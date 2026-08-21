@@ -1,0 +1,51 @@
+# ── Python ──
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ── Virtual environments ──
+.venv/
+venv/
+env/
+
+# ── IDE / Editor ──
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ── OS metadata ──
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Runtime data (never commit bank state) ──
+# The experience bank, trajectories, runs, and indices are runtime artifacts.
+# They are created at runtime under bank_home (default ~/.hermes/or-experience-bank).
+# If local testing created them in-project, exclude them:
+bank/
+episodes/
+trajectories/
+runs/
+archive/
+index/
+*.jsonl
+!references/*.jsonl
+config.yaml
+config.local.yaml
+
+# ── Documents not for public repo ──
+docs/
+*.pdf
+OR_Agent_Cross_Memory_Induction_本轮讨论总结.md
+
+# ── Temp files ──
+*.tmp
+*.bak
+*.log

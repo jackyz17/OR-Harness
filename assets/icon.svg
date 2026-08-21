@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="OR Experience Bank">
+  <rect width="256" height="256" rx="48" fill="#2563EB"/>
+  <path d="M55 64h146v38H55zM55 109h146v38H55zM55 154h146v38H55z" fill="#fff" opacity=".94"/>
+  <circle cx="83" cy="83" r="10" fill="#22C55E"/>
+  <circle cx="128" cy="128" r="10" fill="#FBBF24"/>
+  <circle cx="173" cy="173" r="10" fill="#EF4444"/>
+  <path d="M83 83l45 45 45 45" stroke="#0F172A" stroke-width="8" fill="none"/>
+</svg>

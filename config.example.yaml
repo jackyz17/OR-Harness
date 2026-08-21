@@ -1,0 +1,46 @@
+bank_home: ~/.hermes/or-experience-bank
+
+retrieval:
+  backend: auto
+  embedding_model: local-hashing-embedding-v1
+  top_k:
+    modeling: 5
+    implementation: 5
+    repair: 5
+    solving: 5
+  min_similarity: null
+
+orchestration:
+  solvers:
+    - gurobi
+    - scip
+    - highs
+    - copt
+    - ortools
+    - pulp
+    - pyomo
+  max_parallel_branches: 7
+  max_attempts_per_branch: 3
+  stop_on_repeated_error: true
+  stop_on_unchanged_code: true
+
+execution:
+  python_timeout_seconds: 120
+  solver_timeout_seconds: 60
+  max_stdout_chars: 20000
+  max_stderr_chars: 20000
+  allow_network: false
+
+experience_collection:
+  auto_append: true
+  append_positive: true
+  append_negative: true
+  reject_exact_duplicates: true
+  detect_near_duplicates: true
+  modify_existing: false
+  delete_existing: false
+  merge_existing: false
+
+validation:
+  require_schema_validation: true
+  minimum_positive_experience_level: solver_feasible
