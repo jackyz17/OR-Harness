@@ -186,10 +186,12 @@ class SafePythonExecutor:
                             return "blocked from os import " + alias.name
             elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
                 if not node.args or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, str):
-                    return "open() requires a literal branch-local result.json path"
+                    return ("open() requires a LITERAL string path (dynamic paths are blocked); "
+                            "write your result with open('result.json', 'w') in the branch cwd")
                 target = node.args[0].value
                 if Path(target).is_absolute() or ".." in Path(target).parts or Path(target).name != "result.json":
-                    return "open() may only access branch-local result.json"
+                    return ("open() may only access the branch-local file named result.json "
+                            "(relative path, no directories): open('result.json', 'w')")
             # Block dangerous os.* function calls (os.system, os.popen, etc.)
             elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
                 if node.value.id == "os" and node.attr in os_blocked_attrs:

@@ -1,81 +1,158 @@
 # Workflow
 
-## Contents
-
-1. Runtime layout
-2. End-to-end flow
-3. Experience layers
-4. Branch isolation and repair
-5. Extraction and append-only rules
-6. Quick start
+The end-to-end flow from the `orx` command-calling perspective: what you (the
+agent) produce, what command you run, and what the framework enforces at each
+step.
 
 ## Runtime layout
 
-Runtime data is outside the installed Skill. `OR_EXPERIENCE_BANK_HOME` overrides the default `~/.hermes/or-experience-bank`.
+Runtime data lives in two places. The **bank** is persistent and shared across
+runs; the **run directory** is your per-problem working directory (typically
+your cwd). `OR_EXPERIENCE_BANK_HOME` overrides the default
+`~/.hermes/or-experience-bank`.
 
 ```text
-bank/                 immutable JSONL facts: one file per flat layer + modeling_bank.jsonl
+<bank_home>/
+bank/                 immutable JSONL facts: modeling_bank.jsonl + flat layers
 episodes/             problem-level scene snapshots (append-only, two-phase)
 index/                rebuildable embedding vectors and metadata
-trajectories/         append-only AttemptRecord evidence
-runs/                 isolated generated-code branch workspaces
+archive/              deprecated.jsonl (compressed cards) + deprecated_index.json
+induction/            per-cluster induction working directories
 logs/                 optional operational logs
+
+<run_dir>/            your working directory for ONE solve
+problem.txt  priors.json  model.txt  signature.json
+stamps/  branches/  cross_validation.json  gold.json
+experiences.json  episode.json  rounds/  journal.jsonl
 ```
 
-Derived indexes (embedding index, the repair error-transition graph) are rebuildable from facts at any time; facts are the only source of truth.
+Derived indexes (embedding index, repair error-transition graph) are
+rebuildable from facts at any time; facts are the only source of truth.
 
-## End-to-end flow
+## Online solve flow (Part 1)
 
-The named mode is **Heterogeneous Parallel Solver Exploration with Intra-Branch Sequential Repair**, front-loaded by a verified Structured Modeling stage and closed by gold-gated comparative synthesis.
+```
+NL Problem
+    │
+    ▼
+[T] orx recall ──────────── validated patterns [E1],[E2],... (reflow)
+    │
+    ▼
+[A] [THINK]/[MODEL] ──► [T] orx validate ── L1+L2 gate ──► stamps/model.json
+    │                        issues? ⟲ fix model.txt, retry freely
+    ▼
+[A] signature JSON ───► [T] orx signature ── vocab gate ──► stamps/signature.json
+    │
+    ▼
+[T] orx hints ────────── bank hints BEFORE codegen
+[A] solver code ──────► [T] orx solve --solver a,b,c ── concurrent sandbox exec
+    │                     (branches run in PARALLEL; repair within a branch
+    ▼                      is the agent's serial retry loop)
+branches/<s>/result.json
+    │
+    ▼
+[T] orx cross-validate ── ≥2 valid branches agree within tolerance
+    │
+    ├─ gold match ──► [A] synthesis ──► [T] orx append ×N ─┐
+    └─ mismatch ───► [A] reflection ──► orx new-round ↺    │
+    │                                                       │
+    ▼                                                       │
+[T] orx episode ◄── terminal: episode.json + utility credit ┘
+```
 
-1. Normalize the user problem into family, objective, entities, and constraints.
-2. **Structured Modeling (before any branch)**: the agent emits `<think>` + `<model>` in the GAMS-style DSL (SETS/PARAMETERS/VARIABLES/OBJECTIVE/CONSTRAINTS, symbolic indexing, inline set members). `ModelingGate` runs L1 format, L2 structural (declared-vs-referenced symbols, signature consistency), and optional L3 semantic judge. Failure feeds issues back and re-models (≤3 rounds). **No branch is created until the model passes.**
-3. Extract a **structural signature** (core dims O/D/C/I + open feature slots) from the verified model.
-4. Build a formulation-stage query and retrieve Modeling Bank vectors.
-5. Detect requested solver availability. Missing modules and license failures are environment outcomes, not modeling errors.
-6. Create one isolated branch workspace per available solver. All branches share the verified model.
-7. Retrieve solver-scoped Implementation Bank records and generate complete code that implements the verified model.
-8. Execute with a fixed Python executable, argument list, environment allowlist, timeout, output limits, and Unix resource limits.
-9. Require the code to write `result.json`. Capture missing/invalid results as execution feedback; record the failure into the per-solve `FailureBuffer`.
-10. Validate runtime, schema, solver status, numeric objective, variables, reference objective, and optional semantic validator.
-11. On a repairable failure, normalize feedback, consult the **Repair error-transition graph** (rebuilt on demand) plus Repair Bank records, summarize only current state, and generate the next complete code version.
-12. Stop on accepted success, explicit terminal status, repeated normalized error, unchanged code, timeout, environment failure, or maximum attempts.
-13. After all branches finish, compare validation and only compare objectives when senses and formulations are comparable. Record a base **Episode** (model, signature, branch outcomes, failure count).
-14. **Gold evaluation (separate step, Option A)**: once the gold answer arrives, compare the selected branch. On mismatch, append an Episode supplement and drive an **outer reflection** back to Structured Modeling (≤3 rounds). On match, run **comparative synthesis** over success + buffered failures, admit synthesized lessons through the judge, route them to the right bank (modeling → `ModelingStore`, others → flat store), and append the Episode gold supplement.
+`[A]` = you produce the content; `[T]` = you run the command, the framework
+verifies/executes/stores.
 
-Branches cannot read sibling branch paths or trajectories through the orchestrator. The local executor does not provide a kernel-level filesystem or network sandbox; run production generated code inside an OS/container sandbox when stronger isolation is required.
+Step-by-step responsibilities:
 
-## Experience layers
+1. **recall** `[T]` — pull validated patterns before modeling into
+   `priors.json`. Cite any you apply with `[uses En]` inside the `[THINK]` block.
+2. **validate** `[A] produces, framework gates]` — L1 format + L2 structural.
+   Failure returns structured `issues`; fix model.txt and retry (free, no
+   penalty). The stamp records the content hash — editing model.txt afterwards
+   invalidates it.
+3. **signature** `[A] produces, framework validates]` — controlled
+   vocabularies; out-of-vocabulary values return errors, fix signature.json
+   and retry (the model stamp is unaffected).
+4. **hints + solve ×≥2** `[A] produces code, framework executes]` — pull
+   hints BEFORE writing each branch's solve.py; write ALL branch codes, then
+   run them in ONE command: `orx solve --solver a,b,c` executes the branches
+   **concurrently** (asyncio.gather bounded by `max_parallel_branches` — the
+   heterogeneous parallel exploration contract). Each branch runs in its own
+   sandbox with AST validation; the per-branch result.json carries bank hints
+   (implementation always; repair + graph guidance on failure; solving on
+   performance symptom). **Repair within a branch is serial by design**: a
+   failed branch is fixed by editing ONLY that branch's solve.py and
+   re-running `orx solve --solver <failed>`.
+5. **cross-validate** `[T]` — ≥2 branches must agree within tolerance. On
+   inconsistency, add a third branch and re-run (no token was consumed; the
+   signature stamp stays valid).
+6. **append ×N** `[A] synthesizes, framework admits]` — synthesize lessons for
+   EACH bank layer that had an event during this solve (see the WRITE column
+   in the table below). One JSON file per lesson, `orx append --file` each.
+   Content-hash dedup + anti-resurrection; the modeling layer gets the run's
+   signature.
+7. **episode** `[T]` — terminal; credits utility for cited priors on gold
+   match; writes episode.json.
 
-- **Modeling Bank**: solver-independent, general modeling methods and math techniques. `ModelingExperience` schema (all records are peers; `modeling_aspect` classifies target), own append-only store, carries the structural signature.
-- **Implementation Bank**: language and solver API mechanics.
-- **Repair Bank**: normalized error, diagnosis, successful repair, or ineffective action; feeds the derived error-transition graph.
-- **Solving Bank**: timeouts, gaps, bounds, numerics, parameters, scale, and solver choice.
-- **Episode Store**: problem-level snapshots (not a retrieval layer); raw material for offline induction and provenance target.
+**Reflection (gold mismatch)**: you analyze why the modeling direction was
+wrong (formulation, not code), run `orx new-round` to archive the failed
+round, then re-model from scratch. ≤3 outer rounds. There is no "reflect"
+command — reflection is your creative act.
 
-Retrieval uses embedding vectors plus cosine similarity after metadata hard filtering. Solver-specific records cannot cross solvers; solver-family records remain inside a family; solver-agnostic records may cross solvers. Repair additionally uses the error-transition graph with generality-gated migration.
+## Experience layers (Part 2)
 
-## Branch repair context
+| Bank | Schema | Store file | READ: Reaches you via | WRITE: When you call `orx append` |
+|---|---|---|---|---|
+| Modeling | `ModelingExperience` (fused) | `bank/modeling_bank.jsonl` | `orx recall` → `priors.json` `[E1]...` | Gold match: you found a structural insight (constraint type, objective formulation, variable design) |
+| Implementation | flat `ExperienceRecord` | `bank/implementation.jsonl` | `orx hints` / `orx solve` → `implementation_hints` | You hit a solver API gotcha (wrong attribute, missing call, format quirk) during any branch |
+| Repair | flat `ExperienceRecord` | `bank/repair_bank.jsonl` | `orx solve` (on failure) → `repair_hints` + `repair_graph_guidance` | You hit an error and fixed it (error → fix → outcome during code generation) |
+| Solving | flat `ExperienceRecord` | `bank/solving_bank.jsonl` | `orx solve` (on symptom) → `solving_hints` | You hit a performance issue and tuned it (timeout, large gap, numerics) |
+| Episode | `EpisodeRecord` | `episodes/episodes.jsonl` | never during solving (induction raw material) | `orx episode` (terminal, automatic) |
 
-Attempt 1 receives the normalized problem, the **verified model**, Modeling hits, Implementation hits, solver context, output contract, and execution limits. Later attempts receive the latest formulation, latest complete code, latest feedback, resolved/unresolved issues, ineffective repairs, Repair graph guidance, and Repair/Solving hits. Full historic conversations and unbounded logs are not repeated.
+Free-form inspection: `orx query` / `orx show` / `orx deprecate`.
 
-## Extraction and append-only rules
+## Offline induction flow (Part 3)
 
-Trajectory is evidence; experience is a reusable atomic conclusion. **Failure experiences are never appended alone** — they are buffered, then contrasted with the eventual success by a synthesis step; only synthesized, judge-admitted lessons are appended. Positive prescriptive experience requires solver-feasible evidence or error-before/success-after evidence. Negative experience identifies a concrete action to avoid and needs repeated failure, a proven alternative, or explicit solver rejection.
+Triggered separately from solving (accumulation watermark + heterogeneous
+cluster + cooldown). Per cluster, a 5-step stamped chain inside
+`<bank>/induction/<cluster_id>/`:
 
-Existing JSONL lines are never rewritten. Corrections are new records linked through `related_experience_ids`, `derived_from_experience_ids`, `contradicts_experience_ids`, or `possible_duplicate_of`. Exact content hashes are rejected as duplicates. Embedding indexes and the repair graph are derived data and may be rebuilt.
+```
+[T] orx trigger ──► should_induce?
+[T] orx clusters ──► [{cluster_id, families, members}]
+    │
+    ▼ (per cluster)
+[T] orx align ──► alignment.json (template first, you fill, re-run to stamp)
+[T] orx induce ──► hypotheses.json (status=hypothesis, never knowledge yet)
+[T] orx refute ──► refutations.json (executor verdict decides)
+[T] orx validate-pattern ──► validation.json (source consistency + unseen tasks)
+[T] orx append-pattern ──► validated peers appended | refuted archived
+    │
+    ╰──► reflow: validated patterns become [En] priors in future orx recall
+```
+
+## Append-only rules
+
+- Existing JSONL lines are never rewritten. Corrections are new records linked
+  through `related_experience_ids` / `derived_from_experience_ids` /
+  `contradicts_experience_ids`.
+- Exact content hashes are rejected as duplicates.
+- Failure experiences are never appended alone — they are synthesized into
+  contrast lessons at `orx append` time.
+- Mutable state (lifecycle, utility counts) lives in sidecars, never in fact lines.
+- Deprecated records move to the compressed cold archive; anti-resurrection
+  (hash + cosine ≥ 0.8) blocks re-entry.
 
 ## Quick start
 
 ```bash
-export OR_EXPERIENCE_BANK_HOME=/tmp/or-experience-demo
-python3 scripts/or_experience_cli.py solve \
-  --problem "Assign three tasks to machines and minimize total cost" \
-  --mock-demo --solvers mock-a,mock-b --max-attempts 3 --json
-python3 scripts/or_experience_cli.py stats --json
-python3 scripts/or_experience_cli.py retrieve \
-  --layer repair --solver mock-a \
-  --query "invalid linear expression repaired in next attempt" --json
-```
+# Environment self-check (first action in a fresh environment)
+python3 scripts/orx.py doctor
 
-The mock demonstration intentionally makes one branch fail then succeed and another succeed immediately. It writes experience that the final retrieve command can see. Mock results are not real optimization results.
+# Initialize the bank
+python3 scripts/orx.py init
+
+# Cross-process resumability demo (two sessions, one run)
+python3 scripts/demo_orx_resumability.py
+```

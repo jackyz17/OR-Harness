@@ -3,6 +3,28 @@
 How the framework turns accumulated Modeling Bank records into solver-validated,
 cross-family optimization patterns. This is the framework's core novelty (Phase 3).
 
+## orx command mapping (harness mode)
+
+In harness mode you drive the pipeline through 7 `orx` commands; the internal
+7-stage pipeline maps onto them as follows:
+
+| Internal stage | orx command | Who produces the content |
+|---|---|---|
+| 1. candidates (cluster discovery) | `orx clusters` | framework (inverted index, no LLM) |
+| trigger gating | `orx trigger` | framework (3 gates) |
+| 2. encoding (batch signature verify) | (inside `orx clusters`) | framework |
+| 3. alignment (role correspondence) | `orx align` | **you** (role bindings, must cite realization_id) |
+| 4. inducer (hypothesis generation) | `orx induce` | **you** (1-3 candidates, status=hypothesis) |
+| 5. counterexample (solver refutation) | `orx refute` | **you** propose; **framework executes** the refutation code |
+| 6. validation (consistency + transfer + scoring) | `orx validate-pattern` + `orx append-pattern` | framework checks consistency; **you supply** transfer evidence (with/without-principle objectives) |
+| 7. pipeline (append / archive) | `orx append-pattern` | framework (append validated peers; archive refuted) |
+
+The 5 chained commands form a stamped chain keyed by `cluster_id`:
+`align → induce → refute → validate-pattern → append-pattern`.
+Each content-producing command writes a template artifact on first call; you
+fill it, then re-run the same command to stamp it. Editing a stamped artifact
+invalidates the stamp (content-hash check).
+
 ## What it is (and is not)
 
 - It IS **structural induction** over **heterogeneous but structurally-isomorphic**
@@ -111,12 +133,17 @@ The framework owns rules (prompts, controlled vocabularies, parsing, the executo
 scoring); the agent owns the LLM and the solver executor. `InductionPipeline` holds neither:
 LLM steps take injected drivers (`LLMBackedAligner/Inducer/CounterexampleSearcher`) and the
 transfer comparison takes an injected `transfer_solver(task, principle) -> objective`. In
-harness mode the agent supplies these; the `LLMBacked*` classes are for standalone runs/tests.
+harness mode the agent supplies these via the `orx` commands; the `LLMBacked*` classes are
+for standalone runs/tests.
 
 ## CLI
 
 ```bash
-python3 scripts/or_experience_cli.py induce --auto --min-new-realizations 3 --json
-python3 scripts/or_experience_cli.py induce --mock-demo --json
-PYTHONPATH=src python3 scripts/demo_induction_walkthrough.py   # full worked example
+python3 scripts/orx.py trigger                     # check the 3 gates
+python3 scripts/orx.py clusters                    # list candidate clusters
+python3 scripts/orx.py align --cluster <id>        # template -> fill -> re-run to stamp
+python3 scripts/orx.py induce --cluster <id>
+python3 scripts/orx.py refute --cluster <id>
+python3 scripts/orx.py validate-pattern --cluster <id>
+python3 scripts/orx.py append-pattern --cluster <id>
 ```

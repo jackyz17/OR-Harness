@@ -21,11 +21,38 @@ experience cannot resurrect, whether verbatim or reworded.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
+
+# Cross-process/thread lock guard for lifecycle state writes (parallel orx
+# branches can deprecate concurrently; tmp->replace must be serialized).
+_THREAD_LOCKS: Dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _state_lock(path: Path):
+    """Serialize state reads-modify-writes within a process and across processes."""
+    lock_path = path.parent / (path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(lock_path.resolve())
+    with _THREAD_LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(key, threading.Lock())
+    with thread_lock:
+        with lock_path.open("a+b") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 # Lifecycle states. Only two: active (default) and deprecated (retired).
 # The "superseded" state has been removed: all modeling-bank records are peers,
@@ -123,13 +150,14 @@ class LifecycleStore:
         only its lifecycle state flips and a compressed copy is archived for provenance.
         """
         experience_id = record.get("experience_id", "")
-        state = self._load_state()
-        state[experience_id] = {
-            "state": DEPRECATED,
-            "deprecated_at": deprecated_at,
-            "reason": reason,
-        }
-        self._save_state(state)
+        with _state_lock(self._state_path):
+            state = self._load_state()
+            state[experience_id] = {
+                "state": DEPRECATED,
+                "deprecated_at": deprecated_at,
+                "reason": reason,
+            }
+            self._save_state(state)
         card = self._build_archive_card(record, reason, deprecated_at, embed)
         self._append_archive(card)
         return card

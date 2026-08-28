@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "or-experience-bank"
+version = "2.0.0"
+description = "OR Experience Bank: verified-upfront modeling, multi-solver cross-validation, append-only experience bank, and offline structural induction for OR agents"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "OR Experience Bank contributors" }]
+keywords = ["operations-research", "optimization", "llm-agent", "experience-bank", "structural-induction"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+# Zero runtime dependencies by design: pure Python stdlib. Solver packages
+# (highspy, pulp, ortools, ...) are OPTIONAL and discovered at runtime by
+# `orx doctor` — install whichever you have licenses for.
+dependencies = []
+
+[project.optional-dependencies]
+# Free, open-source solver stack — the recommended minimal install.
+solvers-free = ["highspy", "pulp"]
+# Full open-source stack.
+solvers-full = ["highspy", "pulp", "ortools", "pyomo", "scip"]
+dev = []
+
+[project.scripts]
+orx = "or_experience_bank.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+or_experience_bank = ["py.typed"]

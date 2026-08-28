@@ -33,13 +33,14 @@ from typing import Any, Dict, List, Optional, Protocol
 
 @dataclass
 class ParsedModel:
-    """A parsed <model> body: five GAMS-discipline blocks of raw lines."""
+    """A parsed <model> body: five required GAMS blocks + optional AUXILIARY block."""
 
     sets: List[str] = field(default_factory=list)
     parameters: List[str] = field(default_factory=list)
     variables: List[str] = field(default_factory=list)
     objective: List[str] = field(default_factory=list)
     constraints: List[str] = field(default_factory=list)
+    auxiliary: List[str] = field(default_factory=list)
 
     def blocks(self) -> Dict[str, List[str]]:
         return {
@@ -48,6 +49,7 @@ class ParsedModel:
             "VARIABLES": self.variables,
             "OBJECTIVE": self.objective,
             "CONSTRAINTS": self.constraints,
+            "AUXILIARY": self.auxiliary,
         }
 
 
@@ -75,7 +77,7 @@ class ModelSyntax(Protocol):
 # Option A: GAMS-style lightweight syntax
 # ---------------------------------------------------------------------------
 
-_BLOCK_HEADER = re.compile(r"^\s*(SETS|PARAMETERS|VARIABLES|OBJECTIVE|CONSTRAINTS)\s*:?\s*$", re.I)
+_BLOCK_HEADER = re.compile(r"^\s*(SETS|PARAMETERS|VARIABLES|OBJECTIVE|CONSTRAINTS|AUXILIARY)\s*:?\s*$", re.I)
 _SYMBOL_DECL = re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\]]*\])?)")
 _INDEX_CONTENT = re.compile(r"\[([^\]]*)\]")
 _VTYPE = re.compile(r"\b(binary|integer|continuous)\b", re.I)
@@ -86,6 +88,7 @@ class GamsStyleSyntax:
 
     name = "gams-style-v1"
     required_blocks = ["SETS", "PARAMETERS", "VARIABLES", "OBJECTIVE", "CONSTRAINTS"]
+    optional_blocks = ["AUXILIARY"]
 
     def split_blocks(self, model_text: str) -> ParsedModel:
         parsed = ParsedModel()
@@ -96,6 +99,7 @@ class GamsStyleSyntax:
             "VARIABLES": parsed.variables,
             "OBJECTIVE": parsed.objective,
             "CONSTRAINTS": parsed.constraints,
+            "AUXILIARY": parsed.auxiliary,
         }
         for raw in model_text.splitlines():
             line = raw.rstrip()
@@ -134,6 +138,17 @@ class GamsStyleSyntax:
                     "index_dim": self._index_dim(match.group(2)),
                     "vtype": vtype.group(1).lower() if vtype else "continuous",
                 }
+        # AUXILIARY block: declare symbols that appear on the LHS of "name = expr".
+        # These are auxiliary variables (e.g. P_success = 1 - prod(i, 1-P[i])).
+        # They are treated as declared variables so L2 does not flag them.
+        for line in parsed.auxiliary:
+            match = _SYMBOL_DECL.match(line)
+            if match:
+                symbols.setdefault(match.group(1), {
+                    "kind": "variable",
+                    "index_dim": self._index_dim(match.group(2)),
+                    "vtype": "continuous",
+                })
         return symbols
 
     @staticmethod
@@ -146,7 +161,7 @@ class GamsStyleSyntax:
 
     def referenced_symbols(self, parsed: ParsedModel) -> List[str]:
         refs: List[str] = []
-        for line in parsed.objective + parsed.constraints:
+        for line in parsed.objective + parsed.constraints + parsed.auxiliary:
             for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", line):
                 refs.append(token)
         return refs
@@ -161,11 +176,15 @@ class GamsStyleSyntax:
         return len([part for part in content.group(1).split(",") if part.strip()])
 
 
-# Tokens that legitimately appear in OBJECTIVE/CONSTRAINTS but are NOT model symbols:
-# math keywords, summation notation (sum_i, sum_{i,t}), and constraint labels (C1..Cn).
+# Tokens that legitimately appear in OBJECTIVE/CONSTRAINTS/AUXILIARY but are NOT model symbols:
+# math keywords, summation/product notation, common math functions, and constraint labels.
 _RESERVED = {
     "minimize", "maximize", "subject", "to", "sum", "sigma", "forall", "in",
     "s", "t", "st", "and", "or", "e", "pi", "le", "ge", "eq", "leq", "geq",
+    # Common math functions that may appear in nonlinear objectives/constraints
+    "prod", "exp", "log", "sqrt", "abs", "max", "min", "pow",
+    # Common boolean/probability operators
+    "not", "true", "false", "if", "then", "else",
 }
 _SUM_TOKEN = re.compile(r"^sum_?\{?.*$", re.I)
 _CONSTRAINT_LABEL = re.compile(r"^C\d+$")
@@ -252,7 +271,7 @@ class StructuralValidator:
     def _index_positions(parsed: ParsedModel) -> set:
         """Letters that appear inside index brackets (declared sets make them indices)."""
         positions = set()
-        for line in parsed.objective + parsed.constraints:
+        for line in parsed.objective + parsed.constraints + parsed.auxiliary:
             for content in _INDEX_CONTENT.findall(line):
                 for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", content):
                     positions.add(token)
@@ -320,14 +339,37 @@ class SemanticValidator:
 
 # ---------------------------------------------------------------------------
 # Output parsing (<think>/<model>); <python> deferred to branch stage
+#
+# TWO accepted marker syntaxes (2026-08-26):
+#   1. Square-bracket markers (PREFERRED for harness agents):
+#          [THINK]...[/THINK]  [MODEL]...[/MODEL]
+#      Some harnesses (Hermes-class chat pipelines) reserve/consume <think>
+#      tags as their own reasoning-channel markers, so angle-bracket tags
+#      cannot survive the trip from the agent to model.txt. Square brackets
+#      pass through every known pipeline untouched.
+#   2. Angle-bracket XML tags (legacy, still accepted):
+#          <think>...</think>  <model>...</model>
+# The parser accepts either (or a mix) and normalizes to the same output.
 # ---------------------------------------------------------------------------
 
 _TAG = re.compile(r"<(think|model)>(.*?)</\1>", re.S | re.I)
+_BRACKET = re.compile(r"\[(think|model)\](.*?)\[/\1\]", re.S | re.I)
 
 
 def parse_modeling_output(text: str) -> Dict[str, Optional[str]]:
-    """Extract <think> and <model> bodies. Returns None for any absent tag."""
-    found = {name.lower(): body.strip() for name, body in _TAG.findall(text or "")}
+    """Extract think/model bodies from either marker syntax.
+
+    Accepts [THINK]...[/THINK]/[MODEL]...[/MODEL] (harness-safe, preferred)
+    and <think>...</think>/<model>...</model> (legacy). Square-bracket hits
+    take precedence when both appear. Returns None for any absent block.
+    """
+    text = text or ""
+    found: Dict[str, str] = {}
+    for name, body in _BRACKET.findall(text):
+        found[name.lower()] = body.strip()
+    if not found:
+        for name, body in _TAG.findall(text):
+            found[name.lower()] = body.strip()
     return {"think": found.get("think"), "model": found.get("model")}
 
 

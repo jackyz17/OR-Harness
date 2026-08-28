@@ -242,7 +242,14 @@ class SignatureClusterer:
 
     def _build_cluster(self, core_key: str, members: List[ClusterMember]) -> CandidateCluster:
         shared = self._feature_key_intersection(members)
-        cluster_id = "clu_" + str(abs(hash((core_key, tuple(sorted(m.realization_id for m in members))))) % (10 ** 10))
+        # Stable id across processes: builtin hash() is randomized per process
+        # (PYTHONHASHSEED), which breaks cross-command workflows like the orx CLI
+        # where each command is a fresh process. Use sha256 over the membership.
+        import hashlib
+        digest = hashlib.sha256(
+            (core_key + "|" + ",".join(sorted(m.realization_id for m in members))).encode("utf-8")
+        ).hexdigest()
+        cluster_id = "clu_" + digest[:10]
         return CandidateCluster(
             cluster_id=cluster_id,
             core_key=core_key,

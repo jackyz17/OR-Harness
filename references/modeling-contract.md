@@ -11,21 +11,36 @@
 
 ## 1. Output format (think + model)
 
-The modeling stage produces exactly two blocks:
+The modeling stage produces exactly two sibling blocks. **Preferred markers are square brackets** (harness-safe); angle-bracket XML tags are also accepted (legacy):
 
 ```
- <think> 
+[THINK]
 Free-text analysis: identify the objective, decision variables, constraints,
 key structural insights, and which injected principles you applied.
 Cite applied experiences with [uses E1] or [uses E1, E2].
-<model>
+[/THINK]
+[MODEL]
 ...five GAMS-style blocks...
-</model>
+[/MODEL]
 ```
 
-The framework parses these with a regex `<(think|model)>...</\1>`. Both tags are required. Missing either is an L1 format failure.
+**Marker details (read if L1 fails):**
+- Preferred: `[THINK]...[/THINK]` and `[MODEL]...[/MODEL]` (case-insensitive). Square brackets pass through every known harness pipeline untouched.
+- Legacy (also accepted): `<think>...</think>` and `<model>...</model>` — literal plain-text characters, NOT special LLM tokens.
+- **Why square brackets are preferred**: some harnesses (Hermes-class chat pipelines) reserve `<think>` as their own reasoning-channel marker and consume/strip it before your text reaches model.txt. If your `<think>` blocks keep disappearing or arriving mangled, that is the harness, not the parser — switch to `[THINK]`.
+- The parser accepts either syntax (or a mix) and normalizes to the same output; square-bracket hits take precedence when both appear.
+- Both blocks are required. Missing either (especially an unclosed `[THINK]`) is an L1 format failure.
 
-If planning priors were injected (Phase 4.1), the prompt will contain `[E1]...` past modeling experience references. You **must** cite any experience you actually apply using `[uses En]` inside ` <think> `. The framework parses these citations — only `En` tags that were actually injected map to real ids; you cannot invent a citation.
+**Observed misreadings (do NOT do these):**
+
+| ❌ Misreading | ✅ Correct structure |
+|---|---|
+| `[THINK]...[MODEL]...[/MODEL][/THINK]` (nesting model inside think) | THINK and MODEL are SIBLINGS: `[/THINK]` closes first, then `[MODEL]` starts |
+| Inventing other markers (`[REASONING]`, `[RESPONSE]`, `<thinking>`) | Only THINK and MODEL exist |
+| Writing bare `think`/`model` words without any brackets | The bracket characters are required — they are literal markers |
+| Wrapping everything in a response container | There is no response marker of any kind |
+
+If planning priors were injected (Phase 4.1), the prompt will contain `[E1]...` past modeling experience references. You **must** cite any experience you actually apply using `[uses En]` inside the THINK block. The framework parses these citations — only `En` tags that were actually injected map to real ids; you cannot invent a citation.
 
 ## 2. GAMS-style DSL syntax (Option A)
 
@@ -69,7 +84,7 @@ PARAMETERS:
  max_total
 ```
 
-**Do NOT add inline `#` comments** on parameter lines. The symbol declaration regex `^\s*([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\]]*\])?)` matches the first identifier — a `#` comment after it is harmless for the match itself, but the block-splitter filters out lines starting with `#`. Keep comments in ` <think> ` instead.
+**Do NOT add inline `#` comments** on parameter lines. The symbol declaration regex `^\s*([A-Za-z_][A-Za-z0-9_]*)((?:\[[^\]]*\])?)` matches the first identifier — a `#` comment after it is harmless for the match itself, but the block-splitter filters out lines starting with `#`. Keep comments in the `[THINK]` block instead.
 
 ### VARIABLES
 
@@ -125,11 +140,24 @@ This is the single most common L2 rejection. The structural validator treats any
 
 ### Reserved tokens (not treated as symbols)
 
-These tokens in OBJECTIVE/CONSTRAINTS are filtered out by the `_is_noise` check:
+These tokens in OBJECTIVE/CONSTRAINTS/AUXILIARY are filtered out by the `_is_noise` check:
 
-- Summation notation: `sum`, `sum_i`, `sum_{i,t}` (matched by `^sum_?\{?.*$`)
+- Summation/product notation: `sum`, `sum_i`, `sum_{i,t}`, `prod`, `prod_i` (matched by `^sum_?\{?.*$` and `^prod_?\{?.*$`)
 - Constraint labels: `C1`, `C2`, ... (matched by `^C\d+$`)
 - Math keywords: `minimize`, `maximize`, `subject`, `to`, `sum`, `sigma`, `forall`, `in`, `s`, `t`, `st`, `and`, `or`, `e`, `pi`, `le`, `ge`, `eq`, `leq`, `geq`
+- Math functions: `prod`, `exp`, `log`, `sqrt`, `abs`, `max`, `min`, `pow`
+
+### AUXILIARY block (optional, for nonlinear objectives)
+
+When the objective is nonlinear (e.g. probability of success involving products), declare the relationship in an optional `AUXILIARY` block. Symbols on the LHS of `=` are registered as declared variables so L2 does not flag them. The actual computation happens in solver code — the DSL only verifies symbol references.
+
+```
+AUXILIARY
+  P_success = 1 - prod(i, 1-P[i]) - sum(i, P[i]*prod(i, 1-P[i]))
+  P[i] = 1 - (1-p_h[i])**x[i] * (1-p_l[i])**y[i]
+```
+
+Then in OBJECTIVE: `maximize P_success`.
 
 ### Single-letter index tokens
 
@@ -142,8 +170,8 @@ All three layers run **without executing any code**. The model is verified befor
 ### L1 — FormatValidator (deterministic)
 
 Checks:
-1. ` <think> ` tag present and non-empty.
-2. `<model>` tag present and non-empty.
+1. THINK block present and non-empty (`[THINK]...[/THINK]` or legacy `<think>...</think>`).
+2. MODEL block present and non-empty (`[MODEL]...[/MODEL]` or legacy `<model>...</model>`).
 3. All five required blocks present and non-empty: `SETS`, `PARAMETERS`, `VARIABLES`, `OBJECTIVE`, `CONSTRAINTS`.
 
 L1 runs synchronously and never calls an LLM.

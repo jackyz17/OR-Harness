@@ -49,7 +49,7 @@ Generated code must write `result.json` in its branch directory:
 }
 ```
 
-An exit without this file is an execution failure even if stdout claims success.
+An exit without this file is an execution failure even if stdout claims success. **Write the file, do not print**: the executor reads `result.json` from the branch directory — stdout is never parsed for results. Use the literal path `open('result.json', 'w')` (dynamic path construction is blocked by the sandbox; the branch cwd is already correct).
 
 ## Execution controls
 
@@ -73,48 +73,40 @@ Big-M = √(dimensions) for unit hypercube. K = N−2 Steiner points from the ha
 
 ### Solver-specific API notes
 
+These notes are starting points, NOT exhaustive references — and they are deliberately kept to a similar length per solver. The authoritative, growing source of solver API knowledge is the **Implementation Bank** (`orx hints --solver <s>`): every API gotcha you hit and append becomes a retrievable hint for future runs. Do not favor a solver just because its notes below look longer.
+
 **HiGHS (highspy):**
-- Import: `from highspy import Highs, HighsStatus, HighsModelStatus`.
-- Create model: `h = Highs()`, then `h.addCols(...)`, `h.addRows(...)`.
-- **Status check**: use `h.getModelStatus()` (NOT `h.status`). Returns `HighsModelStatus.kOptimal`, `HighsModelStatus.kInfeasible`, `HighsModelStatus.kUnbounded`.
-- `h.getInfinity()` for infinity value.
-- **Row count**: `h.getNumRow()` (singular, NOT `getNumRows`).
-- **Column cost**: `h.changeColsCost(n, np_int32_array, np_float64_array)` — requires numpy arrays, not plain lists. For older API, `h.changeColsCost(range(n), list)` may work.
-- Objective value: `h.getObjectiveValue()` (not `h.objval`).
-- Variable values: `h.getSolution().col_value`.
-- Set time limit: `h.setOptionValue("time_limit", 60.0)`.
-- MIP gap: `h.getDoubleInfoValue("mip_gap")`.
-- **Version note**: API changed significantly between versions. Test with your installed `highspy` version.
-
-**PuLP (pulp):**
-- Status: `pulp.LpStatus[problem.status]` returns **capitalized** string like `"Optimal"`. **Always `.lower()` the status before writing to result.json**: `status = pulp.LpStatus[problem.status].lower()`.
-- Variable values: `var.varValue` (not `var.value()`).
-- Sense: `pulp.LpMinimize` or `pulp.LpMaximize`.
-- Default backend is CBC (open source).
-
-**COPT (coptpy):**
-- MIP gap parameter: `cp.COPT.Param.RelGap` (NOT `MIPGap`).
-- `model.status` is an **integer**: 1=OPTIMAL, 8=TIMEOUT, 2=INFEASIBLE, 5=UNBOUNDED.
-- `model.objval` works directly (no `hasprimal` attribute).
-- Quadratic constraints: `model.addQConstr(lhs, sense, rhs, name)`. Use `var * var` for products (NOT `addTerm`).
-- COPT struggles to close MIP gaps on MIQCP/MISOCP problems (observed 49% gap after 120s on a 33-variable instance).
+- Status: `h.getModelStatus()` (NOT `h.status`); compare against `HighsModelStatus.kOptimal` etc.
+- Row/column counts: `h.getNumRow()` / `h.getNumCol()` (singular).
+- Objective: `h.getObjectiveValue()`; solution: `h.getSolution().col_value`.
+- `changeColsCost` requires numpy arrays in newer versions.
 
 **SCIP (pyscipopt):**
 - Import only `Model` — `Term` does not exist in newer versions.
-- `model.getStatus()` returns lowercase string: `'optimal'`, `'timelimit'`, `'infeasible'`.
-- Quadratic constraints via `model.addCons(lhs >= 0)` where `lhs = var*var - sum(v*v)` works natively.
+- `model.getStatus()` returns lowercase: `'optimal'`, `'timelimit'`, `'infeasible'`.
+- Dual bound: `model.getDualbound()` (lowercase 'b').
+- Quadratic constraints via `model.addCons(lhs >= 0)` work natively.
 
 **Gurobi (gurobipy):**
-- `model.addQConstr(dist*dist >= gp.quicksum(v*v for v in diffs))` is recognized as SOC automatically.
 - Status constants: `GRB.OPTIMAL=2`, `GRB.TIME_LIMIT=9`, `GRB.INFEASIBLE=3`.
+- `model.addQConstr(...)` is recognized as SOC automatically.
 - Restricted (free) license: 2000-variable limit, supports SOC.
+
+**COPT (coptpy):**
+- MIP gap parameter: `cp.COPT.Param.RelGap` (NOT `MIPGap`).
+- `model.status` is an integer: 1=OPTIMAL, 8=TIMEOUT, 2=INFEASIBLE, 5=UNBOUNDED.
+- Quadratic constraints: `model.addQConstr(lhs, sense, rhs, name)`; use `var * var` (NOT `addTerm`).
 
 **OR-Tools (ortools.cp_model):**
 - CP-SAT requires **integer** variables and coefficients. Scale rational data deliberately.
-- `model.ModelStatus` → use `cp_model.OPTIMAL`, `cp_model.FEASIBLE`, `cp_model.INFEASIBLE`.
-- `solver.ObjectiveValue()` returns the objective (scaled).
+- Status: `cp_model.OPTIMAL`, `cp_model.FEASIBLE`, `cp_model.INFEASIBLE`.
+- Objective: `solver.ObjectiveValue()` (scaled units).
+
+**PuLP (pulp):**
+- Status: `pulp.LpStatus[problem.status]` returns capitalized strings — **always `.lower()`** before writing result.json.
+- Variable values: `var.varValue` (not `var.value()`).
+- Sense: `pulp.LpMinimize` / `pulp.LpMaximize`; default backend CBC.
 
 **Pyomo (pyomo):**
 - Requires a backend solver: `opt = pyomo.SolverFactory("highs")` (or "gurobi", "scip", "cbc").
-- `results = opt.solve(model)`.
-- Status is in `results.solver.termination_condition`.
+- Status: `results.solver.termination_condition`.

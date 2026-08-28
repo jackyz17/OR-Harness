@@ -1,7 +1,0 @@
-interface:
-  display_name: "OR Experience Bank"
-  short_description: "Parallel OR solving with append-only experience retrieval"
-  icon_small: "./assets/icon.svg"
-  icon_large: "./assets/icon.svg"
-  brand_color: "#2563EB"
-  default_prompt: "Use $or-experience-bank to solve this OR problem with isolated solver branches and append-only experience retrieval."

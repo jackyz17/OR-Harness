@@ -662,12 +662,28 @@ class ORExperienceOrchestrator:
     @staticmethod
     def _normalize_problem(problem: str) -> Dict[str, Any]:
         lower = problem.lower()
+        # Order matters: more specific families precede generic ones. The fallback
+        # "general_milp" is a last resort so that two structurally-different problems
+        # are not falsely labelled as the same family (which would defeat the
+        # cross-family induction trigger).
         families = [
+            ("aircraft_landing", ["aircraft landing", "aircraft scheduling", "runway", "landing sequence", "航班降落", "飞机着陆", "跑道调度"]),
+            ("job_shop_scheduling", ["job shop", "job-shop", "machine scheduling", "车间调度", "作业车间"]),
+            ("nurse_rostering", ["nurse", "rostering", "roster", "shift scheduling", "护士排班", "轮班"]),
+            ("crew_scheduling", ["crew scheduling", "crew pairing", "crew rostering", "机组排班", "乘务"]),
+            ("facility_location", ["facility location", "warehouse location", "plant location", "选址", "设施选址"]),
+            ("network_design", ["network design", "network flow", "网络设计", "网络流"]),
+            ("cutting_stock", ["cutting stock", "cutting-stock", "下料", "切割"]),
+            ("bin_packing", ["bin packing", "bin-packing", "装箱"]),
+            ("tsp", ["tsp", "traveling salesman", "travelling salesman", "旅行商"]),
             ("cvrp", ["vrp", "vehicle routing", "车辆路径", "配送"]),
             ("assignment", ["assignment", "assign", "指派", "分配任务"]),
             ("scheduling", ["schedule", "scheduling", "排班", "调度"]),
+            ("inventory", ["inventory", "库存", "补货", "订货"]),
             ("knapsack", ["knapsack", "背包"]),
             ("production_planning", ["production", "生产计划", "产能"]),
+            ("set_covering", ["set covering", "set cover", "集合覆盖"]),
+            ("portfolio", ["portfolio", "投资组合", "资产配置"]),
         ]
         family = next((name for name, words in families if any(word in lower for word in words)), "general_milp")
         objective = "maximize" if any(word in lower for word in ["maximize", "最大化", "最大"] ) else "minimize" if any(word in lower for word in ["minimize", "最小化", "最少", "最低"]) else "unknown"

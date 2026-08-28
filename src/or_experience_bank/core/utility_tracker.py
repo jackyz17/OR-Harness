@@ -19,10 +19,39 @@ and for induction candidates' priority signal (retrieval_hits).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
+
+# Cross-process/thread lock guard: parallel `orx solve` branches bump counters
+# concurrently; the load->mutate->save sequence must be serialized or updates
+# are lost and the tmp->replace rename races (FileNotFoundError).
+_THREAD_LOCKS: Dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _stats_lock(path: Path):
+    """Serialize counter updates within a process (thread lock) and across
+    processes (flock on a sidecar lock file)."""
+    lock_path = path.parent / (path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(lock_path.resolve())
+    with _THREAD_LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(key, threading.Lock())
+    with thread_lock:
+        with lock_path.open("a+b") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 # Default soft-delete thresholds (configurable).
 DEFAULT_ALPHA = 5          # min retrievals before judging (protects new experiences)
@@ -73,10 +102,13 @@ class UtilityTracker:
     def _bump(self, experience_id: str, field: str) -> None:
         if not experience_id:
             return
-        stats = self._load()
-        entry = stats.setdefault(experience_id, {"retrieval_count": 0, "utility_count": 0})
-        entry[field] = int(entry.get(field, 0)) + 1
-        self._save(stats)
+        # The whole load->mutate->save sequence runs under the lock: locking
+        # only _save would still lose concurrent increments (lost updates).
+        with _stats_lock(self._path):
+            stats = self._load()
+            entry = stats.setdefault(experience_id, {"retrieval_count": 0, "utility_count": 0})
+            entry[field] = int(entry.get(field, 0)) + 1
+            self._save(stats)
 
     # -- counters ----------------------------------------------------------------
 

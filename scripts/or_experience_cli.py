@@ -10,6 +10,7 @@ import logging
 import shlex
 import sys
 from pathlib import Path
+from typing import Dict
 
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SRC_DIR = SKILL_DIR / "src"
@@ -17,9 +18,13 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from or_experience_bank.config import ExperienceBankConfig
+from or_experience_bank.core.lifecycle import LifecycleStore
+from or_experience_bank.core.modeling_store import ModelingStore
+from or_experience_bank.core.utility_tracker import UtilityTracker
 from or_experience_bank.retrieval.index import EmbeddingIndex, create_embedding_backend
 from or_experience_bank.llm_client import CommandLLMClient, FakeLLMClient
 from or_experience_bank.solving.orchestrator import NoSolverAvailable, ORExperienceOrchestrator
+from or_experience_bank.retrieval.modeling_retriever import ModelingRetriever
 from or_experience_bank.retrieval.retrieval import ExperienceRetriever
 from or_experience_bank.core.schemas import ExperienceRecord, SolverExecutionResult
 from or_experience_bank.solvers.mock import MockSolverAdapter
@@ -40,6 +45,8 @@ def parser() -> argparse.ArgumentParser:
     solve.add_argument("--max-attempts", type=int)
     solve.add_argument("--auto-append", action=argparse.BooleanOptionalAction, default=None)
     solve.add_argument("--reference-objective", type=float)
+    solve.add_argument("--no-utility", action="store_true",
+                       help="Skip utility tracking / soft delete / prior recall for this run (debug)")
     solve.add_argument("--llm-command", help="Fixed provider-wrapper command accepting JSON stdin/stdout")
     solve.add_argument("--interactive-llm", action="store_true",
                        help="Harness mode: the framework prints prompts, YOU answer on stdin (you ARE the LLM, D18)")
@@ -82,12 +89,43 @@ def parser() -> argparse.ArgumentParser:
 
 
 def components(config: ExperienceBankConfig):
+    """Assemble the full wired stack (Phase 2.3 + 4.1 add-ons included by default).
+
+    UtilityTracker / LifecycleStore / ModelingRetriever are injected here so the
+    whole utility chain (retrieval counting -> gold-credited utility -> soft
+    delete -> anti-resurrection) and planning-prior recall are active in every
+    CLI-driven run, not just in tests that wire them manually.
+    """
     config.ensure_directories()
     backend = create_embedding_backend(config.retrieval_backend, config.embedding_model)
     index = EmbeddingIndex(config.bank_home / "index", backend)
-    store = AppendOnlyExperienceStore(config.bank_home)
-    retriever = ExperienceRetriever(store, index)
-    return store, retriever
+    utility_tracker = UtilityTracker(config.bank_home)
+    lifecycle = LifecycleStore(config.bank_home)
+    store = AppendOnlyExperienceStore(
+        config.bank_home,
+        lifecycle=lifecycle,
+        embed=backend.embed_documents,
+    )
+    retriever = ExperienceRetriever(store, index, utility_tracker=utility_tracker, lifecycle=lifecycle)
+    return store, retriever, utility_tracker, lifecycle
+
+
+def episode_family_index(bank_home: Path) -> Dict[str, str]:
+    """episode_id -> problem_family, resolved from recorded Episode provenance.
+
+    Feeds SignatureClusterer so cross-family detection uses the orchestrator's
+    normalized family (authoritative) instead of keyword guessing.
+    """
+    from or_experience_bank.core.episode import EpisodeStore
+
+    index: Dict[str, str] = {}
+    for record in EpisodeStore(bank_home).iter_records():
+        spec = record.get("normalized_spec") or {}
+        family = spec.get("problem_family")
+        episode_id = record.get("episode_id")
+        if family and episode_id:
+            index[episode_id] = family
+    return index
 
 
 def emit(value, json_mode: bool) -> None:
@@ -97,7 +135,7 @@ def emit(value, json_mode: bool) -> None:
         print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-async def solve_command(args, config, store, retriever):
+async def solve_command(args, config, store, retriever, utility_tracker, lifecycle):
     problem = args.problem if args.problem is not None else Path(args.problem_file).read_text(encoding="utf-8")
     names = [x.strip() for x in args.solvers.split(",")] if args.solvers else config.solvers
     if args.mock_demo:
@@ -131,12 +169,20 @@ async def solve_command(args, config, store, retriever):
                 "environment (the framework prints prompts and you answer them — you ARE "
                 "the LLM, D18), or --llm-command with an external wrapper for standalone runs."
             )
-    orchestrator = ORExperienceOrchestrator(config, store, retriever, registry, llm)
+    modeling_retriever = None
+    if utility_tracker is not None or lifecycle is not None:
+        modeling_retriever = ModelingRetriever(
+            ModelingStore(config.bank_home), lifecycle=lifecycle
+        )
+    orchestrator = ORExperienceOrchestrator(
+        config, store, retriever, registry, llm,
+        modeling_retriever=modeling_retriever,
+        utility_tracker=utility_tracker,
+    )
     result = await orchestrator.solve(
         problem, names, args.max_attempts, args.auto_append, args.reference_objective
     )
     return result.to_dict()
-
 
 async def induce_command(args, config):
     """Offline structural induction: Realization -> Pattern -> Repository (Phase 3)."""
@@ -157,7 +203,9 @@ async def induce_command(args, config):
     store = ModelingStore(config.bank_home)
     workspace = config.bank_home / "induction_ws"
     workspace.mkdir(parents=True, exist_ok=True)
-    clusterer = SignatureClusterer()
+    clusterer = SignatureClusterer(
+        episode_family_index=episode_family_index(config.bank_home)
+    )
     trigger = (
         InductionTrigger(store, clusterer, min_new_realizations=args.min_new_realizations)
         if args.auto else None
@@ -214,7 +262,14 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(levelname)s %(message)s")
     try:
         config = ExperienceBankConfig.load(args.config)
-        store, retriever = components(config)
+        store, retriever, utility_tracker, lifecycle = components(config)
+        if args.command == "solve" and getattr(args, "no_utility", False):
+            # Bare stack for debugging: drop utility/lifecycle/prior-recall add-ons.
+            store = AppendOnlyExperienceStore(config.bank_home)
+            backend = create_embedding_backend(config.retrieval_backend, config.embedding_model)
+            retriever = ExperienceRetriever(store, EmbeddingIndex(config.bank_home / "index", backend))
+            utility_tracker = None
+            lifecycle = None
         if args.command == "retrieve":
             filters = {
                 key: getattr(args, key)
@@ -242,7 +297,7 @@ def main(argv=None) -> int:
             output["index"] = retriever.validate_indexes()
             output["valid"] = output["valid"] and output["index"]["valid"]
         elif args.command == "solve":
-            output = asyncio.run(solve_command(args, config, store, retriever))
+            output = asyncio.run(solve_command(args, config, store, retriever, utility_tracker, lifecycle))
         elif args.command == "induce":
             output = asyncio.run(induce_command(args, config))
         else:

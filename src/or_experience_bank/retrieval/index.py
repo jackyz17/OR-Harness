@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import hashlib
 import math
 import os
 import re
+import threading
 import urllib.request
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Protocol, Sequence
 
@@ -15,6 +18,32 @@ from ..core.schemas import ExperienceLayer
 
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*|[\u4e00-\u9fff]")
+
+# Cross-process/thread lock guard for index rebuilds: concurrent branches
+# (parallel `orx solve`) can trigger lazy rebuilds simultaneously; without a
+# lock they race on the same .tmp file (write -> rename clobbers).
+_THREAD_LOCKS: Dict[str, threading.Lock] = {}
+_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _rebuild_lock(index_dir: Path):
+    """Serialize index rebuilds within a process (thread lock) and across
+    processes (flock on a sidecar lock file)."""
+    lock_path = Path(index_dir) / ".index_rebuild.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(lock_path.resolve())
+    with _THREAD_LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(key, threading.Lock())
+    with thread_lock:
+        with lock_path.open("a+b") as handle:
+            if fcntl is not None:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def tokenize(text: str) -> List[str]:
@@ -142,9 +171,12 @@ class EmbeddingIndex:
             "records": rows,
         }
         target = self.path(layer)
-        temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-        temporary.replace(target)
+        with _rebuild_lock(self.index_dir):
+            # Re-check under the lock: another thread/process may have just
+            # rebuilt this layer with identical content.
+            temporary = target.with_suffix(target.suffix + ".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+            temporary.replace(target)
         return {
             "layer": layer,
             "records": len(rows),

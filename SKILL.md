@@ -1,482 +1,331 @@
 ---
 name: or-experience-bank
-description: Build, solve, debug, and compare Operations Research models with verified-upfront modeling (think->model->verify gate), isolated parallel solver branches (Gurobi / SCIP / HiGHS / COPT / OR-Tools / PuLP / Pyomo), intra-branch sequential repair, outer reflection on gold-answer mismatch, comparative success/failure experience synthesis, an append-only layered experience bank (Modeling / Implementation / Repair / Solving) plus problem-level Episodes, and offline structural induction that distills solver-validated cross-family optimization patterns from accumulated realizations. Use for natural-language OR modeling, solver code generation, infeasible/unbounded/timeout/API-error repair, OR experience retrieval, multi-solver comparison, offline principle induction, or experience-bank inspection.
+description: Solve, verify, and debug operations research optimization problems (LP, MILP, scheduling, transportation, network flow, resource allocation, inventory) by driving the OR Experience Bank CLI (`orx`) — verified-upfront modeling, multi-solver cross-validation, an append-only experience bank, and offline structural induction. Use when the user asks to formulate, solve, validate, or debug an optimization model, or to query/manage accumulated OR experience. Do not use for generic mathematical proofs, pure data analysis, or non-optimization tasks.
 ---
 
-# OR Experience Bank
+# OR Experience Bank (orx)
 
-Use **Heterogeneous Parallel Solver Exploration with Intra-Branch Sequential Repair**, front-loaded by a **verified Structured Modeling stage** and closed by **gold-gated comparative experience synthesis**. An offline **structural induction** pipeline distills solver-validated cross-family patterns from accumulated experience.
+## Purpose
 
-### Full flow at a glance
+Solve OR problems through a verified pipeline (model → validate → multi-solver → cross-validate → gold gate), accumulate the lessons into an append-only experience bank, and — offline — induce transferable optimization principles from accumulated experience. You orchestrate; the `orx` CLI validates, executes, and stores.
 
-```
-[A] = you produce   [F] = framework executes   #n = your output # (see §1)
+## When to Use
 
-NL Problem
-    │
-    ▼
-[F] Normalize → recall planning priors [E1],[E2]... ◀─── reflow (validated records)
-    │
-    ▼
-[A] #1  IMDI + <model> GAMS-DSL → [F] ModelingGate (L1+L2+[A]#3 L3, ≤3 rounds ↺) → [A] #2 signature
-    │
-    ▼
-[F] Fan out → 7 solver branches (Gurobi/SCIP/HiGHS/COPT/OR-Tools/PuLP/Pyomo, parallel)
-    │   [A] #4 generate code → [F] sandbox+validate result.json → repair ↺ (≤max_attempts)
-    ▼
-[F] Cross-solver validation → select best → Episode base record (gold pending)
-    │
-    ════════ solve(defer_extraction=True) → evaluate_with_gold(gold) ════════
-    │
-    ▼
-[F] |objective - gold| ≤ tolerance?
-    │
-    ├─ yes → [A] #5 synthesis (success vs FailureBuffer) → [A] #6 admission judge
-    │              → [F] append to bank → [F] utility credit [uses En] → [F] episode supplement
-    │
-    └─ no  → [A] #7 reflection ("why was modeling direction wrong?") → back to modeling ↺ (≤3 rounds)
+Use this skill when:
+- The user asks to formulate, solve, verify, or debug an optimization model (LP / MILP / scheduling / routing / network flow / resource allocation / inventory).
+- The user asks what the experience bank knows about an OR topic, or wants to manage accumulated experiences.
+- The harness signals that offline induction should run (accumulated cross-family realizations) — though in practice the `induction_check` field in every `orx episode` response is the authoritative cue.
 
-    ──────────── OFFLINE (triggered by accumulation, separate from online loop) ────────────
+Do not use this skill when:
+- The task is a generic mathematical proof or symbolic manipulation with no optimization model.
+- The task is pure data analysis (statistics, plotting) with no decision variables or objective.
+- The user only wants conceptual OR theory explained with no problem to solve.
 
-    Modeling Bank → [F] cluster → [F] encode → [A] #8 align → [A] #9 induce (hypothesis)
-    → [A] #10 counterexample (framework executes refutation code) → [F] validate (#11 unseen transfer)
-    → validated → append peer (status=validated) | refuted → archive (not in bank) → reflow ──↺
-```
+## How This Works
 
-**Your 11 outputs**: #1 think+model · #2 signature · #3 semantic judge · #4 solver code · #5 synthesis · #6 admission · #7 reflection · #8 alignment · #9 hypothesis · #10 counterexample · #11 transfer solver
+You are the orchestrator. The framework is a set of **stateless CLI commands** (`orx ...`); you call one per step, read its JSON output, think, and decide the next step. All state lives in **files in your working directory** (the run directory) — every command is an independent process, so you can stop, inspect, retry, or resume at any step.
 
----
+**The chain is enforced by stamps, not trust.** Each gate command (`validate`, `signature`, ...) stamps the artifact it approved with a content hash. The next command refuses to run if the predecessor stamp is missing or the file changed after stamping. You cannot skip a step or silently edit a validated artifact — but you CAN freely retry any step.
 
-## 0. You ARE the LLM — read this first
+**First action in a fresh environment:** run `orx doctor`. If `orx` is not on PATH, the framework is not installed — use `python3 <repo>/scripts/orx.py` as a fallback and tell the user to `pip install -e .` (see docs/deployment.md).
 
-This framework is a TOOL under a harness agent. The split of responsibilities (**D18**):
-
-- **Framework owns rules**: schemas, controlled vocabularies, the `ModelingGate` verifiers, parsing, dedup, append-only stores, the derived repair graph, **retrieval** (query construction, embedding search, ranking, filtering), and all prompt *templates*.
-- **Agent owns the LLM**: the agent generates the `<think>`/`<model>`, the structural signature, the solver code, the comparative synthesis, the judge verdicts, and (offline) the alignment, hypothesis, and counterexample outputs.
-
-**In a harness environment you ARE the LLM.** There is no external API, no wrapper script, no `openai` package. You read the framework's prompts, produce the answer with your own reasoning, and the framework validates/executes/stores it. The framework retrieves relevant experience from the bank and injects it into each prompt **automatically** — you do not select or query the bank yourself.
-
-**Anti-patterns to avoid**: writing an OpenAI/HTTP wrapper script, reading API credentials from the environment, adjusting framework timeouts to reach an API, manually querying the bank before solving.
-
-### How the framework calls you
-
-Every LLM touchpoint goes through an injected `LLMClient` with two methods:
-
-| Method | When | Your response format |
-|---|---|---|
-| `generate_text(prompt) → str` | Modeling (think+model), solver code, reflection | Free text; code may use ```python fences |
-| `generate_object(prompt) → Any` | Signature, semantic issues, synthesis, judge, alignment, hypothesis, counterexample | **Raw JSON only** — no markdown fences, no prefix text |
-
-In CLI `--interactive-llm` mode, the `StdinLLMClient` prints each prompt to stderr (`===== LLM PROMPT (respond text|json, end with '<<<END_LLM>>>') =====`) and reads your answer from stdin until a line containing only `<<<END_LLM>>>`.
-
----
-
-## 1. Agent Output Contract
-
-The framework will ask you for these outputs. Each has a strict format the framework parses and validates. **Return only what is asked — do not add extra text outside the expected format.**
-
-### Online solve + gold evaluation
-
-| # | When | Method | Format | Framework validates/stores |
-|---|---|---|---|---|
-| 1 | Modeling stage | `generate_text` | `<think>...\n<model>...</model>` | L1 format, L2 structural, L3 semantic |
-| 2 | Signature extraction | `generate_object` | `{"objective":"...","decision":[...],"constraint":[...],"interaction":"...","features":{...}}` | Controlled-vocabulary check |
-| 3 | Semantic judge (L3) | `generate_object` | `[{"type":"...","detail":"..."}]` or `[]` | Feeds issues back if non-empty |
-| 4 | Code generation (per branch) | `generate_text` | Complete Python | Executes in sandbox, reads `result.json` |
-| 5 | Comparative synthesis | `generate_object` | `[{"layer","title","retrieval_text","polarity","diagnosis","action","rationale"}]` | Routes to admission judge |
-| 6 | Admission judge | `generate_object` | `{"accept":true/false,"reason":"..."}` | Appends to bank if accepted |
-
-### Outer reflection (gold mismatch)
-
-| # | When | Method | Format | Framework does |
-|---|---|---|---|---|
-| 7 | Reflection | `generate_text` | Free text — new modeling direction | Feeds back into a fresh modeling round |
-
-### Offline induction (separate from online loop)
-
-| # | When | Method | Format | Framework does |
-|---|---|---|---|---|
-| 8 | Alignment | `generate_object` | `{"roles":[...],"bindings":[...]}` (each binding must cite a `realization_id`) | Grounded check; drops ungrounded bindings |
-| 9 | Hypothesis generation | `generate_object` | `{"statement":"...","rationale":"...","complexity":N}` | Stamped `status=hypothesis` |
-| 10 | Counterexample search | `generate_object` | `{"conditions":[...],"refutation_code":"..."}` | **Executes** refutation code; only executor verdict decides |
-| 11 | Transfer solver | injected callable | `float` (objective) | With/without principle comparison; no improvement → refuted |
-
----
-
-## 2. Structured Modeling — what you generate
-
-When the framework sends the modeling prompt, it has **already**:
-- Normalized the problem `[framework]`
-- Retrieved planning priors from the Modeling Bank (all records as `[E1]...`, `[E2]...`) `[framework]`
-- Injected them into the prompt `[framework]`
-
-**Your job `[agent]`**: produce `<think>` + `<model>` in the GAMS-style DSL.
-
-### Output format
+## Run Directory Layout
 
 ```
-<think>
-Your analysis: identify objective, decision variables, constraints,
-key structural insights, and which injected principles (if any) you applied.
-If you applied a principle, cite it: [uses E1]
-</think>
+problem.txt                     the problem (written by recall)
+priors.json                     recalled experiences + [En] citation labels
+model.txt                       YOU write: [THINK]...[/THINK][MODEL]...[/MODEL]
+signature.json                  YOU write: structural signature JSON
+stamps/model.json               L1+L2 verdict + hash of model.txt
+stamps/signature.json           vocabulary verdict + hash of signature.json
+branches/<solver>/hints.json    bank hints pulled BEFORE codegen
+branches/<solver>/solve.py      YOU write: complete solver script
+branches/<solver>/result.json   execution outcome + hints (written by solve)
+cross_validation.json           cross-solver comparison verdict
+gold.json                       gold verdict (user-provided or consistency-only)
+experiences.json                appended experience ids
+episode.json                    terminal record + utility credit
+rounds/<n>/                     archived artifacts of reflection round n
+journal.jsonl                   audit log of every orx command
 ```
 
-### Concrete example — a valid model
+`orx status` at any time tells you where you are and what's next.
 
-<model>
+## model.txt Format (read before writing model.txt)
+
+model.txt contains EXACTLY two sibling marker blocks, in this order — THINK first, then MODEL, at the top level (NOT nested):
+
+```
+[THINK]
+Your analysis: objective, decisions, constraints, structural insights.
+Cite applied priors here: [uses E1]
+[/THINK]
+[MODEL]
 SETS:
-  a in Animals = {cow, sheep, chicken}
-
+  ...
 PARAMETERS:
-  sell_price[a]
-  feed_cost[a]
-  manure_rate[a]
-  manure_limit
-  max_chickens
-  min_cows
-  min_sheep
-  max_total
-
+  ...
 VARIABLES:
-  x[a] integer >= 0
-
+  ...
 OBJECTIVE:
-  maximize sum(a, (sell_price[a] - feed_cost[a]) * x[a])
-
+  ...
 CONSTRAINTS:
-  C1: sum(a, manure_rate[a] * x[a]) <= manure_limit
-  C2: x[chicken] <= max_chickens
-  C3: x[cow] >= min_cows
-  C4: x[sheep] >= min_sheep
-  C5: sum(a, x[a]) <= max_total
-</model>
+  C1: ...
+[/MODEL]
 ```
 
-### GAMS-style DSL rules (critical — L2 will reject violations)
-
-- **Five required blocks**: `SETS`, `PARAMETERS`, `VARIABLES`, `OBJECTIVE`, `CONSTRAINTS` (exact spellings, each on its own line, ending with `:`).
-- **Constraint labels must be `C1:`, `C2:`, ...** — the L2 structural validator only recognizes `C\d+` as a constraint label. Descriptive names like `manure:` or `chicken_cap:` are treated as **undeclared symbols** and rejected.
-- **No inline `#` comments** in PARAMETERS/VARIABLES lines — the parser may truncate the symbol name.
-- **Set members go in braces**: `a in Animals = {cow, sheep, chicken}`.
-- **Symbolic indexing**: use `x[a]`, `x[i,t]` etc. — declared in SETS, referenced in VARIABLES/PARAMETERS/OBJECTIVE/CONSTRAINTS.
-- **Every symbol referenced in OBJECTIVE/CONSTRAINTS must be declared** in SETS/PARAMETERS/VARIABLES. The L2 validator does a cross-reference check.
-
-See [modeling-contract.md](references/modeling-contract.md) for the full DSL specification.
-
-### What happens after you submit the model
-
-1. `[framework]` **L1 format check**: tags present, five blocks non-empty.
-2. `[framework]` **L2 structural check**: declared-vs-referenced symbol cross-reference + signature consistency.
-3. `[framework]` **L3 semantic check** (if LLM available): you are asked to judge whether the model has missing/spurious constraints vs the original problem — return `[]` if faithful, or `[{"type":"...","detail":"..."}]` for defects.
-4. If any layer fails, `[framework]` feeds the issues back into a new modeling prompt and you retry (≤3 rounds).
-5. If the model passes, `[framework]` extracts a **structural signature** (asks you for the JSON) and proceeds to solver branches.
-
-### Structural signature — what you generate
-
-When asked to extract a signature, return a JSON object with four core dimensions (controlled vocabulary) plus an open features slot:
-
-```json
-{
-  "objective": "linear",
-  "decision": ["integer_batch"],
-  "constraint": ["capacity", "covering"],
-  "interaction": "shared_resource_coupled",
-  "features": {"resource": "shared_scarce", "domain": "livestock_farm"}
-}
-```
-
-**Controlled vocabularies** (values outside these are rejected and retried):
-
-| Dim | Cardinality | Allowed values |
-|---|---|---|
-| `objective` | single | `linear` \| `convex` \| `minmax` \| `multi_objective_weighted` \| `feasibility_only` |
-| `decision` | list | `binary_assignment` \| `integer_batch` \| `continuous_flow` \| `multi_index_2d` \| `multi_index_3d` |
-| `constraint` | list | `capacity` \| `flow_conservation` \| `assignment_exactly_once` \| `covering` \| `precedence` \| `big_m_linking` |
-| `interaction` | single | `independent` \| `shared_resource_coupled` \| `fixed_charge_coupling` \| `nonlinear_interaction` |
-| `features` | open | Any descriptive keys. Recommended: `temporal`, `network`, `resource`, `uncertainty` |
-
-See [structural-signature.md](references/structural-signature.md) for alignment rules and examples.
-
----
-
-## 3. Solve flow — step by step with responsibilities
-
-### Step 1: Problem normalization `[framework]`
-
-The framework normalizes the problem into `{problem_family, objective, entities, constraints}`. You do not participate.
-
-### Step 2: Planning priors retrieval `[framework]`
-
-If `modeling_retriever` is wired, the framework retrieves relevant modeling records from the Modeling Bank and injects them into the modeling prompt as `[E1]...`, `[E2]...`. All records are peers — no distinction between directly-solved and induced. You do not control what gets retrieved.
-
-### Step 3: Structured modeling `[agent]` → `[framework]`
-
-You produce `<think>` + `<model>` (see §2). The framework validates (L1/L2/L3). On failure, it feeds issues back and you retry (≤3 rounds). **No solver branch is created until the model passes.**
-
-### Step 4: Solver availability check `[framework]`
-
-The framework checks which of the 7 solvers are installed (module + license). Missing solvers become warnings, not errors.
-
-### Step 5: Parallel solver branch execution `[agent]` + `[framework]`
-
-For **each available solver**, the framework:
-1. `[framework]` Retrieves Implementation Bank records for that solver.
-2. `[framework]` Builds the codegen prompt (includes verified model, solver context, implementation/modeling experience hits).
-3. `[agent]` You generate complete Python code implementing the verified model for that solver. Write `result.json` in the branch directory.
-4. `[framework]` Executes the code in `SafePythonExecutor` (timeout, rlimits, no network, no shell).
-5. `[framework]` Validates `result.json` (schema, solver status, objective, variables).
-
-#### result.json schema (mandatory — your code MUST write this file)
-
-```json
-{
-  "status": "optimal|feasible|infeasible|unbounded|timeout|error|unknown",
-  "solver": "highs",
-  "objective_sense": "minimize|maximize|feasibility|unknown",
-  "objective_value": 1234.5,
-  "objective_bound": 1234.0,
-  "mip_gap": 0.001,
-  "runtime_seconds": 1.23,
-  "variables": {"x[0]": 1, "x[1]": 0},
-  "diagnostics": {},
-  "message": ""
-}
-```
-
-**Critical**: the field is `objective_value` (NOT `objective`). The `status` value must be **lowercase** (e.g. `"optimal"`, not `"Optimal"`). An exit without this file is a failure even if stdout claims success.
-
-#### Security sandbox (blocked imports)
-
-The `SafePythonExecutor` AST-validates your code before execution. The following top-level modules are **blocked**:
-
-`subprocess`, `socket`, `urllib`, `http`, `requests`, `pathlib`, `shutil`
-
-**`import os` and `import os.path` are ALLOWED** — but dangerous `os.*` calls are blocked: `os.system`, `os.popen`, `os.exec*`, `os.remove`, `os.listdir`, `os.walk`, `os.environ`, etc. Use `os.path.join()` / `os.path.exists()` freely.
-
-If you need file I/O, use the built-in `open()` — but it is restricted to writing `result.json` in the branch directory only. For `json` output, `import json` is allowed. For `sys`, `import sys` is allowed (e.g. `sys.exit()`).
-
-If your code is rejected, the `normalized_error` field will contain `"security policy: blocked import <module>"` or `"blocked call os.<func>()..."`. Check `BranchResult.execution.normalized_error` or `AttemptRecord.normalized_error` to see the rejection reason.
-
-On failure (code error, infeasible, timeout):
-6. `[framework]` Records the failure in `FailureBuffer`.
-7. `[framework]` Retrieves Repair Bank records + rebuilds the error-transition graph for `(solver, normalized_error)`.
-8. `[framework]` Builds a repair prompt (includes latest code, latest feedback, repair guidance, repair hits).
-9. `[agent]` You generate a **complete** corrected code version (not a patch).
-10. Repeat 4-9 (≤ max_attempts). Stop on: success, repeated error, unchanged code, timeout, max attempts.
-
-### Step 6: Cross-solver validation `[framework]`
-
-After all branches finish, the framework compares valid branches. If ≥2 branches have matching objectives (within tolerance), validation upgrades to `cross_solver_consistent`.
-
-### Step 7: Result selection `[framework]`
-
-The framework selects the best branch by validation level, solver status, then objective/bound/gap/runtime.
-
-### Step 8: Episode base record `[framework]`
-
-The framework records a problem-level Episode (model, signature, branch outcomes, failure count). **No experience is appended yet** (deferred to gold evaluation).
-
----
-
-## 4. Gold evaluation — two-step harness flow (Option A)
-
-In the harness, gold arrives **after** solving. So `solve()` and evaluation are separate:
-
-### Step 9: Gold comparison `[framework]`
-
-Someone (the user, or you the agent) provides the gold answer. The framework calls `evaluate_with_gold(gold)`:
-- **Match** → proceed to comparative synthesis (Step 10).
-- **Mismatch** → proceed to reflection (Step 11).
-
-### Step 10 (match): Comparative synthesis + admission `[agent]` → `[framework]`
-
-1. `[framework]` If there are buffered failures, builds a **contrast prompt** (success vs all failures). If no failures, builds a **success-only prompt**.
-2. `[agent]` You produce a JSON array of experience candidates — each with `layer`, `title`, `retrieval_text`, `polarity`, `diagnosis`, `action`, `rationale`. Self-classify each lesson by where it applies: `modeling` (formulation), `implementation` (API mechanics), `repair` (error→fix), `solving` (performance/solver-choice).
-3. `[framework]` For each candidate, builds a judge prompt.
-4. `[agent]` You judge: `{"accept": true/false, "reason": "..."}`.
-5. `[framework]` Appends accepted candidates to the right bank: `modeling` → `ModelingStore` (as a peer record with structural signature and `modeling_aspect`); others → flat store. Appends the Episode gold supplement.
-6. `[framework]` If `utility_tracker` is wired and planning priors were recalled, credits `utility_count` for cited experiences (precise via `[uses En]`). This closes the loop with soft-delete scoring.
-
-### Step 11 (mismatch): Outer reflection `[agent]` → `[framework]`
-
-1. `[framework]` Builds a reflection prompt (includes problem, gold, selected objective, per-branch outcomes).
-2. `[agent]` You analyze why the **modeling direction** was wrong (not the code) and state how the model should change.
-3. `[framework]` Feeds your reflection back into a fresh Structured Modeling round (Step 3), creating a new solve cycle (≤3 outer rounds).
-
-### Failure paths
-
-| Situation | What happens | What you should do |
-|---|---|---|
-| Modeling gate fails 3 rounds | Framework returns `modeling_gate_failed`, no branches run | Re-read the problem; if you cannot model it, tell the user |
-| Gold mismatch after 3 reflection rounds | Framework returns mismatched verdict | Report to user that the problem may need a different approach |
-| No solver available | Framework raises `NoSolverAvailable` | Tell user which solvers to install |
-| All branches fail/infeasible | Framework returns no selected branch | Report branch failures to user; suggest reformulation |
-
----
-
-## 5. Offline structural induction ("举一反三")
-
-Separate from the online solve loop. The framework mines accumulated Modeling Bank records for **heterogeneous but structurally-isomorphic** clusters and induces cross-family optimization principles.
-
-| Signal | Meaning | How to check |
-|---|---|---|
-| Accumulation watermark | Enough new realizations since last run | `stats --json` → compare realization count to last induction |
-| Heterogeneous clusters exist | ≥2 problem families sharing a structural signature | `induce --auto` checks this automatically |
-| Cooldown elapsed | Cluster membership hasn't changed since last run | `induce --auto` skips unchanged clusters |
-
-**Rule of thumb**: trigger after every N=3+ new realizations accumulate AND you've solved problems from ≥2 different families (e.g. assignment + scheduling + inventory). Induction over a single family produces no cross-family insight.
-
-### What you do during induction (7 stages, one pass per cluster)
-
-| Stage | `[agent]` or `[framework]` | What you produce |
-|---|---|---|
-| 1. Candidates | `[framework]` | Discovers isomorphic + cross-family clusters (inverted index, no O(N²)) |
-| 2. Encoding | `[framework]` | Batch-encodes/verifies signatures |
-| 3. Alignment | `[agent]` | `generate_object`: role mappings (e.g. `resource_pool` ↔ warehouse/machine/labor). **Each binding must cite its source `realization_id`** — ungrounded bindings are dropped. |
-| 4. Inducer | `[agent]` | `generate_object`: candidate principle(s) as `status=hypothesis` (never knowledge yet). Grounded in the alignment, not a free-text summary. |
-| 5. Counterexample | `[agent]` + `[framework]` | `generate_object`: failure conditions + refutation code. **The framework executes the code; only the executor verdict decides.** A crashed refutation is NOT a counterexample. |
-| 6. Validation | `[framework]` | Source consistency + **unseen transfer** (with vs without principle) + scoring `αC+βT+γV+δN−λK−μX`. **No transfer improvement → refuted.** This is the gate that makes induction ≠ summary. |
-| 7. Pipeline | `[framework]` | `validated` → append as a new peer record (sources untouched, append-only, `status=validated`). `refuted` → archived in run report, NOT in the bank. |
-
-### Providing unseen tasks for transfer validation
-
-The transfer solver requires unseen OR tasks that were **not** in the source cluster. You provide them via `--unseen-task "..."` (repeatable) or the Python API `unseen_tasks=[...]`.
-
-**How to choose good unseen tasks**:
-- Same structural signature (same O/D/C/I) but a **different problem family** than any cluster member.
-- Same mathematical skeleton, different business domain (e.g. if the cluster is inventory+production, use workforce scheduling as the unseen task).
-- You must also supply a **transfer solver** — a callable that takes `(task_text, principle_or_None)` and returns an objective value. In harness mode this is the agent's own solve capability.
-
-**Critical gap**: the CLI `induce --interactive-llm` path does **not** inject a real transfer solver (it raises `RuntimeError`). To complete real induction validation, use the **Python API**:
-
-```python
-pipeline = InductionPipeline(
-    ...,
-    transfer_solver=my_transfer_solver,  # must be injected
-    unseen_tasks=["..."],
-)
-```
-
-See [induction-pipeline.md](references/induction-pipeline.md) for the full pipeline.
-
-### Pattern reflow into online solving (Phase 4.1, D5)
-
-Validated records (`status=validated` only — never `refuted`) feed back into the online modeling stage as planning priors. When wired (`modeling_retriever` + `utility_tracker` injected):
-
-1. `[framework]` Recalls modeling records `[E1]...`, `[E2]...` before modeling.
-2. `[agent]` You cite applied experiences with `[uses En]` inside `<think>`.
-3. `[framework]` Parses citations — only injected `En` tags map to ids (you cannot invent a citation).
-4. `[framework]` On gold match, credits `utility_count` for cited experiences (precise attribution). Low-utility records sink in retrieval ranking (soft delete, never physical deletion).
-
-This closes the full loop: **solve → experience → induction → reflow → better solve**.
-
----
-
-## 6. Experience bank overview
-
-### Layers and stores
-
-| Bank | Schema | Store file | What it holds |
-|---|---|---|---|
-| **Modeling** | `ModelingExperience` (all records are peers; `modeling_aspect` classifies: constraint/objective/variable/classification/structure) | `bank/modeling_bank.jsonl` | Solver-independent modeling methods. Records from direct solving (`status=null`) and induction (`status=validated`) are peers. Own store, own index. Carries the structural signature. |
-| **Implementation** | Flat `ExperienceRecord` | `bank/implementation.jsonl` | Solver/API mechanics. |
-| **Repair** | Flat `ExperienceRecord` | `bank/repair_bank.jsonl` | Error→repair→outcome. A derived **error-transition graph** (single graph, `(solver, normalized_error)` composite nodes, generality-gated migration) is rebuilt on demand. |
-| **Solving** | Flat `ExperienceRecord` | `bank/solving_bank.jsonl` | Timeouts, gaps, bounds, numerics, parameters, solver choice. |
-| **Episode** | `EpisodeRecord` | `episodes/episodes.jsonl` | Problem-level scene snapshots (model, signature, branch outcomes, gold, produced realization ids). Two-phase append-only (base after solve, supplement after gold). Raw material for offline induction. |
-
-### Rules (non-negotiable)
-
-- **Append-only**: record content is never edited or physically deleted. Content-hash dedup, Episode provenance, and induction `derived_from` depend on immutable content.
-- **Failure experiences are never appended alone**: they are buffered in `FailureBuffer`, then contrasted with the eventual success by a synthesis step. Only synthesized, judge-admitted lessons are appended.
-- **Lifecycle**: `active` → `deprecated` (harmful/low-utility; moved to cold archive). Mutable state/stats live in sidecars (`lifecycle.json`, `utility_stats.json`), never in the fact store.
-- **Utility + soft delete**: `retrieval_count ≥ 5` AND `utility/retrieval < 0.1` → score ×0.3. Never deleted.
-- **Cold archive**: deprecated records compressed to provenance cards at `archive/deprecated.jsonl` (bulky fields dropped, embedding vector kept). Keeps hot bank small.
-- **Anti-resurrection**: `append()` rejects candidates matching a deprecated archive entry — by exact content-hash or by embedding cosine similarity ≥0.8. A retired experience cannot re-enter in either form.
-- **Retrieval is automatic**: the framework constructs queries, searches (cosine similarity + metadata filters), ranks (utility-adjusted), and injects into prompts. You never manually query the bank during solving.
-- **Only `validated` patterns may surface to online solving** (Phase 4.1). `hypothesis`/`refuted` records are never used as knowledge.
-
----
-
-## 7. Common mistakes
-
-| ❌ Mistake | ✅ Correct |
+Critical rules:
+- **Use the square-bracket markers `[THINK]...[/THINK]` and `[MODEL]...[/MODEL]`** (uppercase or lowercase). Angle-bracket tags (`<think>...</think>`) are also accepted by the parser, but many harnesses reserve `<think>` as their own reasoning-channel marker and strip or transform it before it reaches the file — square brackets always survive the trip.
+- `[MODEL]` comes AFTER `[/THINK]` (siblings), never inside the THINK block.
+- Both closing markers are required; an unclosed `[THINK]` fails L1.
+- The five blocks inside `[MODEL]` (SETS/PARAMETERS/VARIABLES/OBJECTIVE/CONSTRAINTS) must all be present and non-empty.
+
+| ❌ Wrong | Why it fails |
 |---|---|
-| Writing an OpenAI/HTTP wrapper script | You ARE the LLM; answer prompts directly |
-| Reading API credentials from the environment | No credentials needed in harness mode |
-| Using descriptive constraint labels (`manure:`, `chicken_cap:`) | Use `C1:`, `C2:`, ... — L2 only recognizes `C\d+` |
-| Adding inline `#` comments in PARAMETERS lines | Put comments in `<think>` instead |
-| Referencing undeclared symbols in OBJECTIVE/CONSTRAINTS | Declare every symbol in SETS/PARAMETERS/VARIABLES first |
-| Returning JSON wrapped in ```json fences for `generate_object` | Return raw JSON, no fences, no prefix |
-| Generating a code patch instead of complete code | Always return the complete latest code |
-| Manually querying the bank before solving | Retrieval is automatic; the framework injects experience into prompts |
-| Using `hypothesis` patterns as knowledge | Only `validated` patterns surface to online solving |
-| Not providing unseen tasks for induction transfer | Supply `--unseen-task` or `unseen_tasks=[...]`; without it, induction cannot validate |
-| Expecting CLI `induce --interactive-llm` to complete transfer validation | CLI raises `RuntimeError` for transfer solver; use Python API |
-| Trusting solver self-report instead of `result.json` | Framework requires `result.json`; stdout claims are ignored |
-| Writing `"objective"` in result.json | Field name is `"objective_value"` (see schema in Step 5) |
-| Writing `"Optimal"` (capitalized) in result.json | Status must be **lowercase**: `"optimal"` |
-| `import os` in solver code | `import os` is **allowed** (for `os.path`); but `os.system`, `os.popen`, `os.environ` etc. are blocked. See security sandbox in Step 5 |
-| Not knowing why a branch failed | Check `result.branch_errors` (maps `branch_id` to `normalized_error`) or `branch.normalized_error` |
+| `[THINK]...[MODEL]...[/MODEL][/THINK]` | Nesting — MODEL must be a sibling after `[/THINK]` |
+| `[THINK]...` with no `[/THINK]` | L1 failure: the parser needs both markers |
+| Inventing other markers (`[REASONING]`, `[RESPONSE]`) | Only THINK and MODEL exist |
+| Descriptive constraint labels (`manure:`) | L2 only recognizes `C1:`, `C2:`, ... |
 
----
+## Core Workflow — Online Solve
 
-## Appendix A: CLI reference (standalone/demo only)
-
-The CLI is for **standalone mode** (no harness agent: cron, batch) and **demos/tests**. In harness mode, use the Python API directly.
-
-```bash
-# Solve (mock demo — no solver/LLM needed)
-python3 scripts/or_experience_cli.py solve --mock-demo --problem "..." --json
-
-# Solve (standalone with external LLM wrapper)
-python3 scripts/or_experience_cli.py solve --llm-command "wrapper-cmd" --problem "..." --json
-
-# Solve (harness interactive — YOU answer prompts on stdin)
-python3 scripts/or_experience_cli.py solve --interactive-llm --problem-file problem.txt
-
-# Offline induction (mock demo)
-python3 scripts/or_experience_cli.py induce --mock-demo --json
-
-# Offline induction (auto-triggered)
-python3 scripts/or_experience_cli.py induce --auto --min-new-realizations 3 --json
-
-# Full induction walkthrough
-PYTHONPATH=src python3 scripts/demo_induction_walkthrough.py
-
-# Bank management
-python3 scripts/or_experience_cli.py stats --json
-python3 scripts/or_experience_cli.py rebuild-index --json
-python3 scripts/or_experience_cli.py validate-bank --json
-python3 scripts/or_experience_cli.py retrieve --layer modeling --query "..." --json
-python3 scripts/or_experience_cli.py append --input experience.json --json
+```
+NL Problem
+  │
+  ▼
+orx recall --problem-file problem.txt     → priors.json (read it: cat priors.json)
+  │
+  ▼
+YOU write model.txt  (cite applied priors as [uses E1] inside [THINK])
+  │
+orx validate                             → issues? fix model.txt, retry freely
+  ▼                                        passed? stamps/model.json
+YOU write signature.json
+  │
+orx signature                            → vocab errors? fix, retry (model stamp intact)
+  ▼
+orx hints --solver <solver>              → read hints BEFORE writing code
+YOU write branches/<solver>/solve.py     (one per solver)
+  │
+orx solve --solver a,b,c                 → branches run CONCURRENTLY (parallel
+  ▼                                        exploration); failed? read that branch's
+(repeat for ≥2 different solvers)          result.json hints, fix code, re-run
+orx solve --solver <failed>              → single-branch retry (repair is serial)
+  │
+orx cross-validate                       → consistent? proceed
+  │                                        inconsistent? add a third branch, re-run
+  ▼
+═══ GOLD GATE: gold comes ONLY from the user/problem. NEVER self-derive. ═══
+  │  If the user hasn't provided gold: STOP and ask.
+  │
+orx gold --answer <value>                → matched? proceed to append
+  │                                        mismatched? DO NOT append; reflect;
+  │                                        orx new-round; re-model (≤3 rounds)
+  ▼
+YOU write experience files (one per lesson, all layers that had events)
+orx append --file exp_<layer>.json       → repeat per lesson
+  │
+orx episode                              → terminal: episode.json + utility credit
+  │                                        + induction_check (should_induce?)
+  ▼
+induction_check.should_induce == true? ── yes ──► run the Offline Induction
+  │                                              Workflow before the next solve
+  no
+  ▼
+done (report to user)
 ```
 
-**Note**: CLI `solve` currently runs the single-shot flow (solve + auto-extract in one call). The two-step harness flow (`solve(defer_extraction=True)` + `evaluate_with_gold(gold)`) is only available via the Python API. CLI `induce --interactive-llm` cannot complete transfer validation (raises `RuntimeError` for the transfer solver).
+### Step-by-step thinking guide
 
-Use `--config config.example.yaml` or environment variables. Runtime data defaults to `~/.hermes/or-experience-bank`; override with `OR_EXPERIENCE_BANK_HOME`.
+| After you observe... | Think... | Then do |
+|---|---|---|
+| `priors.json` returned | Which priors apply to this problem's structure? | Compose model.txt citing `[uses En]` for the ones you actually apply |
+| `validate` issues (L1) | Markers/blocks malformed | Re-read the model.txt Format section; fix the `[THINK]`/`[MODEL]` markers and five blocks |
+| `validate` issues (L2) | Which symbol is undeclared? | Declare it in SETS/PARAMETERS/VARIABLES, or fix the reference |
+| `signature` vocab errors | Which core-dim value is out of vocabulary? | Fix only that value in signature.json |
+| `hints` output | Which API gotchas apply to this solver? | Write solve.py applying the hints |
+| `solve` (parallel) returned | Which branches failed, which agreed? | Fix ONLY the failing branches' solve.py, re-run `orx solve --solver <failed>` |
+| `solve` (single) failed | What does normalized_error + repair_hints say? | Fix ONLY branches/<solver>/solve.py, re-run solve |
+| `cross-validate` inconsistent | Which branch is the outlier? | Add a third solver branch to triangulate |
+| gold matched | What did I learn across ALL layers? | Write one experience file per lesson, append each |
+| gold mismatched | Why was the modeling DIRECTION wrong (not the code)? | `orx new-round`, re-model from scratch |
+| `episode` returned `induction_check.should_induce: true` | Accumulation crossed the watermark | Run the Offline Induction Workflow before the next solve |
 
-For dependency-free demos, use `--mock-demo --solvers mock-a,mock-b`. Treat mock output as test/demo only, never as a real OR result.
+## Solver Selection Strategy
 
----
+Which solvers to branch on is YOUR decision each run. Do not default to the same pair every time — the value of cross-validation comes from **heterogeneity**, and the bank only grows API knowledge for solvers you actually use.
 
-## Appendix B: Output contract
+How to choose:
 
-When reporting results to the user, include: selected branch, branch termination reasons, validation level, objective comparability, discrepancies, warnings, retrieved experience IDs, appended experience IDs, gold verdict, and episode reference. Never expose secrets, full environment variables, unredacted absolute user paths, or oversized tracebacks.
+1. **Check availability first**: `orx doctor` lists importable solvers. Only branch on available ones.
+2. **Prefer heterogeneous families**: pairing a `milp` solver with `cp_sat` (OR-Tools) validates the model across different solving paradigms — stronger evidence than two milp solvers agreeing. Pairing a direct-API solver (highs/scip/gurobi/copt) with a modeling-framework branch (pulp/pyomo) validates at the API level.
+3. **Rotate across runs**: vary your solver pair from run to run (e.g. highs+ortools, then pulp+scip, then gurobi+pyomo). Rotation (a) spreads API knowledge into the Implementation/Repair banks so future runs benefit, (b) avoids over-fitting your code generation to one API's habits, (c) keeps the bank's solver coverage balanced.
+4. **Match the problem**: CP-SAT requires integer coefficients (scale deliberately); commercial solvers (gurobi/copt) need licenses; pyomo needs a backend solver installed.
+5. **When the bank has solver-specific hints**: `orx hints --solver <s>` returns accumulated API knowledge for THAT solver — a solver with rich hints is cheaper to write correct code for, but do not let this collapse into always picking the same two.
 
----
+Minimum requirement stays: ≥2 valid branches from **different** solvers.
+
+## Experience Synthesis — What to Write to Each Bank
+
+After gold match, write one JSON file per lesson and `orx append --file` each:
+
+| If this happened during the solve... | `layer` | Experience file fields |
+|---|---|---|
+| Structural modeling insight | `modeling` | title, retrieval_text, modeling_aspect (constraint/objective/variable/classification/structure), action, rationale |
+| Solver API gotcha | `implementation` | title, retrieval_text, diagnosis, action, rationale, solver |
+| Error → fix | `repair` | title, retrieval_text, diagnosis, action, rationale, solver |
+| Performance tuning | `solving` | title, retrieval_text, diagnosis, action, rationale, solver |
+
+Checklist before `orx episode`: modeling insight? API gotcha? error→fix? performance tuning? Write only layers that had events — never fabricate.
+
+## Core Workflow — Offline Induction
+
+**You do NOT wait for an external signal.** Every `orx episode` response carries an `induction_check` field (the 3-gate trigger decision evaluated right after your realizations were appended). When it says `should_induce: true`, run the induction chain BEFORE starting the next solve:
+
+```
+orx episode -> ... "induction_check": {"should_induce": true, ...}   ← your cue
+  │
+orx clusters                             → candidate clusters (cross-family isomorphic)
+  │
+  ▼ (per cluster, under <bank>/induction/<cluster_id>/)
+orx align --cluster <id>                 → writes alignment.json template; YOU fill it
+orx align --cluster <id>                 → stamps the filled alignment
+  │
+orx induce --cluster <id>                → writes hypotheses.json template; YOU fill it
+orx induce --cluster <id>                → stamps hypotheses (1-3, grounded in roles)
+  │
+orx refute --cluster <id>                → writes refutations.json template; YOU fill it
+orx refute --cluster <id>                → EXECUTES your programs; verdicts decided by execution
+  │
+orx validate-pattern --cluster <id>      → writes validation.json template; YOU fill it
+orx validate-pattern --cluster <id>      → stamps transfer evidence
+  │
+orx append-pattern --cluster <id>        → scores + appends validated patterns (terminal)
+```
+
+Roles come from the canonical set: resource_pool, capacity_limit, competing_decisions, objective_contribution, demand_requirement, coupling_constraint, time_period, flow_balance.
+
+## Tool Usage
+
+| Command | Use it when |
+|---|---|
+| `orx doctor` | Fresh environment, or `command not found` / weird failures — verify python/bank/solvers/indexes |
+| `orx status` | You forgot where you are; after resuming an interrupted run |
+| `orx recall --problem-file <f>` | Starting a run (ALWAYS first — priors must influence the model) |
+| `orx validate` | model.txt written or edited |
+| `orx signature` | signature.json written or edited |
+| `orx hints --solver <s>` | BEFORE writing solve.py for solver s (first time AND after a failure) |
+| `orx solve --solver <s>` | solve.py written or fixed (single branch / repair retry) |
+| `orx solve --solver a,b,c` | All branch codes written — run them CONCURRENTLY (parallel exploration) |
+| `orx cross-validate` | ≥2 valid branches exist |
+| `orx gold --answer <v>` | User provided gold (or explicitly confirmed none) |
+| `orx append --file <f>` | Gold matched, one lesson per file |
+| `orx episode` | All layers covered — terminal |
+| `orx new-round` | Gold mismatched, archiving the failed round |
+| `orx trigger` | Manually checking the induction gates (optional — `orx episode` already carries `induction_check`) |
+| `orx query / show / deprecate / stats` | Bank inspection and management, anytime |
+
+Do not reimplement validation logic manually (symbol cross-checks, vocab checks, objective comparison) — the commands already do it deterministically.
+
+## Verification
+
+| Step | Success criterion |
+|---|---|
+| `recall` | `priors_count >= 0` (empty is fine — first solve) |
+| `validate` | `passed: true` |
+| `signature` | `passed: true` |
+| `solve` | `status` in {optimal, feasible} |
+| `cross-validate` | `consistent: true` |
+| gold gate | Gold from user/problem ONLY; compare `best_objective` |
+| `append` | `status: "appended"` (not duplicate/rejected) |
+| `episode` | `recorded: true` AND read `induction_check.should_induce` — if true, induction is due NOW |
+| induction chain | each step stamps; final `appended` non-empty |
+
+**Cross-solver consistency does NOT prove correctness** — two solvers can agree on the same wrong relaxation. Gold mismatch + consistent solvers almost always means the MODEL is wrong.
+
+## Failure Recovery
+
+| Failure | Recovery |
+|---|---|
+| `validate` issues | Fix model.txt, re-run validate (free retry, no penalty) |
+| `solve` branch failed | Read `normalized_error` + `repair_hints` in branches/<solver>/result.json; fix solve.py; re-run `orx solve --solver <solver>` (repair within a branch is serial by design) |
+| All branches fail | Solver not installed → tell the user. Modeling issue → revise model.txt, re-validate |
+| `cross-validate` inconsistent | Add a third branch with a different solver, re-run cross-validate |
+| Gold mismatch | DO NOT append. Reflect on the modeling direction; `orx new-round`; re-model (≤3 rounds) |
+| `append` says duplicate | Rephrase with new insight or skip |
+| Stamp "stale" error | You edited a stamped artifact; re-run the gate command for the new content |
+| Gold recorded incorrectly, run already finished | Episodes are append-only facts — start a FRESH run (`orx recall` in a new directory) and re-solve with the correct gold; never delete episode.json by hand |
+| Hypothesis refuted | Archive the lesson; do not resubmit without new evidence |
+
+## Output Requirements
+
+When reporting to the user, include:
+- The selected objective value and which solvers agreed (cross-validation status)
+- The verified model (or its key structure) and any assumptions you stated
+- Gold verdict (matched / mismatched / not provided)
+- Appended experience ids and what each lesson says
+- Cited priors and whether they were credited (`utility_credited`)
+
+On failure: what was tried, the concrete failure reason, and the next step — never a bare "it failed".
+
+When reporting **induction results**: clusters processed, patterns validated/refuted, the scoring breakdown (C/T/V/N/K/X → total) per hypothesis, and which hypotheses were refuted and why.
+
+Do not:
+- Present a solver's self-reported status without the result.json evidence
+- Hide assumptions you made when the input was ambiguous
+
+## Common Pitfalls
+
+| ❌ Pitfall | ✅ Correct |
+|---|---|
+| Pre-composing model.txt before `recall` | Run recall FIRST, read priors.json, THEN compose the model |
+| Missing `[/THINK]` closing marker | Always close both blocks; the parser needs them literally |
+| Writing `<think>` tags in model.txt | Many harnesses strip `<think>` before it reaches the file — use `[THINK]...[/THINK]` square-bracket markers |
+| Nesting `[MODEL]` inside `[THINK]` | They are siblings: `[/THINK]` closes first, then `[MODEL]` starts |
+| Descriptive constraint labels (`manure:`) | Use `C1:`, `C2:`, ... — L2 only recognizes `C\d+` |
+| Undeclared symbols in OBJECTIVE/CONSTRAINTS | Declare every symbol in SETS/PARAMETERS/VARIABLES first |
+| `prod`/`exp`/`log` in OBJECTIVE | Use an AUXILIARY block for nonlinear relationships |
+| result.json field `"objective"` | Field is `objective_value`; `status` is lowercase |
+| Code patch instead of complete script | solve.py must be the COMPLETE script every time |
+| Citing `[uses E7]` when only E1-E3 exist | Only cite tags present in priors.json labels |
+| Citing a prior you didn't apply | Citation = utility credit; false credits corrupt ranking |
+| One `solve` then `cross-validate` | Need ≥2 valid branches from different solvers |
+| Always branching on the same solver pair | Rotate across runs (see Solver Selection Strategy) — the bank only learns APIs you actually use, and cross-family agreement is stronger evidence |
+| Running branches one-by-one when you could batch | Write all branch codes first, then `orx solve --solver a,b,c` — branches explore in PARALLEL |
+| Ignoring `repair_hints` on failure | Read them before switching solvers — they may contain the exact fix |
+| Only writing to the Modeling Bank | Check ALL four layers before `orx episode` |
+| Self-deriving gold from solver output | Gold comes ONLY from the user/problem statement |
+| Appending after gold mismatch | Never append wrong-model lessons; reflect and re-model |
+| Made-up `unseen_tasks` in induction | Use REAL problems from past episodes (`orx query` to find them) |
+| Fabricating transfer numbers | You MUST have actually solved with/without the principle |
+| No-op refutation code | The program must print `{"principle_failed": true|false, ...}` as its LAST stdout line |
+| Editing model.txt after validate | The stamp goes stale; re-run `orx validate` after any edit |
+| Arguing with a rejected command | Read the error JSON, fix the artifact, re-run |
+| Printing the result instead of writing result.json | Your solve.py must WRITE result.json in its cwd (`open('result.json', 'w')`) — stdout is not parsed for results |
+| Hand-writing branches/<s>/result.json yourself | result.json is written by `orx solve` (it validates + enriches your solver's output); hand-written files lack the `valid` field and will not count in cross-validate |
+| Constructing the result.json path dynamically (`os.path.dirname(__file__)` + ...) | The sandbox requires a LITERAL path: `open('result.json', 'w')` — the branch cwd is already correct |
+| Re-recording gold on a completed run | Episodes are append-only; if gold was recorded wrong, start a FRESH run (`orx recall` in a new directory) |
+| Ignoring `induction_check` in the episode response | `should_induce: true` means induction is due NOW — process clusters before the next solve; skipping it starves the reflow loop |
+
+## Examples
+
+Three worked examples with exact command sequences and reasoning live in [references/examples.md](references/examples.md). Read it when handling:
+- **A normal solve with gold match** (Example 1) — the happy path, including a mid-chain repair
+- **Ambiguous input / missing information** (Example 2) — what to assume, what to ask
+- **Gold mismatch caused by a wrong modeling direction** (Example 3) — the reflection loop, and why cross-solver consistency did not catch it
 
 ## References
 
-| Doc | What it is |
-|---|---|
-| [references/modeling-contract.md](references/modeling-contract.md) | GAMS-style DSL syntax, constraint label rules, three-layer verification |
-| [references/structural-signature.md](references/structural-signature.md) | Signature schema, controlled vocabularies, alignment rules, examples |
-| [references/induction-pipeline.md](references/induction-pipeline.md) | Offline induction loop: 7 stages, trigger policy, scoring formula |
-| [references/experience-schema.md](references/experience-schema.md) | Record schemas: ExperienceRecord, ModelingExperience, Episode, lifecycle |
-| [references/workflow.md](references/workflow.md) | Online solving workflow (14 steps) |
-| [references/trajectory-schema.md](references/trajectory-schema.md) | AttemptRecord, BranchResult, SolveResult, termination values |
-| [references/solver-adapters.md](references/solver-adapters.md) | 7 solver adapters, result contract, execution controls |
-| [references/prompts.md](references/prompts.md) | Prompt templates for all 11 agent outputs |
+Read these only when needed (progressive disclosure):
 
-Design decisions and roadmap: [docs/redesign-plan.md](docs/redesign-plan.md). Implementation status: [docs/PROGRESS.md](docs/PROGRESS.md).
+| When you need | Read |
+|---|---|
+| GAMS-style DSL syntax, L1/L2/L3 verification | [references/modeling-contract.md](references/modeling-contract.md) |
+| Signature vocabularies and alignment rules | [references/structural-signature.md](references/structural-signature.md) |
+| Record schemas (all banks + Episode) | [references/experience-schema.md](references/experience-schema.md) |
+| result.json contract, sandbox rules, solver API notes | [references/solver-adapters.md](references/solver-adapters.md) |
+| Utility attribution, soft delete, cold archive | [references/bank-lifecycle.md](references/bank-lifecycle.md) |
+| Induction pipeline internals | [references/induction-pipeline.md](references/induction-pipeline.md) |
+| Worked examples (positive / ambiguous / negative) | [references/examples.md](references/examples.md) |
+
+Implementation: [src/or_experience_bank/cli/](src/or_experience_bank/cli/) · Entry: `python3 scripts/orx.py` (or `orx` when installed)

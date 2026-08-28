@@ -61,10 +61,12 @@ class ModelingRetriever:
         store: ModelingStore,
         index: Optional[EmbeddingIndex] = None,
         lifecycle: Optional[LifecycleStore] = None,
+        utility_tracker: Optional[Any] = None,
     ):
         self.store = store
         self.index = index or EmbeddingIndex(store.bank_home / "index" / "modeling_bank")
         self.lifecycle = lifecycle
+        self.utility_tracker = utility_tracker
 
     def _retrievable(self, record: Dict[str, Any]) -> bool:
         if self.lifecycle is not None and self.lifecycle.state_of(record.get("experience_id", "")) == DEPRECATED:
@@ -102,6 +104,9 @@ class ModelingRetriever:
             priors.records.append(record)
         priors.records = priors.records[:max(0, top_k)]
         priors.labels = self._build_labels(priors)
+        # Record retrievals for utility tracking (soft-delete scoring input).
+        if self.utility_tracker is not None:
+            self.utility_tracker.record_retrievals([r.get("experience_id", "") for r in priors.records])
         return priors
 
     @staticmethod
