@@ -17,9 +17,9 @@ each example shows the exact tool sequence and the reasoning at each step.
 
 ```
 0. orx doctor -> solvers_available: [gurobi, highs, ortools, pulp]
-   (pick TWO from DIFFERENT families for stronger cross-validation; this run
-   picks highs + ortools — a milp solver plus a cp_sat solver. Rotate the
-   pair across runs: the bank only accumulates API knowledge for solvers
+   (pick THREE from DIFFERENT families for stronger cross-validation; this run
+   picks highs + ortools + pulp — two milp solvers plus a cp_sat solver. Rotate
+   the trio across runs: the bank only accumulates API knowledge for solvers
    you actually use.)
 
 1. orx recall --problem-file problem.txt
@@ -48,12 +48,12 @@ each example shows the exact tool sequence and the reasoning at each step.
 3. orx validate -> passed=true, stamps/model.json
 4. orx signature: {objective: "linear", decision: ["continuous_flow"],
    constraint: ["capacity"], interaction: "shared_resource_coupled"} -> passed
-5. orx solve --solver highs,ortools (both branches run CONCURRENTLY):
+5. orx solve --solver highs,ortools,pulp (all branches run CONCURRENTLY):
    highs first attempt hits AttributeError on HighsInfo.run_time
    → read repair_hints in branches/highs/result.json → fix code (use
    h.getRunTime()) → re-run orx solve --solver highs (single-branch retry):
-   optimal, 150.0; ortools: optimal, 150.0
-   (NOTE: the solver pair here is an EXAMPLE, not a recommendation — pick
+   optimal, 150.0; ortools: optimal, 150.0; pulp: optimal, 150.0
+   (NOTE: the solver trio here is an EXAMPLE, not a recommendation — pick
    from what `orx doctor` reports as available, prefer different families,
    and rotate across runs)
 6. orx cross-validate -> consistent=true, best_objective=150.0
@@ -77,7 +77,7 @@ each example shows the exact tool sequence and the reasoning at each step.
    Workflow BEFORE starting the next solve. See SKILL.md.)
 ```
 
-**Report to user:** objective 150.0, both solvers agree, model verified,
+**Report to user:** objective 150.0, all three solvers agree, model verified,
 3 experiences appended (modeling + implementation + repair), prior [E1] credited,
 induction not yet due.
 

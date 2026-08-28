@@ -96,6 +96,7 @@ class ExperienceBankConfig:
     )
     max_parallel_branches: int = 3
     max_attempts_per_branch: int = 3
+    min_cross_validation_branches: int = 3
     stop_on_repeated_error: bool = True
     stop_on_unchanged_code: bool = True
     python_timeout_seconds: int = 120
@@ -130,6 +131,7 @@ class ExperienceBankConfig:
                 setattr(defaults, key, value)
         defaults.max_attempts_per_branch = max(1, min(int(defaults.max_attempts_per_branch), 10))
         defaults.max_parallel_branches = max(1, min(int(defaults.max_parallel_branches), 16))
+        defaults.min_cross_validation_branches = max(2, int(defaults.min_cross_validation_branches))
         return defaults
 
     def ensure_directories(self) -> None:
@@ -152,6 +154,7 @@ def _flatten_config(raw: Dict[str, Any]) -> Dict[str, Any]:
         "solvers": orchestration.get("solvers"),
         "max_parallel_branches": orchestration.get("max_parallel_branches"),
         "max_attempts_per_branch": orchestration.get("max_attempts_per_branch"),
+        "min_cross_validation_branches": orchestration.get("min_cross_validation_branches"),
         "stop_on_repeated_error": orchestration.get("stop_on_repeated_error"),
         "stop_on_unchanged_code": orchestration.get("stop_on_unchanged_code"),
         "python_timeout_seconds": execution.get("python_timeout_seconds"),
@@ -179,6 +182,8 @@ def _environment_overrides() -> Dict[str, Any]:
         mapping["auto_append"] = _bool(env["OR_EXPERIENCE_AUTO_APPEND"])
     if env.get("OR_EXPERIENCE_MAX_ATTEMPTS"):
         mapping["max_attempts_per_branch"] = int(env["OR_EXPERIENCE_MAX_ATTEMPTS"])
+    if env.get("OR_EXPERIENCE_MIN_CV_BRANCHES"):
+        mapping["min_cross_validation_branches"] = int(env["OR_EXPERIENCE_MIN_CV_BRANCHES"])
     if env.get("OR_EXPERIENCE_SOLVERS"):
         mapping["solvers"] = [x.strip() for x in env["OR_EXPERIENCE_SOLVERS"].split(",") if x.strip()]
     if env.get("OR_EXPERIENCE_EMBEDDING_BACKEND"):

@@ -80,6 +80,7 @@ value = undefined_symbol + 1
 def run_orx(args, cwd, bank_home):
     env = dict(os.environ)
     env["OR_EXPERIENCE_BANK_HOME"] = str(bank_home)
+    env["OR_EXPERIENCE_MIN_CV_BRANCHES"] = "2"  # legacy gate for these scenario tests
     proc = subprocess.run(
         ORX + args, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=180
     )

@@ -78,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="One solver (single branch / repair retry) or comma-separated list "
                             "(parallel exploration: 'highs,pulp,scip' runs them concurrently)")
 
-    cross = commands.add_parser("cross-validate", help="Compare >=2 valid branches")
+    cross = commands.add_parser("cross-validate", help="Compare >=3 valid branches (configurable: min_cross_validation_branches)")
     cross.add_argument("--tolerance", type=float, default=1e-4)
 
     gold = commands.add_parser("gold", help="Record the gold verdict (user-provided or consistency-only)")

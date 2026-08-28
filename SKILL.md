@@ -109,7 +109,7 @@ YOU write branches/<solver>/solve.py     (one per solver)
   │
 orx solve --solver a,b,c                 → branches run CONCURRENTLY (parallel
   ▼                                        exploration); failed? read that branch's
-(repeat for ≥2 different solvers)          result.json hints, fix code, re-run
+(repeat for ≥3 different solvers)          result.json hints, fix code, re-run
 orx solve --solver <failed>              → single-branch retry (repair is serial)
   │
 orx cross-validate                       → consistent? proceed
@@ -163,7 +163,7 @@ How to choose:
 4. **Match the problem**: CP-SAT requires integer coefficients (scale deliberately); commercial solvers (gurobi/copt) need licenses; pyomo needs a backend solver installed.
 5. **When the bank has solver-specific hints**: `orx hints --solver <s>` returns accumulated API knowledge for THAT solver — a solver with rich hints is cheaper to write correct code for, but do not let this collapse into always picking the same two.
 
-Minimum requirement stays: ≥2 valid branches from **different** solvers.
+Minimum requirement stays: ≥3 valid branches from **different** solvers (configurable via `min_cross_validation_branches`, default 3).
 
 ## Experience Synthesis — What to Write to Each Bank
 
@@ -217,7 +217,7 @@ Roles come from the canonical set: resource_pool, capacity_limit, competing_deci
 | `orx hints --solver <s>` | BEFORE writing solve.py for solver s (first time AND after a failure) |
 | `orx solve --solver <s>` | solve.py written or fixed (single branch / repair retry) |
 | `orx solve --solver a,b,c` | All branch codes written — run them CONCURRENTLY (parallel exploration) |
-| `orx cross-validate` | ≥2 valid branches exist |
+| `orx cross-validate` | ≥3 valid branches exist (configurable: `min_cross_validation_branches`) |
 | `orx gold --answer <v>` | User provided gold (or explicitly confirmed none) |
 | `orx append --file <f>` | Gold matched, one lesson per file |
 | `orx episode` | All layers covered — terminal |
@@ -289,7 +289,7 @@ Do not:
 | Code patch instead of complete script | solve.py must be the COMPLETE script every time |
 | Citing `[uses E7]` when only E1-E3 exist | Only cite tags present in priors.json labels |
 | Citing a prior you didn't apply | Citation = utility credit; false credits corrupt ranking |
-| One `solve` then `cross-validate` | Need ≥2 valid branches from different solvers |
+| One `solve` then `cross-validate` | Need ≥3 valid branches from different solvers (default; configurable) |
 | Always branching on the same solver pair | Rotate across runs (see Solver Selection Strategy) — the bank only learns APIs you actually use, and cross-family agreement is stronger evidence |
 | Running branches one-by-one when you could batch | Write all branch codes first, then `orx solve --solver a,b,c` — branches explore in PARALLEL |
 | Ignoring `repair_hints` on failure | Read them before switching solvers — they may contain the exact fix |

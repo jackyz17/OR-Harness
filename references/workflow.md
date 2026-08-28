@@ -51,7 +51,7 @@ NL Problem
 branches/<s>/result.json
     │
     ▼
-[T] orx cross-validate ── ≥2 valid branches agree within tolerance
+[T] orx cross-validate ── ≥3 valid branches agree within tolerance
     │
     ├─ gold match ──► [A] synthesis ──► [T] orx append ×N ─┐
     └─ mismatch ───► [A] reflection ──► orx new-round ↺    │
@@ -74,7 +74,7 @@ Step-by-step responsibilities:
 3. **signature** `[A] produces, framework validates]` — controlled
    vocabularies; out-of-vocabulary values return errors, fix signature.json
    and retry (the model stamp is unaffected).
-4. **hints + solve ×≥2** `[A] produces code, framework executes]` — pull
+4. **hints + solve ×≥3** `[A] produces code, framework executes]` — pull
    hints BEFORE writing each branch's solve.py; write ALL branch codes, then
    run them in ONE command: `orx solve --solver a,b,c` executes the branches
    **concurrently** (asyncio.gather bounded by `max_parallel_branches` — the
@@ -84,9 +84,9 @@ Step-by-step responsibilities:
    performance symptom). **Repair within a branch is serial by design**: a
    failed branch is fixed by editing ONLY that branch's solve.py and
    re-running `orx solve --solver <failed>`.
-5. **cross-validate** `[T]` — ≥2 branches must agree within tolerance. On
-   inconsistency, add a third branch and re-run (no token was consumed; the
-   signature stamp stays valid).
+5. **cross-validate** `[T]` — ≥3 branches (configurable via `min_cross_validation_branches`,
+   default 3) must agree within tolerance. On inconsistency, add another
+   branch and re-run (no token was consumed; the signature stamp stays valid).
 6. **append ×N** `[A] synthesizes, framework admits]` — synthesize lessons for
    EACH bank layer that had an event during this solve (see the WRITE column
    in the table below). One JSON file per lesson, `orx append --file` each.

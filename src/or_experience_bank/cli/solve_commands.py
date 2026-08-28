@@ -298,6 +298,7 @@ def cmd_solve_parallel(comps: Components, run_dir: Path, solvers: List[str]) -> 
 
     results = asyncio.run(_gather())
     valid = [r for r in results if r["valid"] and r["status"] in {"optimal", "feasible"}]
+    minimum = max(2, comps.config.min_cross_validation_branches)
     return {
         "parallel": True,
         "branches": results,
@@ -305,9 +306,9 @@ def cmd_solve_parallel(comps: Components, run_dir: Path, solvers: List[str]) -> 
         "branches_valid": len(valid),
         "next": (
             "all requested branches executed; run more branches or `orx cross-validate`"
-            if len(valid) >= 2 else
-            "fewer than 2 valid branches: read repair_hints in the failing branches' "
-            "result.json, fix each solve.py, re-run `orx solve --solver <failed>`"
+            if len(valid) >= minimum else
+            "fewer than {} valid branches: read repair_hints in the failing branches' "
+            "result.json, fix each solve.py, re-run `orx solve --solver <failed>`".format(minimum)
         ),
     }
 
@@ -410,21 +411,23 @@ def _execute_branch(comps: Components, run: RunStore, solver: str) -> Dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# cross-validate: >=2 valid branches with matching objectives
+# cross-validate: >=min_cross_validation_branches (config, default 3) valid branches with matching objectives
 # ---------------------------------------------------------------------------
 
 def cmd_cross_validate(comps: Components, run_dir: Path, tolerance: float = 1e-4) -> Dict[str, Any]:
     run = RunStore(run_dir)
     run.require_stamp("signature", run.signature_path)
 
+    minimum = max(2, comps.config.min_cross_validation_branches)
     valid = run.valid_branches()
-    if len(valid) < 2:
+    if len(valid) < minimum:
         run.journal("cross-validate", {"consistent": False, "reason": "insufficient branches"})
         return {
             "consistent": False,
-            "reason": "need >=2 valid branches with numeric objective, found {}".format(len(valid)),
+            "reason": "need >={} valid branches with numeric objective, found {}".format(minimum, len(valid)),
             "branches": run.branch_results(),
-            "next": "add another solver branch (`orx solve --solver <other>`)",
+            "next": "add more solver branches (`orx solve --solver <other>`); the minimum is "
+                    "configurable via min_cross_validation_branches",
         }
 
     objs = [float(b["objective_value"]) for b in valid]
