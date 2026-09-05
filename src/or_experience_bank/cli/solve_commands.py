@@ -1,5 +1,5 @@
 """Online solve-chain commands: recall -> validate -> signature -> hints -> solve
--> cross-validate -> gold -> append -> episode (+ new-round).
+-> gold -> append -> episode (+ new-round).
 
 Every command is a pure function: (run_dir files, bank) -> (files, stdout JSON).
 Chain enforcement is via stamps (see run_store.py): a command checks that the
@@ -253,64 +253,16 @@ def cmd_hints(comps: Components, run_dir: Path, solver: str) -> Dict[str, Any]:
 
 # ---------------------------------------------------------------------------
 # solve: sandbox-execute branches/<solver>/solve.py -> result.json + hints
-# Single-solver form (one branch, typically a repair retry) and parallel form
-# (multiple branches concurrently, mirroring the orchestrator's
-# asyncio.gather + Semaphore semantics: branches run in PARALLEL, repair
-# WITHIN a branch is the agent's sequential retry loop).
+# The agent chooses ONE solver per run (see Solver Selection Strategy in
+# SKILL.md); repair WITHIN the branch is the agent's sequential retry loop
+# (fix solve.py, re-run `orx solve --solver <same>`).
 # ---------------------------------------------------------------------------
 
 def cmd_solve(comps: Components, run_dir: Path, solver: str) -> Dict[str, Any]:
-    """Execute ONE branch (or a repair retry of one branch)."""
+    """Execute the chosen solver branch (or a repair retry of it)."""
     run = RunStore(run_dir)
     run.require_stamp("signature", run.signature_path)  # chain: signature verified & unchanged
     return _execute_branch(comps, run, solver)
-
-
-def cmd_solve_parallel(comps: Components, run_dir: Path, solvers: List[str]) -> Dict[str, Any]:
-    """Execute MULTIPLE branches concurrently (heterogeneous parallel exploration).
-
-    Mirrors the orchestrator contract: all listed branches run via
-    asyncio.gather bounded by max_parallel_branches; each branch's result.json
-    is written independently. Repair within a branch remains the agent's
-    sequential retry (fix solve.py, re-run solve for that solver).
-    """
-    run = RunStore(run_dir)
-    run.require_stamp("signature", run.signature_path)
-
-    solvers = [s.strip() for s in solvers if s.strip()]
-    if not solvers:
-        raise RunError("no solvers given: pass --solver a,b,c or --parallel --solver a --solver b")
-    missing = [s for s in solvers if not (run.branch_dir(s) / "solve.py").exists()]
-    if missing:
-        raise RunError(
-            "branches missing solve.py: {} (write each branch's code first; "
-            "`orx hints --solver <name>` pulls bank hints before codegen)".format(", ".join(missing))
-        )
-
-    async def _gather() -> List[Dict[str, Any]]:
-        semaphore = asyncio.Semaphore(max(1, comps.config.max_parallel_branches))
-
-        async def guarded(solver: str) -> Dict[str, Any]:
-            async with semaphore:
-                return await asyncio.to_thread(_execute_branch, comps, run, solver)
-
-        return await asyncio.gather(*(guarded(s) for s in solvers))
-
-    results = asyncio.run(_gather())
-    valid = [r for r in results if r["valid"] and r["status"] in {"optimal", "feasible"}]
-    minimum = max(2, comps.config.min_cross_validation_branches)
-    return {
-        "parallel": True,
-        "branches": results,
-        "branches_total": len(results),
-        "branches_valid": len(valid),
-        "next": (
-            "all requested branches executed; run more branches or `orx cross-validate`"
-            if len(valid) >= minimum else
-            "fewer than {} valid branches: read repair_hints in the failing branches' "
-            "result.json, fix each solve.py, re-run `orx solve --solver <failed>`".format(minimum)
-        ),
-    }
 
 
 def _execute_branch(comps: Components, run: RunStore, solver: str) -> Dict[str, Any]:
@@ -393,7 +345,7 @@ def _execute_branch(comps: Components, run: RunStore, solver: str) -> Dict[str, 
     run.journal("solve", {"solver": solver, "status": exec_res.status, "valid": val_res.valid})
 
     if val_res.valid and exec_res.status in {"optimal", "feasible"}:
-        next_step = "run another solver branch or `orx cross-validate`"
+        next_step = "branch is valid: compare objective_value with the USER-PROVIDED gold, then `orx gold`"
     else:
         next_step = "read repair_hints in branches/{}/result.json, fix solve.py, re-run `orx solve --solver {}`".format(
             branch_dir.name, solver)
@@ -411,48 +363,19 @@ def _execute_branch(comps: Components, run: RunStore, solver: str) -> Dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# cross-validate: >=min_cross_validation_branches (config, default 3) valid branches with matching objectives
-# ---------------------------------------------------------------------------
-
-def cmd_cross_validate(comps: Components, run_dir: Path, tolerance: float = 1e-4) -> Dict[str, Any]:
-    run = RunStore(run_dir)
-    run.require_stamp("signature", run.signature_path)
-
-    minimum = max(2, comps.config.min_cross_validation_branches)
-    valid = run.valid_branches()
-    if len(valid) < minimum:
-        run.journal("cross-validate", {"consistent": False, "reason": "insufficient branches"})
-        return {
-            "consistent": False,
-            "reason": "need >={} valid branches with numeric objective, found {}".format(minimum, len(valid)),
-            "branches": run.branch_results(),
-            "next": "add more solver branches (`orx solve --solver <other>`); the minimum is "
-                    "configurable via min_cross_validation_branches",
-        }
-
-    objs = [float(b["objective_value"]) for b in valid]
-    max_diff = max(objs) - min(objs)
-    rel_diff = max_diff / max(1.0, max(abs(x) for x in objs))
-    consistent = rel_diff <= tolerance
-
-    payload = {
-        "consistent": consistent,
-        "relative_diff": rel_diff,
-        "tolerance": tolerance,
-        "branches_compared": len(valid),
-        "objectives": objs,
-        "best_objective": objs[0],
-    }
-    _atomic_write(run.cross_validation_path, payload)
-    run.journal("cross-validate", {"consistent": consistent, "rel_diff": rel_diff})
-    if consistent:
-        return {**payload, "next": "compare best_objective with the USER-PROVIDED gold, then `orx gold`"}
-    return {**payload, "next": "branches disagree: add a third branch to triangulate, then re-run `orx cross-validate`"}
-
-
-# ---------------------------------------------------------------------------
 # gold: record the user-provided gold verdict (the gold gate)
 # ---------------------------------------------------------------------------
+
+def _require_valid_branch(run: RunStore) -> Dict[str, Any]:
+    """Gate: the run needs one valid solver branch before gold/episode."""
+    valid = run.valid_branches()
+    if not valid:
+        raise RunError(
+            "no valid solver branch: `orx solve --solver <name>` must produce a branch with "
+            "valid=true and status in {optimal, feasible} before the gold gate"
+        )
+    return valid[0]
+
 
 def cmd_gold(
     comps: Components,
@@ -468,25 +391,25 @@ def cmd_gold(
             "recorded incorrectly, start a FRESH run (`orx recall` in a new directory) "
             "and re-solve with the correct gold."
         )
-    if not run.cross_validation_path.exists():
-        raise RunError("cross_validation.json missing: run `orx cross-validate` first")
-    cv = json.loads(run.cross_validation_path.read_text(encoding="utf-8"))
-    if not cv.get("consistent"):
-        raise RunError("branches are not cross-consistent; fix the model before recording gold")
+    branch = _require_valid_branch(run)
 
     if gold is None:
-        # No gold available: consistency-only validation (recorded explicitly).
-        payload = {"gold_answer": None, "gold_matched": True, "basis": "consistency_only"}
+        # No gold available: solver-reported validation (recorded explicitly).
+        payload = {"gold_answer": None, "gold_matched": True, "basis": "solver_reported",
+                   "solver": branch.get("solver")}
         _atomic_write(run.gold_path, payload)
-        run.journal("gold", {"basis": "consistency_only"})
+        run.journal("gold", {"basis": "solver_reported", "solver": branch.get("solver")})
         return {**payload,
-                "warning": "cross-solver consistency does NOT prove correctness",
-                "next": "`orx append` (consistency-only) then `orx episode`"}
+                "warning": "solver-reported result with NO independent verification — a single "
+                           "solver can be wrong about a mis-modeled problem; tell the user the "
+                           "answer is unverified",
+                "next": "`orx append` (solver-reported basis) then `orx episode`"}
 
     if matched is None:
-        best = cv.get("best_objective")
+        best = branch.get("objective_value")
         matched = best is not None and abs(float(gold) - float(best)) <= 1e-6 * max(1.0, abs(float(gold)))
-    payload = {"gold_answer": gold, "gold_matched": bool(matched), "basis": "user_provided"}
+    payload = {"gold_answer": gold, "gold_matched": bool(matched), "basis": "user_provided",
+               "solver": branch.get("solver")}
     _atomic_write(run.gold_path, payload)
     run.journal("gold", {"gold": gold, "matched": bool(matched)})
     if matched:
@@ -588,8 +511,7 @@ def cmd_episode(
     gold_answer: Optional[float] = None,
 ) -> Dict[str, Any]:
     run = RunStore(run_dir)
-    if not run.cross_validation_path.exists():
-        raise RunError("cross_validation.json missing: run `orx cross-validate` first")
+    _require_valid_branch(run)
     if run.episode_path.exists():
         raise RunError(
             "episode.json already exists: this run is complete and its episode is an "
@@ -743,6 +665,5 @@ def _model_text(run: RunStore) -> str:
 
 __all__ = [
     "cmd_recall", "cmd_validate", "cmd_signature", "cmd_hints", "cmd_solve",
-    "cmd_solve_parallel", "cmd_cross_validate", "cmd_gold", "cmd_append",
-    "cmd_episode", "cmd_new_round", "cmd_status",
+    "cmd_gold", "cmd_append", "cmd_episode", "cmd_new_round", "cmd_status",
 ]

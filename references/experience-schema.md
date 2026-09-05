@@ -57,7 +57,7 @@ Each flat layer is an append-only JSONL file. One complete JSON object occupies 
     "branch_ids": [],
     "attempt_ids": [],
     "solver_feedback_summary": "short evidence",
-    "validation_level": "unverified|runtime_only|solver_feasible|semantic_checked|cross_solver_consistent",
+    "validation_level": "unverified|runtime_only|solver_feasible|semantic_checked",  # cross_solver_consistent is legacy (pre single-solver era), kept for old records
     "causal_confidence": "low|medium|high"
   },
   "related_experience_ids": [],
@@ -117,7 +117,7 @@ The Modeling Bank does NOT use the flat `ExperienceRecord` above. It uses the `M
   "evidence": {
     "source_episodes": ["prob_..."],
     "solver_feedback_summary": "short evidence",
-    "validation_level": "solver_feasible|cross_solver_consistent|...",
+    "validation_level": "solver_feasible|...",  # cross_solver_consistent is legacy
     "causal_confidence": "low|medium|high"
   },
   "derived_from_experience_ids": [],

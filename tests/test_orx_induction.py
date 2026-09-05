@@ -74,7 +74,6 @@ with open("result.json", "w") as handle:
 def run_orx(args, cwd, bank_home):
     env = dict(os.environ)
     env["OR_EXPERIENCE_BANK_HOME"] = str(bank_home)
-    env["OR_EXPERIENCE_MIN_CV_BRANCHES"] = "2"  # legacy gate for these scenario tests
     proc = subprocess.run(
         ORX + args, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120
     )
@@ -97,13 +96,10 @@ def seed_run(bank: Path, tmp: Path, name: str, problem: str, family_note: str) -
     (run_dir / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
     code, out = run_orx(["signature"], run_dir, bank)
     assert out["passed"], out
-    for solver in ("highs", "pulp"):
-        br = run_dir / "branches" / solver
-        br.mkdir(parents=True, exist_ok=True)
-        (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver), encoding="utf-8")
-        run_orx(["solve", "--solver", solver], run_dir, bank)
-    code, out = run_orx(["cross-validate"], run_dir, bank)
-    assert out["consistent"], out
+    br = run_dir / "branches" / "highs"
+    br.mkdir(parents=True, exist_ok=True)
+    (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs"), encoding="utf-8")
+    run_orx(["solve", "--solver", "highs"], run_dir, bank)
     run_orx(["gold", "--answer", "15"], run_dir, bank)
     exp = {
         "layer": "modeling",

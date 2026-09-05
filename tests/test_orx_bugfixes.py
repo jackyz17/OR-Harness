@@ -149,7 +149,6 @@ class TestLifecycleRace(unittest.TestCase):
 def run_orx(args, cwd, bank_home):
     env = dict(os.environ)
     env["OR_EXPERIENCE_BANK_HOME"] = str(bank_home)
-    env["OR_EXPERIENCE_MIN_CV_BRANCHES"] = "2"  # legacy gate for these scenario tests
     proc = subprocess.run(
         ORX + args, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=180
     )
@@ -208,12 +207,10 @@ class TestCompletedRunGuidance(unittest.TestCase):
         run_orx(["validate"], self.run_dir, self.bank)
         (self.run_dir / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
         run_orx(["signature"], self.run_dir, self.bank)
-        for solver in ("highs", "pulp"):
-            br = self.run_dir / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver), encoding="utf-8")
-        run_orx(["solve", "--solver", "highs,pulp"], self.run_dir, self.bank)
-        run_orx(["cross-validate"], self.run_dir, self.bank)
+        br = self.run_dir / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs"), encoding="utf-8")
+        run_orx(["solve", "--solver", "highs"], self.run_dir, self.bank)
         run_orx(["gold", "--answer", "900"], self.run_dir, self.bank)
         run_orx(["episode"], self.run_dir, self.bank)
 

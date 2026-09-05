@@ -13,7 +13,6 @@ directory on disk, so every tool invocation is an independent process:
       stamps/signature.json  vocabulary verdict + content hash of signature.json
       branches/<br>/solve.py agent-authored solver code (br = solver name)
       branches/<br>/result.json   sandbox execution outcome + hints
-      cross_validation.json  cross-solver comparison verdict
       gold.json              gold answer + match verdict (agent-declared)
       experiences.json       appended experience ids (one line per append)
       episode.json           terminal record + utility credit summary
@@ -98,10 +97,6 @@ class RunStore:
         return self.dir / "signature.json"
 
     @property
-    def cross_validation_path(self) -> Path:
-        return self.dir / "cross_validation.json"
-
-    @property
     def gold_path(self) -> Path:
         return self.dir / "gold.json"
 
@@ -184,7 +179,6 @@ class RunStore:
              "objective_value": r.get("objective_value"), "valid": r.get("valid")}
             for b, r in sorted(branches.items())
         ]
-        state["cross_validated"] = self.cross_validation_path.exists()
         state["gold_recorded"] = self.gold_path.exists()
         state["appended_count"] = self.appended_count()
         state["episode_recorded"] = self.episode_path.exists()
@@ -196,12 +190,9 @@ class RunStore:
         elif state["appended_count"] > 0 or state["gold_recorded"]:
             state["phase"] = "appending"
             state["next"] = "finish appending experiences, then `orx episode`"
-        elif state["cross_validated"]:
-            state["phase"] = "cross_validated"
-            state["next"] = "check gold (user-provided only), then `orx gold` / `orx append`"
         elif state["signature_stamped"] and branches:
             state["phase"] = "solving"
-            state["next"] = "run more branches or `orx cross-validate`"
+            state["next"] = "branch executed: check gold (user-provided only), then `orx gold`"
         elif state["signature_stamped"]:
             state["phase"] = "signature_verified"
             state["next"] = "`orx hints --solver <name>`, write branches/<solver>/solve.py, then `orx solve --solver <name>`"

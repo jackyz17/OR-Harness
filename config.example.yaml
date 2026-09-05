@@ -19,9 +19,7 @@ orchestration:
     - ortools
     - pulp
     - pyomo
-  max_parallel_branches: 7
   max_attempts_per_branch: 3
-  min_cross_validation_branches: 3   # cross-validate requires >= N valid branches (min 2)
   stop_on_repeated_error: true
   stop_on_unchanged_code: true
 

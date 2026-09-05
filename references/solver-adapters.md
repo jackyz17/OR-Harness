@@ -10,25 +10,25 @@
 
 ## Interface
 
-`SolverAdapter` exposes `name`, `solver_family`, `api`, `is_available`, `validate_environment`, `build_generation_context`, `execute`, `normalize_feedback`, and `parse_result`. `SolverRegistry` owns adapter discovery and skips unavailable adapters without failing other branches.
+`SolverAdapter` exposes `name`, `solver_family`, `api`, `is_available`, `validate_environment`, `build_generation_context`, `execute`, `normalize_feedback`, and `parse_result`. `SolverRegistry` owns adapter discovery and skips unavailable adapters without failing other solvers.
 
 ## Availability
 
-Seven solver branches are registered by default:
+Seven solvers are registered by default:
 
-| Branch | Package | Family | API | Notes |
+| Solver | Package | Family | API | Notes |
 |---|---|---|---|---|
 | `gurobi` | `gurobipy` | milp | gurobipy | checks module + silent env to distinguish missing license |
 | `scip` | `pyscipopt` | milp | pyscipopt | module check |
 | `highs` | `highspy` | milp | highspy | module check (open source) |
 | `copt` | `coptpy` | milp | coptpy | module check |
 | `ortools` | `ortools` | cp_sat | ortools.cp_model | CP-SAT; requires integer coefficients |
-| `pulp` | `pulp` | milp | pulp | modeling framework branch, default CBC backend |
-| `pyomo` | `pyomo` | milp | pyomo | modeling framework branch; requires a backend solver (highspy/gurobipy/pyscipopt/coptpy/pulp) |
+| `pulp` | `pulp` | milp | pulp | modeling framework, default CBC backend |
+| `pyomo` | `pyomo` | milp | pyomo | modeling framework; requires a backend solver (highspy/gurobipy/pyscipopt/coptpy/pulp) |
 
 - Mock is registered only by explicit test/demo injection.
 - Missing modules map to `solver_unavailable`; Gurobi license failures map to `license_error`. Neither becomes a modeling experience.
-- `pulp` and `pyomo` are modeling-framework branches (per project Option 1): they test code generation quality for that API. Their underlying engine may overlap with another branch, which is intended — the comparison is at the modeling-API level.
+- `pulp` and `pyomo` are modeling-framework solvers: they test code generation quality for that API. Their underlying engine may overlap with another solver's, which is fine — the agent picks ONE solver per run (see Solver Selection Strategy in SKILL.md) and rotates across runs.
 
 ## Result contract
 

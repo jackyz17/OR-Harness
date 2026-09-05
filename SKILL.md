@@ -1,13 +1,13 @@
 ---
 name: or-experience-bank
-description: Solve, verify, and debug operations research optimization problems (LP, MILP, scheduling, transportation, network flow, resource allocation, inventory) by driving the OR Experience Bank CLI (`orx`) — verified-upfront modeling, multi-solver cross-validation, an append-only experience bank, and offline structural induction. Use when the user asks to formulate, solve, validate, or debug an optimization model, or to query/manage accumulated OR experience. Do not use for generic mathematical proofs, pure data analysis, or non-optimization tasks.
+description: Solve, verify, and debug operations research optimization problems (LP, MILP, scheduling, transportation, network flow, resource allocation, inventory) by driving the OR Experience Bank CLI (`orx`) — verified-upfront modeling, agent-chosen single-solver execution, an append-only experience bank, and offline structural induction. Use when the user asks to formulate, solve, validate, or debug an optimization model, or to query/manage accumulated OR experience. Do not use for generic mathematical proofs, pure data analysis, or non-optimization tasks.
 ---
 
 # OR Experience Bank (orx)
 
 ## Purpose
 
-Solve OR problems through a verified pipeline (model → validate → multi-solver → cross-validate → gold gate), accumulate the lessons into an append-only experience bank, and — offline — induce transferable optimization principles from accumulated experience. You orchestrate; the `orx` CLI validates, executes, and stores.
+Solve OR problems through a verified pipeline (model → validate → solve → gold gate), accumulate the lessons into an append-only experience bank, and — offline — induce transferable optimization principles from accumulated experience. You orchestrate; the `orx` CLI validates, executes, and stores.
 
 ## When to Use
 
@@ -41,8 +41,7 @@ stamps/signature.json           vocabulary verdict + hash of signature.json
 branches/<solver>/hints.json    bank hints pulled BEFORE codegen
 branches/<solver>/solve.py      YOU write: complete solver script
 branches/<solver>/result.json   execution outcome + hints (written by solve)
-cross_validation.json           cross-solver comparison verdict
-gold.json                       gold verdict (user-provided or consistency-only)
+gold.json                       gold verdict (user-provided or solver-reported)
 experiences.json                appended experience ids
 episode.json                    terminal record + utility credit
 rounds/<n>/                     archived artifacts of reflection round n
@@ -105,15 +104,13 @@ YOU write signature.json
 orx signature                            → vocab errors? fix, retry (model stamp intact)
   ▼
 orx hints --solver <solver>              → read hints BEFORE writing code
-YOU write branches/<solver>/solve.py     (one per solver)
+YOU write branches/<solver>/solve.py     (the ONE solver you chose)
   │
-orx solve --solver a,b,c                 → branches run CONCURRENTLY (parallel
-  ▼                                        exploration); failed? read that branch's
-(repeat for ≥3 different solvers)          result.json hints, fix code, re-run
-orx solve --solver <failed>              → single-branch retry (repair is serial)
+orx solve --solver <solver>              → sandbox execution; failed? read that
+  ▼                                        branch's result.json hints, fix code,
+(failed? fix solve.py, re-run              re-run `orx solve --solver <same>`)
+orx solve --solver <same>)
   │
-orx cross-validate                       → consistent? proceed
-  │                                        inconsistent? add a third branch, re-run
   ▼
 ═══ GOLD GATE: gold comes ONLY from the user/problem. NEVER self-derive. ═══
   │  If the user hasn't provided gold: STOP and ask.
@@ -144,26 +141,24 @@ done (report to user)
 | `validate` issues (L2) | Which symbol is undeclared? | Declare it in SETS/PARAMETERS/VARIABLES, or fix the reference |
 | `signature` vocab errors | Which core-dim value is out of vocabulary? | Fix only that value in signature.json |
 | `hints` output | Which API gotchas apply to this solver? | Write solve.py applying the hints |
-| `solve` (parallel) returned | Which branches failed, which agreed? | Fix ONLY the failing branches' solve.py, re-run `orx solve --solver <failed>` |
-| `solve` (single) failed | What does normalized_error + repair_hints say? | Fix ONLY branches/<solver>/solve.py, re-run solve |
-| `cross-validate` inconsistent | Which branch is the outlier? | Add a third solver branch to triangulate |
+| `solve` failed | What does normalized_error + repair_hints say? | Fix ONLY branches/<solver>/solve.py, re-run solve |
+| `solve` succeeded (valid) | Does the objective match the USER-PROVIDED gold? | `orx gold --answer <value>` (or ask the user for gold) |
 | gold matched | What did I learn across ALL layers? | Write one experience file per lesson, append each |
 | gold mismatched | Why was the modeling DIRECTION wrong (not the code)? | `orx new-round`, re-model from scratch |
 | `episode` returned `induction_check.should_induce: true` | Accumulation crossed the watermark | Run the Offline Induction Workflow before the next solve |
 
 ## Solver Selection Strategy
 
-Which solvers to branch on is YOUR decision each run. Do not default to the same pair every time — the value of cross-validation comes from **heterogeneity**, and the bank only grows API knowledge for solvers you actually use.
+Which solver to use is YOUR decision each run — choose ONE. Do not default to the same solver every time: the bank only grows API knowledge for solvers you actually use, and over-fitting to one API's habits makes your code fragile.
 
 How to choose:
 
-1. **Check availability first**: `orx doctor` lists importable solvers. Only branch on available ones.
-2. **Prefer heterogeneous families**: pairing a `milp` solver with `cp_sat` (OR-Tools) validates the model across different solving paradigms — stronger evidence than two milp solvers agreeing. Pairing a direct-API solver (highs/scip/gurobi/copt) with a modeling-framework branch (pulp/pyomo) validates at the API level.
-3. **Rotate across runs**: vary your solver pair from run to run (e.g. highs+ortools, then pulp+scip, then gurobi+pyomo). Rotation (a) spreads API knowledge into the Implementation/Repair banks so future runs benefit, (b) avoids over-fitting your code generation to one API's habits, (c) keeps the bank's solver coverage balanced.
-4. **Match the problem**: CP-SAT requires integer coefficients (scale deliberately); commercial solvers (gurobi/copt) need licenses; pyomo needs a backend solver installed.
-5. **When the bank has solver-specific hints**: `orx hints --solver <s>` returns accumulated API knowledge for THAT solver — a solver with rich hints is cheaper to write correct code for, but do not let this collapse into always picking the same two.
+1. **Check availability first**: `orx doctor` lists importable solvers. Only choose an available one.
+2. **Match the problem**: CP-SAT requires integer coefficients (scale deliberately); commercial solvers (gurobi/copt) need licenses; pyomo needs a backend solver installed. For large sparse LP/MILP prefer highs/scip; for scheduling with logical structure consider ortools (CP-SAT).
+3. **Rotate across runs**: vary your solver from run to run (e.g. highs, then pulp, then ortools). Rotation (a) spreads API knowledge into the Implementation/Repair banks so future runs benefit, (b) avoids over-fitting your code generation to one API's habits, (c) keeps the bank's solver coverage balanced.
+4. **When the bank has solver-specific hints**: `orx hints --solver <s>` returns accumulated API knowledge for THAT solver — a solver with rich hints is cheaper to write correct code for, but do not let this collapse into always picking the same one.
 
-Minimum requirement stays: ≥3 valid branches from **different** solvers (configurable via `min_cross_validation_branches`, default 3).
+One run = one solver. If the branch fails after repair attempts, you may switch to a DIFFERENT solver (write its solve.py in a new branch directory and solve again) — but never run multiple solvers just to cross-check answers; the gold gate is the verification mechanism now.
 
 ## Experience Synthesis — What to Write to Each Bank
 
@@ -216,8 +211,6 @@ Roles come from the canonical set: resource_pool, capacity_limit, competing_deci
 | `orx signature` | signature.json written or edited |
 | `orx hints --solver <s>` | BEFORE writing solve.py for solver s (first time AND after a failure) |
 | `orx solve --solver <s>` | solve.py written or fixed (single branch / repair retry) |
-| `orx solve --solver a,b,c` | All branch codes written — run them CONCURRENTLY (parallel exploration) |
-| `orx cross-validate` | ≥3 valid branches exist (configurable: `min_cross_validation_branches`) |
 | `orx gold --answer <v>` | User provided gold (or explicitly confirmed none) |
 | `orx append --file <f>` | Gold matched, one lesson per file |
 | `orx episode` | All layers covered — terminal |
@@ -235,13 +228,12 @@ Do not reimplement validation logic manually (symbol cross-checks, vocab checks,
 | `validate` | `passed: true` |
 | `signature` | `passed: true` |
 | `solve` | `status` in {optimal, feasible} |
-| `cross-validate` | `consistent: true` |
-| gold gate | Gold from user/problem ONLY; compare `best_objective` |
+| gold gate | Gold from user/problem ONLY; compare the branch's `objective_value` |
 | `append` | `status: "appended"` (not duplicate/rejected) |
 | `episode` | `recorded: true` AND read `induction_check.should_induce` — if true, induction is due NOW |
 | induction chain | each step stamps; final `appended` non-empty |
 
-**Cross-solver consistency does NOT prove correctness** — two solvers can agree on the same wrong relaxation. Gold mismatch + consistent solvers almost always means the MODEL is wrong.
+**A single solver's "optimal" does NOT prove correctness** — it can be optimal for a wrong relaxation. Gold mismatch with a clean solve almost always means the MODEL is wrong.
 
 ## Failure Recovery
 
@@ -249,8 +241,7 @@ Do not reimplement validation logic manually (symbol cross-checks, vocab checks,
 |---|---|
 | `validate` issues | Fix model.txt, re-run validate (free retry, no penalty) |
 | `solve` branch failed | Read `normalized_error` + `repair_hints` in branches/<solver>/result.json; fix solve.py; re-run `orx solve --solver <solver>` (repair within a branch is serial by design) |
-| All branches fail | Solver not installed → tell the user. Modeling issue → revise model.txt, re-validate |
-| `cross-validate` inconsistent | Add a third branch with a different solver, re-run cross-validate |
+| All repair attempts failed | Solver not installed → tell the user. Modeling issue → revise model.txt, re-validate. Still stuck → switch to a DIFFERENT solver (new branch directory) |
 | Gold mismatch | DO NOT append. Reflect on the modeling direction; `orx new-round`; re-model (≤3 rounds) |
 | `append` says duplicate | Rephrase with new insight or skip |
 | Stamp "stale" error | You edited a stamped artifact; re-run the gate command for the new content |
@@ -260,7 +251,7 @@ Do not reimplement validation logic manually (symbol cross-checks, vocab checks,
 ## Output Requirements
 
 When reporting to the user, include:
-- The selected objective value and which solvers agreed (cross-validation status)
+- The selected objective value, the solver you chose, and the gold verdict (matched / mismatched / not provided)
 - The verified model (or its key structure) and any assumptions you stated
 - Gold verdict (matched / mismatched / not provided)
 - Appended experience ids and what each lesson says
@@ -289,9 +280,9 @@ Do not:
 | Code patch instead of complete script | solve.py must be the COMPLETE script every time |
 | Citing `[uses E7]` when only E1-E3 exist | Only cite tags present in priors.json labels |
 | Citing a prior you didn't apply | Citation = utility credit; false credits corrupt ranking |
-| One `solve` then `cross-validate` | Need ≥3 valid branches from different solvers (default; configurable) |
-| Always branching on the same solver pair | Rotate across runs (see Solver Selection Strategy) — the bank only learns APIs you actually use, and cross-family agreement is stronger evidence |
-| Running branches one-by-one when you could batch | Write all branch codes first, then `orx solve --solver a,b,c` — branches explore in PARALLEL |
+| One `solve` then `gold` | The branch must be valid (valid=true, status optimal/feasible) before the gold gate |
+| Running multiple solvers to cross-check answers | One run = one solver; the gold gate is the verification mechanism |
+| Always choosing the same solver | Rotate across runs (see Solver Selection Strategy) — the bank only learns APIs you actually use |
 | Ignoring `repair_hints` on failure | Read them before switching solvers — they may contain the exact fix |
 | Only writing to the Modeling Bank | Check ALL four layers before `orx episode` |
 | Self-deriving gold from solver output | Gold comes ONLY from the user/problem statement |
@@ -302,7 +293,7 @@ Do not:
 | Editing model.txt after validate | The stamp goes stale; re-run `orx validate` after any edit |
 | Arguing with a rejected command | Read the error JSON, fix the artifact, re-run |
 | Printing the result instead of writing result.json | Your solve.py must WRITE result.json in its cwd (`open('result.json', 'w')`) — stdout is not parsed for results |
-| Hand-writing branches/<s>/result.json yourself | result.json is written by `orx solve` (it validates + enriches your solver's output); hand-written files lack the `valid` field and will not count in cross-validate |
+| Hand-writing branches/<s>/result.json yourself | result.json is written by `orx solve` (it validates + enriches your solver's output); hand-written files lack the `valid` field and will not count at the gold gate |
 | Constructing the result.json path dynamically (`os.path.dirname(__file__)` + ...) | The sandbox requires a LITERAL path: `open('result.json', 'w')` — the branch cwd is already correct |
 | Re-recording gold on a completed run | Episodes are append-only; if gold was recorded wrong, start a FRESH run (`orx recall` in a new directory) |
 | Ignoring `induction_check` in the episode response | `should_induce: true` means induction is due NOW — process clusters before the next solve; skipping it starves the reflow loop |
@@ -312,7 +303,7 @@ Do not:
 Three worked examples with exact command sequences and reasoning live in [references/examples.md](references/examples.md). Read it when handling:
 - **A normal solve with gold match** (Example 1) — the happy path, including a mid-chain repair
 - **Ambiguous input / missing information** (Example 2) — what to assume, what to ask
-- **Gold mismatch caused by a wrong modeling direction** (Example 3) — the reflection loop, and why cross-solver consistency did not catch it
+- **Gold mismatch caused by a wrong modeling direction** (Example 3) — the reflection loop, and why a clean single-solver solve did not catch it
 
 ## References
 

@@ -1,6 +1,6 @@
 # OR Experience Bank（中文版）
 
-一个面向 LLM Harness Agent 的 Python 框架，实现**多求解器并行探索求解 OR 问题**、**积累经验证的求解经验**、以及离线地**从历史经验中归纳出新的优化原则**（"举一反三"）。纯 Python stdlib，零依赖。
+一个面向 LLM Harness Agent 的 Python 框架，实现**agent 自主选择求解器求解 OR 问题**、**积累经验证的求解经验**、以及离线地**从历史经验中归纳出新的优化原则**（"举一反三"）。纯 Python stdlib，零依赖。
 
 [English](README.md)
 
@@ -41,9 +41,7 @@ agent 写 model.txt ──► orx validate（L1+L2 门禁）──► 盖章
 agent 写 signature.json ──► orx signature（词表门禁）──► 盖章
   │
 orx hints ──► 写码前先拉银行提示
-agent 写 branches/<solver>/solve.py ──► orx solve ×≥2（沙箱执行）
-  │
-orx cross-validate ──► ≥2 分支一致？
+agent 写 branches/<solver>/solve.py ──► orx solve（沙箱执行，单一求解器）
   │
 orx gold ──► 与用户提供的 gold 匹配？
   ├── 是 ──► orx append ×N（每层经验一条）──► orx episode（终态）
@@ -52,11 +50,11 @@ orx gold ──► 与用户提供的 gold 匹配？
 
 ## 它能做什么
 
-### 1. 求解 OR 问题——多求解器并行探索
+### 1. 求解 OR 问题——agent 自主选择求解器
 
-- **先建模后动手**：Agent 把问题形式化为 `<think>` + `<model>`（GAMS 风格 DSL），`orx validate` 在**任何代码运行之前**校验它。
-- **异构并行探索**：校验通过的模型分叉到最多 **7 个求解器分支**——Gurobi、SCIP、HiGHS、COPT、OR-Tools (CP-SAT)、PuLP、Pyomo——每个分支在隔离沙箱中运行。分支失败只需改该分支的代码重跑 `orx solve`，**链路从不重启**。
-- **gold 门控闭环**：跨求解器校验后与 gold 答案（**只**来自用户/题目）对比，不匹配触发**反思式重新建模**（`orx new-round`，外层最多 3 轮），而不是盲目重试。
+- **先建模后动手**：Agent 把问题形式化为 `imd` + `<model>`（GAMS 风格 DSL），`orx validate` 在**任何代码运行之前**校验它。
+- **agent 自主选择求解器**：每个 run 由 agent 根据可用性、问题匹配度和银行积累的 hints 选择**一个**求解器——Gurobi、SCIP、HiGHS、COPT、OR-Tools (CP-SAT)、PuLP、Pyomo。分支失败只需改该分支的代码重跑 `orx solve`，**链路从不重启**。
+- **gold 门控闭环**：求解结果与 gold 答案（**只**来自用户/题目）对比，不匹配触发**反思式重新建模**（`orx new-round`，外层最多 3 轮），而不是盲目重试。
 
 ### 2. 积累经验——一个会进化的经验库
 
@@ -105,9 +103,8 @@ orx recall --problem-file p.txt   # 开始 run + 召回建模先验
 orx validate                      # model.txt 的 L1+L2 门禁 → 盖章
 orx signature                     # signature.json 的词表门禁 → 盖章
 orx hints --solver <s>            # 写码前拉银行提示
-orx solve --solver <s>            # 沙箱执行单个分支（修复重试）
-orx solve --solver a,b,c          # 多分支并发执行（并行探索）
-orx cross-validate                # ≥2 个有效分支在容差内一致
+orx solve --solver <s>            # 沙箱执行所选求解器（修复重试）
+orx gold --answer <v>            # 与用户提供的 gold 对比
 orx gold [--answer <v>]           # 记录 gold 判定（用户提供 / 仅一致性）
 orx append --file exp.json        # 入库一条经验（gold 门禁强制）
 orx episode                       # 终态：episode + utility 归因

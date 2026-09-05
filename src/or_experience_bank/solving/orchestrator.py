@@ -180,15 +180,17 @@ class ORExperienceOrchestrator:
             "implementation": [], "repair": [], "solving": [],
         }
         self._event("modeling_retrieved", ids=retrieved["modeling"])
-        semaphore = asyncio.Semaphore(self.config.max_parallel_branches)
+        # NOTE (single-solver era): the orx CLI path has the agent choose ONE
+        # solver per run; this programming API still accepts a list for
+        # backward compatibility but no longer bounds concurrency by a
+        # dedicated config knob — branches run unbounded via asyncio.gather.
         attempts_limit = max_attempts or self.config.max_attempts_per_branch
 
         async def guarded(adapter: SolverAdapter) -> BranchResult:
-            async with semaphore:
-                return await self._run_branch(
-                    adapter, spec, problem, problem_id, attempts_limit, modeling_hits,
-                    reference_objective, semantic_validator,
-                )
+            return await self._run_branch(
+                adapter, spec, problem, problem_id, attempts_limit, modeling_hits,
+                reference_objective, semantic_validator,
+            )
 
         branches = await asyncio.gather(*(guarded(adapter) for adapter in adapters))
         self._event("all_branches_finished", branch_ids=[branch.branch_id for branch in branches])

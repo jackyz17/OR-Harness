@@ -80,7 +80,6 @@ value = undefined_symbol + 1
 def run_orx(args, cwd, bank_home):
     env = dict(os.environ)
     env["OR_EXPERIENCE_BANK_HOME"] = str(bank_home)
-    env["OR_EXPERIENCE_MIN_CV_BRANCHES"] = "2"  # legacy gate for these scenario tests
     proc = subprocess.run(
         ORX + args, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=180
     )
@@ -123,12 +122,10 @@ class TestFailingBranchRetrievesBank(unittest.TestCase):
         seed = self.tmp / "seed"
         seed.mkdir()
         drive_to_signature(seed, self.bank)
-        for solver in ("highs", "pulp"):
-            br = seed / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(GOOD_CODE.format(solver=solver), encoding="utf-8")
-        run_orx(["solve", "--solver", "highs,pulp"], seed, self.bank)
-        run_orx(["cross-validate"], seed, self.bank)
+        br = seed / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(GOOD_CODE.format(solver="highs"), encoding="utf-8")
+        run_orx(["solve", "--solver", "highs"], seed, self.bank)
         run_orx(["gold", "--answer", "900"], seed, self.bank)
 
         repair_exp = {
@@ -175,18 +172,16 @@ class TestFailingBranchRetrievesBank(unittest.TestCase):
         self.assertIsInstance(record["repair_graph_guidance"], dict)
 
     def test_failing_branch_in_parallel_also_carries_repair_hints(self):
-        """Same guarantee under the parallel form: the failing branch's own
-        result.json carries its repair hints, the succeeding branch is unaffected."""
+        """Same guarantee on a repair retry after a failure: the branch's own
+        result.json carries its repair hints."""
         # Seed the repair bank first (reuse the phase-1 flow).
         seed = self.tmp / "seed"
         seed.mkdir()
         drive_to_signature(seed, self.bank)
-        for solver in ("highs", "pulp"):
-            br = seed / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(GOOD_CODE.format(solver=solver), encoding="utf-8")
-        run_orx(["solve", "--solver", "highs,pulp"], seed, self.bank)
-        run_orx(["cross-validate"], seed, self.bank)
+        br = seed / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(GOOD_CODE.format(solver="highs"), encoding="utf-8")
+        run_orx(["solve", "--solver", "highs"], seed, self.bank)
         run_orx(["gold", "--answer", "900"], seed, self.bank)
         repair_exp = {
             "layer": "repair",
@@ -206,14 +201,13 @@ class TestFailingBranchRetrievesBank(unittest.TestCase):
         self.run_dir = self.tmp / "run2"
         self.run_dir.mkdir()
         drive_to_signature(self.run_dir, self.bank)
-        for solver, code_text in (("highs", FAILING_CODE), ("pulp", GOOD_CODE.format(solver="pulp"))):
-            br = self.run_dir / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(code_text, encoding="utf-8")
+        br = self.run_dir / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(FAILING_CODE, encoding="utf-8")
 
-        code, out = self.orx("solve", "--solver", "highs,pulp")
+        code, out = self.orx("solve", "--solver", "highs")
         self.assertEqual(code, 0, out)
-        self.assertEqual(out["branches_valid"], 1, out)
+        self.assertEqual(out["status"], "error")
 
         # Failing branch: repair hints present.
         fail_record = json.loads(
@@ -221,9 +215,14 @@ class TestFailingBranchRetrievesBank(unittest.TestCase):
         repair_titles = [h.get("title", "") for h in fail_record["repair_hints"]]
         self.assertTrue(any("NameError" in t for t in repair_titles),
                         "repair hint missing on failing branch: {}".format(repair_titles))
-        # Succeeding branch: no error, so no repair hints (correct behavior).
+
+        # Fix the branch code and retry: the repaired run carries no repair hints.
+        (br / "solve.py").write_text(GOOD_CODE.format(solver="highs"), encoding="utf-8")
+        code, out = self.orx("solve", "--solver", "highs")
+        self.assertEqual(code, 0, out)
+        self.assertTrue(out["valid"], out)
         ok_record = json.loads(
-            (self.run_dir / "branches" / "pulp" / "result.json").read_text(encoding="utf-8"))
+            (self.run_dir / "branches" / "highs" / "result.json").read_text(encoding="utf-8"))
         self.assertEqual(ok_record["repair_hints"], [])
 
 

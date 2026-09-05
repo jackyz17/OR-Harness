@@ -80,7 +80,6 @@ with open("result.json", "w") as handle:
 def run_orx(args, cwd, bank_home):
     env = dict(os.environ)
     env["OR_EXPERIENCE_BANK_HOME"] = str(bank_home)
-    env["OR_EXPERIENCE_MIN_CV_BRANCHES"] = "2"  # legacy gate for these scenario tests
     proc = subprocess.run(
         ORX + args, cwd=str(cwd), env=env, capture_output=True, text=True, timeout=120
     )
@@ -149,7 +148,7 @@ class TestSolveChain(OrxCLITestBase):
         self.assertEqual(code, 0, out)
         self.assertTrue((self.run_dir / "branches" / "highs" / "hints.json").exists())
 
-        # solve branch 1
+        # solve the chosen branch
         br = self.run_dir / "branches" / "highs"
         br.mkdir(parents=True, exist_ok=True)
         (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs", objective=900), encoding="utf-8")
@@ -157,20 +156,6 @@ class TestSolveChain(OrxCLITestBase):
         self.assertEqual(code, 0, out)
         self.assertTrue(out["valid"], out)
         self.assertEqual(out["objective_value"], 900)
-
-        # solve branch 2 (different solver, same objective)
-        br2 = self.run_dir / "branches" / "pulp"
-        br2.mkdir(parents=True, exist_ok=True)
-        (br2 / "solve.py").write_text(SOLVE_CODE.format(solver="pulp", objective=900), encoding="utf-8")
-        code, out = self.orx("solve", "--solver", "pulp")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(out["valid"], out)
-
-        # cross-validate
-        code, out = self.orx("cross-validate")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(out["consistent"], out)
-        self.assertEqual(out["best_objective"], 900)
 
         # gold (user-provided, matches)
         code, out = self.orx("gold", "--answer", "900")
@@ -264,12 +249,10 @@ class TestSolveChain(OrxCLITestBase):
         self.orx("validate")
         (self.run_dir / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
         self.orx("signature")
-        for solver in ("highs", "pulp"):
-            br = self.run_dir / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver, objective=900), encoding="utf-8")
-            self.orx("solve", "--solver", solver)
-        self.orx("cross-validate")
+        br = self.run_dir / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs", objective=900), encoding="utf-8")
+        self.orx("solve", "--solver", "highs")
 
         # gold mismatch
         code, out = self.orx("gold", "--answer", "123")
@@ -290,31 +273,31 @@ class TestSolveChain(OrxCLITestBase):
         self.assertTrue((self.run_dir / "problem.txt").exists())
         self.assertFalse((self.run_dir / "model.txt").exists())
 
-    def test_cross_validate_inconsistent_allows_more_branches(self):
-        """The old token chain consumed signature_token on cross_validate, making
-        'add a third branch to triangulate' impossible. Stamps fix this."""
+    def test_gold_gate_requires_valid_branch(self):
+        """gold before any valid solve branch -> chain error."""
         (self.run_dir / "problem.txt").write_text(PROBLEM, encoding="utf-8")
         self.orx("recall", "--problem-file", "problem.txt")
         (self.run_dir / "model.txt").write_text(MODEL, encoding="utf-8")
         self.orx("validate")
         (self.run_dir / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
         self.orx("signature")
-        for solver, obj in (("highs", 900), ("pulp", 850)):
-            br = self.run_dir / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver, objective=obj), encoding="utf-8")
-            self.orx("solve", "--solver", solver)
 
-        code, out = self.orx("cross-validate")
-        self.assertFalse(out["consistent"])
+        code, out = self.orx("gold", "--answer", "900")
+        self.assertEqual(code, 2, out)
+        self.assertIn("no valid solver branch", out["error"])
 
-        # add a third branch WITHOUT re-validating the model — must work
-        br = self.run_dir / "branches" / "scip"
-        br.mkdir(parents=True, exist_ok=True)
-        (br / "solve.py").write_text(SOLVE_CODE.format(solver="scip", objective=900), encoding="utf-8")
-        code, out = self.orx("solve", "--solver", "scip")
-        self.assertEqual(code, 0, out)
-        self.assertTrue(out["valid"], out)
+    def test_multi_solver_argument_rejected(self):
+        """The comma-separated multi-solver form was removed with cross-validation."""
+        (self.run_dir / "problem.txt").write_text(PROBLEM, encoding="utf-8")
+        self.orx("recall", "--problem-file", "problem.txt")
+        (self.run_dir / "model.txt").write_text(MODEL, encoding="utf-8")
+        self.orx("validate")
+        (self.run_dir / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
+        self.orx("signature")
+
+        code, out = self.orx("solve", "--solver", "highs,pulp")
+        self.assertEqual(code, 2, out)
+        self.assertIn("ONE solver", out["error"])
 
 
 class TestUtilityLoop(OrxCLITestBase):
@@ -328,12 +311,10 @@ class TestUtilityLoop(OrxCLITestBase):
         run_orx(["validate"], seed_run, self.bank)
         (seed_run / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
         run_orx(["signature"], seed_run, self.bank)
-        for solver in ("highs", "pulp"):
-            br = seed_run / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver, objective=900), encoding="utf-8")
-            run_orx(["solve", "--solver", solver], seed_run, self.bank)
-        run_orx(["cross-validate"], seed_run, self.bank)
+        br = seed_run / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs", objective=900), encoding="utf-8")
+        run_orx(["solve", "--solver", "highs"], seed_run, self.bank)
         run_orx(["gold", "--answer", "900"], seed_run, self.bank)
         exp = {
             "layer": "modeling",
@@ -363,12 +344,10 @@ class TestUtilityLoop(OrxCLITestBase):
         run_orx(["validate"], run2, self.bank)
         (run2 / "signature.json").write_text(json.dumps(SIGNATURE), encoding="utf-8")
         run_orx(["signature"], run2, self.bank)
-        for solver in ("highs", "pulp"):
-            br = run2 / "branches" / solver
-            br.mkdir(parents=True, exist_ok=True)
-            (br / "solve.py").write_text(SOLVE_CODE.format(solver=solver, objective=900), encoding="utf-8")
-            run_orx(["solve", "--solver", solver], run2, self.bank)
-        run_orx(["cross-validate"], run2, self.bank)
+        br = run2 / "branches" / "highs"
+        br.mkdir(parents=True, exist_ok=True)
+        (br / "solve.py").write_text(SOLVE_CODE.format(solver="highs", objective=900), encoding="utf-8")
+        run_orx(["solve", "--solver", "highs"], run2, self.bank)
         run_orx(["gold", "--answer", "900"], run2, self.bank)
         code, out = run_orx(["episode"], run2, self.bank)
         self.assertEqual(code, 0, out)

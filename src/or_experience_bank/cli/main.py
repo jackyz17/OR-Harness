@@ -8,8 +8,8 @@ Design (ReAct-oriented, 2026-08):
   - stdout is ALWAYS a single compact JSON object (machine-readable observation);
     long content goes to files inside the run directory.
 
-Exit codes: 0 = command succeeded (check "passed"/"consistent"/"status" fields
-for semantic outcomes); 2 = chain/precondition error (read "error"); 1 = crash.
+Exit codes: 0 = command succeeded (check "passed"/"status" fields for semantic
+outcomes); 2 = chain/precondition error (read "error"); 1 = crash.
 """
 
 from __future__ import annotations
@@ -75,13 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     solve = commands.add_parser("solve", help="Sandbox-execute branches/<solver>/solve.py")
     solve.add_argument("--solver", required=True,
-                       help="One solver (single branch / repair retry) or comma-separated list "
-                            "(parallel exploration: 'highs,pulp,scip' runs them concurrently)")
+                       help="The ONE solver you chose for this run (single branch; repair retries "
+                            "re-run the same solver)")
 
-    cross = commands.add_parser("cross-validate", help="Compare >=3 valid branches (configurable: min_cross_validation_branches)")
-    cross.add_argument("--tolerance", type=float, default=1e-4)
-
-    gold = commands.add_parser("gold", help="Record the gold verdict (user-provided or consistency-only)")
+    gold = commands.add_parser("gold", help="Record the gold verdict (user-provided or solver-reported)")
     gold.add_argument("--answer", type=float, default=None, help="User-provided gold objective")
     gold.add_argument("--matched", dest="matched", action="store_true", default=None,
                       help="Explicitly declare match/mismatch (default: auto-compare)")
@@ -162,16 +159,12 @@ def main(argv: Optional[list] = None) -> int:
             from .solve_commands import cmd_hints
             _emit(cmd_hints(comps, _run_dir(args), args.solver))
         elif args.command == "solve":
-            from .solve_commands import cmd_solve, cmd_solve_parallel
-            solvers = [s.strip() for s in args.solver.split(",") if s.strip()]
-            if len(solvers) > 1:
-                # Heterogeneous parallel exploration: all branches concurrently.
-                _emit(cmd_solve_parallel(comps, _run_dir(args), solvers))
-            else:
-                _emit(cmd_solve(comps, _run_dir(args), solvers[0]))
-        elif args.command == "cross-validate":
-            from .solve_commands import cmd_cross_validate
-            _emit(cmd_cross_validate(comps, _run_dir(args), tolerance=args.tolerance))
+            from .solve_commands import cmd_solve
+            solver = args.solver.strip()
+            if "," in solver:
+                _fail("multi-solver cross-validation was removed: choose ONE solver per run "
+                      "(see Solver Selection Strategy in SKILL.md) and pass a single name")
+            _emit(cmd_solve(comps, _run_dir(args), solver))
         elif args.command == "gold":
             from .solve_commands import cmd_gold
             _emit(cmd_gold(comps, _run_dir(args), gold=args.answer, matched=args.matched))

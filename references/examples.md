@@ -17,10 +17,9 @@ each example shows the exact tool sequence and the reasoning at each step.
 
 ```
 0. orx doctor -> solvers_available: [gurobi, highs, ortools, pulp]
-   (pick THREE from DIFFERENT families for stronger cross-validation; this run
-   picks highs + ortools + pulp — two milp solvers plus a cp_sat solver. Rotate
-   the trio across runs: the bank only accumulates API knowledge for solvers
-   you actually use.)
+   (pick ONE solver for this run; this run picks highs — a direct-API milp
+   solver well-suited to a small LP. Rotate the choice across runs: the bank
+   only accumulates API knowledge for solvers you actually use.)
 
 1. orx recall --problem-file problem.txt
    -> priors_count=1, [E1] "shared-resource capacity: single linear row"
@@ -48,17 +47,17 @@ each example shows the exact tool sequence and the reasoning at each step.
 3. orx validate -> passed=true, stamps/model.json
 4. orx signature: {objective: "linear", decision: ["continuous_flow"],
    constraint: ["capacity"], interaction: "shared_resource_coupled"} -> passed
-5. orx solve --solver highs,ortools,pulp (all branches run CONCURRENTLY):
-   highs first attempt hits AttributeError on HighsInfo.run_time
+5. orx hints --solver highs -> read hints BEFORE writing code
+   orx solve --solver highs:
+   first attempt hits AttributeError on HighsInfo.run_time
    → read repair_hints in branches/highs/result.json → fix code (use
-   h.getRunTime()) → re-run orx solve --solver highs (single-branch retry):
-   optimal, 150.0; ortools: optimal, 150.0; pulp: optimal, 150.0
-   (NOTE: the solver trio here is an EXAMPLE, not a recommendation — pick
-   from what `orx doctor` reports as available, prefer different families,
-   and rotate across runs)
-6. orx cross-validate -> consistent=true, best_objective=150.0
-7. gold 150.0 == 150.0 -> orx gold --answer 150 -> matched
-8. orx append ×3 (one file per bankable lesson, BEFORE orx episode):
+   h.getRunTime()) → re-run orx solve --solver highs (repair retry):
+   optimal, 150.0
+   (NOTE: the solver here is an EXAMPLE, not a recommendation — pick from
+   what `orx doctor` reports as available, match the problem, and rotate
+   across runs)
+6. gold 150.0 == 150.0 -> orx gold --answer 150 -> matched
+7. orx append ×3 (one file per bankable lesson, BEFORE orx episode):
    a. (layer=modeling, modeling_aspect=constraint) "shared linear capacity row
       covers multi-product machine time"
    b. (layer=implementation) "HiGHS HighsInfo has no run_time attribute — use
@@ -67,7 +66,7 @@ each example shows the exact tool sequence and the reasoning at each step.
       → replace with h.getRunTime() (error in result.json construction, not
       solver logic)"
    (No solving lesson — no timeout/gap/numerical issues occurred.)
-9. orx episode
+8. orx episode
     -> utility_credited=1 (E1 was cited and helped)
     -> induction_check: {"should_induce": false,
                          "reason": "no heterogeneous isomorphic cluster (candidate gate)",
@@ -77,7 +76,7 @@ each example shows the exact tool sequence and the reasoning at each step.
    Workflow BEFORE starting the next solve. See SKILL.md.)
 ```
 
-**Report to user:** objective 150.0, all three solvers agree, model verified,
+**Report to user:** objective 150.0 (highs), model verified, gold matched,
 3 experiences appended (modeling + implementation + repair), prior [E1] credited,
 induction not yet due.
 
@@ -100,11 +99,11 @@ induction not yet due.
   from the problem text plus stated assumptions.
 
 **Gold answer missing:** if the user does not provide a gold answer, you have two options:
-1. **Ask the user** for the gold answer before proceeding past `orx cross-validate`.
-2. If the user confirms no gold is available, proceed with consistency-only
-   validation: `orx gold` (no --answer) records consistency-only, then
-   `orx append` + `orx episode` — but explicitly tell the user that
-   cross-solver consistency does NOT prove correctness.
+1. **Ask the user** for the gold answer before proceeding past `orx solve`.
+2. If the user confirms no gold is available, proceed with solver-reported
+   validation: `orx gold` (no --answer) records the solver-reported basis, then
+   `orx append` + `orx episode` — but explicitly tell the user that a single
+   solver's "optimal" does NOT prove correctness.
 
 **Do NOT** use your own solver output as the gold answer. Gold comes ONLY from
 the user or the problem statement.
@@ -118,15 +117,14 @@ the user or the problem statement.
 **First attempt (WRONG direction):**
 ```
 Model: assignment-style x[i,j] binary with degree constraints only.
-orx solve --solver highs,ortools -> both solvers: optimal, 185.0
-orx cross-validate -> consistent=true (both agree - but both are WRONG)
+orx solve --solver highs -> optimal, 185.0
 orx gold --answer 230 -> gold_matched=false
 ```
 
-**What went wrong:** the model has no subtour elimination. Both solvers
-"agree" on 185.0 because they solved the same wrong relaxation. Cross-solver
-consistency does NOT prove correctness - it only proves the implementations
-match.
+**What went wrong:** the model has no subtour elimination. The solver reports
+"optimal" at 185.0 because it solved the wrong relaxation faithfully. A clean
+single-solver solve does NOT prove correctness — it only proves the
+implementation ran.
 
 **Recovery (reflection loop):**
 ```
@@ -135,10 +133,9 @@ match.
    cycles are cheaper than one Hamiltonian cycle."
 2. orx new-round (archives the failed round's artifacts)
 3. New model: add subtour elimination (MTZ or exponential lazy constraints).
-4. orx validate -> orx hints --solver highs,ortools
-   -> write both branches' solve.py -> orx solve --solver highs,ortools
-   -> orx cross-validate
-5. Both solvers: 230.0 -> orx gold --answer 230 -> matched
+4. orx validate -> orx hints --solver highs
+   -> write branches/highs/solve.py -> orx solve --solver highs
+5. highs: 230.0 -> orx gold --answer 230 -> matched
 6. orx append (the contrast lesson):
    title: "Degree constraints alone under-count TSP cost (subtours)"
    polarity: "negative"
@@ -147,9 +144,9 @@ match.
 7. orx episode -> read induction_check (should_induce?)
 ```
 
-**Lesson:** cross-solver consistency catches implementation bugs, not
-formulation bugs. Gold mismatch + consistent solvers almost always means
-the MODEL is wrong, not the code.
+**Lesson:** a clean solve catches implementation bugs, not formulation bugs.
+Gold mismatch with a clean solve almost always means the MODEL is wrong, not
+the code.
 
 ## Do-not-do-this summary
 
@@ -157,7 +154,7 @@ the MODEL is wrong, not the code.
 |---|---|
 | Adjust the answer to match gold without re-deriving the model | Matching-by-fiat produces no transferable knowledge and fails on any variation |
 | Infer an exact plan from the gold number alone | The gold validates a model; it is not a substitute for one |
-| Treat cross-solver consistency as proof of correctness | Consistent solvers can agree on the same wrong relaxation (Example 3) |
+| Treat a clean single-solver solve as proof of correctness | The solver can be optimal for a wrong relaxation (Example 3) |
 | Cite a prior you did not apply | Citation is a utility credit; false credits corrupt the ranking |
 | Skip reflection after a gold mismatch and just re-run the same model | The same model will produce the same wrong answer |
 | Only append a modeling experience, ignoring API gotchas and error→fix lessons | The Implementation and Repair banks exist to capture solver-specific knowledge. If you hit and fixed an API issue during `orx solve`, write it via `orx append` (layer="implementation"|"repair") BEFORE `orx episode`. |

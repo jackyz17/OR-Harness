@@ -1,6 +1,6 @@
 # OR Experience Bank
 
-A Python framework for LLM agents to **solve OR problems with parallel solver exploration**, **accumulate verified solving experience**, and — offline — **induce new optimization principles from past experience**. Pure standard library, zero dependencies.
+A Python framework for LLM agents to **solve OR problems with agent-chosen solvers**, **accumulate verified solving experience**, and — offline — **induce new optimization principles from past experience**. Pure standard library, zero dependencies.
 
 [中文版](README_zh.md)
 
@@ -41,9 +41,7 @@ agent writes model.txt ──► orx validate (L1+L2 gate) ──► stamp
 agent writes signature.json ──► orx signature (vocab gate) ──► stamp
   │
 orx hints ──► bank hints BEFORE codegen
-agent writes branches/<solver>/solve.py ──► orx solve ×≥2 (sandbox exec)
-  │
-orx cross-validate ──► ≥2 branches agree?
+agent writes branches/<solver>/solve.py ──► orx solve (sandbox exec, ONE solver)
   │
 orx gold ──► matches user-provided gold?
   ├── yes ──► orx append ×N (one lesson per bank layer) ──► orx episode (terminal)
@@ -52,11 +50,11 @@ orx gold ──► matches user-provided gold?
 
 ## What it does
 
-### 1. Solve OR problems — parallel multi-solver exploration
+### 1. Solve OR problems — agent-chosen single-solver execution
 
-- **Structured modeling first**: the agent formalizes the problem as `<think>` + `<model>` (GAMS-style DSL); `orx validate` verifies it (format / structure) **before any code runs**.
-- **Heterogeneous parallel exploration**: the verified model fans out to up to **7 solver branches** — Gurobi, SCIP, HiGHS, COPT, OR-Tools (CP-SAT), PuLP, Pyomo — each in an isolated sandbox. A failed branch is fixed by editing only that branch's code and re-running `orx solve` — the chain is never restarted.
-- **Gold-gated loop**: after cross-validation, the result is compared to a gold answer (supplied ONLY by the user/problem). A mismatch triggers **reflective re-modeling** (`orx new-round`, ≤3 outer rounds) instead of blind retries.
+- **Structured modeling first**: the agent formalizes the problem as `imd` + `<model>` (GAMS-style DSL); `orx validate` verifies it (format / structure) **before any code runs**.
+- **Agent-chosen solver**: the agent picks ONE solver per run — Gurobi, SCIP, HiGHS, COPT, OR-Tools (CP-SAT), PuLP, or Pyomo — guided by availability, problem fit, and accumulated bank hints. A failed branch is fixed by editing only that branch's code and re-running `orx solve` — the chain is never restarted.
+- **Gold-gated loop**: the result is compared to a gold answer (supplied ONLY by the user/problem). A mismatch triggers **reflective re-modeling** (`orx new-round`, ≤3 outer rounds) instead of blind retries.
 
 ### 2. Accumulate experience — a living experience bank
 
@@ -103,9 +101,8 @@ orx recall --problem-file p.txt   # start run + fetch planning priors
 orx validate                      # L1+L2 gate on model.txt -> stamp
 orx signature                     # vocab gate on signature.json -> stamp
 orx hints --solver <s>            # bank hints BEFORE codegen
-orx solve --solver <s>            # sandbox-execute one branch (repair retry)
-orx solve --solver a,b,c          # branches execute CONCURRENTLY (parallel exploration)
-orx cross-validate                # >=2 valid branches agree within tolerance
+orx solve --solver <s>            # sandbox-execute the chosen solver (repair retry)
+orx gold --answer <v>            # compare with the user-provided gold
 orx gold [--answer <v>]           # record gold verdict (user-provided / consistency-only)
 orx append --file exp.json        # admit one experience (gold gate enforced)
 orx episode                       # terminal: episode + utility credit

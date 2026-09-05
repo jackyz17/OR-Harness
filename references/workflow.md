@@ -22,7 +22,7 @@ logs/                 optional operational logs
 
 <run_dir>/            your working directory for ONE solve
 problem.txt  priors.json  model.txt  signature.json
-stamps/  branches/  cross_validation.json  gold.json
+stamps/  branches/  gold.json
 experiences.json  episode.json  rounds/  journal.jsonl
 ```
 
@@ -45,13 +45,13 @@ NL Problem
     │
     ▼
 [T] orx hints ────────── bank hints BEFORE codegen
-[A] solver code ──────► [T] orx solve --solver a,b,c ── concurrent sandbox exec
-    │                     (branches run in PARALLEL; repair within a branch
+[A] solver code ──────► [T] orx solve --solver <s> ── sandbox exec
+    │                     (the agent chooses ONE solver per run; repair
     ▼                      is the agent's serial retry loop)
 branches/<s>/result.json
     │
     ▼
-[T] orx cross-validate ── ≥3 valid branches agree within tolerance
+[T] orx gold ── compare the branch objective with the user-provided gold
     │
     ├─ gold match ──► [A] synthesis ──► [T] orx append ×N ─┐
     └─ mismatch ───► [A] reflection ──► orx new-round ↺    │
@@ -74,19 +74,19 @@ Step-by-step responsibilities:
 3. **signature** `[A] produces, framework validates]` — controlled
    vocabularies; out-of-vocabulary values return errors, fix signature.json
    and retry (the model stamp is unaffected).
-4. **hints + solve ×≥3** `[A] produces code, framework executes]` — pull
-   hints BEFORE writing each branch's solve.py; write ALL branch codes, then
-   run them in ONE command: `orx solve --solver a,b,c` executes the branches
-   **concurrently** (asyncio.gather bounded by `max_parallel_branches` — the
-   heterogeneous parallel exploration contract). Each branch runs in its own
-   sandbox with AST validation; the per-branch result.json carries bank hints
+4. **hints + solve** `[A] produces code, framework executes]` — pull hints
+   BEFORE writing the branch's solve.py; the agent chooses ONE solver per run
+   (see Solver Selection Strategy in SKILL.md) and runs it in its own sandbox
+   with AST validation; the branch's result.json carries bank hints
    (implementation always; repair + graph guidance on failure; solving on
    performance symptom). **Repair within a branch is serial by design**: a
    failed branch is fixed by editing ONLY that branch's solve.py and
-   re-running `orx solve --solver <failed>`.
-5. **cross-validate** `[T]` — ≥3 branches (configurable via `min_cross_validation_branches`,
-   default 3) must agree within tolerance. On inconsistency, add another
-   branch and re-run (no token was consumed; the signature stamp stays valid).
+   re-running `orx solve --solver <same>`. If repair attempts are exhausted,
+   the agent may switch to a DIFFERENT solver (new branch directory).
+5. **gold** `[T]` — the branch must be valid (valid=true, status in
+   {optimal, feasible}); the user-provided gold is compared against the
+   branch's objective_value. With no gold available, `orx gold` (no
+   --answer) records the solver-reported basis — explicitly weaker evidence.
 6. **append ×N** `[A] synthesizes, framework admits]` — synthesize lessons for
    EACH bank layer that had an event during this solve (see the WRITE column
    in the table below). One JSON file per lesson, `orx append --file` each.
