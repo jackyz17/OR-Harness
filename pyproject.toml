@@ -3,14 +3,14 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "or-experience-bank"
-version = "2.0.0"
-description = "OR Experience Bank: verified-upfront modeling, multi-solver cross-validation, append-only experience bank, and offline structural induction for OR agents"
+name = "or-harness"
+version = "3.0.0"
+description = "OR-Harness: a harness-friendly strategy-learning capability layer for OR agents — two-layer memory (experience facts + calibrated strategic commitments), sandboxed execution, five-dimensional cost tracking, and forward-validated induction"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "OR Experience Bank contributors" }]
-keywords = ["operations-research", "optimization", "llm-agent", "experience-bank", "structural-induction"]
+authors = [{ name = "OR-Harness contributors" }]
+keywords = ["operations-research", "optimization", "llm-agent", "strategy-learning", "experience-bank"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -35,14 +35,10 @@ solvers-full = ["highspy", "pulp", "ortools", "pyomo", "scip"]
 dev = []
 
 [project.scripts]
-# The new harness-facing shell; the legacy or_experience_bank CLI keeps its
-# entry point until the old package is removed in the final cleanup commit.
 orx = "or_harness.cli:main"
-orx-legacy = "or_experience_bank.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-or_experience_bank = ["py.typed"]
 or_harness = ["py.typed", "strategy/catalog.json"]

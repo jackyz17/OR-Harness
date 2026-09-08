@@ -1,322 +1,86 @@
 ---
-name: or-experience-bank
-description: Solve, verify, and debug operations research optimization problems (LP, MILP, scheduling, transportation, network flow, resource allocation, inventory) by driving the OR Experience Bank CLI (`orx`) — verified-upfront modeling, agent-chosen single-solver execution, an append-only experience bank, and offline structural induction. Use when the user asks to formulate, solve, validate, or debug an optimization model, or to query/manage accumulated OR experience. Do not use for generic mathematical proofs, pure data analysis, or non-optimization tasks.
+name: or-harness
+description: Learn which solving strategies fit which optimization problem structures, at what execution cost, by recording and consolidating your own solve executions — a two-layer memory (Experience Bank facts + Strategic Bank commitments) with a sandboxed executor and seven solver adapters. Use when the user asks to solve, retry, or improve at LP/MILP/scheduling/routing/assignment tasks over a session, or to query/manage accumulated OR strategy experience. Do not use for one-off optimization questions with no repetition, generic math proofs, or non-optimization tasks.
 ---
 
-# OR Experience Bank (orx)
+# OR-Harness: Strategy Learning for Optimization Agents
 
-## Purpose
+You are the orchestrator. This capability layer only advises and executes — you retain full control: you may refuse any recommendation, request alternatives, execute without recording, override recorded costs, and you alone decide when to induce and when to collect garbage.
 
-Solve OR problems through a verified pipeline (model → validate → solve → gold gate), accumulate the lessons into an append-only experience bank, and — offline — induce transferable optimization principles from accumulated experience. You orchestrate; the `orx` CLI validates, executes, and stores.
+OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden state: every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`).
 
-## When to Use
+## Core concepts (terminology is strict)
 
-Use this skill when:
-- The user asks to formulate, solve, verify, or debug an optimization model (LP / MILP / scheduling / routing / network flow / resource allocation / inventory).
-- The user asks what the experience bank knows about an OR topic, or wants to manage accumulated experiences.
-- The harness signals that offline induction should run (accumulated cross-family realizations) — though in practice the `induction_check` field in every `orx episode` response is the authoritative cue.
+- **Experience Bank** — append-only episodic facts ("what happened"). Never stores generalizations. The single source of truth.
+- **Strategic Bank** — induced commitments ("what will happen"): prediction intervals, calibration tracking, feature predicates. Fully rebuildable from facts (`induce --rebuild`).
+- **Conditional statistics** — on-the-fly aggregation over the Experience Bank per (strategy × structural group). Arithmetic, not knowledge; never persisted.
+- **Structural group** — problem family + coupling-feature bins (e.g. `resource_coupling ∈ [0.75, 1.0]`).
+- **CostVector** — five dimensions, stored raw, never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Retries are a cost: "wrong model → repair → rerun" must cost more than getting it right.
+- **Cold archive** — tombstones of retired entries. Vetoes re-induction of the same failed generalization; `--force` revives only under genuine environment drift.
 
-Do not use this skill when:
-- The task is a generic mathematical proof or symbolic manipulation with no optimization model.
-- The task is pure data analysis (statistics, plotting) with no decision variables or objective.
-- The user only wants conceptual OR theory explained with no problem to solve.
+## Commands
 
-## How This Works
+Every command prints exactly one JSON line to stdout: `{"result": {...}, "summary": "agent-readable 2-4 sentences"}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. All commands accept `--home DIR` (default `$OR_HARNESS_HOME`, else `./or_harness_home`).
 
-You are the orchestrator. The framework is a set of **stateless CLI commands** (`orx ...`); you call one per step, read its JSON output, think, and decide the next step. All state lives in **files in your working directory** (the run directory) — every command is an independent process, so you can stop, inspect, retry, or resume at any step.
+### `orx profile --task t.json [--code solve.py]`
 
-**The chain is enforced by stamps, not trust.** Each gate command (`validate`, `signature`, ...) stamps the artifact it approved with a content hash. The next command refuses to run if the predecessor stamp is missing or the file changed after stamping. You cannot skip a step or silently edit a validated artifact — but you CAN freely retry any step.
+Builds a `ProblemProfile`. If your task JSON carries `annotations.coupling.{semantic_coupling, resource_coupling, temporal_coupling, route_complexity}` (each in [0,1]), they are used verbatim (`source: "harness_supplied"`). Otherwise the profiler derives them deterministically from the structured `spec` and, when `--code` is given, the solve script's AST (`source: "derived"`). Same input always yields the same profile.
 
-**First action in a fresh environment:** run `orx doctor`. If `orx` is not on PATH, the framework is not installed — use `python3 <repo>/scripts/orx.py` as a fallback and tell the user to `pip install -e .` (see docs/deployment.md).
+Result: `result.profile` = `{problem_id, family, scale_features, <four coupling dims>, risk_features, source, annotations}`.
 
-## Run Directory Layout
+### `orx recommend --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--code solve.py]`
 
-```
-problem.txt                     the problem (written by recall)
-priors.json                     recalled experiences + [En] citation labels
-model.txt                       YOU write: [THINK]...[/THINK][MODEL]...[/MODEL]
-signature.json                  YOU write: structural signature JSON
-stamps/model.json               L1+L2 verdict + hash of model.txt
-stamps/signature.json           vocabulary verdict + hash of signature.json
-branches/<solver>/hints.json    bank hints pulled BEFORE codegen
-branches/<solver>/solve.py      YOU write: complete solver script
-branches/<solver>/result.json   execution outcome + hints (written by solve)
-gold.json                       gold verdict (user-provided or solver-reported)
-experiences.json                appended experience ids
-episode.json                    terminal record + utility credit
-rounds/<n>/                     archived artifacts of reflection round n
-journal.jsonl                   audit log of every orx command
-```
+Ranks applicable strategies. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic entry → conditional statistics → catalog prior.
 
-`orx status` at any time tells you where you are and what's next.
+Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself).
 
-## model.txt Format (read before writing model.txt)
+`--memory-mode`: `none` (default strategy only) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
 
-model.txt contains EXACTLY two sibling marker blocks, in this order — THINK first, then MODEL, at the top level (NOT nested):
+### `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME [--verification basic]`
 
-```
-[THINK]
-Your analysis: objective, decisions, constraints, structural insights.
-Cite applied priors here: [uses E1]
-[/THINK]
-[MODEL]
-SETS:
-  ...
-PARAMETERS:
-  ...
-VARIABLES:
-  ...
-OBJECTIVE:
-  ...
-CONSTRAINTS:
-  C1: ...
-[/MODEL]
-```
+You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox: no network/shell/pathlib, `open()` only for a literal relative `result.json`, POSIX rlimits + wall-clock timeout. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`.
 
-Critical rules:
-- **Use the square-bracket markers `[THINK]...[/THINK]` and `[MODEL]...[/MODEL]`** (uppercase or lowercase). Angle-bracket tags (`<think>...</think>`) are also accepted by the parser, but many harnesses reserve `<think>` as their own reasoning-channel marker and strip or transform it before it reaches the file — square brackets always survive the trip.
-- `[MODEL]` comes AFTER `[/THINK]` (siblings), never inside the THINK block.
-- Both closing markers are required; an unclosed `[THINK]` fails L1.
-- The five blocks inside `[MODEL]` (SETS/PARAMETERS/VARIABLES/OBJECTIVE/CONSTRAINTS) must all be present and non-empty.
+Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill). **Nothing is recorded yet.**
 
-| ❌ Wrong | Why it fails |
-|---|---|
-| `[THINK]...[MODEL]...[/MODEL][/THINK]` | Nesting — MODEL must be a sibling after `[/THINK]` |
-| `[THINK]...` with no `[/THINK]` | L1 failure: the parser needs both markers |
-| Inventing other markers (`[REASONING]`, `[RESPONSE]`) | Only THINK and MODEL exist |
-| Descriptive constraint labels (`manure:`) | L2 only recognizes `C1:`, `C2:`, ... |
+### `orx record --execution <json|path> [--override llm_tokens=1840,tool_calls=9]`
 
-## Core Workflow — Online Solve
+Appends the fact to the Experience Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks.
 
-```
-NL Problem
-  │
-  ▼
-orx recall --problem-file problem.txt     → priors.json (read it: cat priors.json)
-  │
-  ▼
-YOU write model.txt  (cite applied priors as [uses E1] inside [THINK])
-  │
-orx validate                             → issues? fix model.txt, retry freely
-  ▼                                        passed? stamps/model.json
-YOU write signature.json
-  │
-orx signature                            → vocab errors? fix, retry (model stamp intact)
-  ▼
-orx hints --solver <solver>              → read hints BEFORE writing code
-YOU write branches/<solver>/solve.py     (the ONE solver you chose)
-  │
-orx solve --solver <solver>              → sandbox execution; failed? read that
-  ▼                                        branch's result.json hints, fix code,
-(failed? fix solve.py, re-run              re-run `orx solve --solver <same>`)
-orx solve --solver <same>)
-  │
-  ▼
-═══ GOLD GATE: gold comes ONLY from the user/problem. NEVER self-derive. ═══
-  │  If the user hasn't provided gold: STOP and ask.
-  │
-orx gold --answer <value>                → matched? proceed to append
-  │                                        mismatched? DO NOT append; reflect;
-  │                                        orx new-round; re-model (≤3 rounds)
-  ▼
-YOU write experience files (one per lesson, all layers that had events)
-orx append --file exp_<layer>.json       → repeat per lesson
-  │
-orx episode                              → terminal: episode.json + utility credit
-  │                                        + induction_check (should_induce?)
-  ▼
-induction_check.should_induce == true? ── yes ──► run the Offline Induction
-  │                                              Workflow before the next solve
-  no
-  ▼
-done (report to user)
-```
+Result: `result.{execution_id, recorded, prediction_checks[], induction_hints[]}`. Always backfill `llm_tokens` here — it is invisible to the sandbox.
 
-### Step-by-step thinking guide
+### `orx induce [--strategy S | --all] [--rebuild] [--widen ID] [--tighten ID] [--dry-run] [--force] [--llm-conditions <json>]`
 
-| After you observe... | Think... | Then do |
-|---|---|---|
-| `priors.json` returned | Which priors apply to this problem's structure? | Compose model.txt citing `[uses En]` for the ones you actually apply |
-| `validate` issues (L1) | Markers/blocks malformed | Re-read the model.txt Format section; fix the `[THINK]`/`[MODEL]` markers and five blocks |
-| `validate` issues (L2) | Which symbol is undeclared? | Declare it in SETS/PARAMETERS/VARIABLES, or fix the reference |
-| `signature` vocab errors | Which core-dim value is out of vocabulary? | Fix only that value in signature.json |
-| `hints` output | Which API gotchas apply to this solver? | Write solve.py applying the hints |
-| `solve` failed | What does normalized_error + repair_hints say? | Fix ONLY branches/<solver>/solve.py, re-run solve |
-| `solve` succeeded (valid) | Does the objective match the USER-PROVIDED gold? | `orx gold --answer <value>` (or ask the user for gold) |
-| gold matched | What did I learn across ALL layers? | Write one experience file per lesson, append each |
-| gold mismatched | Why was the modeling DIRECTION wrong (not the code)? | `orx new-round`, re-model from scratch |
-| `episode` returned `induction_check.should_induce: true` | Accumulation crossed the watermark | Run the Offline Induction Workflow before the next solve |
+Consolidates facts into a Strategic entry (your explicit call — hints never auto-induce). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). A pattern already covered by an existing entry is refused (restatement-only entries are forbidden). `--rebuild` regenerates the whole Strategic Bank from facts (cold archive preserved). `--widen/--tighten` move an entry along the scope ladder L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins); widening is falsifiable — a cross-family miss auto-tightens.
 
-## Solver Selection Strategy
+`--llm-conditions` (optional, you phrase it): `[{"text": "...", "supporting_execution_ids": ["ex_..."]}]`. Citations are verified — fake ids or numeric claims disagreeing with cited records are rejected; accepted conditions stay `verified: false` and never enter scoring until re-confirmed by future executions.
 
-Which solver to use is YOUR decision each run — choose ONE. Do not default to the same solver every time: the bank only grows API knowledge for solvers you actually use, and over-fitting to one API's habits makes your code fragile.
+### `orx inspect --bank experience|strategic|archive [--task ID] [--strategy S] [--status candidate]`
 
-How to choose:
+Queries a memory layer. Strategic entries include `prediction_track {n_predictions, hit_rate, calibration_error, consecutive_misses}`, `status` (candidate|validated|suspect|dormant), `provenance` (execution ids).
 
-1. **Check availability first**: `orx doctor` lists importable solvers. Only choose an available one.
-2. **Match the problem**: CP-SAT requires integer coefficients (scale deliberately); commercial solvers (gurobi/copt) need licenses; pyomo needs a backend solver installed. For large sparse LP/MILP prefer highs/scip; for scheduling with logical structure consider ortools (CP-SAT).
-3. **Rotate across runs**: vary your solver from run to run (e.g. highs, then pulp, then ortools). Rotation (a) spreads API knowledge into the Implementation/Repair banks so future runs benefit, (b) avoids over-fitting your code generation to one API's habits, (c) keeps the bank's solver coverage balanced.
-4. **When the bank has solver-specific hints**: `orx hints --solver <s>` returns accumulated API knowledge for THAT solver — a solver with rich hints is cheaper to write correct code for, but do not let this collapse into always picking the same one.
+### `orx gc [--mode compact|purge] [--dry-run]`
 
-One run = one solver. If the branch fails after repair attempts, you may switch to a DIFFERENT solver (write its solve.py in a new branch directory and solve again) — but never run multiple solvers just to cross-check answers; the gold gate is the verification mechanism now.
+Disposes only of the derived layer. `compact`: groups covered by entries and beyond retention limits (provenance references, recent 50 tasks, exploratory groups with n<5) collapse into ledger lines — statistics preserved, trajectory detail dropped. `purge` mode lists retirement candidates but never retires them itself.
 
-## Experience Synthesis — What to Write to Each Bank
+### `orx retire --entry ID --reason "..."`
 
-After gold match, write one JSON file per lesson and `orx append --file` each:
+Your explicit, irreversible confirmation: moves an entry to the cold archive.
 
-| If this happened during the solve... | `layer` | Experience file fields |
-|---|---|---|
-| Structural modeling insight | `modeling` | title, retrieval_text, modeling_aspect (constraint/objective/variable/classification/structure), action, rationale |
-| Solver API gotcha | `implementation` | title, retrieval_text, diagnosis, action, rationale, solver |
-| Error → fix | `repair` | title, retrieval_text, diagnosis, action, rationale, solver |
-| Performance tuning | `solving` | title, retrieval_text, diagnosis, action, rationale, solver |
+### `orx doctor`
 
-Checklist before `orx episode`: modeling insight? API gotcha? error→fix? performance tuning? Write only layers that had events — never fabricate.
+Self-check: solver availability (7 adapters probed), memory sizes, home path.
 
-## Core Workflow — Offline Induction
+## Decision guidance
 
-**You do NOT wait for an external signal.** Every `orx episode` response carries an `induction_check` field (the 3-gate trigger decision evaluated right after your realizations were appended). When it says `should_induce: true`, run the induction chain BEFORE starting the next solve:
+- **induction_hints after record**: hints are evidence, not orders. C1 (strategy contrast contradicting priors), C2 (prior divergence), C3 (in-group drift), C4 (fallback exercised), C5 (cross-family reproduction — suggests L2), C6 (stable success). Induce when you judge the pattern worth generalizing; you may also induce with no hint at all.
+- **status**: `candidate` = plausible, unproven. `validated` = ≥5 predictions, ≥70% hit rate. `suspect` = 3 consecutive misses, downweighted ×0.5 — treat its estimates as warnings, not facts. `dormant` = not consulted for 10 tasks, excluded from matching (wakes on a future hit).
+- **confidence & cross_family**: cross-family generalizations (L2/L3 entry matching a family absent from its provenance) are discounted and labelled — weigh them accordingly.
+- **When to gc**: when `inspect` shows large groups fully covered by validated entries. Always `--dry-run` first and review the plan.
 
-```
-orx episode -> ... "induction_check": {"should_induce": true, ...}   ← your cue
-  │
-orx clusters                             → candidate clusters (cross-family isomorphic)
-  │
-  ▼ (per cluster, under <bank>/induction/<cluster_id>/)
-orx align --cluster <id>                 → writes alignment.json template; YOU fill it
-orx align --cluster <id>                 → stamps the filled alignment
-  │
-orx induce --cluster <id>                → writes hypotheses.json template; YOU fill it
-orx induce --cluster <id>                → stamps hypotheses (1-3, grounded in roles)
-  │
-orx refute --cluster <id>                → writes refutations.json template; YOU fill it
-orx refute --cluster <id>                → EXECUTES your programs; verdicts decided by execution
-  │
-orx validate-pattern --cluster <id>      → writes validation.json template; YOU fill it
-orx validate-pattern --cluster <id>      → stamps transfer evidence
-  │
-orx append-pattern --cluster <id>        → scores + appends validated patterns (terminal)
-```
+## Anti-patterns (do not do these)
 
-Roles come from the canonical set: resource_pool, capacity_limit, competing_decisions, objective_contribution, demand_requirement, coupling_constraint, time_period, flow_balance.
-
-## Tool Usage
-
-| Command | Use it when |
-|---|---|
-| `orx doctor` | Fresh environment, or `command not found` / weird failures — verify python/bank/solvers/indexes |
-| `orx status` | You forgot where you are; after resuming an interrupted run |
-| `orx recall --problem-file <f>` | Starting a run (ALWAYS first — priors must influence the model) |
-| `orx validate` | model.txt written or edited |
-| `orx signature` | signature.json written or edited |
-| `orx hints --solver <s>` | BEFORE writing solve.py for solver s (first time AND after a failure) |
-| `orx solve --solver <s>` | solve.py written or fixed (single branch / repair retry) |
-| `orx gold --answer <v>` | User provided gold (or explicitly confirmed none) |
-| `orx append --file <f>` | Gold matched, one lesson per file |
-| `orx episode` | All layers covered — terminal |
-| `orx new-round` | Gold mismatched, archiving the failed round |
-| `orx trigger` | Manually checking the induction gates (optional — `orx episode` already carries `induction_check`) |
-| `orx query / show / deprecate / stats` | Bank inspection and management, anytime |
-
-Do not reimplement validation logic manually (symbol cross-checks, vocab checks, objective comparison) — the commands already do it deterministically.
-
-## Verification
-
-| Step | Success criterion |
-|---|---|
-| `recall` | `priors_count >= 0` (empty is fine — first solve) |
-| `validate` | `passed: true` |
-| `signature` | `passed: true` |
-| `solve` | `status` in {optimal, feasible} |
-| gold gate | Gold from user/problem ONLY; compare the branch's `objective_value` |
-| `append` | `status: "appended"` (not duplicate/rejected) |
-| `episode` | `recorded: true` AND read `induction_check.should_induce` — if true, induction is due NOW |
-| induction chain | each step stamps; final `appended` non-empty |
-
-**A single solver's "optimal" does NOT prove correctness** — it can be optimal for a wrong relaxation. Gold mismatch with a clean solve almost always means the MODEL is wrong.
-
-## Failure Recovery
-
-| Failure | Recovery |
-|---|---|
-| `validate` issues | Fix model.txt, re-run validate (free retry, no penalty) |
-| `solve` branch failed | Read `normalized_error` + `repair_hints` in branches/<solver>/result.json; fix solve.py; re-run `orx solve --solver <solver>` (repair within a branch is serial by design) |
-| All repair attempts failed | Solver not installed → tell the user. Modeling issue → revise model.txt, re-validate. Still stuck → switch to a DIFFERENT solver (new branch directory) |
-| Gold mismatch | DO NOT append. Reflect on the modeling direction; `orx new-round`; re-model (≤3 rounds) |
-| `append` says duplicate | Rephrase with new insight or skip |
-| Stamp "stale" error | You edited a stamped artifact; re-run the gate command for the new content |
-| Gold recorded incorrectly, run already finished | Episodes are append-only facts — start a FRESH run (`orx recall` in a new directory) and re-solve with the correct gold; never delete episode.json by hand |
-| Hypothesis refuted | Archive the lesson; do not resubmit without new evidence |
-
-## Output Requirements
-
-When reporting to the user, include:
-- The selected objective value, the solver you chose, and the gold verdict (matched / mismatched / not provided)
-- The verified model (or its key structure) and any assumptions you stated
-- Gold verdict (matched / mismatched / not provided)
-- Appended experience ids and what each lesson says
-- Cited priors and whether they were credited (`utility_credited`)
-
-On failure: what was tried, the concrete failure reason, and the next step — never a bare "it failed".
-
-When reporting **induction results**: clusters processed, patterns validated/refuted, the scoring breakdown (C/T/V/N/K/X → total) per hypothesis, and which hypotheses were refuted and why.
-
-Do not:
-- Present a solver's self-reported status without the result.json evidence
-- Hide assumptions you made when the input was ambiguous
-
-## Common Pitfalls
-
-| ❌ Pitfall | ✅ Correct |
-|---|---|
-| Pre-composing model.txt before `recall` | Run recall FIRST, read priors.json, THEN compose the model |
-| Missing `[/THINK]` closing marker | Always close both blocks; the parser needs them literally |
-| Writing `<think>` tags in model.txt | Many harnesses strip `<think>` before it reaches the file — use `[THINK]...[/THINK]` square-bracket markers |
-| Nesting `[MODEL]` inside `[THINK]` | They are siblings: `[/THINK]` closes first, then `[MODEL]` starts |
-| Descriptive constraint labels (`manure:`) | Use `C1:`, `C2:`, ... — L2 only recognizes `C\d+` |
-| Undeclared symbols in OBJECTIVE/CONSTRAINTS | Declare every symbol in SETS/PARAMETERS/VARIABLES first |
-| `prod`/`exp`/`log` in OBJECTIVE | Use an AUXILIARY block for nonlinear relationships |
-| result.json field `"objective"` | Field is `objective_value`; `status` is lowercase |
-| Code patch instead of complete script | solve.py must be the COMPLETE script every time |
-| Citing `[uses E7]` when only E1-E3 exist | Only cite tags present in priors.json labels |
-| Citing a prior you didn't apply | Citation = utility credit; false credits corrupt ranking |
-| One `solve` then `gold` | The branch must be valid (valid=true, status optimal/feasible) before the gold gate |
-| Running multiple solvers to cross-check answers | One run = one solver; the gold gate is the verification mechanism |
-| Always choosing the same solver | Rotate across runs (see Solver Selection Strategy) — the bank only learns APIs you actually use |
-| Ignoring `repair_hints` on failure | Read them before switching solvers — they may contain the exact fix |
-| Only writing to the Modeling Bank | Check ALL four layers before `orx episode` |
-| Self-deriving gold from solver output | Gold comes ONLY from the user/problem statement |
-| Appending after gold mismatch | Never append wrong-model lessons; reflect and re-model |
-| Made-up `unseen_tasks` in induction | Use REAL problems from past episodes (`orx query` to find them) |
-| Fabricating transfer numbers | You MUST have actually solved with/without the principle |
-| No-op refutation code | The program must print `{"principle_failed": true|false, ...}` as its LAST stdout line |
-| Editing model.txt after validate | The stamp goes stale; re-run `orx validate` after any edit |
-| Arguing with a rejected command | Read the error JSON, fix the artifact, re-run |
-| Printing the result instead of writing result.json | Your solve.py must WRITE result.json in its cwd (`open('result.json', 'w')`) — stdout is not parsed for results |
-| Hand-writing branches/<s>/result.json yourself | result.json is written by `orx solve` (it validates + enriches your solver's output); hand-written files lack the `valid` field and will not count at the gold gate |
-| Constructing the result.json path dynamically (`os.path.dirname(__file__)` + ...) | The sandbox requires a LITERAL path: `open('result.json', 'w')` — the branch cwd is already correct |
-| Re-recording gold on a completed run | Episodes are append-only; if gold was recorded wrong, start a FRESH run (`orx recall` in a new directory) |
-| Ignoring `induction_check` in the episode response | `should_induce: true` means induction is due NOW — process clusters before the next solve; skipping it starves the reflow loop |
-
-## Examples
-
-Three worked examples with exact command sequences and reasoning live in [references/examples.md](references/examples.md). Read it when handling:
-- **A normal solve with gold match** (Example 1) — the happy path, including a mid-chain repair
-- **Ambiguous input / missing information** (Example 2) — what to assume, what to ask
-- **Gold mismatch caused by a wrong modeling direction** (Example 3) — the reflection loop, and why a clean single-solver solve did not catch it
-
-## References
-
-Read these only when needed (progressive disclosure):
-
-| When you need | Read |
-|---|---|
-| GAMS-style DSL syntax, L1/L2/L3 verification | [references/modeling-contract.md](references/modeling-contract.md) |
-| Signature vocabularies and alignment rules | [references/structural-signature.md](references/structural-signature.md) |
-| Record schemas (all banks + Episode) | [references/experience-schema.md](references/experience-schema.md) |
-| result.json contract, sandbox rules, solver API notes | [references/solver-adapters.md](references/solver-adapters.md) |
-| Utility attribution, soft delete, cold archive | [references/bank-lifecycle.md](references/bank-lifecycle.md) |
-| Induction pipeline internals | [references/induction-pipeline.md](references/induction-pipeline.md) |
-| Worked examples (positive / ambiguous / negative) | [references/examples.md](references/examples.md) |
-
-Implementation: [src/or_experience_bank/cli/](src/or_experience_bank/cli/) · Entry: `python3 scripts/orx.py` (or `orx` when installed)
+- Do not induce just because a hint appeared.
+- Do not treat `verified: false` applicability text as fact.
+- Do not ignore `risk_warnings` in recommendations.
+- Do not skip the `llm_tokens` backfill on record — cost learning silently degrades without it.
+- Do not revive cold-archive vetoes without strong evidence of environment drift.
