@@ -127,6 +127,47 @@ class ExperienceBank:
                      rec.profile_snapshot.family, rec.group_l1, rec.source,
                      rec.created_at, self.store.dumps(rec.to_dict())))
 
+    # -- pending staging (the no-lost-facts safety net) --------------------------
+
+    def stage_pending(self, record: ExecutionRecord) -> str:
+        """Stage an execution produced by `orx execute` before the harness
+        decides to record it. Every execution — successes AND failures — is
+        staged automatically, so a failed attempt can never be silently lost
+        when the harness immediately retries with a different approach.
+        Staging is not recording: the fact enters the Experience Bank only
+        via :meth:`append` (the harness's explicit decision)."""
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_executions "
+                "(execution_id, task_id, created_at, payload) VALUES (?,?,?,?)",
+                (record.execution_id, record.task_id, record.created_at,
+                 self.store.dumps(record.to_dict())))
+        return record.execution_id
+
+    def pending(self, *, task_id: Optional[str] = None) -> List[ExecutionRecord]:
+        """Staged-but-unrecorded executions, oldest first."""
+        sql = "SELECT payload FROM pending_executions"
+        params: List[Any] = []
+        if task_id is not None:
+            sql += " WHERE task_id=?"
+            params.append(task_id)
+        sql += " ORDER BY created_at ASC, execution_id ASC"
+        return [self._decode(r) for r in
+                self.store.conn.execute(sql, params).fetchall()]
+
+    def get_pending(self, execution_id: str) -> Optional[ExecutionRecord]:
+        row = self.store.conn.execute(
+            "SELECT payload FROM pending_executions WHERE execution_id=?",
+            (execution_id,)).fetchone()
+        return self._decode(row) if row else None
+
+    def clear_pending(self, execution_id: str) -> None:
+        """Remove a staged execution after it was recorded (or explicitly
+        discarded by the harness)."""
+        with self.store.transaction() as conn:
+            conn.execute("DELETE FROM pending_executions WHERE execution_id=?",
+                         (execution_id,))
+
     def iter_group(self, group_l1: str) -> Iterator[ExecutionRecord]:
         return iter(self.query(group_l1=group_l1))
 

@@ -54,13 +54,18 @@ class InductionHint:
 
 def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
                    catalog: Dict[str, Strategy],
-                   entries_expected: Optional[Dict[str, Dict[str, float]]] = None
+                   entries_expected: Optional[Dict[str, Dict[str, float]]] = None,
+                   prior_failures: Optional[List[ExecutionRecord]] = None
                    ) -> List[InductionHint]:
     """Evaluate C1-C6 for the group of ``record`` after it was appended.
 
     ``entries_expected``: optional {strategy_id: {"quality": q}} of matching
     strategic entries, so C1/C2 treat "memory already encodes this" as
     non-divergent (same role as priors).
+
+    ``prior_failures``: same-task failed executions (from the Experience
+    Bank and/or the pending staging area) for cross-execution recovery
+    detection in C4.
     """
     group = record.group_l1
     cells = stats.group(group)
@@ -80,7 +85,7 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
     hint = _c3_drift(record, cells, group)
     if hint:
         hints.append(hint)
-    hint = _c4_failure_recovery(record, group)
+    hint = _c4_failure_recovery(record, group, prior_failures or [])
     if hint:
         hints.append(hint)
     hints.extend(_c5_cross_family(record, stats, catalog, expected_map))
@@ -224,21 +229,102 @@ def _c3_drift(record: ExecutionRecord, cells: Dict[str, GroupStats],
                   "execution_ids": list(cell.execution_ids)})
 
 
-def _c4_failure_recovery(record: ExecutionRecord,
-                         group: str) -> Optional[InductionHint]:
+def _c4_failure_recovery(record: ExecutionRecord, group: str,
+                         prior_failures: Optional[List[ExecutionRecord]] = None
+                         ) -> Optional[InductionHint]:
     """C4: a fallback was actually triggered. Failure evidence is the most
-    valuable induction raw material."""
-    if not record.failures:
-        return None
+    valuable induction raw material.
+
+    Two detection paths:
+    1. within-execution: ``failures[].recovery_action`` set on this record.
+    2. cross-execution: this record succeeded while a same-task earlier
+       execution failed under a DIFFERENT solver — the recovery chain
+       (failed -> switched solver -> succeeded) emerges from two independent
+       facts, so the harness never needs to narrate it into a record.
+       Retrying the same solver is not a recovery chain.
+    """
     triggered = [f for f in record.failures if f.recovery_action]
-    if not triggered:
-        return None
-    return InductionHint(
-        criterion="C4", strategy_ids=[record.strategy_id], group_key=group,
-        reason="fallback recovery was exercised in this execution",
-        evidence={"execution_id": record.execution_id,
-                  "failures": [f.to_dict() for f in triggered],
-                  "final_status": record.quality.get("status")})
+    if triggered:
+        return InductionHint(
+            criterion="C4", strategy_ids=[record.strategy_id], group_key=group,
+            reason="fallback recovery was exercised in this execution",
+            evidence={"execution_id": record.execution_id,
+                      "failures": [f.to_dict() for f in triggered],
+                      "final_status": record.quality.get("status")})
+
+    if prior_failures and record.quality.get("feasible"):
+        this_solver = str((record.solver or {}).get("name", ""))
+        for failed in prior_failures:
+            failed_solver = str((failed.solver or {}).get("name", ""))
+            if failed_solver and failed_solver != this_solver:
+                return InductionHint(
+                    criterion="C4", strategy_ids=[record.strategy_id],
+                    group_key=group,
+                    reason=(f"cross-execution recovery: {failed_solver} failed, "
+                            f"switched to {this_solver} and succeeded"),
+                    evidence={
+                        "kind": "cross_execution_recovery",
+                        "failed": {"execution_id": failed.execution_id,
+                                   "solver": failed_solver,
+                                   "error_class": classify_failure(failed),
+                                   "error": _first_error(failed)},
+                        "recovered_by": {"execution_id": record.execution_id,
+                                         "solver": this_solver},
+                    })
+    return None
+
+
+def classify_failure(record: ExecutionRecord) -> str:
+    """Classify a failed execution's error.
+
+    ``environment`` — the solver/stack cannot run here (sandbox security
+    policy, missing module, import error). These feed solver advisories.
+    ``model`` — the harness's own code failed (traceback). These do not.
+    """
+    error = _first_error(record) or ""
+    lowered = error.lower()
+    if ("security policy" in lowered or "importerror" in lowered
+            or "modulenotfounderror" in lowered
+            or "no module named" in lowered):
+        return "environment"
+    return "model"
+
+
+def _first_error(record: ExecutionRecord) -> str:
+    if record.failures:
+        return record.failures[0].error
+    return str(record.quality.get("status", ""))
+
+
+def solver_advisories(bank) -> List[Dict[str, Any]]:
+    """On-the-fly environment-level solver failure view (never persisted).
+
+    Aggregates environment-class failures per solver from the Experience
+    Bank — "pulp failed once in this environment (security_policy)" — so the
+    harness picks solvers informed by its own history. Model-class failures
+    (the harness's own code bugs) are excluded: they say nothing about the
+    solver. Like conditional statistics, this is arithmetic over facts, not
+    knowledge; compaction naturally retires it."""
+    per_solver: Dict[str, Dict[str, Any]] = {}
+    for rec in bank.all():
+        if rec.source != "executed" or rec.quality.get("feasible", False):
+            continue
+        solver = str((rec.solver or {}).get("name", ""))
+        if not solver:
+            continue
+        error_class = classify_failure(rec)
+        if error_class != "environment":
+            continue
+        entry = per_solver.setdefault(
+            solver, {"solver": solver, "environment_failures": 0,
+                     "error_classes": [], "last_execution_id": None,
+                     "last_error": None})
+        entry["environment_failures"] += 1
+        if error_class not in entry["error_classes"]:
+            entry["error_classes"].append(error_class)
+        entry["last_execution_id"] = rec.execution_id
+        entry["last_error"] = (_first_error(rec) or "")[:200]
+    return sorted(per_solver.values(), key=lambda e: e["solver"])
 
 
 def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,

@@ -11,15 +11,29 @@ OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden stat
 
 ## Core workflow (the loop to run for every optimization task)
 
-1. **Profile** — `orx profile --task t.json` (add `--code solve.py` if the script already exists). If you already understand the problem's structure, supply coupling dims yourself via `annotations.coupling` instead of letting the profiler derive them.
-2. **Recommend** — `orx recommend --task t.json --top 3`. Read each candidate's `evidence`, `confidence`, and `risk_warnings`. You may `--exclude` any candidate and re-recommend.
-3. **Choose** — weigh quality vs. cost vs. risk yourself. When quality estimates are tied, prefer the cheaper candidate (that preference is exactly what this memory exists to learn). Pick the concrete solver from `available_solver_families` based on the task (scale, license availability, family fit).
-4. **Write solve.py** — follow the chosen strategy's `actions` (the framework never generates code). The script must write `result.json` with `status, objective_value, objective_bound, mip_gap, runtime_seconds`.
-5. **Execute** — `orx execute ...`. Inspect `result.execution.quality.problems` before recording.
-6. **Verify** (see Verification below) — do not record an execution you have not checked.
-7. **Record** — `orx record --execution <json> --override llm_tokens=<your actual token count>`. Read the returned `induction_hints` and `prediction_checks`.
-8. **Decide on induction** — hints are evidence, not orders. Induce only when you judge the pattern worth generalizing.
-9. **On failure** — follow Recovery below before retrying.
+1. **Model the problem** — before any solver code, write a GAMS-style model representation (SETS / PARAMETERS / VARIABLES / OBJECTIVE / CONSTRAINTS; see [references/modeling.md](references/modeling.md)) and carry it as the task JSON's top-level `model` field. The framework verifies it (L1 format + L2 symbol cross-reference) and derives exact structural coupling from the declared constraints — the single best coupling source. Skipping this makes every later step weaker.
+2. **Profile** — `orx profile --task t.json`. Read the `derivation` report: each coupling dimension shows its value and origin (`model` > `code` > `spec` > `supplied` > `null`). If you see a `coupling_warnings` entry (supplied value contradicts structural derivation across a bin boundary), fix your understanding before proceeding.
+3. **Recommend** — `orx recommend --task t.json --top 3`. Read each candidate's `evidence`, `confidence`, and `risk_warnings`; check `solver_advisories` for solvers that failed in this environment before. You may `--exclude` any candidate and re-recommend.
+4. **Choose** — weigh quality vs. cost vs. risk yourself. When quality estimates are tied, prefer the cheaper candidate (that preference is exactly what this memory exists to learn). Pick the concrete solver from `available_solver_families`, heeding advisories (e.g. an in-process solver when a subprocess-based one failed the sandbox).
+5. **Write solve.py** — follow the chosen strategy's `actions` (the framework never generates code). The model representation from step 1 is your blueprint — the code is a translation, not a re-derivation. The script must write `result.json` with `status, objective_value, objective_bound, mip_gap, runtime_seconds`.
+6. **Execute** — `orx execute ...`. Every execution — successes AND failures — is automatically staged in a pending area (never lost, even if you immediately retry). Inspect `result.execution.quality.problems` before recording.
+7. **Verify** (see Verification below) — do not record an execution you have not checked.
+8. **Record** — `orx record --execution <json> --override llm_tokens=<your actual token count>`. The response lists `unrecorded_staged_executions` for this task — if a failed first attempt is sitting there, backfill it with `orx record --from-staged <id>` (verbatim, no re-typing). Read the returned `induction_hints` and `prediction_checks`.
+9. **Decide on induction** — hints are evidence, not orders. Induce only when you judge the pattern worth generalizing.
+10. **On failure** — follow Recovery below before retrying.
+
+## Coupling dimensions (operational definitions)
+
+Structural grouping — the foundation of all memory — keys on these. Supply them accurately or let the framework derive them (it will, from your model representation):
+
+| Dimension | Measures | Derivable? |
+|---|---|---|
+| resource_coupling | fraction of decision variables appearing in MORE THAN ONE constraint (0 = constraints independent; 1 = fully coupled) | yes — model > code |
+| temporal_coupling | fraction of variables indexed by a temporal set (time/period/stage/...) | yes — model > code |
+| route_complexity | fraction of variables indexed by a network set (arc/edge/link/...) | yes — model > code |
+| semantic_coupling | business-semantic relatedness — invisible to structure | NO — always your call |
+
+Do not guess these from the problem's *name* ("it's a resource allocation problem, so rc must be high") — measure from the constraint structure. Two independent resource constraints means rc≈0, however resource-flavored the problem sounds.
 
 ## Verification (before every record)
 
@@ -34,12 +48,13 @@ Never record an execution whose `problems` is non-empty without noting why.
 
 ## Recovery (when execution fails)
 
-- **status=error, normalized_error mentions security policy** — your script used a blocked construct (network/shell/pathlib/dynamic `open()` paths). Rewrite using only stdlib and literal `open('result.json', 'w')`.
+- **status=error, normalized_error mentions security policy** — your script used a blocked construct (network/shell/pathlib/dynamic `open()` paths). Rewrite using only stdlib and literal `open('result.json', 'w')`. Note: subprocess-based solvers (e.g. PuLP's CBC backend) cannot run in the sandbox — switch to an in-process solver (ortools GLOP/CP-SAT, highspy). The failed execution is staged automatically; record it (`--from-staged`) so the memory learns this too.
 - **status=error, traceback in normalized_error** — re-read the error, fix the model or script, re-execute. Each rerun costs `retries +1` in the CostVector — that is by design; do not hide failed attempts by not recording them.
 - **status=infeasible** — do not fabricate a feasible answer. Check variable bounds and conflicting constraints; if the task itself is infeasible, record the execution with its status (infeasible outcomes are valuable induction evidence — criterion C4).
 - **status=timeout** — the strategy may be too heavy for this scale. Re-recommend with `--exclude <strategy>` and try the next candidate; record the timeout (it is a fact worth remembering).
 - **recommend returns no candidates** — no strategy's applicability matches the profile. Check the profile's coupling dims; if they are extreme, fall back to `--memory-mode none` (default strategy) or relax your exclusions.
 - **Verification fails after a successful solve** (wrong magnitude, wrong direction) — re-derive the model, do not adjust the answer to match expectations.
+- **A coupling_warnings entry at profile time** — your supplied value contradicts the structural derivation. Trust the structure (it is measured, not guessed); the derived value is what gets used for grouping anyway.
 
 ## Core concepts (terminology is strict)
 
@@ -56,15 +71,15 @@ Every command prints exactly one JSON line to stdout: `{"result": {...}, "summar
 
 ### `orx profile --task t.json [--code solve.py]`
 
-Builds a `ProblemProfile`. If your task JSON carries `annotations.coupling.{semantic_coupling, resource_coupling, temporal_coupling, route_complexity}` (each in [0,1]), they are used verbatim (`source: "harness_supplied"`). Otherwise the profiler derives them deterministically from the structured `spec` and, when `--code` is given, the solve script's AST (`source: "derived"`). Same input always yields the same profile.
+Builds a `ProblemProfile`. Coupling derivation priority: task JSON `model` field (best — measured from declared constraints) > solve-script AST (`--code`) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. The response includes a `derivation` report (per-dimension value/origin/notes), `model_verification` (L1+L2 issues) when a model was given, and `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary.
 
-Result: `result.profile` = `{problem_id, family, scale_features, <four coupling dims>, risk_features, source, annotations}`.
+Result: `result.profile` = `{problem_id, family, scale_features, <four coupling dims>, risk_features, source, annotations}` plus `result.derivation`.
 
 ### `orx recommend --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--code solve.py]`
 
 Ranks applicable strategies. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic entry → conditional statistics → catalog prior.
 
-Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself).
+Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before).
 
 `--memory-mode`: `none` (default strategy only) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
 
@@ -72,13 +87,13 @@ Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{qu
 
 You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox: no network/shell/pathlib, `open()` only for a literal relative `result.json`, POSIX rlimits + wall-clock timeout. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`.
 
-Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill). **Nothing is recorded yet.**
+Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill). **Nothing is recorded yet.**
 
-### `orx record --execution <json|path> [--override llm_tokens=1840,tool_calls=9]`
+### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] | --discard-staged <id>`
 
-Appends the fact to the Experience Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks.
+Appends the fact to the Experience Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks (C4 detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
 
-Result: `result.{execution_id, recorded, prediction_checks[], induction_hints[]}`. Always backfill `llm_tokens` here — it is invisible to the sandbox.
+Result: `result.{execution_id, recorded, prediction_checks[], induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox.
 
 ### `orx induce [--strategy S | --all] [--rebuild] [--widen ID] [--tighten ID] [--dry-run] [--force] [--llm-conditions <json>]`
 
@@ -100,7 +115,7 @@ Your explicit, irreversible confirmation: moves an entry to the cold archive.
 
 ### `orx doctor`
 
-Self-check: solver availability (7 adapters probed), memory sizes, home path.
+Self-check: solver availability (7 adapters probed), memory sizes, staged-but-unrecorded executions (audit your pending area), home path.
 
 ## Decision guidance
 
@@ -111,16 +126,20 @@ Self-check: solver availability (7 adapters probed), memory sizes, home path.
 
 ## Anti-patterns (do not do these)
 
+- Do not skip the model representation and jump to solver code — especially for highly coupled problems, where modeling errors are most expensive.
+- Do not guess coupling values from the problem's name; measure them from constraint structure (or let the framework do it from your model).
 - Do not induce just because a hint appeared.
 - Do not treat `verified: false` applicability text as fact.
-- Do not ignore `risk_warnings` in recommendations.
+- Do not ignore `risk_warnings` in recommendations or `solver_advisories`.
 - Do not skip the `llm_tokens` backfill on record — cost learning silently degrades without it.
-- Do not revive cold-archive vetoes without strong evidence of environment drift.
 - Do not skip recording failed executions — failures are the most valuable induction raw material (C4).
+- Do not hand-craft an execution JSON to backfill a failure — use `record --from-staged` (verbatim, no drift).
+- Do not revive cold-archive vetoes without strong evidence of environment drift.
 - Do not adjust a model's constraints merely to match a reference value; re-derive instead.
 
 ## References (read on demand)
 
+- [references/modeling.md](references/modeling.md) — the GAMS-style model representation: syntax, constraint label rules, verification layers. Read before writing your first model.
 - [references/concepts.md](references/concepts.md) — why the two-layer memory, CostVector dimensions, and disposal ladder are designed this way. Read when you need the "why" behind a mechanism.
-- [references/induction.md](references/induction.md) — C1–C6 semantics, the scope ladder, forward validation, citation binding. Read before your first `induce`, and whenever a hint's meaning is unclear.
+- [references/induction.md](references/induction.md) — C1–C6 semantics (including cross-execution recovery), the scope ladder, forward validation, citation binding. Read before your first `induce`, and whenever a hint's meaning is unclear.
 - [references/examples.md](references/examples.md) — three complete walkthroughs (cold-start restraint, cost-only learning, cross-family tighten). Read when unsure how the pieces fit together in practice.

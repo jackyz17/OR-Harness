@@ -17,6 +17,10 @@ P_t → Problem Profiling → Strategy Selection → Strategy Execution
 
 E_t is episodic experience; M_strategic is generalized strategy knowledge. Both layers are necessary — neither alone is memory.
 
+## Structural grouping and coupling derivation
+
+Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's `model` representation (measured from declared constraints; the cleanest source) > solve-script AST > structured spec fields > harness-supplied values. `semantic_coupling` is never derived. When a supplied value contradicts the structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+
 ## Two-layer memory: commitments vs recounts
 
 | | Experience Bank | Strategic Bank |

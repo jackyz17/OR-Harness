@@ -65,6 +65,14 @@ def _summarize_recommendations(result: Dict[str, Any]) -> str:
              f"P(fail)={top['expected']['failure_prob']}."]
     if top["risk_warnings"]:
         parts.append("Warnings: " + "; ".join(top["risk_warnings"]))
+    advisories = result.get("solver_advisories") or []
+    for adv in advisories:
+        parts.append(f"Solver advisory: {adv['solver']} has "
+                     f"{adv['environment_failures']} environment-class "
+                     f"failure(s) in this memory ({', '.join(adv['error_classes'])}); "
+                     f"consider a different solver.")
+    for w in result.get("coupling_warnings") or []:
+        parts.append("WARNING: " + w["message"])
     parts.append(f"{len(recs)} candidates returned. You remain the orchestrator: "
                  "you may refuse, exclude, or override any of them.")
     return " ".join(parts)
@@ -76,13 +84,36 @@ def cmd_profile(args) -> int:
         task = _load_json_arg(args.task)
         code = Path(args.code).read_text(encoding="utf-8") if args.code else None
         profile = h.profile(task, code)
-        return _emit({"profile": profile.to_dict()},
-                     f"Profile for {profile.problem_id} (family={profile.family}, "
-                     f"source={profile.source}): "
-                     f"rc={profile.resource_coupling}, tc={profile.temporal_coupling}, "
-                     f"rx={profile.route_complexity}, sc={profile.semantic_coupling}.")
+        report = h.derivation_report(task, code)
+        return _emit({"profile": profile.to_dict(), "derivation": report},
+                     _summarize_profile(profile, report))
     finally:
         h.close()
+
+
+def _summarize_profile(profile, report) -> str:
+    parts = [f"Profile for {profile.problem_id} (family={profile.family}):"]
+    for dim in ("resource_coupling", "temporal_coupling",
+                "route_complexity", "semantic_coupling"):
+        entry = report.get(dim) or {}
+        value = entry.get("value")
+        origin = entry.get("origin", "?")
+        parts.append(f"{dim}={value} ({origin})" if value is not None
+                     else f"{dim}=null ({origin})")
+    verification = report.get("model_verification")
+    if verification is not None:
+        if verification.get("passed"):
+            parts.append("Model representation verified (L1+L2).")
+        else:
+            issues = verification.get("issues") or []
+            parts.append(f"Model representation has {len(issues)} issue(s): "
+                         + "; ".join(f"[{i['layer']}] {i['code']}: {i['detail']}"
+                                    for i in issues[:3])
+                         + (" ..." if len(issues) > 3 else ""))
+    warnings = report.get("coupling_warnings") or []
+    for w in warnings:
+        parts.append("WARNING: " + w["message"])
+    return " ".join(parts)
 
 
 def cmd_recommend(args) -> int:
@@ -120,7 +151,20 @@ def cmd_execute(args) -> int:
 def cmd_record(args) -> int:
     h = _harness(args)
     try:
-        if args.execution:
+        if args.discard_staged:
+            staged = h.bank.get_pending(args.discard_staged)
+            if staged is None:
+                return _fail(f"no staged execution {args.discard_staged!r}")
+            h.bank.clear_pending(args.discard_staged)
+            return _emit({"discarded": args.discard_staged},
+                         f"Staged execution {args.discard_staged} discarded. "
+                         "It never entered the Experience Bank.")
+        if args.from_staged:
+            staged = h.bank.get_pending(args.from_staged)
+            if staged is None:
+                return _fail(f"no staged execution {args.from_staged!r}")
+            record = staged  # original payload, verbatim — no re-typing, no drift
+        elif args.execution:
             data = _load_json_arg(args.execution)
             if "execution" in data:
                 data = data["execution"]
@@ -128,7 +172,8 @@ def cmd_record(args) -> int:
         elif args.record_file:
             record = ExecutionRecord.from_dict(_load_json_arg(args.record_file))
         else:
-            return _fail("record requires --execution <json|path> or --record-file")
+            return _fail("record requires --execution <json|path>, "
+                         "--from-staged <id>, or --record-file")
         override = None
         if args.override:
             override = {k: float(v) for k, v in
@@ -148,6 +193,13 @@ def cmd_record(args) -> int:
                   "the pattern worth generalizing.")
         else:
             summary.append("No induction hints.")
+        unrecorded = result.get("unrecorded_staged_executions") or []
+        if unrecorded:
+            summary.append(
+                f"NOTE: {len(unrecorded)} staged execution(s) for this task are "
+                f"still unrecorded ({', '.join(unrecorded)}). If one is a failed "
+                "attempt you abandoned, record it with `orx record --from-staged "
+                "<id>` — failures are the most valuable induction raw material.")
         return _emit(result, " ".join(summary))
     finally:
         h.close()
@@ -303,6 +355,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--execution", default=None,
                    help="execution JSON literal/file (or the JSON printed by execute)")
     p.add_argument("--record-file", default=None)
+    p.add_argument("--from-staged", default=None, metavar="EXECUTION_ID",
+                   help="record a staged execution verbatim (the honest path "
+                        "for backfilling a failed attempt — no re-typing)")
+    p.add_argument("--discard-staged", default=None, metavar="EXECUTION_ID",
+                   help="explicitly discard a staged execution")
     p.add_argument("--override", default=None,
                    help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9'")
     p.set_defaults(func=cmd_record)

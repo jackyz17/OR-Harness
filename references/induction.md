@@ -13,11 +13,13 @@ Divergence judgments require **n ≥ 2** supporting executions. A single observa
 | C1 strategy contrast | ≥2 strategies in one group differ significantly (quality or cost) **and** the difference contradicts priors/entries | a difference the prior already encodes is not news |
 | C2 prior divergence | one strategy systematically departs from its catalog prior | n < 2, or departure within noise |
 | C3 in-group drift | same strategy, same group, n ≥ 3, trending quality | flat series |
-| C4 failure-recovery | a fallback was actually exercised | failures without recovery |
+| C4 failure-recovery | a fallback was exercised — within one execution (`failures[].recovery_action`) or across executions (a same-task attempt failed under one solver, then succeeded under another) | failures without recovery; retrying the same solver is not a chain |
 | C5 cross-family reproduction | same strategy, same-direction advantage in ≥2 families with similar structure | single-family evidence |
 | C6 stable success | same group, n ≥ 4, zero failures, zero retries | any retry breaks stability |
 
 C1's cost dimension is the interesting one: when quality is tied and one strategy is markedly cheaper, the *only* thing memory can learn is the cost structure — and that is decision-changing evidence (equivalent choices should consistently favor the cheap side).
+
+C4's cross-execution path deserves emphasis: the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
 
 ## The scope ladder
 

@@ -17,7 +17,7 @@ from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import ExecutionRecord, ProblemProfile, profile_matches
 from or_harness.core.storage import Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
-from or_harness.profiling.profiler import profile_task
+from or_harness.profiling.profiler import derivation_report, profile_task
 from or_harness.strategy.catalog import load_catalog
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.gc import GarbageCollector
@@ -25,7 +25,7 @@ from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.selector import Selector
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank
-from or_harness.strategy.triggers import check_triggers
+from or_harness.strategy.triggers import check_triggers, solver_advisories
 
 #: Prediction hit tolerance: an observation counts as a miss when it falls
 #: outside the entry's interval by more than this fraction of the interval
@@ -57,6 +57,13 @@ class ORHarness:
     def profile(self, task: Dict[str, Any], code: Optional[str] = None) -> ProblemProfile:
         return profile_task(task, code)
 
+    def derivation_report(self, task: Dict[str, Any],
+                          code: Optional[str] = None) -> Dict[str, Any]:
+        """Per-dimension coupling derivation report: value, origin
+        (model/code/spec/supplied/null), notes, model verification issues,
+        and cross-check warnings."""
+        return derivation_report(self.profile(task, code))
+
     def recommend(self, task: Dict[str, Any], *, top: int = 3,
                   exclude: Optional[Sequence[str]] = None,
                   memory_mode: str = "cost-aware",
@@ -65,11 +72,16 @@ class ORHarness:
         recs = self.selector.recommend(profile, top=top, exclude=exclude,
                                        memory_mode=memory_mode)
         solvers = available_families()
-        return {
+        result = {
             "profile": profile.to_dict(),
             "recommendations": [r.to_dict() for r in recs],
             "available_solver_families": solvers,
+            "solver_advisories": solver_advisories(self.bank),
         }
+        profiling = profile.annotations.get("profiling") or {}
+        if profiling.get("coupling_warnings"):
+            result["coupling_warnings"] = profiling["coupling_warnings"]
+        return result
 
     def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
                 workspace: str, *, solver: str,
@@ -78,30 +90,53 @@ class ORHarness:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
         code_text = Path(code_path).read_text(encoding="utf-8")
         profile = self.profile(task, code_text)
-        return self.executor.execute(
+        record = self.executor.execute(
             Path(code_path), Path(workspace), solver=solver,
             task_id=str(task["task_id"]), strategy_id=strategy_id,
             profile=profile, verification_level=verification_level)
+        # Safety net: stage every execution — successes AND failures — so a
+        # failed attempt is never silently lost when the harness immediately
+        # retries. Staging is not recording; recording stays the harness's
+        # explicit decision (`orx record`).
+        self.bank.stage_pending(record)
+        return record
 
     def record(self, record: ExecutionRecord,
                override: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
-        cost backfill -> prediction checks -> dormancy wakeup -> C1-C6 hints."""
+        cost backfill -> prediction checks -> dormancy wakeup -> C1-C6 hints.
+
+        Also reports staged-but-unrecorded executions for the same task, so
+        the harness notices a dropped failure (e.g. an abandoned first
+        attempt) before it is forgotten."""
         self.bank.append(record)
         if override:
             self.bank.update_cost(record.execution_id, **override)
             record = self.bank.get(record.execution_id)
+        self.bank.clear_pending(record.execution_id)
 
         prediction_events = self._check_predictions(record)
         expected_map = {e.strategy_id: {"quality": e.expected_quality_hat}
                         for e in self.sbank.matching(record.profile_snapshot)}
-        hints = check_triggers(record, self.stats, self.catalog, expected_map)
-        return {
+        prior_failures = [r for r in self.bank.query(task_id=record.task_id)
+                          if not r.quality.get("feasible", False)
+                          and r.execution_id != record.execution_id]
+        prior_failures += [p for p in self.bank.pending(task_id=record.task_id)
+                           if p.execution_id != record.execution_id
+                           and not p.quality.get("feasible", False)]
+        hints = check_triggers(record, self.stats, self.catalog, expected_map,
+                               prior_failures=prior_failures)
+        unrecorded = [p.execution_id for p in
+                      self.bank.pending(task_id=record.task_id)]
+        result = {
             "execution_id": record.execution_id,
             "recorded": True,
             "prediction_checks": prediction_events,
             "induction_hints": [h.to_dict() for h in hints],
         }
+        if unrecorded:
+            result["unrecorded_staged_executions"] = unrecorded
+        return result
 
     def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
                rebuild: bool = False, widen: Optional[str] = None,
@@ -150,13 +185,19 @@ class ORHarness:
 
     def doctor(self) -> Dict[str, Any]:
         reports = probe_all()
+        pending = self.bank.pending()
         return {
             "home": str(self.home),
             "solvers": [r.to_dict() for r in reports],
             "available_families": available_families(),
             "memory": {"executions": self.bank.count(),
                        "entries": self.sbank.count(),
-                       "cold_archive": len(self.sbank.cold_archive())},
+                       "cold_archive": len(self.sbank.cold_archive()),
+                       "pending_staged": len(pending)},
+            "pending_staged_executions": [
+                {"execution_id": p.execution_id, "task_id": p.task_id,
+                 "strategy_id": p.strategy_id,
+                 "status": p.quality.get("status")} for p in pending],
         }
 
     def close(self) -> None:

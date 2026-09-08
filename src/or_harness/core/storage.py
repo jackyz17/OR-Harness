@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS cold_archive (
     payload      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS pending_executions (
+    execution_id TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    created_at   REAL NOT NULL,
+    payload      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL

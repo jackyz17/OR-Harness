@@ -1,27 +1,45 @@
 """Deterministic problem profiling.
 
 Same input, same output — no randomness, no time dependence. Coupling
-dimensions come from two channels:
+dimensions come from four channels, in priority order:
 
-1. harness-supplied: the outer agent already understands the problem and
-   provides coupling values via the task file's ``annotations.coupling`` (or
-   top-level coupling keys). The profile is then marked
-   ``source: harness_supplied``.
-2. derived: the profiler estimates coupling deterministically from the
-   structured spec (explicit ``coupling`` hints are NOT required) and,
-   optionally, from the solve script's AST (variable co-occurrence, shared
-   resource-variable ratios, temporal index structure).
+1. model representation (best): the task JSON's optional top-level ``model``
+   field — a GAMS-style five-block DSL the harness writes BEFORE solve.py
+   (SKILL.md convention). Coupling is measured from the declared model
+   itself: resource_coupling = fraction of variables appearing in more than
+   one constraint. Cleanest signal; also verified (L1/L2) for free.
+2. solve-script AST (fallback at execute time): variable co-occurrence,
+   shared-resource ratios, temporal index structure.
+3. structured spec: explicit fields (time_periods, resources, entities...).
+4. harness-supplied: ``annotations.coupling`` — the harness's own estimate.
 
-No NLP subsystem, no semantic graph. These four scalars are the quantitative
-analogue of the legacy alignment layer's canonical roles.
+semantic_coupling is NEVER derived: business semantics are invisible to
+structure; it always stays the harness's call.
+
+When a supplied value conflicts with a derived value across a bin boundary,
+the profile carries ``coupling_warnings`` so the harness can reconsider
+BEFORE writing solver code. No NLP subsystem, no semantic graph.
 """
 
 from __future__ import annotations
 
 import ast
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from or_harness.core.schema import COUPLING_FEATURES, ProblemProfile, SCALE_FEATURES
+from or_harness.core.schema import (
+    COUPLING_FEATURES,
+    FINE_BIN_EDGES,
+    ProblemProfile,
+    SCALE_FEATURES,
+)
+from or_harness.profiling.model_syntax import (
+    ModelReport,
+    coupling_from_model,
+    verify_model,
+)
+
+#: Dimensions measurable from structure (semantic_coupling excluded).
+STRUCTURAL_DIMENSIONS = ("resource_coupling", "temporal_coupling", "route_complexity")
 
 
 def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemProfile:
@@ -32,6 +50,9 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
         {
           "task_id": "...",            # required
           "family": "...",             # required
+          "model": "SETS: ...",        # optional GAMS-style representation
+                                         (see references/modeling.md); verified
+                                         and used as the best coupling source
           "spec": {                    # optional structured description
             "n_vars": 1000, "n_constraints": 500, "n_int_vars": 1000,
             "density": 0.01,
@@ -52,24 +73,141 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
         raise ValueError("task requires 'task_id' and 'family'")
     spec = dict(task.get("spec") or {})
     annotations = dict(task.get("annotations") or {})
+    model_text = task.get("model")
+
+    model_report: Optional[ModelReport] = None
+    model_coupling: Dict[str, Optional[float]] = {}
+    if isinstance(model_text, str) and model_text.strip():
+        model_report = verify_model(model_text)
+        if model_report.parsed is not None:
+            model_coupling = coupling_from_model(model_report.parsed)
 
     supplied = _supplied_coupling(task, annotations)
-    if supplied:
-        coupling = {f: _clamp01(supplied.get(f)) for f in COUPLING_FEATURES}
-        source = "harness_supplied"
-    else:
-        coupling = _derive_coupling(spec, code)
-        source = "derived"
+    derived = _derive_coupling(spec, code)
+
+    # Merge per dimension by priority: model > code/spec-derived > supplied.
+    # semantic_coupling is never derived — supplied only.
+    coupling: Dict[str, Optional[float]] = {}
+    origin: Dict[str, str] = {}
+    for f in COUPLING_FEATURES:
+        if f == "semantic_coupling":
+            coupling[f] = _clamp01(supplied.get(f))
+            origin[f] = "supplied" if f in supplied else "null"
+            continue
+        if model_coupling.get(f) is not None:
+            coupling[f] = model_coupling[f]
+            origin[f] = "model"
+        elif derived.get(f) is not None:
+            coupling[f] = derived[f]
+            origin[f] = "code" if code else "spec"
+        elif f in supplied:
+            coupling[f] = _clamp01(supplied[f])
+            origin[f] = "supplied"
+        else:
+            coupling[f] = None
+            origin[f] = "null"
+
+    source = "harness_supplied" if (supplied and origin.get("resource_coupling")
+                                    == "supplied") else "derived"
+
+    warnings = _cross_check(supplied, model_coupling, derived, origin)
 
     scale = {f: float(spec[f]) for f in SCALE_FEATURES if f in spec}
     risk = dict(spec.get("risk_features") or {})
-    return ProblemProfile(
+    profile = ProblemProfile(
         problem_id=str(task_id), family=str(family), scale_features=scale,
         semantic_coupling=coupling["semantic_coupling"],
         resource_coupling=coupling["resource_coupling"],
         temporal_coupling=coupling["temporal_coupling"],
         route_complexity=coupling["route_complexity"],
         risk_features=risk, source=source, annotations=annotations)
+    # Derivation report + warnings ride along in annotations (schema-stable).
+    report: Dict[str, Any] = {"origin": origin}
+    if model_report is not None:
+        report["model_verification"] = model_report.to_dict()
+    if warnings:
+        report["coupling_warnings"] = warnings
+    profile.annotations["profiling"] = report
+    return profile
+
+
+def derivation_report(profile: ProblemProfile) -> Dict[str, Any]:
+    """The per-dimension derivation report (origin/value/note) for CLI output."""
+    profiling = profile.annotations.get("profiling") or {}
+    origin = profiling.get("origin") or {}
+    report: Dict[str, Any] = {}
+    for f in COUPLING_FEATURES:
+        value = getattr(profile, f)
+        entry: Dict[str, Any] = {
+            "value": value,
+            "origin": origin.get(f, "unknown"),
+        }
+        if value is None:
+            entry["note"] = _null_note(f, origin.get(f))
+        report[f] = entry
+    if "model_verification" in profiling:
+        report["model_verification"] = profiling["model_verification"]
+    if "coupling_warnings" in profiling:
+        report["coupling_warnings"] = profiling["coupling_warnings"]
+    return report
+
+
+# ---------------------------------------------------------------------------
+# cross-check: supplied vs derived, before the harness writes solver code
+# ---------------------------------------------------------------------------
+
+
+def _cross_check(supplied: Dict[str, float],
+                 model_coupling: Dict[str, Optional[float]],
+                 derived: Dict[str, Optional[float]],
+                 origin: Dict[str, str]) -> List[Dict[str, Any]]:
+    """Warn when a supplied value and a structural derivation disagree across
+    a bin boundary — the harness should reconsider before writing solve.py."""
+    warnings: List[Dict[str, Any]] = []
+    for f in STRUCTURAL_DIMENSIONS:
+        if f not in supplied:
+            continue
+        structural = model_coupling.get(f)
+        if structural is None:
+            structural = derived.get(f)
+        if structural is None:
+            continue
+        supplied_bin = _bin_index(supplied[f])
+        derived_bin = _bin_index(structural)
+        if supplied_bin != derived_bin:
+            warnings.append({
+                "dimension": f,
+                "supplied": round(float(supplied[f]), 4),
+                "derived": round(float(structural), 4),
+                "origin": origin.get(f, "unknown"),
+                "message": (
+                    f"you supplied {f}={supplied[f]:.2f} but structural "
+                    f"derivation says {structural:.2f}; these fall in "
+                    f"different similarity bins — reconsider before writing "
+                    f"solver code (the derived value will be used for "
+                    f"grouping)"),
+            })
+    return warnings
+
+
+def _bin_index(value: float) -> int:
+    v = max(0.0, min(1.0, float(value)))
+    for i, (lo, hi) in enumerate(zip(FINE_BIN_EDGES, FINE_BIN_EDGES[1:])):
+        if lo <= v <= hi:
+            return i
+    return len(FINE_BIN_EDGES) - 2
+
+
+def _null_note(dimension: str, origin: str) -> str:
+    if dimension == "semantic_coupling":
+        return ("semantic coupling is never derived (business semantics are "
+                "invisible to structure); supply annotations.coupling."
+                "semantic_coupling if you want it grouped on")
+    if origin == "supplied":
+        return "supplied"
+    return ("no structural signal found: provide the 'model' field (best), "
+            "solver code (--code), or documented spec fields "
+            "(time_periods/horizon, resources+entities, routes/network)")
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +228,7 @@ def _supplied_coupling(task: Dict[str, Any],
 
 
 # ---------------------------------------------------------------------------
-# derived channel
+# derived channel (code AST + spec)
 # ---------------------------------------------------------------------------
 
 
