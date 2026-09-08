@@ -9,6 +9,38 @@ You are the orchestrator. This capability layer only advises and executes — yo
 
 OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden state: every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`).
 
+## Core workflow (the loop to run for every optimization task)
+
+1. **Profile** — `orx profile --task t.json` (add `--code solve.py` if the script already exists). If you already understand the problem's structure, supply coupling dims yourself via `annotations.coupling` instead of letting the profiler derive them.
+2. **Recommend** — `orx recommend --task t.json --top 3`. Read each candidate's `evidence`, `confidence`, and `risk_warnings`. You may `--exclude` any candidate and re-recommend.
+3. **Choose** — weigh quality vs. cost vs. risk yourself. When quality estimates are tied, prefer the cheaper candidate (that preference is exactly what this memory exists to learn). Pick the concrete solver from `available_solver_families` based on the task (scale, license availability, family fit).
+4. **Write solve.py** — follow the chosen strategy's `actions` (the framework never generates code). The script must write `result.json` with `status, objective_value, objective_bound, mip_gap, runtime_seconds`.
+5. **Execute** — `orx execute ...`. Inspect `result.execution.quality.problems` before recording.
+6. **Verify** (see Verification below) — do not record an execution you have not checked.
+7. **Record** — `orx record --execution <json> --override llm_tokens=<your actual token count>`. Read the returned `induction_hints` and `prediction_checks`.
+8. **Decide on induction** — hints are evidence, not orders. Induce only when you judge the pattern worth generalizing.
+9. **On failure** — follow Recovery below before retrying.
+
+## Verification (before every record)
+
+Check `result.execution`:
+- `quality.status` is one of optimal/feasible/infeasible/unbounded/timeout/error — treat anything else as a broken script, not a solver result.
+- `quality.feasible` is true and `quality.objective` is finite when you expect a solution.
+- `quality.gap` is recorded (derived from the bound when the solver omits it).
+- `quality.problems` is empty — non-empty means verification caught something (illegal status, missing objective, non-finite value).
+- The objective value is plausible for the problem (right order of magnitude, correct min/max direction) — the sandbox checks structure, not semantics; only you know what the number should mean.
+
+Never record an execution whose `problems` is non-empty without noting why.
+
+## Recovery (when execution fails)
+
+- **status=error, normalized_error mentions security policy** — your script used a blocked construct (network/shell/pathlib/dynamic `open()` paths). Rewrite using only stdlib and literal `open('result.json', 'w')`.
+- **status=error, traceback in normalized_error** — re-read the error, fix the model or script, re-execute. Each rerun costs `retries +1` in the CostVector — that is by design; do not hide failed attempts by not recording them.
+- **status=infeasible** — do not fabricate a feasible answer. Check variable bounds and conflicting constraints; if the task itself is infeasible, record the execution with its status (infeasible outcomes are valuable induction evidence — criterion C4).
+- **status=timeout** — the strategy may be too heavy for this scale. Re-recommend with `--exclude <strategy>` and try the next candidate; record the timeout (it is a fact worth remembering).
+- **recommend returns no candidates** — no strategy's applicability matches the profile. Check the profile's coupling dims; if they are extreme, fall back to `--memory-mode none` (default strategy) or relax your exclusions.
+- **Verification fails after a successful solve** (wrong magnitude, wrong direction) — re-derive the model, do not adjust the answer to match expectations.
+
 ## Core concepts (terminology is strict)
 
 - **Experience Bank** — append-only episodic facts ("what happened"). Never stores generalizations. The single source of truth.
@@ -84,3 +116,11 @@ Self-check: solver availability (7 adapters probed), memory sizes, home path.
 - Do not ignore `risk_warnings` in recommendations.
 - Do not skip the `llm_tokens` backfill on record — cost learning silently degrades without it.
 - Do not revive cold-archive vetoes without strong evidence of environment drift.
+- Do not skip recording failed executions — failures are the most valuable induction raw material (C4).
+- Do not adjust a model's constraints merely to match a reference value; re-derive instead.
+
+## References (read on demand)
+
+- [references/concepts.md](references/concepts.md) — why the two-layer memory, CostVector dimensions, and disposal ladder are designed this way. Read when you need the "why" behind a mechanism.
+- [references/induction.md](references/induction.md) — C1–C6 semantics, the scope ladder, forward validation, citation binding. Read before your first `induce`, and whenever a hint's meaning is unclear.
+- [references/examples.md](references/examples.md) — three complete walkthroughs (cold-start restraint, cost-only learning, cross-family tighten). Read when unsure how the pieces fit together in practice.
