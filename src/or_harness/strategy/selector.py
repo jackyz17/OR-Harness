@@ -107,10 +107,13 @@ class Selector:
 
         entries = self.sbank.matching(profile) if memory_mode in ("strategic", "cost-aware") else []
         cells = self.stats.for_profile(profile, "L1")
+        norms = self._cost_norms(candidates, entries, cells) \
+            if memory_mode == "cost-aware" else {}
         consulted: List[str] = []
         recs: List[Recommendation] = []
         for strategy in candidates:
-            rec = self._score(strategy, profile, entries, cells, memory_mode)
+            rec = self._score(strategy, profile, entries, cells, memory_mode,
+                              norms)
             consulted.extend(r for r in rec.evidence_refs if r.startswith("se_"))
             recs.append(rec)
         if consulted:
@@ -120,6 +123,26 @@ class Selector:
 
     # -- internals ---------------------------------------------------------------
 
+    def _cost_norms(self, candidates, entries, cells) -> Dict[str, float]:
+        """Per-dimension normalization divisors from the current candidate
+        cost range, so no raw unit (e.g. thousands of tokens) can swamp the
+        quality term. Falls back to 1.0 when a dimension is uniformly zero."""
+        vectors: List[CostVector] = []
+        for strategy in candidates:
+            entry = next((e for e in entries if e.strategy_id == strategy.strategy_id), None)
+            cell = cells.get(strategy.strategy_id)
+            if entry is not None:
+                vectors.append(entry.expected_cost_hat)
+            elif cell is not None and cell.n > 0:
+                vectors.append(cell.mean_cost)
+            else:
+                vectors.append(strategy.expected_cost)
+        norms: Dict[str, float] = {}
+        for d in COST_DIMENSIONS:
+            peak = max((getattr(v, d) for v in vectors), default=0.0)
+            norms[d] = float(peak) if peak > 0 else 1.0
+        return norms
+
     @staticmethod
     def _applies(strategy: Strategy, profile: ProblemProfile) -> bool:
         from or_harness.core.schema import profile_matches
@@ -128,14 +151,16 @@ class Selector:
     def _score(self, strategy: Strategy, profile: ProblemProfile,
                entries: List[StrategicEntry],
                cells: Dict[str, GroupStats],
-               memory_mode: str) -> Recommendation:
+               memory_mode: str,
+               norms: Optional[Dict[str, float]] = None) -> Recommendation:
         entry = next((e for e in entries if e.strategy_id == strategy.strategy_id), None)
         cell = cells.get(strategy.strategy_id)
         if entry is not None and memory_mode in ("strategic", "cost-aware"):
-            return self._from_entry(strategy, profile, entry, memory_mode)
+            return self._from_entry(strategy, profile, entry, memory_mode, norms)
         if cell is not None and cell.n > 0 and memory_mode in ("cases", "strategic", "cost-aware"):
-            return self._from_stats(strategy, cell, memory_mode)
-        return self._from_prior(strategy, basis="no memory evidence; catalog prior")
+            return self._from_stats(strategy, cell, memory_mode, norms)
+        return self._from_prior(strategy, basis="no memory evidence; catalog prior",
+                                norms=norms)
 
     def _entry_confidence(self, entry: StrategicEntry, profile: ProblemProfile) -> float:
         # Confidence scales with support (new entries get a grace floor), and
@@ -157,12 +182,13 @@ class Selector:
         return families
 
     def _from_entry(self, strategy: Strategy, profile: ProblemProfile,
-                    entry: StrategicEntry, memory_mode: str) -> Recommendation:
+                    entry: StrategicEntry, memory_mode: str,
+                    norms: Optional[Dict[str, float]] = None) -> Recommendation:
         confidence = self._entry_confidence(entry, profile)
         cross_family = (entry.scope_level in ("L2", "L3")
                         and profile.family not in self._provenance_families(entry))
         cost = entry.expected_cost_hat
-        cost_term = (cost.scalarize(self.cost_weights)
+        cost_term = (cost.scalarize(self.cost_weights, norms)
                      if memory_mode == "cost-aware" else 0.0)
         score = (self.alpha * entry.expected_quality_hat
                  - self.beta * cost_term
@@ -190,9 +216,10 @@ class Selector:
                   f"n={entry.prediction_track.n_predictions})")
 
     def _from_stats(self, strategy: Strategy, cell: GroupStats,
-                    memory_mode: str) -> Recommendation:
+                    memory_mode: str,
+                    norms: Optional[Dict[str, float]] = None) -> Recommendation:
         cost = cell.mean_cost
-        cost_term = (cost.scalarize(self.cost_weights)
+        cost_term = (cost.scalarize(self.cost_weights, norms)
                      if memory_mode == "cost-aware" else 0.0)
         score = (self.alpha * cell.mean_quality
                  - self.beta * cost_term
@@ -210,11 +237,12 @@ class Selector:
             risk_warnings=warnings,
             basis=f"conditional statistics over n={cell.n} executions in this group")
 
-    def _from_prior(self, strategy: Strategy, basis: str) -> Recommendation:
+    def _from_prior(self, strategy: Strategy, basis: str,
+                    norms: Optional[Dict[str, float]] = None) -> Recommendation:
         return Recommendation(
             strategy=strategy,
             score=(self.alpha * strategy.expected_quality
-                   - self.beta * strategy.expected_cost.scalarize(self.cost_weights)
+                   - self.beta * strategy.expected_cost.scalarize(self.cost_weights, norms)
                    - self.gamma * strategy.expected_risk),
             expected_quality=strategy.expected_quality,
             expected_cost=strategy.expected_cost,

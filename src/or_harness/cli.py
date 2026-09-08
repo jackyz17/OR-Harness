@@ -31,9 +31,16 @@ def _fail(message: str, exit_code: int = 2) -> int:
 
 
 def _load_json_arg(value: str) -> Any:
-    """Accept a JSON literal or a path to a JSON file."""
+    """Accept a JSON literal or a path to a JSON file. JSON literals win when
+    the string parses as JSON; otherwise an existing path is read."""
+    stripped = value.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
     path = Path(value)
-    if path.exists():
+    if path.exists() and path.is_file():
         return json.loads(path.read_text(encoding="utf-8"))
     return json.loads(value)
 

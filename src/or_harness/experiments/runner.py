@@ -48,9 +48,9 @@ GROUND_TRUTH: Dict[str, Dict[str, Dict[str, float]]] = {
     },
     "scheduling": {
         "S01": {"quality": 0.62, "cost": 3.0},
-        "S03": {"quality": 0.85, "cost": 2.0},
-        "S04": {"quality": 0.60, "cost": 1.0},
-        "S05": {"quality": 0.85, "cost": 1.0},   # tied with S03, cheaper
+        "S03": {"quality": 0.85, "cost": 6.0},   # tied quality with S05, pricey
+        "S04": {"quality": 0.40, "cost": 1.0},
+        "S05": {"quality": 0.85, "cost": 2.0},
     },
     "assignment": {
         "S01": {"quality": 0.78, "cost": 2.5},
@@ -109,7 +109,10 @@ def _execution_law(task: SyntheticTask, strategy_id: str) -> Dict[str, float]:
 
 
 def _solve_script(quality: float, cost_scale: float) -> str:
-    """A real solve script whose result.json encodes the ground-truth outcome."""
+    """A real solve script whose result.json encodes the ground-truth outcome.
+
+    Solver runtime follows the cost law directly (deterministic) so cost
+    comparisons do not drown in sub-process wall-clock noise."""
     gap = round(1.0 - quality, 6)
     runtime = round(2.0 * cost_scale, 6)
     objective = round(1000.0 * (1.0 - gap), 4)
@@ -150,12 +153,19 @@ class RunMetrics:
 
 def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                cost_weights: Optional[Dict[str, float]] = None,
-               induce_every: int = 5) -> RunMetrics:
+               induce_every: int = 5,
+               warmup: bool = True) -> RunMetrics:
     """Run one ablation mode over the task stream.
 
     The simulated harness: recommends (in the ablation mode), executes the top
     recommendation, records with llm_tokens backfilled from the cost law, and
     induces every ``induce_every`` tasks (an explicit harness decision).
+
+    ``warmup`` executes every (family, strategy) pair once BEFORE the measured
+    stream, mirroring a harness's exploration phase. This aligns the evidence
+    base across ablation modes so the measured differences come from the
+    selection rule alone, not from divergent exploration trajectories (a
+    greedy top-1 agent never revisits strategies the cold start ranked low).
     """
     if mode not in MEMORY_MODES:
         raise ValueError(f"mode must be one of {MEMORY_MODES}")
@@ -164,6 +174,8 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
     cumulative = 0.0
     workdir = Path(tempfile.mkdtemp(prefix="orx_exp_"))
     try:
+        if warmup:
+            _warmup(harness, workdir)
         for index, task in enumerate(tasks):
             task_json = task.to_task_json()
             recs = harness.recommend(task_json, top=1, memory_mode=mode)
@@ -176,8 +188,9 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                               encoding="utf-8")
             record = harness.execute(task_json, strategy_id, str(script),
                                      str(workdir), solver="highs")
-            llm_tokens = 600.0 * law["cost_scale"]
+            llm_tokens = 1500.0 * law["cost_scale"]
             outcome = harness.record(record, override={"llm_tokens": llm_tokens})
+            record = harness.bank.get(record.execution_id)  # post-backfill fact
             scalar = record.cost.scalarize(
                 cost_weights or harness.selector.cost_weights)
             cumulative += scalar
@@ -186,7 +199,7 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                 "task_id": task.task_id,
                 "family": task.family,
                 "strategy_id": strategy_id,
-                "quality": round(1.0 - (record.quality.get("gap") or 1.0), 4),
+                "quality": round(max(0.0, 1.0 - (record.quality.get("gap") or 1.0)), 4),
                 "feasible": int(bool(record.quality.get("feasible"))),
                 **{f"cost_{d}": round(getattr(record.cost, d), 4)
                    for d in COST_DIMENSIONS},
@@ -200,6 +213,26 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
     finally:
         harness.close()
     return metrics
+
+
+def _warmup(harness: ORHarness, workdir: Path) -> None:
+    """Deterministic exploration: run every (family, strategy) pair once and
+    record it. All ablation modes share this evidence base."""
+    for family in FAMILIES:
+        task = SyntheticTask(task_id=f"warm_{family}", family=family,
+                             spec={"n_vars": 800, "n_constraints": 400,
+                                   "n_int_vars": 500, "density": 0.01})
+        task_json = task.to_task_json()
+        for strategy_id in GROUND_TRUTH[family]:
+            law = _execution_law(task, strategy_id)
+            script = workdir / f"warm_{family}_{strategy_id}.py"
+            script.write_text(_solve_script(law["quality"], law["cost_scale"]),
+                              encoding="utf-8")
+            record = harness.execute(task_json, strategy_id, str(script),
+                                     str(workdir), solver="highs")
+            harness.record(record,
+                           override={"llm_tokens": 1500.0 * law["cost_scale"]})
+    harness.induce(all_=True)
 
 
 def run_ablation(output_dir: str, n_tasks: int = 30, seed: int = 7,
