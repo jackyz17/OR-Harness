@@ -88,13 +88,17 @@ class ConditionalStats:
         self.bank = bank
 
     def cell(self, group_l1: str, strategy_id: str) -> GroupStats:
-        records = self.bank.query(group_l1=group_l1, strategy_id=strategy_id)
+        records = [r for r in self.bank.query(group_l1=group_l1,
+                                              strategy_id=strategy_id)
+                   if r.source == "executed"]
         return self._aggregate(group_l1, strategy_id, records)
 
     def group(self, group_l1: str) -> Dict[str, GroupStats]:
         """All strategy cells within one structural group."""
         cells: Dict[str, List[ExecutionRecord]] = {}
         for rec in self.bank.query(group_l1=group_l1):
+            if rec.source != "executed":
+                continue
             cells.setdefault(rec.strategy_id, []).append(rec)
         return {sid: self._aggregate(group_l1, sid, recs) for sid, recs in cells.items()}
 
@@ -112,6 +116,8 @@ class ConditionalStats:
         target = group_key(profile, level)
         by_family: Dict[str, List[ExecutionRecord]] = {}
         for rec in self.bank.query(strategy_id=strategy_id):
+            if rec.source != "executed":
+                continue
             if group_key(rec.profile_snapshot, level) == target:
                 by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
         return [self._aggregate(f"{target}#family={fam}", strategy_id, recs)
@@ -120,7 +126,7 @@ class ConditionalStats:
     def rebuild_check(self) -> bool:
         """Consistency invariant: aggregating a full scan equals per-group
         aggregation (statistics are derivable from facts at any time)."""
-        everything = self.bank.all()
+        everything = [r for r in self.bank.all() if r.source == "executed"]
         groups = {rec.group_l1 for rec in everything}
         for g in groups:
             via_group = self.group(g)

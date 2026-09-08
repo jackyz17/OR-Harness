@@ -1,0 +1,180 @@
+{
+  "version": 1,
+  "strategies": [
+    {
+      "strategy_id": "S01",
+      "name": "monolithic-milp",
+      "description": "Build the full MILP in one pass and solve with a MILP solver. Right default for moderate scale with weak-to-moderate coupling.",
+      "applicability": {},
+      "actions": [
+        "Write solve.py building the complete model with one MILP solver binding",
+        "Set a time limit; report result.json with status/objective/gap"
+      ],
+      "fallback": "S06",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.8,
+        "cost": {"llm_tokens": 2000, "tool_calls": 3, "solver_runtime_s": 30, "retries": 0.3, "latency_s": 60},
+        "risk": 0.3
+      }
+    },
+    {
+      "strategy_id": "S02",
+      "name": "decomposition",
+      "description": "Split along the dominant coupling axis (e.g. Benders/Dantzig-Wolfe style decomposition) and iterate master/subproblem. Suited to high resource or temporal coupling where the monolith is intractable.",
+      "applicability": {"resource_coupling": [0.5, 1.0]},
+      "actions": [
+        "Identify the complicating constraints from the profile's coupling dimensions",
+        "Write solve.py with a master/subproblem loop and convergence bound",
+        "Report best incumbent + bound in result.json"
+      ],
+      "fallback": "S01",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.75,
+        "cost": {"llm_tokens": 4000, "tool_calls": 6, "solver_runtime_s": 60, "retries": 0.8, "latency_s": 180},
+        "risk": 0.5
+      }
+    },
+    {
+      "strategy_id": "S03",
+      "name": "rolling-horizon",
+      "description": "Decompose the time axis: solve overlapping windows sequentially, freezing the prefix. Suited to high temporal coupling at large scale.",
+      "applicability": {"temporal_coupling": [0.5, 1.0]},
+      "actions": [
+        "Choose window length and overlap from the horizon in scale_features",
+        "Write solve.py iterating windows, freezing past decisions",
+        "Report the concatenated schedule's objective in result.json"
+      ],
+      "fallback": "S01",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.72,
+        "cost": {"llm_tokens": 3000, "tool_calls": 5, "solver_runtime_s": 45, "retries": 0.5, "latency_s": 120},
+        "risk": 0.4
+      }
+    },
+    {
+      "strategy_id": "S04",
+      "name": "construction-plus-ls",
+      "description": "Greedy construction heuristic followed by local search / large-neighborhood improvement. Fast and cheap; quality depends on problem structure.",
+      "applicability": {},
+      "actions": [
+        "Write solve.py with a deterministic greedy construction",
+        "Apply local-search moves until a time or stagnation budget",
+        "Report the best solution found in result.json"
+      ],
+      "fallback": "S01",
+      "solver_family": null,
+      "expected": {
+        "quality": 0.6,
+        "cost": {"llm_tokens": 1500, "tool_calls": 2, "solver_runtime_s": 5, "retries": 0.2, "latency_s": 20},
+        "risk": 0.35
+      }
+    },
+    {
+      "strategy_id": "S05",
+      "name": "cp-sat",
+      "description": "Constraint-programming formulation solved with CP-SAT. Strong when route complexity is high and scheduling-like constraints dominate.",
+      "applicability": {"route_complexity": [0.5, 1.0]},
+      "actions": [
+        "Write solve.py modeling with interval/circuit constraints",
+        "Solve with CP-SAT under a time limit; report result.json"
+      ],
+      "fallback": "S04",
+      "solver_family": "cp_sat",
+      "expected": {
+        "quality": 0.7,
+        "cost": {"llm_tokens": 2500, "tool_calls": 3, "solver_runtime_s": 40, "retries": 0.4, "latency_s": 90},
+        "risk": 0.4
+      }
+    },
+    {
+      "strategy_id": "S06",
+      "name": "lp-relaxation-rounding",
+      "description": "Solve the LP relaxation, then repair/round to an integer-feasible solution. Very cheap; use as warm-start evidence or when approximate answers suffice.",
+      "applicability": {},
+      "actions": [
+        "Write solve.py solving the LP relaxation",
+        "Apply a deterministic rounding/repair pass",
+        "Report the rounded objective and the LP bound in result.json"
+      ],
+      "fallback": "S04",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.55,
+        "cost": {"llm_tokens": 1200, "tool_calls": 2, "solver_runtime_s": 10, "retries": 0.3, "latency_s": 30},
+        "risk": 0.45
+      }
+    },
+    {
+      "strategy_id": "S07",
+      "name": "warm-start-milp",
+      "description": "Construct a heuristic incumbent first, then hand it to the MILP solver as a warm start. Pays off when construction is reliable and the monolith is borderline tractable.",
+      "applicability": {},
+      "actions": [
+        "Write solve.py: greedy construction -> MIP start -> time-limited solve",
+        "Report incumbent and bound in result.json"
+      ],
+      "fallback": "S01",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.78,
+        "cost": {"llm_tokens": 2500, "tool_calls": 4, "solver_runtime_s": 35, "retries": 0.4, "latency_s": 80},
+        "risk": 0.32
+      }
+    },
+    {
+      "strategy_id": "S08",
+      "name": "column-generation",
+      "description": "Delayed column generation for set-covering/partitioning-style structure (routes, patterns, shifts). Suited to high route complexity with strong resource coupling.",
+      "applicability": {"route_complexity": [0.5, 1.0], "resource_coupling": [0.5, 1.0]},
+      "actions": [
+        "Write solve.py with restricted master + pricing subproblem loop",
+        "Close with a final restricted-integer solve if time permits",
+        "Report incumbent + LP bound in result.json"
+      ],
+      "fallback": "S02",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.78,
+        "cost": {"llm_tokens": 4500, "tool_calls": 7, "solver_runtime_s": 90, "retries": 1.0, "latency_s": 240},
+        "risk": 0.55
+      }
+    },
+    {
+      "strategy_id": "S09",
+      "name": "lagrangian-relaxation",
+      "description": "Relax the complicating (resource-coupling) constraints into the objective with multipliers; subgradient/bundle updates. Good bounds for highly resource-coupled problems.",
+      "applicability": {"resource_coupling": [0.5, 1.0]},
+      "actions": [
+        "Write solve.py with multiplier update loop and primal repair heuristic",
+        "Report best primal objective and dual bound in result.json"
+      ],
+      "fallback": "S02",
+      "solver_family": "milp",
+      "expected": {
+        "quality": 0.7,
+        "cost": {"llm_tokens": 3800, "tool_calls": 6, "solver_runtime_s": 70, "retries": 0.9, "latency_s": 200},
+        "risk": 0.5
+      }
+    },
+    {
+      "strategy_id": "S10",
+      "name": "metaheuristic-ga",
+      "description": "Population-based metaheuristic (genetic/local hybrid). Last-resort broad search when structure resists decomposition and CP-SAT.",
+      "applicability": {},
+      "actions": [
+        "Write solve.py with encoding, fitness, crossover/mutation, and a time budget",
+        "Report the best solution found in result.json"
+      ],
+      "fallback": "S04",
+      "solver_family": null,
+      "expected": {
+        "quality": 0.62,
+        "cost": {"llm_tokens": 2200, "tool_calls": 3, "solver_runtime_s": 60, "retries": 0.4, "latency_s": 100},
+        "risk": 0.42
+      }
+    }
+  ]
+}

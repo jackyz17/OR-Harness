@@ -59,6 +59,18 @@ class TestConditionalStats(HarnessTestCase):
         self.assertEqual(len(cells), 2)
         self.assertTrue(all(c.n == 1 for c in cells))
 
+    def test_stats_exclude_compacted_lines(self):
+        # Facts are forever; compacted ledger lines are bookkeeping summaries
+        # and must never re-enter conditional statistics.
+        for i in range(3):
+            self.bank.append(self.make_record(execution_id=f"ex_{i}",
+                                              task_id=f"t{i}", gap=0.1))
+        self.bank.append(self.make_record(execution_id="ex_comp", task_id="tC",
+                                          gap=0.0, source="compacted"))
+        cell = self.stats.cell(self.bank.get("ex_0").group_l1, "S01")
+        self.assertEqual(cell.n, 3)
+        self.assertNotIn("ex_comp", cell.execution_ids)
+
 
 class TestStrategicBank(HarnessTestCase):
     def setUp(self):
