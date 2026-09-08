@@ -123,6 +123,35 @@ class ConditionalStats:
         return [self._aggregate(f"{target}#family={fam}", strategy_id, recs)
                 for fam, recs in sorted(by_family.items())]
 
+    def cells_matching(self, strategy_id: str,
+                       predicates: Dict[str, Any]) -> List[GroupStats]:
+        """Partition a strategy's executions matching ``predicates`` by family."""
+        from or_harness.core.schema import profile_matches
+        by_family: Dict[str, List[ExecutionRecord]] = {}
+        for rec in self.bank.query(strategy_id=strategy_id):
+            if rec.source != "executed":
+                continue
+            if profile_matches(rec.profile_snapshot, predicates):
+                by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
+        return [self._aggregate(f"match#family={fam}", strategy_id, recs)
+                for fam, recs in sorted(by_family.items())]
+
+    def cross_family_from_predicates(self, entry, level: str) -> List[GroupStats]:
+        """Partition an entry's evidence by family at ``level``.
+
+        Cells are keyed by the entry's predicate bins rather than the raw
+        profile bins, so provenance records in adjacent fine bins still count
+        toward the entry's own pattern."""
+        from or_harness.core.schema import profile_matches
+        by_family: Dict[str, List[ExecutionRecord]] = {}
+        for rec in self.bank.query(strategy_id=entry.strategy_id):
+            if rec.source != "executed":
+                continue
+            if profile_matches(rec.profile_snapshot, entry.predicates):
+                by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
+        return [self._aggregate(f"{level}#family={fam}", entry.strategy_id, recs)
+                for fam, recs in sorted(by_family.items())]
+
     def rebuild_check(self) -> bool:
         """Consistency invariant: aggregating a full scan equals per-group
         aggregation (statistics are derivable from facts at any time)."""

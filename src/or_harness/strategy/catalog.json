@@ -68,7 +68,7 @@
       "solver_family": null,
       "expected": {
         "quality": 0.6,
-        "cost": {"llm_tokens": 1500, "tool_calls": 2, "solver_runtime_s": 5, "retries": 0.2, "latency_s": 20},
+        "cost": {"llm_tokens": 2000, "tool_calls": 2, "solver_runtime_s": 5, "retries": 0.2, "latency_s": 20},
         "risk": 0.35
       }
     },
@@ -103,7 +103,7 @@
       "solver_family": "milp",
       "expected": {
         "quality": 0.55,
-        "cost": {"llm_tokens": 1200, "tool_calls": 2, "solver_runtime_s": 10, "retries": 0.3, "latency_s": 30},
+        "cost": {"llm_tokens": 2000, "tool_calls": 2, "solver_runtime_s": 10, "retries": 0.3, "latency_s": 30},
         "risk": 0.45
       }
     },
