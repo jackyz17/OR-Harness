@@ -35,10 +35,14 @@ solvers-full = ["highspy", "pulp", "ortools", "pyomo", "scip"]
 dev = []
 
 [project.scripts]
-orx = "or_experience_bank.cli.main:main"
+# The new harness-facing shell; the legacy or_experience_bank CLI keeps its
+# entry point until the old package is removed in the final cleanup commit.
+orx = "or_harness.cli:main"
+orx-legacy = "or_experience_bank.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 or_experience_bank = ["py.typed"]
+or_harness = ["py.typed", "strategy/catalog.json"]
