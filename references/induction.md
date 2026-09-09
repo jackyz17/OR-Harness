@@ -43,6 +43,10 @@ Every `record` automatically checks each matching entry's interval against the o
 - **demotion** (auto): 3 consecutive misses → `suspect` (score ×0.5, warnings attached)
 - **retirement** (never auto): your explicit `orx retire` moves a suspect entry to the cold archive
 
+Cost predictions run a PARALLEL, warning-only loop: observed cost vs the entry's multiplicative interval → `cost_hit_rate` + per-dimension log-error calibration. Cost misses never touch `consecutive_misses` or the lifecycle — an entry whose quality predictions are perfect but whose costs are volatile stays validated, with an "uncalibrated cost" warning attached for you to weigh.
+
+Induced entries also carry a **mechanism annotation**: the mechanism features of the supporting evidence, aggregated automatically from the provenance records' profiles — measured structure transferred from facts, never narrated. An optional mechanism explanation (your phrasing) is citation-bound like applicability text. This is mechanism ANNOTATION, not causal discovery: the framework moves measured structure; it never infers causality.
+
 Prediction intervals are honest to sample size: with n=2 the floor width is 0.50 — you may not pretend to more certainty than the data supports.
 
 ## LLM phrasing and citation binding

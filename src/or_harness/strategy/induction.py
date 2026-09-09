@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from or_harness.core.schema import (
     ApplicabilityCondition,
     CostVector,
+    MechanismAnnotation,
     ProblemProfile,
     StrategicEntry,
     group_key,
@@ -35,6 +36,10 @@ from or_harness.strategy.triggers import InductionHint
 
 WIDEN_LADDER = {"L1": "L2", "L2": "L3"}
 NARROW_LADDER = {"L3": "L2", "L2": "L1"}
+
+#: v1 cost interval: multiplicative band around the point estimate. Actual
+#: cost within [0.5x, 2.0x] of the prediction counts as a hit.
+COST_INTERVAL_BAND = (0.5, 2.0)
 
 
 class InductionEngine:
@@ -100,9 +105,12 @@ class InductionEngine:
             existing.expected_quality_hat = quality_hat
             existing.quality_interval = (lo, hi)
             existing.expected_cost_hat = cost_hat
+            existing.cost_interval = self._cost_interval()
             existing.failure_prob = fail_prob
             existing.support_n = cell.n
             existing.provenance = cell.execution_ids[:50]
+            existing.mechanism = self._mechanism_annotation(
+                cell.execution_ids, llm_conditions)
             if conditions:
                 existing.applicability.extend(conditions)
             self.sbank.update(existing)
@@ -121,11 +129,14 @@ class InductionEngine:
             expected_quality_hat=quality_hat,
             quality_interval=(lo, hi),
             expected_cost_hat=cost_hat,
+            cost_interval=self._cost_interval(),
             failure_prob=fail_prob,
             applicability=conditions,
             fallback_strategy_id=None,
             provenance=cell.execution_ids[:50],
             support_n=cell.n,
+            mechanism=self._mechanism_annotation(cell.execution_ids,
+                                                 llm_conditions),
         )
         self.sbank.add(entry)
         return {"created": entry.entry_id, "entry": entry.to_dict(),
@@ -220,6 +231,48 @@ class InductionEngine:
 
     # -- internals -----------------------------------------------------------------
 
+    @staticmethod
+    def _cost_interval() -> Dict[str, Tuple[float, float]]:
+        """v1: fixed multiplicative band per dimension."""
+        from or_harness.core.schema import COST_DIMENSIONS
+        return {d: COST_INTERVAL_BAND for d in COST_DIMENSIONS}
+
+    def _mechanism_annotation(self, execution_ids: List[str],
+                              llm_conditions) -> MechanismAnnotation:
+        """Aggregate the mechanism features of the supporting evidence onto
+        the entry — measured structure transferred from facts, never narrated.
+        An optional mechanism explanation from the harness is citation-bound
+        (same discipline as applicability conditions)."""
+        features: Dict[str, float] = {}
+        n = 0
+        for ex_id in execution_ids[:50]:
+            rec = self.stats.bank.get(ex_id)
+            if rec is None or not rec.profile_snapshot.mechanism_features:
+                continue
+            n += 1
+            for key, value in rec.profile_snapshot.mechanism_features.items():
+                features[key] = features.get(key, 0.0) + value
+        if n:
+            features = {k: round(v / n, 4) for k, v in features.items()}
+        explanation = None
+        explanation_ids: List[str] = []
+        for raw in (llm_conditions or []):
+            if not isinstance(raw, dict):
+                continue
+            text = raw.get("mechanism_explanation")
+            if not text:
+                continue
+            ids = [str(i) for i in (raw.get("supporting_execution_ids") or [])]
+            ok, _why, _cond = self._check_condition(
+                {"text": str(text), "supporting_execution_ids": ids})
+            if ok:
+                explanation = str(text)
+                explanation_ids = ids
+        return MechanismAnnotation(
+            features=features, explanation=explanation,
+            explanation_verified=False,  # never born verified
+            supporting_execution_ids=explanation_ids)
+
     def _cell_for(self, profile: ProblemProfile, strategy_id: str,
                   scope: str) -> GroupStats:
         if scope == "L1":
@@ -301,3 +354,40 @@ class InductionEngine:
             if rec is not None:
                 return rec.profile_snapshot.family
         return None
+
+
+# ---------------------------------------------------------------------------
+# Pattern reflow (interface reservation only — deliberately unimplemented)
+# ---------------------------------------------------------------------------
+
+
+class PatternReflowEngine:
+    """Interface reservation for pattern reflow. NOT implemented in v1.
+
+    The future contract (documented, not built):
+
+        new strategic pattern
+              ↓
+        find related experiences (facts whose profiles match the new
+        pattern's predicates or mechanisms, including already-compacted
+        groups)
+              ↓
+        reinterpret / relink them under the new pattern
+              ↓
+        update the strategic structure (entries, provenance links)
+
+    Invariants any future implementation must preserve:
+    - the Experience Bank stays append-only and neutral — reflow reorganizes
+      the DERIVED layer only;
+    - reflow is the harness's explicit call, like induce and gc;
+    - reinterpreted links carry provenance back to the original facts.
+    """
+
+    def __init__(self, stats: ConditionalStats, sbank: StrategicBank):
+        self.stats = stats
+        self.sbank = sbank
+
+    def propose_reflow(self, new_entry_ids: List[str]) -> List[Dict[str, Any]]:
+        """Currently a no-op: returns an empty proposal list. The harness
+        surface (``orx induce``) does not expose reflow yet."""
+        return []

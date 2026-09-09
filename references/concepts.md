@@ -32,6 +32,12 @@ Structural groups — the similarity keys for all memory — are built from prob
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
 
+## Mechanism features: kinship at first contact
+
+Coupling bins answer "how coupled is this problem"; mechanism features answer "WHY is it coupled". Four domain-agnostic OR mechanisms are measured from the model representation: shared resource competition (decisions competing for the same scarce capacity), global constraint propagation (one constraint channeling all decisions), temporal propagation (today's decision changing tomorrow's feasible region), and discrete feasibility shrinkage (integer structure making the continuous relaxation lie).
+
+Mechanisms are the cross-family matching key: a routing-learned entry can serve a scheduling problem at FIRST CONTACT when both exhibit the same mechanism — no exploration tuition in the target family, no widening gamble. The match carries the same cross-family discount and labelling as L2/L3 scope matching; a miss tightens scope as usual. This is the difference between statistical generalization (two families each paid for evidence, then the system merged them) and cognitive generalization (the system recognized kinship when it first appeared).
+
 ## CostVector: five dimensions, never folded at rest
 
 `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`.
@@ -39,6 +45,8 @@ A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this grou
 Retries and rework are costs. A "wrong model → repair → rerun" trajectory must be more expensive than getting it right the first time, even when solver runtime is similar — otherwise the memory cannot learn that one-shot strategies are worth preferring. Scalarization (`C_scalar = Σ wᵢ·norm(cᵢ)`) happens only inside the selector, with configurable weights; the stored record always keeps the raw five dimensions.
 
 `llm_tokens` is invisible to the execution sandbox (the harness owns the LLM), so it is backfilled at record time via `--override`.
+
+Cost predictions are validated like quality predictions — but separately. Each entry carries a per-dimension multiplicative interval; every record checks the observed cost against it and accumulates `cost_hit_rate` and per-dimension log-error calibration. A cost miss NEVER demotes an entry: quality errors invalidate the entry's core promise (retire-worthy), cost errors only make one attached estimate unreliable (warn-worthy). The selector surfaces "uncalibrated cost estimate" warnings and leaves the weighing to you.
 
 ## The disposal ladder (derived layer only)
 

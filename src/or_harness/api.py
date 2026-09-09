@@ -109,6 +109,13 @@ class ORHarness:
         Also reports staged-but-unrecorded executions for the same task, so
         the harness notices a dropped failure (e.g. an abandoned first
         attempt) before it is forgotten."""
+        # Persist failure classification once — a first-class fact, not a
+        # re-derived view (environment vs model errors feed solver advisories
+        # and future failure-pattern induction).
+        from or_harness.strategy.triggers import classify_failure
+        for failure in record.failures:
+            if failure.error_class is None:
+                failure.error_class = classify_failure(record)
         self.bank.append(record)
         if override:
             self.bank.update_cost(record.execution_id, **override)
@@ -208,7 +215,12 @@ class ORHarness:
     def _check_predictions(self, record: ExecutionRecord) -> List[Dict[str, Any]]:
         """Forward validation: every matching entry's prediction vs this
         observation. Cross-family misses on wide entries tighten scope instead
-        of demoting (the content may be right; the range was wrong)."""
+        of demoting (the content may be right; the range was wrong).
+
+        Cost predictions carry a parallel, WARNING-ONLY check: actual cost
+        within the entry's multiplicative interval counts as a hit; misses
+        feed cost calibration but never demote — quality and cost errors have
+        different remedies (retire vs. re-weigh) and never share a verdict."""
         events: List[Dict[str, Any]] = []
         observed = quality_score(record)
         for entry in self.sbank.matching(record.profile_snapshot):
@@ -227,8 +239,51 @@ class ORHarness:
             if not hit and entry.scope_level in ("L2", "L3"):
                 outcome = self.induction.tighten(entry.entry_id)
                 event["scope_tightened"] = outcome
+            # Cost-side check (parallel track, warning-only).
+            cost_event = self._check_cost_prediction(updated, record)
+            if cost_event is not None:
+                event["cost_check"] = cost_event
             events.append(event)
         return events
+
+    def _check_cost_prediction(self, entry, record: ExecutionRecord
+                               ) -> Optional[Dict[str, Any]]:
+        """Check the entry's cost interval against the observed CostVector.
+
+        Runs after the llm_tokens backfill (record applies overrides before
+        calling this chain), so all five dimensions are present. Returns None
+        when the entry carries no cost interval (pre-upgrade entries)."""
+        if not entry.cost_interval:
+            return None
+        import math
+
+        from or_harness.core.schema import COST_DIMENSIONS
+        hits, log_errors = [], {}
+        for dim in COST_DIMENSIONS:
+            band = entry.cost_interval.get(dim)
+            if band is None:
+                continue
+            lo_mult, hi_mult = band
+            predicted = getattr(entry.expected_cost_hat, dim)
+            actual = getattr(record.cost, dim)
+            if predicted <= 0 and actual <= 0:
+                hits.append(True)  # both zero: trivially consistent
+                continue
+            predicted = max(predicted, 1e-9)
+            in_band = lo_mult * predicted <= actual <= hi_mult * predicted
+            hits.append(in_band)
+            log_errors[dim] = round(abs(math.log(max(actual, 1e-9) / predicted)), 4)
+        if not hits:
+            return None
+        cost_hit = all(hits)
+        entry.prediction_track.record_cost(cost_hit, log_errors)
+        self.sbank.update(entry)
+        return {
+            "hit": cost_hit,
+            "per_dimension_in_band": hits,
+            "log_errors": log_errors,
+            "cost_hit_rate": round(entry.prediction_track.cost_hit_rate, 4),
+        }
 
     def _induction_targets(self, strategy_id: Optional[str], all_: bool):
         targets = []

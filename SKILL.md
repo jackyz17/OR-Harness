@@ -62,7 +62,8 @@ Never record an execution whose `problems` is non-empty without noting why.
 - **Strategic Bank** — induced commitments ("what will happen"): prediction intervals, calibration tracking, feature predicates. Fully rebuildable from facts (`induce --rebuild`).
 - **Conditional statistics** — on-the-fly aggregation over the Experience Bank per (strategy × structural group). Arithmetic, not knowledge; never persisted.
 - **Structural group** — problem family + coupling-feature bins (e.g. `resource_coupling ∈ [0.75, 1.0]`).
-- **CostVector** — five dimensions, stored raw, never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Retries are a cost: "wrong model → repair → rerun" must cost more than getting it right.
+- **CostVector** — five dimensions, stored raw, never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Retries are a cost: "wrong model → repair → rerun" must cost more than getting it right. (In Chinese documentation: 代价, not 成本 — it is the price paid at decision time, not bookkeeping.)
+- **Mechanism features** — the WHY-dimensions: `shared_resource_competition, global_constraint_propagation, temporal_propagation, discrete_feasibility_shrinkage`, measured from your model representation. Two problems sharing a mechanism share the causal structure that makes a strategy work, whatever their family labels — kinship is recognized at first contact.
 - **Cold archive** — tombstones of retired entries. Vetoes re-induction of the same failed generalization; `--force` revives only under genuine environment drift.
 
 ## Commands
@@ -77,7 +78,7 @@ Result: `result.profile` = `{problem_id, family, scale_features, <four coupling 
 
 ### `orx recommend --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--code solve.py]`
 
-Ranks applicable strategies. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic entry → conditional statistics → catalog prior.
+Ranks applicable strategies. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic entry → mechanism-kinship entry (same structural mechanism, different family; discounted and labelled) → conditional statistics → cross-family mechanism statistics → catalog prior.
 
 Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before).
 
@@ -120,7 +121,7 @@ Self-check: solver availability (7 adapters probed), memory sizes, staged-but-un
 ## Decision guidance
 
 - **induction_hints after record**: hints are evidence, not orders. C1 (strategy contrast contradicting priors), C2 (prior divergence), C3 (in-group drift), C4 (fallback exercised), C5 (cross-family reproduction — suggests L2), C6 (stable success). Induce when you judge the pattern worth generalizing; you may also induce with no hint at all.
-- **status**: `candidate` = plausible, unproven. `validated` = ≥5 predictions, ≥70% hit rate. `suspect` = 3 consecutive misses, downweighted ×0.5 — treat its estimates as warnings, not facts. `dormant` = not consulted for 10 tasks, excluded from matching (wakes on a future hit).
+- **status**: `candidate` = plausible, unproven. `validated` = ≥5 predictions, ≥70% hit rate. `suspect` = 3 consecutive QUALITY misses, downweighted ×0.5 — treat its estimates as warnings, not facts. `dormant` = not consulted for 10 tasks, excluded from matching (wakes on a future hit). Cost misses never demote — they feed `cost_hit_rate` and surface as "uncalibrated cost estimate" warnings.
 - **confidence & cross_family**: cross-family generalizations (L2/L3 entry matching a family absent from its provenance) are discounted and labelled — weigh them accordingly.
 - **When to gc**: when `inspect` shows large groups fully covered by validated entries. Always `--dry-run` first and review the plan.
 

@@ -35,6 +35,7 @@ from or_harness.core.schema import (
 from or_harness.profiling.model_syntax import (
     ModelReport,
     coupling_from_model,
+    mechanisms_from_model,
     verify_model,
 )
 
@@ -77,10 +78,12 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
 
     model_report: Optional[ModelReport] = None
     model_coupling: Dict[str, Optional[float]] = {}
+    model_mechanisms: Dict[str, float] = {}
     if isinstance(model_text, str) and model_text.strip():
         model_report = verify_model(model_text)
         if model_report.parsed is not None:
             model_coupling = coupling_from_model(model_report.parsed)
+            model_mechanisms = mechanisms_from_model(model_report.parsed)
 
     supplied = _supplied_coupling(task, annotations)
     derived = _derive_coupling(spec, code)
@@ -120,7 +123,8 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
         resource_coupling=coupling["resource_coupling"],
         temporal_coupling=coupling["temporal_coupling"],
         route_complexity=coupling["route_complexity"],
-        risk_features=risk, source=source, annotations=annotations)
+        risk_features=risk, source=source, annotations=annotations,
+        mechanism_features=model_mechanisms)  # {} without a model — never fabricated
     # Derivation report + warnings ride along in annotations (schema-stable).
     report: Dict[str, Any] = {"origin": origin}
     if model_report is not None:

@@ -274,6 +274,158 @@ def coupling_from_model(model: ParsedModel) -> Dict[str, Optional[float]]:
 
 
 # ---------------------------------------------------------------------------
+# mechanism features (domain-agnostic OR mechanisms, measured from structure)
+# ---------------------------------------------------------------------------
+
+#: The four mechanisms measurable from a declared model. Each is a fraction in
+#: [0, 1] capturing how strongly the mechanism is present. Unlike coupling
+#: bins these are WHY-dimensions: two problems sharing a mechanism share the
+#: causal structure that makes a strategy work, regardless of family label.
+#:
+#: shared_resource_competition — constraints overlap on variables: multiple
+#:     decisions compete for the same scarce capacity (shared plant capacity,
+#:     shared machine time, shared line bandwidth — same mechanism, any domain).
+#: global_constraint_propagation — the widest constraint spans most variables:
+#:     local decisions propagate through one global constraint to all others.
+#: temporal_propagation — constraints link the same variable across time
+#:     indices: today's decision changes tomorrow's feasible region.
+#: discrete_feasibility_shrinkage — integer/binary variables dominate: local
+#:     continuous relaxation misrepresents the true feasible region (MOQ,
+#:     batch sizing, on/off units, path selection — same mechanism).
+MECHANISM_FEATURES: Tuple[str, ...] = (
+    "shared_resource_competition",
+    "global_constraint_propagation",
+    "temporal_propagation",
+    "discrete_feasibility_shrinkage",
+)
+
+#: Constraint-pair overlap ratio above which two constraints count as
+#: competing for shared variables.
+_SHARED_COMPETITION_OVERLAP = 0.3
+#: Share of variables a single constraint must span to count as global.
+_GLOBAL_PROPAGATION_SPAN = 0.6
+
+
+def mechanisms_from_model(model: ParsedModel) -> Dict[str, float]:
+    """Deterministic mechanism measurement from the declared model.
+
+    Returns {} when the model is too sparse to measure honestly (fewer than
+    2 constraints or no variables) — never fabricates values.
+    """
+    n_vars = len(model.variables)
+    n_cons = len(model.constraints)
+    if n_vars == 0 or n_cons < 2:
+        return {}
+
+    var_sets = model.constraint_variable_sets()
+
+    # shared_resource_competition: fraction of constraint PAIRS whose variable
+    # sets overlap beyond the threshold (competition means shared decisions).
+    competing_pairs = 0
+    total_pairs = 0
+    for i in range(n_cons):
+        for j in range(i + 1, n_cons):
+            union = len(var_sets[i] | var_sets[j])
+            if union == 0:
+                continue
+            total_pairs += 1
+            overlap = len(var_sets[i] & var_sets[j]) / union
+            if overlap >= _SHARED_COMPETITION_OVERLAP:
+                competing_pairs += 1
+    src = competing_pairs / total_pairs if total_pairs else 0.0
+
+    # global_constraint_propagation: widest constraint's variable span,
+    # counting SUM-EXPANDED references — in this DSL `sum(i, x[i,j])` is a
+    # symbolic summation, so one textual x[i,j] under a sum over i stands for
+    # every member of i. A constraint touching (nearly) all expanded
+    # instances is a global propagation channel.
+    def _expanded_refs(expr: str) -> int:
+        total = 0
+        for var in model.variables:
+            for m in re.finditer(rf"\b{re.escape(var)}\s*\[([^\]]*)\]", expr):
+                indices = re.findall(r"[A-Za-z_]\w*", m.group(1))
+                # Find enclosing sum scopes by scanning the whole expression:
+                # each sum whose index appears in this subscript multiplies
+                # the reference by that set's cardinality.
+                count = 1
+                for sum_idx, set_name in _sum_scopes(expr):
+                    if sum_idx in indices and set_name in model.sets:
+                        count *= max(1, len(model.sets[set_name]))
+                total += count
+        return total
+
+    def _sum_scopes(expr: str):
+        """(index, set_name) pairs for every sum(index, ...) in the expr.
+        Set names are resolved from the model's declared index->set map."""
+        for m in re.finditer(r"\bsum\s*\(\s*([A-Za-z_]\w*)\s*,", expr):
+            idx = m.group(1)
+            set_name = model.set_names.get(idx)
+            if set_name is not None:
+                yield idx, set_name
+
+    # global_constraint_propagation: the widest constraint's share of ALL
+    # variable instances. The denominator is the total instance count (each
+    # declared variable times its full index space), not the sum of
+    # references across constraints — a global constraint is one that touches
+    # (nearly) every instance, whatever else the other constraints do.
+    def _instance_count(var: str) -> int:
+        index_expr = model.var_indices.get(var, "")
+        indices = re.findall(r"[A-Za-z_]\w*", index_expr)
+        count = 1
+        for idx in indices:
+            set_name = model.set_names.get(idx)
+            if set_name in model.sets:
+                count *= max(1, len(model.sets[set_name]))
+        return count
+
+    total_instances = sum(_instance_count(v) for v in model.variables)
+    widest_refs = max((_expanded_refs(expr) for _label, expr in model.constraints),
+                      default=0)
+    gcp = 1.0 if (total_instances > 1
+                  and widest_refs >= _GLOBAL_PROPAGATION_SPAN * total_instances
+                  ) else 0.0
+
+    # temporal_propagation: constraints referencing one variable at multiple
+    # time indices (x[i,t] and x[i,t+1] in the same expression), plus the
+    # share of constraints that link across periods.
+    temporal_sets = {idx for idx, set_name in model.set_names.items()
+                     if re.search(r"time|period|stage|day|hour|week|month",
+                                  set_name, re.IGNORECASE)}
+    linking = 0
+    for _label, expr in model.constraints:
+        for var in model.variables:
+            if not _references(expr, var):
+                continue
+            index_exprs = [m.group(1) for m in re.finditer(
+                rf"\b{re.escape(var)}\s*\[([^\]]*)\]", expr)]
+            # Tolerate arithmetic indices (t+1, t-1): extract the base name.
+            temporal_idx = set()
+            for inner in index_exprs:
+                for token in re.findall(r"[A-Za-z_]\w*", inner):
+                    base = re.match(r"[A-Za-z_]\w*", token).group(0)
+                    if base in temporal_sets or base.lower() == "t":
+                        temporal_idx.add(base)
+            if len(temporal_idx) >= 1 and len(index_exprs) >= 2:
+                # same variable referenced at >= 2 index positions over a
+                # temporal set -> cross-period linkage
+                linking += 1
+                break
+    tp = linking / n_cons if n_cons else 0.0
+
+    # discrete_feasibility_shrinkage: fraction of integer/binary variables.
+    discrete = sum(1 for t in model.variables.values()
+                   if t in ("integer", "binary"))
+    dfs = discrete / n_vars
+
+    return {
+        "shared_resource_competition": round(src, 4),
+        "global_constraint_propagation": round(gcp, 4),
+        "temporal_propagation": round(tp, 4),
+        "discrete_feasibility_shrinkage": round(dfs, 4),
+    }
+
+
+# ---------------------------------------------------------------------------
 # internals
 # ---------------------------------------------------------------------------
 

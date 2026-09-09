@@ -54,4 +54,11 @@ Issues come back as `{layer, code, detail}` — e.g. `[L2] undefined_symbol: 'bu
 - **route_complexity** = fraction of variables indexed by a network set (arc/edge/road/link/route/leg).
 - **semantic_coupling** is NOT derived — business semantics are invisible to structure; supply it via `annotations.coupling.semantic_coupling` if you want it grouped on.
 
+Plus four **mechanism features** (the WHY-dimensions, used for cross-family kinship matching):
+
+- **shared_resource_competition** — fraction of constraint pairs whose variable sets overlap: decisions competing for the same scarce capacity.
+- **global_constraint_propagation** — 1.0 when the widest constraint (sum-expanded) spans nearly all variable instances: one constraint channels every decision.
+- **temporal_propagation** — fraction of constraints linking one variable across multiple time indices (`x[i,t] + x[i,t+1]`).
+- **discrete_feasibility_shrinkage** — fraction of integer/binary variables: the continuous relaxation misrepresents the feasible region.
+
 If you also supply coupling values and they contradict the derivation across a bin boundary, `orx profile` returns `coupling_warnings` — the structural measurement wins for grouping; your original values are preserved in annotations.

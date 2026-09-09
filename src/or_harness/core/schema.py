@@ -124,6 +124,18 @@ COARSE_BIN_EDGES: Tuple[float, ...] = (0.0, 0.5, 1.0)
 
 PROFILE_SOURCES = ("harness_supplied", "derived")
 
+#: Domain-agnostic OR mechanisms (the WHY-dimensions). Unlike coupling bins,
+#: mechanisms capture why a problem is coupled: two problems sharing a
+#: mechanism share the causal structure that makes a strategy work, whatever
+#: their family labels. Derived from the model representation when present;
+#: never fabricated.
+MECHANISM_FEATURES: Tuple[str, ...] = (
+    "shared_resource_competition",
+    "global_constraint_propagation",
+    "temporal_propagation",
+    "discrete_feasibility_shrinkage",
+)
+
 
 @dataclass
 class ProblemProfile:
@@ -144,6 +156,11 @@ class ProblemProfile:
     risk_features: Dict[str, Any] = field(default_factory=dict)
     source: str = "derived"
     annotations: Dict[str, Any] = field(default_factory=dict)
+    #: Domain-agnostic mechanism measurements in [0, 1]; empty when no model
+    #: representation was provided (never fabricated). Used as a cross-family
+    #: matching key: kinship is recognized at first contact, not only after
+    #: both families have paid exploration tuition.
+    mechanism_features: Dict[str, float] = field(default_factory=dict)
 
     def coupling(self) -> Dict[str, Optional[float]]:
         return {f: getattr(self, f) for f in COUPLING_FEATURES}
@@ -157,6 +174,7 @@ class ProblemProfile:
             "risk_features": self.risk_features,
             "source": self.source,
             "annotations": self.annotations,
+            "mechanism_features": {k: float(v) for k, v in self.mechanism_features.items()},
         }
 
     @classmethod
@@ -185,6 +203,8 @@ class ProblemProfile:
             risk_features=dict(data.get("risk_features") or {}),
             source=source,
             annotations=dict(data.get("annotations") or {}),
+            mechanism_features={k: float(v) for k, v in
+                                (data.get("mechanism_features") or {}).items()},
         )
 
 
@@ -392,16 +412,22 @@ class FailureRecord:
     attempt: int
     error: str
     recovery_action: Optional[str] = None
+    #: "environment" (solver/stack cannot run here: sandbox policy, missing
+    #: module) vs "model" (the harness's own code failed). Computed once at
+    #: record time and persisted — a first-class fact, not a re-derived view.
+    error_class: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {"attempt": int(self.attempt), "error": self.error,
-                "recovery_action": self.recovery_action}
+                "recovery_action": self.recovery_action,
+                "error_class": self.error_class}
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "FailureRecord":
         return cls(attempt=int(data.get("attempt", 0)),
                    error=str(data.get("error", "")),
-                   recovery_action=data.get("recovery_action"))
+                   recovery_action=data.get("recovery_action"),
+                   error_class=data.get("error_class"))
 
 
 @dataclass
@@ -525,16 +551,30 @@ class PredictionTrack:
     """Forward-validation bookkeeping: how this entry's predictions fared
     against *future* executions. Promotion: n_predictions >= 5 and
     hit_rate >= 0.7 (candidate -> validated). Demotion: 3 consecutive misses
-    (-> suspect, score x0.5)."""
+    (-> suspect, score x0.5).
+
+    Cost predictions carry their own, SEPARATE track: a cost miss means the
+    entry's cost estimate is unreliable — it warns, it never demotes. Quality
+    and cost errors have different reversibility and different remedies
+    (retire vs. re-weigh), so they never share a verdict."""
 
     n_predictions: int = 0
     n_hits: int = 0
     consecutive_misses: int = 0
     calibration_error: float = 0.0
+    # Cost-side track (parallel, warning-only).
+    n_cost_predictions: int = 0
+    n_cost_hits: int = 0
+    cost_calibration: Dict[str, float] = field(default_factory=dict)
 
     @property
     def hit_rate(self) -> float:
         return self.n_hits / self.n_predictions if self.n_predictions else 0.0
+
+    @property
+    def cost_hit_rate(self) -> float:
+        return self.n_cost_hits / self.n_cost_predictions \
+            if self.n_cost_predictions else 0.0
 
     def record(self, hit: bool, calibration_err: float = 0.0) -> None:
         self.n_predictions += 1
@@ -546,6 +586,17 @@ class PredictionTrack:
         n = self.n_predictions
         self.calibration_error = ((self.calibration_error * (n - 1)) + calibration_err) / n
 
+    def record_cost(self, hit: bool, per_dimension_log_error: Dict[str, float]) -> None:
+        """Record a cost-prediction check. Warning-only: never touches
+        consecutive_misses or the quality-side counters."""
+        self.n_cost_predictions += 1
+        if hit:
+            self.n_cost_hits += 1
+        n = self.n_cost_predictions
+        for dim, err in per_dimension_log_error.items():
+            prev = self.cost_calibration.get(dim, 0.0)
+            self.cost_calibration[dim] = (prev * (n - 1) + err) / n
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "n_predictions": self.n_predictions,
@@ -553,16 +604,66 @@ class PredictionTrack:
             "hit_rate": round(self.hit_rate, 4),
             "consecutive_misses": self.consecutive_misses,
             "calibration_error": round(self.calibration_error, 4),
+            "n_cost_predictions": self.n_cost_predictions,
+            "n_cost_hits": self.n_cost_hits,
+            "cost_hit_rate": round(self.cost_hit_rate, 4),
+            "cost_calibration": {k: round(v, 4) for k, v in
+                                 self.cost_calibration.items()},
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PredictionTrack":
         data = data or {}
-        track = cls(n_predictions=int(data.get("n_predictions", 0)),
-                    n_hits=int(data.get("n_hits", 0)),
-                    consecutive_misses=int(data.get("consecutive_misses", 0)),
-                    calibration_error=float(data.get("calibration_error", 0.0)))
-        return track
+        return cls(
+            n_predictions=int(data.get("n_predictions", 0)),
+            n_hits=int(data.get("n_hits", 0)),
+            consecutive_misses=int(data.get("consecutive_misses", 0)),
+            calibration_error=float(data.get("calibration_error", 0.0)),
+            n_cost_predictions=int(data.get("n_cost_predictions", 0)),
+            n_cost_hits=int(data.get("n_cost_hits", 0)),
+            cost_calibration={k: float(v) for k, v in
+                              (data.get("cost_calibration") or {}).items()},
+        )
+
+
+@dataclass
+class MechanismAnnotation:
+    """The WHY-layer of a strategic entry: which domain-agnostic OR
+    mechanisms the supporting evidence exhibited.
+
+    ``features`` are aggregated automatically from the provenance records'
+    profile snapshots at induce time — measured, not narrated. ``explanation``
+    is optional harness phrasing under the same citation-binding discipline as
+    applicability conditions: cited executions must be real and numeric claims
+    must agree with them, or the explanation is rejected.
+
+    This is mechanism ANNOTATION, not causal discovery: the framework moves
+    measured structure from evidence to entry; it never infers causality."""
+
+    features: Dict[str, float] = field(default_factory=dict)
+    explanation: Optional[str] = None
+    explanation_verified: bool = False
+    supporting_execution_ids: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "features": {k: float(v) for k, v in self.features.items()},
+            "explanation": self.explanation,
+            "explanation_verified": self.explanation_verified,
+            "supporting_execution_ids": list(self.supporting_execution_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "MechanismAnnotation":
+        if not isinstance(data, dict):
+            raise ValueError("MechanismAnnotation must be a JSON object")
+        return cls(
+            features={k: float(v) for k, v in (data.get("features") or {}).items()},
+            explanation=data.get("explanation"),
+            explanation_verified=bool(data.get("explanation_verified", False)),
+            supporting_execution_ids=[str(i) for i in
+                                      (data.get("supporting_execution_ids") or [])],
+        )
 
 
 @dataclass
@@ -579,6 +680,11 @@ class StrategicEntry:
     expected_quality_hat: float = 0.5
     quality_interval: Tuple[float, float] = (0.0, 1.0)
     expected_cost_hat: CostVector = field(default_factory=CostVector)
+    #: Per-dimension multiplicative cost interval: actual cost is expected
+    #: within [lo * hat, hi * hat] per dimension. v1 uses a fixed 2x band
+    #: ([0.5, 2.0]); the interval is checked (not just the point estimate)
+    #: by the record chain's cost validation.
+    cost_interval: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     failure_prob: float = 0.5
     applicability: List[ApplicabilityCondition] = field(default_factory=list)
     risk_conditions: List[str] = field(default_factory=list)
@@ -589,6 +695,13 @@ class StrategicEntry:
     last_consulted_at: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     support_n: int = 0
+    #: The WHY-layer: mechanisms exhibited by the supporting evidence.
+    mechanism: MechanismAnnotation = field(default_factory=MechanismAnnotation)
+    #: Hierarchy placeholders (unused in v1; reserved so future layered
+    #: patterns — specific strategic regularities under higher-level
+    #: mechanism regularities — can be expressed without schema surgery).
+    parent_pattern_id: Optional[str] = None
+    mechanism_id: Optional[str] = None
 
     @staticmethod
     def new_id() -> str:
@@ -615,6 +728,8 @@ class StrategicEntry:
                 "quality_hat": self.expected_quality_hat,
                 "quality_interval": [self.quality_interval[0], self.quality_interval[1]],
                 "cost_hat": self.expected_cost_hat.to_dict(),
+                "cost_interval": {d: [lo, hi] for d, (lo, hi)
+                                  in self.cost_interval.items()},
                 "failure_prob": self.failure_prob,
             },
             "applicability": [a.to_dict() for a in self.applicability],
@@ -624,6 +739,9 @@ class StrategicEntry:
             "prediction_track": self.prediction_track.to_dict(),
             "provenance": list(self.provenance),
             "support_n": self.support_n,
+            "mechanism": self.mechanism.to_dict(),
+            "parent_pattern_id": self.parent_pattern_id,
+            "mechanism_id": self.mechanism_id,
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -643,6 +761,9 @@ class StrategicEntry:
             raise ValueError(f"status must be one of {ENTRY_STATUSES}")
         expected = data.get("expected") or {}
         interval = expected.get("quality_interval") or [0.0, 1.0]
+        cost_interval = {d: (float(lo), float(hi))
+                         for d, (lo, hi) in
+                         (expected.get("cost_interval") or {}).items()}
         return cls(
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),
@@ -651,6 +772,7 @@ class StrategicEntry:
             expected_quality_hat=float(expected.get("quality_hat", 0.5)),
             quality_interval=(float(interval[0]), float(interval[1])),
             expected_cost_hat=CostVector.from_dict(expected.get("cost_hat") or {}),
+            cost_interval=cost_interval,
             failure_prob=float(expected.get("failure_prob", 0.5)),
             applicability=[ApplicabilityCondition.from_dict(a)
                            for a in (data.get("applicability") or [])],
@@ -660,6 +782,9 @@ class StrategicEntry:
             prediction_track=PredictionTrack.from_dict(data.get("prediction_track")),
             provenance=[str(p) for p in (data.get("provenance") or [])],
             support_n=int(data.get("support_n", 0)),
+            mechanism=MechanismAnnotation.from_dict(data.get("mechanism") or {}),
+            parent_pattern_id=data.get("parent_pattern_id"),
+            mechanism_id=data.get("mechanism_id"),
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )
