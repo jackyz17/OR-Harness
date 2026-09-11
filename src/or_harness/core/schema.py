@@ -124,18 +124,6 @@ COARSE_BIN_EDGES: Tuple[float, ...] = (0.0, 0.5, 1.0)
 
 PROFILE_SOURCES = ("harness_supplied", "derived")
 
-#: Domain-agnostic OR mechanisms (the WHY-dimensions). Unlike coupling bins,
-#: mechanisms capture why a problem is coupled: two problems sharing a
-#: mechanism share the causal structure that makes a strategy work, whatever
-#: their family labels. Derived from the model representation when present;
-#: never fabricated.
-MECHANISM_FEATURES: Tuple[str, ...] = (
-    "shared_resource_competition",
-    "global_constraint_propagation",
-    "temporal_propagation",
-    "discrete_feasibility_shrinkage",
-)
-
 
 @dataclass
 class ProblemProfile:
@@ -143,7 +131,7 @@ class ProblemProfile:
 
     Coupling dimensions may be supplied directly by the harness (which may
     already understand the problem upstream) or derived deterministically by
-    the profiler from a structured spec plus the solve-script AST.
+    the profiler from a structured spec or model representation.
     """
 
     problem_id: str
@@ -156,11 +144,6 @@ class ProblemProfile:
     risk_features: Dict[str, Any] = field(default_factory=dict)
     source: str = "derived"
     annotations: Dict[str, Any] = field(default_factory=dict)
-    #: Domain-agnostic mechanism measurements in [0, 1]; empty when no model
-    #: representation was provided (never fabricated). Used as a cross-family
-    #: matching key: kinship is recognized at first contact, not only after
-    #: both families have paid exploration tuition.
-    mechanism_features: Dict[str, float] = field(default_factory=dict)
 
     def coupling(self) -> Dict[str, Optional[float]]:
         return {f: getattr(self, f) for f in COUPLING_FEATURES}
@@ -174,7 +157,6 @@ class ProblemProfile:
             "risk_features": self.risk_features,
             "source": self.source,
             "annotations": self.annotations,
-            "mechanism_features": {k: float(v) for k, v in self.mechanism_features.items()},
         }
 
     @classmethod
@@ -203,8 +185,6 @@ class ProblemProfile:
             risk_features=dict(data.get("risk_features") or {}),
             source=source,
             annotations=dict(data.get("annotations") or {}),
-            mechanism_features={k: float(v) for k, v in
-                                (data.get("mechanism_features") or {}).items()},
         )
 
 
@@ -328,9 +308,10 @@ def scope_of(predicates: Dict[str, Any]) -> str:
 class Strategy:
     """A named solving strategy.
 
-    ``expected`` carries built-in priors (quality/cost/risk) — the selector's
-    only evidence at cold start. ``applicability`` is a predicate set in the
-    same format as structural patterns (empty = applies everywhere).
+    The catalog is a cold-start *vocabulary*: it carries structural knowledge
+    (applicability conditions, modeling actions, fallback chain, solver family)
+    but NO prior quality/cost/risk scores. Without accumulated experience the
+    selector honestly reports "no evidence" rather than fabricating priors.
     """
 
     strategy_id: str
@@ -339,9 +320,6 @@ class Strategy:
     applicability: Dict[str, Any] = field(default_factory=dict)
     actions: List[str] = field(default_factory=list)
     fallback: Optional[str] = None
-    expected_quality: float = 0.5
-    expected_cost: CostVector = field(default_factory=CostVector)
-    expected_risk: float = 0.5
     solver_family: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -352,11 +330,6 @@ class Strategy:
             "applicability": self.applicability,
             "actions": list(self.actions),
             "fallback": self.fallback,
-            "expected": {
-                "quality": self.expected_quality,
-                "cost": self.expected_cost.to_dict(),
-                "risk": self.expected_risk,
-            },
             "solver_family": self.solver_family,
         }
 
@@ -367,7 +340,6 @@ class Strategy:
         for key in ("strategy_id", "name"):
             if not data.get(key):
                 raise ValueError(f"Strategy.{key} is required")
-        expected = data.get("expected") or {}
         return cls(
             strategy_id=str(data["strategy_id"]),
             name=str(data["name"]),
@@ -375,9 +347,6 @@ class Strategy:
             applicability=dict(data.get("applicability") or {}),
             actions=[str(a) for a in (data.get("actions") or [])],
             fallback=data.get("fallback"),
-            expected_quality=float(expected.get("quality", 0.5)),
-            expected_cost=CostVector.from_dict(expected.get("cost") or {}),
-            expected_risk=float(expected.get("risk", 0.5)),
             solver_family=data.get("solver_family"),
         )
 
@@ -445,6 +414,11 @@ class ExecutionRecord:
     cost: CostVector = field(default_factory=CostVector)
     failures: List[FailureRecord] = field(default_factory=list)
     solver: Dict[str, Any] = field(default_factory=dict)
+    #: Post-strategy diagnostics — separate from the frozen pre-strategy
+    #: signature (profile_snapshot). Carries solver diagnostics, model
+    #: diagnostics, and other execution-time observations. Never modifies
+    #: task identity; available to offline induction but not online retrieval.
+    execution_features: Dict[str, Any] = field(default_factory=dict)
     verification_level: str = "basic"
     created_at: float = field(default_factory=time.time)
     source: str = "executed"
@@ -468,6 +442,7 @@ class ExecutionRecord:
             "cost": self.cost.to_dict(),
             "failures": [f.to_dict() for f in self.failures],
             "solver": self.solver,
+            "execution_features": dict(self.execution_features),
             "verification_level": self.verification_level,
             "created_at": self.created_at,
             "source": self.source,
@@ -493,6 +468,7 @@ class ExecutionRecord:
             cost=CostVector.from_dict(data.get("cost") or {}),
             failures=[FailureRecord.from_dict(f) for f in (data.get("failures") or [])],
             solver=dict(data.get("solver") or {}),
+            execution_features=dict(data.get("execution_features") or {}),
             verification_level=verification,
             created_at=float(data.get("created_at", time.time())),
             source=str(data.get("source", "executed")),
@@ -627,46 +603,6 @@ class PredictionTrack:
 
 
 @dataclass
-class MechanismAnnotation:
-    """The WHY-layer of a strategic entry: which domain-agnostic OR
-    mechanisms the supporting evidence exhibited.
-
-    ``features`` are aggregated automatically from the provenance records'
-    profile snapshots at induce time — measured, not narrated. ``explanation``
-    is optional harness phrasing under the same citation-binding discipline as
-    applicability conditions: cited executions must be real and numeric claims
-    must agree with them, or the explanation is rejected.
-
-    This is mechanism ANNOTATION, not causal discovery: the framework moves
-    measured structure from evidence to entry; it never infers causality."""
-
-    features: Dict[str, float] = field(default_factory=dict)
-    explanation: Optional[str] = None
-    explanation_verified: bool = False
-    supporting_execution_ids: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "features": {k: float(v) for k, v in self.features.items()},
-            "explanation": self.explanation,
-            "explanation_verified": self.explanation_verified,
-            "supporting_execution_ids": list(self.supporting_execution_ids),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "MechanismAnnotation":
-        if not isinstance(data, dict):
-            raise ValueError("MechanismAnnotation must be a JSON object")
-        return cls(
-            features={k: float(v) for k, v in (data.get("features") or {}).items()},
-            explanation=data.get("explanation"),
-            explanation_verified=bool(data.get("explanation_verified", False)),
-            supporting_execution_ids=[str(i) for i in
-                                      (data.get("supporting_execution_ids") or [])],
-        )
-
-
-@dataclass
 class StrategicEntry:
     """A generalized, calibrated commitment: 'for problems matching this
     pattern, this strategy will perform within these intervals.'
@@ -695,13 +631,6 @@ class StrategicEntry:
     last_consulted_at: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     support_n: int = 0
-    #: The WHY-layer: mechanisms exhibited by the supporting evidence.
-    mechanism: MechanismAnnotation = field(default_factory=MechanismAnnotation)
-    #: Hierarchy placeholders (unused in v1; reserved so future layered
-    #: patterns — specific strategic regularities under higher-level
-    #: mechanism regularities — can be expressed without schema surgery).
-    parent_pattern_id: Optional[str] = None
-    mechanism_id: Optional[str] = None
 
     @staticmethod
     def new_id() -> str:
@@ -739,9 +668,6 @@ class StrategicEntry:
             "prediction_track": self.prediction_track.to_dict(),
             "provenance": list(self.provenance),
             "support_n": self.support_n,
-            "mechanism": self.mechanism.to_dict(),
-            "parent_pattern_id": self.parent_pattern_id,
-            "mechanism_id": self.mechanism_id,
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -782,9 +708,6 @@ class StrategicEntry:
             prediction_track=PredictionTrack.from_dict(data.get("prediction_track")),
             provenance=[str(p) for p in (data.get("provenance") or [])],
             support_n=int(data.get("support_n", 0)),
-            mechanism=MechanismAnnotation.from_dict(data.get("mechanism") or {}),
-            parent_pattern_id=data.get("parent_pattern_id"),
-            mechanism_id=data.get("mechanism_id"),
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )

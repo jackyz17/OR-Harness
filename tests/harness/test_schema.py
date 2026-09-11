@@ -51,13 +51,12 @@ class TestSchemaRoundTrip(HarnessTestCase):
         s = Strategy(strategy_id="S01", name="monolithic",
                      applicability={"family": "routing"},
                      actions=["build", "solve"], fallback="S02",
-                     expected_quality=0.75,
-                     expected_cost=CostVector(llm_tokens=200),
-                     expected_risk=0.2, solver_family="milp")
+                     solver_family="milp")
         s2 = Strategy.from_dict(s.to_dict())
         self.assertEqual(s2.strategy_id, "S01")
-        self.assertEqual(s2.expected_cost, s.expected_cost)
+        self.assertEqual(s2.applicability, s.applicability)
         self.assertEqual(s2.fallback, "S02")
+        self.assertEqual(s2.solver_family, "milp")
 
     def test_execution_record_round_trip(self):
         r = self.make_record(feasible=False, gap=0.12, status="feasible")

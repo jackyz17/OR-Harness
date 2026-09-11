@@ -35,7 +35,6 @@ from or_harness.core.schema import (
 from or_harness.profiling.model_syntax import (
     ModelReport,
     coupling_from_model,
-    mechanisms_from_model,
     verify_model,
 )
 
@@ -43,7 +42,8 @@ from or_harness.profiling.model_syntax import (
 STRUCTURAL_DIMENSIONS = ("resource_coupling", "temporal_coupling", "route_complexity")
 
 
-def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemProfile:
+def profile_task(task: Dict[str, Any], code: Optional[str] = None,
+                 cir: Optional[Any] = None) -> ProblemProfile:
     """Build a ProblemProfile from a task JSON document.
 
     Task schema::
@@ -78,17 +78,13 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
 
     model_report: Optional[ModelReport] = None
     model_coupling: Dict[str, Optional[float]] = {}
-    model_mechanisms: Dict[str, float] = {}
     if isinstance(model_text, str) and model_text.strip():
         model_report = verify_model(model_text)
         if model_report.parsed is not None:
             model_coupling = coupling_from_model(model_report.parsed)
-            model_mechanisms = mechanisms_from_model(model_report.parsed)
 
     supplied = _supplied_coupling(task, annotations)
     derived = _derive_coupling(spec, code)
-
-    # Merge per dimension by priority: model > code/spec-derived > supplied.
     # semantic_coupling is never derived — supplied only.
     coupling: Dict[str, Optional[float]] = {}
     origin: Dict[str, str] = {}
@@ -123,14 +119,21 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None) -> ProblemPro
         resource_coupling=coupling["resource_coupling"],
         temporal_coupling=coupling["temporal_coupling"],
         route_complexity=coupling["route_complexity"],
-        risk_features=risk, source=source, annotations=annotations,
-        mechanism_features=model_mechanisms)  # {} without a model — never fabricated
+        risk_features=risk, source=source, annotations=annotations)
     # Derivation report + warnings ride along in annotations (schema-stable).
     report: Dict[str, Any] = {"origin": origin}
     if model_report is not None:
         report["model_verification"] = model_report.to_dict()
     if warnings:
         report["coupling_warnings"] = warnings
+    # CIR ↔ model cross-check (optional): the CIR is a pre-model artifact;
+    # the model may later be used to verify it, but is never required to
+    # create one.  When both are present, inconsistencies are flagged here.
+    if cir is not None:
+        from or_harness.core.coupling import cross_check_cir_model
+        cir_warnings = cross_check_cir_model(cir, model_report.parsed if model_report else None)
+        if cir_warnings:
+            report["cir_warnings"] = cir_warnings
     profile.annotations["profiling"] = report
     return profile
 
@@ -254,9 +257,8 @@ def _derive_coupling(spec: Dict[str, Any], code: Optional[str]) -> Dict[str, Opt
         _route_from_spec(spec),
         signals.get("cooccurrence_rate"),
     ])
-    semantic = _semantic_from_spec(spec, resource, temporal, route)
     return {
-        "semantic_coupling": semantic,
+        "semantic_coupling": None,  # never derived — always harness-supplied
         "resource_coupling": resource,
         "temporal_coupling": temporal,
         "route_complexity": route,
@@ -364,16 +366,6 @@ def _route_from_spec(spec: Dict[str, Any]) -> Optional[float]:
     if spec.get("network") is True:
         return 0.8
     return None
-
-
-def _semantic_from_spec(spec: Dict[str, Any], *components: Optional[float]) -> Optional[float]:
-    """Semantic coupling proxy: entity/interaction richness blended with the
-    other coupling dimensions (highly coupled problems are semantically rich)."""
-    entities = spec.get("entities")
-    entity_richness = (min(1.0, len(entities) / 10.0)
-                       if isinstance(entities, list) and entities else None)
-    parts = [c for c in (entity_richness, *components) if c is not None]
-    return (sum(parts) / len(parts)) if parts else None
 
 
 def _combine(values) -> Optional[float]:

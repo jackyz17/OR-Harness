@@ -32,7 +32,7 @@ class TestCatalog(SelectorCase):
     def test_applicability_filters(self):
         profile = self.make_profile(temporal_coupling=0.9, resource_coupling=0.1,
                                     route_complexity=0.1)
-        recs = self.selector.recommend(profile, top=20)
+        recs = self.selector.recall(profile, top=20)
         ids = {r.strategy.strategy_id for r in recs}
         self.assertIn("S03", ids)         # temporal window applies
         self.assertNotIn("S02", ids)      # resource_coupling too low
@@ -40,16 +40,19 @@ class TestCatalog(SelectorCase):
 
 
 class TestFallbackChain(SelectorCase):
-    def test_cold_start_uses_priors(self):
-        recs = self.selector.recommend(self.make_profile())
-        self.assertTrue(all(r.evidence == "prior" for r in recs))
+    def test_cold_start_no_evidence(self):
+        recs = self.selector.recall(self.make_profile())
+        self.assertTrue(all(r.evidence == "no_memory" for r in recs))
+        self.assertTrue(all(r.score == float('-inf') for r in recs))
+        self.assertTrue(all(r.confidence == 0.0 for r in recs))
 
-    def test_stats_override_priors(self):
-        # S04 performs exceptionally in this group; priors say it's mediocre.
+    def test_stats_provide_first_evidence(self):
+        # S04 performs exceptionally in this group; with 3 observations
+        # the stats path provides the first evidence.
         for i in range(3):
             self.bank.append(self.make_record(
                 execution_id=f"ex_{i}", task_id=f"t{i}", strategy_id="S04", gap=0.0))
-        recs = self.selector.recommend(self.make_profile(), top=5)
+        recs = self.selector.recall(self.make_profile(), top=5)
         by_id = {r.strategy.strategy_id: r for r in recs}
         self.assertEqual(by_id["S04"].evidence, "conditional_stats")
         self.assertAlmostEqual(by_id["S04"].expected_quality, 1.0)
@@ -64,7 +67,7 @@ class TestFallbackChain(SelectorCase):
             expected_quality_hat=0.99, quality_interval=(0.9, 1.0),
             failure_prob=0.0, status="validated", support_n=6,
             provenance=["ex_0", "ex_1", "ex_2"]))
-        recs = self.selector.recommend(self.make_profile(), top=5)
+        recs = self.selector.recall(self.make_profile(), top=5)
         s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
         self.assertAlmostEqual(s01.expected_quality, 0.99)
@@ -83,15 +86,18 @@ class TestAblationModes(SelectorCase):
                 gap=0.05, cost=CostVector(llm_tokens=200, solver_runtime_s=3)))
 
     def _winner(self, mode):
-        recs = self.selector.recommend(self.make_profile(), top=10, memory_mode=mode)
+        recs = self.selector.recall(self.make_profile(), top=10, memory_mode=mode)
         return recs[0].strategy.strategy_id, recs[0].evidence
 
-    def test_mode_none_returns_default(self):
+    def test_mode_none_returns_no_evidence(self):
         winner, evidence = self._winner("none")
+        self.assertEqual(evidence, "no_memory")
+        # With no priors, all scores are 0; alphabetical tie-break puts S01 first.
         self.assertEqual(winner, "S01")
-        self.assertEqual(evidence, "prior")
 
     def test_mode_cases_ignores_cost_weights(self):
+        # Cases mode: no cost scalarization; quality tied -> fail_rate 0 both,
+        # tie broken by id order, and evidence is stats (not entries).
         # Cases mode: no cost scalarization; quality tied -> fail_rate 0 both,
         # tie broken by id order, and evidence is stats (not entries).
         winner, evidence = self._winner("cases")
@@ -114,7 +120,7 @@ class TestEntryFlags(SelectorCase):
             pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
             expected_quality_hat=1.0, quality_interval=(0.9, 1.0),
             failure_prob=0.0, status="suspect", support_n=8))
-        recs = self.selector.recommend(self.make_profile(), top=10)
+        recs = self.selector.recall(self.make_profile(), top=10)
         s07 = next(r for r in recs if r.strategy.strategy_id == "S07")
         self.assertTrue(any("suspect" in w for w in s07.risk_warnings))
 
@@ -131,7 +137,7 @@ class TestEntryFlags(SelectorCase):
             failure_prob=0.0, status="validated", support_n=5,
             provenance=["ex_r0", "ex_r1"]))
         other_family = self.make_profile(problem_id="q", family="scheduling")
-        recs = self.selector.recommend(other_family, top=10)
+        recs = self.selector.recall(other_family, top=10)
         s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
         self.assertTrue(s01.cross_family)
@@ -143,12 +149,12 @@ class TestEntryFlags(SelectorCase):
             entry_id="se_c", strategy_id="S01",
             pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
             support_n=3))
-        self.selector.recommend(self.make_profile())
+        self.selector.recall(self.make_profile())
         self.assertIsNotNone(self.sbank.get("se_c").last_consulted_at)
 
     def test_exclude(self):
-        recs = self.selector.recommend(self.make_profile(), top=10,
-                                       exclude=["S01", "S06"])
+        recs = self.selector.recall(self.make_profile(), top=10,
+                                   exclude=["S01", "S06"])
         self.assertNotIn("S01", {r.strategy.strategy_id for r in recs})
         self.assertNotIn("S06", {r.strategy.strategy_id for r in recs})
 

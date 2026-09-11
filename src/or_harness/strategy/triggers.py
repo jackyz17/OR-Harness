@@ -26,10 +26,10 @@ SIGNIFICANT_COST_RATIO = 0.25  # one side >= 25% cheaper counts as a cost gap
 TREND_MIN_N = 3
 STABLE_SUCCESS_MIN_N = 4
 
-
-#: Priors encode "similar" costs within this relative gap; beyond it a cost
-#: difference counts as prior-encoded knowledge.
-PRIOR_COST_SIMILARITY_RATIO = 0.20
+#: Quality level above which a strategy's performance counts as "high" and
+#: below which it counts as "low" (in the [0, 1] quality-score space).
+QUALITY_HIGH_THRESHOLD = 0.75
+QUALITY_LOW_THRESHOLD = 0.35
 
 
 @dataclass
@@ -61,25 +61,25 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
 
     ``entries_expected``: optional {strategy_id: {"quality": q}} of matching
     strategic entries, so C1/C2 treat "memory already encodes this" as
-    non-divergent (same role as priors).
+    non-divergent.
 
     ``prior_failures``: same-task failed executions (from the Experience
     Bank and/or the pending staging area) for cross-execution recovery
     detection in C4.
+
+    Note: triggers no longer reference catalog priors (which have been
+    removed). All criteria are now purely statistical — they detect
+    patterns in observed data, not divergence from fabricated baselines.
     """
     group = record.group_l1
     cells = stats.group(group)
     hints: List[InductionHint] = []
-    priors = {sid: s.expected_quality for sid, s in catalog.items()}
-    expected_map = dict(priors)
-    for sid, exp in (entries_expected or {}).items():
-        expected_map[sid] = exp.get("quality", expected_map.get(sid, 0.5))
+    expected_map = dict(entries_expected or {})
 
-    hint = _c1_strategy_contrast(cells, expected_map, group,
-                                 catalog_costs=catalog)
+    hint = _c1_strategy_contrast(cells, expected_map, group)
     if hint:
         hints.append(hint)
-    hint = _c2_prior_divergence(record, cells, catalog, group)
+    hint = _c2_extreme_performance(record, cells, group, expected_map)
     if hint:
         hints.append(hint)
     hint = _c3_drift(record, cells, group)
@@ -88,7 +88,7 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
     hint = _c4_failure_recovery(record, group, prior_failures or [])
     if hint:
         hints.append(hint)
-    hints.extend(_c5_cross_family(record, stats, catalog, expected_map))
+    hints.extend(_c5_cross_family(record, stats, expected_map))
     hint = _c6_stable_success(cells, group)
     if hint:
         hints.append(hint)
@@ -102,28 +102,30 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
 
 def _c1_strategy_contrast(cells: Dict[str, GroupStats],
                           expected_map: Dict[str, float],
-                          group: str,
-                          catalog_costs: Optional[Dict[str, Strategy]] = None
+                          group: str
                           ) -> Optional[InductionHint]:
-    """C1: >= 2 strategies in one group differ significantly (quality or cost)
-    AND the difference contradicts priors/entries. A difference the prior
-    already encodes does NOT trigger."""
+    """C1: >= 2 strategies in one group differ significantly (quality or cost).
+
+    A difference that existing strategic entries already encode (via
+    ``expected_map``) does NOT trigger — the memory already captured it.
+    Without priors, the trigger fires on the first significant contrast
+    that is not already in the strategic layer.
+    """
     eligible = [c for c in cells.values() if c.n >= MIN_DIVERGENCE_N]
-    prior_costs = {sid: s.expected_cost for sid, s in catalog_costs.items()} \
-        if catalog_costs else {}
     for i in range(len(eligible)):
         for j in range(i + 1, len(eligible)):
             a, b = eligible[i], eligible[j]
             dq = a.mean_quality - b.mean_quality
             q_gap = abs(dq)
-            prior_a = expected_map.get(a.strategy_id, 0.5)
-            prior_b = expected_map.get(b.strategy_id, 0.5)
-            prior_gap = prior_a - prior_b
-            quality_contradicts = (
-                q_gap >= SIGNIFICANT_QUALITY_DELTA
-                and (abs(prior_gap) < SIGNIFICANT_QUALITY_DELTA / 2
-                     or (prior_gap > 0) != (dq > 0)))
-            cost_contradicts = False
+            # Check if existing entries already encode this contrast.
+            entry_a = expected_map.get(a.strategy_id, {}).get("quality")
+            entry_b = expected_map.get(b.strategy_id, {}).get("quality")
+            if entry_a is not None and entry_b is not None:
+                entry_gap = entry_a - entry_b
+                if abs(entry_gap - dq) < SIGNIFICANT_QUALITY_DELTA / 2:
+                    continue  # already encoded
+            quality_contrast = q_gap >= SIGNIFICANT_QUALITY_DELTA
+            cost_contrast = False
             cost_evidence: Dict[str, Any] = {}
             for dim in ("llm_tokens", "solver_runtime_s"):
                 ca = getattr(a.mean_cost, dim)
@@ -141,44 +143,27 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
                                      or cheaper_mean_q > pricier_mean_q)
                 if not decision_changing:
                     continue
-                # Prior-consistent? The prior counts as encoding this knowledge
-                # only when it shows a same-direction gap beyond the similarity
-                # band. Same-sign-but-shallower priors are treated as
-                # "costs similar" — a much larger observed gap still teaches.
-                prior_ca = getattr(prior_costs.get(a.strategy_id), dim, 0.0)
-                prior_cb = getattr(prior_costs.get(b.strategy_id), dim, 0.0)
-                plo, phi = min(prior_ca, prior_cb), max(prior_ca, prior_cb)
-                prior_gap_ratio = ((phi - plo) / phi) if phi > 0 else 0.0
-                prior_same_side = (
-                    prior_gap_ratio >= PRIOR_COST_SIMILARITY_RATIO
-                    and (prior_ca > prior_cb) == (ca > cb)
-                    and prior_gap_ratio >= 0.8 * ((hi - lo) / hi))
-                if prior_same_side:
-                    continue
-                cost_contradicts = True
+                cost_contrast = True
                 cost_evidence = {
                     "dimension": dim,
                     "observed": {a.strategy_id: round(ca, 4),
                                  b.strategy_id: round(cb, 4)},
-                    "prior": {a.strategy_id: prior_ca,
-                              b.strategy_id: prior_cb},
                 }
                 break
-            if not (quality_contradicts or cost_contradicts):
+            if not (quality_contrast or cost_contrast):
                 continue
-            kind = "quality" if quality_contradicts else "cost"
+            kind = "quality" if quality_contrast else "cost"
             return InductionHint(
                 criterion="C1",
                 strategy_ids=[a.strategy_id, b.strategy_id],
                 group_key=group,
-                reason=(f"{kind} contrast contradicts prior expectations: "
+                reason=(f"{kind} contrast between strategies: "
                         f"{a.strategy_id} meanQ={a.mean_quality:.2f} vs "
                         f"{b.strategy_id} meanQ={b.mean_quality:.2f}"),
                 evidence={
                     "kind": kind,
                     "observed_quality": {a.strategy_id: round(a.mean_quality, 4),
                                          b.strategy_id: round(b.mean_quality, 4)},
-                    "prior_quality": {a.strategy_id: prior_a, b.strategy_id: prior_b},
                     "cost": cost_evidence,
                     "n": {a.strategy_id: a.n, b.strategy_id: b.n},
                     "execution_ids": {a.strategy_id: a.execution_ids,
@@ -187,28 +172,37 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
     return None
 
 
-def _c2_prior_divergence(record: ExecutionRecord, cells: Dict[str, GroupStats],
-                         catalog: Dict[str, Strategy],
-                         group: str) -> Optional[InductionHint]:
-    """C2: one strategy's observed performance systematically departs from its
-    built-in prior (n >= 2)."""
+def _c2_extreme_performance(record: ExecutionRecord, cells: Dict[str, GroupStats],
+                         group: str,
+                         expected_map: Dict[str, Dict[str, float]]
+                         ) -> Optional[InductionHint]:
+    """C2: a strategy's observed performance is extreme (very high or very low)
+    with n >= 2, and existing entries don't already capture it.
+
+    Without fabricated priors, the trigger fires on observed extremes — the
+    first evidence that a strategy is notably good or bad in this structural
+    group, worth consolidating into a strategic entry.
+    """
     cell = cells.get(record.strategy_id)
     if cell is None or cell.n < MIN_DIVERGENCE_N:
         return None
-    strategy = catalog.get(record.strategy_id)
-    if strategy is None:
+    # Already encoded by an existing entry?
+    entry_q = expected_map.get(record.strategy_id, {}).get("quality")
+    if entry_q is not None and abs(entry_q - cell.mean_quality) < SIGNIFICANT_QUALITY_DELTA:
         return None
-    prior_q = strategy.expected_quality
-    delta = cell.mean_quality - prior_q
-    if abs(delta) < SIGNIFICANT_QUALITY_DELTA:
+    mean_q = cell.mean_quality
+    if mean_q >= QUALITY_HIGH_THRESHOLD:
+        direction = "high"
+    elif mean_q <= QUALITY_LOW_THRESHOLD:
+        direction = "low"
+    else:
         return None
-    direction = "better" if delta > 0 else "worse"
     return InductionHint(
         criterion="C2", strategy_ids=[record.strategy_id], group_key=group,
-        reason=(f"{record.strategy_id} performs {direction} than its prior: "
-                f"E[gap-quality]={cell.mean_quality:.2f} vs prior {prior_q:.2f}"),
-        evidence={"observed_mean_quality": round(cell.mean_quality, 4),
-                  "prior_quality": prior_q, "n": cell.n,
+        reason=(f"{record.strategy_id} performs {direction}: "
+                f"meanQ={mean_q:.2f} over n={cell.n}"),
+        evidence={"observed_mean_quality": round(mean_q, 4),
+                  "direction": direction, "n": cell.n,
                   "execution_ids": list(cell.execution_ids)})
 
 
@@ -328,34 +322,43 @@ def solver_advisories(bank) -> List[Dict[str, Any]]:
 
 
 def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
-                     catalog: Dict[str, Strategy],
-                     expected_map: Dict[str, float]) -> List[InductionHint]:
-    """C5: the same strategy shows the same-direction, same-magnitude
-    advantage in >= 2 families with similar structure, contradicting priors.
-    The 'learn once, apply elsewhere' detector; suggests widening to L2."""
+                     expected_map: Dict[str, Dict[str, float]]
+                     ) -> List[InductionHint]:
+    """C5: the same strategy shows the same-direction advantage in >= 2
+    families with similar structure. The 'learn once, apply elsewhere'
+    detector; suggests widening to L2.
+
+    Without priors, the trigger detects cross-family reproduction purely
+    from observed data: the strategy is consistently high (or consistently
+    low) across independently observed families.
+    """
     sid = record.strategy_id
     cells = stats.cross_family(record.profile_snapshot, sid, level="L2")
     per_family = [c for c in cells if c.n >= MIN_DIVERGENCE_N]
     if len(per_family) < 2:
         return []
-    prior = expected_map.get(sid, 0.5)
-    deltas = [c.mean_quality - prior for c in per_family]
-    same_direction = all(d >= SIGNIFICANT_QUALITY_DELTA for d in deltas) or \
-        all(d <= -SIGNIFICANT_QUALITY_DELTA for d in deltas)
-    if not same_direction:
+    # Same-direction: all high or all low.
+    all_high = all(c.mean_quality >= QUALITY_HIGH_THRESHOLD for c in per_family)
+    all_low = all(c.mean_quality <= QUALITY_LOW_THRESHOLD for c in per_family)
+    if not (all_high or all_low):
         return []
-    magnitude_spread = max(deltas) - min(deltas)
+    direction = "high" if all_high else "low"
+    magnitude_spread = max(c.mean_quality for c in per_family) - \
+        min(c.mean_quality for c in per_family)
     if magnitude_spread > SIGNIFICANT_QUALITY_DELTA:
         return []
     return [InductionHint(
         criterion="C5", strategy_ids=[sid],
         group_key=group_key(record.profile_snapshot, "L2"),
         scope_suggestion="L2",
-        reason=(f"advantage reproduces independently in {len(per_family)} "
-                "families at similar structure; consider widening to L2"),
+        reason=(f"{direction} performance reproduces independently in "
+                f"{len(per_family)} families at similar structure; "
+                "consider widening to L2"),
         evidence={"families": [c.group_key.split("#family=")[-1] for c in per_family],
-                  "deltas_vs_prior": [round(d, 4) for d in deltas],
-                  "prior_quality": prior,
+                  "direction": direction,
+                  "mean_qualities": {c.group_key.split("#family=")[-1]:
+                                      round(c.mean_quality, 4)
+                                      for c in per_family},
                   "execution_ids": {c.group_key.split("#family=")[-1]: c.execution_ids
                                     for c in per_family}})]
 

@@ -10,9 +10,9 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 
 - **双层记忆**：append-only 的 **Experience Bank**（情景事实层）+ 派生的 **Strategic Bank**（带预测区间与前瞻校验的承诺层）。条件统计即时计算、永不落库。
 - **确定性画像**：从任务 spec 或外层供给的 annotations 提取结构耦合特征——不建 NLP 子系统。
-- **外层保有全部控制权的策略选择**：透明评分（`α·Q̂ − β·C_scalar − γ·R̂`）、双层证据回退、四消融模式。
-- **沙箱执行**：AST 策略 + POSIX rlimit + 墙钟超时；基本验证；五维成本计量（retries 计入成本）。
-- **由你掌控的归纳**：每次 record 后 C1–C6 证据 hint；`induce` 永远是外层显式调用。范围阶梯 L1→L2→L3，加宽可证伪；冷归档防复活。
+- **外层保有全部控制权的策略召回**：透明评分（`α·Q̂ − β·C_scalar − γ·R̂`）、双层证据回退、四消融模式。冷启动时无先验分数——没有经验就如实返回 `no_memory`，从零积累。
+- **沙箱执行**：AST 策略 + POSIX rlimit + 墙钟超时；基本验证；五维代价计量（retries 计入代价）。
+- **由你掌控的归纳**：每次 record 后 C1–C6 证据 hint；`induce` 永远是外层显式调用。范围阶梯 L1→L2→L3，加宽可证伪；冷归档防复活。触发准则不再引用先验分数，改为纯统计判据。
 - **七个求解器适配器**（highs、pulp、ortools、scip、copt、pyomo、gurobi）——仅做可用性探测，具体求解器由你按情况选择。
 
 ## 快速开始
@@ -23,7 +23,7 @@ pip install -e ".[solvers-free]"   # 可选：highspy + pulp
 
 orx doctor                        # 探测求解器、检查记忆目录
 orx profile   --task t.json
-orx recommend --task t.json --top 3
+orx recall    --task t.json --top 3
 orx execute   --task t.json --strategy S04 --code solve.py --workspace ws --solver highs
 orx record    --execution exec.json --override llm_tokens=1840
 orx induce    --strategy S04

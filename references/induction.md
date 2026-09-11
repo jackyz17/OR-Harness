@@ -10,16 +10,14 @@ Divergence judgments require **n ≥ 2** supporting executions. A single observa
 
 | Criterion | Fires when | Key refusal condition |
 |---|---|---|
-| C1 strategy contrast | ≥2 strategies in one group differ significantly (quality or cost) **and** the difference contradicts priors/entries | a difference the prior already encodes is not news |
-| C2 prior divergence | one strategy systematically departs from its catalog prior | n < 2, or departure within noise |
+| C1 strategy contrast | ≥2 strategies in one group differ significantly (quality or cost) **and** existing entries don't already encode the contrast | a difference existing entries already capture is not news |
+| C2 extreme performance | one strategy's observed mean quality is extreme (high ≥0.75 or low ≤0.35) with n ≥ 2, and no existing entry captures it | n < 2, moderate quality, or already encoded |
 | C3 in-group drift | same strategy, same group, n ≥ 3, trending quality | flat series |
 | C4 failure-recovery | a fallback was exercised — within one execution (`failures[].recovery_action`) or across executions (a same-task attempt failed under one solver, then succeeded under another) | failures without recovery; retrying the same solver is not a chain |
-| C5 cross-family reproduction | same strategy, same-direction advantage in ≥2 families with similar structure | single-family evidence |
+| C5 cross-family reproduction | same strategy, same-direction extreme performance in ≥2 families with similar structure | single-family evidence, or mixed directions |
 | C6 stable success | same group, n ≥ 4, zero failures, zero retries | any retry breaks stability |
 
-C1's cost dimension is the interesting one: when quality is tied and one strategy is markedly cheaper, the *only* thing memory can learn is the cost structure — and that is decision-changing evidence (equivalent choices should consistently favor the cheap side).
-
-C4's cross-execution path deserves emphasis: the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
+Note: trigger criteria no longer reference catalog priors (which have been removed). All criteria are purely statistical — they detect patterns in observed data (strategy contrasts, extreme performance, cross-family reproduction), not divergence from fabricated baselines.: the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
 
 ## The scope ladder
 
@@ -44,8 +42,6 @@ Every `record` automatically checks each matching entry's interval against the o
 - **retirement** (never auto): your explicit `orx retire` moves a suspect entry to the cold archive
 
 Cost predictions run a PARALLEL, warning-only loop: observed cost vs the entry's multiplicative interval → `cost_hit_rate` + per-dimension log-error calibration. Cost misses never touch `consecutive_misses` or the lifecycle — an entry whose quality predictions are perfect but whose costs are volatile stays validated, with an "uncalibrated cost" warning attached for you to weigh.
-
-Induced entries also carry a **mechanism annotation**: the mechanism features of the supporting evidence, aggregated automatically from the provenance records' profiles — measured structure transferred from facts, never narrated. An optional mechanism explanation (your phrasing) is citation-bound like applicability text. This is mechanism ANNOTATION, not causal discovery: the framework moves measured structure; it never infers causality.
 
 Prediction intervals are honest to sample size: with n=2 the floor width is 0.50 — you may not pretend to more certainty than the data supports.
 

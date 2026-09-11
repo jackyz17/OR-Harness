@@ -43,23 +43,22 @@ class TestC1Contrast(TriggerCase):
         new = self.seed("S02", 1, 0.02, task_prefix="b")
         self.assertNotIn("C1", self.criteria(new))
 
-    def test_quality_contrast_contradicting_prior_fires(self):
-        # Priors say S01(0.8) > S04(0.6); observe the reverse with n>=2.
+    def test_quality_contrast_fires(self):
+        # S01 meanQ 0.60 vs S04 meanQ 0.98 — significant quality contrast.
         self.seed("S01", 2, 0.40, task_prefix="a")   # meanQ 0.60
         new = self.seed("S04", 2, 0.02, task_prefix="b")  # meanQ 0.98
         hints = [h for h in self.check(new) if h.criterion == "C1"]
         self.assertTrue(hints)
         self.assertEqual(set(hints[0].strategy_ids), {"S01", "S04"})
 
-    def test_prior_consistent_difference_silent(self):
-        # Priors already encode S01 > S04; observing exactly that is not news.
-        self.seed("S01", 2, 0.05, task_prefix="a")   # meanQ 0.95
-        new = self.seed("S04", 2, 0.45, task_prefix="b")  # meanQ 0.55
+    def test_small_difference_silent(self):
+        # Quality difference below threshold — no trigger.
+        self.seed("S01", 2, 0.10, task_prefix="a")   # meanQ 0.90
+        new = self.seed("S04", 2, 0.15, task_prefix="b")  # meanQ 0.85
         self.assertNotIn("C1", self.criteria(new))
 
     def test_cost_contrast_fires(self):
-        # Q2 from the design doc: quality tied, S01 49% more expensive in
-        # tokens, n=2 each -> C1 on the cost dimension.
+        # Quality tied (both ~0.80), S01 100% more expensive in tokens.
         cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0)
         pricey = CostVector(llm_tokens=200, solver_runtime_s=1.0)
         self.seed("S06", 2, 0.20, task_prefix="a", cost=cheap)
@@ -69,18 +68,24 @@ class TestC1Contrast(TriggerCase):
         self.assertEqual(hints[0].evidence["kind"], "cost")
 
 
-class TestC2PriorDivergence(TriggerCase):
-    def test_divergence_fires(self):
-        # S01 prior quality 0.8; observed meanQ ~0.55 over n=2.
-        new = self.seed("S01", 2, 0.45, task_prefix="a")
+class TestC2ExtremePerformance(TriggerCase):
+    def test_high_performance_fires(self):
+        # S01 observed meanQ ~0.95 over n=2 — extreme high.
+        new = self.seed("S01", 2, 0.05, task_prefix="a")
+        self.assertIn("C2", self.criteria(new))
+
+    def test_low_performance_fires(self):
+        # S01 observed meanQ ~0.05 over n=2 — extreme low.
+        new = self.seed("S01", 2, 0.95, task_prefix="a")
         self.assertIn("C2", self.criteria(new))
 
     def test_single_sample_silent(self):
-        new = self.seed("S01", 1, 0.45, task_prefix="a")
+        new = self.seed("S01", 1, 0.05, task_prefix="a")
         self.assertNotIn("C2", self.criteria(new))
 
-    def test_consistent_with_prior_silent(self):
-        new = self.seed("S01", 3, 0.18, task_prefix="a")  # meanQ 0.82 ~ prior
+    def test_moderate_performance_silent(self):
+        # meanQ ~0.50 is neither high nor low.
+        new = self.seed("S01", 3, 0.50, task_prefix="a")
         self.assertNotIn("C2", self.criteria(new))
 
 
@@ -130,8 +135,8 @@ class TestC4FailureRecovery(TriggerCase):
 
 
 class TestC5CrossFamily(TriggerCase):
-    def test_reproduced_advantage_fires(self):
-        # S04 prior 0.6; independently ~0.95 in two families, same structure.
+    def test_reproduced_high_performance_fires(self):
+        # S04 independently ~0.95 (high) in two families, same structure.
         last = None
         for fam in ("routing", "scheduling"):
             for i in range(2):

@@ -1,24 +1,67 @@
 # Worked examples
 
-Three complete walkthroughs. JSON fragments are real CLI output shapes (abridged where marked with `...`).
+Four complete walkthroughs. JSON fragments are real CLI output shapes (abridged where marked with `...`).
+
+## Example 0: coupling-aware understanding (the pre-model step)
+
+**T0.** A scheduling task arrives: three production modes (M1, M2, M3) all feed into the same downstream LDA capacity. Before writing any model, you extract the coupling structure and submit it as a CIR:
+
+```bash
+$ orx understand --task t.json
+{"result": {
+  "cir": {
+    "entities": [{"name": "LDA", "kind": "resource"}, ...],
+    "decisions": [{"name": "x_M1", "kind": "production"}, {"name": "x_M2", ...}, {"name": "x_M3", ...}],
+    "constraints": [{"id": "C1", "kind": "capacity", "expr": "sum(x_M1, x_M2, x_M3) <= cap_LDA"}],
+    "relations": [
+      {"source": "x_M1", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
+      {"source": "x_M2", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
+      {"source": "x_M3", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...}
+    ],
+    "coupling_groups": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
+      "resource": "LDA", "implication": "Multiple decisions (x_M1, x_M2, x_M3) consume the same
+      resource (LDA); ensure one aggregate capacity constraint covers all relevant decisions."}],
+    "issues": []
+  },
+  "modeling_guidance": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
+    "resource": "LDA", "implication": "...aggregate capacity constraint..."}],
+  "cir_warnings": []
+},
+ "summary": "CIR validated: 1 entities, 3 decisions, 1 constraints, 3 relations. Modeling guidance (1):
+   - [shared_bottleneck] Multiple decisions (x_M1, x_M2, x_M3) consume the same resource (LDA);
+     ensure one aggregate capacity constraint covers all relevant decisions."}
+```
+
+**Verification**: entity `LDA` covers the shared capacity mentioned in the task. All three modes have `uses_resource` edges to `LDA`. The `shared_bottleneck` group matches the task's coupling pattern. `issues` is empty. You carry this guidance into step 2 (write the canonical model with an aggregate capacity constraint `sum(x_M1, x_M2, x_M3) <= cap_LDA`).
+
+### Do not do this (CIR negative example)
+
+Do not submit a CIR with a `shares_resource` relation based only on variable name similarity:
+
+```json
+// BAD: no semantic evidence — "x_M1" and "x_M2" both contain "M" so they "share" something
+{"source": "x_M1", "target": "x_M2", "type": "shares_resource", "evidence": "structural"}
+```
+
+Co-occurrence in a constraint is structural evidence only — it produces a generic `depends_on` edge, never a semantic `shares_resource`. To claim `shares_resource`, both decisions must link to the same resource entity with `uses_resource` edges, or the agent must declare it with `evidence="declared"` and validate it against the model.
 
 ## Example 1: cold start → first induction (and the restraint that isn't a bug)
 
-**T1.** First routing task. No memory, so recommendations come from catalog priors:
+**T1.** First routing task. No memory, so `recall` returns candidates with `evidence="no_memory"` — the catalog provides the strategy vocabulary (applicability, actions, solver family) but no quality/cost/risk claims:
 
 ```bash
-$ orx recommend --task t.json --top 2
+$ orx recall --task t.json --top 2
 {"result": {"recommendations": [
-  {"strategy_id": "S04", "name": "construction-plus-ls", "score": -2005.05,
-   "expected": {"quality": 0.6, "cost": {"llm_tokens": 2000.0, ...}, "failure_prob": 0.35},
-   "evidence": "prior", "confidence": 0.35, "cross_family": false,
-   "risk_warnings": [], "basis": "no memory evidence; catalog prior"},
+  {"strategy_id": "S04", "name": "construction-plus-ls", "score": -Infinity,
+   "expected": {"quality": 0.0, "cost": {}, "failure_prob": 0.0},
+   "evidence": "no_memory", "confidence": 0.0, "cross_family": false,
+   "risk_warnings": [], "basis": "no experience for this strategy×profile pair; catalog vocabulary only"},
   ...],
  "available_solver_families": {"milp": ["highs", "pulp"], ...}},
- "summary": "Top recommendation: S04 (construction-plus-ls), score -2005.05, evidence=prior, E[Q]=0.6, P(fail)=0.35. ..."}
+ "summary": "Top candidate: S04 (construction-plus-ls), score -inf, evidence=no_memory, E[Q]=0.0, P(fail)=0.0. ..."}
 ```
 
-You execute S04, record with your token count:
+You pick S04 based on structural fit (it's a general-purpose strategy with no applicability constraints) and execute it:
 
 ```bash
 $ orx execute --task t.json --strategy S04 --code solve.py --workspace ws --solver highs
@@ -33,15 +76,15 @@ $ orx record --execution ex_6096390d0949.json --override llm_tokens=1840
  "summary": "Recorded ex_6096390d0949. No induction hints."}
 ```
 
-**T2.** S02 runs and scores Q=0.98 (its prior says 0.75); S01 has one prior run at 0.85. **No C1/C2 hint fires** — S02 has n=1, and single observations never count as divergence. This restraint is the design working: one lucky run is not a pattern.
+**T2.** S02 runs and scores Q=0.98. **No C2 hint fires** — S02 has n=1, and single observations never count. This restraint is the design working: one lucky run is not a pattern.
 
-**T3–T4.** After S02's second and third runs confirm ~0.95, `record` returns:
+**T3–T4.** After S02's second and third runs confirm ~0.95 (extreme high performance, meanQ ≥ 0.75), `record` returns:
 
 ```json
 {"induction_hints": [{"criterion": "C2", "strategy_ids": ["S02"],
   "group_key": "family=routing|sc[0.75,1.00]|rc[0.75,1.00]|...",
-  "reason": "S02 performs better than its prior: E[gap-quality]=0.95 vs prior 0.75",
-  "evidence": {"observed_mean_quality": 0.95, "prior_quality": 0.75, "n": 3,
+  "reason": "S02 performs high: meanQ=0.95 over n=3",
+  "evidence": {"observed_mean_quality": 0.95, "direction": "high", "n": 3,
                 "execution_ids": ["ex_...", "ex_...", "ex_..."]}}]}
 ```
 
@@ -62,24 +105,23 @@ Note the interval `[0.5, 1.0]`: with n=3 the honest floor is 0.35 width — the 
 
 ## Example 2: quality tied, cost diverges (what only memory can learn)
 
-Routing group, n=2 each: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. Priors said their costs were comparable. `record` fires **C1 on the cost dimension**:
+Routing group, n=2 each: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. `record` fires **C1 on the cost dimension**:
 
 ```json
 {"induction_hints": [{"criterion": "C1", "strategy_ids": ["S01", "S04"],
-  "reason": "cost contrast contradicts prior expectations: S01 meanQ=0.70 vs S04 meanQ=0.70",
+  "reason": "cost contrast between strategies: S01 meanQ=0.70 vs S04 meanQ=0.70",
   "evidence": {"kind": "cost", "dimension": "llm_tokens",
     "observed": {"S01": 4500.0, "S04": 1500.0},
-    "prior": {"S01": 2000.0, "S04": 2000.0},
     "n": {"S01": 2, "S04": 2}, "execution_ids": {...}}}]}
 ```
 
-After you induce both entries, `recommend --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra.
+After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra.
 
 ## Example 3: cross-family generalization → miss → tighten (not delete, not demote)
 
 `se_020` is an L2 entry: any family × rc∈[0.75,1.0], predicting S04 quality in [0.8, 0.95], provenance entirely in routing.
 
-A scheduling task with rc=0.8 arrives. `recommend` matches `se_020` but flags it:
+A scheduling task with rc=0.8 arrives. `recall` matches `se_020` but flags it:
 
 ```json
 {"strategy_id": "S04", "evidence": "strategic_entry", "confidence": 0.42,

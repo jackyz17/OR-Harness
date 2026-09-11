@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "strategies": [
     {
       "strategy_id": "S01",
@@ -11,12 +11,7 @@
         "Set a time limit; report result.json with status/objective/gap"
       ],
       "fallback": "S06",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.8,
-        "cost": {"llm_tokens": 2000, "tool_calls": 3, "solver_runtime_s": 30, "retries": 0.3, "latency_s": 60},
-        "risk": 0.3
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S02",
@@ -29,12 +24,7 @@
         "Report best incumbent + bound in result.json"
       ],
       "fallback": "S01",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.75,
-        "cost": {"llm_tokens": 4000, "tool_calls": 6, "solver_runtime_s": 60, "retries": 0.8, "latency_s": 180},
-        "risk": 0.5
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S03",
@@ -47,12 +37,7 @@
         "Report the concatenated schedule's objective in result.json"
       ],
       "fallback": "S01",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.72,
-        "cost": {"llm_tokens": 3000, "tool_calls": 5, "solver_runtime_s": 45, "retries": 0.5, "latency_s": 120},
-        "risk": 0.4
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S04",
@@ -65,12 +50,7 @@
         "Report the best solution found in result.json"
       ],
       "fallback": "S01",
-      "solver_family": null,
-      "expected": {
-        "quality": 0.6,
-        "cost": {"llm_tokens": 2000, "tool_calls": 2, "solver_runtime_s": 5, "retries": 0.2, "latency_s": 20},
-        "risk": 0.35
-      }
+      "solver_family": null
     },
     {
       "strategy_id": "S05",
@@ -82,12 +62,7 @@
         "Solve with CP-SAT under a time limit; report result.json"
       ],
       "fallback": "S04",
-      "solver_family": "cp_sat",
-      "expected": {
-        "quality": 0.7,
-        "cost": {"llm_tokens": 2500, "tool_calls": 3, "solver_runtime_s": 40, "retries": 0.4, "latency_s": 90},
-        "risk": 0.4
-      }
+      "solver_family": "cp_sat"
     },
     {
       "strategy_id": "S06",
@@ -100,12 +75,7 @@
         "Report the rounded objective and the LP bound in result.json"
       ],
       "fallback": "S04",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.55,
-        "cost": {"llm_tokens": 2000, "tool_calls": 2, "solver_runtime_s": 10, "retries": 0.3, "latency_s": 30},
-        "risk": 0.45
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S07",
@@ -117,12 +87,7 @@
         "Report incumbent and bound in result.json"
       ],
       "fallback": "S01",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.78,
-        "cost": {"llm_tokens": 2500, "tool_calls": 4, "solver_runtime_s": 35, "retries": 0.4, "latency_s": 80},
-        "risk": 0.32
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S08",
@@ -135,12 +100,7 @@
         "Report incumbent + LP bound in result.json"
       ],
       "fallback": "S02",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.78,
-        "cost": {"llm_tokens": 4500, "tool_calls": 7, "solver_runtime_s": 90, "retries": 1.0, "latency_s": 240},
-        "risk": 0.55
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S09",
@@ -152,12 +112,7 @@
         "Report best primal objective and dual bound in result.json"
       ],
       "fallback": "S02",
-      "solver_family": "milp",
-      "expected": {
-        "quality": 0.7,
-        "cost": {"llm_tokens": 3800, "tool_calls": 6, "solver_runtime_s": 70, "retries": 0.9, "latency_s": 200},
-        "risk": 0.5
-      }
+      "solver_family": "milp"
     },
     {
       "strategy_id": "S10",
@@ -169,12 +124,7 @@
         "Report the best solution found in result.json"
       ],
       "fallback": "S04",
-      "solver_family": null,
-      "expected": {
-        "quality": 0.62,
-        "cost": {"llm_tokens": 2200, "tool_calls": 3, "solver_runtime_s": 60, "retries": 0.4, "latency_s": 100},
-        "risk": 0.42
-      }
+      "solver_family": null
     }
   ]
 }

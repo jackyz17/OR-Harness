@@ -22,7 +22,6 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from or_harness.core.schema import (
     ApplicabilityCondition,
     CostVector,
-    MechanismAnnotation,
     ProblemProfile,
     StrategicEntry,
     group_key,
@@ -109,8 +108,6 @@ class InductionEngine:
             existing.failure_prob = fail_prob
             existing.support_n = cell.n
             existing.provenance = cell.execution_ids[:50]
-            existing.mechanism = self._mechanism_annotation(
-                cell.execution_ids, llm_conditions)
             if conditions:
                 existing.applicability.extend(conditions)
             self.sbank.update(existing)
@@ -135,8 +132,6 @@ class InductionEngine:
             fallback_strategy_id=None,
             provenance=cell.execution_ids[:50],
             support_n=cell.n,
-            mechanism=self._mechanism_annotation(cell.execution_ids,
-                                                 llm_conditions),
         )
         self.sbank.add(entry)
         return {"created": entry.entry_id, "entry": entry.to_dict(),
@@ -236,42 +231,6 @@ class InductionEngine:
         """v1: fixed multiplicative band per dimension."""
         from or_harness.core.schema import COST_DIMENSIONS
         return {d: COST_INTERVAL_BAND for d in COST_DIMENSIONS}
-
-    def _mechanism_annotation(self, execution_ids: List[str],
-                              llm_conditions) -> MechanismAnnotation:
-        """Aggregate the mechanism features of the supporting evidence onto
-        the entry — measured structure transferred from facts, never narrated.
-        An optional mechanism explanation from the harness is citation-bound
-        (same discipline as applicability conditions)."""
-        features: Dict[str, float] = {}
-        n = 0
-        for ex_id in execution_ids[:50]:
-            rec = self.stats.bank.get(ex_id)
-            if rec is None or not rec.profile_snapshot.mechanism_features:
-                continue
-            n += 1
-            for key, value in rec.profile_snapshot.mechanism_features.items():
-                features[key] = features.get(key, 0.0) + value
-        if n:
-            features = {k: round(v / n, 4) for k, v in features.items()}
-        explanation = None
-        explanation_ids: List[str] = []
-        for raw in (llm_conditions or []):
-            if not isinstance(raw, dict):
-                continue
-            text = raw.get("mechanism_explanation")
-            if not text:
-                continue
-            ids = [str(i) for i in (raw.get("supporting_execution_ids") or [])]
-            ok, _why, _cond = self._check_condition(
-                {"text": str(text), "supporting_execution_ids": ids})
-            if ok:
-                explanation = str(text)
-                explanation_ids = ids
-        return MechanismAnnotation(
-            features=features, explanation=explanation,
-            explanation_verified=False,  # never born verified
-            supporting_execution_ids=explanation_ids)
 
     def _cell_for(self, profile: ProblemProfile, strategy_id: str,
                   scope: str) -> GroupStats:

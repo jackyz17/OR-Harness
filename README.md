@@ -23,7 +23,7 @@ pip install -e ".[solvers-free]"  # optional: highspy + pulp
 
 orx doctor                       # probe solvers, check memory home
 orx profile   --task t.json
-orx recommend --task t.json --top 3
+orx recall    --task t.json --top 3
 orx execute   --task t.json --strategy S04 --code solve.py --workspace ws --solver highs
 orx record    --execution exec.json --override llm_tokens=1840
 orx induce    --strategy S04

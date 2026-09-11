@@ -54,11 +54,49 @@ Issues come back as `{layer, code, detail}` — e.g. `[L2] undefined_symbol: 'bu
 - **route_complexity** = fraction of variables indexed by a network set (arc/edge/road/link/route/leg).
 - **semantic_coupling** is NOT derived — business semantics are invisible to structure; supply it via `annotations.coupling.semantic_coupling` if you want it grouped on.
 
-Plus four **mechanism features** (the WHY-dimensions, used for cross-family kinship matching):
-
-- **shared_resource_competition** — fraction of constraint pairs whose variable sets overlap: decisions competing for the same scarce capacity.
-- **global_constraint_propagation** — 1.0 when the widest constraint (sum-expanded) spans nearly all variable instances: one constraint channels every decision.
-- **temporal_propagation** — fraction of constraints linking one variable across multiple time indices (`x[i,t] + x[i,t+1]`).
-- **discrete_feasibility_shrinkage** — fraction of integer/binary variables: the continuous relaxation misrepresents the feasible region.
-
 If you also supply coupling values and they contradict the derivation across a bin boundary, `orx profile` returns `coupling_warnings` — the structural measurement wins for grouping; your original values are preserved in annotations.
+
+> The former mechanism feature layer (four scalar WHY-dimensions) has been
+> superseded by the CIR (below), which represents coupling structure
+> explicitly rather than compressing it into scalars.
+
+## Coupling-Aware Intermediate Representation (CIR)
+
+The CIR is an explicit, inspectable structured representation of *how* the components of an optimization problem interact. It is produced **before** the canonical model — from the natural-language task description — and provides modeling guidance that improves the correctness of the canonical representation. Scalar coupling scores (the four dimensions above) are derived summaries; the CIR is the primary representation.
+
+### When to use it
+
+Run `orx understand --task t.json` as the **first step** in the workflow, before writing the `model` field. The CIR lives in the task JSON's optional `coupling` field. The `model` field may later cross-check the CIR (`--cir` on `profile`), but is never required to create one.
+
+### Schema (domain-general — all `kind`/`type` fields are free-form strings)
+
+| Section | Fields | Notes |
+|---|---|---|
+| `entities` | `name, kind, attrs` | `kind` examples: resource, product, site, period, route, … (never enumerated) |
+| `decisions` | `name, kind, indexes, attrs` | `kind` examples: production, allocation, routing, inventory, … |
+| `constraints` | `id, kind, expr, attrs` | `kind` examples: capacity, balance, temporal, precedence, logical, global, … |
+| `relations` | `source, target, type, evidence, detail` | `type` examples: uses_resource, shares_resource, competes_for, precedes, flows_to, depends_on, constrained_by, … |
+| `coupling_groups` | `type, members, resource, implication` | `type` examples: shared_bottleneck, route_convergence, temporal_propagation_chain, global_constraint, cross_stage_coupling, … |
+
+### Evidence levels (critical)
+
+| Level | Meaning |
+|---|---|
+| `structural` | Derived from constraint-variable co-occurrence only. **Never** a semantic claim. Produces generic `depends_on` edges. |
+| `semantic` | Supported by entity/constraint semantics (e.g. resource-kind entity + capacity constraint → `uses_resource`). The only semantic upgrade performed deterministically. |
+| `declared` | Directly asserted by the agent. Subject to L2 referential validation and CIR ↔ model cross-check. |
+
+Co-occurrence is structural evidence only. A semantic relation (`shares_resource`, `competes_for`, …) requires additional entity/constraint semantics; otherwise the edge stays as `depends_on`.
+
+### Validation (deterministic, no LLM)
+
+- **L1 — format**: required fields present, no duplicate node names, valid evidence levels.
+- **L2 — referential integrity**: every relation source/target and coupling-group member/resource must resolve to a known entity, decision, or constraint.
+
+### What the framework derives
+
+- **Structural relations**: from the `model` field's constraint-variable co-occurrence → `depends_on` edges (evidence=`structural`).
+- **Semantic upgrade**: when a structural edge targets a resource-kind entity and a capacity constraint mentions the source → upgraded to `uses_resource` (evidence=`semantic`).
+- **Coupling groups**: `shared_bottleneck` (≥2 decisions using the same resource) is derived deterministically. Other group types may be agent-declared.
+- **Modeling guidance**: each coupling group renders an explicit implication (e.g. "ensure one aggregate capacity constraint covers all relevant decisions").
+- **CIR ↔ model cross-check**: when both CIR and `model` are present, flags missing decisions, unmatched relations, and inconsistencies.

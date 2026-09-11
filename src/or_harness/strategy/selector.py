@@ -7,7 +7,10 @@ Evidence precedence (per strategy):
   2. Conditional statistics over the Experience Bank (recounts) — this single
      path subsumes what older designs split into "case retrieval" and
      "statistics": both are the same data used two ways.
-  3. Built-in catalog priors (cold start).
+  3. No evidence — the catalog is a structural vocabulary (applicability,
+     actions, fallback, solver_family) carrying NO prior quality/cost/risk
+     scores. Without experience the selector honestly reports evidence=
+     "no_memory" with score 0 and confidence 0.
 
 Ablation modes (--memory-mode), reused by the experiments runner:
   A none      — default strategy, no memory.
@@ -19,6 +22,10 @@ Ablation modes (--memory-mode), reused by the experiments runner:
 
 Cross-family generalization (an L2/L3 entry matching a family it has no
 provenance in) carries an explicit confidence discount and is labelled.
+
+Note: the method is named ``recall`` (not ``recommend``) because its purpose
+is to *recall* accumulated experience — when there is none, it says so
+honestly rather than fabricating priors.
 """
 
 from __future__ import annotations
@@ -50,7 +57,7 @@ class Recommendation:
     expected_quality: float
     expected_cost: CostVector
     failure_prob: float
-    evidence: str  # "strategic_entry" | "conditional_stats" | "prior"
+    evidence: str  # "strategic_entry" | "conditional_stats" | "no_memory"
     evidence_refs: List[str] = field(default_factory=list)  # entry/execution ids
     confidence: float = 1.0
     cross_family: bool = False
@@ -90,9 +97,17 @@ class Selector:
 
     # -- public ----------------------------------------------------------------
 
-    def recommend(self, profile: ProblemProfile, *, top: int = 3,
-                  exclude: Optional[Sequence[str]] = None,
-                  memory_mode: str = "cost-aware") -> List[Recommendation]:
+    def recall(self, profile: ProblemProfile, *, top: int = 3,
+               exclude: Optional[Sequence[str]] = None,
+               memory_mode: str = "cost-aware") -> List[Recommendation]:
+        """Recall accumulated experience for this problem signature.
+
+        Returns candidates filtered by applicability. Each candidate carries
+        an ``evidence`` field: ``strategic_entry``, ``conditional_stats``, or
+        ``no_memory``. When no experience exists the score is -inf and
+        confidence is 0 — the catalog vocabulary is still returned as a
+        candidate menu, but no quality/cost/risk claims are made.
+        """
         if memory_mode not in MEMORY_MODES:
             raise ValueError(f"memory_mode must be one of {MEMORY_MODES}")
         excluded = set(exclude or [])
@@ -100,22 +115,16 @@ class Selector:
                       if s.strategy_id not in excluded
                       and self._applies(s, profile)]
         if memory_mode == "none":
-            default = next((s for s in candidates if s.strategy_id == "S01"),
-                           candidates[0] if candidates else None)
-            return ([self._from_prior(default, basis="memory off: default strategy")]
-                    if default else [])
+            return [self._from_no_evidence(s) for s in candidates]
 
         entries = self.sbank.matching(profile) if memory_mode in ("strategic", "cost-aware") else []
-        mechanism_entries = self._mechanism_matching_entries(profile) \
-            if memory_mode in ("strategic", "cost-aware") else []
         cells = self.stats.for_profile(profile, "L1")
         norms = self._cost_norms(candidates, entries, cells) \
             if memory_mode == "cost-aware" else {}
         consulted: List[str] = []
         recs: List[Recommendation] = []
         for strategy in candidates:
-            rec = self._score(strategy, profile, entries, cells, memory_mode,
-                              norms, mechanism_entries)
+            rec = self._score(strategy, profile, entries, cells, memory_mode, norms)
             consulted.extend(r for r in rec.evidence_refs if r.startswith("se_"))
             recs.append(rec)
         if consulted:
@@ -125,31 +134,11 @@ class Selector:
 
     # -- internals ---------------------------------------------------------------
 
-    def _mechanism_matching_entries(self, profile: ProblemProfile
-                                     ) -> List[StrategicEntry]:
-        """Entries whose MECHANISM features match the profile — kinship at
-        first contact. An entry matched by mechanism (but not by structural
-        pattern) is a cross-family generalization with the same discount and
-        labelling discipline as L2/L3 scope matching."""
-        query_mech = profile.mechanism_features or {}
-        if not any(v > 0 for v in query_mech.values()):
-            return []
-        matches: List[StrategicEntry] = []
-        for entry in self.sbank.list(include_dormant=False):
-            if entry.matches(profile):
-                continue  # already a structural match; handled by the main path
-            feats = entry.mechanism.features if entry.mechanism else {}
-            if not feats:
-                continue
-            if ConditionalStats._mechanisms_close(query_mech, feats,
-                                                  MECHANISM_MATCH_THRESHOLD):
-                matches.append(entry)
-        return matches
-
     def _cost_norms(self, candidates, entries, cells) -> Dict[str, float]:
         """Per-dimension normalization divisors from the current candidate
         cost range, so no raw unit (e.g. thousands of tokens) can swamp the
-        quality term. Falls back to 1.0 when a dimension is uniformly zero."""
+        quality term. Falls back to 1.0 when a dimension is uniformly zero
+        or when no evidence is available for a candidate."""
         vectors: List[CostVector] = []
         for strategy in candidates:
             entry = next((e for e in entries if e.strategy_id == strategy.strategy_id), None)
@@ -158,11 +147,10 @@ class Selector:
                 vectors.append(entry.expected_cost_hat)
             elif cell is not None and cell.n > 0:
                 vectors.append(cell.mean_cost)
-            else:
-                vectors.append(strategy.expected_cost)
+            # No prior fallback — if no evidence, no vector contributes.
         norms: Dict[str, float] = {}
         for d in COST_DIMENSIONS:
-            peak = max((getattr(v, d) for v in vectors), default=0.0)
+            peak = max((getattr(v, d) for v in vectors), default=0.0) if vectors else 0.0
             norms[d] = float(peak) if peak > 0 else 1.0
         return norms
 
@@ -176,46 +164,14 @@ class Selector:
                cells: Dict[str, GroupStats],
                memory_mode: str,
                norms: Optional[Dict[str, float]] = None,
-               mechanism_entries: Optional[List[StrategicEntry]] = None
                ) -> Recommendation:
         entry = next((e for e in entries if e.strategy_id == strategy.strategy_id), None)
-        mech_entry = next((e for e in (mechanism_entries or [])
-                           if e.strategy_id == strategy.strategy_id), None)
         cell = cells.get(strategy.strategy_id)
         if entry is not None and memory_mode in ("strategic", "cost-aware"):
             return self._from_entry(strategy, profile, entry, memory_mode, norms)
-        if mech_entry is not None and memory_mode in ("strategic", "cost-aware"):
-            return self._from_mechanism_entry(strategy, profile, mech_entry,
-                                              memory_mode, norms)
         if cell is not None and cell.n > 0 and memory_mode in ("cases", "strategic", "cost-aware"):
             return self._from_stats(strategy, cell, memory_mode, norms)
-        # Mechanism statistics: cross-family aggregation on the WHY-dimensions.
-        if memory_mode in ("cases", "strategic", "cost-aware") \
-                and (profile.mechanism_features or {}):
-            mech_cells = self.stats.mechanism_cells(profile, strategy.strategy_id)
-            mech_cells = [c for c in mech_cells
-                          if c.group_key.split("#family=")[-1] != profile.family]
-            if mech_cells:
-                merged_n = sum(c.n for c in mech_cells)
-                merged = self.stats._aggregate(
-                    f"mechanism#cross", strategy.strategy_id,
-                    [r for c in mech_cells for r in
-                     self.stats.bank.query(strategy_id=strategy.strategy_id)
-                     if r.source == "executed"
-                     and r.profile_snapshot.family != profile.family
-                     and ConditionalStats._mechanisms_close(
-                         profile.mechanism_features,
-                         r.profile_snapshot.mechanism_features,
-                         MECHANISM_MATCH_THRESHOLD)])
-                if merged.n >= 1:
-                    return self._from_stats(
-                        strategy, merged, memory_mode, norms,
-                        basis=f"cross-family mechanism statistics over n={merged_n} "
-                              f"executions in {len(mech_cells)} family(/ies) "
-                              "sharing the same structural mechanism",
-                        cross_family=True)
-        return self._from_prior(strategy, basis="no memory evidence; catalog prior",
-                                norms=norms)
+        return self._from_no_evidence(strategy, norms=norms)
 
     def _entry_confidence(self, entry: StrategicEntry, profile: ProblemProfile) -> float:
         # Confidence scales with support (new entries get a grace floor), and
@@ -271,54 +227,6 @@ class Selector:
                   f"hit_rate={entry.prediction_track.hit_rate:.2f}, "
                   f"n={entry.prediction_track.n_predictions})")
 
-    def _from_mechanism_entry(self, strategy: Strategy, profile: ProblemProfile,
-                              entry: StrategicEntry, memory_mode: str,
-                              norms: Optional[Dict[str, float]] = None
-                              ) -> Recommendation:
-        """Entry matched by MECHANISM kinship rather than structural pattern.
-
-        This is the first-contact generalization path: the query problem
-        exhibits the same causal structure as the entry's evidence, whatever
-        its family label. Cross-family discount and labelling apply — same
-        discipline as L2/L3 scope matching, different (and deeper) basis."""
-        confidence = self._entry_confidence(entry, profile) * \
-            CROSS_FAMILY_CONFIDENCE_DISCOUNT
-        cost = entry.expected_cost_hat
-        cost_term = (cost.scalarize(self.cost_weights, norms)
-                     if memory_mode == "cost-aware" else 0.0)
-        score = (self.alpha * entry.expected_quality_hat
-                 - self.beta * cost_term
-                 - self.gamma * entry.failure_prob)
-        warnings: List[str] = []
-        if entry.status == "suspect":
-            score *= SUSPECT_SCORE_FACTOR
-            warnings.append(f"entry {entry.entry_id} is suspect; estimate "
-                            "downweighted x0.5")
-        warnings.append(
-            f"mechanism-kinship match from entry {entry.entry_id} "
-            f"({entry.scope_level}); same structural mechanism, different "
-            f"family — confidence discounted x{CROSS_FAMILY_CONFIDENCE_DISCOUNT}")
-        if entry.mechanism and entry.mechanism.explanation \
-                and not entry.mechanism.explanation_verified:
-            warnings.append("mechanism explanation is unverified phrasing")
-        warnings.extend(self._cost_calibration_warnings(entry))
-        warnings.extend(entry.risk_conditions)
-        mech_desc = ""
-        if entry.mechanism and entry.mechanism.features:
-            top = sorted(entry.mechanism.features.items(),
-                         key=lambda kv: -kv[1])[:2]
-            mech_desc = ", ".join(f"{k}={v:.2f}" for k, v in top if v > 0)
-        return Recommendation(
-            strategy=strategy, score=score,
-            expected_quality=entry.expected_quality_hat,
-            expected_cost=cost, failure_prob=entry.failure_prob,
-            evidence="mechanism_entry", evidence_refs=[entry.entry_id],
-            confidence=confidence, cross_family=True,
-            risk_warnings=warnings,
-            basis=f"entry {entry.entry_id} via mechanism kinship "
-                  f"({mech_desc}); {entry.prediction_track.n_predictions} "
-                  "predictions checked")
-
     def _cost_calibration_warnings(self, entry: StrategicEntry) -> List[str]:
         """Warning-only cost calibration feedback: a low cost hit rate means
         the entry's cost estimate is unreliable — it informs, never demotes."""
@@ -356,23 +264,24 @@ class Selector:
             risk_warnings=warnings,
             basis=basis or f"conditional statistics over n={cell.n} executions in this group")
 
-    def _from_prior(self, strategy: Strategy, basis: str,
-                    norms: Optional[Dict[str, float]] = None) -> Recommendation:
+    def _from_no_evidence(self, strategy: Strategy,
+                          norms: Optional[Dict[str, float]] = None
+                          ) -> Recommendation:
+        """No experience for this (strategy, profile) pair. The catalog is a
+        structural vocabulary — it tells you the strategy *exists* and *is
+        applicable*, but makes no quality/cost/risk claim. Score is
+        negative-infinity so any strategy with real evidence (even a
+        expensive one) ranks above it; confidence is zero."""
         return Recommendation(
             strategy=strategy,
-            score=(self.alpha * strategy.expected_quality
-                   - self.beta * strategy.expected_cost.scalarize(self.cost_weights, norms)
-                   - self.gamma * strategy.expected_risk),
-            expected_quality=strategy.expected_quality,
-            expected_cost=strategy.expected_cost,
-            failure_prob=strategy.expected_risk,
-            evidence="prior", confidence=NEW_ENTRY_CONFIDENCE_FLOOR,
-            basis=basis)
+            score=float('-inf'),
+            expected_quality=0.0,
+            expected_cost=CostVector(),
+            failure_prob=0.0,
+            evidence="no_memory", confidence=0.0,
+            basis="no experience for this strategy×profile pair; "
+                  "catalog vocabulary only — no quality/cost/risk claim")
 
 
 #: support_n at which an entry reaches full confidence.
 PROMOTE_REFERENCE_N = 5.0
-
-#: Mechanism kinship threshold: every shared mechanism feature must be within
-#: (1 - threshold) of the query's value.
-MECHANISM_MATCH_THRESHOLD = 0.6

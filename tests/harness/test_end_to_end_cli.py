@@ -55,14 +55,14 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["profile"]["source"], "harness_supplied")
         self.assertIn("summary", out)
 
-        # 2. recommend (cold start -> priors)
-        proc = run_orx(self.home, "recommend", "--task", str(self.task_path),
+        # 2. recall (cold start -> no evidence)
+        proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         recs = out["result"]["recommendations"]
         self.assertTrue(recs)
-        self.assertEqual(recs[0]["evidence"], "prior")
+        self.assertEqual(recs[0]["evidence"], "no_memory")
 
         # 3. execute
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
@@ -102,8 +102,8 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertTrue(any(r.get("created") or r.get("updated") for r in results),
                         msg=proc.stdout)
 
-        # 7. recommend again — now entry-backed
-        proc = run_orx(self.home, "recommend", "--task", str(self.task_path),
+        # 7. recall again — now entry-backed
+        proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
         s01 = next(r for r in out["result"]["recommendations"]
@@ -130,7 +130,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["memory"]["executions"], 2)
 
     def test_stdout_is_single_json(self):
-        proc = run_orx(self.home, "recommend", "--task", str(self.task_path))
+        proc = run_orx(self.home, "recall", "--task", str(self.task_path))
         lines = [l for l in proc.stdout.splitlines() if l.strip()]
         self.assertEqual(len(lines), 1)
         parsed = json.loads(lines[0])
@@ -138,7 +138,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIn("summary", parsed)
 
     def test_error_exit_code_and_json(self):
-        proc = run_orx(self.home, "recommend", "--task", "{bad json")
+        proc = run_orx(self.home, "recall", "--task", "{bad json")
         self.assertEqual(proc.returncode, 2)
         out = json.loads(proc.stdout)
         self.assertIn("error", out["result"])

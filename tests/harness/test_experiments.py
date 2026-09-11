@@ -43,7 +43,7 @@ class TestRunner(HarnessTestCase):
         self.assertTrue(aware_late_routing)
         cheap_picks = sum(1 for r in aware_late_routing if r["strategy_id"] == "S04")
         self.assertGreaterEqual(cheap_picks, len(aware_late_routing) - 1)
-        # mode none always plays the default strategy
+        # mode none returns no evidence (score 0); alphabetical tie-break picks S01
         self.assertTrue(all(r["strategy_id"] == "S01" for r in none_.rows))
         # and pays more for it
         self.assertLess(aware.rows[-1]["cumulative_cost_scalar"],

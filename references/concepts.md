@@ -19,7 +19,33 @@ E_t is episodic experience; M_strategic is generalized strategy knowledge. Both 
 
 ## Structural grouping and coupling derivation
 
-Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's `model` representation (measured from declared constraints; the cleanest source) > solve-script AST > structured spec fields > harness-supplied values. `semantic_coupling` is never derived. When a supplied value contradicts the structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's `model` representation (measured from declared constraints; the cleanest source) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived. When a supplied value contradicts the structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+
+**The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
+
+Post-strategy information (solver diagnostics, model diagnostics) is stored separately in `ExecutionRecord.execution_features` — never in `profile_snapshot`. This keeps task identity stable across executions while preserving execution-time observations for offline induction.
+
+## Coupling-Aware Intermediate Representation (CIR)
+
+The four scalar coupling dimensions are **derived summaries**, not the primary representation. The primary representation is the CIR — an explicit, inspectable set of entities, decisions, constraints, and relations that captures *how* the problem's components interact. The CIR is produced **before** the canonical model, from the natural-language task description, and provides modeling guidance that improves the correctness of the canonical representation.
+
+The architectural shift:
+
+```
+Old:  Task → scalar coupling scores → strategy matching → model
+New:  Task → CIR (entities/relations) → modeling guidance → canonical model
+                → derived scalar signature → strategy retrieval
+```
+
+Key principles:
+
+- **CIR before model**: the CIR does not require a `model` field. The model may later cross-check the CIR, but is never required to create one.
+- **Structure first, scalars second**: scalar coupling scores (rc, tc, rx) are derived from the structure; they are summaries, never substitutes for the structure itself.
+- **Co-occurrence is structural evidence only**: constraint-variable co-occurrence produces generic `depends_on` edges. A semantic relation (`uses_resource`, `shares_resource`, `competes_for`) requires additional entity/constraint semantics.
+- **Domain-general**: all `kind`/`type` fields in the CIR are free-form strings — the schema never hard-codes supply-chain-specific vocabulary.
+- **Dual downstream**: CIR feeds both modeling guidance (primary) and strategy retrieval (secondary, via a derived ProblemSignature). Coupling-aware understanding works even when Strategic Memory is empty.
+
+See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, and validation rules.
 
 ## Two-layer memory: commitments vs recounts
 
@@ -32,11 +58,11 @@ Structural groups — the similarity keys for all memory — are built from prob
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
 
-## Mechanism features: kinship at first contact
+## The catalog: structural vocabulary, not prior knowledge
 
-Coupling bins answer "how coupled is this problem"; mechanism features answer "WHY is it coupled". Four domain-agnostic OR mechanisms are measured from the model representation: shared resource competition (decisions competing for the same scarce capacity), global constraint propagation (one constraint channeling all decisions), temporal propagation (today's decision changing tomorrow's feasible region), and discrete feasibility shrinkage (integer structure making the continuous relaxation lie).
+The strategy catalog (S01–S10) is a **cold-start vocabulary**: it carries structural knowledge — applicability conditions (which coupling profiles a strategy suits), modeling actions, fallback chains, and solver-family hints — but **no prior quality/cost/risk scores**.
 
-Mechanisms are the cross-family matching key: a routing-learned entry can serve a scheduling problem at FIRST CONTACT when both exhibit the same mechanism — no exploration tuition in the target family, no widening gamble. The match carries the same cross-family discount and labelling as L2/L3 scope matching; a miss tightens scope as usual. This is the difference between statistical generalization (two families each paid for evidence, then the system merged them) and cognitive generalization (the system recognized kinship when it first appeared).
+Without accumulated experience, `recall` honestly returns `evidence="no_memory"` with `score=-inf` and `confidence=0`. The system does not fabricate priors to fill the gap. This is deliberate: fabricated priors would prejudice the learning loop toward whatever numbers were guessed, rather than letting evidence accumulate from real executions. The catalog vocabulary is still useful at cold start — applicability filtering narrows the candidate menu — but the selection is your call, not a score ranking.
 
 ## CostVector: five dimensions, never folded at rest
 

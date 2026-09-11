@@ -178,7 +178,7 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
             _warmup(harness, workdir)
         for index, task in enumerate(tasks):
             task_json = task.to_task_json()
-            recs = harness.recommend(task_json, top=1, memory_mode=mode)
+            recs = harness.recall(task_json, top=1, memory_mode=mode)
             if not recs["recommendations"]:
                 continue
             strategy_id = recs["recommendations"][0]["strategy_id"]

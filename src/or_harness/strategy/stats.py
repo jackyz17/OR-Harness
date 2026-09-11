@@ -136,41 +136,6 @@ class ConditionalStats:
         return [self._aggregate(f"match#family={fam}", strategy_id, recs)
                 for fam, recs in sorted(by_family.items())]
 
-    def mechanism_cells(self, profile, strategy_id: str,
-                        threshold: float = 0.6) -> List[GroupStats]:
-        """Cross-family aggregation by MECHANISM similarity — the quantitative
-        'learn once, apply elsewhere' view.
-
-        A record matches when its mechanism_features overlap the query's on
-        every shared key with per-key distance <= (1 - threshold): kinship is
-        measured on the WHY-dimensions, not on family labels or bins. This is
-        arithmetic over facts (never persisted), like all conditional
-        statistics."""
-        query_mech = getattr(profile, "mechanism_features", {}) or {}
-        if not any(v > 0 for v in query_mech.values()):
-            return []  # no mechanism signal — never match on nothing
-        by_family: Dict[str, List[ExecutionRecord]] = {}
-        for rec in self.bank.query(strategy_id=strategy_id):
-            if rec.source != "executed":
-                continue
-            rec_mech = rec.profile_snapshot.mechanism_features
-            if not rec_mech or not self._mechanisms_close(query_mech, rec_mech,
-                                                          threshold):
-                continue
-            by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(f"mechanism#family={fam}", strategy_id, recs)
-                for fam, recs in sorted(by_family.items())]
-
-    @staticmethod
-    def _mechanisms_close(a: Dict[str, float], b: Dict[str, float],
-                          threshold: float) -> bool:
-        """Every shared key must be within (1 - threshold) distance; at least
-        one key must be present in both with a positive signal."""
-        shared = [k for k in a if k in b]
-        if not shared:
-            return False
-        return all(abs(a[k] - b[k]) <= (1.0 - threshold) for k in shared)
-
     def cross_family_from_predicates(self, entry, level: str) -> List[GroupStats]:
         """Partition an entry's evidence by family at ``level``.
 

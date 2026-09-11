@@ -215,6 +215,9 @@ class SafePythonExecutor:
             trajectory.append(TrajectoryStep(
                 action="verify:basic", outcome="; ".join(check["problems"])))
         digest = code_hash or _sha256_file(code_path)
+        execution_features: Dict[str, Any] = {}
+        if outcome.diagnostics:
+            execution_features["solver_diagnostics"] = dict(outcome.diagnostics)
         return ExecutionRecord(
             execution_id=ExecutionRecord.new_id(),
             task_id=task_id, strategy_id=strategy_id,
@@ -224,6 +227,7 @@ class SafePythonExecutor:
                      "problems": check["problems"]},
             cost=cost, failures=failures,
             solver={"name": outcome.solver, "code_hash": digest},
+            execution_features=execution_features,
             verification_level=verification_level)
 
     # -- static sandbox policy -------------------------------------------------------

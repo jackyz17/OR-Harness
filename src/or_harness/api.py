@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.adapters.solver import available_families, probe_all
+from or_harness.core.coupling import understand as cir_understand
 from or_harness.core.schema import ExecutionRecord, ProblemProfile, profile_matches
 from or_harness.core.storage import Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
@@ -54,23 +55,36 @@ class ORHarness:
 
     # -- capabilities ----------------------------------------------------------
 
-    def profile(self, task: Dict[str, Any], code: Optional[str] = None) -> ProblemProfile:
-        return profile_task(task, code)
+    def understand(self, task: Dict[str, Any]) -> Dict[str, Any]:
+        """Pre-model coupling-aware understanding.
+
+        Validates the task's optional ``coupling`` field (a CIR), infers
+        structural relations deterministically, derives coupling groups, and
+        renders modeling guidance — all *before* the canonical model is
+        written.  When no CIR is supplied, returns a prompt to submit one.
+        """
+        return cir_understand(task)
+
+    def profile(self, task: Dict[str, Any], code: Optional[str] = None,
+                cir: Optional[Any] = None) -> ProblemProfile:
+        return profile_task(task, code, cir=cir)
 
     def derivation_report(self, task: Dict[str, Any],
-                          code: Optional[str] = None) -> Dict[str, Any]:
+                          code: Optional[str] = None,
+                          cir: Optional[Any] = None) -> Dict[str, Any]:
         """Per-dimension coupling derivation report: value, origin
         (model/code/spec/supplied/null), notes, model verification issues,
-        and cross-check warnings."""
-        return derivation_report(self.profile(task, code))
+        and cross-check warnings (including CIR ↔ model when a CIR is
+        provided)."""
+        return derivation_report(self.profile(task, code, cir=cir))
 
-    def recommend(self, task: Dict[str, Any], *, top: int = 3,
-                  exclude: Optional[Sequence[str]] = None,
-                  memory_mode: str = "cost-aware",
-                  code: Optional[str] = None) -> Dict[str, Any]:
+    def recall(self, task: Dict[str, Any], *, top: int = 3,
+               exclude: Optional[Sequence[str]] = None,
+               memory_mode: str = "cost-aware",
+               code: Optional[str] = None) -> Dict[str, Any]:
         profile = self.profile(task, code)
-        recs = self.selector.recommend(profile, top=top, exclude=exclude,
-                                       memory_mode=memory_mode)
+        recs = self.selector.recall(profile, top=top, exclude=exclude,
+                                    memory_mode=memory_mode)
         solvers = available_families()
         result = {
             "profile": profile.to_dict(),
@@ -88,8 +102,12 @@ class ORHarness:
                 verification_level: str = "basic") -> ExecutionRecord:
         if strategy_id not in self.catalog:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
-        code_text = Path(code_path).read_text(encoding="utf-8")
-        profile = self.profile(task, code_text)
+        # Frozen pre-strategy signature: profile is derived from the task's
+        # spec / annotations / model field ONLY — never from solve.py. The
+        # generated solve script is a post-strategy artifact; letting it
+        # redefine the problem's identity would create a self-reinforcing
+        # loop (strategy → code → profile → grouping → future strategy choice).
+        profile = self.profile(task)
         record = self.executor.execute(
             Path(code_path), Path(workspace), solver=solver,
             task_id=str(task["task_id"]), strategy_id=strategy_id,
@@ -125,6 +143,8 @@ class ORHarness:
         prediction_events = self._check_predictions(record)
         expected_map = {e.strategy_id: {"quality": e.expected_quality_hat}
                         for e in self.sbank.matching(record.profile_snapshot)}
+        # expected_map already uses {sid: {"quality": q}} format, matching
+        # the new check_triggers signature.
         prior_failures = [r for r in self.bank.query(task_id=record.task_id)
                           if not r.quality.get("feasible", False)
                           and r.execution_id != record.execution_id]

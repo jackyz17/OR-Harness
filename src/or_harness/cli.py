@@ -54,12 +54,12 @@ def _harness(args) -> ORHarness:
                      gamma=args.gamma, cost_weights=weights)
 
 
-def _summarize_recommendations(result: Dict[str, Any]) -> str:
+def _summarize_recall(result: Dict[str, Any]) -> str:
     recs = result["recommendations"]
     if not recs:
         return "No applicable strategies."
     top = recs[0]
-    parts = [f"Top recommendation: {top['strategy_id']} ({top['name']}), "
+    parts = [f"Top candidate: {top['strategy_id']} ({top['name']}), "
              f"score {top['score']}, evidence={top['evidence']}, "
              f"E[Q]={top['expected']['quality']}, "
              f"P(fail)={top['expected']['failure_prob']}."]
@@ -83,10 +83,51 @@ def cmd_profile(args) -> int:
     try:
         task = _load_json_arg(args.task)
         code = Path(args.code).read_text(encoding="utf-8") if args.code else None
-        profile = h.profile(task, code)
-        report = h.derivation_report(task, code)
+        cir = None
+        if args.cir:
+            from or_harness.core.coupling import CouplingAwareIR
+            cir_data = _load_json_arg(args.cir)
+            cir = CouplingAwareIR.from_dict(cir_data)
+        profile = h.profile(task, code, cir=cir)
+        report = h.derivation_report(task, code, cir=cir)
         return _emit({"profile": profile.to_dict(), "derivation": report},
                      _summarize_profile(profile, report))
+    finally:
+        h.close()
+
+
+def cmd_understand(args) -> int:
+    """Pre-model coupling-aware understanding."""
+    h = _harness(args)
+    try:
+        task = _load_json_arg(args.task)
+        result = h.understand(task)
+        cir = result.get("cir")
+        if cir is None:
+            return _emit(result, result.get("message", "No CIR provided."))
+        groups = cir.get("coupling_groups") or []
+        guidance = result.get("modeling_guidance") or []
+        warnings = result.get("cir_warnings") or []
+        issues = cir.get("issues") or []
+        parts = [f"CIR validated: {len(cir.get('entities', []))} entities, "
+                 f"{len(cir.get('decisions', []))} decisions, "
+                 f"{len(cir.get('constraints', []))} constraints, "
+                 f"{len(cir.get('relations', []))} relations."]
+        if issues:
+            parts.append(f"Validation issues ({len(issues)}): "
+                         + "; ".join(f"[{i['layer']}] {i['code']}" for i in issues[:3])
+                         + (" ..." if len(issues) > 3 else ""))
+        if guidance:
+            parts.append(f"Modeling guidance ({len(guidance)}):")
+            for g in guidance:
+                parts.append(f"  - [{g['type']}] {g['implication']}")
+        else:
+            parts.append("No coupling groups detected — the CIR is structurally "
+                         "valid but no shared bottleneck or global constraint "
+                         "pattern was found.")
+        for w in warnings:
+            parts.append(f"WARNING: {w['code']}: {w['detail']}")
+        return _emit(result, " ".join(parts))
     finally:
         h.close()
 
@@ -116,15 +157,15 @@ def _summarize_profile(profile, report) -> str:
     return " ".join(parts)
 
 
-def cmd_recommend(args) -> int:
+def cmd_recall(args) -> int:
     h = _harness(args)
     try:
         task = _load_json_arg(args.task)
         code = Path(args.code).read_text(encoding="utf-8") if args.code else None
-        result = h.recommend(task, top=args.top,
-                             exclude=args.exclude or [],
-                             memory_mode=args.memory_mode, code=code)
-        return _emit(result, _summarize_recommendations(result))
+        result = h.recall(task, top=args.top,
+                          exclude=args.exclude or [],
+                          memory_mode=args.memory_mode, code=code)
+        return _emit(result, _summarize_recall(result))
     finally:
         h.close()
 
@@ -328,19 +369,26 @@ def build_parser() -> argparse.ArgumentParser:
                              "'llm_tokens=1.0,retries=2.0'")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    p = sub.add_parser("understand",
+                       help="pre-model coupling-aware understanding (CIR)")
+    p.add_argument("--task", required=True, help="task JSON literal or file")
+    p.set_defaults(func=cmd_understand)
+
     p = sub.add_parser("profile", help="build a ProblemProfile for a task")
     p.add_argument("--task", required=True, help="task JSON literal or file")
     p.add_argument("--code", default=None, help="optional solve script for AST derivation")
+    p.add_argument("--cir", default=None,
+                   help="optional CIR JSON literal/file for CIR↔model cross-check")
     p.set_defaults(func=cmd_profile)
 
-    p = sub.add_parser("recommend", help="rank strategies for a task")
+    p = sub.add_parser("recall", help="recall accumulated experience for a task")
     p.add_argument("--task", required=True)
     p.add_argument("--code", default=None)
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--exclude", nargs="*", default=[])
     p.add_argument("--memory-mode", default="cost-aware",
                    choices=["none", "cases", "strategic", "cost-aware"])
-    p.set_defaults(func=cmd_recommend)
+    p.set_defaults(func=cmd_recall)
 
     p = sub.add_parser("execute", help="sandbox-execute a solve script")
     p.add_argument("--task", required=True)
