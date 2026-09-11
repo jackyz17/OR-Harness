@@ -5,7 +5,11 @@ from helpers import HarnessTestCase
 
 from or_harness.core.schema import CostVector, StrategicEntry
 from or_harness.core.storage import StorageError
-from or_harness.strategy.experience_bank import ExperienceBank
+from or_harness.strategy import (
+    ExecutionEvidenceBank,
+    ExperienceBank,
+    StrategicKnowledgeBank,
+)
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import (
     DEMOTE_CONSECUTIVE_MISSES,
@@ -13,6 +17,17 @@ from or_harness.strategy.strategic_bank import (
     PROMOTE_MIN_PREDICTIONS,
     StrategicBank,
 )
+
+
+class TestBankTerminologyAliases(HarnessTestCase):
+    """Paper terminology: the aliases point at the same classes — no new
+    storage, no new behavior."""
+
+    def test_aliases_are_the_same_classes(self):
+        self.assertIs(ExecutionEvidenceBank, ExperienceBank)
+        self.assertIs(StrategicKnowledgeBank, StrategicBank)
+        self.assertIsInstance(ExecutionEvidenceBank(self.store), ExperienceBank)
+        self.assertIsInstance(StrategicKnowledgeBank(self.store), StrategicBank)
 
 
 class TestConditionalStats(HarnessTestCase):

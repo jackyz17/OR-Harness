@@ -6,9 +6,9 @@ description: >
   network flow, resource allocation, supply-chain, and other highly coupled
   industrial OR scenarios. Provides coupling-aware problem understanding
   (CIR), a sandboxed executor with seven solver adapters, and a two-layer
-  strategy memory (Experience Bank facts + Strategic Bank commitments) that
-  learns which solving strategies fit which problem structures at what
-  execution cost. Use when the user asks to formulate, solve, retry,
+  strategy memory (Execution Evidence facts + Strategic Knowledge
+  commitments) that learns which solving strategies fit which problem
+  structures at what execution cost. Use when the user asks to formulate, solve, retry,
   decompose, validate, or debug an optimization model, or to query/manage
   accumulated OR strategy experience. Do not use for one-off optimization
   questions with no repetition, generic math proofs, or non-optimization tasks.
@@ -88,9 +88,9 @@ Never record an execution whose `problems` is non-empty without noting why.
 
 ## Core concepts (terminology is strict)
 
-- **Experience Bank** — append-only episodic facts ("what happened"). Never stores generalizations. The single source of truth.
-- **Strategic Bank** — induced commitments ("what will happen"): prediction intervals, calibration tracking, feature predicates. Fully rebuildable from facts (`induce --rebuild`).
-- **Conditional statistics** — on-the-fly aggregation over the Experience Bank per (strategy × structural group). Arithmetic, not knowledge; never persisted.
+- **Execution Evidence Bank** — append-only episodic facts ("what actually happened": the strategy actually used, the quality/cost actually observed, failures/recovery, implementation artifacts). Never stores generalizations. The single source of truth. Mutability: append-first, fact-preserving — only cost dimensions may be backfilled (`llm_tokens`), historical facts are never rewritten.
+- **Strategic Knowledge Bank** — induced commitments ("what to do next time": expected quality, expected cost, expected failure risk): prediction intervals, calibration tracking, feature predicates. Provenance-grounded (every entry cites its supporting executions) and fully rebuildable from facts (`induce --rebuild`). Mutability: derived beliefs may be re-estimated, validated, revised, deprecated, replaced.
+- **Conditional statistics** — on-the-fly aggregation over the Evidence Bank per (strategy × structural group). Arithmetic, not knowledge; never persisted. A recount of observations, not a commitment.
 - **Structural group** — problem family + coupling-feature bins (e.g. `resource_coupling ∈ [0.75, 1.0]`).
 - **CostVector** — five dimensions, stored raw, never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Retries are a cost: "wrong model → repair → rerun" must cost more than getting it right. (In Chinese documentation: 代价, not 成本 — it is the price paid at decision time, not bookkeeping.)
 - **Cold archive** — tombstones of retired entries. Vetoes re-induction of the same failed generalization; `--force` revives only under genuine environment drift.
@@ -136,11 +136,11 @@ Result: `result.profile` = `{problem_id, family, scale_features, <four coupling 
 
 ### `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--code solve.py]`
 
-Recalls accumulated experience for the task's problem signature. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic entry → conditional statistics → **no evidence** (`evidence="no_memory"`, `score=-inf`, `confidence=0`).
+Recalls accumulated experience for the task's problem signature. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: matching Strategic Knowledge entry → conditional statistics → **no evidence** (`evidence="no_memory"`, `score=-inf`, `confidence=0`).
 
 When no experience exists for any strategy, all candidates return with `evidence="no_memory"` — the catalog still provides the strategy vocabulary (applicability, actions, fallback, solver family) but makes no quality/cost/risk claims. Pick based on structural fit and your own judgment.
 
-Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before).
+Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before). Note: when `evidence="conditional_stats"`, the `expected` fields report OBSERVED means (a recount from the Evidence Bank), not a knowledge commitment — no interval, no calibration track, no lifecycle.
 
 `--memory-mode`: `none` (no memory consulted; all candidates return `no_memory`) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
 
@@ -148,19 +148,19 @@ Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{qu
 
 You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox: no network/shell/pathlib, `open()` only for a literal relative `result.json`, POSIX rlimits + wall-clock timeout. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`.
 
-The profile used in `execute` is the same frozen pre-strategy signature from `recall` — derived from `spec` / `annotations` / `model` only.
+The profile used in `execute` is the same frozen pre-strategy signature from `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only.
 
-Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill, `execution_features` with solver diagnostics if the solver reported any). **Nothing is recorded yet.**
+Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill, `execution_features` with solver diagnostics if the solver reported any, and `cir_snapshot` = the CIR that was actually solved when the task carries a `coupling` field). **Nothing is recorded yet.**
 
 ### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] | --discard-staged <id>`
 
-Appends the fact to the Experience Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks (C4 detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
+Appends the fact to the Execution Evidence Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks (C4 detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
 
 Result: `result.{execution_id, recorded, prediction_checks[], induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox.
 
 ### `orx induce [--strategy S | --all] [--rebuild] [--widen ID] [--tighten ID] [--dry-run] [--force] [--llm-conditions <json>]`
 
-Consolidates facts into a Strategic entry (your explicit call — hints never auto-induce). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). A pattern already covered by an existing entry is refused (restatement-only entries are forbidden). `--rebuild` regenerates the whole Strategic Bank from facts (cold archive preserved). `--widen/--tighten` move an entry along the scope ladder L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins); widening is falsifiable — a cross-family miss auto-tightens.
+Consolidates facts into a Strategic Knowledge entry (your explicit call — hints never auto-induce). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). A pattern already covered by an existing entry is refused (restatement-only entries are forbidden). `--rebuild` regenerates the whole Strategic Knowledge Bank from facts (cold archive preserved). `--widen/--tighten` move an entry along the scope ladder L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins); widening is falsifiable — a cross-family miss auto-tightens. New entries inherit `strategy_type` and `actions` from the catalog vocabulary (extension points; harness-supplied values are never overwritten).
 
 `--llm-conditions` (optional, you phrase it): `[{"text": "...", "supporting_execution_ids": ["ex_..."]}]`. Citations are verified — fake ids or numeric claims disagreeing with cited records are rejected; accepted conditions stay `verified: false` and never enter scoring until re-confirmed by future executions.
 

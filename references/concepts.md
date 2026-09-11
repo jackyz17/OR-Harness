@@ -10,12 +10,12 @@ The conceptual loop:
 
 ```
 P_t → Problem Profiling → Strategy Selection → Strategy Execution
-    → Outcome + CostVector → Experience Bank (E_t)
-    → Induction/Consolidation → Strategic Bank (M_strategic)
+    → Outcome + CostVector → Execution Evidence Bank (E_t)
+    → Induction/Consolidation → Strategic Knowledge Bank (M_strategic)
     → S_{t+1}
 ```
 
-E_t is episodic experience; M_strategic is generalized strategy knowledge. Both layers are necessary — neither alone is memory.
+E_t is factual execution evidence (what actually happened); M_strategic is derived strategic knowledge (what to do next time). Both layers are necessary — neither alone is memory.
 
 ## Structural grouping and coupling derivation
 
@@ -47,16 +47,22 @@ Key principles:
 
 See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, and validation rules.
 
-## Two-layer memory: commitments vs recounts
+## Two-layer memory: facts vs derived knowledge
 
-| | Experience Bank | Strategic Bank |
+| | Execution Evidence Bank | Strategic Knowledge Bank |
 |---|---|---|
-| Question answered | "What happened?" | "What will happen?" |
-| Storage unit | ExecutionRecord (fact) | StrategicEntry (commitment) |
-| Mutation | append-only (+ cost backfill) | CRUD, lifecycle, disposal |
-| Rebuildable? | it *is* the truth | fully, via `induce --rebuild` |
+| Question answered | "What actually happened?" | "What should we do next time?" |
+| Storage unit | ExecutionRecord (episodic fact) | StrategicEntry (commitment) |
+| Strategy role | the strategy ACTUALLY used | the strategy RECOMMENDED for this structure |
+| Quality / cost | actual (`quality`, `cost`; alias properties `actual_quality` / `actual_cost`) | expected (`expected_quality_hat`, `expected_cost_hat`, `failure_prob`) |
+| Artifacts | solver output, diagnostics — artifacts are evidence | none (only future abstracted patterns) |
+| Mutation | append-first, fact-preserving; only cost backfill | CRUD, lifecycle, disposal — beliefs may be revised |
+| Provenance | it *is* the source of truth | every entry cites supporting executions (`provenance`, `support_n`) |
+| Rebuildable? | it *is* the truth — delete it and the factual basis is gone | fully, via `induce --rebuild` |
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
+
+When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet.
 
 ## The catalog: structural vocabulary, not prior knowledge
 

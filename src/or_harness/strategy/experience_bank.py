@@ -1,9 +1,22 @@
-"""Experience Bank: the append-only episodic fact layer.
+"""Execution Evidence Bank: the append-only episodic fact layer.
 
-Records what happened — never what will happen. Facts are permanently neutral:
-the disposal ladder (suspect/dormant/retired/cold archive) applies only to the
-derived Strategic Bank. The Experience Bank is the single source of truth; the
-Strategic Bank can always be rebuilt from it (``induce --rebuild``).
+Records what actually happened — never what will happen. Facts are permanently
+neutral: the disposal ladder (suspect/dormant/retired/cold archive) applies
+only to the derived Strategic Knowledge Bank. The Evidence Bank is the single
+source of truth; the Knowledge Bank can always be rebuilt from it
+(``induce --rebuild``).
+
+Mutability contract (fact-preserving, append-first):
+  - ``append``: the only way a new fact enters. Duplicate ids are rejected.
+  - ``update_cost``: the sole backfill channel (e.g. llm_tokens becomes known
+    later). Only cost dimensions may change; nothing else is ever rewritten.
+  - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
+    execution and the harness's explicit recording decision.
+  - ``replace_all``: INTERNAL to garbage collection. Compaction replaces only
+    eligible rows with ``source="compacted"`` bookkeeping ledger lines, which
+    are never consumed by induction or the selector (both filter on
+    ``source == "executed"``). Historical facts are never rewritten because
+    later beliefs changed.
 """
 
 from __future__ import annotations
@@ -15,7 +28,10 @@ from or_harness.core.storage import Store, StorageError
 
 
 class ExperienceBank:
-    """Append-only store of :class:`ExecutionRecord` facts."""
+    """Append-only store of :class:`ExecutionRecord` facts (the Execution
+    Evidence layer). One fact = one episode of what actually happened:
+    actual strategy, actual quality, actual cost, observed failures,
+    implementation artifacts."""
 
     def __init__(self, store: Store):
         self.store = store

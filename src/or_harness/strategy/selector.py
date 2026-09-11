@@ -243,6 +243,16 @@ class Selector:
                     norms: Optional[Dict[str, float]] = None,
                     basis: Optional[str] = None,
                     cross_family: bool = False) -> Recommendation:
+        """Recommendation from conditional statistics over the Evidence Bank.
+
+        This path is a RECOUNT of observations (mean quality/cost actually
+        observed in this structural group), not a Strategic Knowledge
+        commitment: it carries no prediction interval, no calibration track,
+        and no lifecycle. The Recommendation fields are named
+        ``expected_*`` for API stability, but here they report observed
+        means, and ``evidence`` is labelled ``conditional_stats`` so the two
+        layers stay distinguishable downstream.
+        """
         cost = cell.mean_cost
         cost_term = (cost.scalarize(self.cost_weights, norms)
                      if memory_mode == "cost-aware" else 0.0)

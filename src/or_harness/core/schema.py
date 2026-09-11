@@ -5,18 +5,33 @@ Five schemas define the whole system:
 - :class:`ProblemProfile`   — what the problem looks like (structure, coupling).
 - :class:`Strategy`         — a named solving strategy with applicability and priors.
 - :class:`CostVector`       — five-dimensional execution cost, never collapsed at rest.
-- :class:`ExecutionRecord`  — Experience Bank storage unit: an append-only fact.
-- :class:`StrategicEntry`   — Strategic Bank storage unit: a calibrated commitment.
+- :class:`ExecutionRecord`  — Execution Evidence storage unit: an append-only fact.
+- :class:`StrategicEntry`   — Strategic Knowledge storage unit: a calibrated commitment.
 
 Terminology discipline (do not blur):
-  Experience Bank = episodic facts, no generalization claims.
-  Strategic Bank  = generalized commitments with prediction intervals and
-                    calibration tracking. Never stores raw execution detail.
-  Conditional statistics = on-the-fly aggregation over the Experience Bank,
+  Execution Evidence Bank = episodic facts ("what actually happened"):
+                    actual strategy / actual quality / actual cost / observed
+                    failures / implementation artifacts. No generalization
+                    claims. Append-only; only cost dimensions may be
+                    backfilled.
+  Strategic Knowledge Bank = generalized commitments ("what to do next
+                    time"): expected quality / expected cost / expected
+                    failure risk, with prediction intervals and calibration
+                    tracking. Provenance-grounded (every entry cites its
+                    supporting executions) and fully rebuildable from the
+                    Evidence Bank. Never stores raw execution detail.
+  Conditional statistics = on-the-fly aggregation over the Evidence Bank,
                     never persisted, always rebuildable. It is arithmetic, not
                     knowledge. An entry that merely restates statistics is
                     redundant and must not be created.
   Structural group = family + feature bins; the similarity key for statistics.
+
+Actual vs expected naming: facts store ACTUAL observations (``quality``,
+``cost`` — alias properties ``actual_quality`` / ``actual_cost`` make this
+explicit); knowledge stores EXPECTED quantities (``expected_quality_hat``,
+``expected_cost_hat``, ``failure_prob`` — aliases ``expected_quality`` /
+``expected_cost`` / ``expected_failure_risk``). Serialization keys never
+change; the aliases are API-level clarifications only.
 """
 
 from __future__ import annotations
@@ -321,6 +336,10 @@ class Strategy:
     actions: List[str] = field(default_factory=list)
     fallback: Optional[str] = None
     solver_family: Optional[str] = None
+    #: Strategy type (free-form: modeling/decomposition/solver_selection/
+    #: execution/recovery). Vocabulary-level tag; induction may inherit it
+    #: into ``StrategicEntry.strategy_type``.
+    strategy_type: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -331,6 +350,7 @@ class Strategy:
             "actions": list(self.actions),
             "fallback": self.fallback,
             "solver_family": self.solver_family,
+            "strategy_type": self.strategy_type,
         }
 
     @classmethod
@@ -348,11 +368,12 @@ class Strategy:
             actions=[str(a) for a in (data.get("actions") or [])],
             fallback=data.get("fallback"),
             solver_family=data.get("solver_family"),
+            strategy_type=data.get("strategy_type"),
         )
 
 
 # ---------------------------------------------------------------------------
-# Execution record (Experience Bank storage unit)
+# Execution record (Execution Evidence storage unit)
 # ---------------------------------------------------------------------------
 
 VERIFICATION_LEVELS = ("basic", "strong")
@@ -401,9 +422,22 @@ class FailureRecord:
 
 @dataclass
 class ExecutionRecord:
-    """One execution episode. Append-only fact: records what happened, never
-    what will happen. Facts are permanently neutral — disposal applies only to
-    the derived layer."""
+    """One execution episode — the Execution Evidence unit. Append-only fact:
+    records what actually happened, never what will happen. Facts are
+    permanently neutral — disposal applies only to the derived layer
+    (Strategic Knowledge).
+
+    Field discipline (do not blur):
+      - ``strategy_id`` is the strategy ACTUALLY used in this episode. It
+        makes no generalization claim.
+      - ``quality`` / ``cost`` are ACTUAL observations (alias properties
+        ``actual_quality`` / ``actual_cost`` make this explicit).
+      - ``solver`` and ``execution_features`` hold implementation artifacts
+        (model/solver outputs). Artifacts are evidence, not a separate
+        memory class.
+      - ``cir_snapshot`` preserves the coupling-aware representation that
+        was actually solved (optional; pre-CIR records omit it).
+    """
 
     execution_id: str
     task_id: str
@@ -422,6 +456,11 @@ class ExecutionRecord:
     verification_level: str = "basic"
     created_at: float = field(default_factory=time.time)
     source: str = "executed"
+    #: Coupling-aware representation snapshot (the CIR that was actually
+    #: solved). Optional: records from tasks without a supplied CIR omit it.
+    #: Preserved so future induction can re-bin evidence by structural
+    #: context beyond the four scalar coupling features.
+    cir_snapshot: Optional[Dict[str, Any]] = None
 
     @staticmethod
     def new_id() -> str:
@@ -430,6 +469,18 @@ class ExecutionRecord:
     @property
     def group_l1(self) -> str:
         return group_key(self.profile_snapshot, "L1")
+
+    @property
+    def actual_quality(self) -> Dict[str, Any]:
+        """Alias for ``quality``: the quality ACTUALLY observed in this
+        episode. Serialization key stays ``quality``."""
+        return self.quality
+
+    @property
+    def actual_cost(self) -> CostVector:
+        """Alias for ``cost``: the cost ACTUALLY paid in this episode.
+        Serialization key stays ``cost``."""
+        return self.cost
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -446,6 +497,8 @@ class ExecutionRecord:
             "verification_level": self.verification_level,
             "created_at": self.created_at,
             "source": self.source,
+            "cir_snapshot": (dict(self.cir_snapshot)
+                             if self.cir_snapshot is not None else None),
         }
 
     @classmethod
@@ -472,11 +525,13 @@ class ExecutionRecord:
             verification_level=verification,
             created_at=float(data.get("created_at", time.time())),
             source=str(data.get("source", "executed")),
+            cir_snapshot=(dict(data["cir_snapshot"])
+                          if data.get("cir_snapshot") else None),
         )
 
 
 # ---------------------------------------------------------------------------
-# Strategic entry (Strategic Bank storage unit)
+# Strategic entry (Strategic Knowledge storage unit)
 # ---------------------------------------------------------------------------
 
 #: Hot-store lifecycle states. ``retired`` is terminal: the entry moves to the
@@ -607,8 +662,20 @@ class StrategicEntry:
     """A generalized, calibrated commitment: 'for problems matching this
     pattern, this strategy will perform within these intervals.'
 
-    Not a restatement of statistics — a claim about the future, with an
-    interval, calibration tracking, and cross-group feature predicates."""
+    The Strategic Knowledge unit: derived (not primary) knowledge —
+    provenance-grounded (``provenance`` cites supporting executions) and
+    fully rebuildable from the Evidence Bank (``induce --rebuild``). Not a
+    restatement of statistics — a claim about the future, with an interval,
+    calibration tracking, and cross-group feature predicates.
+
+    Extension points for future induction (all optional, backward
+    compatible): ``strategy_type`` (what kind of strategy — modeling,
+    decomposition, solver selection, execution, recovery — one knowledge
+    layer holds all types, never one bank per type), ``principle`` (a
+    reusable strategic principle), ``actions`` (recommended
+    actions/adaptations). ``strategy_id`` stays required in v1; future
+    induction may relax it for cross-strategy principles.
+    """
 
     entry_id: str
     strategy_id: str
@@ -621,6 +688,7 @@ class StrategicEntry:
     #: ([0.5, 2.0]); the interval is checked (not just the point estimate)
     #: by the record chain's cost validation.
     cost_interval: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    #: Expected failure risk (alias: ``expected_failure_risk``).
     failure_prob: float = 0.5
     applicability: List[ApplicabilityCondition] = field(default_factory=list)
     risk_conditions: List[str] = field(default_factory=list)
@@ -631,6 +699,16 @@ class StrategicEntry:
     last_consulted_at: Optional[float] = None
     created_at: float = field(default_factory=time.time)
     support_n: int = 0
+    #: Strategy type — free-form string (e.g. "modeling", "decomposition",
+    #: "solver_selection", "execution", "recovery"). No rigid taxonomy;
+    #: multiple types coexist inside one Strategic Knowledge Bank.
+    strategy_type: Optional[str] = None
+    #: Reusable strategic principle (natural language). Future induction
+    #: output slot; v1 leaves it None.
+    principle: Optional[str] = None
+    #: Recommended actions/adaptations, inherited from the catalog
+    #: vocabulary at induce time (harness may override).
+    actions: List[str] = field(default_factory=list)
 
     @staticmethod
     def new_id() -> str:
@@ -639,6 +717,21 @@ class StrategicEntry:
     @property
     def scope_level(self) -> str:
         return str(self.pattern.get("scope_level", "L1"))
+
+    @property
+    def expected_quality(self) -> float:
+        """Alias for ``expected_quality_hat`` (serialization key unchanged)."""
+        return self.expected_quality_hat
+
+    @property
+    def expected_cost(self) -> CostVector:
+        """Alias for ``expected_cost_hat`` (serialization key unchanged)."""
+        return self.expected_cost_hat
+
+    @property
+    def expected_failure_risk(self) -> float:
+        """Alias for ``failure_prob``: the expected failure probability."""
+        return self.failure_prob
 
     @property
     def predicates(self) -> Dict[str, Any]:
@@ -668,6 +761,9 @@ class StrategicEntry:
             "prediction_track": self.prediction_track.to_dict(),
             "provenance": list(self.provenance),
             "support_n": self.support_n,
+            "strategy_type": self.strategy_type,
+            "principle": self.principle,
+            "actions": list(self.actions),
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -708,6 +804,9 @@ class StrategicEntry:
             prediction_track=PredictionTrack.from_dict(data.get("prediction_track")),
             provenance=[str(p) for p in (data.get("provenance") or [])],
             support_n=int(data.get("support_n", 0)),
+            strategy_type=data.get("strategy_type"),
+            principle=data.get("principle"),
+            actions=[str(a) for a in (data.get("actions") or [])],
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )

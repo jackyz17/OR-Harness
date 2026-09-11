@@ -100,6 +100,15 @@ class ORHarness:
     def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
                 workspace: str, *, solver: str,
                 verification_level: str = "basic") -> ExecutionRecord:
+        """Run one episode and assemble its Execution Evidence record.
+
+        The returned record is an evidence unit: the strategy ACTUALLY used,
+        the quality/cost ACTUALLY observed, the failures actually seen, and
+        the implementation artifacts (solver output, diagnostics). When the
+        task carries a CIR (``coupling`` field), a snapshot is preserved on
+        the record so offline induction can re-bin this episode by structural
+        context. The record makes no generalization claim.
+        """
         if strategy_id not in self.catalog:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
         # Frozen pre-strategy signature: profile is derived from the task's
@@ -113,6 +122,11 @@ class ORHarness:
             Path(code_path), Path(workspace), solver=solver,
             task_id=str(task["task_id"]), strategy_id=strategy_id,
             profile=profile, verification_level=verification_level)
+        # Evidence completeness: preserve the coupling-aware representation
+        # snapshot (CIR) that was actually solved. Snapshot only — CIR
+        # extraction and coupling understanding are untouched.
+        if task.get("coupling"):
+            record.cir_snapshot = dict(task["coupling"])
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -171,8 +185,20 @@ class ORHarness:
                tighten: Optional[str] = None,
                dry_run: bool = False, force: bool = False,
                llm_conditions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Consolidate Execution Evidence into Strategic Knowledge.
+
+        Input = facts (ExecutionRecord rows, source="executed"); output =
+        derived StrategicEntry commitments (expected quality/cost/failure
+        risk, provenance-grounded, rebuildable). New entries inherit the
+        catalog vocabulary's strategy_type/actions — extension points for
+        future induction — without ever overwriting harness-supplied values.
+        """
         if rebuild:
-            return self.induction.rebuild(dry_run=dry_run)
+            result = self.induction.rebuild(dry_run=dry_run)
+            if not dry_run:
+                for entry_id in result.get("entry_ids", []):
+                    self._enrich_entry(entry_id)
+            return result
         if widen:
             return self.induction.widen(widen)
         if tighten:
@@ -183,7 +209,35 @@ class ORHarness:
             results.append(self.induction.induce(
                 profile, sid, scope="L1", dry_run=dry_run, force=force,
                 llm_conditions=llm_conditions))
+        if not dry_run:
+            for r in results:
+                entry_id = r.get("created") or r.get("updated")
+                if entry_id:
+                    self._enrich_entry(entry_id)
         return {"results": results}
+
+    def _enrich_entry(self, entry_id: str) -> None:
+        """Inherit catalog vocabulary (strategy_type, actions) into an entry.
+
+        Only fills EMPTY fields — never overwrites values the harness already
+        supplied. Keeps InductionEngine decoupled from the catalog while
+        letting new entries carry the vocabulary's structural knowledge.
+        """
+        entry = self.sbank.get(entry_id)
+        if entry is None:
+            return
+        strat = self.catalog.get(entry.strategy_id)
+        if strat is None:
+            return
+        changed = False
+        if not entry.strategy_type and strat.strategy_type:
+            entry.strategy_type = strat.strategy_type
+            changed = True
+        if not entry.actions and strat.actions:
+            entry.actions = list(strat.actions)
+            changed = True
+        if changed:
+            self.sbank.update(entry)
 
     def inspect(self, *, bank: str = "experience",
                 task_id: Optional[str] = None,

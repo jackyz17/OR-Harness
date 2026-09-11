@@ -1,14 +1,19 @@
-"""Strategic Bank: the derived layer of calibrated commitments.
+"""Strategic Knowledge Bank: the derived layer of calibrated commitments.
 
-Entries are claims about the future — prediction intervals, calibration
-tracking, cross-group feature predicates. They are rebuildable from the
-Experience Bank at any time (``induce --rebuild``), and they alone carry the
-disposal ladder:
+Derived knowledge, not primary facts: "what to do next time" — expected
+quality, expected cost, expected failure risk. Entries are provenance-grounded
+(every entry cites its supporting executions) and rebuildable from the
+Execution Evidence Bank at any time (``induce --rebuild``) — delete the whole
+bank and induction reconstructs it; delete the Evidence Bank and the factual
+basis is gone. Entries alone carry the disposal ladder:
 
   candidate --(n>=5 & hit_rate>=0.7)--> validated
   any hot   --(3 consecutive misses)--> suspect    (score x0.5, reversible)
   suspect   --(harness confirms)-----> retired -> cold archive (leaves hot store)
   any hot   --(10 tasks unconsulted)-> dormant   (selector-excluded, reversible)
+
+Mutability: derived beliefs may be re-estimated, validated, revised,
+deprecated, and replaced — unlike facts, which are never rewritten.
 
 The cold archive is the anti-resurrection mechanism: before inducting a new
 entry, matching tombstones veto re-creating the same failed generalization

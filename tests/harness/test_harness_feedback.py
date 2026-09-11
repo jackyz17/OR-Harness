@@ -8,7 +8,8 @@ import unittest
 
 from helpers import HarnessTestCase
 
-from or_harness.core.schema import CostVector, FailureRecord
+from or_harness.api import ORHarness
+from or_harness.core.schema import CostVector, FailureRecord, StrategicEntry, Strategy
 from or_harness.profiling.model_syntax import (
     coupling_from_model,
     parse_model,
@@ -254,6 +255,111 @@ class TestSolverAdvisories(HarnessTestCase):
     def test_empty_when_no_failures(self):
         self.bank.append(self.make_record(execution_id="ex_ok"))
         self.assertEqual(solver_advisories(self.bank), [])
+
+
+class _StubExecutor:
+    """Executes nothing: returns a pre-built evidence record."""
+
+    def __init__(self, record):
+        self._record = record
+
+    def execute(self, code_path, workspace, *, solver, task_id, strategy_id,
+                profile, verification_level="basic", code_hash=None):
+        return self._record
+
+
+class TestEvidenceKnowledgeSemantics(HarnessTestCase):
+    """The two memory layers: Evidence records ACTUAL facts (including the
+    CIR snapshot of the task actually solved); Knowledge entries inherit the
+    catalog vocabulary (strategy_type/actions) without overwriting
+    harness-supplied values."""
+
+    @staticmethod
+    def _cir():
+        return {"entities": [{"name": "R1", "kind": "resource"}],
+                "decisions": [{"name": "x"}],
+                "constraints": [], "relations": [], "coupling_groups": []}
+
+    def test_execute_captures_cir_snapshot(self):
+        rec = self.make_record(execution_id="ex_cir1", task_id="t_cir",
+                               strategy_id="S01")
+        h = ORHarness(home=self.home, executor=_StubExecutor(rec))
+        try:
+            task = {"task_id": "t_cir", "family": "allocation",
+                    "coupling": self._cir(), "spec": {}}
+            out = h.execute(task, "S01", "solve.py", self.home, solver="highs")
+            self.assertEqual(out.cir_snapshot, task["coupling"])
+            # The snapshot persists through the Evidence Bank.
+            h.record(out)
+            stored = h.bank.get("ex_cir1")
+            self.assertEqual(stored.cir_snapshot, task["coupling"])
+        finally:
+            h.close()
+
+    def test_execute_without_cir_leaves_snapshot_none(self):
+        rec = self.make_record(execution_id="ex_cir2", task_id="t_nocir",
+                               strategy_id="S01")
+        h = ORHarness(home=self.home, executor=_StubExecutor(rec))
+        try:
+            task = {"task_id": "t_nocir", "family": "allocation", "spec": {}}
+            out = h.execute(task, "S01", "solve.py", self.home, solver="highs")
+            self.assertIsNone(out.cir_snapshot)
+        finally:
+            h.close()
+
+    def test_induce_inherits_catalog_vocabulary(self):
+        h = ORHarness(home=self.home)
+        try:
+            h.catalog["S01"] = Strategy(
+                strategy_id="S01", name="decompose",
+                strategy_type="decomposition",
+                actions=["find bottleneck", "decompose locals"])
+            for i in range(2):
+                h.bank.append(self.make_record(
+                    execution_id=f"ex_enc{i}", task_id=f"te{i}",
+                    strategy_id="S01", gap=0.05))
+            result = h.induce(strategy_id="S01")
+            entry = h.sbank.get(result["results"][0]["created"])
+            self.assertEqual(entry.strategy_type, "decomposition")
+            self.assertEqual(entry.actions,
+                             ["find bottleneck", "decompose locals"])
+            self.assertIsNone(entry.principle)  # v1 leaves principle empty
+        finally:
+            h.close()
+
+    def test_rebuild_enriches_entries(self):
+        h = ORHarness(home=self.home)
+        try:
+            h.catalog["S01"] = Strategy(strategy_id="S01", name="monolithic",
+                                        strategy_type="modeling")
+            for i in range(2):
+                h.bank.append(self.make_record(
+                    execution_id=f"ex_rb{i}", task_id=f"tr{i}",
+                    strategy_id="S01", gap=0.05))
+            result = h.induce(rebuild=True)
+            self.assertEqual(result["rebuilt"], 1)
+            entry = h.sbank.get(result["entry_ids"][0])
+            self.assertEqual(entry.strategy_type, "modeling")
+        finally:
+            h.close()
+
+    def test_enrichment_never_overwrites_harness_values(self):
+        h = ORHarness(home=self.home)
+        try:
+            h.catalog["S01"] = Strategy(strategy_id="S01", name="x",
+                                        strategy_type="modeling",
+                                        actions=["catalog-action"])
+            entry = StrategicEntry(
+                entry_id="se_keep", strategy_id="S01",
+                pattern={"scope_level": "L1", "predicates": {}},
+                strategy_type="execution", actions=["harness-custom"])
+            h.sbank.add(entry)
+            h._enrich_entry("se_keep")
+            kept = h.sbank.get("se_keep")
+            self.assertEqual(kept.strategy_type, "execution")
+            self.assertEqual(kept.actions, ["harness-custom"])
+        finally:
+            h.close()
 
 
 if __name__ == "__main__":

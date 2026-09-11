@@ -58,6 +58,33 @@ class TestSchemaRoundTrip(HarnessTestCase):
         self.assertEqual(s2.fallback, "S02")
         self.assertEqual(s2.solver_family, "milp")
 
+    def test_strategy_type_round_trip(self):
+        s = Strategy(strategy_id="S01", name="monolithic",
+                     strategy_type="modeling")
+        self.assertEqual(Strategy.from_dict(s.to_dict()).strategy_type, "modeling")
+        # Old catalog payloads without the field load with None.
+        self.assertIsNone(Strategy.from_dict(
+            {"strategy_id": "S02", "name": "x"}).strategy_type)
+
+    def test_execution_record_actual_aliases(self):
+        r = self.make_record(feasible=False, gap=0.12, status="feasible")
+        # Facts store ACTUAL observations; aliases make this explicit.
+        self.assertIs(r.actual_quality, r.quality)
+        self.assertIs(r.actual_cost, r.cost)
+
+    def test_execution_record_cir_snapshot_round_trip(self):
+        cir = {"entities": [{"name": "R1", "kind": "resource", "attrs": {}}],
+               "decisions": [{"name": "x", "kind": "production",
+                              "indexes": ["i"], "attrs": {}}],
+               "constraints": [], "relations": [], "coupling_groups": []}
+        r = self.make_record()
+        r.cir_snapshot = cir
+        r2 = ExecutionRecord.from_dict(r.to_dict())
+        self.assertEqual(r2.cir_snapshot, cir)
+        # Records without a CIR round-trip to None (backward compatible).
+        r3 = ExecutionRecord.from_dict(self.make_record().to_dict())
+        self.assertIsNone(r3.cir_snapshot)
+
     def test_execution_record_round_trip(self):
         r = self.make_record(feasible=False, gap=0.12, status="feasible")
         self.assertEqual(ExecutionRecord.from_dict(r.to_dict()), r)
@@ -72,6 +99,37 @@ class TestSchemaRoundTrip(HarnessTestCase):
             risk_conditions=["large scale"], provenance=["ex_1"], support_n=2,
         )
         self.assertEqual(StrategicEntry.from_dict(e.to_dict()), e)
+
+    def test_strategic_entry_expected_aliases(self):
+        e = StrategicEntry(
+            entry_id="se_001", strategy_id="S02",
+            pattern={"scope_level": "L1", "predicates": {}},
+            expected_quality_hat=0.8, failure_prob=0.3,
+            expected_cost_hat=CostVector(llm_tokens=5))
+        # Knowledge stores EXPECTED quantities; aliases make this explicit.
+        self.assertEqual(e.expected_quality, 0.8)
+        self.assertEqual(e.expected_cost, e.expected_cost_hat)
+        self.assertEqual(e.expected_failure_risk, 0.3)
+
+    def test_strategic_entry_extension_fields_round_trip(self):
+        e = StrategicEntry(
+            entry_id="se_002", strategy_id="S04",
+            pattern={"scope_level": "L1", "predicates": {}},
+            strategy_type="decomposition",
+            principle="preserve the shared resource globally",
+            actions=["identify bottleneck", "decompose locals"],
+            provenance=["ex_1"], support_n=2)
+        e2 = StrategicEntry.from_dict(e.to_dict())
+        self.assertEqual(e2.strategy_type, "decomposition")
+        self.assertEqual(e2.principle, e.principle)
+        self.assertEqual(e2.actions, e.actions)
+        # Old payloads without the extension fields load with defaults.
+        e3 = StrategicEntry.from_dict({
+            "entry_id": "se_003", "strategy_id": "S01",
+            "pattern": {"scope_level": "L1", "predicates": {}}})
+        self.assertIsNone(e3.strategy_type)
+        self.assertIsNone(e3.principle)
+        self.assertEqual(e3.actions, [])
 
     def test_entry_rejects_bad_scope(self):
         with self.assertRaises(ValueError):
