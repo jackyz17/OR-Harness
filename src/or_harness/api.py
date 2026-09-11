@@ -103,10 +103,11 @@ class ORHarness:
         if strategy_id not in self.catalog:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
         # Frozen pre-strategy signature: profile is derived from the task's
-        # spec / annotations / model field ONLY — never from solve.py. The
-        # generated solve script is a post-strategy artifact; letting it
-        # redefine the problem's identity would create a self-reinforcing
-        # loop (strategy → code → profile → grouping → future strategy choice).
+        # coupling (CIR) / spec / annotations / model fields ONLY — never
+        # from solve.py.  The generated solve script is a post-strategy
+        # artifact; letting it redefine the problem's identity would create
+        # a self-reinforcing loop (strategy → code → profile → grouping →
+        # future strategy choice).
         profile = self.profile(task)
         record = self.executor.execute(
             Path(code_path), Path(workspace), solver=solver,

@@ -36,14 +36,16 @@ OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden stat
 
 ## Coupling dimensions (operational definitions)
 
-Structural grouping — the foundation of all memory — keys on these. Supply them accurately or let the framework derive them (it will, from your model representation):
+Structural grouping — the foundation of all memory — keys on these. Supply them accurately or let the framework derive them (priority: CIR structure > model > spec):
 
 | Dimension | Measures | Derivable? |
 |---|---|---|
-| resource_coupling | fraction of decision variables appearing in MORE THAN ONE constraint (0 = constraints independent; 1 = fully coupled) | yes — model > spec |
-| temporal_coupling | fraction of variables indexed by a temporal set (time/period/stage/...) | yes — model > spec |
-| route_complexity | fraction of variables indexed by a network set (arc/edge/link/...) | yes — model > spec |
+| resource_coupling | fraction of decisions involved in a resource relation (CIR) / fraction of decision variables appearing in MORE THAN ONE constraint (model) | yes — cir > model > spec |
+| temporal_coupling | fraction of decisions/variables indexed by a temporal set (time/period/stage/...) | yes — cir > model > spec |
+| route_complexity | fraction of decisions/variables indexed by a network set (arc/edge/link/...) | yes — cir > model > spec |
 | semantic_coupling | business-semantic relatedness — invisible to structure | NO — always your call |
+
+With a CIR present, `resource_coupling` = fraction of decisions that are the source of ≥1 `uses_resource`/`shares_resource`/`competes_for` relation; `temporal_coupling`/`route_complexity` = fraction of decisions with time-like/network-like indexes. Without a CIR, the model-based definitions apply.
 
 Do not guess these from the problem's *name* ("it's a resource allocation problem, so rc must be high") — measure from the constraint structure. Two independent resource constraints means rc≈0, however resource-flavored the problem sounds.
 
@@ -124,9 +126,11 @@ When no `coupling` field is present, returns `cir=null` with a message prompting
 
 Result: `result.{cir, modeling_guidance[], cir_warnings[]}`. The `modeling_guidance` entries each carry `{type, members, resource, implication}` — e.g. `shared_bottleneck`: "Multiple decisions (x, y) consume the same resource (R1); ensure one aggregate capacity constraint covers all relevant decisions."
 
+The CIR also feeds the scalar ProblemSignature: `profile` / `recall` / `execute` derive the three structural coupling dims from the CIR structure whenever the task carries a `coupling` field (priority: CIR > model > spec > supplied) — so the retrieval signature and the modeling guidance come from the SAME structure, not two parallel lines.
+
 ### `orx profile --task t.json [--code solve.py] [--cir cir.json]`
 
-Builds a `ProblemProfile`. Coupling derivation priority: task JSON `model` field (best — measured from declared constraints) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. The response includes a `derivation` report (per-dimension value/origin/notes), `model_verification` (L1+L2 issues) when a model is given, `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary, and `cir_warnings` when a CIR is provided via `--cir` and inconsistencies with the model are found.
+Builds a `ProblemProfile`. Coupling derivation priority: CIR (task JSON `coupling` field, best — derived from its relations/indexes) > task JSON `model` field (measured from declared constraints) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. The response includes a `derivation` report (per-dimension value/origin/notes), `model_verification` (L1+L2 issues) when a model is given, `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary, and `cir_warnings` when a CIR is provided (via `--cir` or the task's `coupling` field) and inconsistencies with the model are found.
 
 Result: `result.profile` = `{problem_id, family, scale_features, <four coupling dims>, risk_features, source, annotations}` plus `result.derivation`.
 

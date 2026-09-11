@@ -1,24 +1,30 @@
 """Deterministic problem profiling.
 
 Same input, same output — no randomness, no time dependence. Coupling
-dimensions come from four channels, in priority order:
+dimensions come from five channels, in priority order:
 
-1. model representation (best): the task JSON's optional top-level ``model``
-   field — a GAMS-style five-block DSL the harness writes BEFORE solve.py
-   (SKILL.md convention). Coupling is measured from the declared model
-   itself: resource_coupling = fraction of variables appearing in more than
-   one constraint. Cleanest signal; also verified (L1/L2) for free.
-2. solve-script AST (fallback at execute time): variable co-occurrence,
+1. CIR (best): the task JSON's optional top-level ``coupling`` field — the
+   pre-model Coupling-Aware Intermediate Representation.  Scalar dims are
+   derived from its structure: resource relations, temporal indexes,
+   network indexes.  The CIR's relational structure is the primary
+   representation; these scalars are its derived ProblemSignature.
+2. model representation: the optional top-level ``model`` field — a
+   GAMS-style five-block DSL the harness writes BEFORE solve.py
+   (SKILL.md convention). resource_coupling = fraction of variables
+   appearing in more than one constraint; verified (L1/L2) for free.
+3. solve-script AST (fallback at execute time): variable co-occurrence,
    shared-resource ratios, temporal index structure.
-3. structured spec: explicit fields (time_periods, resources, entities...).
-4. harness-supplied: ``annotations.coupling`` — the harness's own estimate.
+4. structured spec: explicit fields (time_periods, resources, entities...).
+5. harness-supplied: ``annotations.coupling`` — the harness's own estimate.
 
-semantic_coupling is NEVER derived: business semantics are invisible to
-structure; it always stays the harness's call.
+semantic_coupling is NEVER derived as a scalar: the CIR's relations are the
+semantic understanding; the scalar always stays the harness's call.
 
-When a supplied value conflicts with a derived value across a bin boundary,
-the profile carries ``coupling_warnings`` so the harness can reconsider
-BEFORE writing solver code. No NLP subsystem, no semantic graph.
+When a supplied value conflicts with the winning derivation across a bin
+boundary, the profile carries ``coupling_warnings`` so the harness can
+reconsider BEFORE writing solver code. When both CIR and model are present,
+inconsistencies surface as ``cir_warnings``. No NLP subsystem, no graph
+database.
 """
 
 from __future__ import annotations
@@ -51,9 +57,13 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
         {
           "task_id": "...",            # required
           "family": "...",             # required
+          "coupling": {...},           # optional CIR (pre-model coupling
+                                         understanding); when present it is
+                                         the BEST source for the scalar
+                                         signature dimensions
           "model": "SETS: ...",        # optional GAMS-style representation
                                          (see references/modeling.md); verified
-                                         and used as the best coupling source
+                                         and used as a coupling source
           "spec": {                    # optional structured description
             "n_vars": 1000, "n_constraints": 500, "n_int_vars": 1000,
             "density": 0.01,
@@ -65,6 +75,12 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
             "coupling": {"resource_coupling": 0.9, ...}
           }
         }
+
+    Derivation priority for the structural dimensions:
+    CIR (task ``coupling`` field or explicit ``cir`` argument) > model >
+    code/spec > supplied.  ``semantic_coupling`` is never derived — the
+    CIR's relations are the semantic understanding; the scalar stays the
+    harness's call.
     """
     if not isinstance(task, dict):
         raise ValueError("task must be a JSON object")
@@ -76,6 +92,15 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
     annotations = dict(task.get("annotations") or {})
     model_text = task.get("model")
 
+    # The CIR is a pre-model artifact: when the caller does not pass one
+    # explicitly, read it from the task's optional ``coupling`` field.
+    # This is what wires recall()/execute() to coupling-aware signatures.
+    if cir is None:
+        coupling_data = task.get("coupling")
+        if isinstance(coupling_data, dict):
+            from or_harness.core.coupling import CouplingAwareIR
+            cir = CouplingAwareIR.from_dict(coupling_data)
+
     model_report: Optional[ModelReport] = None
     model_coupling: Dict[str, Optional[float]] = {}
     if isinstance(model_text, str) and model_text.strip():
@@ -83,8 +108,14 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
         if model_report.parsed is not None:
             model_coupling = coupling_from_model(model_report.parsed)
 
+    cir_coupling: Dict[str, Optional[float]] = {}
+    if cir is not None:
+        from or_harness.core.coupling import coupling_from_cir
+        cir_coupling = coupling_from_cir(cir)
+
     supplied = _supplied_coupling(task, annotations)
     derived = _derive_coupling(spec, code)
+    # Merge per dimension by priority: CIR > model > code/spec > supplied.
     # semantic_coupling is never derived — supplied only.
     coupling: Dict[str, Optional[float]] = {}
     origin: Dict[str, str] = {}
@@ -93,7 +124,10 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
             coupling[f] = _clamp01(supplied.get(f))
             origin[f] = "supplied" if f in supplied else "null"
             continue
-        if model_coupling.get(f) is not None:
+        if cir_coupling.get(f) is not None:
+            coupling[f] = cir_coupling[f]
+            origin[f] = "cir"
+        elif model_coupling.get(f) is not None:
             coupling[f] = model_coupling[f]
             origin[f] = "model"
         elif derived.get(f) is not None:
@@ -109,7 +143,7 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
     source = "harness_supplied" if (supplied and origin.get("resource_coupling")
                                     == "supplied") else "derived"
 
-    warnings = _cross_check(supplied, model_coupling, derived, origin)
+    warnings = _cross_check(supplied, coupling, origin)
 
     scale = {f: float(spec[f]) for f in SCALE_FEATURES if f in spec}
     risk = dict(spec.get("risk_features") or {})
@@ -156,6 +190,8 @@ def derivation_report(profile: ProblemProfile) -> Dict[str, Any]:
         report["model_verification"] = profiling["model_verification"]
     if "coupling_warnings" in profiling:
         report["coupling_warnings"] = profiling["coupling_warnings"]
+    if "cir_warnings" in profiling:
+        report["cir_warnings"] = profiling["cir_warnings"]
     return report
 
 
@@ -165,18 +201,17 @@ def derivation_report(profile: ProblemProfile) -> Dict[str, Any]:
 
 
 def _cross_check(supplied: Dict[str, float],
-                 model_coupling: Dict[str, Optional[float]],
-                 derived: Dict[str, Optional[float]],
+                 coupling: Dict[str, Optional[float]],
                  origin: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Warn when a supplied value and a structural derivation disagree across
-    a bin boundary — the harness should reconsider before writing solve.py."""
+    """Warn when a supplied value and the winning structural derivation
+    (CIR > model > code/spec) disagree across a bin boundary — the harness
+    should reconsider before writing solve.py.  The winning value is used
+    for grouping either way."""
     warnings: List[Dict[str, Any]] = []
     for f in STRUCTURAL_DIMENSIONS:
         if f not in supplied:
             continue
-        structural = model_coupling.get(f)
-        if structural is None:
-            structural = derived.get(f)
+        structural = coupling.get(f)
         if structural is None:
             continue
         supplied_bin = _bin_index(supplied[f])

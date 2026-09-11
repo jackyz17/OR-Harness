@@ -32,6 +32,7 @@ The module is pure-stdlib, has no dependency on the rest of ``or_harness``
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -339,8 +340,13 @@ def validate_cir(cir: CouplingAwareIR) -> CouplingAwareIR:
 # ---------------------------------------------------------------------------
 
 #: Constraint-expression keywords that hint at capacity / resource semantics.
+#: Deliberately narrow: broad words like "demand", "max", "supply" are NOT
+#: capacity evidence — "demand" is a consumption requirement, "max" matches
+#: too many non-capacity patterns.
 _CAPACITY_KEYWORDS = {"capacity", "limit", "cap", "budget", "resource",
-                      "available", "supply", "demand", "max"}
+                      "available"}
+#: Constraint ``kind`` values that hint at capacity / resource semantics.
+_CAPACITY_KINDS = {"capacity", "resource", "budget"}
 #: Entity-kind values that hint at a resource.
 _RESOURCE_KIND_HINTS = {"resource", "capacity", "machine", "crew", "vehicle",
                         "worker", "budget", "stock", "inventory"}
@@ -350,6 +356,26 @@ def _has_capacity_semantics(expr: str) -> bool:
     """Heuristic: does *expr* look like a capacity/limit constraint?"""
     lower = expr.lower()
     return any(kw in lower for kw in _CAPACITY_KEYWORDS)
+
+
+def _constraint_capacityish(constraint: ConstraintRef) -> bool:
+    """Capacity semantics from the constraint's declared kind OR expression."""
+    return (constraint.kind.lower() in _CAPACITY_KINDS
+            or _has_capacity_semantics(constraint.expr))
+
+
+def _constraint_mentions_resource(expr: str, resource_name: str) -> bool:
+    """Does *expr* reference *resource_name*?
+
+    Comparison ignores whitespace/underscore/hyphen/slash separators so that
+    "A-07 LDA" matches "cap_A07_LDA".  A resource that never appears in the
+    constraint expression is NOT evidence that the constraint couples to it.
+    """
+    cleaned_resource = re.sub(r"[\s_\-/]+", "", resource_name.lower())
+    if not cleaned_resource:
+        return False
+    cleaned_expr = re.sub(r"[\s_\-/]+", "", expr.lower())
+    return cleaned_resource in cleaned_expr
 
 
 def infer_structural_relations(
@@ -362,13 +388,20 @@ def infer_structural_relations(
     decisions that share a constraint.  These edges carry
     ``evidence="structural"`` — they are evidence, not semantic claims.
 
-    When a structural edge also has capacity semantics (the constraint
-    expression contains a capacity keyword **and** the target entity kind is
-    resource-like), the edge may be *upgraded* to ``uses_resource``.  This
-    is the only semantic upgrade performed by the deterministic layer; all
-    other semantic relations must come from the agent.
+    A structural ``depends_on`` edge may be upgraded to ``uses_resource``
+    only when ALL of the following hold (tight on purpose — the deterministic
+    layer must not invent semantics):
 
-    The method is idempotent: calling it twice does not duplicate edges.
+    1. the target entity is resource-like (``kind`` in the resource hints);
+    2. some CIR constraint has capacity semantics (capacity-ish ``kind`` or
+       a narrow capacity keyword in its expression);
+    3. that constraint's expression mentions the source decision;
+    4. that constraint's expression also mentions the target resource
+       (so the constraint is evidence the *target* is coupled, not just
+       any resource-flavored constraint the source happens to appear in).
+
+    All other semantic relations must come from the agent.  The method is
+    idempotent: calling it twice does not duplicate edges.
     """
     existing: Set[Tuple[str, str, str, str]] = {
         (r.source, r.target, r.type, r.evidence) for r in cir.relations
@@ -388,16 +421,21 @@ def infer_structural_relations(
             continue
         if target_entity.kind.lower() not in _RESOURCE_KIND_HINTS:
             continue
-        # Look for a constraint that mentions the source decision and has
-        # capacity semantics.
+        # Look for a constraint with capacity semantics that mentions BOTH
+        # the source decision AND the target resource.
         for c in cir.constraints:
-            if _has_capacity_semantics(c.expr) and rel.source in c.expr:
-                rel.type = "uses_resource"
-                rel.evidence = "semantic"
-                rel.detail = (f"upgraded from structural co-occurrence: "
-                              f"constraint {c.id} has capacity semantics "
-                              f"and target {rel.target} is resource-like")
-                break
+            if not _constraint_capacityish(c):
+                continue
+            if rel.source not in c.expr:
+                continue
+            if not _constraint_mentions_resource(c.expr, target_entity.name):
+                continue
+            rel.type = "uses_resource"
+            rel.evidence = "semantic"
+            rel.detail = (f"upgraded from structural co-occurrence: "
+                          f"constraint {c.id} has capacity semantics and "
+                          f"explicitly references resource {rel.target}")
+            break
 
     # -- co-occurrence inference from parsed model ----------------------------
     if parsed_model is not None:
@@ -481,16 +519,19 @@ _IMPLICATION_TEMPLATES: Dict[str, str] = {
 def derive_coupling_groups(cir: CouplingAwareIR) -> CouplingAwareIR:
     """Derive :class:`CouplingGroup` objects from the relation structure.
 
-    Currently detects two patterns deterministically:
+    Deliberately minimal: the deterministic layer detects exactly ONE pattern:
 
     * **shared_bottleneck** — two or more ``uses_resource`` relations point
       to the same resource entity.
-    * **global_constraint** — a constraint referenced by three or more
-      ``constrained_by`` relations (many local decisions → one global rule).
 
-    Other group types (``route_convergence``, ``temporal_propagation_chain``,
-    ``cross_stage_coupling``) may be declared by the agent and are preserved
-    as-is; the deterministic layer does not invent them.
+    Other group types (``route_convergence``,
+    ``temporal_propagation_chain``, ``global_constraint``,
+    ``cross_stage_coupling``) are the agent's responsibility: the agent
+    declares them (they are preserved and rendered as-is); the framework
+    does not invent them.  The division of labor is:
+
+    > **Agent extracts semantic structure; the framework validates it and
+    > derives only this one structural pattern.**
     """
     existing_types = {g.type for g in cir.coupling_groups}
 
@@ -547,6 +588,74 @@ def render_modeling_guidance(cir: CouplingAwareIR) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Scalar signature derivation (derived summaries, NOT the primary form)
+# ---------------------------------------------------------------------------
+
+#: Relation types that count as resource coupling for the scalar signature.
+_RESOURCE_RELATION_TYPES = ("uses_resource", "shares_resource",
+                            "competes_for")
+#: Time-like index tokens (single-letter tokens match by equality only).
+_TEMPORAL_INDEX_TOKENS = ("t", "time", "period", "stage", "day", "week",
+                          "month", "hour", "slot", "shift")
+#: Network-like index tokens (single-letter tokens match by equality only).
+_NETWORK_INDEX_TOKENS = ("arc", "edge", "road", "link", "route", "leg", "node")
+
+
+def _index_matches(index: str, tokens: Tuple[str, ...]) -> bool:
+    low = index.lower()
+    for tok in tokens:
+        if len(tok) == 1:
+            if low == tok:
+                return True
+        elif tok in low:
+            return True
+    return False
+
+
+def coupling_from_cir(cir: CouplingAwareIR) -> Dict[str, Optional[float]]:
+    """Derive the scalar coupling dimensions from the CIR structure.
+
+    These are **derived summaries** for the ProblemSignature — the CIR
+    itself remains the primary representation.  Operational definitions
+    mirror the model-based ones:
+
+    - ``resource_coupling``: fraction of decisions that are the source of at
+      least one resource relation (``uses_resource`` / ``shares_resource`` /
+      ``competes_for``).
+    - ``temporal_coupling``: fraction of decisions with a time-like index
+      (t/time/period/stage/day/...).
+    - ``route_complexity``: fraction of decisions with a network-like index
+      (arc/edge/road/link/route/...).
+    - ``semantic_coupling``: never derived here — the CIR's relations ARE
+      the semantic understanding; the scalar stays the harness's call so the
+      grouping contract remains stable.
+
+    Returns None for every dimension when there are no decisions.
+    """
+    n = len(cir.decisions)
+    if n == 0:
+        return {"resource_coupling": None, "temporal_coupling": None,
+                "route_complexity": None, "semantic_coupling": None}
+
+    decision_names = {d.name for d in cir.decisions}
+    resource_linked = {r.source for r in cir.relations
+                       if r.type in _RESOURCE_RELATION_TYPES
+                       and r.source in decision_names}
+    temporal_count = sum(1 for d in cir.decisions
+                         if any(_index_matches(i, _TEMPORAL_INDEX_TOKENS)
+                                for i in d.indexes))
+    network_count = sum(1 for d in cir.decisions
+                        if any(_index_matches(i, _NETWORK_INDEX_TOKENS)
+                               for i in d.indexes))
+    return {
+        "resource_coupling": round(len(resource_linked) / n, 4),
+        "temporal_coupling": round(temporal_count / n, 4),
+        "route_complexity": round(network_count / n, 4),
+        "semantic_coupling": None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Cross-check: CIR ↔ canonical model
 # ---------------------------------------------------------------------------
 
@@ -584,18 +693,36 @@ def cross_check_cir_model(
         })
 
     # Check: CIR relations should not contradict model structure.
-    # A `uses_resource` edge (va, vb) implies va and vb co-occur in at least
-    # one constraint.  If they never co-occur, flag it.
+    # Relation endpoints may be decisions (model variables) or entities
+    # (resources, sites, ...) which are NOT model variables.  The
+    # co-occurrence-pair check is only meaningful between two decisions:
+    #
+    #   decision --uses_resource--> resource entity
+    #
+    # is the NORMAL shape of `uses_resource` — the resource entity is not a
+    # variable, so demanding a variable-variable co-occurrence pair for it
+    # would flag every correct relation.  For such edges the structural
+    # check is weaker: the decision must appear in at least one model
+    # constraint (otherwise the model likely missed the coupling the CIR
+    # declares).
     var_sets = parsed_model.constraint_variable_sets()
     co_occur: Set[Tuple[str, str]] = set()
+    constrained_vars: Set[str] = set()
     for vs in var_sets:
+        constrained_vars |= vs
         vs_list = sorted(vs)
         for i_a in range(len(vs_list)):
             for i_b in range(i_a + 1, len(vs_list)):
                 co_occur.add((vs_list[i_a], vs_list[i_b]))
 
     for r in cir.relations:
-        if r.type in ("uses_resource", "shares_resource", "competes_for"):
+        if r.type not in ("uses_resource", "shares_resource", "competes_for"):
+            continue
+        src_is_var = r.source in model_vars
+        tgt_is_var = r.target in model_vars
+        if src_is_var and tgt_is_var:
+            # Decision-to-decision semantic relation: both endpoints are
+            # model variables, so the pair must co-occur somewhere.
             pair = tuple(sorted([r.source, r.target]))
             if pair not in co_occur:
                 warnings.append({
@@ -605,6 +732,31 @@ def cross_check_cir_model(
                                "constraint-variable co-occurrence in the "
                                "model"),
                 })
+        elif src_is_var and not tgt_is_var:
+            # Decision-to-resource edge (the normal shape): the decision
+            # must appear in at least one model constraint.
+            if r.source not in constrained_vars:
+                warnings.append({
+                    "code": "relation_source_unconstrained",
+                    "detail": (f"CIR relation {r.source}--{r.type}-->"
+                               f"{r.target}: source decision {r.source} "
+                               "appears in no model constraint — the model "
+                               "may be missing the coupling this relation "
+                               "declares"),
+                })
+        elif tgt_is_var and not src_is_var:
+            # Resource-to-decision edge (unusual direction): same weak check
+            # on the decision endpoint.
+            if r.target not in constrained_vars:
+                warnings.append({
+                    "code": "relation_target_unconstrained",
+                    "detail": (f"CIR relation {r.source}--{r.type}-->"
+                               f"{r.target}: target decision {r.target} "
+                               "appears in no model constraint — the model "
+                               "may be missing the coupling this relation "
+                               "declares"),
+                })
+        # Neither endpoint is a model variable: nothing structural to verify.
 
     return warnings
 

@@ -28,9 +28,11 @@ from or_harness.core.coupling import (
     derive_coupling_groups,
     render_modeling_guidance,
     cross_check_cir_model,
+    coupling_from_cir,
     understand,
 )
 from or_harness.profiling.model_syntax import parse_model
+from or_harness.api import ORHarness
 
 
 class TestCIRSchema(HarnessTestCase):
@@ -221,6 +223,37 @@ CONSTRAINTS:
         upgraded = [r for r in cir.relations if r.type == "uses_resource"]
         self.assertEqual(upgraded, [])
 
+    def test_no_upgrade_with_demand_keyword_only(self):
+        """'demand' is a consumption requirement, not capacity evidence."""
+        cir = CouplingAwareIR(
+            entities=[Entity(name="R1", kind="resource")],
+            decisions=[Decision(name="x")],
+            constraints=[ConstraintRef(id="C1", kind="other",
+                                       expr="sum(x) >= demand_R1")],
+            relations=[Relation(source="x", target="R1", type="depends_on",
+                                evidence="structural")],
+        )
+        infer_structural_relations(cir, parsed_model=None)
+        upgraded = [r for r in cir.relations if r.type == "uses_resource"]
+        self.assertEqual(upgraded, [])
+
+    def test_no_upgrade_when_constraint_not_mentioning_resource(self):
+        """Capacity keyword + source present, but the constraint never
+        references the target resource → no upgrade (the constraint is not
+        evidence that THIS resource is coupled)."""
+        cir = CouplingAwareIR(
+            entities=[Entity(name="R1", kind="resource"),
+                      Entity(name="R2", kind="resource")],
+            decisions=[Decision(name="x")],
+            constraints=[ConstraintRef(id="C1", kind="capacity",
+                                       expr="sum(x) <= limit_of_R2")],
+            relations=[Relation(source="x", target="R1", type="depends_on",
+                                evidence="structural")],
+        )
+        infer_structural_relations(cir, parsed_model=None)
+        upgraded = [r for r in cir.relations if r.type == "uses_resource"]
+        self.assertEqual(upgraded, [])
+
     def test_inference_idempotent(self):
         """Calling infer twice does not duplicate edges."""
         model_text = """
@@ -358,7 +391,8 @@ CONSTRAINTS:
         self.assertIn("model_var_not_in_cir", codes)
 
     def test_relation_not_in_model(self):
-        """CIR declares a uses_resource edge that has no co-occurrence in model."""
+        """CIR declares a uses_resource edge between TWO DECISIONS that never
+        co-occur in the model → flagged (both endpoints are variables)."""
         model_text = """
 SETS:
  i in Items = {a}
@@ -382,6 +416,56 @@ CONSTRAINTS:
         warnings = cross_check_cir_model(cir, model)
         codes = [w["code"] for w in warnings]
         self.assertIn("relation_not_in_model", codes)
+
+    def test_decision_to_resource_relation_not_flagged(self):
+        """The NORMAL uses_resource shape is decision→resource entity; the
+        resource is not a model variable, so no variable-variable
+        co-occurrence pair exists — and none should be demanded."""
+        model_text = """
+SETS:
+ i in Items = {a}
+PARAMETERS:
+ limit[i]
+VARIABLES:
+ x[i] continuous
+OBJECTIVE:
+ maximize sum(i, x[i])
+CONSTRAINTS:
+ C1: sum(i, x[i]) <= limit[i]
+"""
+        model = parse_model(model_text)
+        cir = CouplingAwareIR(
+            entities=[Entity(name="R1", kind="resource")],
+            decisions=[Decision(name="x")],
+            relations=[Relation(source="x", target="R1", type="uses_resource",
+                                evidence="semantic")],
+        )
+        warnings = cross_check_cir_model(cir, model)
+        self.assertEqual(warnings, [])
+
+    def test_relation_source_unconstrained(self):
+        """Decision→resource edge whose source appears in NO model constraint
+        → weak check flags that the model may be missing the coupling."""
+        model_text = """
+SETS:
+ i in Items = {a}
+PARAMETERS:
+ p
+VARIABLES:
+ x[i] continuous
+OBJECTIVE:
+ maximize sum(i, x[i])
+"""
+        model = parse_model(model_text)
+        cir = CouplingAwareIR(
+            entities=[Entity(name="R1", kind="resource")],
+            decisions=[Decision(name="x")],
+            relations=[Relation(source="x", target="R1", type="uses_resource",
+                                evidence="semantic")],
+        )
+        warnings = cross_check_cir_model(cir, model)
+        codes = [w["code"] for w in warnings]
+        self.assertIn("relation_source_unconstrained", codes)
 
     def test_no_warnings_when_consistent(self):
         model_text = """
@@ -408,6 +492,103 @@ CONSTRAINTS:
         cir = CouplingAwareIR(decisions=[Decision(name="x")])
         warnings = cross_check_cir_model(cir, None)
         self.assertEqual(warnings, [])
+
+
+class TestCouplingFromCIR(HarnessTestCase):
+    """Scalar ProblemSignature derivation from CIR structure."""
+
+    def test_resource_coupling_from_relations(self):
+        cir = CouplingAwareIR(
+            entities=[Entity(name="R1", kind="resource")],
+            decisions=[Decision(name=f"x{i}") for i in range(4)],
+            relations=[
+                Relation(source=f"x{i}", target="R1", type="uses_resource",
+                         evidence="semantic") for i in range(3)
+            ],
+        )
+        dims = coupling_from_cir(cir)
+        self.assertEqual(dims["resource_coupling"], 0.75)
+        self.assertEqual(dims["temporal_coupling"], 0.0)
+        self.assertIsNone(dims["semantic_coupling"])
+
+    def test_temporal_and_route_from_indexes(self):
+        cir = CouplingAwareIR(
+            decisions=[Decision(name="x", indexes=["i", "t"]),
+                       Decision(name="y", indexes=["arc"]),
+                       Decision(name="z", indexes=["j"])],
+        )
+        dims = coupling_from_cir(cir)
+        self.assertAlmostEqual(dims["temporal_coupling"], 1 / 3, places=4)
+        self.assertAlmostEqual(dims["route_complexity"], 1 / 3, places=4)
+
+    def test_single_letter_index_matches_by_equality_only(self):
+        """Index 'route' must not count as temporal via the letter 't'."""
+        cir = CouplingAwareIR(
+            decisions=[Decision(name="x", indexes=["route"])],
+        )
+        dims = coupling_from_cir(cir)
+        self.assertEqual(dims["temporal_coupling"], 0.0)
+        self.assertEqual(dims["route_complexity"], 1.0)
+
+    def test_empty_decisions_all_none(self):
+        cir = CouplingAwareIR()
+        dims = coupling_from_cir(cir)
+        self.assertIsNone(dims["resource_coupling"])
+        self.assertIsNone(dims["temporal_coupling"])
+        self.assertIsNone(dims["route_complexity"])
+
+
+class TestProfileWiring(HarnessTestCase):
+    """CIR participates in the retrieval signature: recall/execute derive
+    scalar dims from the task's coupling field (not a parallel model-only
+    line)."""
+
+    def test_profile_derives_from_task_coupling_field(self):
+        h = ORHarness(home=self.home)
+        try:
+            task = {
+                "task_id": "t_wire", "family": "scheduling",
+                "coupling": {
+                    "entities": [{"name": "R1", "kind": "resource"}],
+                    "decisions": [{"name": "x"}, {"name": "y"},
+                                  {"name": "z"}, {"name": "w"}],
+                    "relations": [
+                        {"source": "x", "target": "R1", "type": "uses_resource",
+                         "evidence": "semantic"},
+                        {"source": "y", "target": "R1", "type": "uses_resource",
+                         "evidence": "semantic"},
+                    ],
+                },
+                "spec": {"n_vars": 10},
+            }
+            profile = h.profile(task)
+            self.assertEqual(profile.resource_coupling, 0.5)
+            report = profile.annotations["profiling"]
+            self.assertEqual(report["origin"]["resource_coupling"], "cir")
+        finally:
+            h.close()
+
+    def test_recall_uses_cir_signature(self):
+        h = ORHarness(home=self.home)
+        try:
+            task = {
+                "task_id": "t_wire2", "family": "scheduling",
+                "coupling": {
+                    "entities": [{"name": "R1", "kind": "resource"}],
+                    "decisions": [{"name": "x"}, {"name": "y"}],
+                    "relations": [
+                        {"source": "x", "target": "R1", "type": "uses_resource",
+                         "evidence": "semantic"},
+                        {"source": "y", "target": "R1", "type": "uses_resource",
+                         "evidence": "semantic"},
+                    ],
+                },
+                "spec": {"n_vars": 10},
+            }
+            result = h.recall(task)
+            self.assertEqual(result["profile"]["resource_coupling"], 1.0)
+        finally:
+            h.close()
 
 
 class TestUnderstand(HarnessTestCase):

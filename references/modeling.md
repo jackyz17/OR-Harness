@@ -95,8 +95,9 @@ Co-occurrence is structural evidence only. A semantic relation (`shares_resource
 
 ### What the framework derives
 
+- **ProblemSignature scalars**: when a CIR is present, `resource_coupling` = fraction of decisions that are the source of ≥1 resource relation (`uses_resource`/`shares_resource`/`competes_for`); `temporal_coupling`/`route_complexity` = fraction of decisions with time-like/network-like indexes. Derivation priority: CIR > model > spec > supplied.
 - **Structural relations**: from the `model` field's constraint-variable co-occurrence → `depends_on` edges (evidence=`structural`).
-- **Semantic upgrade**: when a structural edge targets a resource-kind entity and a capacity constraint mentions the source → upgraded to `uses_resource` (evidence=`semantic`).
-- **Coupling groups**: `shared_bottleneck` (≥2 decisions using the same resource) is derived deterministically. Other group types may be agent-declared.
+- **Semantic upgrade**: a structural edge upgrades to `uses_resource` ONLY when the target entity is resource-like AND a capacity-ish constraint mentions BOTH the source decision AND the target resource. Co-occurrence alone never produces semantic relations; capacity-ish words are deliberately narrow (`capacity`, `limit`, `cap`, `budget`, `resource`, `available` — not `demand`/`max`).
+- **Coupling groups**: `shared_bottleneck` (≥2 decisions using the same resource) is the only pattern derived deterministically. Other group types are the agent's responsibility — declared by the agent, validated and rendered by the framework.
 - **Modeling guidance**: each coupling group renders an explicit implication (e.g. "ensure one aggregate capacity constraint covers all relevant decisions").
-- **CIR ↔ model cross-check**: when both CIR and `model` are present, flags missing decisions, unmatched relations, and inconsistencies.
+- **CIR ↔ model cross-check**: when both CIR and `model` are present, flags missing decisions (both directions) and unsupported relations. A decision→resource relation (the normal `uses_resource` shape) only requires the decision to appear in some model constraint; the variable-variable co-occurrence check applies only to decision→decision relations.

@@ -19,9 +19,9 @@ E_t is episodic experience; M_strategic is generalized strategy knowledge. Both 
 
 ## Structural grouping and coupling derivation
 
-Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's `model` representation (measured from declared constraints; the cleanest source) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived. When a supplied value contradicts the structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's CIR (the `coupling` field — relations/indexes measured from the pre-model coupling understanding; the cleanest source) > the `model` representation (measured from declared constraints) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
 
-**The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
+**The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
 
 Post-strategy information (solver diagnostics, model diagnostics) is stored separately in `ExecutionRecord.execution_features` — never in `profile_snapshot`. This keeps task identity stable across executions while preserving execution-time observations for offline induction.
 
@@ -43,7 +43,7 @@ Key principles:
 - **Structure first, scalars second**: scalar coupling scores (rc, tc, rx) are derived from the structure; they are summaries, never substitutes for the structure itself.
 - **Co-occurrence is structural evidence only**: constraint-variable co-occurrence produces generic `depends_on` edges. A semantic relation (`uses_resource`, `shares_resource`, `competes_for`) requires additional entity/constraint semantics.
 - **Domain-general**: all `kind`/`type` fields in the CIR are free-form strings — the schema never hard-codes supply-chain-specific vocabulary.
-- **Dual downstream**: CIR feeds both modeling guidance (primary) and strategy retrieval (secondary, via a derived ProblemSignature). Coupling-aware understanding works even when Strategic Memory is empty.
+- **Dual downstream**: CIR feeds both modeling guidance (primary, via `orx understand`) and strategy retrieval (via the scalar ProblemSignature — `profile`/`recall`/`execute` derive rc/tc/rx from the CIR structure with priority CIR > model > spec > supplied). Coupling-aware understanding works even when Strategic Memory is empty.
 
 See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, and validation rules.
 
