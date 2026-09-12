@@ -214,8 +214,8 @@ class ORHarness:
 
     def record(self, record: ExecutionRecord,
                override: Optional[Dict[str, float]] = None,
+               retain_reason: Optional[str] = None, *,
                override_mode: str = "replace",
-               retain_reason: Optional[str] = None,
                prediction: Optional[PredictionSnapshot] = None) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
         cost backfill -> prediction checks -> cost feedback -> dormancy
@@ -233,6 +233,10 @@ class ORHarness:
         dimensions (llm_tokens, retries the harness declares, extra tool
         calls) with explicit accounting: replace (default, idempotent —
         re-applying the same measurement never double-counts) or increment.
+
+        ``override_mode`` / ``prediction`` are keyword-only so the historical
+        positional call ``record(record, override, retain_reason)`` keeps its
+        original meaning.
 
         Cost feedback is computed AFTER the backfill, from the frozen
         snapshot and the amended actual value, and persisted with the fact.

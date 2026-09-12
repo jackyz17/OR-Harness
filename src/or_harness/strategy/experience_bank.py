@@ -95,10 +95,11 @@ class ExperienceBank:
         - ``increment``: the value is an additional measured amount within
           the record's declared scope.
 
-        Backfilled dimensions are marked measured. If a cost feedback summary
-        was persisted, it is re-computed against the amended value (or
-        removed when no longer computable), so the stored summary never
-        disagrees with the stored fact.
+        Backfilled dimensions are marked measured. Cost feedback is
+        re-computed against the frozen prediction snapshot whenever a
+        snapshot exists: the stored summary never disagrees with the stored
+        fact, and a dimension that was unknown at record time produces
+        feedback as soon as it becomes comparable.
         """
         if mode not in ("replace", "increment"):
             raise StorageError(f"unknown backfill mode {mode!r} "
@@ -115,8 +116,12 @@ class ExperienceBank:
             else:
                 setattr(rec.cost, d, float(v))
         rec.cost.mark_measured(*dimensions)
-        # Keep any persisted feedback consistent with the amended fact.
-        if rec.execution_features.get("cost_feedback") is not None:
+        # Recompute feedback whenever a prediction snapshot exists — not
+        # only when feedback was already stored. A dimension that was
+        # UNKNOWN at record time (so no feedback could be computed then)
+        # becomes comparable once it is backfilled, and must produce
+        # feedback now. No snapshot -> nothing to compare -> untouched.
+        if rec.prediction_snapshot is not None:
             feedback = compute_cost_feedback(rec.prediction_snapshot,
                                              rec.strategy_id,
                                              rec.measurement_scope,

@@ -372,5 +372,159 @@ class TestFrozenSnapshotAndBaseline(HarnessTestCase):
         self.assertIn("cir", result)
 
 
+class TestLegacyEntryCompatibility(HarnessTestCase):
+    """An entry induced BEFORE the measured-mask existed carries a fixed
+    interval for all five dimensions (including never-backfilled tokens).
+    The interval key set must NOT be read as proof of measurement."""
+
+    def _legacy_entry_payload(self):
+        from or_harness.core.schema import COST_DIMENSIONS
+        return {
+            "entry_id": "se_legacy", "strategy_id": "S01",
+            "pattern": {"scope_level": "L1", "predicates": {}},
+            "expected": {
+                "quality_hat": 0.9, "quality_interval": [0.5, 1.0],
+                "cost_hat": {"llm_tokens": 0.0, "tool_calls": 0.0,
+                             "solver_runtime_s": 0.0, "retries": 0.0,
+                             "latency_s": 0.0},
+                # Old code wrote the fixed band for every dimension.
+                "cost_interval": {d: [0.5, 2.0] for d in COST_DIMENSIONS},
+                "failure_prob": 0.1,
+            },
+            "support_n": 2,
+        }
+
+    def test_legacy_fixed_intervals_prove_nothing(self):
+        from or_harness.core.schema import StrategicEntry, compute_cost_feedback
+        entry = StrategicEntry.from_dict(self._legacy_entry_payload())
+        # tokens=0 with a fixed interval is NOT "measured zero".
+        self.assertEqual(entry.expected_cost_hat.measured, None)
+        self.assertNotIn("llm_tokens", entry.expected_cost_hat.measured_dims())
+        snapshot = PredictionSnapshot(
+            strategy_id="S01", expected_cost=entry.expected_cost_hat,
+            source="entry", support_n=entry.support_n)
+        feedback = compute_cost_feedback(
+            snapshot, "S01", "attempt",
+            CostVector(llm_tokens=1000, measured={"llm_tokens"}))
+        self.assertIsNone(feedback)  # no 27.6-style pseudo log-error
+
+    def test_new_entries_carry_explicit_mask(self):
+        from or_harness.core.schema import StrategicEntry
+        entry = StrategicEntry(
+            entry_id="se_new", strategy_id="S01",
+            pattern={"scope_level": "L1", "predicates": {}},
+            expected_cost_hat=CostVector(llm_tokens=100.0,
+                                         measured={"llm_tokens"}),
+            cost_interval={"llm_tokens": (0.5, 2.0)},
+            cost_support_n={"llm_tokens": 3})
+        restored = StrategicEntry.from_dict(entry.to_dict())
+        self.assertEqual(restored.expected_cost_hat.measured, {"llm_tokens"})
+        self.assertEqual(restored.cost_support_n, {"llm_tokens": 3})
+
+
+class TestDelayedBackfillFeedback(HarnessTestCase):
+    """A dimension unknown at record time must produce feedback once
+    backfilled — the gate is "is there a snapshot", not "was there already
+    feedback"."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+
+    def test_first_delayed_backfill_creates_feedback(self):
+        snapshot = PredictionSnapshot(
+            strategy_id="S01",
+            expected_cost=CostVector(llm_tokens=100.0,
+                                     measured={"llm_tokens"}),
+            source="entry", support_n=2, support_per_dim={"llm_tokens": 2})
+        rec = self.make_record(
+            task_id="td", strategy_id="S01",
+            cost=CostVector(llm_tokens=0, tool_calls=2, solver_runtime_s=1.0,
+                            retries=0, latency_s=1.0),
+            cost_measured=("tool_calls", "solver_runtime_s", "retries",
+                           "latency_s"))
+        outcome = self.h.record(rec, prediction=snapshot)
+        # tokens unmeasured on the actual side -> no feedback yet.
+        self.assertNotIn("cost_feedback", outcome)
+        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0)
+        stored = self.h.bank.get(outcome["execution_id"])
+        feedback = stored.execution_features.get("cost_feedback")
+        self.assertIsNotNone(feedback)
+        self.assertAlmostEqual(
+            feedback["per_dimension"]["llm_tokens"]["predicted"], 100.0)
+        self.assertAlmostEqual(
+            feedback["per_dimension"]["llm_tokens"]["actual"], 1000.0)
+
+    def test_no_snapshot_means_backfill_writes_no_feedback(self):
+        rec = self.make_record(task_id="td2", strategy_id="S01",
+                               cost_measured=MEASURED_ALL)
+        outcome = self.h.record(rec)
+        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0)
+        stored = self.h.bank.get(outcome["execution_id"])
+        self.assertNotIn("cost_feedback", stored.execution_features)
+
+
+class TestRecordPositionalCompatibility(HarnessTestCase):
+    """The historical positional call
+    ``record(record, override, retain_reason)`` keeps its meaning; the new
+    keyword-only parameters never capture positional arguments."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+
+    def test_positional_retain_reason_still_works(self):
+        rec = self.make_record(task_id="tp1", strategy_id="S01",
+                               cost_measured=MEASURED_ALL)
+        outcome = self.h.record(rec, None, "contrast")
+        stored = self.h.bank.get(outcome["execution_id"])
+        self.assertEqual(stored.retention_reason, "contrast")
+
+    def test_positional_override_and_retain_reason_together(self):
+        rec = self.make_record(task_id="tp2", strategy_id="S01",
+                               cost_measured=MEASURED_ALL)
+        outcome = self.h.record(rec, {"llm_tokens": 50.0}, "keep")
+        stored = self.h.bank.get(outcome["execution_id"])
+        self.assertEqual(stored.retention_reason, "keep")
+        self.assertEqual(stored.cost.llm_tokens, 50.0)
+
+
+class TestSupportRefresh(HarnessTestCase):
+    """Identical means with more measured samples must still refresh the
+    entry's per-dimension support (and thus the prediction snapshot's)."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+
+    def _seed(self):
+        self.h.bank.append(self.make_record(
+            execution_id="ex_one", task_id="ta", strategy_id="S01",
+            cost=CostVector(llm_tokens=100, tool_calls=2,
+                            solver_runtime_s=1.0, retries=0, latency_s=1.0),
+            cost_measured=MEASURED_ALL))
+        self.h.bank.append(self.make_record(
+            execution_id="ex_two", task_id="tb", strategy_id="S01",
+            cost=CostVector(llm_tokens=0, tool_calls=2, solver_runtime_s=1.0,
+                            retries=0, latency_s=1.0),
+            cost_measured=("tool_calls", "solver_runtime_s", "retries",
+                           "latency_s")))
+
+    def test_support_change_triggers_re_induction(self):
+        self._seed()
+        first = self.h.induce(strategy_id="S01")
+        entry_id = first["results"][0]["created"]
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual(entry.cost_support_n["llm_tokens"], 1)
+        # Same mean (100), one more measured sample.
+        self.h.bank.update_cost("ex_two", llm_tokens=100.0)
+        again = self.h.induce(strategy_id="S01")
+        self.assertEqual(again["results"][0].get("updated"), entry_id)
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual(entry.cost_support_n["llm_tokens"], 2)
+        snapshot = self.h.predict_cost(_task("t_sup"), "S01")
+        self.assertEqual(snapshot.support_per_dim["llm_tokens"], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

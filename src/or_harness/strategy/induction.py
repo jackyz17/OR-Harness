@@ -101,7 +101,8 @@ class InductionEngine:
                        or existing.support_n != cell.n
                        or abs(existing.failure_prob - fail_prob) > 0.02
                        or self._cost_estimates_changed(existing, cost_hat,
-                                                       measured_cost_interval))
+                                                       measured_cost_interval,
+                                                       cell.n_measured))
             if not changed and not conditions:
                 return {"created": None,
                         "skipped": f"entry {existing.entry_id} already encodes this "
@@ -241,13 +242,19 @@ class InductionEngine:
 
     def _cost_estimates_changed(self, existing: StrategicEntry,
                                 new_hat: CostVector,
-                                new_interval: Dict[str, Tuple[float, float]]
+                                new_interval: Dict[str, Tuple[float, float]],
+                                new_support: Optional[Dict[str, int]] = None
                                 ) -> bool:
         """True when the entry's cost estimate needs refreshing: the measured
-        dimension set changed, or any measured dimension's point estimate
-        moved materially (relative to its previous magnitude). This is the
-        induction update-connection only — no induction refactoring."""
+        dimension set changed, any measured dimension's point estimate moved
+        materially (relative to its previous magnitude), or any dimension's
+        effective sample size changed (identical means with more measured
+        samples still raise the entry's — and its predictions' — support).
+        This is the induction update-connection only — no induction
+        refactoring."""
         if set(existing.cost_interval.keys()) != set(new_interval.keys()):
+            return True
+        if new_support is not None and dict(existing.cost_support_n) != dict(new_support):
             return True
         for dim in new_interval:
             old = getattr(existing.expected_cost_hat, dim)

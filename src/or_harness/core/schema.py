@@ -1004,6 +1004,13 @@ class StrategicEntry:
                 "cost_hat": self.expected_cost_hat.to_dict(),
                 "cost_interval": {d: [lo, hi] for d, (lo, hi)
                                   in self.cost_interval.items()},
+                # Measured-dimension mask for the cost estimate. Written only
+                # when known (None = unknown provenance, e.g. entries induced
+                # before this field existed) — legacy payloads are NOT
+                # retroactively granted a mask.
+                "cost_measured": (sorted(self.expected_cost_hat.measured)
+                                  if self.expected_cost_hat.measured is not None
+                                  else None),
                 "failure_prob": self.failure_prob,
             },
             "applicability": [a.to_dict() for a in self.applicability],
@@ -1041,10 +1048,17 @@ class StrategicEntry:
                          for d, (lo, hi) in
                          (expected.get("cost_interval") or {}).items()}
         cost_hat = CostVector.from_dict(expected.get("cost_hat") or {})
-        if cost_interval:
-            # The interval key set is the entry's measured-dimension mask
-            # for its cost estimate.
-            cost_hat.measured = set(cost_interval)
+        # Measured-dimension mask comes ONLY from the explicit serialized
+        # key. It is deliberately NOT inferred from the cost_interval key
+        # set: legacy entries were given a fixed interval for all five
+        # dimensions (including never-backfilled llm_tokens), so the keys
+        # cannot prove measurement. Without the key the vector stays
+        # maskless and falls back to value-level legacy inference — an
+        # unconfirmed legacy zero stays unknown.
+        raw_measured = expected.get("cost_measured")
+        if isinstance(raw_measured, list):
+            cost_hat.measured = {str(d) for d in raw_measured
+                                 if d in COST_DIMENSIONS}
         return cls(
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),
