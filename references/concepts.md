@@ -57,12 +57,12 @@ See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, a
 | Quality / cost | actual (`quality`, `cost`; alias properties `actual_quality` / `actual_cost`) | expected (`expected_quality_hat`, `expected_cost_hat`, `failure_prob`) |
 | Artifacts | solver output, diagnostics — artifacts are evidence | none (only future abstracted patterns) |
 | Mutation | append-first, fact-preserving; only cost backfill | CRUD, lifecycle, disposal — beliefs may be revised |
-| Validation | it *is* the truth — the factual grounding layer | induction-time only: evidence must support the candidate BEFORE admission; afterwards only lightweight origin metadata (`provenance`, `support_n`) is kept |
+| Validation | it *is* the truth — the factual grounding layer | **target**: induction-time — candidates complete admission validation in offline induction. **current**: entries are born `candidate`; forward prediction checks (promote/demote/tighten) still run online — moving admission validation offline is a pending item for the next Induction round |
 | Re-induction | delete it and the factual basis is gone | re-inducible from currently retained evidence (`induce --rebuild`) — exact reconstruction of past entries is NOT a requirement |
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
 
-Strict Evidence ↔ Knowledge linkage is an **induction-time** requirement: evidence must support and validate a candidate before admission. Once admitted, an entry's continued validity does NOT depend on preserving its original supporting evidence — compacting or deleting old evidence never invalidates an entry, and no runtime re-validation against preserved evidence is performed. New evidence accumulates normally and influences knowledge again at the **next induction cycle**.
+Strict Evidence ↔ Knowledge linkage is an **induction-time** requirement **by target design**: evidence must support and validate a candidate before admission. This is a migration target — today entries are born `candidate` and forward prediction checks still run online; moving admission validation offline is the next Induction round's job. Once admitted (and also under the current regime), an entry's continued validity does NOT depend on preserving its original supporting evidence — compacting or deleting old evidence never invalidates an entry. New evidence accumulates normally and influences knowledge again at the **next induction cycle**.
 
 When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet.
 
@@ -92,15 +92,14 @@ Facts are permanently neutral — no disposal ever touches an ExecutionRecord's 
 | dormant | 10 tasks unconsulted (auto) | excluded from matching | yes (wakes on hit) |
 | retired | your explicit confirmation | moved to cold archive | no (leaves hot store) |
 | cold archive | default forever | vetoes re-induction of the same pattern | `--force` only |
-| compacted ledger line | gc, groups covered by entries | raw rows → (n, mean Q, per-dimension cost mean/min/max, failure-class & recovery-action counts) | statistics survive; trajectories do not |
+| compaction (deferred) | — | lossy evidence compaction is PAUSED: statistics and induction ignore `source="compacted"` rows, so summarizing raw facts would bias conditional statistics (90 successes + 10 failures would read as 100% failure rate). Re-enabled once the summary consumption contract exists (Cost/Induction rounds) | — |
 
-## Evidence retention classes (inside the Evidence layer — no new Banks)
+## Evidence retention (inside the Evidence layer — no new Banks)
 
-- **recent raw** — full episodes within the recent-task window; the default state.
-- **representative raw** — full episodes marked with `retention_reason` (automatically: `failure_recovery`, `boundary_outcome`, `high_cost`, `recovery_chain`; or harness-supplied, e.g. `contrast`). GC never compacts these; they carry failure→recovery trajectories, applicability boundaries, cost outliers, and CIR structure for future induction, cost learning, and nearest-example explanation.
-- **compacted summary** — ledger lines replacing redundant old mass (`source="compacted"`). The derived layer never consumes them; they preserve strategically informative aggregates without raw detail.
+- **raw facts** — every execution stays a full, append-only `ExecutionRecord`; GC compaction never touches them today.
+- **explicit retention mark** — a harness-supplied `retention_reason` (free text, e.g. `contrast`) reserves representative episodes for future compaction policies. No automatic marking is performed.
 
-Retention serves future induction and cost learning — it is NOT referential integrity. Compaction never invalidates admitted Strategic Knowledge.
+Lossy compaction and the summary consumption contract are left to the Cost/Induction rounds.
 
 ## Verification philosophy: forward, not backward
 

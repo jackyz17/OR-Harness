@@ -17,13 +17,15 @@ Terminology discipline (do not blur):
   Strategic Knowledge Bank = generalized commitments ("what to do next
                     time"): expected quality / expected cost / expected
                     failure risk, with prediction intervals and calibration
-                    tracking. Induction-time validated: evidence must support
-                    a candidate BEFORE admission; after admission an entry
-                    carries only lightweight origin metadata (support_n,
-                    optional representative execution ids) and its validity
-                    does NOT depend on the survival of the original evidence
-                    rows — compacting old evidence never invalidates an
-                    entry. Never stores raw execution detail.
+                    tracking. TARGET semantics (migration pending — the next
+                    Induction round): candidates complete admission
+                    validation in offline induction; online execution only
+                    records new evidence; the next induction revises
+                    knowledge. CURRENT status: entries are born candidate
+                    and forward prediction checks promote/demote/tighten
+                    online. In either case, admission never depends on the
+                    survival of the original evidence rows. Never stores raw
+                    execution detail.
   Conditional statistics = on-the-fly aggregation over the Evidence Bank,
                     never persisted, always rebuildable. It is arithmetic, not
                     knowledge. An entry that merely restates statistics is
@@ -442,11 +444,9 @@ class ExecutionRecord:
       - ``cir_snapshot`` preserves the coupling-aware representation that
         was actually solved (optional; pre-CIR records omit it).
       - ``retention_reason`` marks representative evidence (free-form
-        string, e.g. "failure_recovery", "boundary_outcome", "high_cost",
-        "recovery_chain", or a harness-supplied reason). Marked rows are
-        never compacted by GC. Retention serves future induction, cost
-        learning, and explanation — it is NOT referential integrity:
-        knowledge admission never depends on which evidence rows survive.
+        string, harness-supplied, e.g. "contrast"). Explicit only — no
+        automatic marking. Reserved for future compaction policies; lossy
+        GC compaction is currently deferred.
     """
 
     execution_id: str
@@ -471,10 +471,10 @@ class ExecutionRecord:
     #: Preserved so future induction can re-bin evidence by structural
     #: context beyond the four scalar coupling features.
     cir_snapshot: Optional[Dict[str, Any]] = None
-    #: Representative-evidence retention marker (free-form string). Non-empty
-    #: values exempt this episode from GC compaction. Set automatically by
-    #: ``api.record`` for strategically informative episodes and overridable
-    #: by the harness.
+    #: Representative-evidence retention marker (free-form string, explicit
+    #: only — set via ``api.record(retain_reason=...)`` /
+    #: ``orx record --retain-reason``). Reserved for future compaction
+    #: policies; lossy GC compaction is currently deferred.
     retention_reason: Optional[str] = None
 
     @staticmethod
@@ -680,12 +680,15 @@ class StrategicEntry:
     pattern, this strategy will perform within these intervals.'
 
     The Strategic Knowledge unit: derived (not primary) knowledge — a
-    revisable belief validated at INDUCTION time against supporting evidence.
-    After admission the entry keeps only lightweight origin metadata
+    revisable belief. TARGET semantics (migration pending, next Induction
+    round): candidates complete admission validation in offline induction;
+    online execution only records new evidence; the next induction revises
+    knowledge. CURRENT status: entries are born ``candidate`` and forward
+    prediction checks (promotion/demotion/scope tightening) still run
+    online. In either case the entry keeps lightweight origin metadata
     (``provenance`` = optional representative execution ids, ``support_n``);
     its continued validity does NOT depend on the survival of those evidence
-    rows — compacting or deleting old evidence never invalidates an admitted
-    entry, and exact reconstruction of past entries is never required
+    rows, and exact reconstruction of past entries is never required
     (``induce --rebuild`` re-induces from whatever evidence is currently
     retained). Not a restatement of statistics — a claim about the future,
     with an interval, calibration tracking, and cross-group feature

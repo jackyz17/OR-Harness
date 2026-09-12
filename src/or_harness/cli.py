@@ -314,16 +314,17 @@ def cmd_gc(args) -> int:
     h = _harness(args)
     try:
         result = h.collect_garbage(mode=args.mode, dry_run=args.dry_run)
+        if result.get("deferred"):
+            return _emit(result, f"GC deferred: {result['deferred']}")
         if result.get("dry_run"):
             actions = result["actions"]
             if not actions:
                 return _emit(result, "GC dry-run: nothing to dispose.")
             lines = [f"- {a['kind']} {a['target']}: {a['reason']}" for a in actions]
             return _emit(result, "GC dry-run plan:\n" + "\n".join(lines))
-        return _emit(result, f"GC applied: {result.get('compacted_cells', 0)} cells "
-                             "compacted into ledger lines (statistics preserved, "
-                             "trajectory detail dropped). Planned retirements are "
-                             "listed but NOT applied — retire explicitly.")
+        return _emit(result,
+                     f"GC applied: retirement candidates listed but NOT "
+                     f"retired — retire entries explicitly.")
     finally:
         h.close()
 
@@ -413,11 +414,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--override", default=None,
                    help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9'")
     p.add_argument("--retain-reason", default=None,
-                   help="mark this episode as representative evidence (never "
-                        "compacted by gc), e.g. 'contrast'; when omitted, "
-                        "strategically informative episodes are marked "
-                        "automatically (failure_recovery, boundary_outcome, "
-                        "high_cost, recovery_chain)")
+                   help="explicitly mark this episode as representative "
+                        "evidence (reserved for future compaction policies), "
+                        "e.g. 'contrast'; when omitted, any mark already on "
+                        "the record is preserved")
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser("induce", help="consolidate facts into strategic entries")

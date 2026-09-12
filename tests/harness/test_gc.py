@@ -1,11 +1,14 @@
-"""GC compaction tests: retention classes, provenance independence, and the
-enriched ledger line.
+"""GC tests: honest compaction deferral and purge planning.
 
-The corrected memory semantics: Strategic Knowledge is validated at induction
-time; after admission it keeps only lightweight origin metadata. Compacting
-or deleting old evidence never invalidates an admitted entry, so GC imposes
-no referential integrity between the two Banks — provenance references do
-NOT exempt evidence from compaction; retention classes do.
+Lossy evidence compaction is DEFERRED until the summary consumption contract
+exists (statistics and induction ignore source="compacted" rows). Core
+regressions:
+  - ``gc compact`` never deletes or replaces raw execution facts;
+  - conditional statistics and induction inputs are unchanged after GC
+    (the 90-success/10-failure bias scenario);
+  - no referential integrity between the Banks — knowledge admission never
+    depends on evidence survival;
+  - ``purge`` still lists retirement candidates without retiring them.
 """
 import unittest
 
@@ -13,11 +16,7 @@ from helpers import HarnessTestCase
 
 from or_harness.core.schema import FailureRecord, StrategicEntry
 from or_harness.strategy.experience_bank import ExperienceBank
-from or_harness.strategy.gc import (
-    COMPACT_MIN_PER_CELL,
-    RECENT_TASK_WINDOW,
-    GarbageCollector,
-)
+from or_harness.strategy.gc import COMPACTION_DEFERRED, GarbageCollector
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.strategic_bank import StrategicBank
 
@@ -30,115 +29,84 @@ class GcCase(HarnessTestCase):
         self.stats = ConditionalStats(self.bank)
         self.gc = GarbageCollector(self.bank, self.sbank, self.stats)
 
-    def seed_recent_tasks(self, n=RECENT_TASK_WINDOW):
-        """n recent executions with distinct timestamps (freshness anchor)."""
-        for i in range(n):
-            profile = self.make_profile(problem_id=f"trec{i}", family="recent")
-            rec = self.make_record(execution_id=f"ex_recent_{i}",
-                                   task_id=f"trec{i}", strategy_id="S09",
-                                   profile=profile, created_at=2000.0 + i)
-            self.bank.append(rec)
-
-    def seed_old_cell(self, n=12, strategy_id="S01", created_at=1000.0,
-                      retention_reason=None):
+    def seed_cell(self, n_success=9, n_failure=1, strategy_id="S01"):
+        """One (group, strategy) cell mixing successes and failures."""
         ids = []
-        for i in range(n):
-            profile = self.make_profile(problem_id=f"told{i}", family="routing")
-            rec = self.make_record(execution_id=f"ex_old_{strategy_id}_{i}",
-                                   task_id=f"told{i}", strategy_id=strategy_id,
-                                   profile=profile, created_at=created_at)
-            rec.retention_reason = retention_reason
+        for i in range(n_success):
+            rec = self.make_record(execution_id=f"ex_ok_{i}",
+                                   task_id=f"tok{i}", strategy_id=strategy_id)
+            self.bank.append(rec)
+            ids.append(rec.execution_id)
+        for i in range(n_failure):
+            rec = self.make_record(execution_id=f"ex_fail_{i}",
+                                   task_id=f"tfail{i}", strategy_id=strategy_id,
+                                   feasible=False, status="error")
+            rec.failures = [FailureRecord(attempt=1, error="boom")]
             self.bank.append(rec)
             ids.append(rec.execution_id)
         return ids
 
-    def covering_entry(self, provenance=()):
+
+class TestCompactionDeferred(GcCase):
+    def test_compact_defers_and_touches_nothing(self):
+        ids = self.seed_cell()
         entry = StrategicEntry(
             entry_id="se_cover", strategy_id="S01",
-            pattern={"scope_level": "L1",
-                     "predicates": {"family": "routing"}},
+            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
             expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
-            provenance=list(provenance), support_n=len(provenance))
+            provenance=list(ids), support_n=len(ids))
         self.sbank.add(entry)
-        return entry
-
-
-class TestCompactionEligibility(GcCase):
-    def test_provenance_references_do_not_block_compaction(self):
-        """Evidence referenced by an entry may be compacted — knowledge
-        admission never depends on evidence survival."""
-        self.seed_recent_tasks()
-        ids = self.seed_old_cell()
-        self.covering_entry(provenance=ids)
-        plan = [a for a in self.gc.plan("compact") if a.kind == "compact"]
-        self.assertEqual(len(plan), 1)
-        self.assertEqual(set(plan[0].detail["execution_ids"]), set(ids))
-
-    def test_retention_reason_rows_never_compacted(self):
-        self.seed_recent_tasks()
-        self.seed_old_cell(n=12, retention_reason="contrast")
-        self.covering_entry()
-        plan = [a for a in self.gc.plan("compact") if a.kind == "compact"]
-        self.assertEqual(plan, [])
-
-    def test_cell_at_k_threshold_stays_raw(self):
-        self.seed_recent_tasks()
-        self.seed_old_cell(n=COMPACT_MIN_PER_CELL)
-        self.covering_entry()
-        plan = [a for a in self.gc.plan("compact") if a.kind == "compact"]
-        # Exactly K=10 rows: the cell-level gate (len(recs) > K) fails.
-        self.assertEqual(plan, [])
-
-
-class TestCompactionExecution(GcCase):
-    def test_compaction_does_not_invalidate_referencing_entry(self):
-        """Core regression: compacting referenced evidence leaves the
-        admitted Strategic Knowledge entry intact and unchanged."""
-        self.seed_recent_tasks()
-        ids = self.seed_old_cell()
-        entry = self.covering_entry(provenance=ids)
+        before = {r.execution_id for r in self.bank.all()}
         result = self.gc.run("compact")
-        self.assertEqual(result["compacted_cells"], 1)
+        self.assertEqual(result["deferred"], COMPACTION_DEFERRED)
+        self.assertEqual(result["compacted_cells"], 0)
+        after = {r.execution_id for r in self.bank.all()}
+        self.assertEqual(before, after)  # nothing deleted or replaced
         kept = self.sbank.get("se_cover")
         self.assertIsNotNone(kept)
-        self.assertEqual(kept.status, entry.status)
-        self.assertEqual(kept.expected_quality_hat, entry.expected_quality_hat)
-        self.assertEqual(kept.support_n, entry.support_n)
-        # Raw rows replaced by exactly one ledger line.
-        ledgers = [r for r in self.bank.all() if r.source == "compacted"]
-        self.assertEqual(len(ledgers), 1)
-        remaining_ids = {r.execution_id for r in self.bank.all()}
-        self.assertFalse(set(ids) & remaining_ids)
+        self.assertEqual(kept.status, "candidate")
 
-    def test_compacted_ledger_carries_strategic_summaries(self):
-        self.seed_recent_tasks()
-        for i in range(12):
-            profile = self.make_profile(problem_id=f"tled{i}", family="routing")
-            rec = self.make_record(execution_id=f"ex_led_{i}",
-                                   task_id=f"tled{i}", strategy_id="S01",
-                                   profile=profile, created_at=1000.0)
-            if i % 3 == 0:
-                rec.failures = [FailureRecord(
-                    attempt=1, error="timeout",
-                    recovery_action="switch solver",
-                    error_class="environment")]
-            rec.cost.llm_tokens = float(100 + i * 10)
-            self.bank.append(rec)
-        self.covering_entry()
-        result = self.gc.run("compact")
-        self.assertEqual(result["compacted_cells"], 1)
-        ledger = next(r for r in self.bank.all()
-                      if r.source == "compacted")
-        self.assertIsNone(ledger.quality["gap"])  # no fabricated gap
-        compacted = ledger.quality["compacted"]
-        self.assertEqual(compacted["n"], 12)
-        self.assertEqual(compacted["failures"], 4)
-        self.assertEqual(compacted["failure_classes"]["environment"], 4)
-        self.assertEqual(compacted["recovery_actions"]["switch solver"], 4)
-        self.assertEqual(compacted["verification_levels"]["basic"], 12)
-        # Cost spread survives for future cost learning.
-        self.assertLess(compacted["cost_min"]["llm_tokens"],
-                        compacted["cost_max"]["llm_tokens"])
+    def test_plan_compact_is_empty(self):
+        self.seed_cell()
+        self.assertEqual(self.gc.plan("compact"), [])
+
+    def test_gc_does_not_bias_conditional_statistics(self):
+        """The reproduced defect: 90 successes + 10 failures must stay a 10%
+        failure rate after GC."""
+        self.seed_cell(n_success=90, n_failure=10)
+        group = self.bank.get("ex_ok_0").group_l1
+        before = self.stats.cell(group, "S01")
+        self.gc.run("compact")
+        after = self.stats.cell(group, "S01")
+        self.assertEqual(before.n, 100)
+        self.assertEqual(after.n, 100)
+        self.assertAlmostEqual(after.fail_rate, 0.1, places=6)
+        self.assertEqual(before.execution_ids, after.execution_ids)
+
+    def test_references_do_not_matter_and_rows_survive(self):
+        """Deferral holds regardless of references — nothing is touched, so
+        the no-referential-integrity behavior holds trivially."""
+        ids = self.seed_cell()
+        self.sbank.add(StrategicEntry(
+            entry_id="se_cover", strategy_id="S01",
+            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            provenance=list(ids), support_n=len(ids)))
+        self.gc.run("compact")
+        self.assertEqual(self.bank.count(), len(ids))
+
+
+class TestPurgeStillPlans(GcCase):
+    def test_purge_lists_retirements_without_applying(self):
+        self.sbank.add(StrategicEntry(
+            entry_id="se_sus", strategy_id="S01",
+            pattern={"scope_level": "L1", "predicates": {}},
+            status="suspect"))
+        plan = self.gc.plan("purge")
+        self.assertEqual([a.kind for a in plan], ["retire"])
+        self.assertEqual(plan[0].target, "se_sus")
+        result = self.gc.run("purge")
+        self.assertEqual(result["planned_retirements"], ["se_sus"])
+        self.assertIsNotNone(self.sbank.get("se_sus"))  # not retired
 
 
 if __name__ == "__main__":

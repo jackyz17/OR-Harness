@@ -14,11 +14,11 @@ Mutability contract (fact-preserving, append-first):
     later). Only cost dimensions may change; nothing else is ever rewritten.
   - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
     execution and the harness's explicit recording decision.
-  - ``replace_all``: INTERNAL to garbage collection. Compaction replaces only
-    eligible rows with ``source="compacted"`` bookkeeping ledger lines, which
-    are never consumed by induction or the selector (both filter on
-    ``source == "executed"``). Historical facts are never rewritten because
-    later beliefs changed.
+  - ``replace_all``: reserved for future evidence compaction — currently
+    unused, because lossy compaction is deferred until the summary
+    consumption contract exists (statistics and induction ignore
+    ``source="compacted"`` rows). Historical facts are never rewritten
+    because later beliefs changed.
 """
 
 from __future__ import annotations
@@ -132,8 +132,11 @@ class ExperienceBank:
         return int(row["n"])
 
     def replace_all(self, records: List[ExecutionRecord]) -> None:
-        """Rewrite the whole bank (used by gc compaction). Fact-neutral: only
-        rows eligible for compaction are replaced by compacted ledger lines."""
+        """Rewrite the whole bank. Reserved for future evidence compaction —
+        currently unused: lossy compaction is deferred until the summary
+        consumption contract exists (statistics and induction ignore
+        ``source="compacted"`` rows, so summarizing raw facts would bias
+        conditional statistics)."""
         with self.store.transaction() as conn:
             conn.execute("DELETE FROM executions")
             for rec in records:

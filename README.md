@@ -8,7 +8,7 @@ OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an aut
 
 ## What it provides
 
-- **Two-layer memory**: an append-only **Execution Evidence Bank** (episodic facts: actual strategy/quality/cost, failures, artifacts; recent raw + representative raw + compacted summaries) and a derived **Strategic Knowledge Bank** (commitments: expected quality/cost/failure risk, with prediction intervals, forward validation, and induction-time evidence validation; re-inducible from retained evidence — admission does not depend on evidence survival). Statistics are computed on the fly, never persisted.
+- **Two-layer memory**: an append-only **Execution Evidence Bank** (episodic facts: actual strategy/quality/cost, failures, artifacts; lossy compaction deferred) and a derived **Strategic Knowledge Bank** (commitments: expected quality/cost/failure risk, with prediction intervals and forward validation; admission never depends on evidence survival — re-inducible from retained evidence). Statistics are computed on the fly, never persisted.
 - **Deterministic profiling**: structural coupling features from your task spec or supplied annotations — no NLP subsystem.
 - **Strategy selection with full control**: transparent scoring (`α·Q̂ − β·C_scalar − γ·R̂`), two-layer evidence fallback, four ablation modes.
 - **Sandboxed execution**: AST policy + POSIX rlimits + wall-clock timeout for your solve scripts; basic verification; five-dimensional cost metering (retries count).
