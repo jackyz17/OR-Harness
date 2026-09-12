@@ -88,8 +88,8 @@ Never record an execution whose `problems` is non-empty without noting why.
 
 ## Core concepts (terminology is strict)
 
-- **Execution Evidence Bank** — append-only episodic facts ("what actually happened": the strategy actually used, the quality/cost actually observed, failures/recovery, implementation artifacts). Never stores generalizations. The single source of truth. Mutability: append-first, fact-preserving — only cost dimensions may be backfilled (`llm_tokens`), historical facts are never rewritten.
-- **Strategic Knowledge Bank** — induced commitments ("what to do next time": expected quality, expected cost, expected failure risk): prediction intervals, calibration tracking, feature predicates. Provenance-grounded (every entry cites its supporting executions) and fully rebuildable from facts (`induce --rebuild`). Mutability: derived beliefs may be re-estimated, validated, revised, deprecated, replaced.
+- **Execution Evidence Bank** — append-only episodic facts ("what actually happened": the strategy actually used, the quality/cost actually observed, failures/recovery, implementation artifacts). Never stores generalizations. The single source of truth. Mutability: append-first, fact-preserving — only cost dimensions may be backfilled (`llm_tokens`), historical facts are never rewritten. Retention classes: recent raw rows, representative raw rows (`retention_reason` — never compacted), compacted ledger summaries.
+- **Strategic Knowledge Bank** — induced commitments ("what to do next time": expected quality, expected cost, expected failure risk): prediction intervals, calibration tracking, feature predicates. Validated at induction time against supporting evidence; after admission only lightweight origin metadata (`provenance`, `support_n`) is kept — compacting old evidence never invalidates an entry. `induce --rebuild` re-induces from currently retained evidence (exact reconstruction is not a requirement). Mutability: derived beliefs may be re-estimated, validated, revised, deprecated, replaced.
 - **Conditional statistics** — on-the-fly aggregation over the Evidence Bank per (strategy × structural group). Arithmetic, not knowledge; never persisted. A recount of observations, not a commitment.
 - **Structural group** — problem family + coupling-feature bins (e.g. `resource_coupling ∈ [0.75, 1.0]`).
 - **CostVector** — five dimensions, stored raw, never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Retries are a cost: "wrong model → repair → rerun" must cost more than getting it right. (In Chinese documentation: 代价, not 成本 — it is the price paid at decision time, not bookkeeping.)
@@ -152,15 +152,17 @@ The profile used in `execute` is the same frozen pre-strategy signature from `re
 
 Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` — that dimension is yours to backfill, `execution_features` with solver diagnostics if the solver reported any, and `cir_snapshot` = the CIR that was actually solved when the task carries a `coupling` field). **Nothing is recorded yet.**
 
-### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] | --discard-staged <id>`
+### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] [--retain-reason contrast] | --discard-staged <id>`
 
 Appends the fact to the Execution Evidence Bank, then runs the automatic chain: cost backfill → prediction checks against matching entries (hits/misses feed calibration; 3 consecutive misses demote an entry to `suspect`; cross-family misses tighten an L2/L3 entry's scope) → C1–C6 induction-hint checks (C4 detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
+
+`--retain-reason <free text>` marks this episode as representative evidence — GC never compacts it. When omitted, strategically informative episodes are marked automatically (`failure_recovery`, `boundary_outcome`, `high_cost`, `recovery_chain`). Retention is lightweight origin metadata, not referential integrity: compactions never invalidate admitted Strategic Knowledge entries.
 
 Result: `result.{execution_id, recorded, prediction_checks[], induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox.
 
 ### `orx induce [--strategy S | --all] [--rebuild] [--widen ID] [--tighten ID] [--dry-run] [--force] [--llm-conditions <json>]`
 
-Consolidates facts into a Strategic Knowledge entry (your explicit call — hints never auto-induce). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). A pattern already covered by an existing entry is refused (restatement-only entries are forbidden). `--rebuild` regenerates the whole Strategic Knowledge Bank from facts (cold archive preserved). `--widen/--tighten` move an entry along the scope ladder L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins); widening is falsifiable — a cross-family miss auto-tightens. New entries inherit `strategy_type` and `actions` from the catalog vocabulary (extension points; harness-supplied values are never overwritten).
+Consolidates facts into a Strategic Knowledge entry (your explicit call — hints never auto-induce). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). A pattern already covered by an existing entry is refused (restatement-only entries are forbidden). `--rebuild` re-induces the whole Strategic Knowledge Bank from currently retained evidence (cold archive preserved); the result may differ from the previous bank — exact reconstruction is not a requirement. `--widen/--tighten` move an entry along the scope ladder L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins); widening is falsifiable — a cross-family miss auto-tightens. New entries inherit `strategy_type` and `actions` from the catalog vocabulary (extension points; harness-supplied values are never overwritten).
 
 `--llm-conditions` (optional, you phrase it): `[{"text": "...", "supporting_execution_ids": ["ex_..."]}]`. Citations are verified — fake ids or numeric claims disagreeing with cited records are rejected; accepted conditions stay `verified: false` and never enter scoring until re-confirmed by future executions.
 
@@ -170,7 +172,7 @@ Queries a memory layer. Strategic entries include `prediction_track {n_predictio
 
 ### `orx gc [--mode compact|purge] [--dry-run]`
 
-Disposes only of the derived layer. `compact`: groups covered by entries and beyond retention limits (provenance references, recent 50 tasks, exploratory groups with n<5) collapse into ledger lines — statistics preserved, trajectory detail dropped. `purge` mode lists retirement candidates but never retires them itself.
+Disposes only of the derived layer. `compact`: groups covered by entries and beyond retention limits (recent 50 tasks; representative rows with a `retention_reason` are never touched) collapse into ledger lines — per-dimension cost mean/min/max, failure-class and recovery-action counts, and mean quality preserved, trajectory detail dropped. Compaction never invalidates Strategic Knowledge entries (knowledge is validated at induction time; only lightweight origin metadata is kept afterwards). `purge` mode lists retirement candidates but never retires them itself.
 
 ### `orx retire --entry ID --reason "..."`
 

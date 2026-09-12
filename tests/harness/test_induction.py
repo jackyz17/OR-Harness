@@ -197,6 +197,10 @@ class TestLLMConditions(InductionCase):
 
 
 class TestRebuild(InductionCase):
+    """Re-induction from currently retained evidence. NOT exact
+    reconstruction: the re-induced bank may legitimately differ from the
+    previous one (induction logic and evidence sets evolve)."""
+
     def test_rebuild_regenerates_entries(self):
         self.seed("S01", [0.05, 0.10], task_prefix="a")
         self.seed("S04", [0.02, 0.04], task_prefix="b")

@@ -15,8 +15,9 @@ from or_harness.strategy.strategic_bank import StrategicBank
 #: artifacts).
 ExecutionEvidenceBank = ExperienceBank
 #: "Strategic Knowledge Bank" — paper terminology for the derived layer
-#: (what to do next time: expected quality/cost/failure risk,
-#: provenance-grounded, rebuildable).
+#: (what to do next time: expected quality/cost/failure risk;
+#: induction-time validated, revisable beliefs — admission does not depend
+#: on the survival of the original evidence rows).
 StrategicKnowledgeBank = StrategicBank
 
 __all__ = [

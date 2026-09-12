@@ -17,9 +17,13 @@ Terminology discipline (do not blur):
   Strategic Knowledge Bank = generalized commitments ("what to do next
                     time"): expected quality / expected cost / expected
                     failure risk, with prediction intervals and calibration
-                    tracking. Provenance-grounded (every entry cites its
-                    supporting executions) and fully rebuildable from the
-                    Evidence Bank. Never stores raw execution detail.
+                    tracking. Induction-time validated: evidence must support
+                    a candidate BEFORE admission; after admission an entry
+                    carries only lightweight origin metadata (support_n,
+                    optional representative execution ids) and its validity
+                    does NOT depend on the survival of the original evidence
+                    rows — compacting old evidence never invalidates an
+                    entry. Never stores raw execution detail.
   Conditional statistics = on-the-fly aggregation over the Evidence Bank,
                     never persisted, always rebuildable. It is arithmetic, not
                     knowledge. An entry that merely restates statistics is
@@ -437,6 +441,12 @@ class ExecutionRecord:
         memory class.
       - ``cir_snapshot`` preserves the coupling-aware representation that
         was actually solved (optional; pre-CIR records omit it).
+      - ``retention_reason`` marks representative evidence (free-form
+        string, e.g. "failure_recovery", "boundary_outcome", "high_cost",
+        "recovery_chain", or a harness-supplied reason). Marked rows are
+        never compacted by GC. Retention serves future induction, cost
+        learning, and explanation — it is NOT referential integrity:
+        knowledge admission never depends on which evidence rows survive.
     """
 
     execution_id: str
@@ -461,6 +471,11 @@ class ExecutionRecord:
     #: Preserved so future induction can re-bin evidence by structural
     #: context beyond the four scalar coupling features.
     cir_snapshot: Optional[Dict[str, Any]] = None
+    #: Representative-evidence retention marker (free-form string). Non-empty
+    #: values exempt this episode from GC compaction. Set automatically by
+    #: ``api.record`` for strategically informative episodes and overridable
+    #: by the harness.
+    retention_reason: Optional[str] = None
 
     @staticmethod
     def new_id() -> str:
@@ -499,6 +514,7 @@ class ExecutionRecord:
             "source": self.source,
             "cir_snapshot": (dict(self.cir_snapshot)
                              if self.cir_snapshot is not None else None),
+            "retention_reason": self.retention_reason,
         }
 
     @classmethod
@@ -527,6 +543,7 @@ class ExecutionRecord:
             source=str(data.get("source", "executed")),
             cir_snapshot=(dict(data["cir_snapshot"])
                           if data.get("cir_snapshot") else None),
+            retention_reason=data.get("retention_reason"),
         )
 
 
@@ -662,11 +679,17 @@ class StrategicEntry:
     """A generalized, calibrated commitment: 'for problems matching this
     pattern, this strategy will perform within these intervals.'
 
-    The Strategic Knowledge unit: derived (not primary) knowledge —
-    provenance-grounded (``provenance`` cites supporting executions) and
-    fully rebuildable from the Evidence Bank (``induce --rebuild``). Not a
-    restatement of statistics — a claim about the future, with an interval,
-    calibration tracking, and cross-group feature predicates.
+    The Strategic Knowledge unit: derived (not primary) knowledge — a
+    revisable belief validated at INDUCTION time against supporting evidence.
+    After admission the entry keeps only lightweight origin metadata
+    (``provenance`` = optional representative execution ids, ``support_n``);
+    its continued validity does NOT depend on the survival of those evidence
+    rows — compacting or deleting old evidence never invalidates an admitted
+    entry, and exact reconstruction of past entries is never required
+    (``induce --rebuild`` re-induces from whatever evidence is currently
+    retained). Not a restatement of statistics — a claim about the future,
+    with an interval, calibration tracking, and cross-group feature
+    predicates.
 
     Extension points for future induction (all optional, backward
     compatible): ``strategy_type`` (what kind of strategy — modeling,

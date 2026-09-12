@@ -1,11 +1,14 @@
 """Strategic Knowledge Bank: the derived layer of calibrated commitments.
 
 Derived knowledge, not primary facts: "what to do next time" — expected
-quality, expected cost, expected failure risk. Entries are provenance-grounded
-(every entry cites its supporting executions) and rebuildable from the
-Execution Evidence Bank at any time (``induce --rebuild``) — delete the whole
-bank and induction reconstructs it; delete the Evidence Bank and the factual
-basis is gone. Entries alone carry the disposal ladder:
+quality, expected cost, expected failure risk. Entries are validated at
+INDUCTION time against supporting evidence; after admission they keep only
+lightweight origin metadata (``provenance`` / ``support_n``) and their
+continued validity does NOT depend on the survival of the original evidence
+rows — compacting or deleting old evidence never invalidates an admitted
+entry, and exact reconstruction of past entries is never required
+(``induce --rebuild`` re-induces from whatever evidence is currently
+retained). Entries alone carry the disposal ladder:
 
   candidate --(n>=5 & hit_rate>=0.7)--> validated
   any hot   --(3 consecutive misses)--> suspect    (score x0.5, reversible)

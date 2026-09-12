@@ -362,5 +362,54 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             h.close()
 
 
+class TestRetentionMarking(HarnessTestCase):
+    """Representative-evidence retention marking at record time: lightweight
+    origin metadata, not referential integrity."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+
+    def tearDown(self):
+        self.h.close()
+
+    def test_plain_success_unmarked(self):
+        self.h.record(self.make_record(execution_id="ex_rt0", task_id="trt0"))
+        self.assertIsNone(self.h.bank.get("ex_rt0").retention_reason)
+
+    def test_boundary_failure_recovery_high_cost_marked(self):
+        rec = self.make_record(execution_id="ex_rt1", task_id="trt1",
+                               feasible=False, status="error")
+        rec.failures = [FailureRecord(attempt=1, error="boom",
+                                      recovery_action="switch solver")]
+        self.h.record(rec)
+        self.assertEqual(
+            self.h.bank.get("ex_rt1").retention_reason,
+            "boundary_outcome,failure_recovery,high_cost")
+
+    def test_recovery_chain_marked(self):
+        failed = self.make_record(execution_id="ex_rtf", task_id="trt2",
+                                  feasible=False, status="error")
+        failed.failures = [FailureRecord(attempt=1, error="x")]
+        self.h.bank.stage_pending(failed)
+        ok = self.make_record(execution_id="ex_rts", task_id="trt2")
+        self.h.record(ok)
+        self.assertEqual(self.h.bank.get("ex_rts").retention_reason,
+                         "recovery_chain")
+
+    def test_retries_alone_marked_high_cost(self):
+        rec = self.make_record(execution_id="ex_rt4", task_id="trt4",
+                               cost=CostVector(llm_tokens=100, retries=2))
+        self.h.record(rec)
+        self.assertEqual(self.h.bank.get("ex_rt4").retention_reason,
+                         "high_cost")
+
+    def test_harness_override_wins(self):
+        rec = self.make_record(execution_id="ex_rt5", task_id="trt5")
+        self.h.record(rec, retain_reason="contrast")
+        self.assertEqual(self.h.bank.get("ex_rt5").retention_reason,
+                         "contrast")
+
+
 if __name__ == "__main__":
     unittest.main()

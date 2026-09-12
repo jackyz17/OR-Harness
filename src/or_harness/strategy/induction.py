@@ -192,11 +192,15 @@ class InductionEngine:
     # -- rebuild ------------------------------------------------------------------
 
     def rebuild(self, *, dry_run: bool = False) -> Dict[str, Any]:
-        """Rebuild the entire Strategic Bank from the Experience Bank.
+        """Re-induce the entire Strategic Knowledge Bank from the evidence
+        currently retained in the Evidence Bank (raw ``source="executed"``
+        rows).
 
-        The fact layer is the single source of truth; the derived layer is
-        always regenerable. Tombstones in the cold archive are preserved
-        (they are disposal decisions, not derivations)."""
+        This is re-induction, NOT exact reconstruction: the resulting bank
+        may legitimately differ from the previous one (induction logic,
+        evidence set, and validation criteria all evolve). Tombstones in the
+        cold archive are preserved (they are disposal decisions, not
+        derivations)."""
         bank = self.stats.bank
         groups: Dict[Tuple[str, str], List[str]] = {}
         for rec in bank.all():

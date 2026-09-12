@@ -219,7 +219,8 @@ def cmd_record(args) -> int:
         if args.override:
             override = {k: float(v) for k, v in
                         (pair.split("=") for pair in args.override.split(","))}
-        result = h.record(record, override=override)
+        result = h.record(record, override=override,
+                          retain_reason=args.retain_reason)
         hints = result["induction_hints"]
         checks = result["prediction_checks"]
         summary = [f"Recorded {result['execution_id']}."]
@@ -268,10 +269,11 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
     if args.rebuild:
         if result.get("dry_run") or "would_rebuild" in result:
             return (f"Rebuild plan: {result.get('would_rebuild', 0)} cells would "
-                    "be re-induced from the Experience Bank. Cold archive is "
-                    "preserved. Run without --dry-run to apply.")
-        return (f"Rebuilt {result.get('rebuilt', 0)} entries from facts. "
-                "The derived layer is regenerable at any time.")
+                    "be re-induced from currently retained evidence. Cold "
+                    "archive is preserved. Run without --dry-run to apply.")
+        return (f"Re-induced {result.get('rebuilt', 0)} entries from retained "
+                "evidence. Exact reconstruction is not a requirement — the "
+                "re-induced bank may differ from the previous one.")
     if args.widen:
         return json.dumps(result) if "error" in result else \
             f"Entry {result['widened']} widened to {result['new_scope']}."
@@ -410,6 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="explicitly discard a staged execution")
     p.add_argument("--override", default=None,
                    help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9'")
+    p.add_argument("--retain-reason", default=None,
+                   help="mark this episode as representative evidence (never "
+                        "compacted by gc), e.g. 'contrast'; when omitted, "
+                        "strategically informative episodes are marked "
+                        "automatically (failure_recovery, boundary_outcome, "
+                        "high_cost, recovery_chain)")
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser("induce", help="consolidate facts into strategic entries")

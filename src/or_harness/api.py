@@ -135,9 +135,18 @@ class ORHarness:
         return record
 
     def record(self, record: ExecutionRecord,
-               override: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+               override: Optional[Dict[str, float]] = None,
+               retain_reason: Optional[str] = None) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
         cost backfill -> prediction checks -> dormancy wakeup -> C1-C6 hints.
+
+        ``retain_reason`` (optional) marks this episode as representative
+        evidence (never compacted by GC). When omitted, simple deterministic
+        predicates mark strategically informative episodes automatically:
+        failure->recovery chains, boundary outcomes, high-cost episodes,
+        same-task recovery. Retention is lightweight origin metadata — NOT
+        referential integrity: admission of strategic knowledge never
+        depends on which evidence rows survive.
 
         Also reports staged-but-unrecorded executions for the same task, so
         the harness notices a dropped failure (e.g. an abandoned first
@@ -149,6 +158,9 @@ class ORHarness:
         for failure in record.failures:
             if failure.error_class is None:
                 failure.error_class = classify_failure(record)
+        # Evidence retention marking — BEFORE append, so the fact is stored
+        # with its retention class.
+        record.retention_reason = self._retention_reason(record, retain_reason)
         self.bank.append(record)
         if override:
             self.bank.update_cost(record.execution_id, **override)
@@ -160,12 +172,7 @@ class ORHarness:
                         for e in self.sbank.matching(record.profile_snapshot)}
         # expected_map already uses {sid: {"quality": q}} format, matching
         # the new check_triggers signature.
-        prior_failures = [r for r in self.bank.query(task_id=record.task_id)
-                          if not r.quality.get("feasible", False)
-                          and r.execution_id != record.execution_id]
-        prior_failures += [p for p in self.bank.pending(task_id=record.task_id)
-                           if p.execution_id != record.execution_id
-                           and not p.quality.get("feasible", False)]
+        prior_failures = self._prior_failures(record)
         hints = check_triggers(record, self.stats, self.catalog, expected_map,
                                prior_failures=prior_failures)
         unrecorded = [p.execution_id for p in
@@ -189,9 +196,11 @@ class ORHarness:
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
         derived StrategicEntry commitments (expected quality/cost/failure
-        risk, provenance-grounded, rebuildable). New entries inherit the
-        catalog vocabulary's strategy_type/actions — extension points for
-        future induction — without ever overwriting harness-supplied values.
+        risk), validated against supporting evidence at INDUCTION time —
+        admission does not depend on the survival of those evidence rows.
+        New entries inherit the catalog vocabulary's strategy_type/actions —
+        extension points for future induction — without ever overwriting
+        harness-supplied values.
         """
         if rebuild:
             result = self.induction.rebuild(dry_run=dry_run)
@@ -359,6 +368,42 @@ class ORHarness:
             "log_errors": log_errors,
             "cost_hit_rate": round(entry.prediction_track.cost_hit_rate, 4),
         }
+
+    def _prior_failures(self, record: ExecutionRecord) -> List[ExecutionRecord]:
+        """Failed executions (bank + staged) for the same task, excluding
+        this record itself."""
+        prior = [r for r in self.bank.query(task_id=record.task_id)
+                 if r.execution_id != record.execution_id
+                 and not r.quality.get("feasible", False)]
+        prior += [p for p in self.bank.pending(task_id=record.task_id)
+                  if p.execution_id != record.execution_id
+                  and not p.quality.get("feasible", False)]
+        return prior
+
+    def _retention_reason(self, record: ExecutionRecord,
+                          explicit: Optional[str]) -> Optional[str]:
+        """Representative-evidence retention marker.
+
+        The harness may force any reason; otherwise simple deterministic
+        predicates mark strategically informative episodes (future induction,
+        cost learning, explanation). Retention is origin metadata, not
+        referential integrity — knowledge admission never depends on which
+        evidence rows survive.
+        """
+        if explicit:
+            return explicit
+        reasons: List[str] = []
+        status = str(record.quality.get("status", ""))
+        if status in ("infeasible", "unbounded", "timeout", "error"):
+            reasons.append("boundary_outcome")
+        if any(f.recovery_action for f in record.failures):
+            reasons.append("failure_recovery")
+        if record.cost.retries > 0 or record.failures:
+            reasons.append("high_cost")
+        if (record.quality.get("feasible", False)
+                and self._prior_failures(record)):
+            reasons.append("recovery_chain")
+        return ",".join(sorted(reasons)) or None
 
     def _induction_targets(self, strategy_id: Optional[str], all_: bool):
         targets = []

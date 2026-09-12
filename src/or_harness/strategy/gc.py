@@ -4,6 +4,17 @@ Disposal targets the derived layer only — facts (ExecutionRecords) stay
 neutral forever; compacted ledger lines are bookkeeping summaries, not
 StrategicEntries (no commitments, no lifecycle).
 
+Compaction of redundant evidence does NOT invalidate admitted Strategic
+Knowledge: knowledge is validated at induction time and carries only
+lightweight origin metadata afterwards, so GC imposes no referential
+integrity between the two Banks. Evidence retention follows retention
+classes instead:
+  - recent raw rows (outside the window only are eligible),
+  - representative raw rows (``retention_reason`` set — never compacted),
+  - compacted ledger lines (counts, mean quality, per-dimension cost
+    mean/min/max, failure-class and recovery-action counts — the
+    strategically informative summaries).
+
 ``orx gc [--dry-run] [--mode compact|purge]`` — always the harness's explicit
 call; dry-run lists what would be disposed and why.
 """
@@ -77,9 +88,11 @@ class GarbageCollector:
                 if len(recs) <= COMPACT_MIN_PER_CELL:
                     continue
                 keep_raw = [r for r in recs if r.created_at >= recent_cutoff]
-                referenced = self._referenced_ids()
-                eligible = [r for r in recs if r.created_at < recent_cutoff
-                            and r.execution_id not in referenced]
+                keep_retained = [r for r in recs
+                                 if r.retention_reason is not None]
+                eligible = [r for r in recs
+                            if r.created_at < recent_cutoff
+                            and r.retention_reason is None]
                 if len(eligible) <= COMPACT_MIN_PER_CELL:
                     continue
                 actions.append(GcAction(
@@ -89,7 +102,8 @@ class GarbageCollector:
                             f"{len(eligible)} raw rows beyond K={COMPACT_MIN_PER_CELL} "
                             f"and outside the recent window N={RECENT_TASK_WINDOW}"),
                     detail={"execution_ids": [r.execution_id for r in eligible],
-                            "kept_recent": [r.execution_id for r in keep_raw]}))
+                            "kept_recent": [r.execution_id for r in keep_raw],
+                            "kept_retained": [r.execution_id for r in keep_retained]}))
         return actions
 
     def _plan_purge(self) -> List[GcAction]:
@@ -150,18 +164,43 @@ class GarbageCollector:
     @staticmethod
     def _compact_line(group: str, sid: str,
                       records: List[ExecutionRecord]) -> ExecutionRecord:
-        """Raw rows -> one ledger line (n, mean quality, mean cost per
-        dimension, failure count). Statistics survive losslessly; trajectory
-        detail does not (irreversible by design)."""
+        """Raw rows -> one ledger line.
+
+        The ledger preserves what future cost learning and induction need
+        from redundant mass: counts, mean quality, per-dimension cost
+        mean/min/max, failure-class counts, recovery-action counts, and
+        verification-level counts. Trajectory detail and artifacts do not
+        survive here — representative raw rows (``retention_reason``) carry
+        those. The derived layer never consumes ledger lines, so no fake
+        quality/cost values are fabricated: ``gap`` is None and the summary
+        lives in ``quality["compacted"]``.
+        """
         n = len(records)
         profile = records[0].profile_snapshot
         cost_totals = {d: 0.0 for d in COST_DIMENSIONS}
+        cost_min = {d: float("inf") for d in COST_DIMENSIONS}
+        cost_max = {d: float("-inf") for d in COST_DIMENSIONS}
         failures = 0
+        failure_classes: Dict[str, int] = {}
+        recovery_actions: Dict[str, int] = {}
+        verification_levels: Dict[str, int] = {}
         quality_values = []
         for r in records:
             for d in COST_DIMENSIONS:
-                cost_totals[d] += getattr(r.cost, d)
-            failures += len(r.failures)
+                v = float(getattr(r.cost, d))
+                cost_totals[d] += v
+                cost_min[d] = min(cost_min[d], v)
+                cost_max[d] = max(cost_max[d], v)
+            for f in r.failures:
+                failures += 1
+                if f.error_class:
+                    failure_classes[f.error_class] = \
+                        failure_classes.get(f.error_class, 0) + 1
+                if f.recovery_action:
+                    recovery_actions[f.recovery_action] = \
+                        recovery_actions.get(f.recovery_action, 0) + 1
+            verification_levels[r.verification_level] = \
+                verification_levels.get(r.verification_level, 0) + 1
             quality_values.append(quality_score(r))
         mean_cost = {d: round(v / n, 6) for d, v in cost_totals.items()}
         mean_q = sum(quality_values) / n
@@ -171,10 +210,20 @@ class GarbageCollector:
             strategy_id=sid,
             profile_snapshot=profile,
             trajectory=[],
-            quality={"feasible": True, "objective": None, "gap": 1.0 - mean_q,
+            quality={"feasible": True, "objective": None, "gap": None,
                      "status": "compacted",
-                     "compacted": {"n": n, "mean_quality": round(mean_q, 6),
-                                   "failures": failures}},
+                     "compacted": {
+                         "n": n,
+                         "mean_quality": round(mean_q, 6),
+                         "failures": failures,
+                         "cost_min": {d: round(v, 6)
+                                      for d, v in cost_min.items()},
+                         "cost_max": {d: round(v, 6)
+                                      for d, v in cost_max.items()},
+                         "failure_classes": failure_classes,
+                         "recovery_actions": recovery_actions,
+                         "verification_levels": verification_levels,
+                     }},
             cost=CostVector(**mean_cost),
             failures=[],
             solver={"name": "compacted"},
@@ -192,11 +241,3 @@ class GarbageCollector:
         if len(rows) < RECENT_TASK_WINDOW:
             return float("inf")  # nothing old enough to compact
         return float(rows[-1]["created_at"])
-
-    def _referenced_ids(self) -> set:
-        ids = set()
-        for entry in self.sbank.list():
-            ids.update(entry.provenance)
-            for cond in entry.applicability:
-                ids.update(cond.supporting_execution_ids)
-        return ids

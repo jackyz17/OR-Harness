@@ -3,8 +3,10 @@
 Records what actually happened — never what will happen. Facts are permanently
 neutral: the disposal ladder (suspect/dormant/retired/cold archive) applies
 only to the derived Strategic Knowledge Bank. The Evidence Bank is the single
-source of truth; the Knowledge Bank can always be rebuilt from it
-(``induce --rebuild``).
+source of truth; Strategic Knowledge is induced and validated against it at
+INDUCTION time — once admitted, an entry does not require the survival of any
+particular evidence row (``induce --rebuild`` re-induces from whatever
+evidence is currently retained).
 
 Mutability contract (fact-preserving, append-first):
   - ``append``: the only way a new fact enters. Duplicate ids are rejected.
