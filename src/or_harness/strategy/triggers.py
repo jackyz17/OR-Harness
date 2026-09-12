@@ -128,6 +128,8 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
             cost_contrast = False
             cost_evidence: Dict[str, Any] = {}
             for dim in ("llm_tokens", "solver_runtime_s"):
+                if a.n_measured.get(dim, 0) == 0 or b.n_measured.get(dim, 0) == 0:
+                    continue  # unknown on either side never drives a contrast
                 ca = getattr(a.mean_cost, dim)
                 cb = getattr(b.mean_cost, dim)
                 lo, hi = min(ca, cb), max(ca, cb)
@@ -366,9 +368,12 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
 def _c6_stable_success(cells: Dict[str, GroupStats],
                        group: str) -> Optional[InductionHint]:
     """C6: same strategy, same group, n >= 4 with zero failures and zero
-    retries — consolidation channel for pure success patterns."""
+    retries — consolidation channel for pure success patterns. Retries must
+    be MEASURED on every supporting record: unknown retries never count as
+    proof of stability."""
     for cell in cells.values():
         if (cell.n >= STABLE_SUCCESS_MIN_N and cell.n_failures == 0
+                and cell.n_measured.get("retries", 0) == cell.n
                 and cell.total_retries == 0 and cell.mean_quality > 0.0):
             return InductionHint(
                 criterion="C6", strategy_ids=[cell.strategy_id], group_key=group,

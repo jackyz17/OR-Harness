@@ -7,12 +7,18 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from or_harness.core.schema import (  # noqa: E402
+    COST_DIMENSIONS,
     CostVector,
     ExecutionRecord,
     FailureRecord,
     ProblemProfile,
 )
 from or_harness.core.storage import Store  # noqa: E402
+
+#: A fully-metered default cost — every dimension explicitly measured, so
+#: tests that rely on "retries=0 was actually observed" (e.g. C6 stable
+#: success) do not trip over unknown-vs-zero inference.
+MEASURED_ALL = set(COST_DIMENSIONS)
 
 
 class HarnessTestCase(unittest.TestCase):
@@ -40,7 +46,12 @@ class HarnessTestCase(unittest.TestCase):
     def make_record(self, execution_id=None, task_id="t1", strategy_id="S01",
                     profile=None, feasible=True, objective=100.0, gap=0.0,
                     status="optimal", cost=None, failures=None, solver=None,
-                    source="executed", created_at=None) -> ExecutionRecord:
+                    source="executed", created_at=None,
+                    cost_measured=None) -> ExecutionRecord:
+        """Build an executed record. The DEFAULT cost is fully metered
+        (all five dimensions measured — retries=0 is an observed zero);
+        tests that pass their own ``cost`` may optionally declare its
+        measured mask via ``cost_measured`` (None keeps legacy inference)."""
         rec = ExecutionRecord(
             execution_id=execution_id or ExecutionRecord.new_id(),
             task_id=task_id,
@@ -49,11 +60,15 @@ class HarnessTestCase(unittest.TestCase):
             quality={"feasible": feasible, "objective": objective,
                      "gap": gap, "status": status},
             cost=cost or CostVector(llm_tokens=100, tool_calls=2,
-                                    solver_runtime_s=1.0, retries=0, latency_s=1.5),
+                                    solver_runtime_s=1.0, retries=0,
+                                    latency_s=1.5,
+                                    measured=set(MEASURED_ALL)),
             failures=failures or [],
             solver=solver or {"name": "highs", "family": "milp", "code_hash": "abc123"},
             source=source,
         )
+        if cost_measured is not None:
+            rec.cost.measured = set(cost_measured)
         if created_at is not None:
             rec.created_at = created_at
         return rec

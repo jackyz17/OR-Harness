@@ -15,9 +15,13 @@ from or_harness.strategy.strategic_bank import StrategicBank
 #: artifacts).
 ExecutionEvidenceBank = ExperienceBank
 #: "Strategic Knowledge Bank" — paper terminology for the derived layer
-#: (what to do next time: expected quality/cost/failure risk;
-#: induction-time validated, revisable beliefs — admission does not depend
-#: on the survival of the original evidence rows).
+#: (what to do next time: expected quality/cost/failure risk; revisable
+#: beliefs whose validity does not depend on the survival of the original
+#: evidence rows). TARGET semantics (next Induction migration round):
+#: admission validation completes in offline induction BEFORE entries enter
+#: the bank; online execution only records new evidence. CURRENT status:
+#: entries are born candidate and promoted/demoted online by forward
+#: quality checks; cost feedback never alters entry state.
 StrategicKnowledgeBank = StrategicBank
 
 __all__ = [

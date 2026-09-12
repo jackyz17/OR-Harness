@@ -110,15 +110,31 @@ class TestExecution(ExecutorCase):
         self.assertEqual(record.solver["name"], "mock")
         self.assertEqual(len(record.solver["code_hash"]), 16)
 
-    def test_execute_counts_retries_on_failure(self):
+    def test_first_failure_is_not_a_retry(self):
+        """A first failed attempt is retries=0 (an observed zero): the
+        executor never infers a retry from failure status. The retry
+        relationship is the harness's declaration (override retries=...)."""
         path = self.write("solve.py", "raise RuntimeError('boom')\n")
         record = self.executor.execute(
             path, self.work, solver="mock", task_id="t1",
             strategy_id="S02", profile=self.make_profile())
         self.assertFalse(record.quality["feasible"])
-        self.assertEqual(record.cost.retries, 1.0)
+        self.assertEqual(record.cost.retries, 0.0)
+        self.assertIn("retries", record.cost.measured_dims())
         self.assertEqual(len(record.failures), 1)
         self.assertIn("RuntimeError", record.failures[0].error)
+        # No result.json: wall-clock proxy is used, and it is explicit.
+        self.assertEqual(record.solver_runtime_provenance, "wall_proxy")
+        self.assertEqual(record.measurement_scope, "attempt")
+        self.assertIn("solver_runtime_s", record.cost.measured_dims())
+
+    def test_reported_runtime_marked_as_reported(self):
+        path = self.write("solve.py", GOOD_SCRIPT)  # reports runtime_seconds
+        record = self.executor.execute(
+            path, self.work, solver="mock", task_id="t1",
+            strategy_id="S02", profile=self.make_profile())
+        self.assertEqual(record.solver_runtime_provenance, "reported")
+        self.assertEqual(record.cost.solver_runtime_s, 0.01)
 
     def test_verify_catches_illegal_status(self):
         path = self.write("solve.py", """

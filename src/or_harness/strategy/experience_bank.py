@@ -3,15 +3,27 @@
 Records what actually happened — never what will happen. Facts are permanently
 neutral: the disposal ladder (suspect/dormant/retired/cold archive) applies
 only to the derived Strategic Knowledge Bank. The Evidence Bank is the single
-source of truth; Strategic Knowledge is induced and validated against it at
-INDUCTION time — once admitted, an entry does not require the survival of any
-particular evidence row (``induce --rebuild`` re-induces from whatever
+source of truth. NOTE (target semantics, next Induction migration round):
+"Strategic Knowledge is induced AND validated against it at induction time"
+is the migration TARGET — today entries are born candidate and promoted
+online by forward quality checks; admission never depends on the survival of
+any particular evidence row (``induce --rebuild`` re-induces from whatever
 evidence is currently retained).
 
 Mutability contract (fact-preserving, append-first):
   - ``append``: the only way a new fact enters. Duplicate ids are rejected.
   - ``update_cost``: the sole backfill channel (e.g. llm_tokens becomes known
     later). Only cost dimensions may change; nothing else is ever rewritten.
+    Backfill is EXPLICITLY REPLACEMENT by default (idempotent: re-applying
+    the same measurement never double-counts); ``increment`` mode exists for
+    harness-owned counters delivered in parts within the attempt's declared
+    scope. Backfilled dimensions become measured. Any persisted cost
+    feedback is re-computed against the amended value so the stored summary
+    can never disagree with the fact (no stale actual=110 vs 1000).
+  - ``set_cost_feedback``: the only channel that writes the record's cost
+    feedback annotation (a computed summary over the frozen prediction
+    snapshot and the actual cost). Narrow by design — it cannot rewrite any
+    other execution feature.
   - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
     execution and the harness's explicit recording decision.
   - ``replace_all``: reserved for future evidence compaction — currently
@@ -25,7 +37,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Optional
 
-from or_harness.core.schema import ExecutionRecord
+from or_harness.core.schema import COST_DIMENSIONS, ExecutionRecord, compute_cost_feedback
 from or_harness.core.storage import Store, StorageError
 
 
@@ -69,14 +81,28 @@ class ExperienceBank:
                 raise
         return payload.execution_id
 
-    def update_cost(self, execution_id: str, **dimensions: float) -> ExecutionRecord:
+    def update_cost(self, execution_id: str, *,
+                    mode: str = "replace", **dimensions: float) -> ExecutionRecord:
         """Backfill cost dimensions (harness-owned llm_tokens via --override).
 
         Appends nothing: this amends the fact's measured fields in place, which
         is the documented supplement channel. Only cost dimensions may change.
-        """
-        from or_harness.core.schema import COST_DIMENSIONS
 
+        ``mode`` makes the accounting explicit so nothing is double-counted:
+        - ``replace`` (default): the value IS the measurement. Re-applying
+          the same override is idempotent — the same tokens can never be
+          added twice.
+        - ``increment``: the value is an additional measured amount within
+          the record's declared scope.
+
+        Backfilled dimensions are marked measured. If a cost feedback summary
+        was persisted, it is re-computed against the amended value (or
+        removed when no longer computable), so the stored summary never
+        disagrees with the stored fact.
+        """
+        if mode not in ("replace", "increment"):
+            raise StorageError(f"unknown backfill mode {mode!r} "
+                               "(expected 'replace' or 'increment')")
         unknown = set(dimensions) - set(COST_DIMENSIONS)
         if unknown:
             raise StorageError(f"unknown cost dimensions: {sorted(unknown)}")
@@ -84,7 +110,43 @@ class ExperienceBank:
         if rec is None:
             raise StorageError(f"unknown execution_id {execution_id!r}")
         for d, v in dimensions.items():
-            setattr(rec.cost, d, float(v))
+            if mode == "increment":
+                setattr(rec.cost, d, float(getattr(rec.cost, d)) + float(v))
+            else:
+                setattr(rec.cost, d, float(v))
+        rec.cost.mark_measured(*dimensions)
+        # Keep any persisted feedback consistent with the amended fact.
+        if rec.execution_features.get("cost_feedback") is not None:
+            feedback = compute_cost_feedback(rec.prediction_snapshot,
+                                             rec.strategy_id,
+                                             rec.measurement_scope,
+                                             rec.cost)
+            if feedback is None:
+                rec.execution_features.pop("cost_feedback", None)
+            else:
+                rec.execution_features["cost_feedback"] = feedback
+        with self.store.transaction() as conn:
+            conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
+                         (self.store.dumps(rec.to_dict()), execution_id))
+        return rec
+
+    def set_cost_feedback(self, execution_id: str,
+                          feedback: Optional[Dict[str, Any]]) -> ExecutionRecord:
+        """Write (or remove) the record's cost feedback annotation.
+
+        A narrow, single-purpose channel: it only ever touches the
+        ``cost_feedback`` key inside ``execution_features`` (a computed
+        summary over the frozen prediction snapshot and the actual cost).
+        It cannot rewrite any other execution feature, historical fact, or
+        derived-layer state.
+        """
+        rec = self.get(execution_id)
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        if feedback is None:
+            rec.execution_features.pop("cost_feedback", None)
+        else:
+            rec.execution_features["cost_feedback"] = dict(feedback)
         with self.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
                          (self.store.dumps(rec.to_dict()), execution_id))

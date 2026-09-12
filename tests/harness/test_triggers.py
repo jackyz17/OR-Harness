@@ -24,13 +24,15 @@ class TriggerCase(HarnessTestCase):
     def criteria(self, record):
         return {h.criterion for h in self.check(record)}
 
-    def seed(self, strategy_id, n, gap, task_prefix="s", cost=None):
+    def seed(self, strategy_id, n, gap, task_prefix="s", cost=None,
+             cost_measured=None):
         last = None
         for i in range(n):
             last = self.make_record(
                 execution_id=f"{task_prefix}_{strategy_id}_{i}",
                 task_id=f"{task_prefix}{i}", strategy_id=strategy_id, gap=gap,
-                cost=cost or CostVector(llm_tokens=100, solver_runtime_s=1.0))
+                cost=cost or CostVector(llm_tokens=100, solver_runtime_s=1.0),
+                cost_measured=cost_measured)
             self.bank.append(last)
         return last
 
@@ -160,11 +162,23 @@ class TestC5CrossFamily(TriggerCase):
 
 class TestC6StableSuccess(TriggerCase):
     def test_stable_success_fires(self):
-        new = self.seed("S01", 4, 0.05, task_prefix="st")
+        # Retries must be MEASURED zero on every record — unknown retries
+        # never count as proof of stability.
+        from or_harness.core.schema import COST_DIMENSIONS
+        new = self.seed("S01", 4, 0.05, task_prefix="st",
+                        cost_measured=tuple(COST_DIMENSIONS))
         self.assertIn("C6", self.criteria(new))
 
     def test_three_samples_silent(self):
-        new = self.seed("S01", 3, 0.05, task_prefix="st")
+        from or_harness.core.schema import COST_DIMENSIONS
+        new = self.seed("S01", 3, 0.05, task_prefix="st",
+                        cost_measured=tuple(COST_DIMENSIONS))
+        self.assertNotIn("C6", self.criteria(new))
+
+    def test_unmeasured_retries_never_claim_stability(self):
+        """retries=0 but never measured: C6 must stay silent — unknown is
+        not evidence of stability."""
+        new = self.seed("S01", 4, 0.05, task_prefix="st")
         self.assertNotIn("C6", self.criteria(new))
 
     def test_retries_break_stability(self):

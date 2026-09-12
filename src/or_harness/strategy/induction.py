@@ -78,6 +78,13 @@ class InductionEngine:
         lo, hi = self._honest_interval(cell)
         cost_hat = cell.mean_cost
         fail_prob = cell.fail_rate
+        # Cost intervals only for dimensions that were ever measured — an
+        # unmeasured dimension carries no interval (unknown), never a
+        # fabricated band around a placeholder zero. The interval key set
+        # doubles as the entry's measured-dimension mask.
+        measured_cost_interval = {d: band for d, band in
+                                  self._cost_interval().items()
+                                  if cell.n_measured.get(d, 0) > 0}
 
         conditions: List[ApplicabilityCondition] = []
         rejected_conditions: List[Dict[str, Any]] = []
@@ -92,7 +99,9 @@ class InductionEngine:
         if existing is not None:
             changed = (abs(existing.expected_quality_hat - quality_hat) > 0.02
                        or existing.support_n != cell.n
-                       or abs(existing.failure_prob - fail_prob) > 0.02)
+                       or abs(existing.failure_prob - fail_prob) > 0.02
+                       or self._cost_estimates_changed(existing, cost_hat,
+                                                       measured_cost_interval))
             if not changed and not conditions:
                 return {"created": None,
                         "skipped": f"entry {existing.entry_id} already encodes this "
@@ -104,7 +113,8 @@ class InductionEngine:
             existing.expected_quality_hat = quality_hat
             existing.quality_interval = (lo, hi)
             existing.expected_cost_hat = cost_hat
-            existing.cost_interval = self._cost_interval()
+            existing.cost_interval = measured_cost_interval
+            existing.cost_support_n = dict(cell.n_measured)
             existing.failure_prob = fail_prob
             existing.support_n = cell.n
             existing.provenance = cell.execution_ids[:50]
@@ -126,7 +136,8 @@ class InductionEngine:
             expected_quality_hat=quality_hat,
             quality_interval=(lo, hi),
             expected_cost_hat=cost_hat,
-            cost_interval=self._cost_interval(),
+            cost_interval=measured_cost_interval,
+            cost_support_n=dict(cell.n_measured),
             failure_prob=fail_prob,
             applicability=conditions,
             fallback_strategy_id=None,
@@ -227,6 +238,23 @@ class InductionEngine:
             if result.get("created"):
                 created.append(result["created"])
         return {"rebuilt": len(created), "entry_ids": created}
+
+    def _cost_estimates_changed(self, existing: StrategicEntry,
+                                new_hat: CostVector,
+                                new_interval: Dict[str, Tuple[float, float]]
+                                ) -> bool:
+        """True when the entry's cost estimate needs refreshing: the measured
+        dimension set changed, or any measured dimension's point estimate
+        moved materially (relative to its previous magnitude). This is the
+        induction update-connection only — no induction refactoring."""
+        if set(existing.cost_interval.keys()) != set(new_interval.keys()):
+            return True
+        for dim in new_interval:
+            old = getattr(existing.expected_cost_hat, dim)
+            new = getattr(new_hat, dim)
+            if abs(old - new) > 0.02 * max(abs(old), 1.0):
+                return True
+        return False
 
     # -- internals -----------------------------------------------------------------
 

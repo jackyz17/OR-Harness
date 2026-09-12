@@ -64,6 +64,15 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertTrue(recs)
         self.assertEqual(recs[0]["evidence"], "no_memory")
 
+        # 2b. predict (cold start -> unknown, never a default zero)
+        proc = run_orx(self.home, "predict", "--task", str(self.task_path),
+                       "--strategy", "S01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout)
+        prediction = out["result"]["prediction"]
+        self.assertEqual(prediction["source"], "unknown")
+        self.assertIsNone(prediction["expected_cost"])
+
         # 3. execute
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),

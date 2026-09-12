@@ -170,6 +170,34 @@ def cmd_recall(args) -> int:
         h.close()
 
 
+def cmd_predict(args) -> int:
+    """Pre-execution cost expectation snapshot for one (task, strategy)."""
+    h = _harness(args)
+    try:
+        task = _load_json_arg(args.task)
+        code = Path(args.code).read_text(encoding="utf-8") if args.code else None
+        snapshot = h.predict_cost(task, args.strategy, code=code)
+        result = {"prediction": snapshot.to_dict()}
+        if snapshot.expected_cost is None:
+            summary = (f"No usable cost evidence for {args.strategy} "
+                       f"(source=unknown). {snapshot.note or 'Expected cost is '
+                       'UNKNOWN — not zero.'} Pass this snapshot back at "
+                       "record time so feedback never fabricates an error "
+                       "against a placeholder zero.")
+        else:
+            cost = {k: round(v, 4) for k, v
+                    in snapshot.expected_cost.to_dict().items()}
+            summary = (f"Expected cost for {args.strategy} (scope="
+                       f"{snapshot.measurement_scope}, source={snapshot.source}, "
+                       f"n={snapshot.support_n}, per-dim "
+                       f"{snapshot.support_per_dim or 'n/a'}): {cost}. "
+                       "Pass this snapshot back at record time so feedback "
+                       "compares against the prediction actually used.")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
 def cmd_execute(args) -> int:
     h = _harness(args)
     try:
@@ -219,8 +247,21 @@ def cmd_record(args) -> int:
         if args.override:
             override = {k: float(v) for k, v in
                         (pair.split("=") for pair in args.override.split(","))}
+        prediction = None
+        if args.prediction:
+            from or_harness.core.schema import PredictionSnapshot
+            raw = _load_json_arg(args.prediction)
+            # Accept either the bare snapshot JSON or the full `orx predict`
+            # output envelope ({"result": {"prediction": {...}}, ...}).
+            if isinstance(raw.get("prediction"), dict):
+                raw = raw["prediction"]
+            elif isinstance(raw.get("result", {}).get("prediction"), dict):
+                raw = raw["result"]["prediction"]
+            prediction = PredictionSnapshot.from_dict(raw)
         result = h.record(record, override=override,
-                          retain_reason=args.retain_reason)
+                          override_mode=args.override_mode,
+                          retain_reason=args.retain_reason,
+                          prediction=prediction)
         hints = result["induction_hints"]
         checks = result["prediction_checks"]
         summary = [f"Recorded {result['execution_id']}."]
@@ -393,6 +434,15 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["none", "cases", "strategic", "cost-aware"])
     p.set_defaults(func=cmd_recall)
 
+    p = sub.add_parser("predict",
+                       help="pre-execution cost expectation snapshot for one "
+                            "(task, strategy); pass it back to `orx record` "
+                            "via --prediction")
+    p.add_argument("--task", required=True)
+    p.add_argument("--strategy", required=True)
+    p.add_argument("--code", default=None)
+    p.set_defaults(func=cmd_predict)
+
     p = sub.add_parser("execute", help="sandbox-execute a solve script")
     p.add_argument("--task", required=True)
     p.add_argument("--strategy", required=True)
@@ -412,7 +462,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--discard-staged", default=None, metavar="EXECUTION_ID",
                    help="explicitly discard a staged execution")
     p.add_argument("--override", default=None,
-                   help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9'")
+                   help="cost backfill, e.g. 'llm_tokens=1840,tool_calls=9' "
+                        "(or 'retries=1' to declare this attempt is itself "
+                        "a retry)")
+    p.add_argument("--override-mode", default="replace",
+                   choices=["replace", "increment"],
+                   help="backfill accounting: 'replace' (default, idempotent — "
+                        "the value IS the measurement, re-applying never "
+                        "double-counts) or 'increment' (an additional measured "
+                        "amount within the record's scope)")
+    p.add_argument("--prediction", default=None,
+                   help="pre-execution cost prediction snapshot (the JSON "
+                        "printed by `orx predict`) actually used for this "
+                        "attempt; feedback compares against it, never a "
+                        "post-hoc estimate")
     p.add_argument("--retain-reason", default=None,
                    help="explicitly mark this episode as representative "
                         "evidence (reserved for future compaction policies), "

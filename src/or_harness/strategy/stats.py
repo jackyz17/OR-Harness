@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from statistics import mean, pstdev
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector, ExecutionRecord, group_key
 from or_harness.strategy.experience_bank import ExperienceBank
@@ -46,6 +46,14 @@ class GroupStats:
     std_quality: float = 0.0
     quality_values: List[float] = field(default_factory=list)
     mean_cost: CostVector = field(default_factory=CostVector)
+    #: Per-dimension count of records where the dimension was actually
+    #: measured. A dimension with n_measured == 0 is UNKNOWN for this cell
+    #: (mean_cost reports a placeholder 0, never evidence of cheap).
+    n_measured: Dict[str, int] = field(default_factory=dict)
+    #: Per-scale-feature [min, max] over the supporting records, for
+    #: pre-execution scale comparability checks (no thresholds — callers
+    #: decide whether a target profile lies outside the sample coverage).
+    scale_ranges: Dict[str, Tuple[float, float]] = field(default_factory=dict)
     fallback_triggered: int = 0
     execution_ids: List[str] = field(default_factory=list)
 
@@ -56,6 +64,13 @@ class GroupStats:
     @property
     def mean_retries(self) -> float:
         return self.total_retries / self.n if self.n else 0.0
+
+    def measured_cost(self, dim: str) -> Optional[float]:
+        """Mean of ``dim`` over records that measured it, or None when no
+        record measured it (unknown — never a default zero)."""
+        if self.n_measured.get(dim, 0) == 0:
+            return None
+        return getattr(self.mean_cost, dim)
 
     def quality_trend(self) -> float:
         """Simple slope proxy: mean(second half) - mean(first half)."""
@@ -75,6 +90,9 @@ class GroupStats:
             "mean_quality": round(self.mean_quality, 4),
             "std_quality": round(self.std_quality, 4),
             "mean_cost": {d: round(v, 4) for d, v in self.mean_cost.to_dict().items()},
+            "n_measured": dict(self.n_measured),
+            "scale_ranges": {d: [round(lo, 4), round(hi, 4)]
+                             for d, (lo, hi) in self.scale_ranges.items()},
             "mean_retries": round(self.mean_retries, 4),
             "fallback_triggered": self.fallback_triggered,
             "execution_ids": list(self.execution_ids),
@@ -177,8 +195,17 @@ class ConditionalStats:
         stats = GroupStats(group_key=group, strategy_id=strategy_id)
         if not records:
             return stats
-        costs: Dict[str, float] = {d: 0.0 for d in COST_DIMENSIONS}
+        # Per-dimension sums over MEASURED values only, and only over
+        # attempt-scope records: an unmeasured dimension never contributes
+        # its placeholder zero, and a task-scope record never contaminates
+        # attempt-scope statistics.
+        sums: Dict[str, float] = {d: 0.0 for d in COST_DIMENSIONS}
+        counts: Dict[str, int] = {d: 0 for d in COST_DIMENSIONS}
+        scale_mins: Dict[str, float] = {}
+        scale_maxs: Dict[str, float] = {}
         for rec in records:
+            if rec.measurement_scope != "attempt":
+                continue
             stats.n += 1
             q = quality_score(rec)
             stats.quality_values.append(q)
@@ -188,11 +215,27 @@ class ConditionalStats:
                 stats.n_failures += 1
                 if any(f.recovery_action for f in rec.failures):
                     stats.fallback_triggered += 1
-            stats.total_retries += rec.cost.retries
             stats.execution_ids.append(rec.execution_id)
+            measured = rec.cost.measured_dims()
+            if "retries" in measured:
+                stats.total_retries += rec.cost.retries
             for d in COST_DIMENSIONS:
-                costs[d] += getattr(rec.cost, d)
+                if d in measured:
+                    sums[d] += getattr(rec.cost, d)
+                    counts[d] += 1
+            for feat, value in rec.profile_snapshot.scale_features.items():
+                scale_mins[feat] = min(scale_mins.get(feat, float("inf")), value)
+                scale_maxs[feat] = max(scale_maxs.get(feat, float("-inf")), value)
+        if stats.n == 0:
+            return stats
         stats.mean_quality = mean(stats.quality_values)
         stats.std_quality = pstdev(stats.quality_values) if stats.n > 1 else 0.0
-        stats.mean_cost = CostVector(**{d: costs[d] / stats.n for d in COST_DIMENSIONS})
+        stats.n_measured = counts
+        stats.scale_ranges = {feat: (scale_mins[feat], scale_maxs[feat])
+                              for feat in scale_mins}
+        measured_dims = {d for d in COST_DIMENSIONS if counts[d] > 0}
+        stats.mean_cost = CostVector(
+            **{d: (sums[d] / counts[d] if counts[d] else 0.0)
+               for d in COST_DIMENSIONS},
+            measured=measured_dims)
         return stats

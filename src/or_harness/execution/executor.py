@@ -7,6 +7,21 @@ verification (status legality, finite objective, gap recording) and produces
 the execution half of the CostVector (solver_runtime_s, retries, latency_s,
 tool_calls). ``llm_tokens`` is owned by the harness and backfilled via
 ``orx record --override``.
+
+Cost semantics:
+- One execution = one ATTEMPT (``measurement_scope="attempt"``).
+- ``retries`` counts only *extra* attempts beyond the first. A first failed
+  attempt is retries=0 (measured zero). When this attempt itself is a retry
+  inside an inner loop, the harness declares the fact via
+  ``orx record --override retries=...`` (replace semantics, absolute value).
+- ``solver_runtime_s`` prefers the script-reported ``runtime_seconds``
+  (``solver_runtime_provenance="reported"``); when the script does not
+  report it (or on error/timeout), wall-clock time is recorded as an
+  explicit proxy (``"wall_proxy"``) — never silently zero, never pretending
+  to be a precise solver runtime.
+- Measured-dimension mask on the record: tool_calls, solver_runtime_s,
+  retries and latency_s are measured by the executor; llm_tokens stays
+  UNKNOWN until the harness backfills it.
 """
 
 from __future__ import annotations
@@ -60,6 +75,9 @@ class ExecutionOutcome:
     objective_bound: Optional[float] = None
     mip_gap: Optional[float] = None
     runtime_seconds: float = 0.0
+    #: Provenance of runtime_seconds: "reported" (result.json) or
+    #: "wall_proxy" (wall-clock of the whole script, explicit proxy).
+    runtime_provenance: Optional[str] = None
     wall_seconds: float = 0.0
     message: str = ""
     normalized_error: str = ""
@@ -134,6 +152,16 @@ class SafePythonExecutor:
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
                 normalized_error="invalid result.json: " + type(exc).__name__,
                 message="result.json is invalid")
+        # Solver runtime: prefer the script-reported value; otherwise fall
+        # back to wall-clock as an EXPLICIT proxy (never silently zero,
+        # never masquerading as a precise solver runtime).
+        reported = payload.get("runtime_seconds")
+        if reported is not None:
+            runtime_seconds = float(reported)
+            runtime_provenance = "reported"
+        else:
+            runtime_seconds = wall
+            runtime_provenance = "wall_proxy"
         return ExecutionOutcome(
             status=str(payload.get("status", "unknown")).lower(),
             solver=str(payload.get("solver", solver)),
@@ -142,7 +170,8 @@ class SafePythonExecutor:
             objective_value=payload.get("objective_value"),
             objective_bound=payload.get("objective_bound"),
             mip_gap=payload.get("mip_gap"),
-            runtime_seconds=float(payload.get("runtime_seconds") or wall),
+            runtime_seconds=runtime_seconds,
+            runtime_provenance=runtime_provenance,
             wall_seconds=wall,
             message=str(payload.get("message", "")),
             diagnostics=dict(payload.get("diagnostics") or {}),
@@ -190,18 +219,34 @@ class SafePythonExecutor:
 
         The record is returned, not persisted — recording is the harness's
         explicit decision (``orx record``), keeping execute/record separable.
+
+        Cost semantics: this record covers ONE attempt. A first failure is
+        retries=0 (a measured zero) — the executor never infers retries from
+        failure status; only the harness may declare a retry relationship via
+        ``record --override retries=...``. Solver runtime provenance is
+        explicit (``reported`` vs ``wall_proxy``).
         """
         started = time.time()
         outcome = self.run(code_path, workspace, solver)
         check = self.verify(outcome)
-        retries = 1.0 if outcome.status in ("error", "timeout") else 0.0
         latency = time.time() - started
+        # One sandboxed invocation = one attempt, zero retries. The executor
+        # cannot know whether THIS attempt is itself a retry of an earlier
+        # one — that relationship is the harness's declaration.
+        retries = 0.0
+        if outcome.status in ("error", "timeout"):
+            runtime = outcome.wall_seconds
+            runtime_provenance = "wall_proxy"
+        else:
+            runtime = outcome.runtime_seconds
+            runtime_provenance = outcome.runtime_provenance or "wall_proxy"
         cost = CostVector(
             llm_tokens=0.0,  # harness backfills via record --override
             tool_calls=1.0,
-            solver_runtime_s=outcome.runtime_seconds,
+            solver_runtime_s=runtime,
             retries=retries,
             latency_s=latency,
+            measured={"tool_calls", "solver_runtime_s", "retries", "latency_s"},
         )
         failures: List[FailureRecord] = []
         if outcome.status in ("error", "timeout"):
@@ -228,7 +273,9 @@ class SafePythonExecutor:
             cost=cost, failures=failures,
             solver={"name": outcome.solver, "code_hash": digest},
             execution_features=execution_features,
-            verification_level=verification_level)
+            verification_level=verification_level,
+            measurement_scope="attempt",
+            solver_runtime_provenance=runtime_provenance)
 
     # -- static sandbox policy -------------------------------------------------------
 

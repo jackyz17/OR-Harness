@@ -44,10 +44,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # ---------------------------------------------------------------------------
 # Cost vector
@@ -75,11 +76,20 @@ DEFAULT_COST_WEIGHTS: Dict[str, float] = {
 class CostVector:
     """Five-dimensional execution cost.
 
-    Stored raw, never folded into a scalar at rest. ``retries`` is a cost:
-    "model wrong -> repair -> rerun" must be more expensive than getting it
-    right the first time, even when solver runtime is similar.
+    Stored raw, never folded into a scalar at rest. ``retries`` counts only
+    *extra* attempts beyond the first (a first failure is not a retry).
     ``llm_tokens`` is unknown at execution time (the harness owns the LLM)
     and is backfilled later via ``orx record --override llm_tokens=...``.
+
+    Unknown vs measured-zero is carried by ``measured`` (the set of
+    dimensions actually measured). A placeholder zero for an unmeasured
+    dimension is NEVER evidence of cheapness: consumers must consult
+    :meth:`measured_dims` and exclude unmeasured dimensions from means,
+    errors, and comparisons. ``measured=None`` marks legacy data (payloads
+    written before this field existed); the value-level inference in
+    :meth:`measured_dims` keeps non-zero legacy values usable (including
+    already-backfilled non-zero ``llm_tokens``) while unconfirmable legacy
+    zeros stay unknown.
     """
 
     llm_tokens: float = 0.0
@@ -87,6 +97,27 @@ class CostVector:
     solver_runtime_s: float = 0.0
     retries: float = 0.0
     latency_s: float = 0.0
+    #: Measured-dimension mask. ``None`` = legacy/unmarked data.
+    measured: Optional[Set[str]] = None
+
+    def measured_dims(self) -> Set[str]:
+        """Dimensions confirmed measured.
+
+        Legacy inference (``measured is None``): any non-zero value can only
+        come from a measurement — including non-zero ``llm_tokens`` that
+        older harnesses already backfilled — while zero values cannot be
+        confirmed and stay unknown. This is value-level, not dimension-level:
+        legacy non-zero tokens are NOT excluded.
+        """
+        if self.measured is not None:
+            return {d for d in self.measured if d in COST_DIMENSIONS}
+        return {d for d in COST_DIMENSIONS if getattr(self, d) != 0.0}
+
+    def mark_measured(self, *dims: str) -> None:
+        """Explicitly mark dimensions measured (e.g. after backfill)."""
+        m = self.measured_dims()
+        m.update(dims)
+        self.measured = m
 
     def to_dict(self) -> Dict[str, float]:
         return {d: float(getattr(self, d)) for d in COST_DIMENSIONS}
@@ -95,7 +126,11 @@ class CostVector:
     def from_dict(cls, data: Dict[str, Any]) -> "CostVector":
         if not isinstance(data, dict):
             raise ValueError("CostVector must be a JSON object")
-        return cls(**{d: float(data.get(d, 0.0)) for d in COST_DIMENSIONS})
+        vector = cls(**{d: float(data.get(d, 0.0)) for d in COST_DIMENSIONS})
+        raw_measured = data.get("measured")
+        if isinstance(raw_measured, (list, tuple, set)):
+            vector.measured = {str(d) for d in raw_measured if d in COST_DIMENSIONS}
+        return vector
 
     def scalarize(self, weights: Optional[Dict[str, float]] = None,
                   norms: Optional[Dict[str, float]] = None) -> float:
@@ -104,6 +139,10 @@ class CostVector:
         Normalization divisors default to 1.0 (raw units). Callers that want
         scale-free comparison should pass per-dimension norms (e.g. running
         maxima). Weights are configurable, never hard-coded at call sites.
+        Unmeasured dimensions carry placeholder zeros here — callers doing
+        selection-time comparison must pass weights restricted to the
+        comparable (commonly measured) dimensions, so missing data never
+        scores as cheap.
         """
         w = dict(DEFAULT_COST_WEIGHTS if weights is None else weights)
         n = norms or {}
@@ -114,7 +153,151 @@ class CostVector:
         return total
 
     def plus(self, other: "CostVector") -> "CostVector":
-        return CostVector(**{d: getattr(self, d) + getattr(other, d) for d in COST_DIMENSIONS})
+        merged = None
+        if self.measured is not None and other.measured is not None:
+            merged = set(self.measured) | set(other.measured)
+        return CostVector(
+            **{d: getattr(self, d) + getattr(other, d) for d in COST_DIMENSIONS},
+            measured=merged)
+
+
+# ---------------------------------------------------------------------------
+# Prediction snapshot (pre-execution expectation, for feedback alignment)
+# ---------------------------------------------------------------------------
+
+#: Provenance labels for a prediction snapshot. ``entry`` = a matching
+#: StrategicEntry's expectation; ``stats`` = conditional statistics over the
+#: Execution Evidence Bank (a recount, weaker evidence); ``unknown`` = no
+#: usable evidence (no data, or data out of scope/scale).
+SNAPSHOT_SOURCES = ("entry", "stats", "unknown")
+
+
+@dataclass
+class PredictionSnapshot:
+    """The prediction ACTUALLY used before execution, frozen at that time.
+
+    Cost-side feedback alignment: an execution is compared against the
+    expectation that informed its choice — never against whatever estimate
+    happens to be current after the fact. Fields:
+
+    - ``strategy_id``: the strategy this snapshot predicted for.
+    - ``expected_cost``: expected CostVector (with per-dimension measured
+      mask), or ``None`` when there is no usable evidence — unknown is never
+      represented as a placeholder zero.
+    - ``source``: ``entry`` / ``stats`` / ``unknown``.
+    - ``measurement_scope``: what the expectation covers (``attempt``).
+      Predictions must reuse the same scope as the historical records they
+      were estimated from and as the execution they will be checked against.
+    - ``support_n``: total supporting executions; ``support_per_dim``: the
+      per-dimension effective sample counts — total support never masquerades
+      as per-dimension support.
+    - ``evidence_refs``: lightweight provenance (entry id / execution ids),
+      no strict reference-integrity dependency.
+    - ``note``: lightweight explanation (e.g. scale mismatch, insufficient
+      evidence). Post-modeling information never enters this snapshot.
+    """
+
+    strategy_id: str
+    expected_cost: Optional[CostVector] = None
+    source: str = "unknown"
+    measurement_scope: str = "attempt"
+    support_n: int = 0
+    support_per_dim: Dict[str, int] = field(default_factory=dict)
+    evidence_refs: List[str] = field(default_factory=list)
+    note: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "strategy_id": self.strategy_id,
+            "expected_cost": (self.expected_cost.to_dict()
+                              if self.expected_cost is not None else None),
+            "cost_measured": (sorted(self.expected_cost.measured)
+                              if self.expected_cost is not None
+                              and self.expected_cost.measured is not None
+                              else None),
+            "source": self.source,
+            "measurement_scope": self.measurement_scope,
+            "support_n": int(self.support_n),
+            "support_per_dim": {d: int(n) for d, n in
+                                self.support_per_dim.items()},
+            "evidence_refs": list(self.evidence_refs),
+            "note": self.note,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PredictionSnapshot":
+        if not isinstance(data, dict) or not data.get("strategy_id"):
+            raise ValueError("PredictionSnapshot.strategy_id is required")
+        source = str(data.get("source", "unknown"))
+        if source not in SNAPSHOT_SOURCES:
+            raise ValueError(f"PredictionSnapshot.source must be one of {SNAPSHOT_SOURCES}")
+        raw_cost = data.get("expected_cost")
+        expected_cost = (CostVector.from_dict(raw_cost)
+                         if isinstance(raw_cost, dict) else None)
+        raw_measured = data.get("cost_measured")
+        if expected_cost is not None and isinstance(raw_measured, list):
+            expected_cost.measured = {str(d) for d in raw_measured
+                                      if d in COST_DIMENSIONS}
+        return cls(
+            strategy_id=str(data["strategy_id"]),
+            expected_cost=expected_cost,
+            source=source,
+            measurement_scope=str(data.get("measurement_scope", "attempt")),
+            support_n=int(data.get("support_n", 0)),
+            support_per_dim={str(d): int(n) for d, n in
+                             (data.get("support_per_dim") or {}).items()},
+            evidence_refs=[str(r) for r in (data.get("evidence_refs") or [])],
+            note=str(data.get("note", "")),
+        )
+
+
+def compute_cost_feedback(snapshot: Optional["PredictionSnapshot"],
+                          actual_strategy_id: str,
+                          actual_scope: str,
+                          actual_cost: "CostVector") -> Optional[Dict[str, Any]]:
+    """Compute cost feedback from the frozen snapshot and the actual cost.
+
+    Pure function (no storage access) shared by the record chain and by
+    backfill-time re-computation, so a later ``update_cost`` keeps any
+    persisted feedback consistent with the amended actual value.
+
+    Feedback is produced only when:
+    - a snapshot with a concrete expected cost exists;
+    - the snapshot's strategy equals the actual strategy (A never audits B);
+    - the snapshot's scope equals the record's scope (an attempt never
+      audits a task-scope prediction);
+    - a dimension is measured on BOTH sides (prediction side included — an
+      unmeasured predicted zero never fabricates an error against a measured
+      actual).
+    Otherwise returns None — no pseudo-errors.
+    """
+    if snapshot is None or snapshot.expected_cost is None:
+        return None
+    if snapshot.strategy_id != actual_strategy_id:
+        return None
+    if snapshot.measurement_scope != actual_scope:
+        return None
+    per_dim: Dict[str, Dict[str, float]] = {}
+    for dim in snapshot.expected_cost.measured_dims() & actual_cost.measured_dims():
+        predicted = getattr(snapshot.expected_cost, dim)
+        actual = getattr(actual_cost, dim)
+        if predicted <= 0 and actual <= 0:
+            continue  # both placeholders: nothing to learn
+        per_dim[dim] = {
+            "predicted": round(predicted, 6),
+            "actual": round(actual, 6),
+            "log_error": round(abs(math.log(max(actual, 1e-9)
+                                            / max(predicted, 1e-9))), 4),
+        }
+    if not per_dim:
+        return None
+    return {
+        "source": snapshot.source,
+        "measurement_scope": snapshot.measurement_scope,
+        "support_n": snapshot.support_n,
+        "support_per_dim": dict(snapshot.support_per_dim),
+        "per_dimension": per_dim,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +659,25 @@ class ExecutionRecord:
     #: ``orx record --retain-reason``). Reserved for future compaction
     #: policies; lossy GC compaction is currently deferred.
     retention_reason: Optional[str] = None
+    #: What ``cost`` covers: "attempt" (this single execution attempt) or a
+    #: wider harness-declared scope (e.g. "task"). One record = one attempt
+    #: by default; conditional statistics, predictions, task summaries and
+    #: feedback all consume attempt-scope records only, so a task-scope
+    #: record can never be re-labelled as an attempt prediction. Legacy
+    #: payloads without the key load as "attempt" (pre-scope records were
+    #: all single attempts).
+    measurement_scope: str = "attempt"
+    #: Provenance of ``cost.solver_runtime_s``: "reported" (the solve
+    #: script's result.json runtime_seconds) or "wall_proxy" (wall-clock of
+    #: the whole script — an explicit proxy, never to be read as precise
+    #: solver runtime). None for legacy payloads.
+    solver_runtime_provenance: Optional[str] = None
+    #: The pre-execution prediction actually used for this attempt (strategy,
+    #: expected cost with per-dimension mask, source, scope), frozen at
+    #: record time. Feedback is computed against this snapshot — never
+    #: against a post-hoc re-read of current estimates. None when no
+    #: prediction was supplied.
+    prediction_snapshot: Optional[PredictionSnapshot] = None
 
     @staticmethod
     def new_id() -> str:
@@ -515,6 +717,13 @@ class ExecutionRecord:
             "cir_snapshot": (dict(self.cir_snapshot)
                              if self.cir_snapshot is not None else None),
             "retention_reason": self.retention_reason,
+            "cost_measured": (sorted(self.cost.measured)
+                              if self.cost.measured is not None else None),
+            "measurement_scope": self.measurement_scope,
+            "solver_runtime_provenance": self.solver_runtime_provenance,
+            "prediction_snapshot": (self.prediction_snapshot.to_dict()
+                                    if self.prediction_snapshot is not None
+                                    else None),
         }
 
     @classmethod
@@ -527,6 +736,13 @@ class ExecutionRecord:
         verification = data.get("verification_level", "basic")
         if verification not in VERIFICATION_LEVELS:
             raise ValueError(f"verification_level must be one of {VERIFICATION_LEVELS}")
+        cost = CostVector.from_dict(data.get("cost") or {})
+        raw_measured = data.get("cost_measured")
+        if isinstance(raw_measured, list):
+            cost.measured = {str(d) for d in raw_measured if d in COST_DIMENSIONS}
+        raw_snapshot = data.get("prediction_snapshot")
+        snapshot = (PredictionSnapshot.from_dict(raw_snapshot)
+                    if isinstance(raw_snapshot, dict) else None)
         return cls(
             execution_id=str(data["execution_id"]),
             task_id=str(data["task_id"]),
@@ -534,7 +750,7 @@ class ExecutionRecord:
             profile_snapshot=ProblemProfile.from_dict(data["profile_snapshot"]),
             trajectory=[TrajectoryStep.from_dict(t) for t in (data.get("trajectory") or [])],
             quality=dict(data.get("quality") or {}),
-            cost=CostVector.from_dict(data.get("cost") or {}),
+            cost=cost,
             failures=[FailureRecord.from_dict(f) for f in (data.get("failures") or [])],
             solver=dict(data.get("solver") or {}),
             execution_features=dict(data.get("execution_features") or {}),
@@ -544,6 +760,9 @@ class ExecutionRecord:
             cir_snapshot=(dict(data["cir_snapshot"])
                           if data.get("cir_snapshot") else None),
             retention_reason=data.get("retention_reason"),
+            measurement_scope=str(data.get("measurement_scope", "attempt")),
+            solver_runtime_provenance=data.get("solver_runtime_provenance"),
+            prediction_snapshot=snapshot,
         )
 
 
@@ -712,8 +931,15 @@ class StrategicEntry:
     #: Per-dimension multiplicative cost interval: actual cost is expected
     #: within [lo * hat, hi * hat] per dimension. v1 uses a fixed 2x band
     #: ([0.5, 2.0]); the interval is checked (not just the point estimate)
-    #: by the record chain's cost validation.
+    #: by the record chain's cost validation. Only dimensions that were
+    #: actually measured carry an interval — the key set doubles as the
+    #: entry's measured-dimension mask for ``expected_cost_hat``.
     cost_interval: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    #: Per-dimension effective sample size behind ``expected_cost_hat``
+    #: (records that actually measured the dimension). Total ``support_n``
+    #: never masquerades as per-dimension cost support. Empty dict for
+    #: pre-upgrade entries (per-dimension support unknown there).
+    cost_support_n: Dict[str, int] = field(default_factory=dict)
     #: Expected failure risk (alias: ``expected_failure_risk``).
     failure_prob: float = 0.5
     applicability: List[ApplicabilityCondition] = field(default_factory=list)
@@ -787,6 +1013,8 @@ class StrategicEntry:
             "prediction_track": self.prediction_track.to_dict(),
             "provenance": list(self.provenance),
             "support_n": self.support_n,
+            "cost_support_n": {d: int(n) for d, n in
+                                self.cost_support_n.items()},
             "strategy_type": self.strategy_type,
             "principle": self.principle,
             "actions": list(self.actions),
@@ -812,6 +1040,11 @@ class StrategicEntry:
         cost_interval = {d: (float(lo), float(hi))
                          for d, (lo, hi) in
                          (expected.get("cost_interval") or {}).items()}
+        cost_hat = CostVector.from_dict(expected.get("cost_hat") or {})
+        if cost_interval:
+            # The interval key set is the entry's measured-dimension mask
+            # for its cost estimate.
+            cost_hat.measured = set(cost_interval)
         return cls(
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),
@@ -819,7 +1052,7 @@ class StrategicEntry:
                      "predicates": dict(pattern.get("predicates") or {})},
             expected_quality_hat=float(expected.get("quality_hat", 0.5)),
             quality_interval=(float(interval[0]), float(interval[1])),
-            expected_cost_hat=CostVector.from_dict(expected.get("cost_hat") or {}),
+            expected_cost_hat=cost_hat,
             cost_interval=cost_interval,
             failure_prob=float(expected.get("failure_prob", 0.5)),
             applicability=[ApplicabilityCondition.from_dict(a)
@@ -830,6 +1063,8 @@ class StrategicEntry:
             prediction_track=PredictionTrack.from_dict(data.get("prediction_track")),
             provenance=[str(p) for p in (data.get("provenance") or [])],
             support_n=int(data.get("support_n", 0)),
+            cost_support_n={str(d): int(n) for d, n in
+                            (data.get("cost_support_n") or {}).items()},
             strategy_type=data.get("strategy_type"),
             principle=data.get("principle"),
             actions=[str(a) for a in (data.get("actions") or [])],

@@ -186,10 +186,15 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
             script = workdir / f"solve_{task.task_id}.py"
             script.write_text(_solve_script(law["quality"], law["cost_scale"]),
                               encoding="utf-8")
+            # Freeze the pre-execution cost prediction actually used, so
+            # record-time feedback compares against it (never a post-hoc
+            # estimate).
+            prediction = harness.predict_cost(task_json, strategy_id)
             record = harness.execute(task_json, strategy_id, str(script),
                                      str(workdir), solver="highs")
             llm_tokens = 1500.0 * law["cost_scale"]
-            outcome = harness.record(record, override={"llm_tokens": llm_tokens})
+            outcome = harness.record(record, override={"llm_tokens": llm_tokens},
+                                     prediction=prediction)
             record = harness.bank.get(record.execution_id)  # post-backfill fact
             scalar = record.cost.scalarize(
                 cost_weights or harness.selector.cost_weights)
