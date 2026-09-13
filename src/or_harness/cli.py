@@ -292,9 +292,17 @@ def cmd_induce(args) -> int:
     h = _harness(args)
     try:
         notes = list(args.note or []) or None
+        verify = None
+        if getattr(args, "verify", None):
+            try:
+                verify = json.loads(args.verify)
+            except json.JSONDecodeError as exc:
+                return _fail(f"--verify must be JSON: {exc}", 2)
+            if not isinstance(verify, dict):
+                return _fail("--verify must be a JSON object", 2)
         result = h.induce(strategy_id=args.strategy, all_=args.all,
                           rebuild=args.rebuild, dry_run=args.dry_run,
-                          force=args.force, notes=notes)
+                          force=args.force, notes=notes, verify=verify)
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
@@ -397,11 +405,15 @@ def cmd_doctor(args) -> int:
         result = h.doctor()
         avail = [s["name"] for s in result["solvers"] if s["available"]]
         missing = [s["name"] for s in result["solvers"] if not s["available"]]
+        stale = result.get("index_health", {}).get("stale_group_index", 0)
+        index_note = (f" {stale} row(s) carry a stale group_l1 index (read "
+                      "correctly; the index is derived from family)."
+                      if stale else "")
         return _emit(result,
                      f"Home: {result['home']}. Available solvers: "
                      f"{', '.join(avail) or 'none'}. Missing: "
                      f"{', '.join(missing) or 'none'}. Memory: "
-                     f"{result['memory']}.")
+                     f"{result['memory']}." + index_note)
     finally:
         h.close()
 
@@ -496,7 +508,9 @@ def build_parser() -> argparse.ArgumentParser:
         "induce", help="consolidate facts into strategic entries",
         epilog=("Creating an entry requires >=2 supporting executions from "
                 ">=2 distinct task_ids: repeating one task is repetition, not "
-                "reproduction. Refreshing an existing entry is never gated."))
+                "reproduction. Refreshing an existing entry is never gated. "
+                "Publishing is separate: an entry becomes strategic knowledge "
+                "only once --verify renders 'verified'."))
     p.add_argument("--strategy", default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--rebuild", action="store_true")
@@ -511,6 +525,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="applicability note to attach to the entries this call "
                         "creates/refreshes (free text, kept for the reader, "
                         "never scored; repeatable)")
+    p.add_argument("--verify", default=None, metavar="JSON",
+                   help="admission check for the candidate this call forms: "
+                        "{\"purpose\": \"rule|repair|cost_saving\", \"claim\": "
+                        "TEXT, \"check\": {...}, \"executions\": [...], "
+                        "\"supporting\": [...]}. The framework computes the "
+                        "verdict from those executions; without it the entry "
+                        "is recorded unverified and is NOT published as "
+                        "strategic knowledge")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

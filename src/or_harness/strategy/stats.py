@@ -13,8 +13,25 @@ from dataclasses import dataclass, field
 from statistics import mean, pstdev
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector, ExecutionRecord, group_key
+from or_harness.core.schema import (
+    COST_DIMENSIONS,
+    CostVector,
+    ExecutionRecord,
+    GROUPING_FEATURES,
+    bin_label,
+    group_key,
+)
 from or_harness.strategy.experience_bank import ExperienceBank
+
+
+def cell_token(profile) -> str:
+    """The structural part of a group key, without the family.
+
+    Two executions in different families are still STRUCTURALLY comparable
+    when their measured coupling values fall in the same cells — that is
+    exactly what C5's cross-family reproduction is about, so it cannot
+    compare whole keys (which include the family)."""
+    return "|".join(bin_label(getattr(profile, f)) for f in GROUPING_FEATURES)
 
 
 def quality_score(record: ExecutionRecord) -> float:
@@ -110,62 +127,118 @@ class ConditionalStats:
         self.bank = bank
 
     def cell(self, group_l1: str, strategy_id: str) -> GroupStats:
+        """One (structural group key, strategy) cell.
+
+        The key is compared against the record's DERIVED key (from its own
+        profile snapshot), so a stale index column can never smuggle a
+        foreign fact into the cell."""
         records = [r for r in self.bank.query(group_l1=group_l1,
                                               strategy_id=strategy_id)
-                   if r.source == "executed"]
+                   if r.source == "executed"
+                   and group_key(r.profile_snapshot) == group_l1]
         return self._aggregate(group_l1, strategy_id, records)
 
     def group(self, group_l1: str) -> Dict[str, GroupStats]:
-        """All strategy cells within one structural group."""
+        """Every strategy cell inside ONE structural group key.
+
+        Raw view: the key is taken literally (legacy keys included), so this
+        is a diagnostic/administrative entry point. Trigger and prediction
+        paths use :meth:`for_profile` instead, which scopes to the cell the
+        target profile actually belongs to."""
         cells: Dict[str, List[ExecutionRecord]] = {}
         for rec in self.bank.query(group_l1=group_l1):
             if rec.source != "executed":
                 continue
+            if group_key(rec.profile_snapshot) != group_l1:
+                continue
             cells.setdefault(rec.strategy_id, []).append(rec)
         return {sid: self._aggregate(group_l1, sid, recs) for sid, recs in cells.items()}
 
+    #: The single membership rule for aggregated evidence: an EXECUTED,
+    #: ATTEMPT-scope fact, in the target's own structural cell.
+    @staticmethod
+    def _is_attempt_evidence(rec: ExecutionRecord) -> bool:
+        return rec.source == "executed" and rec.measurement_scope == "attempt"
+
     def for_profile(self, profile) -> Dict[str, GroupStats]:
-        return self.group(group_key(profile))
+        """Cells of the structural group ``profile`` belongs to.
+
+        Only executed attempt-scope facts in the SAME structural cell
+        contribute: a family can hold regions with opposite behaviour
+        (low-coupling Q=1.0 vs high-coupling Q=0.1), and pooling them into
+        one cell would erase the relation between structure and performance."""
+        key = group_key(profile)
+        cells: Dict[str, List[ExecutionRecord]] = {}
+        for rec in self.bank.query(group_l1=key):
+            if not self._is_attempt_evidence(rec):
+                continue
+            if group_key(rec.profile_snapshot) != key:
+                continue
+            cells.setdefault(rec.strategy_id, []).append(rec)
+        return {sid: self._aggregate(key, sid, recs)
+                for sid, recs in cells.items()}
 
     def evidence(self, profile, strategy_id: str) -> List[ExecutionRecord]:
-        """The records of one (family, strategy) evidence set.
+        """The records of one (structural group, strategy) evidence set.
 
-        Same membership rule as :meth:`cell`, exposed so induction can read
-        the claim's intervals off the very records it aggregates."""
-        return [r for r in self.bank.query(group_l1=group_key(profile),
-                                           strategy_id=strategy_id)
-                if r.source == "executed"]
+        SAME membership rule :meth:`for_profile` aggregates over, exposed so
+        induction reads a claim's predicates off the very records it
+        aggregates — sample count, independent-task count, ranges,
+        statistics and prediction can therefore never disagree about which
+        facts supported a claim (mixing them is how a task-scope total once
+        masqueraded as an independent attempt observation)."""
+        key = group_key(profile)
+        return [r for r in self.bank.query(group_l1=key, strategy_id=strategy_id)
+                if self._is_attempt_evidence(r)
+                and group_key(r.profile_snapshot) == key]
 
     def aggregate(self, group_l1: str, strategy_id: str,
                   records: Sequence[ExecutionRecord]) -> GroupStats:
         """Public aggregator (used by induction for a cell it already read)."""
         return self._aggregate(group_l1, strategy_id, records)
 
-    def cross_family(self, strategy_id: str) -> List[GroupStats]:
-        """One strategy's evidence partitioned by family.
+    def cross_family(self, strategy_id: str, *,
+                     like=None) -> List[GroupStats]:
+        """One strategy's evidence partitioned by family, structurally
+        scoped to the reference ``like`` when one is given.
 
-        The "learn once, apply elsewhere" view: callers can check whether the
-        same-direction advantage shows up in >= 2 families independently.
-        """
+        The "learn once, apply elsewhere" view. With ``like=profile`` only
+        executions in the SAME structural cell as the reference contribute,
+        so families whose behaviour comes from an unrelated structure can
+        neither be mixed into the statistic nor veto a genuine reproduction
+        between two comparable families.
+
+        With ``like=None`` there is no common structure to compare against:
+        every executed attempt-scope fact of the strategy contributes, and
+        the caller must treat the result as "each family's own behaviour"
+        rather than as evidence of a shared structure."""
         by_family: Dict[str, List[ExecutionRecord]] = {}
+        reference_cell = cell_token(like) if like is not None else None
         for rec in self.bank.query(strategy_id=strategy_id):
-            if rec.source != "executed":
+            if not self._is_attempt_evidence(rec):
+                continue
+            if (reference_cell is not None
+                    and cell_token(rec.profile_snapshot) != reference_cell):
                 continue
             by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(group_key(recs[0].profile_snapshot), strategy_id, recs)
-                for _, recs in sorted(by_family.items())]
+        return [self._aggregate(f"family={fam}", strategy_id, recs)
+                for fam, recs in sorted(by_family.items())]
 
     def rebuild_check(self) -> bool:
         """Consistency invariant: aggregating a full scan equals per-group
-        aggregation (statistics are derivable from facts at any time)."""
+        aggregation (statistics are derivable from facts at any time).
+
+        Groups are keyed by the DERIVED key of each record's own profile, so
+        the invariant holds even when the stored index column is stale."""
         everything = [r for r in self.bank.all() if r.source == "executed"]
-        groups = {rec.group_l1 for rec in everything}
-        for g in groups:
+        by_key: Dict[str, List[ExecutionRecord]] = {}
+        for rec in everything:
+            by_key.setdefault(group_key(rec.profile_snapshot), []).append(rec)
+        for g, recs in by_key.items():
             via_group = self.group(g)
             via_scan: Dict[str, List[ExecutionRecord]] = {}
-            for rec in everything:
-                if rec.group_l1 == g:
-                    via_scan.setdefault(rec.strategy_id, []).append(rec)
+            for rec in recs:
+                via_scan.setdefault(rec.strategy_id, []).append(rec)
             for sid, cell in via_group.items():
                 other = self._aggregate(g, sid, via_scan.get(sid, []))
                 if cell.to_dict() != other.to_dict():

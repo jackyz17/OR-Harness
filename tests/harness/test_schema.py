@@ -108,6 +108,7 @@ class TestSchemaRoundTrip(HarnessTestCase):
                                "supporting_execution_ids": ["ex_1"]},
                               "plain note"]})
         self.assertEqual(entry.applicability, ["works at scale", "plain note"])
+        self.assertEqual(entry.verification, {})
 
     def test_strategic_entry_expected_aliases(self):
         e = StrategicEntry(
@@ -145,41 +146,80 @@ class TestSchemaRoundTrip(HarnessTestCase):
 
 
 class TestStructuralGrouping(HarnessTestCase):
-    def test_group_key_is_the_family(self):
-        """One evidence set = one (family, strategy) cell. Where inside the
-        family a strategy held is the claim's business, not the key's."""
-        p = self.make_profile()
-        self.assertEqual(group_key(p), "family=routing")
-        self.assertEqual(group_key(self.make_profile(resource_coupling=0.1)),
-                         group_key(self.make_profile(resource_coupling=0.9)))
+    def test_group_key_is_the_family_plus_cell(self):
+        """One evidence set = one (family, structural cell, strategy) triple.
+        Structure conditions the aggregation; semantic_coupling never does."""
+        p = self.make_profile()        # rc 0.9, tc 0.1, rx 0.85
+        self.assertEqual(group_key(p),
+                         "family=routing|rc[0.75,1.00]|tc[0.00,0.25]|rx[0.75,1.00]")
+        # A structurally different region is a DIFFERENT evidence set: pooling
+        # them once averaged a Q=1.0 region and a Q=0.1 region into one claim.
+        self.assertNotEqual(group_key(p),
+                            group_key(self.make_profile(resource_coupling=0.1)))
         self.assertNotEqual(group_key(p),
                             group_key(self.make_profile(family="scheduling")))
+        # Same cell wherever the (never-derived) semantic value points.
+        self.assertEqual(group_key(p),
+                         group_key(self.make_profile(semantic_coupling=0.2)))
 
-    def test_evidence_predicates_are_the_observed_span(self):
+    def test_unknown_is_its_own_cell(self):
+        self.assertEqual(group_key(self.make_profile(resource_coupling=None)),
+                         "family=routing|rc[unknown]|tc[0.00,0.25]|rx[0.75,1.00]")
+        self.assertNotEqual(group_key(self.make_profile(resource_coupling=None)),
+                            group_key(self.make_profile(resource_coupling=0.9)))
+
+    def test_evidence_predicates_are_the_cell(self):
+        """Predicates are the structural CELL the evidence occupies — not a
+        cross-sample min/max, which could stretch across incomparable
+        regions just because samples sat at both ends."""
         records = [
             self.make_record(execution_id="ex_a", task_id="a",
                              profile=self.make_profile(problem_id="a",
-                                                       resource_coupling=0.72)),
+                                                       resource_coupling=0.80)),
             self.make_record(execution_id="ex_b", task_id="b",
                              profile=self.make_profile(problem_id="b",
                                                        resource_coupling=0.94)),
         ]
         predicates = evidence_predicates(records)
         self.assertEqual(predicates["family"], "routing")
-        self.assertEqual(predicates["resource_coupling"], [0.72, 0.94])
-        # A task anywhere inside the observed span matches; outside it does not.
+        self.assertEqual(predicates["resource_coupling"], [0.75, 1.0])
         inside = self.make_profile(problem_id="q", resource_coupling=0.80)
         outside = self.make_profile(problem_id="q2", resource_coupling=0.55)
         self.assertTrue(profile_matches(inside, predicates))
         self.assertFalse(profile_matches(outside, predicates))
 
-    def test_evidence_predicates_skip_unmeasured_dimensions(self):
+    def test_predicates_keep_full_precision(self):
+        """Rounding predicates to 4 places once made a claim fail to match
+        the very executions supporting it (rc=1/3 -> [0.3333, 0.3333])."""
+        third = 1.0 / 3.0
+        records = [self.make_record(execution_id="ex_third", task_id="t1",
+                                    profile=self.make_profile(
+                                        problem_id="t1", resource_coupling=third,
+                                        temporal_coupling=None,
+                                        route_complexity=None))]
+        predicates = evidence_predicates(records)
+        # The cell label is the interval; the boundary values are exact.
+        self.assertEqual(predicates["resource_coupling"], [0.25, 0.5])
+        self.assertTrue(profile_matches(
+            self.make_profile(problem_id="q", resource_coupling=third,
+                              temporal_coupling=None, route_complexity=None),
+            predicates))
+
+    def test_unknown_predicate_matches_only_unknown(self):
+        """'Both sides unknown' is a shared absence of evidence, not evidence
+        of similarity — an unknown-cell claim must not be applied to a task
+        whose structure IS known (nor the reverse)."""
         records = [self.make_record(
             execution_id="ex_a", task_id="a",
-            profile=self.make_profile(problem_id="a", resource_coupling=None,
-                                      temporal_coupling=None,
-                                      route_complexity=None))]
-        self.assertEqual(evidence_predicates(records), {"family": "routing"})
+            profile=self.make_profile(problem_id="a", resource_coupling=None))]
+        predicates = evidence_predicates(records)
+        self.assertEqual(predicates["resource_coupling"], "[unknown]")
+        self.assertTrue(profile_matches(
+            self.make_profile(problem_id="q", resource_coupling=None), predicates))
+        self.assertFalse(profile_matches(
+            self.make_profile(problem_id="q2", resource_coupling=0.9), predicates))
+
+    def test_evidence_predicates_empty_without_records(self):
         self.assertEqual(evidence_predicates([]), {})
 
     def test_profile_matches(self):
@@ -191,6 +231,16 @@ class TestStructuralGrouping(HarnessTestCase):
         # Unknown coupling never matches a numeric predicate.
         q = self.make_profile(resource_coupling=None)
         self.assertFalse(profile_matches(q, {"resource_coupling": [0.0, 0.5]}))
+
+    def test_predicates_cover_with_unknown(self):
+        self.assertTrue(predicates_cover({"family": "routing"},
+                                         {"family": "routing"}))
+        self.assertTrue(predicates_cover({"resource_coupling": "[unknown]"},
+                                         {"resource_coupling": "[unknown]"}))
+        self.assertFalse(predicates_cover({"resource_coupling": "[unknown]"},
+                                          {"resource_coupling": [0.0, 1.0]}))
+        self.assertFalse(predicates_cover({"resource_coupling": [0.0, 1.0]},
+                                          {"resource_coupling": "[unknown]"}))
 
     def test_semantic_coupling_never_enters_the_evidence(self):
         """The one dimension that is never derived must not split the

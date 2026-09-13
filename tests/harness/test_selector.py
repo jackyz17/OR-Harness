@@ -66,6 +66,7 @@ class TestFallbackChain(SelectorCase):
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.99, quality_interval=(0.9, 1.0),
             failure_prob=0.0, status="validated", support_n=6,
+            verification={"state": "verified", "claim": "S01 holds here"},
             provenance=["ex_0", "ex_1", "ex_2"]))
         recs = self.selector.recall(self.make_profile(), top=5)
         s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
@@ -135,6 +136,7 @@ class TestEntryFlags(SelectorCase):
             pattern={"predicates": {"resource_coupling": [0.75, 1.0]}},
             expected_quality_hat=0.95, quality_interval=(0.8, 1.0),
             failure_prob=0.0, status="validated", support_n=5,
+            verification={"state": "verified", "claim": "rc>=0.75 holds"},
             provenance=["ex_r0", "ex_r1"]))
         other_family = self.make_profile(problem_id="q", family="scheduling")
         recs = self.selector.recall(other_family, top=10)

@@ -93,13 +93,15 @@ class TestStrategicBank(HarnessTestCase):
         self.sbank = StrategicBank(self.store)
 
     def make_entry(self, entry_id="se_1", strategy_id="S01", status="candidate",
-                   predicates=None, support_n=2) -> StrategicEntry:
+                   predicates=None, support_n=2, verified=False) -> StrategicEntry:
         return StrategicEntry(
             entry_id=entry_id, strategy_id=strategy_id,
             pattern={"predicates": predicates if predicates is not None
                      else {"family": "routing", "resource_coupling": [0.75, 1.0]}},
             expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
             failure_prob=0.05, status=status, support_n=support_n,
+            verification=({"state": "verified", "claim": "c",
+                           "conclusion": "check passed"} if verified else {}),
             provenance=["ex_1", "ex_2"])
 
     def test_crud(self):
@@ -135,7 +137,9 @@ class TestStrategicBank(HarnessTestCase):
                          ["se_l2"])
 
     def test_promotion(self):
-        self.sbank.add(self.make_entry())
+        """Forward calibration promotes ONLY verified claims: five checks
+        with a good hit rate are calibration evidence, not admission."""
+        self.sbank.add(self.make_entry(verified=True))
         transitions = []
         for _ in range(PROMOTE_MIN_PREDICTIONS):
             entry, tr = self.sbank.record_prediction("se_1", hit=True)
@@ -144,6 +148,29 @@ class TestStrategicBank(HarnessTestCase):
         self.assertIn("promoted:candidate->validated", transitions)
         self.assertGreaterEqual(entry.prediction_track.hit_rate, PROMOTE_MIN_HIT_RATE)
 
+    def test_calibration_alone_never_promotes_unverified(self):
+        """The reproduced defect: n>=5 hits used to promote regardless of
+        admission verification, so a never-verified candidate could reach
+        `validated` and be published."""
+        self.sbank.add(self.make_entry())       # unverified
+        for _ in range(PROMOTE_MIN_PREDICTIONS):
+            entry, transitions = self.sbank.record_prediction("se_1", hit=True)
+        self.assertEqual(entry.status, "candidate")
+        self.assertNotIn("promoted:candidate->validated", transitions)
+        self.assertEqual(entry.prediction_track.n_predictions,
+                         PROMOTE_MIN_PREDICTIONS)
+
+    def test_validated_requires_verified_state(self):
+        with self.assertRaises(StorageError):
+            self.sbank.add(self.make_entry(status="validated"))
+
+    def test_refuted_claim_never_validated(self):
+        entry = self.make_entry()
+        entry.verification = {"state": "refuted", "claim": "c"}
+        entry.status = "validated"
+        with self.assertRaises(StorageError):
+            self.sbank.add(entry)
+
     def test_no_early_promotion(self):
         self.sbank.add(self.make_entry())
         for _ in range(PROMOTE_MIN_PREDICTIONS - 1):
@@ -151,7 +178,7 @@ class TestStrategicBank(HarnessTestCase):
         self.assertEqual(entry.status, "candidate")
 
     def test_demotion_after_consecutive_misses(self):
-        self.sbank.add(self.make_entry(status="validated"))
+        self.sbank.add(self.make_entry(status="validated", verified=True))
         for i in range(DEMOTE_CONSECUTIVE_MISSES):
             entry, tr = self.sbank.record_prediction("se_1", hit=False,
                                                      calibration_err=0.4)

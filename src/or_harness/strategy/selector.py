@@ -109,7 +109,8 @@ class Selector:
 
     def recall(self, profile: ProblemProfile, *, top: int = 3,
                exclude: Optional[Sequence[str]] = None,
-               memory_mode: str = "cost-aware") -> List[Recommendation]:
+               memory_mode: str = "cost-aware",
+               include_unverified: bool = False) -> List[Recommendation]:
         """Recall accumulated experience for this problem signature.
 
         Returns candidates filtered by applicability. Each candidate carries
@@ -117,6 +118,20 @@ class Selector:
         ``no_memory``. When no experience exists the score is -inf and
         confidence is 0 — the catalog vocabulary is still returned as a
         candidate menu, but no quality/cost/risk claims are made.
+
+        Only PUBLISHED knowledge is treated as strategic knowledge: an
+        admission-verified entry, or a legacy entry from before admission
+        verification existed (its provenance cannot be re-litigated, and
+        silently discarding accumulated knowledge would be worse than
+        labelling it). An entry whose verification explicitly failed
+        (``refuted``) or could not be decided yet (``insufficient_evidence``)
+        is NOT published: with ``include_unverified=False`` (the default) it
+        contributes nothing and recall falls back to the raw conditional
+        statistics or the catalog vocabulary. ``include_unverified=True`` is
+        the offline/inspection view and returns it with an explicit warning.
+
+        Unverified entries are still RECORDED as checks (a fact about the
+        claim is worth keeping) — they are just not published.
         """
         if memory_mode not in MEMORY_MODES:
             raise ValueError(f"memory_mode must be one of {MEMORY_MODES}")
@@ -127,7 +142,12 @@ class Selector:
         if memory_mode == "none":
             return [self._from_no_evidence(s) for s in candidates]
 
-        entries = self.sbank.matching(profile) if memory_mode in ("strategic", "cost-aware") else []
+        all_entries = (self.sbank.matching(profile)
+                       if memory_mode in ("strategic", "cost-aware") else [])
+        if include_unverified:
+            entries = all_entries
+        else:
+            entries = [e for e in all_entries if is_publishable(e)]
         cells = self.stats.for_profile(profile)
         if memory_mode == "cost-aware":
             # Comparable cost dimensions: the common measured dims across
@@ -365,3 +385,22 @@ class Selector:
 
 #: support_n at which an entry reaches full confidence.
 PROMOTE_REFERENCE_N = 5.0
+
+
+def is_publishable(entry: StrategicEntry) -> bool:
+    """Whether an entry may be presented as published strategic knowledge.
+
+    - ``verified``: yes — the claim passed its admission check.
+    - NO verification block at all: yes — this is a legacy entry written
+      before admission verification existed. Refusing to use it would
+      silently discard accumulated knowledge; it stays usable and its missing
+      verification stays visible in ``inspect``.
+    - anything else (``unverified`` candidate, ``insufficient_evidence``,
+      ``refuted``): no — the framework holds a candidate, not knowledge.
+      Recall falls back to the raw conditional statistics, and the harness
+      can still try the strategy.
+    """
+    block = entry.verification or {}
+    if not block:
+        return True
+    return block.get("state") == "verified"

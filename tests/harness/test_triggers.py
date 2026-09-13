@@ -138,18 +138,80 @@ class TestC4FailureRecovery(TriggerCase):
 
 class TestC5CrossFamily(TriggerCase):
     def test_reproduced_high_performance_fires(self):
-        # S04 independently ~0.95 (high) in two families, same structure.
+        """Two families, same strategy, SAME structure (rc cell), same
+        direction — the reproduction C5 exists to report."""
         last = None
         for fam in ("routing", "scheduling"):
             for i in range(2):
-                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam)
+                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
+                                            resource_coupling=0.90)
                 last = self.make_record(execution_id=f"c5_{fam}_{i}",
                                         task_id=f"{fam}{i}", strategy_id="S04",
                                         profile=profile, gap=0.05)
                 self.bank.append(last)
         hints = [h for h in self.check(last) if h.criterion == "C5"]
         self.assertTrue(hints)
-        self.assertEqual(hints[0].criterion, "C5")
+        self.assertEqual(set(hints[0].evidence["families"]),
+                         {"routing", "scheduling"})
+        self.assertEqual(hints[0].evidence["structure"]["resource_coupling"],
+                         "[0.75,1.00]")
+
+    def test_incomparable_structure_is_not_mixed_in(self):
+        """The reproduced defect: a third family whose evidence comes from an
+        unrelated structure used to be pooled into the same statistic."""
+        last = None
+        for fam, rc in (("routing", 0.90), ("scheduling", 0.90),
+                        ("packing", 0.10)):
+            for i in range(2):
+                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
+                                            resource_coupling=rc)
+                last = self.make_record(execution_id=f"mix_{fam}_{i}",
+                                        task_id=f"{fam}{i}", strategy_id="S04",
+                                        profile=profile, gap=0.05)
+                self.bank.append(last)
+        hits = [h for h in self.check(last) if h.criterion == "C5"]
+        # packing is structurally different: not reported as reproduction.
+        for h in hits:
+            self.assertNotIn("packing", h.evidence["families"])
+
+    def test_unrelated_family_cannot_veto_a_real_reproduction(self):
+        """The reproduced defect (the other direction): an incomparable third
+        family with opposite behaviour used to cancel a genuine reproduction
+        between two comparable families."""
+        scheduling = None
+        orders = (("routing", 0.90, 0.05), ("scheduling", 0.90, 0.05),
+                  ("packing", 0.10, 0.55))
+        for fam, rc, gap in orders:
+            for i in range(2):
+                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
+                                            resource_coupling=rc)
+                rec = self.make_record(execution_id=f"veto_{fam}_{i}",
+                                       task_id=f"{fam}{i}", strategy_id="S04",
+                                       profile=profile, gap=gap)
+                self.bank.append(rec)
+                if fam == "scheduling" and i == 1:
+                    scheduling = rec
+        hints = [h for h in self.check(scheduling) if h.criterion == "C5"]
+        self.assertTrue(hints, "routing+scheduling reproduce")
+        self.assertEqual(set(hints[0].evidence["families"]),
+                         {"routing", "scheduling"})
+        # packing is structurally incomparable AND opposite: it is neither
+        # mixed into the statistic nor able to veto the reproduction.
+        self.assertNotIn("packing", hints[0].evidence["families"])
+
+    def test_unknown_structure_never_counts_as_similarity(self):
+        """'Both sides unknown' is a shared absence of evidence, not evidence
+        of structural similarity — so C5 stays silent."""
+        last = None
+        for fam in ("routing", "scheduling"):
+            for i in range(2):
+                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
+                                            resource_coupling=None)
+                last = self.make_record(execution_id=f"unk_{fam}_{i}",
+                                        task_id=f"{fam}{i}", strategy_id="S04",
+                                        profile=profile, gap=0.05)
+                self.bank.append(last)
+        self.assertNotIn("C5", {h.criterion for h in self.check(last)})
 
     def test_single_family_silent(self):
         last = None

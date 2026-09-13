@@ -12,7 +12,7 @@ OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an aut
 - **Deterministic profiling**: structural coupling features from your task spec or supplied annotations — no NLP subsystem.
 - **Strategy selection with full control**: transparent scoring (`α·Q̂ − β·C_scalar − γ·R̂`), two-layer evidence fallback, four ablation modes.
 - **Sandboxed execution**: AST policy + POSIX rlimits + wall-clock timeout for your solve scripts; basic verification; five-dimensional cost metering (retries count).
-- **Induction you control**: C1–C6 evidence hints after every record; `induce` is always your explicit call. A claim's applicability is read off its own evidence (family + the feature span it covered) and moves as evidence accumulates; creating one needs ≥2 executions from ≥2 distinct tasks (repetition is not reproduction); cold archive with anti-resurrection.
+- **Induction you control**: C1–C6 evidence hints after every record; `induce` is always your explicit call. A claim's applicability is the family plus the structural cell its evidence occupies (legacy four-interval quantization — never a cross-sample span that would pool opposite regions); creating one needs ≥2 executions from ≥2 distinct tasks (repetition is not reproduction); publishing it needs a passed admission check (`induce --verify`: rule / repair / quality-preserving cost saving), so an unverified candidate is recorded but not recommended; cold archive with anti-resurrection.
 - **Seven solver adapters** (highs, pulp, ortools, scip, copt, pyomo, gurobi) — availability probing only; you pick the concrete solver per situation.
 
 ## Quick start
@@ -36,8 +36,8 @@ Memory lives in an explicit directory (`--home` or `$OR_HARNESS_HOME`), stored a
 
 - **[SKILL.md](SKILL.md)** — the thin contract for harness agents (start here)
 - **[references/concepts.md](references/concepts.md)** — two-layer memory, CostVector, disposal ladder
-- **[references/induction.md](references/induction.md)** — C1–C6, applicability read off evidence, offline lifecycle
-- **[references/examples.md](references/examples.md)** — three complete walkthroughs
+- **[references/induction.md](references/induction.md)** — C1–C6, applicability as family + structural cell, creation gate and admission verification, offline lifecycle
+- **[references/examples.md](references/examples.md)** — four complete walkthroughs
 
 ## Experiments
 

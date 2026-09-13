@@ -63,7 +63,11 @@ def apply_transitions(entry: StrategicEntry) -> List[str]:
         transitions.append("awakened:dormant->candidate")
     if (entry.status == "candidate"
             and entry.prediction_track.n_predictions >= PROMOTE_MIN_PREDICTIONS
-            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE):
+            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE
+            and entry.verification_state == "verified"):
+        # Forward calibration alone never promotes: the claim itself must
+        # have passed admission verification. (Demotion below is unaffected —
+        # observed misses are evidence regardless of admission state.)
         entry.status = "validated"
         transitions.append("promoted:candidate->validated")
     if (entry.status in ("candidate", "validated")
@@ -283,6 +287,18 @@ class StrategicBank:
         lo, hi = entry.quality_interval
         if not (0.0 <= lo <= hi <= 1.0):
             raise StorageError("quality_interval must satisfy 0 <= lo <= hi <= 1")
+        # Admission invariant: a validated entry must have PASSED admission
+        # verification, and a refuted claim may never be validated. Forward
+        # calibration (n>=5 checks, hit rate) tracks how the entry's
+        # predictions fared — it can never substitute for verifying the
+        # claim itself.
+        state = entry.verification_state
+        if entry.status == "validated" and state != "verified":
+            raise StorageError(
+                "status='validated' requires verification.state='verified' "
+                f"(got {state!r})")
+        if state == "refuted" and entry.status == "validated":
+            raise StorageError("a refuted claim may never be 'validated'")
 
     @staticmethod
     def _decode(row: Any) -> StrategicEntry:

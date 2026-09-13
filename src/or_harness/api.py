@@ -22,6 +22,7 @@ from or_harness.core.schema import (
     PredictionSnapshot,
     ProblemProfile,
     compute_cost_feedback,
+    group_key,
     profile_matches,
 )
 from or_harness.core.storage import Store, resolve_home
@@ -31,7 +32,7 @@ from or_harness.strategy.catalog import load_catalog
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.gc import GarbageCollector
 from or_harness.strategy.induction import InductionEngine
-from or_harness.strategy.selector import Selector
+from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank
 from or_harness.strategy.triggers import check_triggers, solver_advisories
@@ -123,8 +124,15 @@ class ORHarness:
         if strategy_id not in self.catalog:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
         profile = self.profile(task, code)
+        # Published knowledge only: a candidate whose admission verification
+        # is missing a verdict must not act as a verified entry prediction
+        # either. Gating recall alone would leave this second door open —
+        # the snapshot then falls back to the statistics ladder below, which
+        # is exactly what "we have no verified knowledge yet" should look
+        # like.
         entry = next((e for e in self.sbank.matching(profile)
-                      if e.strategy_id == strategy_id), None)
+                      if e.strategy_id == strategy_id
+                      and is_publishable(e)), None)
         if entry is not None:
             return PredictionSnapshot(
                 strategy_id=strategy_id,
@@ -307,14 +315,15 @@ class ORHarness:
     def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
                rebuild: bool = False,
                dry_run: bool = False, force: bool = False,
-               notes: Optional[List[str]] = None) -> Dict[str, Any]:
+               notes: Optional[List[str]] = None,
+               verify: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Consolidate Execution Evidence into Strategic Knowledge.
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
         derived StrategicEntry commitments (expected quality/cost/failure
         risk). This is where knowledge changes: recording only accumulates
         evidence, and `induce` (i) forms candidates from the statistics of
-        each structural group, (ii) creates/refreshes entries, and (iii)
+        each structural cell, (ii) creates/refreshes entries, and (iii)
         REVISES existing entries from the frozen forward checks recorded on
         the facts — promotion (n>=5, hit rate>=0.7), demotion (3 consecutive
         misses), dormancy wakeup — reported under ``revisions``. Cost feedback
@@ -323,6 +332,12 @@ class ORHarness:
         the supporting evidence rows. New entries inherit the catalog
         vocabulary's strategy_type/actions — extension points for future
         induction — without ever overwriting harness-supplied values.
+
+        ``verify`` carries the harness's admission check for the candidate
+        this call forms (see ``InductionEngine.induce``); the verdict is
+        computed by the framework from real executions. Without it the entry
+        is ``unverified`` and is not published as strategic knowledge —
+        recall falls back to the raw conditional statistics.
         """
         if rebuild:
             result = self.induction.rebuild(dry_run=dry_run)
@@ -336,7 +351,7 @@ class ORHarness:
         for profile, sid in targets:
             results.append(self.induction.induce(
                 profile, sid, dry_run=dry_run, force=force,
-                notes=notes))
+                notes=notes, verify=verify))
         if not dry_run:
             for r in results:
                 entry_id = r.get("created") or r.get("updated")
@@ -415,6 +430,10 @@ class ORHarness:
                        "entries": self.sbank.count(),
                        "cold_archive": len(self.sbank.cold_archive()),
                        "pending_staged": len(pending)},
+            # group_l1 is a derived index: report staleness (read-only — the
+            # open path never rewrites a bank) so an upgraded database is
+            # visibly diagnosed instead of silently mysterious.
+            "index_health": self.bank.index_health(),
             "pending_staged_executions": [
                 {"execution_id": p.execution_id, "task_id": p.task_id,
                  "strategy_id": p.strategy_id,
@@ -549,14 +568,20 @@ class ORHarness:
         return prior
 
     def _induction_targets(self, strategy_id: Optional[str], all_: bool):
+        """One induction target per (structural group, strategy).
+
+        The group is DERIVED from each record's own profile snapshot rather
+        than read from the stored index column: legacy rows carry the old
+        index format, and letting that decide targets would make the facts
+        invisible to induction."""
         targets = []
         seen = set()
         for rec in self.bank.all():
-            if rec.source != "executed":
+            if rec.source != "executed" or rec.measurement_scope != "attempt":
                 continue
             if strategy_id and rec.strategy_id != strategy_id:
                 continue
-            key = (rec.group_l1, rec.strategy_id)
+            key = (group_key(rec.profile_snapshot), rec.strategy_id)
             if key in seen:
                 continue
             if not all_ and strategy_id is None:

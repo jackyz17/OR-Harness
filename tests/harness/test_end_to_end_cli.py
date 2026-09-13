@@ -115,8 +115,32 @@ class TestEndToEndCLI(HarnessTestCase):
         results = out["result"]["results"]
         self.assertTrue(any(r.get("created") or r.get("updated") for r in results),
                         msg=proc.stdout)
+        # The candidate is formed but NOT published: no admission verdict was
+        # supplied, so recall must keep answering from the statistics.
+        self.assertIn("not published", results[0]["skipped"])
+        entry_id = results[0].get("created") or results[0].get("updated")
 
-        # 7. recall again — now entry-backed
+        # 7. recall again — still statistics: publishing needs a verified claim
+        proc = run_orx(self.home, "recall", "--task", str(self.task_path),
+                       "--top", "3")
+        out = json.loads(proc.stdout)
+        s01 = next(r for r in out["result"]["recommendations"]
+                   if r["strategy_id"] == "S01")
+        self.assertEqual(s01["evidence"], "conditional_stats")
+
+        # 7b. re-induce WITH an admission check -> published knowledge
+        verify = json.dumps({
+            "purpose": "rule",
+            "claim": "S01 reaches the reference objective in this cell",
+            "check": {"reference_objective": 100.0},
+            "executions": [execution],
+            "supporting": [execution2],
+        })
+        proc = run_orx(self.home, "induce", "--strategy", "S01",
+                       "--verify", verify)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        verified = json.loads(proc.stdout)["result"]["results"][0]
+        self.assertEqual(verified["verification"]["state"], "verified")
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
@@ -131,6 +155,8 @@ class TestEndToEndCLI(HarnessTestCase):
         entries = json.loads(proc.stdout)["result"]["entries"]
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["status"], "candidate")
+        self.assertEqual(entries[0]["entry_id"], entry_id)
+        self.assertEqual(entries[0]["verification"]["state"], "verified")
 
         # 9. gc dry-run (nothing to compact yet, but the plan is empty cleanly)
         proc = run_orx(self.home, "gc", "--dry-run")

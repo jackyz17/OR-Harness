@@ -170,7 +170,17 @@ class ExperienceBank:
               family: Optional[str] = None,
               group_l1: Optional[str] = None,
               source: Optional[str] = None,
+              scope: Optional[str] = None,
               limit: Optional[int] = None) -> List[ExecutionRecord]:
+        """Query facts.
+
+        ``group_l1`` is a DERIVED INDEX column and is matched with a
+        fallback: rows written before the scope ladder was retired hold the
+        old ``family=...|rc[..]|...`` format, so a caller asking for the
+        current key would silently miss every historical fact. Index drift
+        must never hide evidence — the semantic filter (``family`` /
+        ``scope``, or filtering the returned records) is authoritative, and
+        this column is only a fast path."""
         sql = "SELECT payload FROM executions"
         clauses, params = [], []
         if task_id is not None:
@@ -180,7 +190,11 @@ class ExperienceBank:
         if family is not None:
             clauses.append("family=?"); params.append(family)
         if group_l1 is not None:
-            clauses.append("group_l1=?"); params.append(group_l1)
+            # Match the current key AND any legacy key that refers to the
+            # same family — the prefix is what survives format changes.
+            prefix = group_l1.split("|", 1)[0]
+            clauses.append("(group_l1=? OR group_l1 LIKE ?)")
+            params.extend([group_l1, prefix + "|%"])
         if source is not None:
             clauses.append("source=?"); params.append(source)
         if clauses:
@@ -188,8 +202,29 @@ class ExperienceBank:
         sql += " ORDER BY created_at ASC, execution_id ASC"
         if limit is not None:
             sql += f" LIMIT {int(limit)}"
-        return [self._decode(r) for r in
-                self.store.conn.execute(sql, params).fetchall()]
+        records = [self._decode(r) for r in
+                   self.store.conn.execute(sql, params).fetchall()]
+        if scope is not None:
+            records = [r for r in records if r.measurement_scope == scope]
+        return records
+
+    def index_health(self) -> Dict[str, Any]:
+        """Read-only diagnostic: how many rows carry a stale ``group_l1``.
+
+        ``group_l1`` is fully derivable from ``family`` (see
+        :func:`or_harness.core.schema.group_key`), so a stale value is a
+        stale INDEX, never a lost fact — reads do not depend on it. This
+        reports the count so ``orx doctor`` can be honest about it without
+        writing anything on open."""
+        stale = int(self.store.conn.execute(
+            "SELECT COUNT(*) AS n FROM executions "
+            "WHERE group_l1 IS NULL OR group_l1 NOT LIKE 'family=%' "
+            "   OR group_l1 LIKE '%|%'").fetchone()["n"])
+        total = self.count()
+        return {"rows": total, "stale_group_index": stale,
+                "note": ("group_l1 is a derived index; stale rows are still "
+                         "read correctly because queries filter on family "
+                         "and the profile snapshot")}
 
     def all(self) -> List[ExecutionRecord]:
         return self.query()

@@ -186,40 +186,65 @@ class TestColdArchiveVeto(InductionCase):
         self.assertNotIn("vetoed", again)
 
 
-class TestEvidenceRanges(InductionCase):
-    """A claim's applicability is read off its own evidence: the observed
-    family and the observed span of each structural dimension. There are no
-    bins, no levels and no widening command — accumulating evidence is what
-    moves the range."""
+class TestStructuralCells(InductionCase):
+    """A claim's applicability is the structural CELL its evidence occupies
+    (family + the rc/tc/rx interval). Structurally different regions of one
+    family are separate evidence sets — pooling them once averaged a Q=1.0
+    region and a Q=0.1 region into a single claim predicting 0.55. There are
+    no levels and no widening command."""
 
-    def test_predicates_are_the_observed_span(self):
-        self.seed("S01", [0.05, 0.10], task_prefix="a", resource_coupling=0.72)
+    def test_predicates_are_the_cell(self):
+        self.seed("S01", [0.05, 0.10], task_prefix="a", resource_coupling=0.80)
         self.seed("S01", [0.05, 0.10], task_prefix="b", resource_coupling=0.94)
         entry = self.sbank.get(self.engine.induce(self.make_profile("q"), "S01")["created"])
         self.assertEqual(entry.predicates["family"], "routing")
-        self.assertEqual(entry.predicates["resource_coupling"], [0.72, 0.94])
-        # A task anywhere inside the demonstrated span matches the claim —
-        # including at rc=0.80, which the old binning would have rejected.
+        self.assertEqual(entry.predicates["resource_coupling"], [0.75, 1.0])
         self.assertTrue(entry.matches(self.make_profile(problem_id="p80",
                                                         resource_coupling=0.80)))
-        # Outside the span the claim says nothing.
         self.assertFalse(entry.matches(self.make_profile(problem_id="p40",
                                                          resource_coupling=0.40)))
 
-    def test_new_evidence_widens_the_claim(self):
-        self.seed("S01", [0.05, 0.10], task_prefix="a", resource_coupling=0.62)
-        self.seed("S01", [0.05, 0.10], task_prefix="b", resource_coupling=0.66)
-        entry_id = self.engine.induce(self.make_profile("q"), "S01")["created"]
-        self.assertEqual(self.sbank.get(entry_id).predicates["resource_coupling"],
-                         [0.62, 0.66])
-        # The same strategy also held at rc=0.90 -> the range follows the
-        # evidence, with no widening operation in between.
-        self.seed("S01", [0.05, 0.10], task_prefix="c", resource_coupling=0.90)
-        self.engine.induce(self.make_profile("q2"), "S01")
-        entry = self.sbank.get(entry_id)
-        self.assertEqual(entry.predicates["resource_coupling"], [0.62, 0.90])
-        self.assertTrue(entry.matches(self.make_profile(problem_id="p80",
-                                                        resource_coupling=0.80)))
+    def test_opposite_regions_never_merge(self):
+        """The reproduced defect: one strategy scoring 1.0 in a low-coupling
+        region and 0.1 in a high-coupling region used to produce ONE claim
+        covering both and predicting 0.55."""
+        self.seed("S01", [0.0, 0.0], task_prefix="lo", resource_coupling=0.10)
+        self.seed("S01", [0.9, 0.9], task_prefix="hi", resource_coupling=0.90)
+
+        low = self.engine.induce(self.make_profile("q", resource_coupling=0.10),
+                                 "S01")
+        high = self.engine.induce(self.make_profile("q", resource_coupling=0.90),
+                                  "S01")
+        self.assertIsNotNone(low.get("created"))
+        self.assertIsNotNone(high.get("created"))
+        self.assertNotEqual(low["created"], high["created"])
+        lo_entry = self.sbank.get(low["created"])
+        hi_entry = self.sbank.get(high["created"])
+        self.assertEqual(lo_entry.predicates["resource_coupling"], [0.0, 0.25])
+        self.assertEqual(hi_entry.predicates["resource_coupling"], [0.75, 1.0])
+        self.assertAlmostEqual(lo_entry.expected_quality_hat, 1.0, places=3)
+        self.assertAlmostEqual(hi_entry.expected_quality_hat, 0.1, places=3)
+        # Neither claim answers for the other's structure.
+        self.assertFalse(lo_entry.matches(self.make_profile(problem_id="h",
+                                                           resource_coupling=0.90)))
+        self.assertFalse(hi_entry.matches(self.make_profile(problem_id="l",
+                                                           resource_coupling=0.10)))
+
+    def test_scattered_evidence_forms_no_claim(self):
+        """Accepted trade-off of the cell rule: evidence scattered across
+        cells may be too thin to form a claim. Statistics stay visible and NO
+        automatic cell-merging invents knowledge."""
+        for i, rc in enumerate([0.10, 0.40, 0.60, 0.90]):
+            self.seed("S01", [0.05], task_prefix=f"sc{i}", resource_coupling=rc)
+        result = self.engine.induce(self.make_profile("q", resource_coupling=0.10),
+                                    "S01")
+        self.assertIsNone(result.get("created"))
+        self.assertIn("fewer than 2", result["skipped"])
+        self.assertEqual(self.sbank.count(), 0)
+        # The facts are still there to be counted.
+        self.assertEqual(
+            self.stats.evidence(self.make_profile("q", resource_coupling=0.10),
+                                "S01")[0].execution_id, "sc0_S01_0")
 
     def test_claim_stays_inside_its_family(self):
         """Evidence in one family says nothing about another: cross-family
@@ -232,19 +257,6 @@ class TestEvidenceRanges(InductionCase):
                      else "routing")
             self.assertFalse(entry.matches(
                 self.make_profile(problem_id="x", family=other)))
-
-    def test_evidence_accumulates_across_coupling_drift(self):
-        """Four successes in one family used to be split into bins, leaving
-        cells too small to learn from (and a rc=0.60 task with no answer even
-        though the strategy had held from 0.30 to 0.80)."""
-        for i, rc in enumerate([0.30, 0.45, 0.62, 0.80]):
-            self.seed("S01", [0.05], task_prefix=f"t{i}", resource_coupling=rc)
-        result = self.engine.induce(self.make_profile("q"), "S01")
-        entry = self.sbank.get(result["created"])
-        self.assertEqual(entry.support_n, 4)
-        self.assertEqual(entry.predicates["resource_coupling"], [0.30, 0.80])
-        self.assertTrue(entry.matches(self.make_profile(problem_id="p60",
-                                                        resource_coupling=0.60)))
 
 
 class TestApplicabilityNotes(InductionCase):
@@ -384,6 +396,12 @@ class TestOfflineRevision(HarnessTestCase):
 
     def test_hits_promote_at_revise(self):
         entry_id = self._entry()
+        # Admission first: forward calibration can never promote a claim that
+        # was not verified.
+        entry = self.h.sbank.get(entry_id)
+        entry.verification = {"state": "verified", "claim": "S01 holds here",
+                              "conclusion": "check passed"}
+        self.h.sbank.update(entry)
         for i in range(5):
             out = self._record(f"ex_h{i}", f"ht{i}", gap=0.0)
             self.assertEqual([c["hit"] for c in out["prediction_checks"]], [True])
@@ -392,6 +410,17 @@ class TestOfflineRevision(HarnessTestCase):
         item = next(r for r in report if r["entry_id"] == entry_id)
         self.assertIn("promoted:candidate->validated", item["transitions"])
         self.assertEqual(self.h.sbank.get(entry_id).status, "validated")
+
+    def test_hits_never_promote_an_unverified_claim(self):
+        """The reproduced defect: five frozen hits promoted a candidate that
+        had never passed admission verification."""
+        entry_id = self._entry()
+        for i in range(5):
+            self._record(f"ex_np{i}", f"npt{i}", gap=0.0)
+        report = self.h.induction.revise("S01")
+        item = next(r for r in report if r["entry_id"] == entry_id)
+        self.assertNotIn("promoted:candidate->validated", item["transitions"])
+        self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")
 
     def test_out_of_range_evidence_is_not_checked(self):
         """A claim only answers for the structure it was induced from: a

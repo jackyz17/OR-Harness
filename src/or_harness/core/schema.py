@@ -319,6 +319,26 @@ GROUPING_FEATURES: Tuple[str, ...] = (
     "route_complexity",
 )
 
+#: Structural grouping edges — the SAME four intervals the framework used
+#: before the scope ladder was retired. Restoring them restores "structurally
+#: similar evidence is what gets aggregated", WITHOUT restoring the ladder
+#: lifecycle (no levels, no scope_of, no widen/tighten, no automatic
+#: re-scoping): widening a claim's structure is the harness's judgment, not
+#: a framework command.
+#:
+#: The trade-off is accepted deliberately: when a family's executions scatter
+#: across cells, a cell may hold too few samples to form a claim — the
+#: statistics remain visible, no knowledge is created, and no automatic
+#: cell-merging is attempted. (Merging is what produced claims that averaged
+#: opposite behaviours into a single "0.55".)
+BIN_EDGES: Tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
+
+#: Bucket label for a grouping dimension with no measured value. Unknown is
+#: its OWN cell; it is never pooled with measured evidence, and (unlike the
+#: pre-ladder-retirement behaviour, which simply omitted the dimension and so
+#: matched everything) it does not silently widen a claim's applicability.
+UNKNOWN_BUCKET = "unknown"
+
 SCALE_FEATURES: Tuple[str, ...] = (
     "n_vars",
     "n_constraints",
@@ -393,40 +413,89 @@ class ProblemProfile:
 # Structural grouping (evidence sets)
 # ---------------------------------------------------------------------------
 
+def bin_label(value: Optional[float],
+              edges: Tuple[float, ...] = BIN_EDGES) -> str:
+    """The interval label a grouping-dimension value falls into.
+
+    Edges are inclusive on both sides (``[0.25, 0.50]`` contains 0.25), with
+    the top interval closed so a value of exactly 1.0 lands in the last cell.
+    ``None`` (unmeasured) labels as :data:`UNKNOWN_BUCKET` — its own cell.
+    Exact edge values are binary-exact (0.25, 0.5, 0.75, 1.0), so this
+    quantization introduces no rounding drift.
+    """
+    if value is None:
+        return f"[{UNKNOWN_BUCKET}]"
+    v = min(max(float(value), edges[0]), edges[-1])
+    for lo, hi in zip(edges, edges[1:]):
+        if lo <= v <= hi and (v < hi or hi == edges[-1]):
+            return f"[{lo:.2f},{hi:.2f}]"
+    return f"[{edges[-2]:.2f},{edges[-1]:.2f}]"
+
+
 def group_key(profile: ProblemProfile) -> str:
-    """Scope key of one evidence set: the task family.
+    """Similarity key of one evidence set: family + structural cells.
 
-    One (family, strategy) cell is one evidence set — the observations that
-    may be aggregated together. Within a family, WHERE a strategy held is
-    expressed by the claim's own intervals (:func:`evidence_predicates`), not
-    by splitting the evidence into feature bins: binning cut contiguous
-    experience into cells too small to learn from (four successful runs of
-    one strategy in one family could produce no claim at all, because each
-    bin held a single observation)."""
-    return f"family={profile.family}"
+    One (family, structural cell, strategy) triple is one evidence set — the
+    observations that may be aggregated together. Structure is the legacy
+    four-interval quantization of the measurable coupling dims, so evidence
+    from structurally incomparable regions of a family is never pooled (the
+    defect that averaged a Q=1.0 region and a Q=0.1 region into one claim).
+    """
+    parts: List[str] = [f"family={profile.family}"]
+    short = {"resource_coupling": "rc", "temporal_coupling": "tc",
+             "route_complexity": "rx"}
+    for f in GROUPING_FEATURES:
+        parts.append(f"{short[f]}{bin_label(getattr(profile, f))}")
+    return "|".join(parts)
 
 
-def evidence_predicates(records: Sequence["ExecutionRecord"]
-                        ) -> Dict[str, Any]:
+def bin_interval(label: str) -> Optional[Tuple[float, float]]:
+    """Numeric bounds of a bin label, or None for the unknown bucket."""
+    if label == f"[{UNKNOWN_BUCKET}]":
+        return None
+    lo, hi = label.strip("[]").split(",")
+    return (float(lo), float(hi))
+
+
+def evidence_predicates(records: Sequence["ExecutionRecord"],
+                        family: Optional[str] = None) -> Dict[str, Any]:
     """The applicability of a claim, read off the evidence supporting it.
 
-    One interval per grouping dimension: the span the supporting executions
-    actually covered ([min, max], inclusive) — the observed range, not a
-    quantized approximation of it. Dimensions no supporting execution
-    measured are omitted (the claim then says nothing about them), and the
-    family is the scope key of the evidence set. The intervals grow and
-    shrink as evidence accumulates, so applicability follows experience
-    instead of a fixed grid.
+    One predicate per grouping dimension: the structural CELL the supporting
+    executions occupy — ``[lo, hi]`` for a measured cell, or the string
+    :data:`UNKNOWN_BUCKET` when none of them measured the dimension. Read off
+    the cell (not a cross-sample min/max span) so that applicability says
+    exactly what was demonstrated: the observed range could otherwise stretch
+    across structurally incomparable regions merely because samples sat at
+    both ends, and precision loss during rounding once made a claim fail to
+    match its own supporting executions.
+
+    ``family`` is the scope key of the evidence set. Callers that already
+    know the family (induction) pass it explicitly; otherwise it is read off
+    the first record.
     """
     if not records:
         return {}
     predicates: Dict[str, Any] = {
-        "family": records[0].profile_snapshot.family}
+        "family": family or records[0].profile_snapshot.family}
     for f in GROUPING_FEATURES:
-        values = [getattr(r.profile_snapshot, f) for r in records]
-        values = [float(v) for v in values if v is not None]
-        if values:
-            predicates[f] = [round(min(values), 4), round(max(values), 4)]
+        labels = {bin_label(getattr(r.profile_snapshot, f)) for r in records}
+        measured = sorted(l for l in labels if l != f"[{UNKNOWN_BUCKET}]")
+        if len(measured) == 1:
+            lo, hi = bin_interval(measured[0])
+            predicates[f] = [lo, hi]
+        elif len(measured) > 1:
+            # A mixed measured set can only arise when the caller pooled
+            # across cells; widening to the envelope keeps the predicate
+            # honest about what was covered.
+            bounds = [bin_interval(l) for l in measured]
+            predicates[f] = [min(b[0] for b in bounds),
+                             max(b[1] for b in bounds)]
+        else:
+            # Every supporting execution left this dimension unmeasured:
+            # the claim says nothing about it — and must NOT match tasks
+            # that DO have a measured value there.
+            predicates[f] = f"[{UNKNOWN_BUCKET}]"
     return predicates
 
 
@@ -440,18 +509,24 @@ def pattern_hash(predicates: Dict[str, Any], strategy_id: str = "") -> str:
 def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool:
     """True when the profile satisfies every predicate.
 
-    A predicate on a dimension whose value is unknown does NOT match: the
-    claim states a range, and an unmeasured value cannot be shown to be in
-    it. (Unknown dimensions contribute no predicate in the first place, so
-    this only bites on predicates read off measured evidence.)"""
+    An ``unknown`` predicate matches ONLY an unmeasured profile value on that
+    dimension: "we never measured this" is not evidence that the structure is
+    similar, so an unknown-cell claim must not be applied to a task whose
+    structure is known (nor the reverse). A missing predicate still means
+    "no constraint on this dimension" (harness-authored predicates)."""
     family_pred = predicates.get("family")
     if family_pred is not None and profile.family != family_pred:
         return False
     for f in GROUPING_FEATURES:
         if f not in predicates:
             continue
-        lo, hi = (float(x) for x in predicates[f])
+        pred = predicates[f]
         v = getattr(profile, f)
+        if isinstance(pred, str):
+            if v is not None:
+                return False
+            continue
+        lo, hi = (float(x) for x in pred)
         if v is None or not (lo <= float(v) <= hi):
             return False
     return True
@@ -466,8 +541,17 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
             continue
         if f not in inner:
             return False
-        o_lo, o_hi = (float(x) for x in outer[f])
-        i_lo, i_hi = (float(x) for x in inner[f])
+        o, i = outer[f], inner[f]
+        o_unknown, i_unknown = isinstance(o, str), isinstance(i, str)
+        if o_unknown or i_unknown:
+            # An unknown predicate covers exactly one thing: the unknown
+            # cell. It never covers measured evidence, and measured evidence
+            # never covers it.
+            if outer[f] != inner[f]:
+                return False
+            continue
+        o_lo, o_hi = (float(x) for x in o)
+        i_lo, i_hi = (float(x) for x in i)
         if not (o_lo <= i_lo and i_hi <= o_hi):
             return False
     return True
@@ -879,6 +963,25 @@ class StrategicEntry:
     #: Recommended actions/adaptations, inherited from the catalog
     #: vocabulary at induce time (harness may override).
     actions: List[str] = field(default_factory=list)
+    #: Admission verification (offline only). ``state`` gates publishing: a
+    #: candidate with ``state != "verified"`` is not published as strategic
+    #: knowledge (see ``Selector`` / ``ORHarness.predict_cost``). The rest of
+    #: the block is the audit trail: what claim was checked, which executions
+    #: were used, what check was applied, and why that conclusion followed.
+    #: Never a bare boolean — a claim is only ever backed by a readable check.
+    verification: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def is_published(self) -> bool:
+        """True when this entry's claim passed admission verification."""
+        return (self.verification or {}).get("state") == "verified"
+
+    @property
+    def verification_state(self) -> str:
+        """Admission state, defaulting to ``unverified`` for legacy entries
+        written before the block existed (absence of evidence is never
+        treated as verification)."""
+        return str((self.verification or {}).get("state", "unverified"))
 
     @staticmethod
     def new_id() -> str:
@@ -937,6 +1040,8 @@ class StrategicEntry:
                                 self.cost_support_n.items()},
             "strategy_type": self.strategy_type,
             "actions": list(self.actions),
+            "verification": (dict(self.verification)
+                             if self.verification else None),
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -991,9 +1096,45 @@ class StrategicEntry:
                             (data.get("cost_support_n") or {}).items()},
             strategy_type=data.get("strategy_type"),
             actions=[str(a) for a in (data.get("actions") or [])],
+            verification=(_verification_block(data["verification"])
+                          if data.get("verification") is not None else {}),
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )
+
+
+#: Admission-verification outcomes. ``unverified`` is the honest default for
+#: an entry that has not been through an offline check (including every entry
+#: written before this field existed); ``insufficient_evidence`` covers "the
+#: check ran but could not decide" — a failed execution is NOT a refutation.
+VERIFICATION_STATES = ("unverified", "verified", "insufficient_evidence",
+                       "refuted")
+
+
+def _verification_block(raw: Any) -> Dict[str, Any]:
+    """Normalize the verification block (compact, one dict).
+
+    Shape: ``{"state", "purpose", "claim", "checks", "evidence",
+    "conclusion", "verified_at"}``. Only ``state`` is load-bearing for
+    admission; the rest is the audit trail the harness reads back."""
+    data = dict(raw) if isinstance(raw, dict) else {}
+    state = str(data.get("state", "unverified"))
+    if state not in VERIFICATION_STATES:
+        state = "unverified"
+    return {
+        "state": state,
+        "purpose": data.get("purpose"),
+        "claim": data.get("claim"),
+        "checks": list(data.get("checks") or []),
+        "evidence": list(data.get("evidence") or []),
+        "conclusion": data.get("conclusion"),
+        "verified_at": data.get("verified_at"),
+    }
+
+
+def empty_verification() -> Dict[str, Any]:
+    """The honest default block for an entry nobody has verified yet."""
+    return _verification_block(None)
 
 
 def _applicability_notes(raw: Any) -> List[str]:

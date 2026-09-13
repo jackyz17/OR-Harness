@@ -17,7 +17,14 @@ from dataclasses import dataclass, field
 from statistics import mean
 from typing import Any, Dict, List, Optional
 
-from or_harness.core.schema import CostVector, ExecutionRecord, Strategy, group_key
+from or_harness.core.schema import (
+    GROUPING_FEATURES,
+    CostVector,
+    ExecutionRecord,
+    Strategy,
+    bin_label,
+    group_key,
+)
 from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
 
 MIN_DIVERGENCE_N = 2
@@ -55,7 +62,8 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
                    entries_expected: Optional[Dict[str, Dict[str, float]]] = None,
                    prior_failures: Optional[List[ExecutionRecord]] = None
                    ) -> List[InductionHint]:
-    """Evaluate C1-C6 for the group of ``record`` after it was appended.
+    """Evaluate C1-C6 for the structural group of ``record`` after it was
+    appended.
 
     ``entries_expected``: optional {strategy_id: {"quality": q}} of matching
     strategic entries, so C1/C2 treat "memory already encodes this" as
@@ -65,12 +73,18 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
     Bank and/or the pending staging area) for cross-execution recovery
     detection in C4.
 
+    Scope: every criterion reads the cell the record's profile belongs to
+    (:meth:`ConditionalStats.for_profile`), never the whole family — evidence
+    from a structurally different region must not drive, dilute, or veto a
+    contrast. C5 is the only cross-family criterion and it is scoped to the
+    same cell in each family.
+
     Note: triggers no longer reference catalog priors (which have been
     removed). All criteria are now purely statistical — they detect
     patterns in observed data, not divergence from fabricated baselines.
     """
-    group = record.group_l1
-    cells = stats.group(group)
+    cells = stats.for_profile(record.profile_snapshot)
+    group = group_key(record.profile_snapshot)
     hints: List[InductionHint] = []
     expected_map = dict(entries_expected or {})
 
@@ -115,14 +129,18 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
             a, b = eligible[i], eligible[j]
             dq = a.mean_quality - b.mean_quality
             q_gap = abs(dq)
-            # Check if existing entries already encode this contrast.
+            quality_contrast = q_gap >= SIGNIFICANT_QUALITY_DELTA
+            # Existing entries explaining the QUALITY gap says nothing about
+            # the COST gap: the two comparisons are independent, so a
+            # quality-only dedup must not skip the price comparison. (It used
+            # to `continue` here, hiding a 5x-token difference whenever both
+            # sides' quality was already encoded.)
+            quality_encoded = False
             entry_a = expected_map.get(a.strategy_id, {}).get("quality")
             entry_b = expected_map.get(b.strategy_id, {}).get("quality")
             if entry_a is not None and entry_b is not None:
                 entry_gap = entry_a - entry_b
-                if abs(entry_gap - dq) < SIGNIFICANT_QUALITY_DELTA / 2:
-                    continue  # already encoded
-            quality_contrast = q_gap >= SIGNIFICANT_QUALITY_DELTA
+                quality_encoded = abs(entry_gap - dq) < SIGNIFICANT_QUALITY_DELTA / 2
             cost_contrast = False
             cost_evidence: Dict[str, Any] = {}
             for dim in ("llm_tokens", "solver_runtime_s"):
@@ -150,9 +168,15 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
                                  b.strategy_id: round(cb, 4)},
                 }
                 break
-            if not (quality_contrast or cost_contrast):
+            if not quality_contrast and not cost_contrast:
                 continue
-            kind = "quality" if quality_contrast else "cost"
+            if quality_contrast and quality_encoded and not cost_contrast:
+                continue  # the only contrast found is already in memory
+            kind = "quality" if quality_contrast and not quality_encoded else "cost"
+            if kind == "cost" and not cost_contrast:
+                continue
+            if kind == "quality" and quality_encoded:
+                continue
             return InductionHint(
                 criterion="C1",
                 strategy_ids=[a.strategy_id, b.strategy_id],
@@ -325,13 +349,26 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
                      expected_map: Dict[str, Dict[str, float]]
                      ) -> List[InductionHint]:
     """C5: the same strategy shows the same-direction advantage in >= 2
-    families — the 'learn once, apply elsewhere' detector.
+    families AT THE SAME STRUCTURE — the 'learn once, apply elsewhere'
+    detector. Informational: it reports reproduction across independently
+    observed families from the data alone.
 
-    Informational: it reports reproduction across independently observed
-    families from the data alone. (There is no widening operation to suggest:
-    a claim's applicability is read off its own evidence.)"""
+    Structural comparability is required BEFORE the reproduction claim is
+    made: each family's evidence is scoped to the record's own cell (same
+    rc/tc/rx interval), so a family whose behaviour comes from an unrelated
+    structure can neither be mixed into the statistic nor veto a genuine
+    reproduction between two comparable families.
+
+    Unknown structure never counts. If the reference dimension is unmeasured
+    there is nothing to compare, and this returns nothing: "both sides are
+    unknown" is a shared absence of evidence, not evidence of structural
+    similarity."""
     sid = record.strategy_id
-    cells = stats.cross_family(sid)
+    profile = record.profile_snapshot
+    for f in GROUPING_FEATURES:
+        if getattr(profile, f) is None:
+            return []
+    cells = stats.cross_family(sid, like=profile)
     per_family = [c for c in cells if c.n >= MIN_DIVERGENCE_N]
     if len(per_family) < 2:
         return []
@@ -349,13 +386,16 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
     def _family(cell: GroupStats) -> str:
         return cell.group_key.split("family=")[-1]
 
+    structure = {f: bin_label(getattr(profile, f)) for f in GROUPING_FEATURES}
     return [InductionHint(
         criterion="C5", strategy_ids=[sid],
-        group_key=record.group_l1,
+        group_key=group_key(profile),
         reason=(f"{direction} performance reproduces independently in "
-                f"{len(per_family)} families"),
+                f"{len(per_family)} families at the same structure "
+                f"({', '.join(f'{k}{v}' for k, v in structure.items())})"),
         evidence={"families": [_family(c) for c in per_family],
                   "direction": direction,
+                  "structure": structure,
                   "mean_qualities": {_family(c): round(c.mean_quality, 4)
                                      for c in per_family},
                   "execution_ids": {_family(c): c.execution_ids
@@ -364,19 +404,25 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
 
 def _c6_stable_success(cells: Dict[str, GroupStats],
                        group: str) -> Optional[InductionHint]:
-    """C6: same strategy, same group, n >= 4 with zero failures and zero
-    retries — consolidation channel for pure success patterns. Retries must
-    be MEASURED on every supporting record: unknown retries never count as
-    proof of stability."""
+    """C6: same strategy, same group, n >= 4 with EVERY supporting execution
+    feasible, zero failures and zero retries — the consolidation channel for
+    pure success patterns.
+
+    An empty ``failures`` list is not proof of success: an infeasible or
+    errored execution can carry no failure record at all, so feasibility is
+    required on every supporting record. Retries must also be MEASURED on
+    every record: unknown retries never count as proof of stability."""
     for cell in cells.values():
-        if (cell.n >= STABLE_SUCCESS_MIN_N and cell.n_failures == 0
+        if (cell.n >= STABLE_SUCCESS_MIN_N and cell.n_feasible == cell.n
+                and cell.n_failures == 0
                 and cell.n_measured.get("retries", 0) == cell.n
                 and cell.total_retries == 0 and cell.mean_quality > 0.0):
             return InductionHint(
                 criterion="C6", strategy_ids=[cell.strategy_id], group_key=group,
-                reason=(f"stable success: n={cell.n}, zero failures, zero retries, "
-                        f"meanQ={cell.mean_quality:.2f}"),
-                evidence={"n": cell.n, "mean_quality": round(cell.mean_quality, 4),
+                reason=(f"stable success: n={cell.n}, all feasible, zero failures, "
+                        f"zero retries, meanQ={cell.mean_quality:.2f}"),
+                evidence={"n": cell.n, "n_feasible": cell.n_feasible,
+                          "mean_quality": round(cell.mean_quality, 4),
                           "mean_cost": {d: round(v, 4) for d, v in
                                         cell.mean_cost.to_dict().items()},
                           "execution_ids": list(cell.execution_ids)})

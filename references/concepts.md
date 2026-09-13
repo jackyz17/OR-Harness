@@ -19,7 +19,21 @@ E_t is factual execution evidence (what actually happened); M_strategic is deriv
 
 ## Structural grouping and coupling derivation
 
-Structural groups — the similarity keys for all memory — are one (family, strategy) cell each: the observations that may be aggregated together. How widely a claim extends inside that family is read off its own evidence (the feature span its supporting executions covered), never declared on a ladder or quantized into fixed bins. Coupling values are derived by priority: the task's CIR (the `coupling` field — relations/indexes measured from the pre-model coupling understanding; the cleanest source) > the `model` representation (measured from declared constraints) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+Structural groups — the similarity keys for all memory — are one (family,
+structural cell, strategy) triple each: the observations that may be
+aggregated together. A cell is the measurable coupling dims quantized to the
+four intervals `[0.00,0.25] [0.25,0.50] [0.50,0.75] [0.75,1.00]`, with an
+unmeasured dimension in its own `[unknown]` cell. Structure conditions the
+statistics but not the ladder: there are no generalization levels, no
+`widen`/`tighten`, and no automatic re-scoping. Coupling values are derived by
+priority: the task's CIR (the `coupling` field — relations/indexes measured
+from the pre-model coupling understanding; the cleanest source) > the `model`
+representation (measured from declared constraints) > structured spec fields >
+harness-supplied values. `semantic_coupling` is never derived as a scalar.
+When a supplied value contradicts the winning structural derivation across a
+bin boundary, the profile carries a warning — and the derived value wins for
+grouping, because an append-only fact filed in the wrong group would pollute
+conditional statistics permanently.
 
 **The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
 
@@ -105,20 +119,31 @@ Lossy compaction and the summary consumption contract are left to the Cost/Induc
 
 ## Verification philosophy: forward, not backward
 
-An induced entry is a prediction hypothesis. It is validated by *future* executions checking its interval — never by self-testing on the training data. This is why entries are born `candidate`, why intervals are floored by sample size (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions with ≥70% hit rate.
+An induced entry is a prediction hypothesis. Two separate things must hold
+before it counts as published knowledge: its CLAIM must pass an admission
+check at induction time (`induce --verify` — a rule holding, a repair working,
+or a quality-preserving cost saving, judged by the framework from real
+executions), and its PREDICTIONS are then validated by *future* executions
+checking its interval — never by self-testing on the training data. This is
+why entries are born `candidate`, why intervals are floored by sample size
+(n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions
+with ≥70% hit rate ON TOP of the passed admission check.
 
 The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and never enter scoring — the framework cannot verify a sentence, so it does not pretend to.
 
-## Applicability: read off the evidence, not declared
+## Applicability: the structural cell, not a declared ladder
 
-There is no ladder of generalization levels and no feature binning. Each
-(family, strategy) cell is one evidence set, and the claim induced from it
-states its own applicability: the family, plus the span each structural
-dimension actually covered in the supporting executions. Refresh the claim
-with new evidence and the span follows the evidence — run the strategy at
-another coupling magnitude and it is included, stop seeing it hold there and
-the failures are what pull the claim down (three consecutive misses demote it
-to `suspect`).
+There is no ladder of generalization levels and no `widen`/`tighten` command.
+Each (family, structural cell, strategy) triple is one evidence set, and the
+claim induced from it states its own applicability: that family and that cell
+(e.g. `rc[0.75,1.00]`). Structurally different regions of one family are
+separate evidence sets — one strategy scoring 1.0 at low coupling and 0.1 at
+high coupling yields two claims, not one averaged "0.55 everywhere".
+
+Unmeasured structure is never similarity: an `[unknown]` claim matches only a
+task whose value is also unmeasured. The cost of the cell rule is honest:
+evidence scattered across cells may be too thin to form a claim, in which case
+only the statistics remain and no knowledge is invented.
 
 Cross-family transfer is therefore a judgment, not a mechanism: a claim
 speaks for the family it was induced from, and applying a routing lesson to

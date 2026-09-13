@@ -30,9 +30,11 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
     CostVector,
+    GROUPING_FEATURES,
     PredictionTrack,
     ProblemProfile,
     StrategicEntry,
+    empty_verification,
     evidence_predicates,
     group_key,
     min_interval_width,
@@ -40,10 +42,17 @@ from or_harness.core.schema import (
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
+from or_harness.strategy.verification import VERIFIED, verify_candidate
 
 #: v1 cost interval: multiplicative band around the point estimate. Actual
 #: cost within [0.5x, 2.0x] of the prediction counts as a hit.
 COST_INTERVAL_BAND = (0.5, 2.0)
+
+#: Reported whenever a candidate is formed without an admission verdict: the
+#: entry exists (and collects forward checks) but is not published knowledge.
+UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
+                   "strategic knowledge — recall falls back to conditional "
+                   "statistics until an admission check passes")
 
 
 class InductionEngine:
@@ -55,7 +64,8 @@ class InductionEngine:
 
     def induce(self, profile: ProblemProfile, strategy_id: str, *,
                notes: Optional[List[str]] = None,
-               dry_run: bool = False, force: bool = False) -> Dict[str, Any]:
+               dry_run: bool = False, force: bool = False,
+               verify: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Create or refresh the entry for (strategy, evidence set).
 
         Guard rails:
@@ -78,14 +88,23 @@ class InductionEngine:
 
         ``notes`` are harness-written applicability notes (free text): kept on
         the entry for the reader, never scored.
+
+        ``verify`` optionally carries the harness's offline admission check
+        ``{"purpose", "claim", "check", "executions", "supporting"}``; the
+        framework computes the verdict from real executions
+        (:mod:`or_harness.strategy.verification`). Without it the entry is
+        created ``unverified`` — a candidate that is NOT published as
+        strategic knowledge.
         """
         records = self.stats.evidence(profile, strategy_id)
         cell = self.stats.aggregate(group_key(profile), strategy_id, records)
         if cell.n < 2:
             return {"created": None, "skipped": "fewer than 2 supporting executions",
                     "cell": cell.to_dict()}
-        predicates = evidence_predicates(records)
-        existing = self._find_existing(strategy_id, predicates)
+        predicates = evidence_predicates(
+            records, family=profile.family)
+        existing = self._find_existing(strategy_id, predicates,
+                                       include_dormant=True)
         veto = self.sbank.archive_vetoes(strategy_id, predicates)
         if veto is not None:
             if not force:
@@ -94,7 +113,11 @@ class InductionEngine:
                                    "reason": veto.reason},
                         "skipped": "cold-archive veto (use --force to override)"}
             # The harness judged the environment drifted: lift the veto.
-            self.sbank.revive(veto.pattern_hash, force=True)
+            # A rehearsal must not write — the lift happens only for real.
+            if not dry_run:
+                self.sbank.revive(veto.pattern_hash, force=True)
+            else:
+                veto = None
         tasks = sorted({r.task_id for r in records})
         if existing is None and len(tasks) < 2:
             # A veto (above) is the real blocker and reports first: telling the
@@ -119,12 +142,14 @@ class InductionEngine:
                                   self._cost_interval().items()
                                   if cell.n_measured.get(d, 0) > 0}
         note_texts = [str(n).strip() for n in (notes or []) if str(n).strip()]
+        verification, verification_note = self._run_verification(verify, dry_run)
 
         if existing is not None:
             changed = (abs(existing.expected_quality_hat - quality_hat) > 0.02
                        or existing.support_n != cell.n
                        or existing.predicates != predicates
                        or abs(existing.failure_prob - fail_prob) > 0.02
+                       or verification is not None
                        or self._cost_estimates_changed(existing, cost_hat,
                                                        measured_cost_interval,
                                                        cell.n_measured))
@@ -134,8 +159,11 @@ class InductionEngine:
                                    "evidence (restatement-only entries are forbidden)",
                         "entry_id": existing.entry_id}
             if dry_run:
-                return {"created": None, "would_update": existing.entry_id,
-                        "cell": cell.to_dict()}
+                out = {"created": None, "would_update": existing.entry_id,
+                       "cell": cell.to_dict()}
+                if verification is not None:
+                    out["verification"] = verification
+                return out
             existing.pattern = {"predicates": predicates}
             existing.expected_quality_hat = quality_hat
             existing.quality_interval = (lo, hi)
@@ -145,17 +173,27 @@ class InductionEngine:
             existing.failure_prob = fail_prob
             existing.support_n = cell.n
             existing.provenance = cell.execution_ids[:50]
+            if verification is not None:
+                existing.verification = verification
             if note_texts:
                 existing.applicability.extend(note_texts)
             self.sbank.update(existing)
-            return {"updated": existing.entry_id, "cell": cell.to_dict(),
-                    "predicates": predicates,
-                    "notes_added": len(note_texts)}
+            out = {"updated": existing.entry_id, "cell": cell.to_dict(),
+                   "predicates": predicates,
+                   "notes_added": len(note_texts)}
+            if verification is not None:
+                out["verification"] = verification
+            if verification_note is not None:
+                out["skipped"] = verification_note
+            return out
 
         if dry_run:
-            return {"would_create": {"strategy_id": strategy_id,
-                                     "predicates": predicates},
-                    "cell": cell.to_dict()}
+            out: Dict[str, Any] = {"would_create": {"strategy_id": strategy_id,
+                                                    "predicates": predicates},
+                                   "cell": cell.to_dict()}
+            if verification is not None:
+                out["verification"] = verification
+            return out
         entry = StrategicEntry(
             entry_id=StrategicEntry.new_id(),
             strategy_id=strategy_id,
@@ -170,28 +208,69 @@ class InductionEngine:
             fallback_strategy_id=None,
             provenance=cell.execution_ids[:50],
             support_n=cell.n,
+            verification=(verification if verification is not None
+                          else empty_verification()),
         )
         self.sbank.add(entry)
-        return {"created": entry.entry_id, "entry": entry.to_dict(),
-                "predicates": predicates, "cell": cell.to_dict()}
+        out = {"created": entry.entry_id, "entry": entry.to_dict(),
+               "predicates": predicates, "cell": cell.to_dict()}
+        if verification is not None:
+            out["verification"] = verification
+        if verification_note is not None:
+            out["skipped"] = verification_note
+        elif verification is None:
+            # No verdict supplied: the entry is recorded as a candidate but
+            # is NOT published, and the caller is told exactly that instead
+            # of having to infer it from an empty field.
+            out["skipped"] = UNVERIFIED_NOTE
+        return out
+
+    def _run_verification(self, verify: Optional[Dict[str, Any]],
+                          dry_run: bool) -> Tuple[Optional[Dict[str, Any]],
+                                                 Optional[str]]:
+        """Compute the admission verdict from real executions.
+
+        Nothing is executed here and nothing is written: the harness hands in
+        the executions it already produced (or intends to), and the framework
+        applies the declared check. Returning ``None`` preserves whatever the
+        entry already carries — re-inducing from the same evidence must not
+        silently demote a verified claim back to unverified."""
+        if not verify:
+            return None, None
+        report = verify_candidate(
+            verify.get("purpose"), str(verify.get("claim", "")),
+            check=verify.get("check"),
+            executions=verify.get("executions") or (),
+            supporting=verify.get("supporting") or ())
+        state = report.get("state")
+        note = None
+        if state != VERIFIED:
+            note = (f"candidate is {state}: not published as strategic "
+                    "knowledge — " + str(report.get("conclusion", "")))
+        return report, note
 
     # -- rebuild ------------------------------------------------------------------
 
     def rebuild(self, *, dry_run: bool = False) -> Dict[str, Any]:
         """Re-induce the entire Strategic Knowledge Bank from the evidence
         currently retained in the Evidence Bank (raw ``source="executed"``
-        rows).
+        attempt-scope rows).
 
         This is re-induction, NOT exact reconstruction: the resulting bank
         may legitimately differ from the previous one (induction logic,
         evidence set, and validation criteria all evolve). Cold-archive cards
-        are preserved (they are disposal decisions, not derivations)."""
+        are preserved (they are disposal decisions, not derivations).
+
+        ``dry_run`` plans only — nothing is wiped, created or revived."""
         bank = self.stats.bank
         groups: Dict[Tuple[str, str], List[str]] = {}
         for rec in bank.all():
-            if rec.source != "executed":
+            if rec.source != "executed" or rec.measurement_scope != "attempt":
                 continue
-            groups.setdefault((rec.group_l1, rec.strategy_id), []).append(rec.execution_id)
+            # Group by the DERIVED key: a stale index column (pre-retirement
+            # format) must not decide which cells are rebuilt.
+            key = group_key(rec.profile_snapshot)
+            groups.setdefault((key, rec.strategy_id), []).append(rec.execution_id)
         plan = []
         for (group, sid), ids in sorted(groups.items()):
             if len(ids) < 2:
@@ -349,40 +428,68 @@ class InductionEngine:
     @staticmethod
     def _honest_interval(cell: GroupStats) -> Tuple[float, float]:
         """Interval honest to sample size: never narrower than the floor for
-        n, centered on the observed mean, spread by the observed std."""
+        n, centered on the observed mean, spread by the observed std.
+
+        Full precision — this value is persisted (``StrategicEntry.to_dict``
+        feeds the payload) and used for matching decisions, so rounding here
+        would only move the defect to disk. Human-facing summaries round."""
         spread = max(cell.std_quality, min_interval_width(cell.n) / 2.0)
         lo = max(0.0, cell.mean_quality - spread)
         hi = min(1.0, cell.mean_quality + spread)
         if hi - lo < min_interval_width(cell.n):
             hi = min(1.0, lo + min_interval_width(cell.n))
             lo = max(0.0, hi - min_interval_width(cell.n))
-        return (round(lo, 4), round(hi, 4))
+        return (lo, hi)
 
     def _find_existing(self, strategy_id: str,
-                       predicates: Dict[str, Any]) -> Optional[StrategicEntry]:
+                       predicates: Dict[str, Any],
+                       *, include_dormant: bool = True) -> Optional[StrategicEntry]:
         """The entry this evidence belongs to, if any.
 
         - an entry whose predicates already cover the new ones (the
           restatement case, including a family-free pattern a harness wrote);
-        - otherwise the entry of the same (family, strategy) evidence set:
-          one evidence set owns exactly one claim, so growing evidence
+        - otherwise the entry of the same (family, structural cell) evidence
+          set: one evidence set owns exactly one claim, so growing evidence
           REFRESHES that claim instead of spawning a second one.
-        """
-        covering = self._find_covering(strategy_id, predicates)
+
+        Dormant entries are INCLUDED by default. Excluding them meant a
+        dormant claim was invisible to the dedup pass, so induction created a
+        fresh entry and then ``revise`` woke the old one — two entries for one
+        knowledge object. Waking it and refreshing it are offline decisions
+        made here, on the same entry id."""
+        covering = self._find_covering(strategy_id, predicates,
+                                       include_dormant=include_dormant)
         if covering is not None:
             return covering
-        family = predicates.get("family")
-        if family is None:
+        # Otherwise: the entry of the SAME CELL. Matching on the family alone
+        # was the defect that merged structurally opposite regions (the fallback
+        # below used to accept any entry naming the same family, so the second
+        # cell "refreshed" the first cell's claim). The cell is fully described
+        # by (family, the grouping-dimension predicates), so that is what is
+        # compared — including the unknown bucket.
+        if predicates.get("family") is None:
             return None
         for entry in self.sbank.list(strategy_id=strategy_id,
-                                     include_dormant=False):
-            if entry.predicates.get("family") == family:
+                                     include_dormant=include_dormant):
+            if self._same_cell(entry.predicates, predicates):
                 return entry
         return None
 
+    @staticmethod
+    def _same_cell(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+        """True when two predicate sets describe the same structural cell."""
+        if a.get("family") != b.get("family"):
+            return False
+        for f in GROUPING_FEATURES:
+            if a.get(f) != b.get(f):
+                return False
+        return True
+
     def _find_covering(self, strategy_id: str,
-                       predicates: Dict[str, Any]) -> Optional[StrategicEntry]:
-        for entry in self.sbank.list(strategy_id=strategy_id, include_dormant=False):
+                       predicates: Dict[str, Any],
+                       *, include_dormant: bool = True) -> Optional[StrategicEntry]:
+        for entry in self.sbank.list(strategy_id=strategy_id,
+                                     include_dormant=include_dormant):
             if predicates_cover(entry.predicates, predicates):
                 return entry
         return None

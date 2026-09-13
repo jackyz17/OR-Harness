@@ -94,15 +94,19 @@ You judge it worth committing:
 $ orx induce --strategy S02
 {"result": {"results": [{"created": "se_c977f8ac78e8", "entry": {
   "entry_id": "se_c977f8ac78e8", "strategy_id": "S02",
-  "pattern": {"predicates": {"family": "routing",
-                             "resource_coupling": [0.78, 0.94], ...}},
+  "pattern": {"predicates": {"family": "routing", "resource_coupling": [0.75, 1.0],
+                             "temporal_coupling": [0.0, 0.25],
+                             "route_complexity": [0.75, 1.0]}},
   "expected": {"quality_hat": 0.95, "quality_interval": [0.5, 1.0], ...},
-  "status": "candidate", "prediction_track": {"n_predictions": 0, ...},
-  "provenance": ["ex_...", "ex_...", "ex_..."], "support_n": 3}, ...}]},
- "summary": "Created/updated 1 entries: se_c977f8ac78e8"}
+  "status": "candidate", "verification": {"state": "unverified", ...},
+  "prediction_track": {"n_predictions": 0, ...},
+  "provenance": ["ex_...", "ex_...", "ex_..."], "support_n": 3},
+  "skipped": "recorded as an unverified candidate: not published as strategic knowledge — ..."}]}}
 ```
 
 Note the interval `[0.5, 1.0]`: with n=3 the honest floor is 0.35 width — the entry cannot pretend to more certainty than three runs support. Note also what made it admissible: three executions from three distinct tasks (t2, t3, t4). Had all three been the same task, `induce` would have returned `skipped: "needs independent evidence: all 3 observations come from 1 task [...] — a claim requires >=2 tasks"` and the executions would have stayed in the Evidence Bank as `conditional_stats` only.
+
+Note the second `skipped`: the candidate is formed but NOT published — recall still answers `conditional_stats` until `--verify` renders a verdict (example 4).
 
 ## Example 2: quality tied, cost diverges (what only memory can learn)
 
@@ -116,15 +120,16 @@ Routing group, n=2 each on distinct tasks: S01 and S04 both deliver ~0.70 qualit
     "n": {"S01": 2, "S04": 2}, "execution_ids": {...}}}]}
 ```
 
-After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra.
+After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra. Both entries are unverified candidates at this point, so recall answers from the statistics until you verify them; the ordering above is what the statistics already show.
 
 ## Example 3: a claim meeting its counterexample (miss → demote at the next induce)
 
-`se_020` was induced from routing executions with rc∈[0.78,0.94], predicting
-S04 quality in [0.8, 0.95]. Its applicability is exactly that: the family plus
-the demonstrated span — no ladder, no bins.
+`se_020` was induced from routing executions whose rc fell in the
+`[0.75,1.00]` cell, predicting S04 quality in [0.8, 0.95]. Its applicability
+is exactly that: the family plus that structural cell — no ladder, no
+`widen` command.
 
-A routing task with rc=0.80 arrives, inside the span. `recall` matches
+A routing task with rc=0.80 arrives, inside the cell. `recall` matches
 `se_020` and you execute; quality comes in at 0.55 — outside the interval.
 `record` writes the frozen check onto the fact and changes nothing:
 
@@ -148,8 +153,47 @@ against the claim. Two more like it and the next `orx induce` reports:
 `suspect` is downweighted ×0.5 and labelled in `recall`; retirement to the
 cold archive remains your explicit, irreversible call via `orx retire`.
 
-Note what a *record outside the span* does instead: it does not match the
-claim, so it is neither a check nor a counterexample — and if the strategy
-keeps doing well outside the span too, the next `induce` widens the claim's
-intervals to follow that evidence. No operation to remember, no level to
-choose.
+Note what a *record in another cell* does instead: a task at rc=0.40 is in
+`rc[0.25,0.50]`, so it does not match this claim and is neither a check nor a
+counterexample. If the strategy holds there too, that is evidence for a
+*different* claim in that cell — induce it separately. Nothing stretches the
+first claim's applicability to reach it, which is the point: a range in which
+samples happened to be observed is not a demonstrated region, and pooling
+opposite regions is how a claim ends up predicting "0.55 everywhere".
+
+## Example 4: a candidate that is formed but not published
+
+You record four routing executions, all at rc≈0.9, across three tasks, all
+optimum. `record` fires C2/C6. You induce:
+
+```bash
+$ orx induce --strategy S04
+{"result": {"results": [{"created": "se_71c2...",
+  "verification": {"state": "unverified", ...},
+  "skipped": "recorded as an unverified candidate: not published as strategic knowledge — recall falls back to conditional statistics until an admission check passes"}]}}
+```
+
+The entry exists and will collect frozen checks, but `recall` still answers
+`evidence="conditional_stats"` for S04 — a candidate is not knowledge yet. You
+then verify the actual claim on an execution that was not part of the
+inducing set:
+
+```bash
+$ orx induce --strategy S04 --verify '{"purpose":"rule",
+    "claim":"S04 reaches the reference objective in this cell",
+    "check":{"reference_objective":100.0},
+    "executions":[<unseen-task execution>]}'
+{"result": {"results": [{"updated": "se_71c2...",
+  "verification": {"state": "verified",
+    "checks": [{"check":"feasible","observed":true},
+               {"check":"objective_within_tolerance","observed":100.0,
+                "reference":100.0,"gap":0.0}],
+    "conclusion":"the declared check passed on real execution evidence"}}]}}
+```
+
+Now `recall` returns `evidence="strategic_entry"`. If the same check had
+instead been run against an execution that crashed, the state would have been
+`insufficient_evidence` — the claim was not checked, which is not the same as
+being wrong. And if the execution had completed with the wrong objective, the
+state would be `refuted`, which keeps the entry out of recall permanently
+until something changes.

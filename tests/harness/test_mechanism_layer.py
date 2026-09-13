@@ -34,7 +34,15 @@ class TestCostPredictionLoop(HarnessTestCase):
             cost=CostVector(llm_tokens=tokens_hat, tool_calls=2,
                             solver_runtime_s=1.0, retries=0, latency_s=1.0),
             cost_measured=MEASURED_ALL))
-        result = self.h.induce(strategy_id="S01")
+        # Admission check: the entry under test must be PUBLISHED knowledge
+        # before it may serve a prediction (an unverified candidate is
+        # recorded but not published).
+        verify = {"purpose": "rule", "claim": "S01 holds in this cell",
+                  "check": {"reference_objective": 100.0},
+                  "executions": [self.make_record(execution_id="ex_cv",
+                                                  task_id="tc_verify",
+                                                  strategy_id="S01")]}
+        result = self.h.induce(strategy_id="S01", verify=verify)
         return result["results"][0]["created"]
 
     def _task(self, task_id):
