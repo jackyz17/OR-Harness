@@ -118,34 +118,54 @@ strategic knowledge:
 ```json
 {"purpose": "rule | repair | cost_saving",
  "claim": "the sentence being asserted (audit trail only)",
- "check": {"dimension": "llm_tokens", "quality_floor": 0.9,
+ "check": {"reference_status": "optimal",
            "reference_objective": 100.0, "tolerance": 1e-6,
-           "semantic_ok": true},
+           "semantic_probe": {"path": "quality.objective", "max": 250.0},
+           "dimension": "llm_tokens", "quality_floor": 0.9},
  "executions": [ ... ], "supporting": [ ... ]}
 ```
 
 The **framework** computes the verdict from those executions — it does not
 execute anything itself, and it does not take the candidate's word for
-anything. `purpose` selects the check:
+anything. `purpose` selects the check family:
 
-- `rule` — the produced result satisfies a declared check: the execution
-  completed feasibly, the objective is finite and matches `reference_objective`
-  within tolerance, an optional problem-specific semantic check (a boolean the
-  FRAMEWORK evaluated) passes, and — when a comparison set is supplied — the
-  rule also holds on an execution that was not part of the inducing set.
-- `repair` — the fix turned a recorded failure into a usable success. Both
-  sides are required: the originally failed attempt and the repaired one.
+- `rule` — the produced result satisfies a declared criterion. At least one
+  must be declared; feasibility alone is a PRECONDITION, not a criterion.
+  Available criteria: `reference_status` (the recorded status must match),
+  `reference_objective` (finite objective within `tolerance`), `semantic_probe`
+  (the framework reads a dotted path in the record — e.g.
+  `quality.objective`, `execution_features.solver_diagnostics.X` — and
+  compares it to `equals` / `min` / `max` / `in`), `semantic_ok` (labelled
+  `agent-declared`: it is recorded, but since the framework cannot re-derive a
+  bare boolean it cannot carry a verdict on its own), and a comparison set.
+- `repair` — the fix turned a recorded failure into a usable success **on the
+  same task**. Both sides are required; a failure on one problem and a success
+  on another is two unrelated facts, not a repair.
 - `cost_saving` — quality meets `quality_floor`, results are comparable
-  (within `tolerance` of each other), and the declared cost dimension is
-  measurably LOWER on both sides with consistent scope. "Cheaper at the same
-  quality" is the claim; you do not have to improve the objective.
+  (within `tolerance`), and the declared cost dimension is measurably LOWER on
+  BOTH sides, measured on the **same task** under the **same measurement
+  scope**, with the dimension actually measured on both sides. An attempt cost
+  is never compared against a task-scope total (different quantities), and an
+  unmeasured dimension never proves a saving.
+
+Every supplied execution is evaluated, so a counterexample anywhere in the
+batch refutes the claim regardless of the order you list records in. A
+comparison set that repeats the inducing tasks (or re-passes an execution id
+already used on the other side) is not independent and reports as such.
+
+The evidence must correspond to the candidate: the executions have to be for
+this strategy and family. The same payload also cannot be reused across
+induction targets — evidence for another candidate reports
+`insufficient_evidence` instead of publishing this one by accident.
 
 Three outcomes, deliberately distinct:
 
-- `verified` — the check passed on real execution evidence;
-- `insufficient_evidence` — the check could not decide (no usable execution,
-  nothing to compare, or the execution itself failed). **A crash is not a
-  refutation.**;
+- `verified` — at least one substantive check was computed by the framework
+  and every declared criterion held on all supplied evidence;
+- `insufficient_evidence` — the check could not decide: an execution did not
+  identify itself, nothing checkable was declared, the evidence does not
+  correspond to this candidate, the two sides are not comparable, or the
+  execution itself failed. **A crash is not a refutation.**;
 - `refuted` — the check ran on real evidence and did not hold.
 
 Two things that are NOT verification, however convenient they look:
@@ -153,7 +173,9 @@ Two things that are NOT verification, however convenient they look:
 - a program's own printed verdict (`print('{"principle_failed": false}')`
   proves the program ran, nothing about the claim);
 - a candidate's natural-language summary of itself, or a single unchecked
-  boolean.
+  boolean (`semantic_ok` with nothing else declared reports
+  `insufficient_evidence` — use `semantic_probe` when the framework should
+  evaluate the condition itself).
 
 `surviving forward calibration` cannot substitute either: five frozen hits
 raise an entry's calibration confidence, but a `candidate` reaches

@@ -119,22 +119,29 @@ class GroupStats:
 class ConditionalStats:
     """Computes (group x strategy) aggregates directly from the fact layer.
 
-    A group is one evidence set: a (family, strategy) cell. Where inside a
-    family a strategy held is expressed by the claim's own predicates, never
-    by splitting the evidence into feature bins."""
+    A group is one evidence set: a (family, structural cell, strategy) triple.
+    Membership is decided by the FAMILY column plus the structural key derived
+    from each record's own profile snapshot — never by the stored ``group_l1``
+    index, which has been written in more than one format over time."""
 
     def __init__(self, bank: ExperienceBank):
         self.bank = bank
+
+    def _all_attempt_records(self) -> List[ExecutionRecord]:
+        return [r for r in self.bank.all() if self._is_attempt_evidence(r)]
 
     def cell(self, group_l1: str, strategy_id: str) -> GroupStats:
         """One (structural group key, strategy) cell.
 
         The key is compared against the record's DERIVED key (from its own
         profile snapshot), so a stale index column can never smuggle a
-        foreign fact into the cell."""
-        records = [r for r in self.bank.query(group_l1=group_l1,
-                                              strategy_id=strategy_id)
-                   if r.source == "executed"
+        foreign fact into the cell. ``group_l1`` is itself the structured key
+        (``family=..|rc[..]|..``); its ``family=`` prefix selects the family
+        and the rest is recomputed per record."""
+        family = group_l1.split("|", 1)[0].replace("family=", "", 1)
+        records = [r for r in self._all_attempt_records()
+                   if r.strategy_id == strategy_id
+                   and r.profile_snapshot.family == family
                    and group_key(r.profile_snapshot) == group_l1]
         return self._aggregate(group_l1, strategy_id, records)
 
@@ -145,9 +152,10 @@ class ConditionalStats:
         is a diagnostic/administrative entry point. Trigger and prediction
         paths use :meth:`for_profile` instead, which scopes to the cell the
         target profile actually belongs to."""
+        family = group_l1.split("|", 1)[0].replace("family=", "", 1)
         cells: Dict[str, List[ExecutionRecord]] = {}
-        for rec in self.bank.query(group_l1=group_l1):
-            if rec.source != "executed":
+        for rec in self._all_attempt_records():
+            if rec.profile_snapshot.family != family:
                 continue
             if group_key(rec.profile_snapshot) != group_l1:
                 continue
@@ -160,6 +168,18 @@ class ConditionalStats:
     def _is_attempt_evidence(rec: ExecutionRecord) -> bool:
         return rec.source == "executed" and rec.measurement_scope == "attempt"
 
+    def _family_records(self, profile) -> List[ExecutionRecord]:
+        """Executed attempt-scope facts of the profile's family.
+
+        Selected by the FAMILY column and then filtered by the structural key
+        derived from each record's own profile snapshot — never by the
+        ``group_l1`` index column. The index was written in several formats
+        over time (``family=routing``, ``family=routing|rc[..]|..``), so
+        querying it directly let historical facts silently drop out of the
+        statistics."""
+        return [r for r in self.bank.query(family=profile.family)
+                if self._is_attempt_evidence(r)]
+
     def for_profile(self, profile) -> Dict[str, GroupStats]:
         """Cells of the structural group ``profile`` belongs to.
 
@@ -169,9 +189,7 @@ class ConditionalStats:
         one cell would erase the relation between structure and performance."""
         key = group_key(profile)
         cells: Dict[str, List[ExecutionRecord]] = {}
-        for rec in self.bank.query(group_l1=key):
-            if not self._is_attempt_evidence(rec):
-                continue
+        for rec in self._family_records(profile):
             if group_key(rec.profile_snapshot) != key:
                 continue
             cells.setdefault(rec.strategy_id, []).append(rec)
@@ -188,8 +206,8 @@ class ConditionalStats:
         facts supported a claim (mixing them is how a task-scope total once
         masqueraded as an independent attempt observation)."""
         key = group_key(profile)
-        return [r for r in self.bank.query(group_l1=key, strategy_id=strategy_id)
-                if self._is_attempt_evidence(r)
+        return [r for r in self._family_records(profile)
+                if r.strategy_id == strategy_id
                 and group_key(r.profile_snapshot) == key]
 
     def aggregate(self, group_l1: str, strategy_id: str,

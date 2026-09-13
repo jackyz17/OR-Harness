@@ -528,11 +528,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verify", default=None, metavar="JSON",
                    help="admission check for the candidate this call forms: "
                         "{\"purpose\": \"rule|repair|cost_saving\", \"claim\": "
-                        "TEXT, \"check\": {...}, \"executions\": [...], "
-                        "\"supporting\": [...]}. The framework computes the "
-                        "verdict from those executions; without it the entry "
-                        "is recorded unverified and is NOT published as "
-                        "strategic knowledge")
+                        "TEXT, \"check\": {\"reference_status\" | "
+                        "\"reference_objective\" | \"semantic_probe\" | "
+                        "\"dimension\"+\"quality_floor\"}, \"executions\": "
+                        "[...], \"supporting\": [...]}. The framework evaluates "
+                        "those checks on the executions you supply; "
+                        "feasibility alone is not a check, and without a "
+                        "verdict the entry is NOT published")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

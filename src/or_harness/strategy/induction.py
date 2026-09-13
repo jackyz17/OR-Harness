@@ -142,7 +142,8 @@ class InductionEngine:
                                   self._cost_interval().items()
                                   if cell.n_measured.get(d, 0) > 0}
         note_texts = [str(n).strip() for n in (notes or []) if str(n).strip()]
-        verification, verification_note = self._run_verification(verify, dry_run)
+        verification, verification_note = self._run_verification(
+            verify, dry_run, strategy_id=strategy_id, profile=profile)
 
         if existing is not None:
             changed = (abs(existing.expected_quality_hat - quality_hat) > 0.02
@@ -226,22 +227,29 @@ class InductionEngine:
         return out
 
     def _run_verification(self, verify: Optional[Dict[str, Any]],
-                          dry_run: bool) -> Tuple[Optional[Dict[str, Any]],
-                                                 Optional[str]]:
+                          dry_run: bool, *, strategy_id: str,
+                          profile: ProblemProfile
+                          ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """Compute the admission verdict from real executions.
 
         Nothing is executed here and nothing is written: the harness hands in
         the executions it already produced (or intends to), and the framework
         applies the declared check. Returning ``None`` preserves whatever the
         entry already carries — re-inducing from the same evidence must not
-        silently demote a verified claim back to unverified."""
+        silently demote a verified claim back to unverified.
+
+        The candidate's identity is passed in, so ONE payload can never be
+        reused across induction targets: evidence for another strategy or
+        family reports as not corresponding rather than verifying this
+        candidate by accident."""
         if not verify:
             return None, None
         report = verify_candidate(
             verify.get("purpose"), str(verify.get("claim", "")),
             check=verify.get("check"),
             executions=verify.get("executions") or (),
-            supporting=verify.get("supporting") or ())
+            supporting=verify.get("supporting") or (),
+            strategy_id=strategy_id, family=profile.family)
         state = report.get("state")
         note = None
         if state != VERIFIED:

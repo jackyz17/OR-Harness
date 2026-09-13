@@ -37,7 +37,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from or_harness.core.schema import COST_DIMENSIONS, ExecutionRecord, compute_cost_feedback
+from or_harness.core.schema import (
+    COST_DIMENSIONS,
+    ExecutionRecord,
+    compute_cost_feedback,
+    group_key,
+)
 from or_harness.core.storage import Store, StorageError
 
 
@@ -174,27 +179,28 @@ class ExperienceBank:
               limit: Optional[int] = None) -> List[ExecutionRecord]:
         """Query facts.
 
-        ``group_l1`` is a DERIVED INDEX column and is matched with a
-        fallback: rows written before the scope ladder was retired hold the
-        old ``family=...|rc[..]|...`` format, so a caller asking for the
-        current key would silently miss every historical fact. Index drift
-        must never hide evidence — the semantic filter (``family`` /
-        ``scope``, or filtering the returned records) is authoritative, and
-        this column is only a fast path."""
+        ``family`` is the authoritative selector. ``group_l1`` is a DERIVED
+        INDEX column whose FORMAT has changed over time — it has held at least
+        ``family=routing|sc[..]|rc[..]|..`` (ladder era) and plain
+        ``family=routing`` (the version that retired the ladder) — so it is
+        never used to decide membership:
+
+        - with ``group_l1`` given, the query first narrows to that family and
+          then re-derives the structural key from each record's own profile
+          snapshot, so facts written under any historical index format stay
+          visible. Relying on the column directly is exactly how a whole
+          generation of records dropped out of the statistics.
+        """
         sql = "SELECT payload FROM executions"
         clauses, params = [], []
         if task_id is not None:
             clauses.append("task_id=?"); params.append(task_id)
         if strategy_id is not None:
             clauses.append("strategy_id=?"); params.append(strategy_id)
+        if group_l1 is not None and family is None:
+            family = group_l1.split("|", 1)[0].replace("family=", "", 1) or None
         if family is not None:
             clauses.append("family=?"); params.append(family)
-        if group_l1 is not None:
-            # Match the current key AND any legacy key that refers to the
-            # same family — the prefix is what survives format changes.
-            prefix = group_l1.split("|", 1)[0]
-            clauses.append("(group_l1=? OR group_l1 LIKE ?)")
-            params.extend([group_l1, prefix + "|%"])
         if source is not None:
             clauses.append("source=?"); params.append(source)
         if clauses:
@@ -204,6 +210,9 @@ class ExperienceBank:
             sql += f" LIMIT {int(limit)}"
         records = [self._decode(r) for r in
                    self.store.conn.execute(sql, params).fetchall()]
+        if group_l1 is not None:
+            records = [r for r in records
+                       if group_key(r.profile_snapshot) == group_l1]
         if scope is not None:
             records = [r for r in records if r.measurement_scope == scope]
         return records
@@ -211,20 +220,27 @@ class ExperienceBank:
     def index_health(self) -> Dict[str, Any]:
         """Read-only diagnostic: how many rows carry a stale ``group_l1``.
 
-        ``group_l1`` is fully derivable from ``family`` (see
-        :func:`or_harness.core.schema.group_key`), so a stale value is a
-        stale INDEX, never a lost fact — reads do not depend on it. This
-        reports the count so ``orx doctor`` can be honest about it without
-        writing anything on open."""
-        stale = int(self.store.conn.execute(
-            "SELECT COUNT(*) AS n FROM executions "
-            "WHERE group_l1 IS NULL OR group_l1 NOT LIKE 'family=%' "
-            "   OR group_l1 LIKE '%|%'").fetchone()["n"])
+        ``group_l1`` is a DERIVED index (it must equal
+        :func:`or_harness.core.schema.group_key` of the row's own profile),
+        and it has held at least two historical formats. Reads never depend
+        on it now, but a database upgraded from an older version is worth
+        reporting honestly — including the previous release's plain
+        ``family=routing`` form, which an earlier check mistook for healthy.
+        Nothing is written here."""
+        stale = 0
+        for row in self.store.conn.execute("SELECT group_l1, payload FROM executions"):
+            try:
+                record = self._decode(row)
+            except StorageError:
+                stale += 1
+                continue
+            if str(row["group_l1"]) != record.group_l1:
+                stale += 1
         total = self.count()
         return {"rows": total, "stale_group_index": stale,
-                "note": ("group_l1 is a derived index; stale rows are still "
-                         "read correctly because queries filter on family "
-                         "and the profile snapshot")}
+                "note": ("group_l1 is a derived index; reads re-derive the key "
+                         "from each record's profile snapshot, so stale rows "
+                         "are still counted correctly")}
 
     def all(self) -> List[ExecutionRecord]:
         return self.query()

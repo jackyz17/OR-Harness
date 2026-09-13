@@ -44,20 +44,43 @@ class TestExperienceBank(HarnessTestCase):
         self.assertEqual(len(self.bank.query()), 2)
 
     def test_query_by_group(self):
-        """One evidence set = one (family, strategy) cell: what groups records
-        is the family, not where inside it the task's features fell."""
-        rec = self.make_record(execution_id="ex_g")
+        """One evidence set = one (family, structural cell, strategy) triple:
+        a query for a cell returns that cell's facts, and the key is derived
+        from each record's own profile rather than trusted from the index
+        column."""
+        rec = self.make_record(execution_id="ex_g")          # rc 0.9
         self.bank.append(rec)
-        same_group = self.make_record(execution_id="ex_g2", task_id="t2",
+        same_cell = self.make_record(execution_id="ex_g2", task_id="t2",
+                                     profile=self.make_profile(
+                                         problem_id="t2", resource_coupling=0.80))
+        self.bank.append(same_cell)
+        other_cell = self.make_record(execution_id="ex_g3", task_id="t3",
                                       profile=self.make_profile(
-                                          problem_id="t2", resource_coupling=0.1))
-        self.bank.append(same_group)
-        other = self.make_record(execution_id="ex_g3", task_id="t3",
-                                 profile=self.make_profile(problem_id="t3",
-                                                           family="scheduling"))
-        self.bank.append(other)
+                                          problem_id="t3", resource_coupling=0.1))
+        self.bank.append(other_cell)
+        other_family = self.make_record(
+            execution_id="ex_g4", task_id="t4",
+            profile=self.make_profile(problem_id="t4", family="scheduling"))
+        self.bank.append(other_family)
         rows = self.bank.query(group_l1=rec.group_l1)
         self.assertEqual({r.execution_id for r in rows}, {"ex_g", "ex_g2"})
+        # The family alone is a wider view than one cell.
+        self.assertEqual(len(self.bank.query(family="routing")), 3)
+
+    def test_query_by_group_reads_legacy_index_formats(self):
+        """group_l1's FORMAT has changed over time; membership is decided by
+        the family column plus each record's derived key, so facts written
+        under any historical index format stay visible."""
+        conn = self.store.conn
+        rec = self.make_record(execution_id="ex_legacy")
+        self.bank.append(rec)
+        conn.execute("UPDATE executions SET group_l1=? WHERE execution_id=?",
+                     ("family=routing|sc[0.75,1.00]|rc[0.75,1.00]|tc[0.00,0.25]|"
+                      "rx[0.75,1.00]", "ex_legacy"))
+        conn.commit()
+        rows = self.bank.query(group_l1=rec.group_l1)
+        self.assertEqual([r.execution_id for r in rows], ["ex_legacy"])
+        self.assertEqual(len(self.bank.query(family="routing")), 1)
 
     def test_cross_process_persistence(self):
         self.bank.append(self.make_record(execution_id="ex_p"))

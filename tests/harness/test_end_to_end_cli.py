@@ -183,6 +183,58 @@ class TestEndToEndCLI(HarnessTestCase):
         out = json.loads(proc.stdout)
         self.assertIn("error", out["result"])
 
+    def test_cli_cost_saving_verification(self):
+        """The real-usage path: --verify arrives as JSON, where costs are
+        plain dicts. The same evidence verified through the Python API must
+        verify here too (it used to report "the cost dimension could not be
+        read" because only object attribute access was implemented)."""
+        self.seed_entry_with_two_tasks()
+        verify = json.dumps({
+            "purpose": "cost_saving",
+            "claim": "S01 reaches the same quality on t1 for far fewer tokens",
+            "check": {"dimension": "llm_tokens", "quality_floor": 0.9},
+            "executions": [{
+                "execution_id": "ex_candidate", "task_id": "t1",
+                "strategy_id": "S01", "family": "routing",
+                "measurement_scope": "attempt",
+                "cost": {"llm_tokens": 100}, "cost_measured": ["llm_tokens"],
+                "quality": {"feasible": True, "objective": 100.0,
+                            "status": "optimal"},
+            }],
+            "supporting": [{
+                "execution_id": "ex_baseline", "task_id": "t1",
+                "strategy_id": "S01", "family": "routing",
+                "measurement_scope": "attempt",
+                "cost": {"llm_tokens": 1000}, "cost_measured": ["llm_tokens"],
+                "quality": {"feasible": True, "objective": 100.0,
+                            "status": "optimal"},
+            }],
+        })
+        proc = run_orx(self.home, "induce", "--strategy", "S01",
+                       "--verify", verify)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)["result"]["results"][0]["verification"]
+        self.assertEqual(report["state"], "verified", report["conclusion"])
+        self.assertIn("1000", report["conclusion"])
+
+    def test_cli_verify_rejects_evidence_for_another_strategy(self):
+        """A payload for a different strategy must not publish this entry."""
+        self.seed_entry_with_two_tasks()
+        verify = json.dumps({
+            "purpose": "rule", "claim": "c",
+            "check": {"reference_objective": 100.0},
+            "executions": [{"execution_id": "ex_s04", "task_id": "other",
+                            "strategy_id": "S04", "family": "scheduling",
+                            "quality": {"feasible": True, "objective": 100.0,
+                                        "status": "optimal"}}],
+        })
+        proc = run_orx(self.home, "induce", "--strategy", "S01",
+                       "--verify", verify)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        report = json.loads(proc.stdout)["result"]["results"][0]["verification"]
+        self.assertNotEqual(report["state"], "verified")
+        self.assertIn("does not correspond", report["conclusion"])
+
     def test_inspect_covers_all_three_layers(self):
         """Every --bank value must answer (the archive branch silently broke
         once: the api echoed a different bank name than the CLI switched on)."""

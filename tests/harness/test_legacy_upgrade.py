@@ -19,6 +19,10 @@ from or_harness.api import ORHarness
 from or_harness.core.schema import group_key
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "legacy_b919497"
+#: A bank written by the release that RETIRED the ladder (``121e29a``). Its
+#: group_l1 holds the plain ``family=routing`` form, which an earlier
+#: compatibility pass mistook for healthy while the statistics saw nothing.
+FIXTURE_121 = Path(__file__).resolve().parent / "fixtures" / "legacy_121e29a"
 
 
 class TestLegacyDatabaseUpgrade(HarnessTestCase):
@@ -102,6 +106,62 @@ class TestLegacyDatabaseUpgrade(HarnessTestCase):
             self.assertEqual(len(entry.provenance), 2)
             self.assertTrue(entry.quality_interval[0] <= entry.quality_interval[1])
             self.assertEqual(entry.status, "candidate")
+        finally:
+            h.close()
+
+
+class TestLegacy121e29aUpgrade(HarnessTestCase):
+    """The PREVIOUS release's bank must not go dark either.
+
+    ``121e29a`` wrote ``group_l1`` as the plain ``family=routing``. A
+    compatibility pass that only understood the ladder-era ``|``-joined form
+    reported this database as healthy while every group-keyed query returned
+    nothing — facts visible to ``inspect`` but invisible to the statistics.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, True)
+        shutil.copytree(FIXTURE_121, self.home, dirs_exist_ok=True)
+        self.store.close()
+
+    def test_open_does_not_rewrite_the_fixture(self):
+        conn = sqlite3.connect(str(Path(self.home) / "or_harness.db"))
+        before = conn.execute("SELECT group_l1 FROM executions").fetchall()
+        conn.close()
+        h = ORHarness(home=self.home)
+        try:
+            self.assertEqual(h.bank.count(), 2)
+        finally:
+            h.close()
+        conn = sqlite3.connect(str(Path(self.home) / "or_harness.db"))
+        self.assertEqual(conn.execute("SELECT group_l1 FROM executions").fetchall(),
+                         before)
+        conn.close()
+
+    def test_statistics_see_the_previous_releases_facts(self):
+        h = ORHarness(home=self.home)
+        try:
+            records = h.bank.all()
+            self.assertEqual(len(records), 2)
+            profile = records[0].profile_snapshot
+            key = group_key(profile)
+            self.assertEqual(len(h.bank.query(group_l1=key)), 2)
+            self.assertEqual(len(h.stats.evidence(profile, "S01")), 2)
+            self.assertEqual(h.stats.for_profile(profile)["S01"].n, 2)
+            # Induction is no longer blind to this evidence.
+            out = h.induce(strategy_id="S01")["results"][0]
+            self.assertIsNotNone(out.get("created") or out.get("updated"))
+        finally:
+            h.close()
+
+    def test_index_health_notices_this_format(self):
+        """The old check only looked for the ladder-era form and called this
+        database clean, right next to a statistic of zero."""
+        h = ORHarness(home=self.home)
+        try:
+            self.assertEqual(h.bank.index_health()["stale_group_index"], 2)
         finally:
             h.close()
 
