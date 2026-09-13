@@ -44,13 +44,17 @@ class TestExperienceBank(HarnessTestCase):
         self.assertEqual(len(self.bank.query()), 2)
 
     def test_query_by_group(self):
+        """One evidence set = one (family, strategy) cell: what groups records
+        is the family, not where inside it the task's features fell."""
         rec = self.make_record(execution_id="ex_g")
         self.bank.append(rec)
-        same_group = self.make_record(execution_id="ex_g2", task_id="t2")
+        same_group = self.make_record(execution_id="ex_g2", task_id="t2",
+                                      profile=self.make_profile(
+                                          problem_id="t2", resource_coupling=0.1))
         self.bank.append(same_group)
         other = self.make_record(execution_id="ex_g3", task_id="t3",
                                  profile=self.make_profile(problem_id="t3",
-                                                           resource_coupling=0.1))
+                                                           family="scheduling"))
         self.bank.append(other)
         rows = self.bank.query(group_l1=rec.group_l1)
         self.assertEqual({r.execution_id for r in rows}, {"ex_g", "ex_g2"})
@@ -83,14 +87,13 @@ class TestExperienceBank(HarnessTestCase):
         with self.assertRaises(StorageError):
             self.bank.update_cost("ex_missing", llm_tokens=1.0)
 
-    def test_replace_all_round_trip(self):
+    def test_append_only_rejects_duplicates(self):
+        """The bank is append-only: re-appending an execution id is refused
+        (no channel rewrites history)."""
         self.bank.append(self.make_record(execution_id="ex_r1"))
-        self.bank.append(self.make_record(execution_id="ex_r2", task_id="t2"))
-        compacted = self.make_record(execution_id="ex_r2", task_id="t2",
-                                     source="compacted")
-        self.bank.replace_all([self.bank.get("ex_r1"), compacted])
-        self.assertEqual(self.bank.get("ex_r2").source, "compacted")
-        self.assertEqual(self.bank.count(), 2)
+        with self.assertRaises(StorageError):
+            self.bank.append(self.make_record(execution_id="ex_r1"))
+        self.assertEqual(self.bank.count(), 1)
 
 
 if __name__ == "__main__":

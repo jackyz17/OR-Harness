@@ -1,10 +1,13 @@
-"""Induction tests: consolidation, honest intervals, scope ladder widen/tighten,
-restatement refusal, cold-archive veto, LLM condition citation binding, rebuild."""
+"""Induction tests: consolidation, honest intervals, evidence-derived
+applicability, independent-evidence gate, restatement refusal, cold-archive
+veto, offline revision, rebuild."""
 import unittest
 
 from helpers import HarnessTestCase
 
-from or_harness.core.schema import StrategicEntry, min_interval_width
+from or_harness.api import ORHarness
+from or_harness.core.schema import (StrategicEntry, evidence_predicates,
+                                    min_interval_width)
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.stats import ConditionalStats
@@ -19,10 +22,12 @@ class InductionCase(HarnessTestCase):
         self.stats = ConditionalStats(self.bank)
         self.engine = InductionEngine(self.stats, self.sbank)
 
-    def seed(self, strategy_id, gaps, family="routing", task_prefix="s"):
+    def seed(self, strategy_id, gaps, family="routing", task_prefix="s",
+             **coupling):
         ids = []
         for i, gap in enumerate(gaps):
-            profile = self.make_profile(problem_id=f"{task_prefix}{i}", family=family)
+            profile = self.make_profile(problem_id=f"{task_prefix}{i}",
+                                        family=family, **coupling)
             rec = self.make_record(execution_id=f"{task_prefix}_{strategy_id}_{i}",
                                    task_id=f"{task_prefix}{i}",
                                    strategy_id=strategy_id, profile=profile, gap=gap)
@@ -38,7 +43,6 @@ class TestInduce(InductionCase):
         self.assertIsNotNone(result.get("created"))
         entry = self.sbank.get(result["created"])
         self.assertEqual(entry.status, "candidate")  # never born validated
-        self.assertEqual(entry.scope_level, "L1")
         self.assertEqual(entry.predicates["family"], "routing")
         self.assertAlmostEqual(entry.expected_quality_hat, (0.95 + 0.90 + 0.92) / 3, places=3)
         self.assertEqual(sorted(entry.provenance), sorted(ids))
@@ -82,8 +86,86 @@ class TestInduce(InductionCase):
         self.assertEqual(self.sbank.count(), 0)
 
 
+class TestIndependentEvidence(HarnessTestCase):
+    """A claim needs >=2 distinct tasks: repeating one task is repetition, not
+    reproduction. The gate guards CREATION only — an existing claim is still
+    refreshed by any new evidence, and the evidence itself is never discarded
+    (it stays available to recall as conditional statistics)."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+        self.addCleanup(self.h.close)
+        self._seq = 0
+
+    def _record(self, task_id, gaps, *, strategy="S01", **coupling):
+        for gap in gaps:
+            self._seq += 1
+            self.h.bank.append(self.make_record(
+                execution_id=f"ex_{task_id}_{self._seq}", task_id=task_id,
+                strategy_id=strategy, gap=gap,
+                profile=self.make_profile(problem_id=task_id, **coupling)))
+
+    def test_same_task_repeated_is_not_independent_evidence(self):
+        self._record("lonely", [0.0, 0.0, 0.0])
+        result = self.h.induce(strategy_id="S01")["results"][0]
+        self.assertIsNone(result.get("created"))
+        self.assertIn("needs independent evidence", result["skipped"])
+        self.assertEqual(result["verification"],
+                         {"tasks": ["lonely"], "required_tasks": 2})
+        self.assertEqual(self.h.sbank.count(), 0)
+
+    def test_gate_applies_to_dry_run(self):
+        self._record("lonely", [0.0, 0.0])
+        result = self.h.induce(strategy_id="S01", dry_run=True)["results"][0]
+        self.assertNotIn("would_create", result)
+        self.assertIn("needs independent evidence", result["skipped"])
+
+    def test_refused_evidence_is_still_recallable(self):
+        self._record("lonely", [0.0, 0.0, 0.0])
+        self.h.induce(strategy_id="S01")
+        recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
+        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        self.assertEqual(s01.evidence, "conditional_stats")
+        self.assertEqual(len(s01.evidence_refs), 3)
+
+    def test_two_tasks_create_the_claim(self):
+        self._record("ta", [0.0, 0.0])
+        self._record("tb", [0.0, 0.0])
+        result = self.h.induce(strategy_id="S01")["results"][0]
+        self.assertIsNotNone(result.get("created"))
+        self.assertNotIn("verification", result)
+
+    def test_repetition_still_refreshes_an_existing_claim(self):
+        self._record("ta", [0.0])
+        self._record("tb", [0.0])
+        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
+        self._record("ta", [0.0])          # same task again — refresh, not create
+        result = self.h.induce(strategy_id="S01")["results"][0]
+        self.assertEqual(result.get("updated"), created)
+        self.assertNotIn("skipped", result)
+        self.assertEqual(self.h.sbank.get(created).support_n, 3)
+
+
 class TestColdArchiveVeto(InductionCase):
-    def test_veto_blocks_and_force_overrides(self):
+    def test_veto_reports_before_the_admission_gate(self):
+        """With a card standing, a single-task evidence set must hear
+        "vetoed" (the real blocker), not "collect a second task" — that path
+        cannot succeed while the card is there."""
+        self.seed("S01", [0.05, 0.10], task_prefix="one")  # a single task
+        profile = self.make_profile("q")
+        predicates = evidence_predicates(self.stats.evidence(profile, "S01"))
+        self.sbank.add(StrategicEntry(
+            entry_id="se_hand", strategy_id="S01",
+            pattern={"predicates": predicates},
+            expected_quality_hat=0.9, quality_interval=[0.5, 1.0],
+            status="suspect"))
+        self.sbank.retire("se_hand", reason="did not reproduce")
+        result = self.engine.induce(profile, "S01")
+        self.assertIn("cold-archive veto", result["skipped"])
+        self.assertNotIn("verification", result)
+
+    def test_veto_blocks_and_force_lifts_it(self):
         self.seed("S01", [0.05, 0.10])
         created = self.engine.induce(self.make_profile("q"), "S01")["created"]
         entry = self.sbank.get(created)
@@ -94,106 +176,103 @@ class TestColdArchiveVeto(InductionCase):
         blocked = self.engine.induce(self.make_profile("q2"), "S01")
         self.assertIsNone(blocked.get("created"))
         self.assertEqual(blocked["vetoed"]["pattern_hash"], card.pattern_hash)
-        # Force overrides when the harness judges the environment drifted.
+        # Force LIFTS the veto (the card is removed), so the harness's
+        # environment-drift judgment is made once — the next plain induce
+        # must not be vetoed again.
         forced = self.engine.induce(self.make_profile("q2"), "S01", force=True)
         self.assertIsNotNone(forced.get("created"))
+        self.assertEqual(self.sbank.cold_archive(), [])
+        again = self.engine.induce(self.make_profile("q3"), "S01")
+        self.assertNotIn("vetoed", again)
 
 
-class TestScopeLadder(InductionCase):
-    def _wide_entry(self, support_families=("routing", "scheduling")):
-        ids = []
-        for fam in support_families:
-            ids.extend(self.seed("S01", [0.05, 0.10], family=fam,
-                                 task_prefix=f"w{fam[:2]}"))
-        entry = StrategicEntry(
-            entry_id="se_wide", strategy_id="S01",
-            pattern={"scope_level": "L1",
-                     "predicates": {"family": "routing",
-                                    "resource_coupling": [0.75, 1.0]}},
-            expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
-            failure_prob=0.0, provenance=ids, support_n=len(ids))
-        self.sbank.add(entry)
-        return entry
+class TestEvidenceRanges(InductionCase):
+    """A claim's applicability is read off its own evidence: the observed
+    family and the observed span of each structural dimension. There are no
+    bins, no levels and no widening command — accumulating evidence is what
+    moves the range."""
 
-    def test_widen_on_cross_family_reproduction(self):
-        self._wide_entry()
-        result = self.engine.widen("se_wide")
-        self.assertEqual(result.get("widened"), "se_wide")
-        self.assertEqual(result["new_scope"], "L2")
-        self.assertNotIn("family", result["predicates"])
-
-    def test_widen_refused_when_advantage_diverges(self):
-        # Second family performs badly -> advantage does not reproduce.
-        self.seed("S01", [0.05, 0.10], family="routing", task_prefix="wr")
-        self.seed("S01", [0.80, 0.85], family="scheduling", task_prefix="ws")
-        ids = [r.execution_id for r in self.bank.all()]
-        self.sbank.add(StrategicEntry(
-            entry_id="se_div", strategy_id="S01",
-            pattern={"scope_level": "L1",
-                     "predicates": {"family": "routing",
-                                    "resource_coupling": [0.75, 1.0]}},
-            expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
-            failure_prob=0.0, provenance=ids, support_n=len(ids)))
-        result = self.engine.widen("se_div")
-        self.assertIn("error", result)
-
-    def test_tighten_after_cross_family_miss(self):
-        # Q3 from the design doc: L2 entry misses in a new family -> tighten
-        # to L1 (range was wrong), not suspect (content may be right).
-        ids = self.seed("S01", [0.05, 0.10], family="routing", task_prefix="tr")
-        self.sbank.add(StrategicEntry(
-            entry_id="se_l2", strategy_id="S01",
-            pattern={"scope_level": "L2",
-                     "predicates": {"resource_coupling": [0.75, 1.0]}},
-            expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
-            failure_prob=0.0, provenance=ids, support_n=2))
-        result = self.engine.tighten("se_l2")
-        self.assertEqual(result.get("tightened"), "se_l2")
-        entry = self.sbank.get("se_l2")
-        self.assertEqual(entry.scope_level, "L1")
+    def test_predicates_are_the_observed_span(self):
+        self.seed("S01", [0.05, 0.10], task_prefix="a", resource_coupling=0.72)
+        self.seed("S01", [0.05, 0.10], task_prefix="b", resource_coupling=0.94)
+        entry = self.sbank.get(self.engine.induce(self.make_profile("q"), "S01")["created"])
         self.assertEqual(entry.predicates["family"], "routing")
-        self.assertEqual(entry.status, "candidate")  # not demoted
+        self.assertEqual(entry.predicates["resource_coupling"], [0.72, 0.94])
+        # A task anywhere inside the demonstrated span matches the claim —
+        # including at rc=0.80, which the old binning would have rejected.
+        self.assertTrue(entry.matches(self.make_profile(problem_id="p80",
+                                                        resource_coupling=0.80)))
+        # Outside the span the claim says nothing.
+        self.assertFalse(entry.matches(self.make_profile(problem_id="p40",
+                                                         resource_coupling=0.40)))
 
+    def test_new_evidence_widens_the_claim(self):
+        self.seed("S01", [0.05, 0.10], task_prefix="a", resource_coupling=0.62)
+        self.seed("S01", [0.05, 0.10], task_prefix="b", resource_coupling=0.66)
+        entry_id = self.engine.induce(self.make_profile("q"), "S01")["created"]
+        self.assertEqual(self.sbank.get(entry_id).predicates["resource_coupling"],
+                         [0.62, 0.66])
+        # The same strategy also held at rc=0.90 -> the range follows the
+        # evidence, with no widening operation in between.
+        self.seed("S01", [0.05, 0.10], task_prefix="c", resource_coupling=0.90)
+        self.engine.induce(self.make_profile("q2"), "S01")
+        entry = self.sbank.get(entry_id)
+        self.assertEqual(entry.predicates["resource_coupling"], [0.62, 0.90])
+        self.assertTrue(entry.matches(self.make_profile(problem_id="p80",
+                                                        resource_coupling=0.80)))
 
-class TestLLMConditions(InductionCase):
-    def test_valid_condition_accepted_unverified(self):
-        ids = self.seed("S01", [0.05, 0.10])
-        result = self.engine.induce(
-            self.make_profile("q"), "S01",
-            llm_conditions=[{"text": "performs above 90% here",
-                             "supporting_execution_ids": ids}])
+    def test_claim_stays_inside_its_family(self):
+        """Evidence in one family says nothing about another: cross-family
+        transfer is a harness judgment, not an automatic claim."""
+        self.seed("S01", [0.05, 0.10], family="routing", task_prefix="a")
+        self.seed("S01", [0.05, 0.10], family="packing", task_prefix="b")
+        self.engine.induce(self.make_profile("q"), "S01")
+        for entry in self.sbank.list():
+            other = ("packing" if entry.predicates["family"] == "routing"
+                     else "routing")
+            self.assertFalse(entry.matches(
+                self.make_profile(problem_id="x", family=other)))
+
+    def test_evidence_accumulates_across_coupling_drift(self):
+        """Four successes in one family used to be split into bins, leaving
+        cells too small to learn from (and a rc=0.60 task with no answer even
+        though the strategy had held from 0.30 to 0.80)."""
+        for i, rc in enumerate([0.30, 0.45, 0.62, 0.80]):
+            self.seed("S01", [0.05], task_prefix=f"t{i}", resource_coupling=rc)
+        result = self.engine.induce(self.make_profile("q"), "S01")
         entry = self.sbank.get(result["created"])
-        self.assertEqual(len(entry.applicability), 1)
-        self.assertFalse(entry.applicability[0].verified)  # never enters scoring yet
-        self.assertEqual(result["conditions_rejected"], [])
+        self.assertEqual(entry.support_n, 4)
+        self.assertEqual(entry.predicates["resource_coupling"], [0.30, 0.80])
+        self.assertTrue(entry.matches(self.make_profile(problem_id="p60",
+                                                        resource_coupling=0.60)))
 
-    def test_forged_citation_rejected(self):
+
+class TestApplicabilityNotes(InductionCase):
+    """Notes are harness-written free text: stored verbatim, shown by
+    ``inspect``, never scored and never "verified" — the framework cannot
+    check a sentence, so it does not pretend to."""
+
+    def test_notes_are_stored_verbatim(self):
         self.seed("S01", [0.05, 0.10])
-        result = self.engine.induce(
-            self.make_profile("q"), "S01",
-            llm_conditions=[{"text": "great", "supporting_execution_ids": ["ex_fake"]}])
+        note = "only trust this when the shared resource is the bottleneck"
+        result = self.engine.induce(self.make_profile("q"), "S01", notes=[note])
         entry = self.sbank.get(result["created"])
-        self.assertEqual(entry.applicability, [])
-        self.assertEqual(len(result["conditions_rejected"]), 1)
-        self.assertIn("does not exist", result["conditions_rejected"][0]["reason"])
+        self.assertEqual(entry.applicability, [note])
 
-    def test_numeric_claim_disagreement_rejected(self):
-        ids = self.seed("S01", [0.05, 0.10])  # quality ~90-95%
-        result = self.engine.induce(
-            self.make_profile("q"), "S01",
-            llm_conditions=[{"text": "achieves 30% quality",
-                             "supporting_execution_ids": ids}])
-        entry = self.sbank.get(result["created"])
-        self.assertEqual(entry.applicability, [])
-        self.assertIn("disagree", result["conditions_rejected"][0]["reason"])
-
-    def test_uncited_condition_rejected(self):
+    def test_blank_notes_ignored(self):
         self.seed("S01", [0.05, 0.10])
-        result = self.engine.induce(
-            self.make_profile("q"), "S01",
-            llm_conditions=[{"text": "trust me", "supporting_execution_ids": []}])
+        result = self.engine.induce(self.make_profile("q"), "S01",
+                                    notes=["   ", ""])
         entry = self.sbank.get(result["created"])
         self.assertEqual(entry.applicability, [])
+
+    def test_notes_append_on_refresh(self):
+        self.seed("S01", [0.05, 0.10])
+        first = self.engine.induce(self.make_profile("q"), "S01", notes=["one"])
+        result = self.engine.induce(self.make_profile("q2"), "S01", notes=["two"])
+        self.assertEqual(result.get("updated"), first["created"])
+        self.assertEqual(self.sbank.get(first["created"]).applicability,
+                         ["one", "two"])
 
 
 class TestRebuild(InductionCase):
@@ -216,6 +295,144 @@ class TestRebuild(InductionCase):
         self.sbank.retire(created, reason="x")
         self.engine.rebuild()
         self.assertEqual(len(self.sbank.cold_archive()), 1)
+
+
+class TestOfflineRevision(HarnessTestCase):
+    """Online recording only accumulates evidence; every knowledge change
+    (promotion, demotion, scope tightening, dormancy wakeup) happens in the
+    explicit offline `induce` call, replayed from the frozen checks written
+    on the facts."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+        self.addCleanup(self.h.close)
+
+    def _entry(self, strategy="S01", gaps=(0.0, 0.0), tasks=("a", "b")):
+        """Two independent tasks -> entry (honest interval floors at width 0.5)."""
+        for i, gap in enumerate(gaps):
+            self.h.bank.append(self.make_record(
+                execution_id=f"ex_seed_{strategy}_{i}", task_id=tasks[i],
+                strategy_id=strategy, gap=gap))
+        result = self.h.induce(strategy_id=strategy)
+        return result["results"][0]["created"]
+
+    def _record(self, execution_id, task_id, gap, *, strategy="S01",
+                family="routing", scope="attempt", **coupling):
+        rec = self.make_record(
+            execution_id=execution_id, task_id=task_id, strategy_id=strategy,
+            gap=gap, profile=self.make_profile(problem_id=task_id,
+                                               family=family, **coupling))
+        rec.measurement_scope = scope
+        return self.h.record(rec)
+
+    # -- online: evidence only -------------------------------------------------
+
+    def test_frozen_check_is_persisted_with_the_fact(self):
+        entry_id = self._entry()
+        entry = self.h.sbank.get(entry_id)
+        out = self._record("ex_frozen", "ft1", gap=0.9)
+        self.assertEqual([c["entry_id"] for c in out["prediction_checks"]],
+                         [entry_id])
+        self.assertEqual(out["prediction_checks"][0]["hit"], False)
+        # The check carries the interval that was in force at that moment.
+        self.assertEqual(out["prediction_checks"][0]["interval"],
+                         list(entry.quality_interval))
+        stored = self.h.bank.get("ex_frozen")
+        self.assertEqual(stored.execution_features["quality_feedback"],
+                         out["prediction_checks"])
+
+    def test_recording_never_changes_the_entry(self):
+        entry_id = self._entry()
+        for i in range(3):
+            self._record(f"ex_m{i}", f"mt{i}", gap=0.9)
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual(entry.status, "candidate")
+        self.assertEqual(entry.prediction_track.n_predictions, 0)
+        self.assertEqual(entry.prediction_track.consecutive_misses, 0)
+
+    def test_other_strategy_never_audits_the_entry(self):
+        """A never audits B: S06's execution says nothing about S01's entry."""
+        entry_id = self._entry()
+        out = self._record("ex_s06", "ot1", gap=0.9, strategy="S06")
+        self.assertEqual(out["prediction_checks"], [])
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual((entry.status, entry.prediction_track.n_predictions),
+                         ("candidate", 0))
+
+    def test_task_scope_record_writes_no_check(self):
+        """A task-scope total never audits attempt-scope knowledge."""
+        entry_id = self._entry()
+        out = self._record("ex_ts", "ts1", gap=0.9, scope="task")
+        self.assertEqual(out["prediction_checks"], [])
+        stored = self.h.bank.get("ex_ts")
+        self.assertNotIn("quality_feedback", stored.execution_features)
+        self.assertEqual(self.h.sbank.get(entry_id).prediction_track.n_predictions, 0)
+
+    # -- offline: revision -----------------------------------------------------
+
+    def test_content_misses_demote_at_revise(self):
+        entry_id = self._entry()
+        for i in range(3):
+            out = self._record(f"ex_c{i}", f"ct{i}", gap=0.9)
+            self.assertEqual([c["hit"] for c in out["prediction_checks"]], [False])
+        report = self.h.induction.revise("S01")
+        item = next(r for r in report if r["entry_id"] == entry_id)
+        self.assertEqual(item["forward"]["consecutive_misses"], 3)
+        self.assertIn("demoted:->suspect", item["transitions"])
+        self.assertEqual(self.h.sbank.get(entry_id).status, "suspect")
+
+    def test_hits_promote_at_revise(self):
+        entry_id = self._entry()
+        for i in range(5):
+            out = self._record(f"ex_h{i}", f"ht{i}", gap=0.0)
+            self.assertEqual([c["hit"] for c in out["prediction_checks"]], [True])
+        self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")
+        report = self.h.induction.revise("S01")
+        item = next(r for r in report if r["entry_id"] == entry_id)
+        self.assertIn("promoted:candidate->validated", item["transitions"])
+        self.assertEqual(self.h.sbank.get(entry_id).status, "validated")
+
+    def test_out_of_range_evidence_is_not_checked(self):
+        """A claim only answers for the structure it was induced from: a
+        record outside its ranges matches nothing and changes nothing."""
+        entry_id = self._entry()          # evidence sits at rc=0.9
+        out = self._record("ex_far", "far1", gap=0.9, resource_coupling=0.2)
+        self.assertEqual(out["prediction_checks"], [])
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual((entry.status, entry.prediction_track.n_predictions),
+                         ("candidate", 0))
+
+    def test_other_family_is_not_checked(self):
+        """Claims are family-scoped; another family's execution is not a check
+        on this claim (and not a counterexample to it either)."""
+        entry_id = self._entry()
+        out = self._record("ex_fam", "f1", gap=0.9, family="packing")
+        self.assertEqual(out["prediction_checks"], [])
+        self.assertEqual(self.h.sbank.get(entry_id).prediction_track.n_predictions, 0)
+        self.assertEqual([r["entry_id"] for r in self.h.induction.revise("S01")], [])
+
+    def test_dormant_wakes_on_new_evidence(self):
+        entry_id = self._entry()
+        entry = self.h.sbank.get(entry_id)
+        entry.status = "dormant"
+        entry.created_at = 1.0          # long before the new evidence
+        self.h.sbank.update(entry)
+        self._record("ex_wake", "wt1", gap=0.0)
+        self.assertEqual(self.h.sbank.get(entry_id).status, "dormant")  # online
+        self.h.induction.revise("S01")
+        self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")
+
+    def test_revise_dry_run_writes_nothing(self):
+        entry_id = self._entry()
+        for i in range(3):
+            self._record(f"ex_d{i}", f"dt{i}", gap=0.9)
+        report = self.h.induction.revise("S01", dry_run=True)
+        item = next(r for r in report if r["entry_id"] == entry_id)
+        self.assertEqual(item["forward"]["consecutive_misses"], 3)
+        entry = self.h.sbank.get(entry_id)
+        self.assertEqual(entry.status, "candidate")
+        self.assertEqual(entry.prediction_track.consecutive_misses, 0)
 
 
 if __name__ == "__main__":

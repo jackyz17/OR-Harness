@@ -149,7 +149,7 @@ class TestC5CrossFamily(TriggerCase):
                 self.bank.append(last)
         hints = [h for h in self.check(last) if h.criterion == "C5"]
         self.assertTrue(hints)
-        self.assertEqual(hints[0].scope_suggestion, "L2")
+        self.assertEqual(hints[0].criterion, "C5")
 
     def test_single_family_silent(self):
         last = None

@@ -70,7 +70,7 @@ class TestConditionalStats(HarnessTestCase):
         p_b = self.make_profile(problem_id="b1", family="scheduling")
         self.bank.append(self.make_record(execution_id="ex_a", task_id="a1", profile=p_a))
         self.bank.append(self.make_record(execution_id="ex_b", task_id="b1", profile=p_b))
-        cells = self.stats.cross_family(self.make_profile(problem_id="q"), "S01")
+        cells = self.stats.cross_family("S01")
         self.assertEqual(len(cells), 2)
         self.assertTrue(all(c.n == 1 for c in cells))
 
@@ -93,11 +93,10 @@ class TestStrategicBank(HarnessTestCase):
         self.sbank = StrategicBank(self.store)
 
     def make_entry(self, entry_id="se_1", strategy_id="S01", status="candidate",
-                   scope="L1", predicates=None, support_n=2) -> StrategicEntry:
+                   predicates=None, support_n=2) -> StrategicEntry:
         return StrategicEntry(
             entry_id=entry_id, strategy_id=strategy_id,
-            pattern={"scope_level": scope,
-                     "predicates": predicates if predicates is not None
+            pattern={"predicates": predicates if predicates is not None
                      else {"family": "routing", "resource_coupling": [0.75, 1.0]}},
             expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
             failure_prob=0.05, status=status, support_n=support_n,
@@ -123,10 +122,11 @@ class TestStrategicBank(HarnessTestCase):
             self.sbank.add(entry)
 
     def test_matching_respects_scope(self):
-        self.sbank.add(self.make_entry(entry_id="se_l1", scope="L1"))
+        # A family-scoped claim and a family-free one; the latter matches
+        # every family (it is cross-family by construction, not by a label).
+        self.sbank.add(self.make_entry(entry_id="se_l1"))
         self.sbank.add(self.make_entry(
-            entry_id="se_l2", scope="L2",
-            predicates={"resource_coupling": [0.75, 1.0]}))
+            entry_id="se_l2", predicates={"resource_coupling": [0.75, 1.0]}))
         profile = self.make_profile(problem_id="q")
         self.assertEqual({e.entry_id for e in self.sbank.matching(profile)},
                          {"se_l1", "se_l2"})

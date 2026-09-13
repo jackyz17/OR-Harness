@@ -381,7 +381,7 @@ class TestLegacyEntryCompatibility(HarnessTestCase):
         from or_harness.core.schema import COST_DIMENSIONS
         return {
             "entry_id": "se_legacy", "strategy_id": "S01",
-            "pattern": {"scope_level": "L1", "predicates": {}},
+            "pattern": {"predicates": {}},
             "expected": {
                 "quality_hat": 0.9, "quality_interval": [0.5, 1.0],
                 "cost_hat": {"llm_tokens": 0.0, "tool_calls": 0.0,
@@ -412,7 +412,7 @@ class TestLegacyEntryCompatibility(HarnessTestCase):
         from or_harness.core.schema import StrategicEntry
         entry = StrategicEntry(
             entry_id="se_new", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {}},
+            pattern={"predicates": {}},
             expected_cost_hat=CostVector(llm_tokens=100.0,
                                          measured={"llm_tokens"}),
             cost_interval={"llm_tokens": (0.5, 2.0)},

@@ -100,7 +100,11 @@ class GroupStats:
 
 
 class ConditionalStats:
-    """Computes (group x strategy) aggregates directly from the fact layer."""
+    """Computes (group x strategy) aggregates directly from the fact layer.
+
+    A group is one evidence set: a (family, strategy) cell. Where inside a
+    family a strategy held is expressed by the claim's own predicates, never
+    by splitting the evidence into feature bins."""
 
     def __init__(self, bank: ExperienceBank):
         self.bank = bank
@@ -120,55 +124,36 @@ class ConditionalStats:
             cells.setdefault(rec.strategy_id, []).append(rec)
         return {sid: self._aggregate(group_l1, sid, recs) for sid, recs in cells.items()}
 
-    def for_profile(self, profile, level: str = "L1") -> Dict[str, GroupStats]:
-        return self.group(group_key(profile, level))
+    def for_profile(self, profile) -> Dict[str, GroupStats]:
+        return self.group(group_key(profile))
 
-    def cross_family(self, profile, strategy_id: str,
-                     level: str = "L2") -> List[GroupStats]:
-        """Same strategy across families at a wider scope.
+    def evidence(self, profile, strategy_id: str) -> List[ExecutionRecord]:
+        """The records of one (family, strategy) evidence set.
 
-        The "learn once, apply elsewhere" detector: partitions the matched
-        facts by family so callers can check whether an advantage reproduces
-        independently in >= 2 families.
+        Same membership rule as :meth:`cell`, exposed so induction can read
+        the claim's intervals off the very records it aggregates."""
+        return [r for r in self.bank.query(group_l1=group_key(profile),
+                                           strategy_id=strategy_id)
+                if r.source == "executed"]
+
+    def aggregate(self, group_l1: str, strategy_id: str,
+                  records: Sequence[ExecutionRecord]) -> GroupStats:
+        """Public aggregator (used by induction for a cell it already read)."""
+        return self._aggregate(group_l1, strategy_id, records)
+
+    def cross_family(self, strategy_id: str) -> List[GroupStats]:
+        """One strategy's evidence partitioned by family.
+
+        The "learn once, apply elsewhere" view: callers can check whether the
+        same-direction advantage shows up in >= 2 families independently.
         """
-        target = group_key(profile, level)
         by_family: Dict[str, List[ExecutionRecord]] = {}
         for rec in self.bank.query(strategy_id=strategy_id):
             if rec.source != "executed":
                 continue
-            if group_key(rec.profile_snapshot, level) == target:
-                by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(f"{target}#family={fam}", strategy_id, recs)
-                for fam, recs in sorted(by_family.items())]
-
-    def cells_matching(self, strategy_id: str,
-                       predicates: Dict[str, Any]) -> List[GroupStats]:
-        """Partition a strategy's executions matching ``predicates`` by family."""
-        from or_harness.core.schema import profile_matches
-        by_family: Dict[str, List[ExecutionRecord]] = {}
-        for rec in self.bank.query(strategy_id=strategy_id):
-            if rec.source != "executed":
-                continue
-            if profile_matches(rec.profile_snapshot, predicates):
-                by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(f"match#family={fam}", strategy_id, recs)
-                for fam, recs in sorted(by_family.items())]
-
-    def cross_family_from_predicates(self, entry, level: str) -> List[GroupStats]:
-        """Partition an entry's evidence by family at ``level``.
-
-        Cells are keyed by the entry's predicate bins rather than the raw
-        profile bins, so provenance records in adjacent fine bins still count
-        toward the entry's own pattern."""
-        from or_harness.core.schema import profile_matches
-        by_family: Dict[str, List[ExecutionRecord]] = {}
-        for rec in self.bank.query(strategy_id=entry.strategy_id):
-            if rec.source != "executed":
-                continue
-            if profile_matches(rec.profile_snapshot, entry.predicates):
-                by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(f"{level}#family={fam}", entry.strategy_id, recs)
-                for fam, recs in sorted(by_family.items())]
+            by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
+        return [self._aggregate(group_key(recs[0].profile_snapshot), strategy_id, recs)
+                for _, recs in sorted(by_family.items())]
 
     def rebuild_check(self) -> bool:
         """Consistency invariant: aggregating a full scan equals per-group

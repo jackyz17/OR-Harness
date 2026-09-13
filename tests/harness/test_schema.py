@@ -4,21 +4,18 @@ import unittest
 from helpers import HarnessTestCase
 
 from or_harness.core.schema import (
-    COARSE_BIN_EDGES,
     CostVector,
     ColdArchiveCard,
     ExecutionRecord,
     ProblemProfile,
     StrategicEntry,
     Strategy,
-    ApplicabilityCondition,
+    evidence_predicates,
     group_key,
     min_interval_width,
-    pattern_for,
     pattern_hash,
     predicates_cover,
     profile_matches,
-    scope_of,
 )
 
 
@@ -92,18 +89,30 @@ class TestSchemaRoundTrip(HarnessTestCase):
     def test_strategic_entry_round_trip(self):
         e = StrategicEntry(
             entry_id="se_001", strategy_id="S02",
-            pattern={"scope_level": "L2",
-                     "predicates": {"resource_coupling": [0.75, 1.0]}},
+            pattern={"predicates": {"family": "routing",
+                                    "resource_coupling": [0.75, 1.0]}},
             expected_quality_hat=0.9, quality_interval=(0.7, 1.0),
-            applicability=[ApplicabilityCondition("good here", False, ["ex_1"])],
-            risk_conditions=["large scale"], provenance=["ex_1"], support_n=2,
+            applicability=["good here"], risk_conditions=["large scale"],
+            provenance=["ex_1"], support_n=2,
         )
         self.assertEqual(StrategicEntry.from_dict(e.to_dict()), e)
+
+    def test_legacy_condition_objects_load_as_notes(self):
+        """Payloads written when applicability was a list of condition
+        objects keep their text; the never-populated verification flags are
+        dropped."""
+        entry = StrategicEntry.from_dict({
+            "entry_id": "se_legacy", "strategy_id": "S01",
+            "pattern": {"predicates": {}},
+            "applicability": [{"text": "works at scale", "verified": False,
+                               "supporting_execution_ids": ["ex_1"]},
+                              "plain note"]})
+        self.assertEqual(entry.applicability, ["works at scale", "plain note"])
 
     def test_strategic_entry_expected_aliases(self):
         e = StrategicEntry(
             entry_id="se_001", strategy_id="S02",
-            pattern={"scope_level": "L1", "predicates": {}},
+            pattern={"predicates": {}},
             expected_quality_hat=0.8, failure_prob=0.3,
             expected_cost_hat=CostVector(llm_tokens=5))
         # Knowledge stores EXPECTED quantities; aliases make this explicit.
@@ -114,28 +123,19 @@ class TestSchemaRoundTrip(HarnessTestCase):
     def test_strategic_entry_extension_fields_round_trip(self):
         e = StrategicEntry(
             entry_id="se_002", strategy_id="S04",
-            pattern={"scope_level": "L1", "predicates": {}},
+            pattern={"predicates": {}},
             strategy_type="decomposition",
-            principle="preserve the shared resource globally",
             actions=["identify bottleneck", "decompose locals"],
             provenance=["ex_1"], support_n=2)
         e2 = StrategicEntry.from_dict(e.to_dict())
         self.assertEqual(e2.strategy_type, "decomposition")
-        self.assertEqual(e2.principle, e.principle)
         self.assertEqual(e2.actions, e.actions)
         # Old payloads without the extension fields load with defaults.
         e3 = StrategicEntry.from_dict({
             "entry_id": "se_003", "strategy_id": "S01",
-            "pattern": {"scope_level": "L1", "predicates": {}}})
+            "pattern": {"predicates": {}}})
         self.assertIsNone(e3.strategy_type)
-        self.assertIsNone(e3.principle)
         self.assertEqual(e3.actions, [])
-
-    def test_entry_rejects_bad_scope(self):
-        with self.assertRaises(ValueError):
-            StrategicEntry.from_dict({
-                "entry_id": "se_x", "strategy_id": "S01",
-                "pattern": {"scope_level": "L9", "predicates": {}}})
 
     def test_cold_archive_card_round_trip(self):
         c = ColdArchiveCard(pattern_hash="abc", strategy_id="S01",
@@ -145,27 +145,42 @@ class TestSchemaRoundTrip(HarnessTestCase):
 
 
 class TestStructuralGrouping(HarnessTestCase):
-    def test_l1_includes_family_l2_l3_do_not(self):
+    def test_group_key_is_the_family(self):
+        """One evidence set = one (family, strategy) cell. Where inside the
+        family a strategy held is the claim's business, not the key's."""
         p = self.make_profile()
-        self.assertIn("family=routing", group_key(p, "L1"))
-        self.assertIn("family=*", group_key(p, "L2"))
-        self.assertIn("family=*", group_key(p, "L3"))
+        self.assertEqual(group_key(p), "family=routing")
+        self.assertEqual(group_key(self.make_profile(resource_coupling=0.1)),
+                         group_key(self.make_profile(resource_coupling=0.9)))
+        self.assertNotEqual(group_key(p),
+                            group_key(self.make_profile(family="scheduling")))
 
-    def test_bin_boundaries(self):
-        lo = self.make_profile(resource_coupling=0.1)
-        hi = self.make_profile(resource_coupling=0.9)
-        self.assertNotEqual(group_key(lo, "L1"), group_key(hi, "L1"))
-        same = self.make_profile(resource_coupling=0.95)
-        self.assertEqual(group_key(hi, "L1"), group_key(same, "L1"))
+    def test_evidence_predicates_are_the_observed_span(self):
+        records = [
+            self.make_record(execution_id="ex_a", task_id="a",
+                             profile=self.make_profile(problem_id="a",
+                                                       resource_coupling=0.72)),
+            self.make_record(execution_id="ex_b", task_id="b",
+                             profile=self.make_profile(problem_id="b",
+                                                       resource_coupling=0.94)),
+        ]
+        predicates = evidence_predicates(records)
+        self.assertEqual(predicates["family"], "routing")
+        self.assertEqual(predicates["resource_coupling"], [0.72, 0.94])
+        # A task anywhere inside the observed span matches; outside it does not.
+        inside = self.make_profile(problem_id="q", resource_coupling=0.80)
+        outside = self.make_profile(problem_id="q2", resource_coupling=0.55)
+        self.assertTrue(profile_matches(inside, predicates))
+        self.assertFalse(profile_matches(outside, predicates))
 
-    def test_pattern_for_levels(self):
-        p = self.make_profile()
-        self.assertEqual(pattern_for(p, "L1")["family"], "routing")
-        self.assertNotIn("family", pattern_for(p, "L2"))
-        l3 = pattern_for(p, "L3")
-        for f, (lo, hi) in l3.items():
-            self.assertIn(lo, COARSE_BIN_EDGES)
-            self.assertIn(hi, COARSE_BIN_EDGES)
+    def test_evidence_predicates_skip_unmeasured_dimensions(self):
+        records = [self.make_record(
+            execution_id="ex_a", task_id="a",
+            profile=self.make_profile(problem_id="a", resource_coupling=None,
+                                      temporal_coupling=None,
+                                      route_complexity=None))]
+        self.assertEqual(evidence_predicates(records), {"family": "routing"})
+        self.assertEqual(evidence_predicates([]), {})
 
     def test_profile_matches(self):
         p = self.make_profile()
@@ -177,30 +192,12 @@ class TestStructuralGrouping(HarnessTestCase):
         q = self.make_profile(resource_coupling=None)
         self.assertFalse(profile_matches(q, {"resource_coupling": [0.0, 0.5]}))
 
-    def test_scope_inference(self):
-        self.assertEqual(scope_of({"family": "f", "resource_coupling": [0.75, 1.0]}), "L1")
-        self.assertEqual(scope_of({"resource_coupling": [0.75, 1.0]}), "L2")
-        self.assertEqual(scope_of({"resource_coupling": [0.0, 0.5]}), "L3")
-
-    def test_predicates_cover(self):
-        wide = {"resource_coupling": [0.5, 1.0]}
-        narrow = {"resource_coupling": [0.75, 1.0]}
-        self.assertTrue(predicates_cover(wide, narrow))
-        self.assertFalse(predicates_cover(narrow, wide))
-        self.assertFalse(predicates_cover({"family": "a"}, {"family": "b"}))
-
-    def test_pattern_hash_stable(self):
-        a = pattern_hash({"resource_coupling": [0.75, 1.0]}, "S01")
-        b = pattern_hash({"resource_coupling": [0.75, 1.0]}, "S01")
-        c = pattern_hash({"resource_coupling": [0.75, 1.0]}, "S02")
-        self.assertEqual(a, b)
-        self.assertNotEqual(a, c)
-
-    def test_interval_honesty_floor(self):
-        self.assertEqual(min_interval_width(2), 0.50)
-        self.assertEqual(min_interval_width(5), 0.15)
-        self.assertEqual(min_interval_width(50), 0.0)
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_semantic_coupling_never_enters_the_evidence(self):
+        """The one dimension that is never derived must not split the
+        evidence or appear in a claim."""
+        a = self.make_profile(semantic_coupling=0.8)
+        b = self.make_profile(semantic_coupling=0.2)
+        self.assertEqual(group_key(a), group_key(b))
+        records = [self.make_record(execution_id="ex_a", task_id="a", profile=a),
+                   self.make_record(execution_id="ex_b", task_id="b", profile=b)]
+        self.assertNotIn("semantic_coupling", evidence_predicates(records))

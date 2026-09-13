@@ -291,16 +291,10 @@ def cmd_record(args) -> int:
 def cmd_induce(args) -> int:
     h = _harness(args)
     try:
-        conditions = None
-        if args.llm_conditions:
-            conditions = _load_json_arg(args.llm_conditions)
-            if not isinstance(conditions, list):
-                return _fail("--llm-conditions must be a JSON list of "
-                             "{text, supporting_execution_ids}")
+        notes = list(args.note or []) or None
         result = h.induce(strategy_id=args.strategy, all_=args.all,
-                          rebuild=args.rebuild, widen=args.widen,
-                          tighten=args.tighten, dry_run=args.dry_run,
-                          force=args.force, llm_conditions=conditions)
+                          rebuild=args.rebuild, dry_run=args.dry_run,
+                          force=args.force, notes=notes)
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
@@ -310,26 +304,31 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
     if args.rebuild:
         if result.get("dry_run") or "would_rebuild" in result:
             return (f"Rebuild plan: {result.get('would_rebuild', 0)} cells would "
-                    "be re-induced from currently retained evidence. Cold "
+                    "be re-induced from currently retained evidence. The cold "
                     "archive is preserved. Run without --dry-run to apply.")
         return (f"Re-induced {result.get('rebuilt', 0)} entries from retained "
                 "evidence. Exact reconstruction is not a requirement — the "
                 "re-induced bank may differ from the previous one.")
-    if args.widen:
-        return json.dumps(result) if "error" in result else \
-            f"Entry {result['widened']} widened to {result['new_scope']}."
-    if args.tighten:
-        return json.dumps(result) if "error" in result else \
-            f"Entry {result['tightened']} tightened to {result['new_scope']}."
     created = [r for r in result.get("results", []) if r.get("created")]
+    revised = [r for r in result.get("results", []) if r.get("updated")]
     skipped = [r for r in result.get("results", []) if r.get("skipped")]
     parts = []
     if created:
-        parts.append(f"Created/updated {len(created)} entries: "
-                     + ", ".join(r.get("created") or r.get("updated", "?")
-                                 for r in created))
+        parts.append(f"Created {len(created)} entries: "
+                     + ", ".join(r["created"] for r in created))
+    if revised:
+        parts.append(f"Refreshed {len(revised)} entries: "
+                     + ", ".join(r["updated"] for r in revised))
     if skipped:
-        parts.append(f"Skipped {len(skipped)}: " + skipped[0]["skipped"])
+        parts.append(f"Skipped {len(skipped)}: {skipped[0]['skipped']}")
+    transitions = [rev for rev in (result.get("revisions") or [])
+                   if rev.get("transitions")]
+    for rev in transitions:
+        parts.append(f"Revision on {rev['entry_id']} ({rev['strategy_id']}): "
+                     f"{', '.join(rev['transitions'])} — from "
+                     f"{rev['forward']['n_predictions']} frozen check(s), "
+                     f"{rev['forward']['consecutive_misses']} consecutive "
+                     "miss(es)")
     if not parts:
         parts.append("Nothing to induce.")
     return " ".join(parts)
@@ -342,11 +341,20 @@ def cmd_inspect(args) -> int:
                            strategy_id=args.strategy, status=args.status)
         count = result["count"]
         noun = {"experience": "records", "strategic": "entries",
-                "archive": "cards"}[result["bank"]]
-        return _emit(result, f"{count} {noun} in {result['bank']} bank"
+                "archive": "cards"}[args.bank]
+        if count == 1:
+            noun = noun[:-1]           # "1 card", not "1 cards"
+        detail = ""
+        if args.bank == "strategic":
+            detail = (" Entry track records show n_predictions, hit_rate, "
+                      "calibration_error, and consecutive_misses.")
+        elif args.bank == "archive":
+            detail = (" A card blocks re-inducing that same pattern; lift it "
+                      "with `induce --force` when the environment has "
+                      "genuinely drifted.")
+        return _emit(result, f"{count} {noun} in {args.bank} bank"
                              + (f" (status={args.status})" if args.status else "")
-                             + ". Entry track records show n_predictions, hit_rate, "
-                               "calibration_error, and consecutive_misses.")
+                             + "." + detail)
     finally:
         h.close()
 
@@ -375,9 +383,10 @@ def cmd_retire(args) -> int:
     try:
         result = h.retire(args.entry, reason=args.reason)
         return _emit(result, f"Entry {args.entry} retired to the cold archive. "
-                             "It left the hot store; its tombstone vetoes "
-                             "re-induction of the same pattern (revive only with "
-                             "--force if the environment has genuinely drifted).")
+                             "It left the hot store; its cold-archive card now "
+                             "blocks re-inducing the same pattern (lift it with "
+                             "`induce --force` if the environment has genuinely "
+                             "drifted).")
     finally:
         h.close()
 
@@ -483,17 +492,25 @@ def build_parser() -> argparse.ArgumentParser:
                         "the record is preserved")
     p.set_defaults(func=cmd_record)
 
-    p = sub.add_parser("induce", help="consolidate facts into strategic entries")
+    p = sub.add_parser(
+        "induce", help="consolidate facts into strategic entries",
+        epilog=("Creating an entry requires >=2 supporting executions from "
+                ">=2 distinct task_ids: repeating one task is repetition, not "
+                "reproduction. Refreshing an existing entry is never gated."))
     p.add_argument("--strategy", default=None)
     p.add_argument("--all", action="store_true")
     p.add_argument("--rebuild", action="store_true")
-    p.add_argument("--widen", default=None, metavar="ENTRY_ID")
-    p.add_argument("--tighten", default=None, metavar="ENTRY_ID")
+
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true",
-                   help="override cold-archive veto (environment drift)")
-    p.add_argument("--llm-conditions", default=None,
-                   help="JSON list of {text, supporting_execution_ids} phrased by you")
+                   help="lift the cold-archive veto: the card blocking this "
+                        "pattern is REMOVED, then induction proceeds "
+                        "(reserve it for genuine environment drift — the "
+                        "lift is one-time, no need to repeat it)")
+    p.add_argument("--note", action="append", default=None, metavar="TEXT",
+                   help="applicability note to attach to the entries this call "
+                        "creates/refreshes (free text, kept for the reader, "
+                        "never scored; repeatable)")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

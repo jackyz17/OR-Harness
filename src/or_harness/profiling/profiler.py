@@ -34,7 +34,6 @@ from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import (
     COUPLING_FEATURES,
-    FINE_BIN_EDGES,
     ProblemProfile,
     SCALE_FEATURES,
 )
@@ -46,6 +45,11 @@ from or_harness.profiling.model_syntax import (
 
 #: Dimensions measurable from structure (semantic_coupling excluded).
 STRUCTURAL_DIMENSIONS = ("resource_coupling", "temporal_coupling", "route_complexity")
+
+#: Diagnostic threshold for the supplied-vs-derived cross-check: how far apart
+#: the two values may be before the report flags them. Purely advisory — the
+#: derived value always wins, and applicability is read off evidence.
+CROSS_CHECK_MIN_DISAGREEMENT = 0.2
 
 
 def profile_task(task: Dict[str, Any], code: Optional[str] = None,
@@ -204,9 +208,10 @@ def _cross_check(supplied: Dict[str, float],
                  coupling: Dict[str, Optional[float]],
                  origin: Dict[str, str]) -> List[Dict[str, Any]]:
     """Warn when a supplied value and the winning structural derivation
-    (CIR > model > code/spec) disagree across a bin boundary — the harness
-    should reconsider before writing solve.py.  The winning value is used
-    for grouping either way."""
+    (CIR > model > code/spec) disagree materially — the harness should
+    reconsider before writing solve.py.  The winning value is used for
+    grouping either way (applicability is read off evidence, so this is a
+    diagnostic, not a grouping rule)."""
     warnings: List[Dict[str, Any]] = []
     for f in STRUCTURAL_DIMENSIONS:
         if f not in supplied:
@@ -214,37 +219,29 @@ def _cross_check(supplied: Dict[str, float],
         structural = coupling.get(f)
         if structural is None:
             continue
-        supplied_bin = _bin_index(supplied[f])
-        derived_bin = _bin_index(structural)
-        if supplied_bin != derived_bin:
+        gap = abs(float(supplied[f]) - float(structural))
+        if gap >= CROSS_CHECK_MIN_DISAGREEMENT:
             warnings.append({
                 "dimension": f,
                 "supplied": round(float(supplied[f]), 4),
                 "derived": round(float(structural), 4),
+                "gap": round(gap, 4),
                 "origin": origin.get(f, "unknown"),
                 "message": (
                     f"you supplied {f}={supplied[f]:.2f} but structural "
-                    f"derivation says {structural:.2f}; these fall in "
-                    f"different similarity bins — reconsider before writing "
-                    f"solver code (the derived value will be used for "
-                    f"grouping)"),
+                    f"derivation says {structural:.2f} (gap {gap:.2f}) — "
+                    f"reconsider before writing solver code (the derived "
+                    f"value is what gets used)"),
             })
     return warnings
-
-
-def _bin_index(value: float) -> int:
-    v = max(0.0, min(1.0, float(value)))
-    for i, (lo, hi) in enumerate(zip(FINE_BIN_EDGES, FINE_BIN_EDGES[1:])):
-        if lo <= v <= hi:
-            return i
-    return len(FINE_BIN_EDGES) - 2
 
 
 def _null_note(dimension: str, origin: str) -> str:
     if dimension == "semantic_coupling":
         return ("semantic coupling is never derived (business semantics are "
                 "invisible to structure); supply annotations.coupling."
-                "semantic_coupling if you want it grouped on")
+                "semantic_coupling to keep it in the profile — it informs "
+                "your own judgment and never conditions the statistics")
     if origin == "supplied":
         return "supplied"
     return ("no structural signal found: provide the 'model' field (best), "

@@ -17,44 +17,83 @@ Divergence judgments require **n ≥ 2** supporting executions. A single observa
 | C5 cross-family reproduction | same strategy, same-direction extreme performance in ≥2 families with similar structure | single-family evidence, or mixed directions |
 | C6 stable success | same group, n ≥ 4, zero failures, zero retries | any retry breaks stability |
 
-Note: trigger criteria no longer reference catalog priors (which have been removed). All criteria are purely statistical — they detect patterns in observed data (strategy contrasts, extreme performance, cross-family reproduction), not divergence from fabricated baselines.: the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
+Note: trigger criteria no longer reference catalog priors (which have been removed). All criteria are purely statistical — they detect patterns in observed data (strategy contrasts, extreme performance, cross-family reproduction), not divergence from fabricated baselines. For C4, the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
 
-## The scope ladder
+Hints count **executions**, not tasks: three runs of one instance can legitimately fire C2 or C6. That is not a bug and not a contradiction — a hint says the numbers look patterned, while the admission gate below decides whether the evidence may become a claim.
 
-An entry's pattern lives on a ladder:
+## Applicability is read off the evidence
 
-- **L1** — family + fine bins (e.g. routing × rc∈[0.75,1.0]). Narrowest, safest.
-- **L2** — fine bins, any family. Cross-family generalization.
-- **L3** — coarse bins, any family. Widest, riskiest.
+A claim's applicability is not declared on a ladder and not quantized into
+bins. It is the evidence itself:
 
-`induce` starts at L1. C5 evidence (independent reproduction across families) justifies `--widen`. Widening is falsifiable: a wide entry makes riskier predictions, and when a cross-family execution misses, the pattern **auto-tightens back down** — the range was wrong, not necessarily the content. A scope miss never demotes an entry to `suspect`; that state is reserved for prediction-content misses.
+- **family** — the evidence set the claim came from: one (family, strategy)
+  cell is one evidence set, and the claim speaks for that family only;
+- **intervals** — for every structural dimension the supporting executions
+  measured, the span they actually covered (`resource_coupling ∈ [0.62, 0.94]`).
 
-Cross-problem alignment needs no LLM role schema: the profiler's coupling dimensions are the quantitative version of abstract roles. Predicate intervals merge when the strategy's evidence points the same direction in each family — the merge replaces what an older design spent 500 lines of LLM alignment pipeline on.
+Both move with the evidence, because `induce` re-reads the claim's predicates
+from its supporting records every time it refreshes them. Run the strategy on
+a task at another coupling magnitude and the interval follows; a task anywhere
+inside the demonstrated span matches the claim; a task outside it gets no
+answer (and the statistics view, `evidence: "conditional_stats"`, is still
+there).
 
-## Forward validation and lifecycle
+Widening across families is **your** call, not the framework's: the evidence
+says "in routing, at these couplings, S04 held", and nothing about packing. If
+you decide a routing lesson transfers to packing, act on it yourself — and
+record the executions, which is what will give packing its own claim.
 
-Every `record` automatically checks each matching entry's interval against the observation:
+Counterexamples need no special machinery either: a miss inside the claimed
+range is a miss *of the claim* (the claim covered that task when it ran), and
+three consecutive ones demote the entry to `suspect`. Records outside the
+range or from another family simply do not match, so they are neither checks
+nor counterexamples.
 
-- **hit** → `n_hits += 1`, calibration error updated
-- **miss** → `consecutive_misses += 1`
-- **promotion** (auto): n ≥ 5 and hit rate ≥ 0.7 → `candidate` becomes `validated`
-- **demotion** (auto): 3 consecutive misses → `suspect` (score ×0.5, warnings attached)
-- **retirement** (never auto): your explicit `orx retire` moves a suspect entry to the cold archive
+## What it takes to become a claim (admission)
 
-Cost predictions run a PARALLEL, warning-only loop: observed cost vs the entry's multiplicative interval → `cost_hit_rate` + per-dimension log-error calibration. Cost misses never touch `consecutive_misses` or the lifecycle — an entry whose quality predictions are perfect but whose costs are volatile stays validated, with an "uncalibrated cost" warning attached for you to weigh.
+Creating an entry is cheap and reversible, but it is not free of evidence
+requirements. `induce` refuses to create one unless all of this holds:
+
+1. **≥2 supporting executions** in the (family, strategy) evidence set;
+2. **≥2 distinct `task_id`s** — repeating one task is repetition, not
+   reproduction: five runs of the same instance prove something about that
+   instance, not about the strategy in this family;
+3. **no cold-archive card** for the same (strategy, predicates) pattern.
+
+A refusal is a report, not a loss: the call returns
+`verification {tasks, required_tasks}` and a `skipped` reason, the executions
+stay in the Evidence Bank, and recall keeps answering from them as
+`conditional_stats` until a second task arrives. A standing cold-archive card
+is reported **before** this gate, because that is the real blocker (collecting
+a second task would not help while the card stands). The gate guards
+**creation only** — once a claim exists, any new matching evidence refreshes
+it, however repetitive, because the claim's value there is calibration, not
+admission. (This is also why `--dry-run` obeys the gate: it reports the same
+`skipped` reason it would have produced for real.)
+
+Task identity is taken from the recorded `task_id`, so one logical problem
+solved several times (retry under another solver, larger time limit) is one
+task. If you legitimately consider two runs independent — different instance
+drawn from the same distribution — give them distinct `task_id`s; that
+decision is yours to make and to record.
+
+## Forward validation and lifecycle (applied offline)
+
+Recording never changes knowledge. Each `record` freezes one check per matching entry (same strategy, attempt scope) onto the fact: the interval in force at that moment, the observed quality, and whether it fell inside. The next `orx induce` replays those frozen checks:
+
+- **promotion**: n ≥ 5 checks and hit rate ≥ 0.7 → `candidate` becomes `validated`
+- **demotion**: 3 consecutive misses → `suspect` (score ×0.5, warnings attached)
+- **wakeup**: a dormant entry with evidence newer than its last consultation returns to `candidate`
+- **retirement** (never automatic): your explicit `orx retire` moves an entry to the cold archive
+
+The report of what changed comes back as `result.revisions` (`forward` counters, `misses`, `transitions`). Counters are recomputed from the whole chronological series, so `consecutive_misses` counts the misses at the END of the series — a later hit clears the streak, and the state transition is applied once per induction rather than once per execution.
 
 Prediction intervals are honest to sample size: with n=2 the floor width is 0.50 — you may not pretend to more certainty than the data supports.
 
-## LLM phrasing and citation binding
+## Applicability notes
 
-The single optional LLM injection point: at `induce --llm-conditions`, you supply applicability/risk text. The framework checks every condition:
-
-1. every `supporting_execution_ids` entry must reference a real record;
-2. numeric claims in the text (e.g. "achieves 90%") must agree with the cited records' quality range;
-3. accepted conditions are stored `verified: false` and **never enter scoring** — only `R̂` from statistics does — until the described situation recurs and the condition is confirmed.
-
-A condition failing either check is rejected with the reason; the entry itself is still created from the statistical evidence.
+`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and **never enter scoring** — they are your phrasing for your own future reading, not a verified fact. The framework deliberately does not pretend to validate a sentence.
 
 ## Cold archive (anti-resurrection)
 
-Retired entries leave tombstones (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `--force` lifts a veto — reserve it for genuine environment drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data.
+Retired entries leave cards in the cold archive (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `induce --force` LIFTS the veto — it removes the card and then proceeds, so your environment-drift judgment is made once rather than repeated on every induction. Reserve it for genuine drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data.

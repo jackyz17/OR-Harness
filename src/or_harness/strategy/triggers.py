@@ -37,7 +37,6 @@ class InductionHint:
     criterion: str  # "C1".."C6"
     strategy_ids: List[str]
     group_key: str
-    scope_suggestion: str = "L1"
     reason: str = ""
     evidence: Dict[str, Any] = field(default_factory=dict)
 
@@ -46,7 +45,6 @@ class InductionHint:
             "criterion": self.criterion,
             "strategy_ids": list(self.strategy_ids),
             "group_key": self.group_key,
-            "scope_suggestion": self.scope_suggestion,
             "reason": self.reason,
             "evidence": self.evidence,
         }
@@ -327,15 +325,13 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
                      expected_map: Dict[str, Dict[str, float]]
                      ) -> List[InductionHint]:
     """C5: the same strategy shows the same-direction advantage in >= 2
-    families with similar structure. The 'learn once, apply elsewhere'
-    detector; suggests widening to L2.
+    families — the 'learn once, apply elsewhere' detector.
 
-    Without priors, the trigger detects cross-family reproduction purely
-    from observed data: the strategy is consistently high (or consistently
-    low) across independently observed families.
-    """
+    Informational: it reports reproduction across independently observed
+    families from the data alone. (There is no widening operation to suggest:
+    a claim's applicability is read off its own evidence.)"""
     sid = record.strategy_id
-    cells = stats.cross_family(record.profile_snapshot, sid, level="L2")
+    cells = stats.cross_family(sid)
     per_family = [c for c in cells if c.n >= MIN_DIVERGENCE_N]
     if len(per_family) < 2:
         return []
@@ -349,19 +345,20 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
         min(c.mean_quality for c in per_family)
     if magnitude_spread > SIGNIFICANT_QUALITY_DELTA:
         return []
+
+    def _family(cell: GroupStats) -> str:
+        return cell.group_key.split("family=")[-1]
+
     return [InductionHint(
         criterion="C5", strategy_ids=[sid],
-        group_key=group_key(record.profile_snapshot, "L2"),
-        scope_suggestion="L2",
+        group_key=record.group_l1,
         reason=(f"{direction} performance reproduces independently in "
-                f"{len(per_family)} families at similar structure; "
-                "consider widening to L2"),
-        evidence={"families": [c.group_key.split("#family=")[-1] for c in per_family],
+                f"{len(per_family)} families"),
+        evidence={"families": [_family(c) for c in per_family],
                   "direction": direction,
-                  "mean_qualities": {c.group_key.split("#family=")[-1]:
-                                      round(c.mean_quality, 4)
-                                      for c in per_family},
-                  "execution_ids": {c.group_key.split("#family=")[-1]: c.execution_ids
+                  "mean_qualities": {_family(c): round(c.mean_quality, 4)
+                                     for c in per_family},
+                  "execution_ids": {_family(c): c.execution_ids
                                     for c in per_family}})]
 
 

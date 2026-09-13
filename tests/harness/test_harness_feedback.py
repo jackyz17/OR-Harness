@@ -312,7 +312,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         try:
             h.catalog["S01"] = Strategy(
                 strategy_id="S01", name="decompose",
-                strategy_type="decomposition",
+                strategy_type="decomposition", fallback="S06",
                 actions=["find bottleneck", "decompose locals"])
             for i in range(2):
                 h.bank.append(self.make_record(
@@ -323,7 +323,9 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             self.assertEqual(entry.strategy_type, "decomposition")
             self.assertEqual(entry.actions,
                              ["find bottleneck", "decompose locals"])
-            self.assertIsNone(entry.principle)  # v1 leaves principle empty
+            # The entry is self-contained: it also carries the recovery
+            # advice the catalog declares for this strategy.
+            self.assertEqual(entry.fallback_strategy_id, "S06")
         finally:
             h.close()
 
@@ -351,7 +353,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                                         actions=["catalog-action"])
             entry = StrategicEntry(
                 entry_id="se_keep", strategy_id="S01",
-                pattern={"scope_level": "L1", "predicates": {}},
+                pattern={"predicates": {}},
                 strategy_type="execution", actions=["harness-custom"])
             h.sbank.add(entry)
             h._enrich_entry("se_keep")

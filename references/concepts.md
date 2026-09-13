@@ -19,7 +19,7 @@ E_t is factual execution evidence (what actually happened); M_strategic is deriv
 
 ## Structural grouping and coupling derivation
 
-Structural groups — the similarity keys for all memory — are built from problem family plus coupling-feature bins. Coupling values are derived by priority: the task's CIR (the `coupling` field — relations/indexes measured from the pre-model coupling understanding; the cleanest source) > the `model` representation (measured from declared constraints) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
+Structural groups — the similarity keys for all memory — are one (family, strategy) cell each: the observations that may be aggregated together. How widely a claim extends inside that family is read off its own evidence (the feature span its supporting executions covered), never declared on a ladder or quantized into fixed bins. Coupling values are derived by priority: the task's CIR (the `coupling` field — relations/indexes measured from the pre-model coupling understanding; the cleanest source) > the `model` representation (measured from declared constraints) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
 
 **The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
 
@@ -57,7 +57,7 @@ See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, a
 | Quality / cost | actual (`quality`, `cost`; alias properties `actual_quality` / `actual_cost`) | expected (`expected_quality_hat`, `expected_cost_hat`, `failure_prob`) |
 | Artifacts | solver output, diagnostics — artifacts are evidence | none (only future abstracted patterns) |
 | Mutation | append-first, fact-preserving; only cost backfill | CRUD, lifecycle, disposal — beliefs may be revised |
-| Validation | it *is* the truth — the factual grounding layer | **target**: induction-time — candidates complete admission validation in offline induction. **current**: entries are born `candidate`; forward prediction checks (promote/demote/tighten) still run online — moving admission validation offline is a pending item for the next Induction round |
+| Validation | it *is* the truth — the factual grounding layer | recorded, never rewritten: applicability and intervals are read off the supporting evidence at induction time, and the frozen checks on the facts are what promote, demote, or wake an entry |
 | Re-induction | delete it and the factual basis is gone | re-inducible from currently retained evidence (`induce --rebuild`) — exact reconstruction of past entries is NOT a requirement |
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
@@ -107,8 +107,21 @@ Lossy compaction and the summary consumption contract are left to the Cost/Induc
 
 An induced entry is a prediction hypothesis. It is validated by *future* executions checking its interval — never by self-testing on the training data. This is why entries are born `candidate`, why intervals are floored by sample size (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions with ≥70% hit rate.
 
-The only LLM involvement is *phrasing*: you may write applicability text at induce time, but citations are verified against real records, and unverified text never enters scoring.
+The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and never enter scoring — the framework cannot verify a sentence, so it does not pretend to.
 
-## Scope ladder: generalization as a mechanism
+## Applicability: read off the evidence, not declared
 
-Patterns live on L1 (family + fine bins) → L2 (fine bins) → L3 (coarse bins). Induction asks "which rung does the evidence support?" Evidence from one family supports only L1; independent reproduction across families (criterion C5) justifies proposing L2. Widening is falsifiable: a wide entry makes riskier predictions, and a cross-family miss tightens the pattern back down — the generalization range is itself a continuously tested hypothesis.
+There is no ladder of generalization levels and no feature binning. Each
+(family, strategy) cell is one evidence set, and the claim induced from it
+states its own applicability: the family, plus the span each structural
+dimension actually covered in the supporting executions. Refresh the claim
+with new evidence and the span follows the evidence — run the strategy at
+another coupling magnitude and it is included, stop seeing it hold there and
+the failures are what pull the claim down (three consecutive misses demote it
+to `suspect`).
+
+Cross-family transfer is therefore a judgment, not a mechanism: a claim
+speaks for the family it was induced from, and applying a routing lesson to
+packing is your call. Record those executions and packing earns its own
+claim. The frozen per-fact checks (same strategy, attempt scope) are what
+make the lifecycle revision evidence-based rather than self-referential.

@@ -134,7 +134,7 @@ class ORHarness:
                 support_per_dim=dict(entry.cost_support_n),
                 evidence_refs=[entry.entry_id],
                 note=f"strategic entry {entry.entry_id} ({entry.status})")
-        cell = self.stats.for_profile(profile, "L1").get(strategy_id)
+        cell = self.stats.for_profile(profile).get(strategy_id)
         if cell is not None and cell.n > 0:
             mismatch = self._scale_mismatch(profile, cell)
             if mismatch:
@@ -218,8 +218,13 @@ class ORHarness:
                override_mode: str = "replace",
                prediction: Optional[PredictionSnapshot] = None) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
-        cost backfill -> prediction checks -> cost feedback -> dormancy
-        wakeup -> C1-C6 hints.
+        frozen quality checks -> cost backfill -> cost feedback -> C1-C6
+        hints.
+
+        The chain is EVIDENCE-ONLY: it never promotes, demotes, or awakens a
+        Strategic Knowledge entry. Quality checks are written onto the fact
+        (``execution_features.quality_feedback``); the next explicit
+        ``induce`` replays them offline (``InductionEngine.revise``).
 
         ``retain_reason`` is an EXPLICIT, optional representative-evidence
         mark (reserved for future compaction policies): a non-empty value
@@ -260,6 +265,12 @@ class ORHarness:
         # supplies one and the record does not already carry it.
         if prediction is not None and record.prediction_snapshot is None:
             record.prediction_snapshot = prediction
+        # Frozen quality checks are computed against the interval in force
+        # RIGHT NOW and persisted with the fact — nothing downstream
+        # re-scores a later execution against a post-hoc interval.
+        prediction_checks = self._check_predictions(record)
+        if prediction_checks:
+            record.execution_features["quality_feedback"] = prediction_checks
         self.bank.append(record)
         if override:
             self.bank.update_cost(record.execution_id,
@@ -267,7 +278,6 @@ class ORHarness:
             record = self.bank.get(record.execution_id)
         self.bank.clear_pending(record.execution_id)
 
-        prediction_events = self._check_predictions(record)
         cost_feedback = compute_cost_feedback(
             record.prediction_snapshot, record.strategy_id,
             record.measurement_scope, record.cost)
@@ -285,7 +295,7 @@ class ORHarness:
         result = {
             "execution_id": record.execution_id,
             "recorded": True,
-            "prediction_checks": prediction_events,
+            "prediction_checks": prediction_checks,
             "induction_hints": [h.to_dict() for h in hints],
         }
         if cost_feedback is not None:
@@ -295,47 +305,50 @@ class ORHarness:
         return result
 
     def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
-               rebuild: bool = False, widen: Optional[str] = None,
-               tighten: Optional[str] = None,
+               rebuild: bool = False,
                dry_run: bool = False, force: bool = False,
-               llm_conditions: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+               notes: Optional[List[str]] = None) -> Dict[str, Any]:
         """Consolidate Execution Evidence into Strategic Knowledge.
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
         derived StrategicEntry commitments (expected quality/cost/failure
-        risk). TARGET semantics (next Induction migration round): admission
-        validation completes BEFORE an entry enters the bank, in offline
-        induction; online execution only records new evidence. CURRENT
-        status: entries are born candidate and promoted/demoted online by
-        forward quality checks; cost feedback never alters entry state. In
-        either case, once admitted an entry's validity does not depend on
-        the survival of the supporting evidence rows. New entries inherit
-        the catalog vocabulary's strategy_type/actions — extension points
-        for future induction — without ever overwriting harness-supplied
-        values.
+        risk). This is where knowledge changes: recording only accumulates
+        evidence, and `induce` (i) forms candidates from the statistics of
+        each structural group, (ii) creates/refreshes entries, and (iii)
+        REVISES existing entries from the frozen forward checks recorded on
+        the facts — promotion (n>=5, hit rate>=0.7), demotion (3 consecutive
+        misses), dormancy wakeup — reported under ``revisions``. Cost feedback
+        never alters entry state.
+        Once an entry exists its validity does not depend on the survival of
+        the supporting evidence rows. New entries inherit the catalog
+        vocabulary's strategy_type/actions — extension points for future
+        induction — without ever overwriting harness-supplied values.
         """
         if rebuild:
             result = self.induction.rebuild(dry_run=dry_run)
             if not dry_run:
                 for entry_id in result.get("entry_ids", []):
                     self._enrich_entry(entry_id)
+                result["revisions"] = self.induction.revise()
             return result
-        if widen:
-            return self.induction.widen(widen)
-        if tighten:
-            return self.induction.tighten(tighten)
         targets = self._induction_targets(strategy_id, all_)
         results = []
         for profile, sid in targets:
             results.append(self.induction.induce(
-                profile, sid, scope="L1", dry_run=dry_run, force=force,
-                llm_conditions=llm_conditions))
+                profile, sid, dry_run=dry_run, force=force,
+                notes=notes))
         if not dry_run:
             for r in results:
                 entry_id = r.get("created") or r.get("updated")
                 if entry_id:
                     self._enrich_entry(entry_id)
-        return {"results": results}
+        out: Dict[str, Any] = {"results": results}
+        if targets:
+            # Offline revision of the entries this call covers: lifecycle
+            # state is re-derived from the frozen checks on the facts.
+            out["revisions"] = self.induction.revise(strategy_id=strategy_id,
+                                                     dry_run=dry_run)
+        return out
 
     def _enrich_entry(self, entry_id: str) -> None:
         """Inherit catalog vocabulary (strategy_type, actions) into an entry.
@@ -357,6 +370,9 @@ class ORHarness:
         if not entry.actions and strat.actions:
             entry.actions = list(strat.actions)
             changed = True
+        if not entry.fallback_strategy_id and strat.fallback:
+            entry.fallback_strategy_id = strat.fallback
+            changed = True
         if changed:
             self.sbank.update(entry)
 
@@ -374,7 +390,9 @@ class ORHarness:
                     "entries": [e.to_dict() for e in entries]}
         if bank == "archive":
             cards = self.sbank.cold_archive()
-            return {"bank": "cold_archive", "count": len(cards),
+            # Echo the REQUESTED bank name ("archive"): the other branches do
+            # the same, and callers switch on this field.
+            return {"bank": "archive", "count": len(cards),
                     "cards": [c.to_dict() for c in cards]}
         raise ValueError("bank must be experience|strategic|archive")
 
@@ -409,35 +427,40 @@ class ORHarness:
     # -- automatic chain internals ------------------------------------------------
 
     def _check_predictions(self, record: ExecutionRecord) -> List[Dict[str, Any]]:
-        """Forward validation: every matching entry's prediction vs this
-        observation. Cross-family misses on wide entries tighten scope instead
-        of demoting (the content may be right; the range was wrong).
+        """Frozen forward checks: this execution against matching entries'
+        intervals, as EVIDENCE.
 
-        Quality-side only. COST feedback is decoupled: it is computed solely
-        against the record's frozen pre-execution snapshot (same strategy,
-        same scope, both sides measured) via ``compute_cost_feedback`` —
-        never against every matching entry here, so strategy A's execution
-        can never audit strategy B's cost prediction, and cost feedback never
-        mutates entry state or calibration online."""
-        events: List[Dict[str, Any]] = []
+        Online the harness only accumulates: each check is computed against
+        the interval in force at this moment and written onto the fact
+        (``execution_features.quality_feedback``). No entry is promoted,
+        demoted, tightened, or awakened here — ``InductionEngine.revise``
+        replays these checks at the next offline induction.
+
+        Isolation rules (mirroring the cost-feedback contract):
+        - the strategy that ACTUALLY ran owns the check (A never audits B);
+        - only attempt-scope executions produce checks: a task-scope total
+          never audits attempt-scope knowledge;
+        - dormant entries are included — a matching execution is evidence
+          about the pattern, and waking the entry is an offline decision.
+        """
+        if record.measurement_scope != "attempt":
+            return []
         observed = quality_score(record)
-        for entry in self.sbank.matching(record.profile_snapshot):
+        events: List[Dict[str, Any]] = []
+        for entry in self.sbank.matching(record.profile_snapshot,
+                                         include_dormant=True):
+            if entry.strategy_id != record.strategy_id:
+                continue
             lo, hi = entry.quality_interval
             width = max(hi - lo, 1e-6)
             slack = PREDICTION_HIT_SLACK * width
-            hit = (lo - slack) <= observed <= (hi + slack)
-            calibration_err = abs(observed - entry.expected_quality_hat)
-            updated, transitions = self.sbank.record_prediction(
-                entry.entry_id, hit, calibration_err)
-            event: Dict[str, Any] = {
-                "entry_id": entry.entry_id, "hit": hit,
-                "observed_quality": round(observed, 4),
-                "interval": [lo, hi], "transitions": transitions,
-            }
-            if not hit and entry.scope_level in ("L2", "L3"):
-                outcome = self.induction.tighten(entry.entry_id)
-                event["scope_tightened"] = outcome
-            events.append(event)
+            events.append({
+                "entry_id": entry.entry_id,
+                "predicted": round(entry.expected_quality_hat, 4),
+                "interval": [lo, hi],
+                "observed": round(observed, 4),
+                "hit": bool(lo - slack <= observed <= hi + slack),
+            })
         return events
 
     def task_cost_summary(self, task_id: str, *,

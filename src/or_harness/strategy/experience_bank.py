@@ -26,16 +26,16 @@ Mutability contract (fact-preserving, append-first):
     other execution feature.
   - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
     execution and the harness's explicit recording decision.
-  - ``replace_all``: reserved for future evidence compaction — currently
-    unused, because lossy compaction is deferred until the summary
-    consumption contract exists (statistics and induction ignore
-    ``source="compacted"`` rows). Historical facts are never rewritten
-    because later beliefs changed.
+
+Lossy compaction is deferred until the summary consumption contract exists
+(statistics and induction ignore ``source="compacted"`` rows); when it
+arrives it will need its own replacement channel. No such channel is kept
+around unused today.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import COST_DIMENSIONS, ExecutionRecord, compute_cost_feedback
 from or_harness.core.storage import Store, StorageError
@@ -198,23 +198,6 @@ class ExperienceBank:
         row = self.store.conn.execute("SELECT COUNT(*) AS n FROM executions").fetchone()
         return int(row["n"])
 
-    def replace_all(self, records: List[ExecutionRecord]) -> None:
-        """Rewrite the whole bank. Reserved for future evidence compaction —
-        currently unused: lossy compaction is deferred until the summary
-        consumption contract exists (statistics and induction ignore
-        ``source="compacted"`` rows, so summarizing raw facts would bias
-        conditional statistics)."""
-        with self.store.transaction() as conn:
-            conn.execute("DELETE FROM executions")
-            for rec in records:
-                conn.execute(
-                    "INSERT INTO executions "
-                    "(execution_id, task_id, strategy_id, family, group_l1, "
-                    " source, created_at, payload) VALUES (?,?,?,?,?,?,?,?)",
-                    (rec.execution_id, rec.task_id, rec.strategy_id,
-                     rec.profile_snapshot.family, rec.group_l1, rec.source,
-                     rec.created_at, self.store.dumps(rec.to_dict())))
-
     # -- pending staging (the no-lost-facts safety net) --------------------------
 
     def stage_pending(self, record: ExecutionRecord) -> str:
@@ -255,9 +238,6 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute("DELETE FROM pending_executions WHERE execution_id=?",
                          (execution_id,))
-
-    def iter_group(self, group_l1: str) -> Iterator[ExecutionRecord]:
-        return iter(self.query(group_l1=group_l1))
 
     # -- internals -----------------------------------------------------------------
 

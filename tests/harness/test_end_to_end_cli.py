@@ -38,6 +38,10 @@ class TestEndToEndCLI(HarnessTestCase):
         }
         self.task_path = self.work / "task.json"
         self.task_path.write_text(json.dumps(self.task), encoding="utf-8")
+        # A second task in the same family: a claim needs independent evidence.
+        self.task2 = dict(self.task, task_id="t2")
+        self.task2_path = self.work / "task2.json"
+        self.task2_path.write_text(json.dumps(self.task2), encoding="utf-8")
         self.solve_path = self.work / "solve.py"
         self.solve_path.write_text(textwrap.dedent("""
             import json
@@ -92,8 +96,9 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertTrue(out["result"]["recorded"])
         self.assertIn("induction_hints", out["result"])
 
-        # 5. record a second execution in the same group to enable induction
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        # 5. record a second execution on a DIFFERENT task in the same group:
+        #    repetition of one task is not independent evidence.
+        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution2 = json.loads(proc.stdout)["result"]["execution"]
@@ -152,7 +157,46 @@ class TestEndToEndCLI(HarnessTestCase):
         out = json.loads(proc.stdout)
         self.assertIn("error", out["result"])
 
-    def test_prediction_check_demotes_after_misses(self):
+    def test_inspect_covers_all_three_layers(self):
+        """Every --bank value must answer (the archive branch silently broke
+        once: the api echoed a different bank name than the CLI switched on)."""
+        self.seed_entry_with_two_tasks()
+        for bank, key in (("experience", "records"), ("strategic", "entries"),
+                          ("archive", "cards")):
+            proc = run_orx(self.home, "inspect", "--bank", bank)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            out = json.loads(proc.stdout)["result"]
+            self.assertEqual(out["bank"], bank)
+            self.assertIn(key, out)
+        # Retire -> the entry leaves the hot store and a card appears.
+        entry_id = json.loads(run_orx(self.home, "inspect", "--bank",
+                                      "strategic").stdout)["result"]["entries"][0]["entry_id"]
+        proc = run_orx(self.home, "retire", "--entry", entry_id,
+                       "--reason", "probe: retire path")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        hot = json.loads(run_orx(self.home, "inspect", "--bank",
+                                 "strategic").stdout)["result"]
+        self.assertEqual(hot["count"], 0)
+        cold = json.loads(run_orx(self.home, "inspect", "--bank",
+                                  "archive").stdout)["result"]
+        self.assertEqual(cold["count"], 1)
+        self.assertEqual(cold["cards"][0]["reason"], "probe: retire path")
+        self.assertEqual(cold["cards"][0]["strategy_id"], "S01")
+
+    def seed_entry_with_two_tasks(self):
+        """Two recorded tasks -> one admissible claim (S01, routing)."""
+        for task_path in (self.task_path, self.task2_path):
+            proc = run_orx(self.home, "execute", "--task", str(task_path),
+                           "--strategy", "S01", "--code", str(self.solve_path),
+                           "--workspace", str(self.work), "--solver", "highs")
+            execution = json.loads(proc.stdout)["result"]["execution"]
+            path = self.work / f"{execution['task_id']}.json"
+            path.write_text(json.dumps(execution), encoding="utf-8")
+            run_orx(self.home, "record", "--execution", str(path))
+        proc = run_orx(self.home, "induce", "--strategy", "S01")
+        self.assertTrue(json.loads(proc.stdout)["result"]["results"][0]["created"])
+
+    def test_quality_misses_demote_at_next_induce(self):
         # Seed an entry, then record three executions far outside its interval.
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
@@ -160,7 +204,7 @@ class TestEndToEndCLI(HarnessTestCase):
         e1 = json.loads(proc.stdout)["result"]["execution"]
         p = self.work / "e1.json"; p.write_text(json.dumps(e1))
         run_orx(self.home, "record", "--execution", str(p))
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         e2 = json.loads(proc.stdout)["result"]["execution"]
@@ -171,7 +215,8 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIsNotNone(created)
 
         # Three terrible executions (objective 3x the bound -> quality ~0.33)
-        # fall far below the entry's [0.5, 1.0] interval -> 3 misses -> suspect.
+        # fall far below the entry's [0.5, 1.0] interval. Recording them keeps
+        # the entry untouched (evidence only); the NEXT induce demotes it.
         bad_solve = self.work / "bad_solve.py"
         bad_solve.write_text(textwrap.dedent("""
             import json
@@ -187,6 +232,14 @@ class TestEndToEndCLI(HarnessTestCase):
             ex = json.loads(proc.stdout)["result"]["execution"]
             px = self.work / f"bad{i}.json"; px.write_text(json.dumps(ex))
             proc = run_orx(self.home, "record", "--execution", str(px))
+            checks = json.loads(proc.stdout)["result"]["prediction_checks"]
+            self.assertEqual([c["hit"] for c in checks], [False])
+        proc = run_orx(self.home, "inspect", "--bank", "strategic")
+        entries = json.loads(proc.stdout)["result"]["entries"]
+        self.assertEqual(entries[0]["status"], "candidate")  # record never demotes
+        proc = run_orx(self.home, "induce", "--strategy", "S01")
+        revisions = json.loads(proc.stdout)["result"]["revisions"]
+        self.assertIn("demoted:->suspect", revisions[0]["transitions"])
         proc = run_orx(self.home, "inspect", "--bank", "strategic")
         entries = json.loads(proc.stdout)["result"]["entries"]
         self.assertEqual(entries[0]["status"], "suspect")

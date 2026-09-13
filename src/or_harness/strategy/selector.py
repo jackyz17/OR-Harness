@@ -20,8 +20,9 @@ Ablation modes (--memory-mode), reused by the experiments runner:
                 "quality tied, cost divergent" scenarios — the experimental
                 support for 'cost awareness is a necessary part of memory'.
 
-Cross-family generalization (an L2/L3 entry matching a family it has no
-provenance in) carries an explicit confidence discount and is labelled.
+Cross-family generalization (a family-free entry pattern matching a family it
+has no provenance in) carries an explicit confidence discount and is
+labelled.
 
 Note: the method is named ``recall`` (not ``recommend``) because its purpose
 is to *recall* accumulated experience — when there is none, it says so
@@ -127,7 +128,7 @@ class Selector:
             return [self._from_no_evidence(s) for s in candidates]
 
         entries = self.sbank.matching(profile) if memory_mode in ("strategic", "cost-aware") else []
-        cells = self.stats.for_profile(profile, "L1")
+        cells = self.stats.for_profile(profile)
         if memory_mode == "cost-aware":
             # Comparable cost dimensions: the common measured dims across
             # candidates that actually carry cost evidence. Missing data
@@ -226,27 +227,25 @@ class Selector:
         # cross-family generalization is explicitly discounted.
         conf = max(NEW_ENTRY_CONFIDENCE_FLOOR,
                    min(1.0, entry.support_n / PROMOTE_REFERENCE_N))
-        cross_family = (entry.scope_level in ("L2", "L3")
-                        and profile.family not in self._provenance_families(entry))
-        if cross_family:
+        if self._is_cross_family(entry, profile):
             conf *= CROSS_FAMILY_CONFIDENCE_DISCOUNT
         return conf
 
-    def _provenance_families(self, entry: StrategicEntry) -> set:
-        families = set()
-        for ex_id in entry.provenance:
-            rec = self.stats.bank.get(ex_id)
-            if rec is not None:
-                families.add(rec.profile_snapshot.family)
-        return families
+    @staticmethod
+    def _is_cross_family(entry: StrategicEntry,
+                         profile: ProblemProfile) -> bool:
+        """True when the claim does not itself name this family — i.e. it is
+        being applied outside the family it was induced from. Entries produced
+        by induction carry a family predicate, so this only bites on
+        harness-authored family-free patterns."""
+        return "family" not in entry.predicates and bool(entry.predicates)
 
     def _from_entry(self, strategy: Strategy, profile: ProblemProfile,
                     entry: StrategicEntry, memory_mode: str,
                     norms: Optional[Dict[str, float]] = None,
                     cost_basis: Optional[List[str]] = None) -> Recommendation:
         confidence = self._entry_confidence(entry, profile)
-        cross_family = (entry.scope_level in ("L2", "L3")
-                        and profile.family not in self._provenance_families(entry))
+        cross_family = self._is_cross_family(entry, profile)
         cost = entry.expected_cost_hat
         cost_term = self._cost_term(cost, memory_mode, norms, cost_basis)
         score = (self.alpha * entry.expected_quality_hat
@@ -260,9 +259,9 @@ class Selector:
                 "misses); its estimate is downweighted x0.5")
         if cross_family:
             warnings.append(
-                f"cross-family generalization from {entry.scope_level} entry "
-                f"{entry.entry_id}; confidence discounted x{CROSS_FAMILY_CONFIDENCE_DISCOUNT}")
-        warnings.extend(self._cost_calibration_warnings(entry))
+                f"cross-family generalization: entry {entry.entry_id} states no "
+                f"family predicate; confidence discounted "
+                f"x{CROSS_FAMILY_CONFIDENCE_DISCOUNT}")
         warnings.extend(self._cost_basis_warnings(cost_basis))
         warnings.extend(entry.risk_conditions)
         return Recommendation(
@@ -300,17 +299,6 @@ class Selector:
             return ["cost not comparable across candidates: no common "
                     "measured cost dimension; cost term set to zero (missing "
                     "data does not count as cheap)"]
-        return []
-
-    def _cost_calibration_warnings(self, entry: StrategicEntry) -> List[str]:
-        """Warning-only cost calibration feedback: a low cost hit rate means
-        the entry's cost estimate is unreliable — it informs, never demotes."""
-        track = entry.prediction_track
-        if track.n_cost_predictions >= 3 and track.cost_hit_rate < 0.5:
-            return [f"cost estimates for entry {entry.entry_id} are uncalibrated "
-                    f"(hit rate {track.cost_hit_rate:.2f} over "
-                    f"{track.n_cost_predictions} predictions); treat E[cost] "
-                    "as unreliable"]
         return []
 
     def _from_stats(self, strategy: Strategy, cell: GroupStats,

@@ -17,15 +17,14 @@ Terminology discipline (do not blur):
   Strategic Knowledge Bank = generalized commitments ("what to do next
                     time"): expected quality / expected cost / expected
                     failure risk, with prediction intervals and calibration
-                    tracking. TARGET semantics (migration pending — the next
-                    Induction round): candidates complete admission
-                    validation in offline induction; online execution only
-                    records new evidence; the next induction revises
-                    knowledge. CURRENT status: entries are born candidate
-                    and forward prediction checks promote/demote/tighten
-                    online. In either case, admission never depends on the
-                    survival of the original evidence rows. Never stores raw
-                    execution detail.
+                    tracking. Mutation happens at INDUCTION time only: online
+                    execution records new evidence (frozen checks on the
+                    facts) and touches no entry; the next induction creates,
+                    refreshes, and revises entries from that evidence, and a
+                    claim's applicability is read off the evidence that
+                    supports it. Admission never depends on the survival of
+                    the original evidence rows. Never stores raw execution
+                    detail.
   Conditional statistics = on-the-fly aggregation over the Evidence Bank,
                     never persisted, always rebuildable. It is arithmetic, not
                     knowledge. An entry that merely restates statistics is
@@ -151,14 +150,6 @@ class CostVector:
             divisor = float(n.get(d, 1.0)) or 1.0
             total += float(w.get(d, 0.0)) * (float(getattr(self, d)) / divisor)
         return total
-
-    def plus(self, other: "CostVector") -> "CostVector":
-        merged = None
-        if self.measured is not None and other.measured is not None:
-            merged = set(self.measured) | set(other.measured)
-        return CostVector(
-            **{d: getattr(self, d) + getattr(other, d) for d in COST_DIMENSIONS},
-            measured=merged)
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +295,25 @@ def compute_cost_feedback(snapshot: Optional["PredictionSnapshot"],
 # Problem profile
 # ---------------------------------------------------------------------------
 
-#: Coupling dimensions that participate in structural grouping. All are floats
-#: in [0, 1]; ``None`` means "unknown" and bins to its own bucket.
+#: Coupling dimensions of a ProblemProfile, all floats in [0, 1]; ``None``
+#: means "unknown" and bins to its own bucket.
 COUPLING_FEATURES: Tuple[str, ...] = (
     "semantic_coupling",
+    "resource_coupling",
+    "temporal_coupling",
+    "route_complexity",
+)
+
+#: The MEASURABLE subset — the only dimensions that may condition statistics.
+#: ``resource_coupling`` / ``temporal_coupling`` / ``route_complexity`` are
+#: derived from structure (CIR > model > spec), so every task's value is
+#: reproducible from its own artifacts. ``semantic_coupling`` is never
+#: derived — it is whatever number the harness typed — so it stays a profile
+#: attribute (understanding, self-judgment) and is deliberately kept OUT of
+#: grouping keys and predicates: an unverifiable input must not split the
+#: evidence, and an entry carrying it could never match a task where it was
+#: not supplied.
+GROUPING_FEATURES: Tuple[str, ...] = (
     "resource_coupling",
     "temporal_coupling",
     "route_complexity",
@@ -319,12 +325,6 @@ SCALE_FEATURES: Tuple[str, ...] = (
     "n_int_vars",
     "density",
 )
-
-#: Feature-bin edges for the scope ladder. Fine bins drive L1/L2; coarse bins
-#: drive L3. Configurable by callers that construct profiles directly, but the
-#: defaults below are the canonical grouping contract.
-FINE_BIN_EDGES: Tuple[float, ...] = (0.0, 0.25, 0.5, 0.75, 1.0)
-COARSE_BIN_EDGES: Tuple[float, ...] = (0.0, 0.5, 1.0)
 
 PROFILE_SOURCES = ("harness_supplied", "derived")
 
@@ -348,9 +348,6 @@ class ProblemProfile:
     risk_features: Dict[str, Any] = field(default_factory=dict)
     source: str = "derived"
     annotations: Dict[str, Any] = field(default_factory=dict)
-
-    def coupling(self) -> Dict[str, Optional[float]]:
-        return {f: getattr(self, f) for f in COUPLING_FEATURES}
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -393,64 +390,44 @@ class ProblemProfile:
 
 
 # ---------------------------------------------------------------------------
-# Structural grouping (the scope ladder)
+# Structural grouping (evidence sets)
 # ---------------------------------------------------------------------------
 
-#: Scope levels. L1 = family + fine bins (narrowest). L2 = fine bins, any
-#: family. L3 = coarse bins, any family (widest). Widening is falsifiable:
-#: a wide entry makes riskier predictions; a cross-family miss tightens the
-#: pattern back down the ladder.
-SCOPE_LEVELS = ("L1", "L2", "L3")
+def group_key(profile: ProblemProfile) -> str:
+    """Scope key of one evidence set: the task family.
+
+    One (family, strategy) cell is one evidence set — the observations that
+    may be aggregated together. Within a family, WHERE a strategy held is
+    expressed by the claim's own intervals (:func:`evidence_predicates`), not
+    by splitting the evidence into feature bins: binning cut contiguous
+    experience into cells too small to learn from (four successful runs of
+    one strategy in one family could produce no claim at all, because each
+    bin held a single observation)."""
+    return f"family={profile.family}"
 
 
-def _bin_label(value: Optional[float], edges: Tuple[float, ...]) -> str:
-    if value is None:
-        return "unknown"
-    v = min(max(float(value), edges[0]), edges[-1])
-    for lo, hi in zip(edges, edges[1:]):
-        if lo <= v <= hi and (v < hi or hi == edges[-1]):
-            return f"[{lo:.2f},{hi:.2f}]"
-    return f"[{edges[-2]:.2f},{edges[-1]:.2f}]"
+def evidence_predicates(records: Sequence["ExecutionRecord"]
+                        ) -> Dict[str, Any]:
+    """The applicability of a claim, read off the evidence supporting it.
 
-
-def group_key(profile: ProblemProfile, level: str = "L1") -> str:
-    """Similarity key for conditional statistics at a given scope level."""
-    if level not in SCOPE_LEVELS:
-        raise ValueError(f"level must be one of {SCOPE_LEVELS}")
-    edges = FINE_BIN_EDGES if level in ("L1", "L2") else COARSE_BIN_EDGES
-    parts: List[str] = []
-    if level == "L1":
-        parts.append(f"family={profile.family}")
-    else:
-        parts.append("family=*")
-    short = {"semantic_coupling": "sc", "resource_coupling": "rc",
-             "temporal_coupling": "tc", "route_complexity": "rx"}
-    for f in COUPLING_FEATURES:
-        parts.append(f"{short[f]}{_bin_label(getattr(profile, f), edges)}")
-    return "|".join(parts)
-
-
-def pattern_for(profile: ProblemProfile, level: str = "L1") -> Dict[str, Any]:
-    """Feature predicates describing the structural group of ``profile``.
-
-    Predicate format: ``{"family": "routing"?, "<feature>": [lo, hi]}`` with
-    inclusive bounds. L1 includes family and fine bins; L2 drops family;
-    L3 uses coarse bins.
+    One interval per grouping dimension: the span the supporting executions
+    actually covered ([min, max], inclusive) — the observed range, not a
+    quantized approximation of it. Dimensions no supporting execution
+    measured are omitted (the claim then says nothing about them), and the
+    family is the scope key of the evidence set. The intervals grow and
+    shrink as evidence accumulates, so applicability follows experience
+    instead of a fixed grid.
     """
-    if level not in SCOPE_LEVELS:
-        raise ValueError(f"level must be one of {SCOPE_LEVELS}")
-    edges = FINE_BIN_EDGES if level in ("L1", "L2") else COARSE_BIN_EDGES
-    pred: Dict[str, Any] = {}
-    if level == "L1":
-        pred["family"] = profile.family
-    for f in COUPLING_FEATURES:
-        v = getattr(profile, f)
-        if v is None:
-            continue
-        label = _bin_label(v, edges)
-        lo, hi = (float(x) for x in label.strip("[]").split(","))
-        pred[f] = [lo, hi]
-    return pred
+    if not records:
+        return {}
+    predicates: Dict[str, Any] = {
+        "family": records[0].profile_snapshot.family}
+    for f in GROUPING_FEATURES:
+        values = [getattr(r.profile_snapshot, f) for r in records]
+        values = [float(v) for v in values if v is not None]
+        if values:
+            predicates[f] = [round(min(values), 4), round(max(values), 4)]
+    return predicates
 
 
 def pattern_hash(predicates: Dict[str, Any], strategy_id: str = "") -> str:
@@ -461,11 +438,16 @@ def pattern_hash(predicates: Dict[str, Any], strategy_id: str = "") -> str:
 
 
 def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool:
-    """True when the profile satisfies every predicate."""
+    """True when the profile satisfies every predicate.
+
+    A predicate on a dimension whose value is unknown does NOT match: the
+    claim states a range, and an unmeasured value cannot be shown to be in
+    it. (Unknown dimensions contribute no predicate in the first place, so
+    this only bites on predicates read off measured evidence.)"""
     family_pred = predicates.get("family")
     if family_pred is not None and profile.family != family_pred:
         return False
-    for f in COUPLING_FEATURES:
+    for f in GROUPING_FEATURES:
         if f not in predicates:
             continue
         lo, hi = (float(x) for x in predicates[f])
@@ -479,7 +461,7 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
     """True when every profile matching ``inner`` also matches ``outer``."""
     if "family" in outer and outer.get("family") != inner.get("family"):
         return False
-    for f in COUPLING_FEATURES:
+    for f in GROUPING_FEATURES:
         if f not in outer:
             continue
         if f not in inner:
@@ -489,19 +471,6 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
         if not (o_lo <= i_lo and i_hi <= o_hi):
             return False
     return True
-
-
-def scope_of(predicates: Dict[str, Any]) -> str:
-    """Infer the ladder level of a predicate set."""
-    edges = COARSE_BIN_EDGES
-    is_coarse = any(
-        f in predicates and any(float(x) in edges for x in predicates[f])
-        and tuple(float(x) for x in predicates[f]) in zip(edges, edges[1:])
-        for f in COUPLING_FEATURES
-    )
-    if "family" in predicates:
-        return "L1"
-    return "L3" if is_coarse else "L2"
 
 
 # ---------------------------------------------------------------------------
@@ -685,7 +654,13 @@ class ExecutionRecord:
 
     @property
     def group_l1(self) -> str:
-        return group_key(self.profile_snapshot, "L1")
+        """Evidence-set key of this record (its family).
+
+        Name kept from the retired scope ladder because it is an on-disk
+        column (``executions.group_l1``) with no migration mechanism — the
+        value stored there is exactly :func:`group_key`.
+        """
+        return group_key(self.profile_snapshot)
 
     @property
     def actual_quality(self) -> Dict[str, Any]:
@@ -789,59 +764,27 @@ def min_interval_width(n: int) -> float:
 
 
 @dataclass
-class ApplicabilityCondition:
-    """Natural-language applicability text, optionally LLM-phrased by the
-    outer harness. While ``verified`` is false it never enters scoring.
-    Citations are unfalsifiable-by-construction-checked: every
-    ``supporting_execution_ids`` must reference real records and numeric
-    claims must agree with them, or the condition is rejected."""
-
-    text: str
-    verified: bool = False
-    supporting_execution_ids: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {"text": self.text, "verified": self.verified,
-                "supporting_execution_ids": list(self.supporting_execution_ids)}
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ApplicabilityCondition":
-        if not isinstance(data, dict) or not data.get("text"):
-            raise ValueError("ApplicabilityCondition.text is required")
-        return cls(text=str(data["text"]), verified=bool(data.get("verified", False)),
-                   supporting_execution_ids=[str(i) for i in
-                                             (data.get("supporting_execution_ids") or [])])
-
-
-@dataclass
 class PredictionTrack:
     """Forward-validation bookkeeping: how this entry's predictions fared
     against *future* executions. Promotion: n_predictions >= 5 and
     hit_rate >= 0.7 (candidate -> validated). Demotion: 3 consecutive misses
-    (-> suspect, score x0.5).
+    (-> suspect, score x0.5). Both are applied by the offline induction pass
+    from the frozen checks recorded on facts — never online.
 
-    Cost predictions carry their own, SEPARATE track: a cost miss means the
-    entry's cost estimate is unreliable — it warns, it never demotes. Quality
-    and cost errors have different reversibility and different remedies
-    (retire vs. re-weigh), so they never share a verdict."""
+    Quality only. Cost deviations are recorded PER EXECUTION as evidence
+    (``execution_features.cost_feedback``, with per-dimension log errors);
+    they never accumulate here, so there is no second lifecycle to keep in
+    sync. Anyone wanting a cost-calibration view aggregates that evidence on
+    demand, the way solver advisories do."""
 
     n_predictions: int = 0
     n_hits: int = 0
     consecutive_misses: int = 0
     calibration_error: float = 0.0
-    # Cost-side track (parallel, warning-only).
-    n_cost_predictions: int = 0
-    n_cost_hits: int = 0
-    cost_calibration: Dict[str, float] = field(default_factory=dict)
 
     @property
     def hit_rate(self) -> float:
         return self.n_hits / self.n_predictions if self.n_predictions else 0.0
-
-    @property
-    def cost_hit_rate(self) -> float:
-        return self.n_cost_hits / self.n_cost_predictions \
-            if self.n_cost_predictions else 0.0
 
     def record(self, hit: bool, calibration_err: float = 0.0) -> None:
         self.n_predictions += 1
@@ -853,17 +796,6 @@ class PredictionTrack:
         n = self.n_predictions
         self.calibration_error = ((self.calibration_error * (n - 1)) + calibration_err) / n
 
-    def record_cost(self, hit: bool, per_dimension_log_error: Dict[str, float]) -> None:
-        """Record a cost-prediction check. Warning-only: never touches
-        consecutive_misses or the quality-side counters."""
-        self.n_cost_predictions += 1
-        if hit:
-            self.n_cost_hits += 1
-        n = self.n_cost_predictions
-        for dim, err in per_dimension_log_error.items():
-            prev = self.cost_calibration.get(dim, 0.0)
-            self.cost_calibration[dim] = (prev * (n - 1) + err) / n
-
     def to_dict(self) -> Dict[str, Any]:
         return {
             "n_predictions": self.n_predictions,
@@ -871,11 +803,6 @@ class PredictionTrack:
             "hit_rate": round(self.hit_rate, 4),
             "consecutive_misses": self.consecutive_misses,
             "calibration_error": round(self.calibration_error, 4),
-            "n_cost_predictions": self.n_cost_predictions,
-            "n_cost_hits": self.n_cost_hits,
-            "cost_hit_rate": round(self.cost_hit_rate, 4),
-            "cost_calibration": {k: round(v, 4) for k, v in
-                                 self.cost_calibration.items()},
         }
 
     @classmethod
@@ -886,10 +813,6 @@ class PredictionTrack:
             n_hits=int(data.get("n_hits", 0)),
             consecutive_misses=int(data.get("consecutive_misses", 0)),
             calibration_error=float(data.get("calibration_error", 0.0)),
-            n_cost_predictions=int(data.get("n_cost_predictions", 0)),
-            n_cost_hits=int(data.get("n_cost_hits", 0)),
-            cost_calibration={k: float(v) for k, v in
-                              (data.get("cost_calibration") or {}).items()},
         )
 
 
@@ -899,12 +822,10 @@ class StrategicEntry:
     pattern, this strategy will perform within these intervals.'
 
     The Strategic Knowledge unit: derived (not primary) knowledge — a
-    revisable belief. TARGET semantics (migration pending, next Induction
-    round): candidates complete admission validation in offline induction;
-    online execution only records new evidence; the next induction revises
-    knowledge. CURRENT status: entries are born ``candidate`` and forward
-    prediction checks (promotion/demotion/scope tightening) still run
-    online. In either case the entry keeps lightweight origin metadata
+    revisable belief. Mutation happens at INDUCTION time only: online
+    execution records evidence (frozen checks on the facts) and touches no
+    entry; ``orx induce`` creates, refreshes, and revises entries, replaying
+    that evidence. The entry keeps lightweight origin metadata
     (``provenance`` = optional representative execution ids, ``support_n``);
     its continued validity does NOT depend on the survival of those evidence
     rows, and exact reconstruction of past entries is never required
@@ -913,18 +834,15 @@ class StrategicEntry:
     with an interval, calibration tracking, and cross-group feature
     predicates.
 
-    Extension points for future induction (all optional, backward
-    compatible): ``strategy_type`` (what kind of strategy — modeling,
-    decomposition, solver selection, execution, recovery — one knowledge
-    layer holds all types, never one bank per type), ``principle`` (a
-    reusable strategic principle), ``actions`` (recommended
-    actions/adaptations). ``strategy_id`` stays required in v1; future
-    induction may relax it for cross-strategy principles.
+    ``strategy_type`` / ``actions`` / ``fallback_strategy_id`` inherit the
+    catalog vocabulary at induce time so the entry is self-contained (the
+    catalog may evolve after the entry was written). ``applicability`` holds
+    harness-written notes: free text, kept for the reader, never scored.
     """
 
     entry_id: str
     strategy_id: str
-    pattern: Dict[str, Any]  # {"scope_level": "L1"|"L2"|"L3", "predicates": {...}}
+    pattern: Dict[str, Any]  # {"predicates": {"family": ..., "<dim>": [lo, hi]}}
     expected_quality_hat: float = 0.5
     quality_interval: Tuple[float, float] = (0.0, 1.0)
     expected_cost_hat: CostVector = field(default_factory=CostVector)
@@ -942,7 +860,10 @@ class StrategicEntry:
     cost_support_n: Dict[str, int] = field(default_factory=dict)
     #: Expected failure risk (alias: ``expected_failure_risk``).
     failure_prob: float = 0.5
-    applicability: List[ApplicabilityCondition] = field(default_factory=list)
+    #: Harness-written applicability notes (free text). Displayed by
+    #: ``inspect``; never scored, never validated — the framework cannot
+    #: check a sentence, and pretending to would be theatre.
+    applicability: List[str] = field(default_factory=list)
     risk_conditions: List[str] = field(default_factory=list)
     fallback_strategy_id: Optional[str] = None
     status: str = "candidate"
@@ -955,9 +876,6 @@ class StrategicEntry:
     #: "solver_selection", "execution", "recovery"). No rigid taxonomy;
     #: multiple types coexist inside one Strategic Knowledge Bank.
     strategy_type: Optional[str] = None
-    #: Reusable strategic principle (natural language). Future induction
-    #: output slot; v1 leaves it None.
-    principle: Optional[str] = None
     #: Recommended actions/adaptations, inherited from the catalog
     #: vocabulary at induce time (harness may override).
     actions: List[str] = field(default_factory=list)
@@ -965,10 +883,6 @@ class StrategicEntry:
     @staticmethod
     def new_id() -> str:
         return f"se_{uuid.uuid4().hex[:12]}"
-
-    @property
-    def scope_level(self) -> str:
-        return str(self.pattern.get("scope_level", "L1"))
 
     @property
     def expected_quality(self) -> float:
@@ -996,8 +910,7 @@ class StrategicEntry:
         return {
             "entry_id": self.entry_id,
             "strategy_id": self.strategy_id,
-            "pattern": {"scope_level": self.scope_level,
-                        "predicates": self.predicates},
+            "pattern": {"predicates": self.predicates},
             "expected": {
                 "quality_hat": self.expected_quality_hat,
                 "quality_interval": [self.quality_interval[0], self.quality_interval[1]],
@@ -1013,7 +926,7 @@ class StrategicEntry:
                                   else None),
                 "failure_prob": self.failure_prob,
             },
-            "applicability": [a.to_dict() for a in self.applicability],
+            "applicability": list(self.applicability),
             "risk_conditions": list(self.risk_conditions),
             "fallback_strategy_id": self.fallback_strategy_id,
             "status": self.status,
@@ -1023,7 +936,6 @@ class StrategicEntry:
             "cost_support_n": {d: int(n) for d, n in
                                 self.cost_support_n.items()},
             "strategy_type": self.strategy_type,
-            "principle": self.principle,
             "actions": list(self.actions),
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
@@ -1037,8 +949,8 @@ class StrategicEntry:
             if key not in data:
                 raise ValueError(f"StrategicEntry.{key} is required")
         pattern = dict(data["pattern"])
-        if pattern.get("scope_level") not in SCOPE_LEVELS:
-            raise ValueError(f"pattern.scope_level must be one of {SCOPE_LEVELS}")
+        # Canonical form: predicates are the only content of a pattern.
+        predicates = dict(pattern.get("predicates") or {})
         status = data.get("status", "candidate")
         if status not in ENTRY_STATUSES:
             raise ValueError(f"status must be one of {ENTRY_STATUSES}")
@@ -1062,15 +974,13 @@ class StrategicEntry:
         return cls(
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),
-            pattern={"scope_level": pattern["scope_level"],
-                     "predicates": dict(pattern.get("predicates") or {})},
+            pattern={"predicates": predicates},
             expected_quality_hat=float(expected.get("quality_hat", 0.5)),
             quality_interval=(float(interval[0]), float(interval[1])),
             expected_cost_hat=cost_hat,
             cost_interval=cost_interval,
             failure_prob=float(expected.get("failure_prob", 0.5)),
-            applicability=[ApplicabilityCondition.from_dict(a)
-                           for a in (data.get("applicability") or [])],
+            applicability=_applicability_notes(data.get("applicability")),
             risk_conditions=[str(r) for r in (data.get("risk_conditions") or [])],
             fallback_strategy_id=data.get("fallback_strategy_id"),
             status=status,
@@ -1080,11 +990,25 @@ class StrategicEntry:
             cost_support_n={str(d): int(n) for d, n in
                             (data.get("cost_support_n") or {}).items()},
             strategy_type=data.get("strategy_type"),
-            principle=data.get("principle"),
             actions=[str(a) for a in (data.get("actions") or [])],
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )
+
+
+def _applicability_notes(raw: Any) -> List[str]:
+    """Harness notes: plain strings. Legacy payloads stored condition
+    objects ``{text, verified, supporting_execution_ids}`` — the text is
+    kept, the (never-populated) verification flags are dropped."""
+    notes: List[str] = []
+    for item in (raw or []):
+        if isinstance(item, dict):
+            text = str(item.get("text", "")).strip()
+        else:
+            text = str(item).strip()
+        if text:
+            notes.append(text)
+    return notes
 
 
 # ---------------------------------------------------------------------------
@@ -1094,9 +1018,12 @@ class StrategicEntry:
 
 @dataclass
 class ColdArchiveCard:
-    """Compressed tombstone (~200 B) for a retired entry. Kept forever by
-    default; consulted before induction so the same evidence cannot resurrect
-    the same failed generalization (anti-resurrection)."""
+    """Compressed card (~200 B) for a retired entry — the cold archive
+    record. Kept by default; consulted before induction so the same evidence
+    cannot resurrect the same failed generalization (anti-resurrection).
+    ``orx induce --force`` removes the card for this pattern (the harness
+    judging the environment drifted), after which induction proceeds
+    normally."""
 
     pattern_hash: str
     strategy_id: str

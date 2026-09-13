@@ -52,7 +52,7 @@ Issues come back as `{layer, code, detail}` — e.g. `[L2] undefined_symbol: 'bu
 - **resource_coupling** = fraction of variables appearing in more than one constraint. In the example above, `x` appears in both C1 and C2 → rc = 1.0. Drop C2 and rc = 0.0 (constraints independent).
 - **temporal_coupling** = fraction of variables indexed by a temporal set (name matching time/period/stage/day/hour/week/month).
 - **route_complexity** = fraction of variables indexed by a network set (arc/edge/road/link/route/leg).
-- **semantic_coupling** is NOT derived — business semantics are invisible to structure; supply it via `annotations.coupling.semantic_coupling` if you want it grouped on.
+- **semantic_coupling** is NOT derived — business semantics are invisible to structure; supply it via `annotations.coupling.semantic_coupling` to keep it in the profile. It is understanding-level information: it never enters grouping keys or entry predicates (only the derived dimensions `resource_coupling` / `temporal_coupling` / `route_complexity` condition the statistics, so an unverifiable hand-typed number can never split the evidence or block a match).
 
 If you also supply coupling values and they contradict the derivation across a bin boundary, `orx profile` returns `coupling_warnings` — the structural measurement wins for grouping; your original values are preserved in annotations.
 

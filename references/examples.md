@@ -78,11 +78,11 @@ $ orx record --execution ex_6096390d0949.json --override llm_tokens=1840
 
 **T2.** S02 runs and scores Q=0.98. **No C2 hint fires** — S02 has n=1, and single observations never count. This restraint is the design working: one lucky run is not a pattern.
 
-**T3–T4.** After S02's second and third runs confirm ~0.95 (extreme high performance, meanQ ≥ 0.75), `record` returns:
+**T3–T4.** After S02 repeats ~0.95 on **two further tasks** (t3, t4 — the claim needs distinct tasks, not one task run three times), meanQ ≥ 0.75 over n=3 and `record` returns:
 
 ```json
 {"induction_hints": [{"criterion": "C2", "strategy_ids": ["S02"],
-  "group_key": "family=routing|sc[0.75,1.00]|rc[0.75,1.00]|...",
+  "group_key": "family=routing",
   "reason": "S02 performs high: meanQ=0.95 over n=3",
   "evidence": {"observed_mean_quality": 0.95, "direction": "high", "n": 3,
                 "execution_ids": ["ex_...", "ex_...", "ex_..."]}}]}
@@ -94,18 +94,19 @@ You judge it worth committing:
 $ orx induce --strategy S02
 {"result": {"results": [{"created": "se_c977f8ac78e8", "entry": {
   "entry_id": "se_c977f8ac78e8", "strategy_id": "S02",
-  "pattern": {"scope_level": "L1", "predicates": {"family": "routing", ...}},
+  "pattern": {"predicates": {"family": "routing",
+                             "resource_coupling": [0.78, 0.94], ...}},
   "expected": {"quality_hat": 0.95, "quality_interval": [0.5, 1.0], ...},
   "status": "candidate", "prediction_track": {"n_predictions": 0, ...},
   "provenance": ["ex_...", "ex_...", "ex_..."], "support_n": 3}, ...}]},
  "summary": "Created/updated 1 entries: se_c977f8ac78e8"}
 ```
 
-Note the interval `[0.5, 1.0]`: with n=3 the honest floor is 0.35 width — the entry cannot pretend to more certainty than three runs support.
+Note the interval `[0.5, 1.0]`: with n=3 the honest floor is 0.35 width — the entry cannot pretend to more certainty than three runs support. Note also what made it admissible: three executions from three distinct tasks (t2, t3, t4). Had all three been the same task, `induce` would have returned `skipped: "needs independent evidence: all 3 observations come from 1 task [...] — a claim requires >=2 tasks"` and the executions would have stayed in the Evidence Bank as `conditional_stats` only.
 
 ## Example 2: quality tied, cost diverges (what only memory can learn)
 
-Routing group, n=2 each: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. `record` fires **C1 on the cost dimension**:
+Routing group, n=2 each on distinct tasks: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. `record` fires **C1 on the cost dimension**:
 
 ```json
 {"induction_hints": [{"criterion": "C1", "strategy_ids": ["S01", "S04"],
@@ -117,25 +118,38 @@ Routing group, n=2 each: S01 and S04 both deliver ~0.70 quality, but S01 costs 3
 
 After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra.
 
-## Example 3: cross-family generalization → miss → tighten (not delete, not demote)
+## Example 3: a claim meeting its counterexample (miss → demote at the next induce)
 
-`se_020` is an L2 entry: any family × rc∈[0.75,1.0], predicting S04 quality in [0.8, 0.95], provenance entirely in routing.
+`se_020` was induced from routing executions with rc∈[0.78,0.94], predicting
+S04 quality in [0.8, 0.95]. Its applicability is exactly that: the family plus
+the demonstrated span — no ladder, no bins.
 
-A scheduling task with rc=0.8 arrives. `recall` matches `se_020` but flags it:
-
-```json
-{"strategy_id": "S04", "evidence": "strategic_entry", "confidence": 0.42,
- "cross_family": true,
- "risk_warnings": ["cross-family generalization from L2 entry se_020; confidence discounted x0.6"]}
-```
-
-You execute anyway; quality comes in at 0.55 — outside the interval. `record`'s automatic chain:
+A routing task with rc=0.80 arrives, inside the span. `recall` matches
+`se_020` and you execute; quality comes in at 0.55 — outside the interval.
+`record` writes the frozen check onto the fact and changes nothing:
 
 ```json
-{"prediction_checks": [{"entry_id": "se_020", "hit": false,
-  "observed_quality": 0.55, "interval": [0.8, 0.95],
-  "scope_tightened": {"tightened": "se_020", "new_scope": "L1",
-                      "predicates": {"family": "routing", "resource_coupling": [0.75, 1.0]}}}]}
+{"prediction_checks": [{"entry_id": "se_020", "hit": false, "predicted": 0.95,
+  "interval": [0.8, 0.95], "observed": 0.55, "hit": false}],
+ "cost_feedback": {...}}
 ```
 
-The pattern tightened back to L1: the *range* was wrong, not necessarily the content — so no suspect demotion (that is for content misses, tracked by `consecutive_misses`). If the routing-only prediction later misses three times in a row, *then* the entry demotes to `suspect`, and retirement to the cold archive remains your explicit, irreversible call via `orx retire`.
+The claim covered that task when the execution ran, so the miss is evidence
+against the claim. Two more like it and the next `orx induce` reports:
+
+```json
+{"revisions": [{"entry_id": "se_020", "strategy_id": "S04",
+  "forward": {"n_predictions": 3, "n_hits": 0, "hit_rate": 0.0,
+              "consecutive_misses": 3, "calibration_error": 0.4},
+  "misses": ["ex_...", "ex_...", "ex_..."],
+  "transitions": ["demoted:->suspect"]}]}
+```
+
+`suspect` is downweighted ×0.5 and labelled in `recall`; retirement to the
+cold archive remains your explicit, irreversible call via `orx retire`.
+
+Note what a *record outside the span* does instead: it does not match the
+claim, so it is neither a check nor a counterexample — and if the strategy
+keeps doing well outside the span too, the next `induce` widens the claim's
+intervals to follow that evidence. No operation to remember, no level to
+choose.

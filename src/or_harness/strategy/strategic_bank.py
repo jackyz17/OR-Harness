@@ -1,12 +1,12 @@
 """Strategic Knowledge Bank: the derived layer of calibrated commitments.
 
 Derived knowledge, not primary facts: "what to do next time" — expected
-quality, expected cost, expected failure risk. TARGET semantics (migration
-pending, next Induction round): candidates complete admission validation in
-offline induction; online execution only records new evidence; the next
-induction revises knowledge. CURRENT status: forward prediction checks
-(promotion/demotion/scope tightening) still run online against new
-executions. In either case entries keep lightweight origin metadata
+quality, expected cost, expected failure risk. Mutation happens at
+INDUCTION time only: online execution records evidence (the frozen quality
+checks live on the facts, see
+``ExecutionRecord.execution_features.quality_feedback``) and never touches
+an entry; ``orx induce`` re-derives lifecycle state from that evidence
+(``InductionEngine.revise``). Entries keep lightweight origin metadata
 (``provenance`` / ``support_n``) and their continued validity does NOT
 depend on the survival of the original evidence rows. Entries alone carry
 the disposal ladder:
@@ -20,9 +20,10 @@ Mutability: derived beliefs may be re-estimated, validated, revised,
 deprecated, and replaced — unlike facts, which are never rewritten.
 
 The cold archive is the anti-resurrection mechanism: before inducting a new
-entry, matching tombstones veto re-creating the same failed generalization
-from the same evidence. ``--force`` revives only when the environment has
-genuinely drifted (harness's explicit call).
+entry, matching cards veto re-creating the same failed generalization from
+the same evidence. ``orx induce --force`` REMOVES the card for that pattern
+(the harness's explicit "the environment drifted" call), so the judgment is
+made once instead of being repeated on every induction.
 """
 
 from __future__ import annotations
@@ -45,6 +46,33 @@ DORMANT_AFTER_TASKS = 10
 SUSPECT_SCORE_FACTOR = 0.5
 
 
+def apply_transitions(entry: StrategicEntry) -> List[str]:
+    """Automatic lifecycle transitions for the entry's CURRENT track.
+
+    One definition, two callers: the per-event API
+    (:meth:`StrategicBank.record_prediction`) and the offline revalidation
+    pass (``InductionEngine.revise``) — so promotion, demotion, and dormancy
+    wakeup can never drift apart between the two.
+
+    Retirement is never automatic: it stays the harness's explicit call via
+    :meth:`StrategicBank.retire`.
+    """
+    transitions: List[str] = []
+    if entry.status == "dormant":
+        entry.status = "candidate"
+        transitions.append("awakened:dormant->candidate")
+    if (entry.status == "candidate"
+            and entry.prediction_track.n_predictions >= PROMOTE_MIN_PREDICTIONS
+            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE):
+        entry.status = "validated"
+        transitions.append("promoted:candidate->validated")
+    if (entry.status in ("candidate", "validated")
+            and entry.prediction_track.consecutive_misses >= DEMOTE_CONSECUTIVE_MISSES):
+        entry.status = "suspect"
+        transitions.append(f"demoted:->{entry.status}")
+    return transitions
+
+
 class StrategicBank:
     """CRUD + lifecycle for :class:`StrategicEntry`, plus the cold archive."""
 
@@ -60,7 +88,7 @@ class StrategicBank:
                 "INSERT INTO strategic_entries "
                 "(entry_id, strategy_id, scope_level, status, payload) "
                 "VALUES (?,?,?,?,?)",
-                (entry.entry_id, entry.strategy_id, entry.scope_level,
+                (entry.entry_id, entry.strategy_id, self._scope_token(entry),
                  entry.status, self.store.dumps(entry.to_dict())))
         return entry.entry_id
 
@@ -70,7 +98,7 @@ class StrategicBank:
             cur = conn.execute(
                 "UPDATE strategic_entries SET strategy_id=?, scope_level=?, "
                 "status=?, payload=? WHERE entry_id=?",
-                (entry.strategy_id, entry.scope_level, entry.status,
+                (entry.strategy_id, self._scope_token(entry), entry.status,
                  self.store.dumps(entry.to_dict()), entry.entry_id))
             if cur.rowcount == 0:
                 raise StorageError(f"unknown entry_id {entry.entry_id!r}")
@@ -81,12 +109,6 @@ class StrategicBank:
             (entry_id,)).fetchone()
         return self._decode(row) if row else None
 
-    def remove(self, entry_id: str) -> None:
-        with self.store.transaction() as conn:
-            cur = conn.execute("DELETE FROM strategic_entries WHERE entry_id=?",
-                               (entry_id,))
-            if cur.rowcount == 0:
-                raise StorageError(f"unknown entry_id {entry.entry_id!r}")
 
     def list(self, *, status: Optional[str] = None,
              strategy_id: Optional[str] = None,
@@ -109,9 +131,17 @@ class StrategicBank:
         return int(self.store.conn.execute(
             "SELECT COUNT(*) AS n FROM strategic_entries").fetchone()["n"])
 
-    def matching(self, profile) -> List[StrategicEntry]:
-        """Hot (non-dormant) entries whose predicates match the profile."""
-        return [e for e in self.list(include_dormant=False) if e.matches(profile)]
+    def matching(self, profile, *,
+                 include_dormant: bool = False) -> List[StrategicEntry]:
+        """Entries whose predicates match the profile.
+
+        ``include_dormant=False`` (default) is the RETRIEVAL view: dormant
+        entries are not consulted. ``include_dormant=True`` is the EVIDENCE
+        view used when recording: a matching execution is a fact about the
+        pattern regardless of whether the entry is currently consulted, and
+        waking it back up is an offline induction decision."""
+        return [e for e in self.list(include_dormant=include_dormant)
+                if e.matches(profile)]
 
     def mark_consulted(self, entry_ids: List[str], at: Optional[float] = None) -> None:
         at = time.time() if at is None else at
@@ -133,30 +163,23 @@ class StrategicBank:
                           calibration_err: float = 0.0,
                           latest_task_at: Optional[float] = None
                           ) -> Tuple[StrategicEntry, List[str]]:
-        """Forward validation: an execution checked this entry's prediction.
+        """Record ONE forward check against this entry's prediction.
 
-        Applies the automatic transitions (promotion, demotion, dormancy
-        wakeup) and returns the updated entry plus the transitions taken.
+        This is the per-event API of the lifecycle. The automatic record
+        chain no longer calls it: recording writes the frozen check into the
+        EXECUTION evidence instead (``quality_feedback`` on the fact) and
+        ``InductionEngine.revise`` replays a whole batch of checks at the next
+        offline induction. Both callers apply exactly the same transition
+        rules (:func:`apply_transitions`).
+
         Retirement is *not* automatic — the harness confirms irreversible
         disposal explicitly via :meth:`retire`.
         """
         entry = self.get(entry_id)
         if entry is None:
             raise StorageError(f"unknown entry_id {entry_id!r}")
-        transitions: List[str] = []
         entry.prediction_track.record(hit, calibration_err)
-        if entry.status == "dormant":
-            entry.status = "candidate"
-            transitions.append("awakened:dormant->candidate")
-        if (entry.status == "candidate"
-                and entry.prediction_track.n_predictions >= PROMOTE_MIN_PREDICTIONS
-                and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE):
-            entry.status = "validated"
-            transitions.append("promoted:candidate->validated")
-        if (entry.status in ("candidate", "validated")
-                and entry.prediction_track.consecutive_misses >= DEMOTE_CONSECUTIVE_MISSES):
-            entry.status = "suspect"
-            transitions.append(f"demoted:->{entry.status}")
+        transitions = apply_transitions(entry)
         self.update(entry)
         return entry, transitions
 
@@ -176,7 +199,7 @@ class StrategicBank:
                 "support_n": entry.support_n,
                 "hit_rate": round(entry.prediction_track.hit_rate, 4),
                 "n_predictions": entry.prediction_track.n_predictions,
-                "scope_level": entry.scope_level,
+                "predicates": entry.predicates,
                 "provenance": list(entry.provenance)[:10],
             },
         )
@@ -221,7 +244,7 @@ class StrategicBank:
 
     def archive_vetoes(self, strategy_id: str,
                        predicates: Dict[str, Any]) -> Optional[ColdArchiveCard]:
-        """Anti-resurrection check: an archived tombstone with the same
+        """Anti-resurrection check: a cold-archive card with the same
         (strategy, predicates) hash blocks re-induction of the same failed
         generalization."""
         digest = pattern_hash(predicates, strategy_id)
@@ -231,9 +254,9 @@ class StrategicBank:
         return ColdArchiveCard.from_dict(Store.loads(row["payload"])) if row else None
 
     def revive(self, pattern_digest: str, force: bool = False) -> None:
-        """Remove a tombstone so induction may retry. Requires ``force`` —
-        the escape hatch for genuine environment drift, exercised explicitly
-        by the harness."""
+        """Remove a cold-archive card so induction may re-create the pattern.
+        Requires ``force`` — lifting a veto is the harness's explicit call
+        (the ``--force`` flag on ``orx induce`` does exactly this)."""
         if not force:
             raise StorageError(
                 "cold-archive revival requires force=True: reviving a vetoed "
@@ -245,6 +268,13 @@ class StrategicBank:
                 raise StorageError(f"no cold-archive card {pattern_digest!r}")
 
     # -- internals -----------------------------------------------------------------
+
+    @staticmethod
+    def _scope_token(entry: StrategicEntry) -> str:
+        """Index token for the entry's applicability: the family it names,
+        or ``*`` for a family-free pattern. Stored in the legacy
+        ``scope_level`` column (kept for on-disk compatibility)."""
+        return str(entry.predicates.get("family", "*"))
 
     @staticmethod
     def _validate(entry: StrategicEntry) -> None:

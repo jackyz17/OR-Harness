@@ -1,21 +1,20 @@
-"""Tests for the snapshot-based cost feedback loop, failure classification
-persistence, and the reflow stub. (Mechanism feature tests removed in P1 —
-the mechanism machinery was deleted as redundant with coupling features.)
+"""Tests for the snapshot-based cost feedback loop and failure
+classification persistence. (Mechanism feature tests removed earlier — the
+mechanism machinery was deleted as redundant with coupling features.)
 
 Cost feedback semantics (Cost round): an execution is compared against the
 PRE-EXECUTION prediction snapshot actually used (same strategy, same scope,
 both sides measured), frozen on the record. Feedback is auxiliary Execution
-Evidence (execution_features.cost_feedback); it never updates entry state or
-calibration online."""
+Evidence (execution_features.cost_feedback); it never updates entry state.
+
+Quality checks follow the same evidence-only rule: they are frozen onto the
+fact (execution_features.quality_feedback) and replayed offline by the next
+``induce`` (see test_induction.TestOfflineRevision)."""
 import unittest
 
 from helpers import HarnessTestCase, MEASURED_ALL
 
 from or_harness.core.schema import CostVector, FailureRecord
-from or_harness.strategy.experience_bank import ExperienceBank
-from or_harness.strategy.induction import InductionEngine, PatternReflowEngine
-from or_harness.strategy.stats import ConditionalStats
-from or_harness.strategy.strategic_bank import StrategicBank
 from or_harness.api import ORHarness
 
 
@@ -81,15 +80,13 @@ class TestCostPredictionLoop(HarnessTestCase):
                                    cost_measured=MEASURED_ALL)
             self.h.record(rec, prediction=snapshot)
         after = self.h.sbank.get(entry_id)
-        # Cost feedback never touches the cost track or the lifecycle.
-        self.assertEqual(after.prediction_track.n_cost_predictions,
-                         before["n_cost_predictions"])
-        self.assertEqual(after.prediction_track.n_cost_hits,
-                         before["n_cost_hits"])
-        self.assertEqual(after.prediction_track.cost_calibration,
-                         before["cost_calibration"])
+        # Cost feedback never touches the lifecycle or the forward track.
+        self.assertEqual(after.prediction_track.to_dict(), before)
         self.assertEqual(after.status, "candidate")
         self.assertEqual(after.prediction_track.consecutive_misses, 0)
+        # The deviation is recorded per execution instead (evidence).
+        stored = self.h.bank.query(task_id="tc10")[0]
+        self.assertIn("cost_feedback", stored.execution_features)
 
     def test_a_execution_never_audits_b_prediction(self):
         self._entry_with_cost(tokens_hat=1500.0)  # entry for S01 only
@@ -105,16 +102,27 @@ class TestCostPredictionLoop(HarnessTestCase):
         outcome = self.h.record(rec, prediction=snapshot)
         self.assertNotIn("cost_feedback", outcome)
 
-    def test_quality_miss_still_demotes(self):
-        """The quality loop is untouched by the cost loop."""
+    def test_quality_misses_demote_at_next_induce(self):
+        """Quality misses accumulate as EVIDENCE online and demote the entry
+        at the next offline induction — never during record."""
         entry_id = self._entry_with_cost(tokens_hat=1500.0)
         for i in range(3):
             rec = self.make_record(task_id=f"tq{i}", strategy_id="S01", gap=0.9,
                                    cost=CostVector(llm_tokens=1500),
                                    cost_measured=MEASURED_ALL)
-            self.h.record(rec)
+            outcome = self.h.record(rec)
+            # Online: evidence written, knowledge untouched.
+            self.assertTrue(outcome["prediction_checks"])
+            self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")
+            self.assertEqual(
+                self.h.sbank.get(entry_id).prediction_track.consecutive_misses, 0)
+        result = self.h.induce(strategy_id="S01")
         entry = self.h.sbank.get(entry_id)
         self.assertEqual(entry.status, "suspect")
+        revisions = [r for r in result["revisions"] if r["entry_id"] == entry_id]
+        self.assertEqual(len(revisions), 1)
+        self.assertEqual(revisions[0]["forward"]["consecutive_misses"], 3)
+        self.assertIn("demoted:->suspect", revisions[0]["transitions"])
 
 
 class TestFailureClassificationPersistence(HarnessTestCase):
@@ -137,15 +145,6 @@ class TestFailureClassificationPersistence(HarnessTestCase):
         stored = h.bank.get("ex_fm")
         self.assertEqual(stored.failures[0].error_class, "model")
         h.close()
-
-
-class TestReflowStub(HarnessTestCase):
-    def test_stub_is_noop(self):
-        bank = ExperienceBank(self.store)
-        sbank = StrategicBank(self.store)
-        stats = ConditionalStats(bank)
-        engine = PatternReflowEngine(stats, sbank)
-        self.assertEqual(engine.propose_reflow(["se_anything"]), [])
 
 
 if __name__ == "__main__":

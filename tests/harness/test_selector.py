@@ -63,7 +63,7 @@ class TestFallbackChain(SelectorCase):
                 execution_id=f"ex_{i}", task_id=f"t{i}", strategy_id="S01", gap=0.5))
         self.sbank.add(StrategicEntry(
             entry_id="se_boost", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.99, quality_interval=(0.9, 1.0),
             failure_prob=0.0, status="validated", support_n=6,
             provenance=["ex_0", "ex_1", "ex_2"]))
@@ -117,7 +117,7 @@ class TestEntryFlags(SelectorCase):
     def test_suspect_downweighted_and_warned(self):
         self.sbank.add(StrategicEntry(
             entry_id="se_sus", strategy_id="S07",
-            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=1.0, quality_interval=(0.9, 1.0),
             failure_prob=0.0, status="suspect", support_n=8))
         recs = self.selector.recall(self.make_profile(), top=10)
@@ -125,14 +125,14 @@ class TestEntryFlags(SelectorCase):
         self.assertTrue(any("suspect" in w for w in s07.risk_warnings))
 
     def test_cross_family_discounted(self):
-        # L2 entry provenanced only in 'routing'; queried from 'scheduling'.
+        # A claim with no family predicate (cross-family by construction); its
+        # evidence sits in 'routing' but it is queried from 'scheduling'.
         for i in range(2):
             self.bank.append(self.make_record(
                 execution_id=f"ex_r{i}", task_id=f"tr{i}", strategy_id="S01"))
         self.sbank.add(StrategicEntry(
             entry_id="se_wide", strategy_id="S01",
-            pattern={"scope_level": "L2",
-                     "predicates": {"resource_coupling": [0.75, 1.0]}},
+            pattern={"predicates": {"resource_coupling": [0.75, 1.0]}},
             expected_quality_hat=0.95, quality_interval=(0.8, 1.0),
             failure_prob=0.0, status="validated", support_n=5,
             provenance=["ex_r0", "ex_r1"]))
@@ -147,7 +147,7 @@ class TestEntryFlags(SelectorCase):
     def test_consultation_marks_entries(self):
         self.sbank.add(StrategicEntry(
             entry_id="se_c", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            pattern={"predicates": {"family": "routing"}},
             support_n=3))
         self.selector.recall(self.make_profile())
         self.assertIsNotNone(self.sbank.get("se_c").last_consulted_at)

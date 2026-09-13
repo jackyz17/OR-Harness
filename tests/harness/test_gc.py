@@ -52,7 +52,7 @@ class TestCompactionDeferred(GcCase):
         ids = self.seed_cell()
         entry = StrategicEntry(
             entry_id="se_cover", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
             provenance=list(ids), support_n=len(ids))
         self.sbank.add(entry)
@@ -89,7 +89,7 @@ class TestCompactionDeferred(GcCase):
         ids = self.seed_cell()
         self.sbank.add(StrategicEntry(
             entry_id="se_cover", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {"family": "routing"}},
+            pattern={"predicates": {"family": "routing"}},
             provenance=list(ids), support_n=len(ids)))
         self.gc.run("compact")
         self.assertEqual(self.bank.count(), len(ids))
@@ -99,7 +99,7 @@ class TestPurgeStillPlans(GcCase):
     def test_purge_lists_retirements_without_applying(self):
         self.sbank.add(StrategicEntry(
             entry_id="se_sus", strategy_id="S01",
-            pattern={"scope_level": "L1", "predicates": {}},
+            pattern={"predicates": {}},
             status="suspect"))
         plan = self.gc.plan("purge")
         self.assertEqual([a.kind for a in plan], ["retire"])
