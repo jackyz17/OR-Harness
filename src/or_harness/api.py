@@ -36,6 +36,18 @@ from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank
 from or_harness.strategy.triggers import check_triggers, solver_advisories
+from or_harness.world_model.actions import (
+    ActionLog,
+    ActionRecord,
+    INDUCE_OUTCOMES,
+)
+from or_harness.world_model.budget import BudgetLedger
+from or_harness.world_model.state import (
+    MAINTENANCE_TASK_ID,
+    BeliefSnapshot,
+    KnowledgeRef,
+    verified_knowledge_view,
+)
 
 #: Prediction hit tolerance: an observation counts as a miss when it falls
 #: outside the entry's interval by more than this fraction of the interval
@@ -61,8 +73,211 @@ class ORHarness:
         self.executor = executor or SafePythonExecutor()
         self.induction = InductionEngine(self.stats, self.sbank)
         self.gc = GarbageCollector(self.bank, self.sbank, self.stats)
+        # World-model M1 substrate: action log + budget ledger (log/index
+        # facilities — NOT a third knowledge bank).
+        self.actions = ActionLog(self.store)
+        self.budget = BudgetLedger(self.bank, self.actions)
+        # Episode budget declarations (task_id/episode_id -> {dim: limit}),
+        # in-memory only: the harness re-declares per session; snapshots
+        # freeze the declaration they were taken under.
+        self._episode_budgets: Dict[str, Dict[str, float]] = {}
 
     # -- capabilities ----------------------------------------------------------
+
+    def snapshot(self, task: Dict[str, Any], episode_id: Optional[str] = None,
+                 *, task_progress: Optional[Dict[str, Any]] = None
+                 ) -> BeliefSnapshot:
+        """Freeze and persist the current information state for this task.
+
+        The snapshot is the ``b_t`` the world model will condition on: H
+        (value-copied knowledge refs + experience counts + tool config), P
+        (profile + task digest + CIR/model digests), X (caller-supplied
+        progress, labelled), B (declared budget + consumption view), and a
+        coverage view layered by admission state. Everything is copied by
+        value at freeze time — later bank writes never change what this
+        snapshot meant."""
+        profile = self.profile(task)
+        knowledge = verified_knowledge_view(profile, self.sbank)
+        recent = self.bank.query(task_id=str(task.get("task_id", "")))
+        harness_state = {
+            "knowledge": knowledge,
+            "experience": {
+                "task_execution_count": len(recent),
+                "total_executions": self.bank.count(),
+                "recent_execution_ids": [r.execution_id for r in recent[:20]],
+            },
+            "tool_config": {
+                "available_solver_families": available_families(),
+                "executor_timeout_seconds": getattr(
+                    self.executor, "timeout_seconds", None),
+            },
+        }
+        budget = self._episode_budgets.get(
+            f"{task.get('task_id', '')}|{episode_id or ''}")
+        budget_state = self.budget.view(
+            str(task.get("task_id", "")), episode_id, budget=budget)
+        snap = BeliefSnapshot.build(
+            task, episode_id,
+            harness_state=harness_state,
+            problem_state={"profile": profile.to_dict()},
+            task_progress=task_progress,
+            budget_state=budget_state,
+            coverage=self._coverage_view(profile, knowledge),
+        )
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO belief_snapshots "
+                "(snapshot_id, task_id, episode_id, created_at, payload) "
+                "VALUES (?,?,?,?,?)",
+                (snap.snapshot_id, snap.task_id, snap.episode_id,
+                 snap.created_at, self.store.dumps(snap.to_dict())))
+        return snap
+
+    def get_snapshot(self, snapshot_id: str) -> Optional[BeliefSnapshot]:
+        row = self.store.conn.execute(
+            "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
+            (snapshot_id,)).fetchone()
+        return (BeliefSnapshot.from_dict(self.store.loads(row["payload"]))
+                if row else None)
+
+    def snapshots(self, *, task_id: Optional[str] = None) -> List[BeliefSnapshot]:
+        sql = "SELECT payload FROM belief_snapshots"
+        params: List[Any] = []
+        if task_id is not None:
+            sql += " WHERE task_id=?"
+            params.append(task_id)
+        sql += " ORDER BY created_at ASC, snapshot_id ASC"
+        return [BeliefSnapshot.from_dict(self.store.loads(r["payload"]))
+                for r in self.store.conn.execute(sql, params).fetchall()]
+
+    def _coverage_view(self, profile, knowledge: Dict[str, Any]) -> Dict[str, Any]:
+        """Conditional capability evidence: cell statistics + layered
+        knowledge, with coverage gaps. NO composite capability score."""
+        cells = self.stats.for_profile(profile)
+        return {
+            "cell_statistics": {sid: cell.to_dict() for sid, cell
+                                in cells.items()},
+            "knowledge_layers": {
+                "verified": knowledge["verified"],
+                "legacy_unknown": knowledge["legacy_unknown"],
+                "unverified": knowledge["unverified"],
+            },
+            "coverage_gaps": {
+                "strategies_without_evidence": [
+                    sid for sid in self.catalog
+                    if sid not in cells or cells[sid].n == 0],
+                "note": "strategies with no attempt-scope evidence in this "
+                        "structural cell; no quality claim is made for them",
+            },
+        }
+
+    def declare_budget(self, task_id: str, budget: Dict[str, float],
+                       episode_id: Optional[str] = None) -> Dict[str, Any]:
+        """Declare (or replace) an episode budget. Explicit, in-memory per
+        session — snapshots freeze the declaration they were taken under."""
+        key = f"{task_id}|{episode_id or ''}"
+        self._episode_budgets[key] = dict(budget)
+        return {"task_id": task_id, "episode_id": episode_id,
+                "budget": dict(budget)}
+
+    def budget_view(self, task_id: str,
+                    episode_id: Optional[str] = None) -> Dict[str, Any]:
+        """The honest budget view (see BudgetLedger)."""
+        budget = self._episode_budgets.get(f"{task_id}|{episode_id or ''}")
+        return self.budget.view(task_id, episode_id, budget=budget)
+
+    # -- unified action contract ------------------------------------------------
+
+    def begin_action(self, action_type: str, task: Dict[str, Any],
+                     episode_id: Optional[str] = None, *,
+                     params: Optional[Dict[str, Any]] = None,
+                     parent_action_id: Optional[str] = None,
+                     source: str = "executed") -> Dict[str, Any]:
+        """Begin an action: freeze the PRE snapshot, mint an id, persist
+        status=running. The pre snapshot is taken BEFORE the action runs —
+        that is the point."""
+        pre = self.snapshot(task, episode_id)
+        record = self.actions.begin_action(
+            action_type, str(task.get("task_id", "")), episode_id,
+            pre_snapshot=pre, params=params,
+            parent_action_id=parent_action_id, source=source)
+        return {"action_id": record.action_id,
+                "pre_snapshot_id": pre.snapshot_id, "status": record.status}
+
+    def end_action(self, action_id: str, *,
+                   status: str = "completed",
+                   outcome: Optional[Dict[str, Any]] = None,
+                   cost: Optional[Dict[str, float]] = None,
+                   task: Optional[Dict[str, Any]] = None,
+                   episode_id: Optional[str] = None,
+                   linked_execution_id: Optional[str] = None,
+                   rollup: str = "own") -> Dict[str, Any]:
+        """End an action: persist the result, bind the POST snapshot (when
+        the task is supplied), update nothing else implicitly."""
+        cost_vector = None
+        if cost is not None:
+            from or_harness.core.schema import CostVector as _CV
+            cost_vector = _CV(**{d: float(v) for d, v in cost.items()})
+        post = None
+        if task is not None:
+            progress = self._progress_from_outcome(action_id, outcome or {})
+            post = self.snapshot(task, episode_id,
+                                 task_progress=progress)
+        record = self.actions.end_action(
+            action_id, status=status, outcome=outcome, cost=cost_vector,
+            post_snapshot=post, linked_execution_id=linked_execution_id,
+            rollup=rollup)
+        return {"action_id": record.action_id, "status": record.status,
+                "post_snapshot_id": record.post_snapshot_id}
+
+    def _progress_from_outcome(self, action_id: str,
+                               outcome: Dict[str, Any]) -> Dict[str, Any]:
+        """Task-progress fields implied by an ended action (the post-state
+        update rules): each action type owns one progress key."""
+        from or_harness.world_model.actions import PROGRESS_UPDATES
+        record = self.actions.get(action_id)
+        if record is None:
+            return {}
+        key = PROGRESS_UPDATES.get(record.action_type)
+        if key is None:
+            return {}
+        return {key: {
+            "value": outcome,
+            "provenance": ("observed" if record.source == "executed"
+                           else "agent_reported"),
+            "epistemic": "fact",
+            "evidence_ref": action_id,
+        }}
+
+    def report_action(self, action_type: str, task: Dict[str, Any],
+                      episode_id: Optional[str] = None, *,
+                      params: Optional[Dict[str, Any]] = None,
+                      outcome: Optional[Dict[str, Any]] = None,
+                      status: str = "completed",
+                      cost: Optional[Dict[str, float]] = None,
+                      started_at: Optional[float] = None,
+                      ended_at: Optional[float] = None) -> Dict[str, Any]:
+        """Report an action the OUTER agent performed (understand / model /
+        select_strategy / verify / finish_task). The library did not execute
+        it — the report is the caller's statement, labelled agent_reported.
+        A missing pre snapshot is recorded as missing, never fabricated."""
+        from or_harness.core.schema import CostVector as _CV
+        cost_vector = (_CV(**{d: float(v) for d, v in cost.items()})
+                       if cost is not None else None)
+        record = self.actions.report_action(
+            action_type, str(task.get("task_id", "")), episode_id,
+            params=params, outcome=outcome, status=status,
+            cost=cost_vector, started_at=started_at, ended_at=ended_at)
+        return {"action_id": record.action_id, "status": record.status,
+                "source": record.source}
+
+    def amend_action_cost(self, action_id: str,
+                          **dimensions: float) -> Dict[str, Any]:
+        """Explicit cost-amendment channel for an action (replace
+        semantics, idempotent — re-applying never double-counts)."""
+        record = self.actions.amend_action_cost(action_id, **dimensions)
+        return {"action_id": record.action_id,
+                "cost": record.cost.to_dict() if record.cost else None}
 
     def understand(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-model coupling-aware understanding.
@@ -185,7 +400,8 @@ class ORHarness:
 
     def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
                 workspace: str, *, solver: str,
-                verification_level: str = "basic") -> ExecutionRecord:
+                verification_level: str = "basic",
+                episode_id: Optional[str] = None) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
 
         The returned record is an evidence unit: the strategy ACTUALLY used,
@@ -204,6 +420,16 @@ class ORHarness:
         # a self-reinforcing loop (strategy → code → profile → grouping →
         # future strategy choice).
         profile = self.profile(task)
+        # Unified action record (macro): the PRE snapshot is frozen BEFORE
+        # execution; the action ends when the execution ends (independent
+        # of the harness's later record decision — execute/record
+        # separation is unchanged).
+        pre = self.snapshot(task, episode_id)
+        action = self.actions.begin_action(
+            "execute_strategy", str(task["task_id"]), episode_id,
+            pre_snapshot=pre,
+            params={"strategy_id": strategy_id, "solver": solver,
+                    "verification_level": verification_level})
         record = self.executor.execute(
             Path(code_path), Path(workspace), solver=solver,
             task_id=str(task["task_id"]), strategy_id=strategy_id,
@@ -218,6 +444,38 @@ class ORHarness:
         # retries. Staging is not recording; recording stays the harness's
         # explicit decision (`orx record`).
         self.bank.stage_pending(record)
+        # End the macro action: status follows the EXECUTION outcome (not
+        # the record decision); cost is a REFERENCE to the execution's own
+        # cost (counted there — never summed again); the post snapshot
+        # carries the solution/error state.
+        exec_status = record.quality.get("status")
+        action_status = ("completed" if exec_status in ("optimal", "feasible")
+                         else "failed" if exec_status in ("error",)
+                         else "timeout" if exec_status == "timeout"
+                         else "completed")
+        progress = {
+            "current_solution": {
+                "value": {"status": exec_status,
+                          "feasible": record.quality.get("feasible"),
+                          "objective": record.quality.get("objective"),
+                          "gap": record.quality.get("gap")},
+                "provenance": "observed", "epistemic": "fact",
+                "evidence_ref": record.execution_id},
+        }
+        if record.failures:
+            progress["errors"] = {
+                "value": [f.to_dict() for f in record.failures],
+                "provenance": "observed", "epistemic": "fact",
+                "evidence_ref": record.execution_id}
+        post = self.snapshot(task, episode_id, task_progress=progress)
+        self.actions.end_action(
+            action.action_id, status=action_status,
+            outcome={"execution_status": exec_status,
+                     "feasible": record.quality.get("feasible"),
+                     "objective": record.quality.get("objective")},
+            cost=record.cost, post_snapshot=post,
+            linked_execution_id=record.execution_id, rollup="reference")
+        record.action_id = action.action_id
         return record
 
     def record(self, record: ExecutionRecord,
@@ -345,6 +603,8 @@ class ORHarness:
                 for entry_id in result.get("entry_ids", []):
                     self._enrich_entry(entry_id)
                 result["revisions"] = self.induction.revise()
+            if not dry_run:
+                self._record_induce_action(result, dry_run=False)
             return result
         targets = self._induction_targets(strategy_id, all_)
         results = []
@@ -363,7 +623,56 @@ class ORHarness:
             # state is re-derived from the frozen checks on the facts.
             out["revisions"] = self.induction.revise(strategy_id=strategy_id,
                                                      dry_run=dry_run)
+        # The induce action belongs to the MAINTENANCE scope (never to the
+        # most recent task): it references the target profiles, evidence,
+        # and knowledge it touched. Dry-run persists nothing.
+        if not dry_run:
+            out["action"] = self._record_induce_action(out, dry_run=False)
         return out
+
+    def _record_induce_action(self, result: Dict[str, Any], *,
+                              dry_run: bool) -> Dict[str, Any]:
+        """Record the offline-induction action in the maintenance scope.
+
+        Lifecycle status and business outcome are SEPARATE: no new entry is
+        not failure — the call may have revised entries, refused a
+        candidate at the gate, or legitimately changed nothing. The business
+        result feeds M4's benefit learning; wrong labels there would
+        poison it."""
+        results = result.get("results") or []
+        created = [r for r in results if r.get("created")]
+        updated = [r for r in results if r.get("updated")]
+        refused = [r for r in results if r.get("skipped")]
+        revised = result.get("revisions") or []
+        if created:
+            business = "created"
+        elif updated:
+            business = "updated"
+        elif revised:
+            business = "revised"
+        elif refused:
+            business = "refused"
+        else:
+            business = "unchanged"
+        episode_id = f"maint_{int(time.time())}"
+        action = self.actions.begin_action(
+            "induce", MAINTENANCE_TASK_ID, episode_id,
+            params={"scope": "maintenance",
+                    "targets": [r.get("strategy_id") for r in results
+                                if r.get("strategy_id")] or
+                              [r.get("group_key") for r in results]})
+        # Induction cost is UNKNOWN unless the harness amends it explicitly
+        # (amend_action_cost) — never fabricated for report completeness.
+        self.actions.end_action(
+            action.action_id,
+            status="completed" if business != "refused" else "no_valid_entry",
+            outcome={"business_result": business,
+                     "created": [r["created"] for r in created],
+                     "updated": [r["updated"] for r in updated],
+                     "refused_reasons": [r.get("skipped") for r in refused],
+                     "revisions": len(revised)})
+        return {"action_id": action.action_id, "episode_id": episode_id,
+                "business_result": business}
 
     def _enrich_entry(self, entry_id: str) -> None:
         """Inherit catalog vocabulary (strategy_type, actions) into an entry.
@@ -394,7 +703,8 @@ class ORHarness:
     def inspect(self, *, bank: str = "experience",
                 task_id: Optional[str] = None,
                 strategy_id: Optional[str] = None,
-                status: Optional[str] = None) -> Dict[str, Any]:
+                status: Optional[str] = None,
+                episode_id: Optional[str] = None) -> Dict[str, Any]:
         if bank == "experience":
             records = self.bank.query(task_id=task_id, strategy_id=strategy_id)
             return {"bank": "experience", "count": len(records),
@@ -409,7 +719,25 @@ class ORHarness:
             # the same, and callers switch on this field.
             return {"bank": "archive", "count": len(cards),
                     "cards": [c.to_dict() for c in cards]}
-        raise ValueError("bank must be experience|strategic|archive")
+        if bank == "actions":
+            records = self.actions.query(task_id=task_id,
+                                         episode_id=episode_id,
+                                         action_type=strategy_id
+                                         if strategy_id and strategy_id
+                                         in ("understand", "model",
+                                             "select_strategy",
+                                             "execute_strategy", "verify",
+                                             "finish_task", "induce")
+                                         else None,
+                                         status=status)
+            return {"bank": "actions", "count": len(records),
+                    "actions": [a.to_dict() for a in records]}
+        if bank == "snapshots":
+            snaps = self.snapshots(task_id=task_id)
+            return {"bank": "snapshots", "count": len(snaps),
+                    "snapshots": [s.to_dict() for s in snaps]}
+        raise ValueError("bank must be experience|strategic|archive|"
+                         "actions|snapshots")
 
     def collect_garbage(self, mode: str = "compact",
                         dry_run: bool = False) -> Dict[str, Any]:

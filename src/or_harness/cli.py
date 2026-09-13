@@ -204,9 +204,11 @@ def cmd_execute(args) -> int:
         task = _load_json_arg(args.task)
         record = h.execute(task, args.strategy, args.code, args.workspace,
                            solver=args.solver,
-                           verification_level=args.verification)
+                           verification_level=args.verification,
+                           episode_id=getattr(args, "episode", None))
         out = {"execution": record.to_dict(),
-               "execution_id": record.execution_id}
+               "execution_id": record.execution_id,
+               "action_id": record.action_id}
         q = record.quality
         return _emit(out,
                      f"Execution {record.execution_id} finished with status "
@@ -339,6 +341,11 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
                      "miss(es)")
     if not parts:
         parts.append("Nothing to induce.")
+    action = result.get("action") or {}
+    if action.get("action_id"):
+        parts.append(f"Induction action {action['action_id']} recorded in "
+                     f"the maintenance scope (business result: "
+                     f"{action.get('business_result', 'unknown')}).")
     return " ".join(parts)
 
 
@@ -346,10 +353,12 @@ def cmd_inspect(args) -> int:
     h = _harness(args)
     try:
         result = h.inspect(bank=args.bank, task_id=args.task,
-                           strategy_id=args.strategy, status=args.status)
+                           strategy_id=args.strategy, status=args.status,
+                           episode_id=getattr(args, "episode", None))
         count = result["count"]
         noun = {"experience": "records", "strategic": "entries",
-                "archive": "cards"}[args.bank]
+                "archive": "cards", "actions": "actions",
+                "snapshots": "snapshots"}[args.bank]
         if count == 1:
             noun = noun[:-1]           # "1 card", not "1 cards"
         detail = ""
@@ -360,9 +369,89 @@ def cmd_inspect(args) -> int:
             detail = (" A card blocks re-inducing that same pattern; lift it "
                       "with `induce --force` when the environment has "
                       "genuinely drifted.")
+        elif args.bank == "actions":
+            detail = (" Actions carry lifecycle status (running = begun, "
+                      "not ended) and, for induce, a business result "
+                      "separate from the lifecycle status.")
         return _emit(result, f"{count} {noun} in {args.bank} bank"
                              + (f" (status={args.status})" if args.status else "")
                              + "." + detail)
+    finally:
+        h.close()
+
+
+def cmd_snapshot(args) -> int:
+    h = _harness(args)
+    try:
+        task = _load_json_arg(args.task)
+        snap = h.snapshot(task, episode_id=args.episode)
+        result = {"snapshot": snap.to_dict(),
+                  "snapshot_id": snap.snapshot_id}
+        layers = snap.coverage.get("knowledge_layers", {})
+        return _emit(result,
+                     f"Snapshot {snap.snapshot_id} frozen for task "
+                     f"{snap.task_id} (episode={snap.episode_id}). Knowledge "
+                     f"layers: {len(layers.get('verified', []))} verified, "
+                     f"{len(layers.get('legacy_unknown', []))} legacy, "
+                     f"{len(layers.get('unverified', []))} unverified. "
+                     "Later bank writes cannot change this snapshot.")
+    finally:
+        h.close()
+
+
+def cmd_action(args) -> int:
+    h = _harness(args)
+    try:
+        if args.amend_cost:
+            if not args.cost:
+                return _fail("--amend-cost requires --cost")
+            cost = _load_json_arg(args.cost)
+            if not isinstance(cost, dict):
+                return _fail("--cost must be a JSON object")
+            result = h.amend_action_cost(args.amend_cost, **cost)
+            return _emit(result,
+                         f"Amended cost of action {args.amend_cost} "
+                         "(replace semantics, idempotent).")
+        if not args.report:
+            return _fail("action requires --report TYPE or --amend-cost "
+                         "ACTION_ID")
+        if not args.task:
+            return _fail("--report requires --task")
+        task = _load_json_arg(args.task)
+        params = _load_json_arg(args.params) if args.params else None
+        outcome = _load_json_arg(args.outcome) if args.outcome else None
+        cost = None
+        if args.cost:
+            cost = _load_json_arg(args.cost)
+            if not isinstance(cost, dict):
+                return _fail("--cost must be a JSON object")
+        result = h.report_action(
+            args.report, task, episode_id=args.episode, params=params,
+            outcome=outcome, status=args.status, cost=cost)
+        return _emit(result,
+                     f"Recorded {args.report} action {result['action_id']} "
+                     f"(source=agent_reported, status={result['status']}). "
+                     "The library did not execute this action — the report "
+                     "is your statement, labelled as such.")
+    finally:
+        h.close()
+
+
+def cmd_budget(args) -> int:
+    h = _harness(args)
+    try:
+        if args.declare:
+            budget = {k: float(v) for k, v in
+                      (pair.split("=") for pair in args.declare.split(","))}
+            h.declare_budget(args.task, budget, episode_id=args.episode)
+        result = h.budget_view(args.task, episode_id=args.episode)
+        cons = result["consumption"]
+        summary = (f"Budget status for task {args.task}: "
+                   f"{result['status']}. {result['status_note']} "
+                   f"Consumption: {cons['n_recorded']} recorded + "
+                   f"{cons['n_staged']} staged execution(s), "
+                   f"{len(cons['action_costs'])} own-cost action(s).")
+        return _emit(result, summary)
     finally:
         h.close()
 
@@ -471,6 +560,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--workspace", required=True)
     p.add_argument("--solver", required=True)
     p.add_argument("--verification", default="basic", choices=["basic", "strong"])
+    p.add_argument("--episode", default=None,
+                   help="episode id for the unified action record "
+                        "(budget/progress scoping)")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")
@@ -539,11 +631,50 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("inspect", help="query the memory layers")
     p.add_argument("--bank", default="experience",
-                   choices=["experience", "strategic", "archive"])
+                   choices=["experience", "strategic", "archive",
+                            "actions", "snapshots"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
+    p.add_argument("--episode", default=None,
+                   help="filter actions by episode id")
     p.set_defaults(func=cmd_inspect)
+
+    p = sub.add_parser("snapshot",
+                       help="freeze and persist the current belief state "
+                            "for a task (world-model M1)")
+    p.add_argument("--task", required=True)
+    p.add_argument("--episode", default=None)
+    p.set_defaults(func=cmd_snapshot)
+
+    p = sub.add_parser("action",
+                       help="report an action the outer agent performed "
+                            "(understand/model/select_strategy/verify/"
+                            "finish_task) or amend an action's cost")
+    p.add_argument("--report", default=None, metavar="TYPE",
+                   help="action type to report (agent_reported)")
+    p.add_argument("--task", default=None)
+    p.add_argument("--episode", default=None)
+    p.add_argument("--params", default=None, help="JSON params")
+    p.add_argument("--outcome", default=None, help="JSON outcome")
+    p.add_argument("--status", default="completed",
+                   choices=["completed", "failed", "cancelled", "timeout"])
+    p.add_argument("--cost", default=None,
+                   help="JSON cost dimensions, e.g. '{\"llm_tokens\": 500}'")
+    p.add_argument("--amend-cost", default=None, metavar="ACTION_ID",
+                   help="amend an existing action's cost (replace, "
+                        "idempotent); pair with --cost")
+    p.set_defaults(func=cmd_action)
+
+    p = sub.add_parser("budget",
+                       help="budget view for a task/episode (all action "
+                            "costs, staged executions included)")
+    p.add_argument("--task", required=True)
+    p.add_argument("--episode", default=None)
+    p.add_argument("--declare", default=None,
+                   help="declare a budget, e.g. 'llm_tokens=50000,"
+                        "solver_runtime_s=600'")
+    p.set_defaults(func=cmd_budget)
 
     p = sub.add_parser("gc", help="dispose of the derived layer (harness's call)")
     p.add_argument("--mode", default="compact", choices=["compact", "purge"])

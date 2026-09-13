@@ -399,8 +399,14 @@ def is_publishable(entry: StrategicEntry) -> bool:
       ``refuted``): no — the framework holds a candidate, not knowledge.
       Recall falls back to the raw conditional statistics, and the harness
       can still try the strategy.
+    - ``stale_after_revision``: no — the entry's claim was SUBSTANTIVELY
+      revised (predicates or expected estimates moved) without a fresh
+      admission verdict, so the old verification no longer covers the new
+      claim. Re-verify with ``induce --verify`` to re-publish.
     """
     block = entry.verification or {}
     if not block:
         return True
+    if block.get("stale_after_revision"):
+        return False
     return block.get("state") == "verified"

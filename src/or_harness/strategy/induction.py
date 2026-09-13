@@ -165,6 +165,22 @@ class InductionEngine:
                 if verification is not None:
                     out["verification"] = verification
                 return out
+            # Substantive-revision check: when the CLAIM changes (predicates
+            # or expected estimates beyond tolerance) without a fresh
+            # admission verdict, the old verification no longer covers the
+            # new claim — mark it stale rather than silently re-publishing
+            # a revised claim under an old check. Pure support-count
+            # growth does NOT trigger this: more evidence for the same
+            # claim only sharpens it. Cost SUPPORT growth alone (same
+            # point estimates, more measured samples) is likewise not a
+            # claim change.
+            cost_claim_changed = self._cost_estimates_changed(
+                existing, cost_hat, measured_cost_interval, None)
+            substantive = (existing.predicates != predicates
+                           or abs(existing.expected_quality_hat
+                                   - quality_hat) > 0.02
+                           or abs(existing.failure_prob - fail_prob) > 0.02
+                           or cost_claim_changed)
             existing.pattern = {"predicates": predicates}
             existing.expected_quality_hat = quality_hat
             existing.quality_interval = (lo, hi)
@@ -176,12 +192,22 @@ class InductionEngine:
             existing.provenance = cell.execution_ids[:50]
             if verification is not None:
                 existing.verification = verification
+            elif substantive and existing.verification_state == "verified":
+                existing.verification = dict(existing.verification)
+                existing.verification["stale_after_revision"] = True
+                existing.verification["stale_reason"] = (
+                    "claim substantively revised (predicates or expected "
+                    "estimates) without a fresh admission verdict; "
+                    "re-verify with induce --verify to re-publish")
             if note_texts:
                 existing.applicability.extend(note_texts)
             self.sbank.update(existing)
             out = {"updated": existing.entry_id, "cell": cell.to_dict(),
                    "predicates": predicates,
                    "notes_added": len(note_texts)}
+            if substantive and verification is None \
+                    and existing.verification_state == "verified":
+                out["verification_stale"] = True
             if verification is not None:
                 out["verification"] = verification
             if verification_note is not None:

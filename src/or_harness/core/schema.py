@@ -731,6 +731,11 @@ class ExecutionRecord:
     #: against a post-hoc re-read of current estimates. None when no
     #: prediction was supplied.
     prediction_snapshot: Optional[PredictionSnapshot] = None
+    #: The unified action record this execution belongs to (world-model M1
+    #: macro action). Not serialized into the fact payload — the linkage
+    #: lives on the action side (``action_records.linked_execution_id``);
+    #: this field is a transient handle for the caller.
+    action_id: Optional[str] = None
 
     @staticmethod
     def new_id() -> str:
@@ -1129,6 +1134,11 @@ def _verification_block(raw: Any) -> Dict[str, Any]:
         "evidence": list(data.get("evidence") or []),
         "conclusion": data.get("conclusion"),
         "verified_at": data.get("verified_at"),
+        # Substantive revision without a fresh verdict: the old verification
+        # no longer covers the (changed) claim. Kept through round-trips so
+        # is_publishable can hold the entry back until re-verification.
+        "stale_after_revision": bool(data.get("stale_after_revision", False)),
+        "stale_reason": data.get("stale_reason"),
     }
 
 

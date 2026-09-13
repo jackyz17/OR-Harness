@@ -62,7 +62,38 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- World-model M1 substrate: belief snapshots and unified action records.
+-- Index/log tables only — they reference the two knowledge banks but never
+-- constitute a third one (no generalization claims live here).
+CREATE TABLE IF NOT EXISTS belief_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    episode_id  TEXT,
+    created_at  REAL NOT NULL,
+    payload     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_task ON belief_snapshots(task_id);
+
+CREATE TABLE IF NOT EXISTS action_records (
+    action_id   TEXT PRIMARY KEY,
+    action_type TEXT NOT NULL,
+    task_id     TEXT NOT NULL,
+    episode_id  TEXT,
+    parent_action_id TEXT,
+    source      TEXT NOT NULL DEFAULT 'executed',
+    status      TEXT NOT NULL DEFAULT 'running',
+    started_at  REAL NOT NULL,
+    ended_at    REAL,
+    payload     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_actions_task ON action_records(task_id);
+CREATE INDEX IF NOT EXISTS idx_actions_episode ON action_records(episode_id);
 """
+
+#: Schema version marker (idempotent). Written once per store; M1 = "wm1".
+SCHEMA_VERSION_KEY = "schema_version"
+SCHEMA_VERSION = "wm1"
 
 
 class StorageError(Exception):
@@ -105,6 +136,12 @@ class Store:
     def _init_schema(self) -> None:
         with self.locked():
             self.conn.executescript(SCHEMA_SQL)
+            # Idempotent schema-version marker: old databases gain the new
+            # tables via IF NOT EXISTS above; nothing is migrated or
+            # rewritten. Re-running is always safe.
+            self.conn.execute(
+                "INSERT OR IGNORE INTO meta (key, value) VALUES (?,?)",
+                (SCHEMA_VERSION_KEY, SCHEMA_VERSION))
             self.conn.commit()
 
     # -- locking ----------------------------------------------------------------
