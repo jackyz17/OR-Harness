@@ -222,9 +222,17 @@ class ActionLog:
         if record is None:
             raise StorageError(f"unknown action_id {action_id!r}")
         if record.status != "running":
-            fingerprint = _outcome_fingerprint(status, outcome or {}, cost)
+            # Replay rule mirrors the completion rule below: a call WITHOUT
+            # a cost argument means "preserve whatever cost is recorded",
+            # so the replay fingerprint compares the EFFECTIVE cost (the
+            # stored one), not the absent argument. Otherwise a legitimate
+            # replay of an action whose cost was amended beforehand would
+            # be misjudged as a conflict.
+            effective_cost = cost if cost is not None else record.cost
+            fingerprint = _outcome_fingerprint(status, outcome or {},
+                                               effective_cost)
             stored = _outcome_fingerprint(record.status, record.outcome,
-                                         record.cost)
+                                          record.cost)
             if fingerprint == stored:
                 return record  # idempotent replay of the same ending
             raise StorageError(

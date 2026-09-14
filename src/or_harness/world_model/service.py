@@ -43,10 +43,7 @@ from or_harness.world_model.prediction import (
     OutcomePrediction,
     validate_prediction_payload,
 )
-from or_harness.world_model.provider import (
-    NotConfiguredProvider,
-    WorldModelProvider,
-)
+from or_harness.world_model.provider import WorldModelProvider
 
 #: The snapshot fields the input view is assembled from. The SAME memory
 #: views the snapshot already carries — no second retrieval system, no
@@ -238,6 +235,35 @@ class PredictionService:
                 f"prediction {prediction_id!r} is already bound to action "
                 f"{prediction.bound_action_id!r}")
         spec = prediction.action_spec
+        # A prediction conditioned on a HYPOTHETICAL snapshot is a
+        # conditional outlook (second step of a rollout), never a real
+        # one-step feedback sample: it must not be bound to a real action.
+        try:
+            row = self.store.conn.execute(
+                "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
+                (prediction.input_snapshot_id,)).fetchone()
+            if row is not None:
+                from or_harness.world_model.state import BeliefSnapshot
+                snap = BeliefSnapshot.from_dict(
+                    self.store.loads(row["payload"]))
+                if snap.hypothetical:
+                    prediction.bound_action_id = action.action_id
+                    prediction.binding_mismatch = {
+                        "input_snapshot": {
+                            "snapshot_id": snap.snapshot_id,
+                            "hypothetical": True,
+                            "reason": "prediction conditioned on a "
+                                      "hypothetical successor state: a "
+                                      "conditional outlook, not a real "
+                                      "one-step prediction",
+                        },
+                    }
+                    self._save(prediction)
+                    return prediction
+        except StorageError:
+            raise
+        except Exception:
+            pass  # snapshot unreadable: fall through to normal checks
         mismatch: Dict[str, Any] = {}
         if action.action_type != spec.action_type:
             mismatch["action_type"] = {"predicted": spec.action_type,
@@ -270,15 +296,26 @@ class PredictionService:
                 "predicted_at": prediction.created_at,
                 "action_started_at": action.started_at,
                 "reason": "prediction was generated after the action began"}
-        # Measurement scope: an attempt-scope prediction is never scored
-        # against a task-scope total (and vice versa).
-        if (spec.measurement_scope != "attempt"
-                and getattr(record_scope, "measurement_scope", "attempt")
-                != spec.measurement_scope):
+        # Measurement scope (BOTH directions): an attempt-scope prediction
+        # is never scored against a task-scope total, and a task-scope
+        # prediction is never scored against an attempt.
+        actual_scope = getattr(record_scope, "measurement_scope", "attempt")
+        if actual_scope != spec.measurement_scope:
             mismatch["measurement_scope"] = {
                 "predicted": spec.measurement_scope,
-                "actual": getattr(record_scope, "measurement_scope",
-                                  "attempt")}
+                "actual": actual_scope}
+        # Source: only REAL actions produce real outcomes. A hypothetical
+        # action's "outcome" is an inference, never feedback evidence.
+        if getattr(action, "source", "executed") == "hypothetical":
+            mismatch["action_source"] = {
+                "predicted": "executed/agent_reported",
+                "actual": "hypothetical",
+                "reason": "a hypothetical action is not a real outcome"}
+        # Unknown identity never counts as matching: when the prediction
+        # names a task/episode the action must too.
+        if spec.task_id and not action.task_id:
+            mismatch["task_id"] = {"predicted": spec.task_id,
+                                   "actual": None}
         prediction.bound_action_id = action.action_id
         prediction.binding_mismatch = mismatch or None
         self._save(prediction)
@@ -364,11 +401,23 @@ class PredictionService:
         else:
             from or_harness.strategy.stats import quality_score
             actual_q = quality_score(record)
-            compared["quality"] = {
+            entry = {
                 "predicted": round(float(pred_quality), 4),
                 "actual": round(actual_q, 4),
                 "abs_error": round(abs(float(pred_quality) - actual_q), 4),
             }
+            # Honest quality semantics: a feasible execution with no
+            # gap/bound yields the heuristic 0.5 placeholder — that is NOT
+            # an observed quality truth, and an error measured against it
+            # is not evidence about the model.
+            if (record.quality.get("gap") is None
+                    and record.quality.get("status") != "optimal"):
+                entry["heuristic_placeholder"] = True
+                entry["note"] = ("actual quality is the 0.5 heuristic "
+                                 "(no gap/bound observed): not an "
+                                 "observation; abs_error is informational "
+                                 "only")
+            compared["quality"] = entry
         # Cost per dimension: both sides measured. Dimensions predicted
         # but not observed (and vice versa) are listed individually — a
         # missing comparison is information, not silence.
@@ -378,39 +427,46 @@ class PredictionService:
         else:
             pred_cost = CostVector.from_dict(pred_cost_raw)
             actual_measured = record.cost.measured_dims()
-            per_dim: Dict[str, Dict[str, float]] = {}
             for dim in COST_DIMENSIONS:
-                if dim not in pred_cost.measured_dims():
-                    continue
-                if dim not in actual_measured:
+                if dim in pred_cost.measured_dims() \
+                        and dim not in actual_measured:
                     not_compared[f"cost.{dim}"] = (
                         "predicted but not measured on the execution")
-                    continue
-                p = getattr(pred_cost, dim)
-                a = getattr(record.cost, dim)
-                if p <= 0 and a <= 0:
-                    continue  # both placeholders: nothing to learn
-                per_dim[dim] = {
-                    "predicted": round(p, 6),
-                    "actual": round(a, 6),
-                    "log_error": round(abs(math.log(
-                        max(a, 1e-9) / max(p, 1e-9))), 4),
-                }
+            # Shared arithmetic with the legacy record-chain feedback
+            # (cost_error_per_dim): both-sides-measured dims only.
+            from or_harness.core.schema import cost_error_per_dim
+            per_dim = cost_error_per_dim(pred_cost, record.cost)
             if per_dim:
                 compared["cost"] = per_dim
-            elif "cost" not in not_compared:
+            elif "cost" not in not_compared and not any(
+                    k.startswith("cost.") for k in not_compared):
                 not_compared["cost"] = ("no dimension measured on both "
                                         "sides")
 
-        prediction.feedback = {
-            "compared": True,
-            "execution_id": record.execution_id,
-            "compared_fields": compared,
-            "not_compared": not_compared,
-            "note": "online comparison records facts and errors only; "
-                    "knowledge updates still go through explicit offline "
-                    "induction with verification",
-        }
+        if not compared:
+            # compared=true must mean at least one field was ACTUALLY
+            # compared; otherwise the honest answer is "nothing comparable"
+            # with the per-field reasons preserved — never a vacuous
+            # success sample.
+            prediction.feedback = {
+                "compared": False,
+                "reason": "no comparable field: every predicted field was "
+                          "either unobserved on the execution or not "
+                          "predicted (see not_compared)",
+                "execution_id": record.execution_id,
+                "compared_fields": {},
+                "not_compared": not_compared,
+            }
+        else:
+            prediction.feedback = {
+                "compared": True,
+                "execution_id": record.execution_id,
+                "compared_fields": compared,
+                "not_compared": not_compared,
+                "note": "online comparison records facts and errors only; "
+                        "knowledge updates still go through explicit offline "
+                        "induction with verification",
+            }
         self._save(prediction)
         return prediction
 

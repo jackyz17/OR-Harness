@@ -96,13 +96,10 @@ class BudgetLedger:
         total: Dict[str, float] = {d: 0.0 for d in COST_DIMENSIONS}
         n_measured: Dict[str, int] = {d: 0 for d in COST_DIMENSIONS}
         per_attempt: List[Dict[str, Any]] = []
+        from or_harness.core.schema import accumulate_measured_costs
         for rec in recorded + staged:
             measured = rec.cost.measured_dims()
-            for d in COST_DIMENSIONS:
-                if d in measured:
-                    n_measured[d] += 1
-                    if d != "latency_s":
-                        total[d] += getattr(rec.cost, d)
+            accumulate_measured_costs([rec.cost], total, n_measured)
             per_attempt.append({
                 "execution_id": rec.execution_id,
                 "strategy_id": rec.strategy_id,
@@ -139,11 +136,7 @@ class BudgetLedger:
                 })
                 continue
             measured = act.cost.measured_dims()
-            for d in COST_DIMENSIONS:
-                if d in measured:
-                    n_measured[d] += 1
-                    if d != "latency_s":
-                        total[d] += getattr(act.cost, d)
+            accumulate_measured_costs([act.cost], total, n_measured)
             action_costs.append({
                 "action_id": act.action_id,
                 "action_type": act.action_type,
@@ -159,6 +152,7 @@ class BudgetLedger:
         # unparented prediction call never silently vanishes from the
         # budget view, and a parented one is never double-counted.
         prediction_costs: List[Dict[str, Any]] = []
+        unattributed_prediction_costs: List[Dict[str, Any]] = []
         try:
             pred_rows = self.store.conn.execute(
                 "SELECT payload FROM world_model_predictions "
@@ -177,15 +171,24 @@ class BudgetLedger:
                 continue
             if (pred.model_info or {}).get("charged_to_parent_action"):
                 continue  # already counted on the parent action
-            if episode_id is not None and pred.action_spec.episode_id \
-                    not in (None, episode_id):
-                continue
+            if episode_id is not None:
+                # STRICT episode matching: a prediction whose episode is
+                # unknown (None) is NOT a wildcard — charging it to every
+                # episode would leak one call's cost into budgets it never
+                # consulted. Unattributable prediction costs are reported
+                # separately, never folded into this episode.
+                if pred.action_spec.episode_id is None:
+                    unattributed_prediction_costs.append({
+                        "prediction_id": pred.prediction_id,
+                        "cost": pred.call_cost.to_dict(),
+                        "cost_measured":
+                            sorted(pred.call_cost.measured_dims()),
+                    })
+                    continue
+                if pred.action_spec.episode_id != episode_id:
+                    continue
             measured = pred.call_cost.measured_dims()
-            for d in COST_DIMENSIONS:
-                if d in measured:
-                    n_measured[d] += 1
-                    if d != "latency_s":
-                        total[d] += getattr(pred.call_cost, d)
+            accumulate_measured_costs([pred.call_cost], total, n_measured)
             prediction_costs.append({
                 "prediction_id": pred.prediction_id,
                 "cost": pred.call_cost.to_dict(),
@@ -219,6 +222,8 @@ class BudgetLedger:
             "attempts": per_attempt,
             "action_costs": action_costs,
             "prediction_call_costs": prediction_costs,
+            "unattributed_prediction_costs":
+                unattributed_prediction_costs or None,
             "unattributed": unattributed_summary,
             "total_cost": {d: (round(total[d], 4) if n_measured[d] > 0
                                else None)

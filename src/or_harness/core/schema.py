@@ -242,6 +242,51 @@ class PredictionSnapshot:
         )
 
 
+def accumulate_measured_costs(costs, total: Dict[str, float],
+                              n_measured: Dict[str, int]) -> None:
+    """Shared measured-only accumulation kernel (mutates ``total`` /
+    ``n_measured``).
+
+    Used by both cost-consumption views (``task_cost_summary`` and
+    ``BudgetLedger.consumption``) so the arithmetic can never drift apart:
+    cumulative dimensions sum over MEASURED values only; ``latency_s`` is
+    counted as measured but never summed (per-attempt fact). The two views
+    differ in WHICH items they aggregate — that stays with the callers.
+    """
+    for cost in costs:
+        measured = cost.measured_dims()
+        for dim in COST_DIMENSIONS:
+            if dim in measured:
+                n_measured[dim] += 1
+                if dim != "latency_s":
+                    total[dim] += getattr(cost, dim)
+
+
+def cost_error_per_dim(predicted: "CostVector", actual: "CostVector"
+                       ) -> Dict[str, Dict[str, float]]:
+    """Per-dimension cost error, both-sides-measured only (shared kernel).
+
+    Used by the legacy record-chain feedback (``compute_cost_feedback``)
+    and the world-model prediction comparison alike, so the two contracts
+    agree on the arithmetic: a dimension participates only when BOTH sides
+    measured it; a pair of placeholder zeros teaches nothing and is
+    skipped; the error is the absolute log-ratio. Dimensions present on
+    only one side are the caller's responsibility to report."""
+    per_dim: Dict[str, Dict[str, float]] = {}
+    for dim in predicted.measured_dims() & actual.measured_dims():
+        p = getattr(predicted, dim)
+        a = getattr(actual, dim)
+        if p <= 0 and a <= 0:
+            continue  # both placeholders: nothing to learn
+        per_dim[dim] = {
+            "predicted": round(p, 6),
+            "actual": round(a, 6),
+            "log_error": round(abs(math.log(max(a, 1e-9)
+                                            / max(p, 1e-9))), 4),
+        }
+    return per_dim
+
+
 def compute_cost_feedback(snapshot: Optional["PredictionSnapshot"],
                           actual_strategy_id: str,
                           actual_scope: str,
@@ -268,18 +313,7 @@ def compute_cost_feedback(snapshot: Optional["PredictionSnapshot"],
         return None
     if snapshot.measurement_scope != actual_scope:
         return None
-    per_dim: Dict[str, Dict[str, float]] = {}
-    for dim in snapshot.expected_cost.measured_dims() & actual_cost.measured_dims():
-        predicted = getattr(snapshot.expected_cost, dim)
-        actual = getattr(actual_cost, dim)
-        if predicted <= 0 and actual <= 0:
-            continue  # both placeholders: nothing to learn
-        per_dim[dim] = {
-            "predicted": round(predicted, 6),
-            "actual": round(actual, 6),
-            "log_error": round(abs(math.log(max(actual, 1e-9)
-                                            / max(predicted, 1e-9))), 4),
-        }
+    per_dim = cost_error_per_dim(snapshot.expected_cost, actual_cost)
     if not per_dim:
         return None
     return {

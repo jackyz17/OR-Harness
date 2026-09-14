@@ -561,6 +561,78 @@ def cmd_bind_outcome(args) -> int:
         h.close()
 
 
+def cmd_plan_next(args) -> int:
+    h = _harness(args)
+    try:
+        from or_harness.world_model.prediction import ActionSpec
+        task = _load_json_arg(args.task)
+        candidates = None
+        if args.candidates:
+            raw = _load_json_arg(args.candidates)
+            if not isinstance(raw, list):
+                return _fail("--candidates must be a JSON list of "
+                             "ActionSpec objects")
+            candidates = [ActionSpec.from_dict(c) for c in raw]
+        limits = {"horizon": args.horizon, "max_model_calls": args.max_calls}
+        plan = h.plan_next(task, episode_id=args.episode,
+                           candidates=candidates, limits=limits)
+        result = {"plan": plan, "decision_action_id": plan.get(
+            "decision_action_id")}
+        status = plan.get("status")
+        if status in ("disabled", "no_candidates", "fallback"):
+            return _emit(result, f"plan_next returned status={status}: "
+                                 f"{plan.get('truncation_reason')}")
+        paths = plan.get("paths") or []
+        parts = [f"Plan {plan['plan_id']}: {len(paths)} path(s) evaluated "
+                 f"from snapshot {plan['root_snapshot_id']} "
+                 f"(calls={plan.get('model_calls_made')}, "
+                 f"planning_cost={plan.get('planning_cost')})."]
+        suggested = plan.get("suggested")
+        if suggested:
+            parts.append(f"Suggested first step: {suggested['action_type']}"
+                         + (f" {suggested.get('strategy_id')}"
+                            if suggested.get("strategy_id") else "")
+                         + f" — {plan.get('suggestion_basis')}. Accept with "
+                           f"`orx choose-next --decision "
+                           f"{plan.get('decision_action_id')} --chosen ...`, "
+                           "or choose something else.")
+        else:
+            parts.append(plan.get("suggestion_basis")
+                         or "No suggestion (see paths).")
+        return _emit(result, " ".join(parts))
+    finally:
+        h.close()
+
+
+def cmd_choose_next(args) -> int:
+    h = _harness(args)
+    try:
+        from or_harness.world_model.prediction import ActionSpec
+        chosen = None
+        if args.chosen:
+            chosen = ActionSpec.from_dict(_load_json_arg(args.chosen))
+        result = h.choose_next(args.decision, chosen=chosen,
+                               rejected=args.rejected,
+                               deviation_note=args.note)
+        if result.get("rejected"):
+            summary = (f"Decision {args.decision} recorded as REJECTED. "
+                       "X.selected_plan is NOT written.")
+        else:
+            summary = (f"Choice recorded for decision {args.decision}: "
+                       f"{(result.get('selected') or {}).get('action_type')} "
+                       + (f"{(result.get('selected') or {}).get('strategy_id')}"
+                          if (result.get('selected') or {}).get('strategy_id')
+                          else "")
+                       + ". X.selected_plan updated; execute the step with "
+                         "`orx execute`, then record and bind the "
+                         "prediction.")
+        if result.get("deviation"):
+            summary += " (deviation from the suggestion recorded)"
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
 def cmd_gc(args) -> int:
     h = _harness(args)
     try:
@@ -811,6 +883,40 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--prediction", required=True)
     p.add_argument("--action", required=True)
     p.set_defaults(func=cmd_bind_outcome)
+
+    p = sub.add_parser("plan-next",
+                       help="bounded next-step planning over predicted "
+                            "action consequences (M3): freeze one root "
+                            "snapshot, compare <=3 root candidates (and "
+                            "optional horizon-2 continuations), suggest the "
+                            "first step. Never executes, never writes "
+                            "selected_plan")
+    p.add_argument("--task", required=True)
+    p.add_argument("--episode", default=None)
+    p.add_argument("--candidates", default=None,
+                   help="JSON list of ActionSpec objects (literal or file); "
+                        "omitted = catalog vocabulary filtered by "
+                        "applicability and available solver families")
+    p.add_argument("--horizon", type=int, default=1, choices=[1, 2])
+    p.add_argument("--max-calls", type=int, default=6,
+                   help="max world-model calls for the whole decision")
+    p.set_defaults(func=cmd_plan_next)
+
+    p = sub.add_parser("choose-next",
+                       help="record your explicit choice after a plan: "
+                            "accept the suggestion, pick another candidate "
+                            "(deviation), or reject. Only this writes "
+                            "X.selected_plan")
+    p.add_argument("--decision", required=True, metavar="ACTION_ID",
+                   help="the select_strategy decision action id from "
+                        "plan-next")
+    p.add_argument("--chosen", default=None,
+                   help="ActionSpec JSON of the action you will execute")
+    p.add_argument("--rejected", action="store_true",
+                   help="record that no suggestion/candidate was taken")
+    p.add_argument("--note", default=None,
+                   help="free-text note (e.g. deviation reason)")
+    p.set_defaults(func=cmd_choose_next)
 
     p = sub.add_parser("gc", help="dispose of the derived layer (harness's call)")
     p.add_argument("--mode", default="compact", choices=["compact", "purge"])

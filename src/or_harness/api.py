@@ -22,6 +22,7 @@ from or_harness.core.schema import (
     ExecutionRecord,
     PredictionSnapshot,
     ProblemProfile,
+    accumulate_measured_costs,
     compute_cost_feedback,
     group_key,
     profile_matches,
@@ -69,7 +70,9 @@ class ORHarness:
                  cost_weights: Optional[Dict[str, float]] = None,
                  catalog_path: Optional[str] = None,
                  executor: Optional[SafePythonExecutor] = None,
-                 world_model: Optional[WorldModelProvider] = None):
+                 world_model: Optional[WorldModelProvider] = None,
+                 planning: bool = True,
+                 plan_mode: str = "advise"):
         self.home = resolve_home(home)
         self.store = Store(self.home)
         self.bank = ExperienceBank(self.store)
@@ -93,9 +96,21 @@ class ORHarness:
         # is untouched.
         self.world_model = world_model or NotConfiguredProvider()
         self.predictions = PredictionService(self.store, self.world_model)
-        # Episode budget declarations (task_id/episode_id -> {dim: limit}),
-        # in-memory only: the harness re-declares per session; snapshots
-        # freeze the declaration they were taken under.
+        # World-model M3: bounded planning. ``planning=False`` restores the
+        # exact M2 behaviour (plan_next refuses with status=disabled);
+        # ``plan_mode`` is "advise" (a suggestion is produced for the agent
+        # to accept or reject) or "shadow" (paths are evaluated and
+        # recorded but no suggestion field is emitted — observation only).
+        # There is no unattended auto-execution mode, ever.
+        if plan_mode not in ("advise", "shadow"):
+            raise ValueError("plan_mode must be 'advise' or 'shadow'")
+        self.planning = bool(planning)
+        self.plan_mode = plan_mode
+        # Episode budget declarations (task_id/episode_id -> {dim: limit}).
+        # Declarations PERSIST in the store's meta table (declare_budget);
+        # this dict is only an in-memory cache of what this instance has
+        # loaded or declared. Snapshots freeze the declaration they were
+        # taken under.
         self._episode_budgets: Dict[str, Dict[str, float]] = {}
 
     # -- capabilities ----------------------------------------------------------
@@ -303,29 +318,25 @@ class ORHarness:
         cost_vector = self._cost_from_dict(cost)
         # (1) Replay/conflict check first — an idempotent replay returns
         # the stored record without writing anything (no new snapshot); a
-        # conflict raises before anything persists.
-        record = self.actions.get(action_id)
-        if record is None:
+        # conflict raises before anything persists. The check lives ONLY
+        # in ActionLog.end_action (one completion rule, one replay rule):
+        # the API layer must not maintain a second fingerprint comparison
+        # — it once treated "no cost argument" as an empty fingerprint and
+        # rejected a legitimate replay of an action whose cost had been
+        # amended beforehand.
+        prior = self.actions.get(action_id)
+        if prior is None:
             raise StorageError(f"unknown action_id {action_id!r}")
-        replayed = record.status != "running"
-        if replayed:
-            from or_harness.world_model.actions import \
-                _outcome_fingerprint
-            fingerprint = _outcome_fingerprint(status, outcome or {},
-                                               cost_vector)
-            stored = _outcome_fingerprint(record.status, record.outcome,
-                                           record.cost)
-            if fingerprint != stored:
-                raise StorageError(
-                    f"action {action_id!r} already ended with different "
-                    "content: conflicting re-end is rejected")
-            return {"action_id": record.action_id,
-                    "status": record.status,
-                    "post_snapshot_id": record.post_snapshot_id}
-        # (2) Persist result + cost.
+        replayed = prior.status != "running"
+        # (2) Persist result + cost (idempotent replay returns the stored
+        # record unchanged; conflicts raise StorageError).
         record = self.actions.end_action(
             action_id, status=status, outcome=outcome, cost=cost_vector,
             linked_execution_id=linked_execution_id, rollup=rollup)
+        if replayed:
+            return {"action_id": record.action_id,
+                    "status": record.status,
+                    "post_snapshot_id": record.post_snapshot_id}
         # (3) Post snapshot AFTER the cost is recorded, so its budget view
         # includes this action's spend. Hypothetical actions get a
         # hypothetical successor snapshot — never merged into the real
@@ -434,10 +445,32 @@ class ORHarness:
         belongs to (e.g. the selection process that is evaluating
         candidates). The model call's own cost is charged to it as an
         own-cost amendment — never to the PREDICTED action, which has not
-        happened."""
+        happened.
+
+        Identity discipline: the prediction belongs to the SAME task and
+        episode as the snapshot it is conditioned on. Before calling the
+        provider, the spec's task_id/episode_id are reconciled with the
+        call arguments (explicit spec values that disagree are overridden
+        and the adjustment recorded in ``model_info.identity_adjusted``) —
+        an episode-less spec is never persisted as a wildcard that later
+        leaks this call's cost into every episode's budget."""
+        task_id = str(task.get("task_id", ""))
+        adjusted: Dict[str, Any] = {}
+        if action_spec.task_id != task_id:
+            adjusted["task_id"] = {"spec": action_spec.task_id,
+                                   "call": task_id}
+            action_spec.task_id = task_id
+        if action_spec.episode_id != episode_id:
+            if action_spec.episode_id is not None:
+                adjusted["episode_id"] = {"spec": action_spec.episode_id,
+                                          "call": episode_id}
+            action_spec.episode_id = episode_id
         snap = self.snapshot(task, episode_id)
         prediction = self.predictions.predict_outcome(
             task, action_spec, snap)
+        if adjusted:
+            prediction.model_info["identity_adjusted"] = adjusted
+            self.predictions._save(prediction)
         if prediction.call_cost is not None:
             dims = {d: getattr(prediction.call_cost, d) for d in
                     prediction.call_cost.measured_dims()}
@@ -462,8 +495,8 @@ class ORHarness:
                     self.predictions._save(prediction)
                 # No parent action: the call cost stays recorded on the
                 # prediction itself AND is aggregated into the budget view
-                # by PredictionLedger (see budget.py) — never silently
-                # dropped.
+                # by BudgetLedger.consumption (see budget.py,
+                # prediction_call_costs) — never silently dropped.
         return prediction
 
     def bind_outcome(self, prediction_id: str,
@@ -514,6 +547,375 @@ class ORHarness:
                           ) -> List[OutcomePrediction]:
         return self.predictions.query(task_id=task_id, episode_id=episode_id)
 
+    # -- world-model M3: bounded planning ----------------------------------------
+
+    def _candidate_specs(self, task: Dict[str, Any],
+                         episode_id: Optional[str],
+                         candidates: Optional[Sequence[ActionSpec]],
+                         limit: int) -> List[ActionSpec]:
+        """Assemble the bounded root-candidate list.
+
+        Sources (no new LLM agent, no retrieval system):
+        1. caller-supplied ActionSpecs (taken as-is, identity reconciled by
+           predict-time discipline);
+        2. otherwise the catalog vocabulary, filtered by applicability and
+           available solver families, turned into execute_strategy specs
+           whose params FREEZE the strategy description (meaning, actions,
+           fallback) the candidate stands for. With no memory this menu
+           carries NO fabricated performance claims — the prediction step
+           is where consequences come from."""
+        task_id = str(task.get("task_id", ""))
+        if candidates:
+            specs = []
+            for spec in list(candidates)[:limit]:
+                spec = ActionSpec.from_dict(spec.to_dict())  # value copy
+                if not spec.task_id:
+                    spec.task_id = task_id
+                if spec.episode_id is None:
+                    spec.episode_id = episode_id
+                specs.append(spec)
+            return specs
+        from or_harness.adapters.solver import available_families
+        profile = self.profile(task)
+        families = set(available_families())
+        specs = []
+        for strategy in self.catalog.values():
+            if len(specs) >= limit:
+                break
+            if strategy.solver_family and families \
+                    and strategy.solver_family not in families:
+                continue  # tool capability filter
+            from or_harness.core.schema import profile_matches
+            if strategy.applicability and not profile_matches(
+                    profile, strategy.applicability):
+                continue
+            specs.append(ActionSpec(
+                action_type="execute_strategy",
+                task_id=task_id,
+                episode_id=episode_id,
+                strategy_id=strategy.strategy_id,
+                params={
+                    "strategy_name": strategy.name,
+                    "strategy_type": strategy.strategy_type,
+                    "actions": list(strategy.actions),
+                    "fallback_strategy_id": strategy.fallback,
+                    "solver_family": strategy.solver_family,
+                },
+            ))
+        return specs
+
+    def plan_next(self, task: Dict[str, Any],
+                  episode_id: Optional[str] = None, *,
+                  candidates: Optional[Sequence[ActionSpec]] = None,
+                  limits: Optional[Any] = None,
+                  second_step: Optional[Sequence[ActionSpec]] = None
+                  ) -> Dict[str, Any]:
+        """Bounded next-step planning over predicted action consequences.
+
+        Freezes ONE root snapshot, evaluates <= limits.max_root_candidates
+        root candidates (horizon 1 or 2; the second step is predicted FROM
+        the hypothetical successor state of the first), and recommends the
+        first step of the best path — the agent then explicitly accepts,
+        rejects, or overrides it (``choose_next``).
+
+        The decision is recorded as a real ``select_strategy`` action whose
+        own cost carries the planning calls' spend (also aggregated in the
+        returned plan). Nothing is executed by this call; the suggestion
+        never writes X.selected_plan — only ``choose_next`` does."""
+        from or_harness.world_model.planner import (
+            PlanLimits,
+            PlanResult,
+            PLANNABLE_ACTION_TYPES,
+            build_hypothetical_successor,
+            comparison_norms,
+            evaluate_path,
+            second_step_dependency_ok,
+        )
+        limits = (limits if isinstance(limits, PlanLimits)
+                  else PlanLimits.from_dict(limits))
+        limits.horizon = max(1, min(2, limits.horizon))
+        task_id = str(task.get("task_id", ""))
+        plan = PlanResult(plan_id=PlanResult.new_id(),
+                          root_snapshot_id="",
+                          decision_action_id=None,
+                          task_id=task_id,
+                          episode_id=episode_id,
+                          limits=limits)
+        if not self.planning:
+            plan.status = "disabled"
+            plan.truncation_reason = ("planning is disabled "
+                                      "(ORHarness(planning=False))")
+            return plan.to_dict()
+        # (1) Freeze the root state ONCE for the whole decision.
+        root = self.snapshot(task, episode_id)
+        plan.root_snapshot_id = root.snapshot_id
+        # Budget honesty up front: an exceeded REAL budget stops planning
+        # (planning itself would spend more); unknown consumption is
+        # reported, never claimed as "within budget".
+        declared = self._load_budget(task_id, episode_id)
+        budget_view = self.budget.view(task_id, episode_id,
+                                       budget=declared)
+        plan.budget_confirmation = (
+            budget_view["status"] if declared else "unknown")
+        if budget_view["status"] == "exceeded":
+            plan.status = "fallback"
+            plan.truncation_reason = (
+                "declared budget already exceeded by real consumption; "
+                "planning would spend more — returning without model "
+                "calls. Report the current best solution instead.")
+            return plan.to_dict()
+        # (2) Bounded candidate list.
+        specs = self._candidate_specs(task, episode_id, candidates,
+                                      limits.max_root_candidates)
+        specs = [s for s in specs
+                 if s.action_type in PLANNABLE_ACTION_TYPES]
+        if not specs:
+            plan.status = "no_candidates"
+            plan.truncation_reason = (
+                "no plannable candidates: planning currently supports "
+                f"{PLANNABLE_ACTION_TYPES} only, after applicability and "
+                "tool-capability filtering. Fall back to `recall` for a "
+                "memory-based ordering.")
+            return plan.to_dict()
+        # (3) Decision (parent) action: the planning spend lands here.
+        decision = self.actions.begin_action(
+            "select_strategy", task_id, episode_id, pre_snapshot=root,
+            params={"kind": "plan_next", "horizon": limits.horizon,
+                    "limits": limits.to_dict()})
+        plan.decision_action_id = decision.action_id
+        started = time.monotonic()
+        predictions: List[OutcomePrediction] = []
+        calls_made = 0
+        stop_reason: Optional[str] = None
+        hypothetical_snaps: Dict[str, str] = {}  # pred_id -> snapshot_id
+        for spec in specs:
+            if calls_made >= limits.max_model_calls:
+                stop_reason = (f"model-call budget exhausted "
+                               f"({limits.max_model_calls})")
+                break
+            if time.monotonic() - started > limits.time_budget_s:
+                stop_reason = ("planning time budget exhausted "
+                               f"({limits.time_budget_s}s)")
+                break
+            prediction = self.predictions.predict_outcome(task, spec, root)
+            calls_made += 1
+            predictions.append(prediction)
+        # (4) Horizon=2: condition the second step on the first step's
+        # hypothetical successor — never a second independent root
+        # prediction.
+        continuation: Dict[str, List[OutcomePrediction]] = {}
+        if limits.horizon == 2 and stop_reason is None:
+            followups = list(second_step or [])
+            for first in predictions:
+                if calls_made >= limits.max_model_calls:
+                    stop_reason = (f"model-call budget exhausted "
+                                   f"({limits.max_model_calls})")
+                    break
+                if time.monotonic() - started > limits.time_budget_s:
+                    stop_reason = ("planning time budget exhausted")
+                    break
+                if first.status != "valid":
+                    continue
+                if not second_step_dependency_ok(first):
+                    continuation[first.prediction_id] = []
+                    continue
+                hypo = build_hypothetical_successor(root, first, task)
+                # Persist for auditability: the hypothetical flag keeps it
+                # out of every real-state query and out of episode
+                # progress inheritance; the rollout stays inspectable.
+                with self.store.transaction() as conn:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO belief_snapshots "
+                        "(snapshot_id, task_id, episode_id, created_at, "
+                        "payload) VALUES (?,?,?,?,?)",
+                        (hypo.snapshot_id, hypo.task_id, hypo.episode_id,
+                         hypo.created_at, self.store.dumps(hypo.to_dict())))
+                hypothetical_snaps[first.prediction_id] = hypo.snapshot_id
+                second_spec = (followups[0] if followups else
+                               ActionSpec.from_dict(
+                                   first.action_spec.to_dict()))
+                second_spec.episode_id = root.episode_id
+                if not second_spec.task_id:
+                    second_spec.task_id = task_id
+                second = self.predictions.predict_outcome(
+                    task, second_spec, hypo)
+                calls_made += 1
+                continuation[first.prediction_id] = [second]
+        # (5) Common yardstick, then per-path evaluation.
+        all_predictions = predictions + [p for ps in continuation.values()
+                                         for p in ps]
+        cost_basis, norms = comparison_norms(all_predictions)
+        for first in predictions:
+            steps = [first] + continuation.get(first.prediction_id, [])
+            if (limits.horizon == 2 and first.status == "valid"
+                    and not continuation.get(first.prediction_id)):
+                # Second step was required but could not be produced.
+                path = evaluate_path([first], limits, norms, cost_basis)
+                if stop_reason is None:
+                    path.notes.append(
+                        "conditional_unsupported: the first prediction did "
+                        "not establish what a second execution step "
+                        "depends on (e.g. a usable incumbent); evaluated "
+                        "as a one-step path")
+                else:
+                    path.notes.append(f"second step truncated: {stop_reason}")
+            else:
+                path = evaluate_path(steps, limits, norms, cost_basis)
+            if first.prediction_id in hypothetical_snaps:
+                path.hypothetical_snapshot_id = \
+                    hypothetical_snaps[first.prediction_id]
+            plan.paths.append(path)
+        # (6) Real planning spend -> decision action own cost.
+        plan.model_calls_made = calls_made
+        planning_total: Dict[str, float] = {}
+        planning_measured: set = set()
+        for prediction in all_predictions:
+            if prediction.call_cost is None:
+                continue
+            for dim in prediction.call_cost.measured_dims():
+                planning_total[dim] = planning_total.get(dim, 0.0) + \
+                    getattr(prediction.call_cost, dim)
+                planning_measured.add(dim)
+        if planning_measured:
+            self.actions.amend_action_cost_increment(
+                decision.action_id,
+                **{d: planning_total[d] for d in planning_measured})
+            for prediction in all_predictions:
+                if prediction.call_cost is not None:
+                    prediction.model_info["charged_to_parent_action"] = \
+                        decision.action_id
+                    self.predictions._save(prediction)
+            plan.planning_cost = {
+                "cost": {d: round(planning_total[d], 4)
+                         for d in sorted(planning_measured)},
+                "measured": sorted(planning_measured),
+                "note": "REAL spend of the planning model calls, charged "
+                        "once to the decision action as own cost — sunk, "
+                        "never part of any path's utility",
+            }
+        # (7) Suggestion (first step only).
+        comparable = [p for p in plan.paths if p.utility is not None]
+        suggested_path = (max(comparable, key=lambda p: p.utility)
+                          if comparable else None)
+        if suggested_path is not None and self.plan_mode == "advise":
+            plan.suggested = suggested_path.steps[0].action_spec
+            parts = [
+                f"U={suggested_path.utility} = "
+                f"{limits.alpha}*Q({suggested_path.q_terminal}) - "
+                f"{limits.beta}*C({suggested_path.c_path}) - "
+                f"{limits.gamma}*R({suggested_path.r_terminal})",
+                f"evaluated {len(plan.paths)} path(s) from root snapshot "
+                f"{plan.root_snapshot_id}",
+            ]
+            if suggested_path.incomparable:
+                parts.append("incomparable: "
+                             + "; ".join(suggested_path.incomparable.values()))
+            plan.suggestion_basis = "; ".join(parts)
+        elif suggested_path is not None:
+            plan.suggestion_basis = ("shadow mode: paths evaluated and "
+                                     "recorded; suggestion withheld")
+        plan.status = "truncated" if stop_reason else "ok"
+        plan.truncation_reason = stop_reason
+        # (8) End the decision action. The outcome records the evaluation
+        # (references + decomposition) — NOT a selection: X.selected_plan
+        # is written only by choose_next.
+        self.actions.end_action(
+            decision.action_id, status="completed",
+            outcome={"kind": "plan_next_evaluation",
+                     "plan_id": plan.plan_id,
+                     "n_paths": len(plan.paths),
+                     "suggested": (plan.suggested.to_dict()
+                                   if plan.suggested else None),
+                     "suggestion_withheld": self.plan_mode == "shadow",
+                     "status": plan.status,
+                     "truncation_reason": plan.truncation_reason})
+        return plan.to_dict()
+
+    def choose_next(self, decision_action_id: str, *,
+                    chosen: Optional[ActionSpec] = None,
+                    rejected: bool = False,
+                    deviation_note: Optional[str] = None) -> Dict[str, Any]:
+        """Record the agent's EXPLICIT choice after a plan.
+
+        ``chosen`` is the ActionSpec the agent decided to take (the
+        suggested one or another — a deviation); ``rejected=True`` records
+        that no suggestion was taken. Only this call writes
+        X.selected_plan (via a completed select_strategy report linked to
+        the decision action): a generated suggestion alone never counts as
+        a selection, and a selection record produces no execution quality.
+        """
+        from or_harness.world_model.actions import PROGRESS_UPDATES
+        decision = self.actions.get(decision_action_id)
+        if decision is None:
+            raise StorageError(
+                f"unknown decision_action_id {decision_action_id!r}")
+        if decision.action_type != "select_strategy":
+            raise StorageError(
+                f"action {decision_action_id!r} is a "
+                f"{decision.action_type}, not a select_strategy decision")
+        outcome: Dict[str, Any] = {
+            "kind": "plan_next_choice",
+            "decision_action_id": decision_action_id,
+            "decision_plan_id": (decision.outcome or {}).get("plan_id"),
+        }
+        if rejected:
+            outcome["rejected"] = True
+            if deviation_note:
+                outcome["note"] = deviation_note
+        elif chosen is not None:
+            outcome["selected"] = chosen.to_dict()
+            suggested = (decision.outcome or {}).get("suggested")
+            if suggested and suggested != chosen.to_dict():
+                outcome["deviation"] = {
+                    "suggested": suggested,
+                    "chosen": chosen.to_dict(),
+                    "note": deviation_note,
+                }
+            elif deviation_note:
+                outcome["note"] = deviation_note
+        else:
+            raise ValueError("choose_next requires chosen=... or "
+                             "rejected=True")
+        record = self.actions.report_action(
+            "select_strategy", decision.task_id, decision.episode_id,
+            params={"decision_action_id": decision_action_id},
+            outcome=outcome, status="completed")
+        # Link the choice to the decision it answers (parent-child).
+        record.parent_action_id = decision_action_id
+        self.actions._update(record)
+        # Explicit choice -> X.selected_plan update (the ONLY writer of
+        # that field from the planning flow). The task payload is recovered
+        # from the decision's frozen root snapshot (its P carries the
+        # problem content) — the caller does not have to re-supply it.
+        progress = self._progress_from_outcome(record.action_id, outcome)
+        root_snap = self.get_snapshot(decision.pre_snapshot_id) \
+            if decision.pre_snapshot_id else None
+        task = dict((root_snap.problem_state.get("task_payload") or {})
+                    if root_snap is not None else {})
+        task.setdefault("task_id", decision.task_id)
+        if "family" not in task and root_snap is not None:
+            family = ((root_snap.problem_state.get("profile") or {})
+                      .get("family"))
+            if family:
+                task["family"] = family
+        post = self.snapshot(task, decision.episode_id,
+                             task_progress=progress)
+        self.actions._bind_post_snapshot(record.action_id,
+                                         post.snapshot_id)
+        return {"action_id": record.action_id,
+                "status": record.status,
+                "selected": outcome.get("selected"),
+                "rejected": bool(outcome.get("rejected")),
+                "deviation": outcome.get("deviation"),
+                "post_snapshot_id": post.snapshot_id}
+
+    def plan_decision(self, decision_action_id: str) -> Optional[Dict[str, Any]]:
+        """Read back a planning decision record (the select_strategy action
+        plus its outcome payload)."""
+        record = self.actions.get(decision_action_id)
+        return record.to_dict() if record is not None else None
+
+    # -- world-model M3: bounded planning ------------------------------------
     def understand(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-model coupling-aware understanding.
 
@@ -1175,11 +1577,10 @@ class ORHarness:
         per_attempt = []
         for rec in records:
             measured = rec.cost.measured_dims()
-            for dim in COST_DIMENSIONS:
-                if dim in measured:
-                    n_measured[dim] += 1
-                    if dim != "latency_s":
-                        total[dim] += getattr(rec.cost, dim)
+            # Shared measured-only accumulation kernel (same arithmetic as
+            # BudgetLedger.consumption; the AGGREGATION SCOPE differs and
+            # stays here: recorded attempts only).
+            accumulate_measured_costs([rec.cost], total, n_measured)
             per_attempt.append({
                 "execution_id": rec.execution_id,
                 "strategy_id": rec.strategy_id,

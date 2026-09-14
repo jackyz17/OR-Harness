@@ -213,6 +213,26 @@ Bind a prediction to the real action that ran, then compare. Type/strategy/solve
 
 Query predictions with `orx inspect --bank predictions [--task ID]`.
 
+### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N]`
+
+**Bounded next-step planning (M3).** Compare a small set of candidate actions by their PREDICTED consequences and get a suggested first step. The decision:
+
+1. freezes ONE root snapshot for the whole comparison (all candidates see the same state);
+2. predicts each root candidate's first-step consequences (default ≤3 candidates, ≤6 model calls total);
+3. with `--horizon 2`, builds a HYPOTHETICAL successor state from each first prediction's `state_changes` and predicts the continuation FROM that successor (a genuine state-conditioned two-step rollout — never two independent root predictions);
+4. scores each path as `U = alpha*Q_terminal − beta*C_path − gamma*R_terminal` (terminal quality / incremental predicted cost on the common measured dimensions / terminal failure risk — longer paths never win by accumulating quality terms; step risks are never summed or multiplied);
+5. suggests the FIRST step of the best path.
+
+- **Candidates**: `--candidates` (your own ActionSpec list, recommended when you have domain hypotheses), or the catalog vocabulary filtered by applicability and available solvers. Without memory, candidates carry no fabricated performance claims — consequences come from the world model.
+- **Hard bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.
+- **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
+- **Honesty**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
+- **Requirements**: a configured `--world-model` provider. Without one every path is `not_configured` and no suggestion is made. Planning supports `execute_strategy` candidates; other action types are reported as not plannable.
+
+### `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
+
+Record YOUR explicit choice after a plan: accept the suggestion, pick another candidate (a deviation, recorded with its reason), or reject all. Only this call writes `X.selected_plan`; the choice itself produces no execution quality. Then execute the step with `orx execute`, record the result with `orx record`, and bind the executed step's prediction with `orx bind-outcome`. Re-plan from the new real state afterwards — the old plan stays as the suggestion of its time.
+
 ### `orx gc [--mode compact|purge] [--dry-run]`
 
 Disposes only of the derived layer. `compact` is **deferred**: lossy evidence compaction is paused until the summary consumption contract exists (statistics and induction currently ignore `source="compacted"` rows, so summarizing raw facts would bias conditional statistics — e.g. 90 successes + 10 failures would read as 100% failure rate). The command still runs and honestly reports the deferral; raw facts are never touched. `purge` lists retirement candidates (suspect/dormant entries) but never retires them itself.
@@ -235,6 +255,7 @@ Self-check: solver availability (7 adapters probed), memory sizes, staged-but-un
 ## Anti-patterns (do not do these)
 
 - Do not treat a world-model prediction as a decision — it is a shadow hypothesis. You choose the strategy; the prediction only gets compared afterwards.
+- Do not treat a `plan-next` suggestion as a selection or an execution — it changes nothing until you `choose-next` and `execute`. Do not re-plan from a hypothetical state: the second step of a rollout is a conditional outlook, never real feedback; after executing the first step, re-plan from the NEW real state.
 - Do not predict after executing and call it a forecast — the input snapshot must be frozen BEFORE the action. A post-hoc "prediction" is not evidence.
 - Do not compare a prediction against a different strategy's or configuration's execution — bind the action that actually matches the candidate; a mismatch is recorded, not scored.
 - Do not treat the model's self-reported `confidence` as a calibrated probability, or a prediction with no evidence basis as knowledge.
