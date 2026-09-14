@@ -806,6 +806,84 @@ class TestBugfixRegressions(HarnessTestCase):
         self.assertEqual(snap2.problem_state["task_ref"],
                          "file:///tasks/vrp-001.json")
 
+    def test_execute_post_snapshot_sees_this_execution(self):
+        """P1 (round 2): execute's post snapshot is generated AFTER the
+        action (with linked_execution_id) is persisted, so its budget view
+        already counts this execution — including the staged one."""
+        from pathlib import Path
+        h = self._harness()
+        task = _task()
+        script = Path(self.home) / "solve_r2.py"
+        script.write_text(
+            "import json\n"
+            "json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "           'objective_bound': 1.0, 'mip_gap': 0.0,\n"
+            "           'runtime_seconds': 0.1}, open('result.json', 'w'))\n")
+        record = h.execute(task, "S01", str(script), self.home,
+                           solver="highs", episode_id="ep1")
+        action = h.actions.get(record.action_id)
+        post = h.get_snapshot(action.post_snapshot_id)
+        cons = post.budget_state["consumption"]
+        # The staged execution is visible to the snapshot's budget view.
+        self.assertEqual(cons["n_attempts"], 1)
+        self.assertEqual(cons["n_staged"], 1)
+        # Executor-measured dimensions are known (not unknown).
+        self.assertIn("tool_calls", cons["n_measured"])
+        self.assertGreater(cons["n_measured"]["tool_calls"], 0)
+
+    def test_reference_rollup_not_double_counted_any_type(self):
+        """P1 (round 2): cost attribution follows rollup, not action type —
+        a non-execute parent action with rollup=reference contributes
+        nothing (the cost lives on its child)."""
+        h = self._harness()
+        # Child action: own cost 100 tokens.
+        child = h.actions.begin_action("verify", "t1", "ep1")
+        h.actions.end_action(
+            child.action_id, status="completed",
+            cost=CostVector(llm_tokens=100.0, measured={"llm_tokens"}))
+        # Parent action referencing the child's cost: must NOT add again.
+        parent = h.actions.begin_action("select_strategy", "t1", "ep1",
+                                        parent_action_id=child.action_id)
+        h.actions.end_action(
+            parent.action_id, status="completed",
+            cost=CostVector(llm_tokens=100.0, measured={"llm_tokens"}),
+            rollup="reference")
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         100.0)
+
+    def test_induce_records_full_knowledge_after_and_diff(self):
+        """P1 (round 2): the induce action's outcome carries the full
+        after-state and a per-entry diff, so the transition is
+        reconstructible from the frozen record."""
+        h = self._harness()
+        for task_id in ("t1", "t2"):
+            h.bank.append(self.make_record(
+                task_id=task_id, strategy_id="S01",
+                profile=self.make_profile(problem_id=task_id)))
+        first = h.induce(strategy_id="S01")
+        entry_id = first["results"][0]["created"]
+        # New evidence that MOVES the expected quality (a failure).
+        h.bank.append(self.make_record(
+            task_id="t3", strategy_id="S01",
+            profile=self.make_profile(problem_id="t3"),
+            feasible=False, status="error"))
+        second = h.induce(strategy_id="S01")
+        action = h.actions.get(second["action"]["action_id"])
+        # Full after-state present with the modified values.
+        after = action.outcome["knowledge_after"]
+        self.assertIn("entries", after)
+        moved = next(e for e in after["entries"]
+                     if e["entry_id"] == entry_id)
+        self.assertLess(moved["expected_quality_hat"], 1.0)
+        # Per-entry diff shows the changed field with before/after values.
+        changes = action.outcome["knowledge_delta"]["entry_changes"]
+        change = next(c for c in changes if c["entry_id"] == entry_id)
+        self.assertIn("expected_quality_hat", change["changed"])
+        field = change["changed"]["expected_quality_hat"]
+        self.assertEqual(field["before"], 1.0)
+        self.assertLess(field["after"], 1.0)
+
 
 class TestLegacyCompatibility(HarnessTestCase):
     """Requirement 6: old databases and old payloads."""

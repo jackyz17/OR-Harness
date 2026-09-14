@@ -111,18 +111,20 @@ class BudgetLedger:
             })
 
         # Non-execution actions: their own costs. Hypothetical actions are
-        # excluded everywhere. An execute_strategy action with rollup="own"
-        # carries its OWN additional spend (beyond the child execution's) —
-        # counted here; rollup="reference" contributes nothing (the cost
-        # lives on the child). A cost of None means UNKNOWN, not zero: the
-        # action still participates in the completeness judgment.
+        # excluded everywhere. Cost attribution follows ROLLUP, not action
+        # type: rollup="reference" means the cost lives on the child
+        # (execution or child action) and is counted there — never here,
+        # whatever the action type; rollup="own" (including an
+        # execute_strategy's own additional spend beyond its child
+        # execution) is counted here. A cost of None means UNKNOWN, not
+        # zero: the action still participates in the completeness judgment.
         action_costs: List[Dict[str, Any]] = []
         actions = [a for a in self.actions.query(task_id=task_id)
                    if a.source != "hypothetical"]
         if episode_id is not None:
             actions = [a for a in actions if a.episode_id == episode_id]
         for act in actions:
-            if act.action_type == "execute_strategy" and act.rollup != "own":
+            if act.rollup == "reference":
                 continue  # reference costs are counted on the child
             if act.cost is None:
                 # Unknown cost: no dimensions to add, but the action exists

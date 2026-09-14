@@ -564,13 +564,23 @@ class ORHarness:
         self.bank.stage_pending(record)
         # End the macro action: status follows the EXECUTION outcome (not
         # the record decision); cost is a REFERENCE to the execution's own
-        # cost (counted there — never summed again); the post snapshot
-        # carries the solution/error state.
+        # cost (counted there — never summed again). Save order mirrors
+        # end_action: the action (with its linked_execution_id) is persisted
+        # FIRST, then the post snapshot is generated — so the snapshot's
+        # budget view already sees this execution (the episode filter
+        # resolves via the linkage) and its cost.
         exec_status = record.quality.get("status")
         action_status = ("completed" if exec_status in ("optimal", "feasible")
                          else "failed" if exec_status in ("error",)
                          else "timeout" if exec_status == "timeout"
                          else "completed")
+        self.actions.end_action(
+            action.action_id, status=action_status,
+            outcome={"execution_status": exec_status,
+                     "feasible": record.quality.get("feasible"),
+                     "objective": record.quality.get("objective")},
+            cost=record.cost,
+            linked_execution_id=record.execution_id, rollup="reference")
         progress = {
             "current_solution": {
                 "value": {"status": exec_status,
@@ -586,13 +596,7 @@ class ORHarness:
                 "provenance": "observed", "epistemic": "fact",
                 "evidence_ref": record.execution_id}
         post = self.snapshot(task, episode_id, task_progress=progress)
-        self.actions.end_action(
-            action.action_id, status=action_status,
-            outcome={"execution_status": exec_status,
-                     "feasible": record.quality.get("feasible"),
-                     "objective": record.quality.get("objective")},
-            cost=record.cost, post_snapshot=post,
-            linked_execution_id=record.execution_id, rollup="reference")
+        self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
         return record
 
@@ -822,9 +826,31 @@ class ORHarness:
                         for e in self.sbank.list()],
             "entry_count": self.sbank.count(),
         }
-        before_ids = {k["entry_id"] for k in
-                     maintenance["knowledge_before"]["entries"]}
-        after_ids = {k["entry_id"] for k in knowledge_after["entries"]}
+        before_by_id = {k["entry_id"]: k for k in
+                        maintenance["knowledge_before"]["entries"]}
+        after_by_id = {k["entry_id"]: k for k in knowledge_after["entries"]}
+        before_ids = set(before_by_id)
+        after_ids = set(after_by_id)
+        # Per-entry diff: what actually changed in the entries that stayed.
+        # A bare id list cannot reconstruct the transition — the modified
+        # values (expected quality/cost, predicates, verification state)
+        # are what future analysis needs to replay this knowledge change.
+        entry_changes = []
+        for entry_id in sorted(before_ids & after_ids):
+            before, after = before_by_id[entry_id], after_by_id[entry_id]
+            changed_fields = {}
+            for field in ("predicates", "expected_quality_hat",
+                          "quality_interval", "expected_cost_hat",
+                          "cost_interval", "failure_prob", "support_n",
+                          "status", "verification_state"):
+                if before.get(field) != after.get(field):
+                    changed_fields[field] = {
+                        "before": before.get(field),
+                        "after": after.get(field),
+                    }
+            if changed_fields:
+                entry_changes.append({"entry_id": entry_id,
+                                      "changed": changed_fields})
         outcome = {
             "business_result": business,
             "created_verified": [r["created"] for r in created_verified],
@@ -842,7 +868,12 @@ class ORHarness:
                 "entry_count_before":
                     maintenance["knowledge_before"]["entry_count"],
                 "entry_count_after": knowledge_after["entry_count"],
+                "entry_changes": entry_changes,
             },
+            # The full AFTER state (value-copied entry refs): the frozen
+            # record can reconstruct what the knowledge looked like after
+            # this induction, not just which ids moved.
+            "knowledge_after": knowledge_after,
         }
         # Induction cost is UNKNOWN unless the harness amends it explicitly
         # (amend_action_cost) — never fabricated for report completeness.
