@@ -66,21 +66,31 @@ class BudgetLedger:
         if episode_id is not None:
             # Episode scoping: an execution belongs to an episode via its
             # execute_strategy action. Executions with NO action linkage
-            # (recorded directly, or pre-M1 records) belong to no episode —
-            # excluding them would silently hide real spend, so they are
-            # KEPT in the task-level view (the episode filter only
-            # excludes executions that provably belong to a DIFFERENT
-            # episode).
+            # (recorded directly, or pre-M1 records) belong to NO episode:
+            # deterministically charging them to every new episode would
+            # make a fresh episode start "exceeded". They are reported
+            # SEPARATELY (unattributed) instead of being folded in.
             recorded = [r for r in recorded
                         if self._episode_of_execution(r.execution_id)
-                        in (None, episode_id)]
+                        == episode_id]
         recorded_ids = {r.execution_id for r in recorded}
         staged = [p for p in self.bank.pending(task_id=task_id)
                   if p.execution_id not in recorded_ids]
         if episode_id is not None:
             staged = [p for p in staged
                       if self._episode_of_execution(p.execution_id)
-                      in (None, episode_id)]
+                      == episode_id]
+        # Unattributed executions: same task, no episode linkage. Reported
+        # as their own line so the caller sees the real history without it
+        # being charged to this episode.
+        if episode_id is not None:
+            unattributed = [r for r in self.bank.query(task_id=task_id)
+                            if r.source == "executed"
+                            and r.measurement_scope == "attempt"
+                            and self._episode_of_execution(r.execution_id)
+                            is None]
+        else:
+            unattributed = []
 
         total: Dict[str, float] = {d: 0.0 for d in COST_DIMENSIONS}
         n_measured: Dict[str, int] = {d: 0 for d in COST_DIMENSIONS}
@@ -100,17 +110,30 @@ class BudgetLedger:
                 "cost_measured": sorted(measured),
             })
 
-        # Non-execution actions: their own costs, rollup="own" only.
-        # Hypothetical actions are excluded everywhere.
+        # Non-execution actions: their own costs. Hypothetical actions are
+        # excluded everywhere. An execute_strategy action with rollup="own"
+        # carries its OWN additional spend (beyond the child execution's) —
+        # counted here; rollup="reference" contributes nothing (the cost
+        # lives on the child). A cost of None means UNKNOWN, not zero: the
+        # action still participates in the completeness judgment.
         action_costs: List[Dict[str, Any]] = []
         actions = [a for a in self.actions.query(task_id=task_id)
                    if a.source != "hypothetical"]
         if episode_id is not None:
             actions = [a for a in actions if a.episode_id == episode_id]
         for act in actions:
-            if act.action_type == "execute_strategy" or act.cost is None:
-                continue  # macro reference costs are counted on the child
-            if act.rollup != "own":
+            if act.action_type == "execute_strategy" and act.rollup != "own":
+                continue  # reference costs are counted on the child
+            if act.cost is None:
+                # Unknown cost: no dimensions to add, but the action exists
+                # and its cost is unmeasured — it must make the verdict
+                # unconfirmed, never silently "ok".
+                action_costs.append({
+                    "action_id": act.action_id,
+                    "action_type": act.action_type,
+                    "cost": None,
+                    "cost_measured": [],
+                })
                 continue
             measured = act.cost.measured_dims()
             for d in COST_DIMENSIONS:
@@ -126,12 +149,21 @@ class BudgetLedger:
             })
 
         # A dimension is unknown when at least one contributing item
-        # (execution or own-cost action) exists and any of them did not
-        # measure it. latency_s is never summed but IS a declared budget
+        # (execution or action, measured or not) exists and any of them did
+        # not measure it. latency_s is never summed but IS a declared budget
         # dimension, so its measurement state still matters for honesty.
         n_items = len(recorded) + len(staged) + len(action_costs)
         unknown_dims = [d for d in COST_DIMENSIONS
                         if n_items > 0 and n_measured[d] < n_items]
+        unattributed_summary = None
+        if unattributed:
+            unattributed_summary = {
+                "n": len(unattributed),
+                "execution_ids": [r.execution_id for r in unattributed],
+                "note": ("executions of this task with no episode linkage "
+                         "(pre-M1 or directly recorded): reported for "
+                         "visibility, NOT charged to this episode"),
+            }
         return {
             "task_id": task_id,
             "episode_id": episode_id,
@@ -140,6 +172,7 @@ class BudgetLedger:
             "n_staged": len(staged),
             "attempts": per_attempt,
             "action_costs": action_costs,
+            "unattributed": unattributed_summary,
             "total_cost": {d: (round(total[d], 4) if n_measured[d] > 0
                                else None)
                            for d in COST_DIMENSIONS if d != "latency_s"},
@@ -148,9 +181,10 @@ class BudgetLedger:
             "aggregation_note": (
                 "cumulative dimensions summed over measured recorded AND "
                 "staged executions (deduplicated by execution_id) plus "
-                "own-cost non-execution actions; macro reference costs are "
-                "not re-counted; latency never summed; unknown dimensions "
-                "reported as null, never zero"),
+                "own-cost actions; macro reference costs are not "
+                "re-counted; latency never summed (a declared latency "
+                "budget is judged per-attempt, see view); unknown "
+                "dimensions reported as null, never zero"),
         }
 
     def _episode_of_execution(self, execution_id: str) -> Optional[str]:
@@ -189,6 +223,16 @@ class BudgetLedger:
                 and consumption["total_cost"].get(d) is not None
                 and consumption["total_cost"][d] > budget[d]
                 for d in COST_DIMENSIONS)
+            # latency_s is never summed (attempts may overlap), so a
+            # declared latency budget is judged PER ATTEMPT: any single
+            # measured attempt latency over the limit exceeds the budget.
+            if not exceeded and "latency_s" in budget:
+                limit = budget["latency_s"]
+                for attempt in consumption["attempts"]:
+                    latency = (attempt.get("cost") or {}).get("latency_s")
+                    if latency is not None and latency > limit:
+                        exceeded = True
+                        break
             if exceeded:
                 status = "exceeded"
             elif declared_unknown:

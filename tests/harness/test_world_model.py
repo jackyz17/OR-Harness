@@ -475,9 +475,13 @@ class TestHarnessIntegration(HarnessTestCase):
         action = h.actions.get(action_info["action_id"])
         self.assertEqual(action.task_id, MAINTENANCE_TASK_ID)
         self.assertTrue(action.episode_id.startswith("maint_"))
-        self.assertIn(action_info["business_result"],
-                      ("created", "updated", "revised", "refused",
-                       "unchanged"))
+        # Without --verify the entry is an unverified candidate: the
+        # business label says so (candidates are NOT knowledge growth).
+        self.assertEqual(action_info["business_result"],
+                         "created_unverified")
+        # The action carries the real pre-knowledge state and the delta.
+        self.assertIn("knowledge_before", action.params)
+        self.assertIn("knowledge_delta", action.outcome)
         # Refused induction (single task) is no_valid_entry, not failed.
         h2 = ORHarness(home=self.home + "_2")
         self.addCleanup(h2.close)
@@ -487,6 +491,28 @@ class TestHarnessIntegration(HarnessTestCase):
         self.assertEqual(
             h2.actions.get(refused["action"]["action_id"]).status,
             "no_valid_entry")
+
+    def test_induce_crash_still_records_action(self):
+        """An induction that raises still leaves a failed action with its
+        pre state — the attempt is never silently lost."""
+        h = self._harness()
+        for task_id in ("t1", "t2"):
+            h.bank.append(self.make_record(
+                task_id=task_id, strategy_id="S01",
+                profile=self.make_profile(problem_id=task_id)))
+        original = h.induction.induce
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated induction crash")
+
+        h.induction.induce = boom
+        with self.assertRaises(RuntimeError):
+            h.induce(strategy_id="S01")
+        failed = h.actions.query(action_type="induce")
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0].status, "failed")
+        self.assertIn("error", failed[0].outcome)
+        self.assertIn("knowledge_before", failed[0].params)
 
     def test_induce_dry_run_persists_nothing(self):
         h = self._harness()
@@ -508,22 +534,41 @@ class TestHarnessIntegration(HarnessTestCase):
         # solver_runtime_s declared but unmeasured => unconfirmed (NOT ok).
         h.declare_budget("t2", {"llm_tokens": 1000,
                                 "solver_runtime_s": 100}, episode_id="ep-a")
-        rec = self.make_record(
-            task_id="t2", strategy_id="S01",
-            cost=CostVector(llm_tokens=100.0,
-                            measured={"llm_tokens"}))
-        h.bank.append(rec)
+        # An episode-scoped action with a partially-measured cost: the
+        # declared-but-unmeasured dimension makes the verdict unconfirmed.
+        begin = h.begin_action("select_strategy", _task("t2"), "ep-a")
+        h.end_action(begin["action_id"], status="completed",
+                     outcome={"strategy_id": "S01"},
+                     cost={"llm_tokens": 100.0})
         view = h.budget_view("t2", episode_id="ep-a")
         self.assertEqual(view["status"], "unconfirmed")
         # Harness experience is RETAINED across tasks: t1's execution is
         # still visible to t2's snapshot (total = t1 + t2's own).
         snap = h.snapshot(_task("t2"), "ep-a")
         self.assertEqual(
-            snap.harness_state["experience"]["total_executions"], 2)
+            snap.harness_state["experience"]["total_executions"], 1)
         # Task-scoped count: only t2's own execution (t1's is retained in
         # the TOTAL, not in this task's context).
         self.assertEqual(
-            snap.harness_state["experience"]["task_execution_count"], 1)
+            snap.harness_state["experience"]["task_execution_count"], 0)
+
+    def test_unattributed_history_not_charged_to_new_episode(self):
+        """P2-8: executions with no episode linkage are reported separately
+        and NOT charged to a fresh episode's budget."""
+        h = self._harness()
+        # Pre-M1 style: a recorded execution with NO action linkage.
+        h.bank.append(self.make_record(task_id="t1", strategy_id="S01"))
+        h.declare_budget("t1", {"llm_tokens": 100}, episode_id="ep-new")
+        view = h.budget_view("t1", episode_id="ep-new")
+        # The fresh episode has no spend of its own: not exceeded.
+        self.assertNotEqual(view["status"], "exceeded")
+        # The history is visible as unattributed, not folded in.
+        self.assertEqual(view["consumption"]["n_attempts"], 0)
+        self.assertIsNotNone(view["consumption"]["unattributed"])
+        self.assertEqual(view["consumption"]["unattributed"]["n"], 1)
+        # Task-level view (no episode) still counts it.
+        task_view = h.budget_view("t1")
+        self.assertEqual(task_view["consumption"]["n_attempts"], 1)
 
     def test_end_to_end_flow(self):
         """Requirement 8: snapshot -> selection -> execution -> record ->
@@ -560,6 +605,206 @@ class TestHarnessIntegration(HarnessTestCase):
         sel_action = h.actions.get(sel["action_id"])
         self.assertEqual(sel_action.action_type, "select_strategy")
         self.assertIsNone(sel_action.linked_execution_id)
+
+
+class TestBugfixRegressions(HarnessTestCase):
+    """Regressions for the nine reviewed defects (P1-1..P2-9)."""
+
+    def _harness(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        return h
+
+    def test_episode_progress_carries_over_between_actions(self):
+        """P1-1: after selecting a strategy, the NEXT action's pre state
+        still contains selected_plan (and everything else established)."""
+        h = self._harness()
+        task = _task()
+        # Select via report (post snapshot with selected_plan).
+        h.report_action("select_strategy", task, "ep1",
+                        outcome={"strategy_id": "S01"})
+        # Begin the NEXT action: its pre snapshot must inherit X.
+        pre = h.snapshot(task, "ep1")
+        self.assertIn("selected_plan", pre.task_progress)
+        self.assertEqual(pre.task_progress["selected_plan"]["value"]
+                         ["strategy_id"], "S01")
+        # A model action's post state keeps selected_plan AND adds
+        # model_artifact.
+        h.report_action("model", task, "ep1",
+                        outcome={"model_version": "v2"})
+        after = h.snapshot(task, "ep1")
+        self.assertIn("selected_plan", after.task_progress)
+        self.assertIn("model_artifact", after.task_progress)
+
+    def test_end_action_post_snapshot_includes_action_cost(self):
+        """P1-2: the post snapshot's budget view reflects THIS action's
+        cost (it is generated after the cost is on the books)."""
+        h = self._harness()
+        task = _task()
+        begin = h.begin_action("select_strategy", task, "ep1")
+        out = h.end_action(begin["action_id"], status="completed",
+                           outcome={"strategy_id": "S01"},
+                           cost={"llm_tokens": 200}, task=task,
+                           episode_id="ep1")
+        post = h.get_snapshot(out["post_snapshot_id"])
+        self.assertEqual(
+            post.budget_state["consumption"]["total_cost"]["llm_tokens"],
+            200.0)
+
+    def test_end_action_replay_writes_no_extra_snapshot(self):
+        """P1-2: replaying the same ending is idempotent — no second post
+        snapshot is persisted."""
+        h = self._harness()
+        task = _task()
+        begin = h.begin_action("verify", task, "ep1")
+        n_before = len(h.snapshots(task_id="t1"))
+        first = h.end_action(begin["action_id"], status="completed",
+                             outcome={"passed": True}, task=task,
+                             episode_id="ep1")
+        n_after = len(h.snapshots(task_id="t1"))
+        again = h.end_action(begin["action_id"], status="completed",
+                              outcome={"passed": True}, task=task,
+                              episode_id="ep1")
+        self.assertEqual(len(h.snapshots(task_id="t1")), n_after)
+        self.assertEqual(first["post_snapshot_id"],
+                        again["post_snapshot_id"])
+        self.assertGreater(n_after, n_before)
+
+    def test_end_action_conflict_raises_before_snapshot(self):
+        """P1-2: a conflicting re-end raises and persists nothing new."""
+        h = self._harness()
+        task = _task()
+        begin = h.begin_action("verify", task, "ep1")
+        h.end_action(begin["action_id"], status="completed",
+                     outcome={"passed": True}, task=task, episode_id="ep1")
+        n = len(h.snapshots(task_id="t1"))
+        from or_harness.core.storage import StorageError
+        with self.assertRaises(StorageError):
+            h.end_action(begin["action_id"], status="failed",
+                         outcome={"passed": True}, task=task, episode_id="ep1")
+        self.assertEqual(len(h.snapshots(task_id="t1")), n)
+
+    def test_unknown_action_cost_makes_budget_unconfirmed(self):
+        """P1-3a: an action with NO cost at all still participates in the
+        completeness judgment — a declared dimension stays unknown."""
+        h = self._harness()
+        task = _task()
+        begin = h.begin_action("model", task, "ep1")
+        h.end_action(begin["action_id"], status="completed",
+                     outcome={"v": 1})  # no cost supplied
+        h.declare_budget("t1", {"llm_tokens": 1000}, episode_id="ep1")
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["status"], "unconfirmed")
+
+    def test_own_rollup_execute_action_cost_counted(self):
+        """P1-3b: an execute_strategy action with rollup=own carries its
+        own additional spend — counted, not skipped."""
+        h = self._harness()
+        action = h.actions.begin_action("execute_strategy", "t1", "ep1")
+        h.actions.end_action(
+            action.action_id, status="completed",
+            cost=CostVector(llm_tokens=200.0, measured={"llm_tokens"}),
+            rollup="own")
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         200.0)
+
+    def test_latency_budget_judged_per_attempt(self):
+        """P1-3c: a declared latency budget is judged per-attempt — a
+        single 100s attempt against a 1s budget exceeds it."""
+        h = self._harness()
+        h.bank.append(self.make_record(
+            task_id="t1", strategy_id="S01",
+            cost=CostVector(latency_s=100.0, measured={"latency_s"})))
+        view = h.budget_view("t1", budget={"latency_s": 1.0})
+        self.assertEqual(view["status"], "exceeded")
+        # Within the limit: ok (latency measured, not summed).
+        view = h.budget_view("t1", budget={"latency_s": 200.0})
+        self.assertEqual(view["status"], "ok")
+
+    def test_budget_declaration_persists_across_instances(self):
+        """P1-4: a budget declared in one ORHarness instance is visible to
+        a fresh instance on the same home (separate CLI processes)."""
+        h1 = self._harness()
+        h1.declare_budget("t1", {"llm_tokens": 500}, episode_id="ep1")
+        h1.close()
+        h2 = ORHarness(home=self.home)
+        self.addCleanup(h2.close)
+        view = h2.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["budget"], {"llm_tokens": 500.0})
+        self.assertNotEqual(view["status"], "no_budget_declared")
+
+    def test_hypothetical_outcome_not_in_real_state(self):
+        """P1-6: a hypothetical action's post snapshot is marked
+        hypothetical, labelled inferred, and excluded from the real episode
+        progress chain."""
+        h = self._harness()
+        task = _task()
+        begin = h.begin_action("verify", task, "ep1", source="hypothetical")
+        out = h.end_action(begin["action_id"], status="completed",
+                           outcome={"passed": True}, task=task,
+                           episode_id="ep1")
+        post = h.get_snapshot(out["post_snapshot_id"])
+        self.assertTrue(post.hypothetical)
+        field = post.task_progress["verification_evidence"]
+        self.assertEqual(field["epistemic"], "inferred")
+        self.assertTrue(field.get("hypothetical"))
+        # The real state chain does NOT inherit the hypothetical outcome.
+        real = h.snapshot(task, "ep1")
+        self.assertNotIn("verification_evidence", real.task_progress)
+
+    def test_status_index_column_synced(self):
+        """P2-7: the SQLite status column matches the payload — a
+        completed action is found by status=completed, not by running()."""
+        h = self._harness()
+        action = h.actions.begin_action("understand", "t1", "ep1")
+        self.assertEqual(h.actions.running(task_id="t1").__len__(), 1)
+        h.actions.end_action(action.action_id, status="completed")
+        self.assertEqual(h.actions.running(task_id="t1"), [])
+        completed = h.actions.query(task_id="t1", status="completed")
+        self.assertEqual([a.action_id for a in completed],
+                         [action.action_id])
+        # And at the SQL level.
+        row = h.store.conn.execute(
+            "SELECT status FROM action_records WHERE action_id=?",
+            (action.action_id,)).fetchone()
+        self.assertEqual(row["status"], "completed")
+
+    def test_explicit_zero_cost_is_measured(self):
+        """P2-9: reporting {"llm_tokens": 0} marks the dimension measured —
+        an observed zero, not an unknown."""
+        h = self._harness()
+        task = _task()
+        out = h.report_action("select_strategy", task, "ep1",
+                              cost={"llm_tokens": 0})
+        action = h.actions.get(out["action_id"])
+        self.assertIn("llm_tokens", action.cost.measured_dims())
+        # Budget: declared llm_tokens, measured zero => ok, not unconfirmed.
+        h.declare_budget("t1", {"llm_tokens": 100}, episode_id="ep1")
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["status"], "ok")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"], 0.0)
+
+    def test_task_payload_preserved_without_task_ref(self):
+        """P content: with no task_ref, the snapshot keeps the
+        problem-relevant payload (description/objective/spec), not just a
+        hash."""
+        h = self._harness()
+        task = _task()
+        task["description"] = "Vehicle routing with time windows"
+        task["objective"] = "minimize total distance"
+        snap = h.snapshot(task, "ep1")
+        payload = snap.problem_state.get("task_payload")
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["description"],
+                         "Vehicle routing with time windows")
+        self.assertEqual(payload["objective"], "minimize total distance")
+        # With an explicit task_ref, the payload is not duplicated.
+        task2 = dict(task, task_ref="file:///tasks/vrp-001.json")
+        snap2 = h.snapshot(task2, "ep1")
+        self.assertIsNone(snap2.problem_state.get("task_payload"))
+        self.assertEqual(snap2.problem_state["task_ref"],
+                         "file:///tasks/vrp-001.json")
 
 
 class TestLegacyCompatibility(HarnessTestCase):

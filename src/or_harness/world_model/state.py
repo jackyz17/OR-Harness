@@ -64,6 +64,20 @@ def _labelled(value: Any, provenance: str = "observed",
     }
 
 
+#: Task keys that carry problem semantics (kept in the snapshot's P when no
+#: explicit task_ref exists, so a future model can recover WHAT was asked,
+#: not just a hash). Bulky/derived artifacts are excluded.
+_TASK_PAYLOAD_KEYS = ("task_id", "family", "description", "objective",
+                      "constraints", "spec", "requirements", "business_rules",
+                      "data_ref")
+
+
+def _task_payload(task: Dict[str, Any]) -> Dict[str, Any]:
+    """The problem-relevant subset of a task payload (deep-copied)."""
+    return {k: copy.deepcopy(task[k]) for k in _TASK_PAYLOAD_KEYS
+            if task.get(k) is not None}
+
+
 @dataclass
 class KnowledgeRef:
     """A value copy of one strategic entry's decision-relevant fields.
@@ -174,6 +188,11 @@ class BeliefSnapshot:
     #: Conditional capability evidence view, layered by admission state.
     coverage: Dict[str, Any] = field(default_factory=dict)
     frozen: bool = False
+    #: A hypothetical rollout's successor state (M2 preview). Hypothetical
+    #: snapshots are excluded from real-state queries and from episode
+    #: progress inheritance — an imagined outcome never contaminates the
+    #: real state chain, the budget, or knowledge views.
+    hypothetical: bool = False
 
     @staticmethod
     def new_id() -> str:
@@ -189,13 +208,19 @@ class BeliefSnapshot:
               budget_state: Optional[Dict[str, Any]] = None,
               coverage: Optional[Dict[str, Any]] = None,
               snapshot_id: Optional[str] = None,
-              created_at: Optional[float] = None) -> "BeliefSnapshot":
+              created_at: Optional[float] = None,
+              hypothetical: bool = False) -> "BeliefSnapshot":
         """Assemble a snapshot from caller-supplied pieces.
 
         The caller (ORHarness.snapshot) fills harness/problem/budget/coverage
         from the live banks; this constructor only deep-copies them. The
         problem-side task digest is derived here so it is always consistent
-        with the task payload actually being solved."""
+        with the task payload actually being solved.
+
+        P content: when the task carries no explicit ``task_ref``, the
+        problem-relevant payload (description / objective / constraints /
+        spec — everything except bulky artifacts) is preserved so a future
+        model can recover the problem's semantics, not just its hash."""
         task = copy.deepcopy(task)
         problem = dict(problem_state or {})
         problem.setdefault("task_digest", _stable_digest(task))
@@ -204,6 +229,8 @@ class BeliefSnapshot:
             problem["cir_snapshot"] = copy.deepcopy(task["coupling"])
         if task.get("model") is not None and "model_digest" not in problem:
             problem["model_digest"] = _stable_digest(task["model"])
+        if problem.get("task_ref") is None:
+            problem["task_payload"] = _task_payload(task)
         snap = cls(
             snapshot_id=snapshot_id or cls.new_id(),
             task_id=str(task.get("task_id", "")),
@@ -214,6 +241,7 @@ class BeliefSnapshot:
             task_progress=copy.deepcopy(task_progress or {}),
             budget_state=copy.deepcopy(budget_state or {}),
             coverage=copy.deepcopy(coverage or {}),
+            hypothetical=hypothetical,
         )
         snap.freeze()
         return snap
@@ -243,6 +271,7 @@ class BeliefSnapshot:
             "episode_id": self.episode_id,
             "created_at": self.created_at,
             "frozen": self.frozen,
+            "hypothetical": self.hypothetical,
             "harness_state": copy.deepcopy(self.harness_state),
             "problem_state": copy.deepcopy(self.problem_state),
             "task_progress": copy.deepcopy(self.task_progress),
@@ -265,6 +294,7 @@ class BeliefSnapshot:
             budget_state=copy.deepcopy(dict(data.get("budget_state") or {})),
             coverage=copy.deepcopy(dict(data.get("coverage") or {})),
             frozen=bool(data.get("frozen", False)),
+            hypothetical=bool(data.get("hypothetical", False)),
         )
         snap.freeze()
         return snap

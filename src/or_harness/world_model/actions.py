@@ -312,6 +312,20 @@ class ActionLog:
         self._update(record)
         return record
 
+    def _bind_post_snapshot(self, action_id: str,
+                            snapshot_id: str) -> None:
+        """Attach a post snapshot id to an already-ended action.
+
+        Used by the API layer when the post snapshot must be generated AFTER
+        the action's result and cost are persisted (so its budget view
+        reflects the spend). Narrow by design: only the post_snapshot_id
+        field changes."""
+        record = self.get(action_id)
+        if record is None:
+            raise StorageError(f"unknown action_id {action_id!r}")
+        record.post_snapshot_id = snapshot_id
+        self._update(record)
+
     # -- queries ----------------------------------------------------------------
 
     def get(self, action_id: str) -> Optional[ActionRecord]:
@@ -356,11 +370,13 @@ class ActionLog:
                 conn.execute(
                     "INSERT INTO action_records "
                     "(action_id, action_type, task_id, episode_id, "
-                    " parent_action_id, source, started_at, ended_at, payload) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    " parent_action_id, source, status, started_at, "
+                    " ended_at, payload) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     (payload.action_id, payload.action_type, payload.task_id,
                      payload.episode_id, payload.parent_action_id,
-                     payload.source, payload.started_at, payload.ended_at,
+                     payload.source, payload.status, payload.started_at,
+                     payload.ended_at,
                      self.store.dumps(payload.to_dict())))
             except Exception as exc:
                 if "UNIQUE" in str(exc).upper():
@@ -372,9 +388,10 @@ class ActionLog:
     def _update(self, record: ActionRecord) -> None:
         with self.store.transaction() as conn:
             cur = conn.execute(
-                "UPDATE action_records SET ended_at=?, payload=? "
+                "UPDATE action_records SET status=?, ended_at=?, payload=? "
                 "WHERE action_id=?",
-                (record.ended_at, self.store.dumps(record.to_dict()),
+                (record.status, record.ended_at,
+                 self.store.dumps(record.to_dict()),
                  record.action_id))
             if cur.rowcount == 0:
                 raise StorageError(f"unknown action_id {record.action_id!r}")
