@@ -215,13 +215,18 @@ class PredictionService:
 
     # -- bind -------------------------------------------------------------------
 
-    def bind_outcome(self, prediction_id: str, action) -> OutcomePrediction:
+    def bind_outcome(self, prediction_id: str, action,
+                     record_scope=None) -> OutcomePrediction:
         """Bind a prediction to the REAL action that ran.
 
-        Match check: action type, strategy, solver. A mismatch is recorded
+        Match check (request identity): action type, task, episode,
+        strategy, solver, prediction TIMING (the prediction must predate the
+        action), and measurement scope (an attempt-scope prediction is
+        never scored against a task-scope total). A mismatch is recorded
         (``binding_mismatch``) and the comparison will only cover the
-        matching parts — a prediction for strategy A is never scored
-        against strategy B's execution."""
+        matching parts — a prediction for task A is never scored against
+        task B's execution, and a post-hoc prediction is never scored at
+        all."""
         prediction = self.get(prediction_id)
         if prediction is None:
             raise StorageError(f"unknown prediction_id {prediction_id!r}")
@@ -237,6 +242,16 @@ class PredictionService:
         if action.action_type != spec.action_type:
             mismatch["action_type"] = {"predicted": spec.action_type,
                                       "actual": action.action_type}
+        # Request identity: the prediction must be FOR THIS task and
+        # episode. A prediction for task A never scores task B's execution.
+        if spec.task_id and action.task_id != spec.task_id:
+            mismatch["task_id"] = {"predicted": spec.task_id,
+                                   "actual": action.task_id}
+        if (spec.episode_id is not None
+                and action.episode_id is not None
+                and spec.episode_id != action.episode_id):
+            mismatch["episode_id"] = {"predicted": spec.episode_id,
+                                      "actual": action.episode_id}
         if (spec.strategy_id is not None
                 and action.params.get("strategy_id") not in
                 (None, spec.strategy_id)):
@@ -248,6 +263,22 @@ class PredictionService:
                 (None, spec.solver)):
             mismatch["solver"] = {"predicted": spec.solver,
                                   "actual": action.params.get("solver")}
+        # Timing: the prediction must have been made BEFORE the action
+        # started. A post-hoc "prediction" is hindsight, not evidence.
+        if prediction.created_at > action.started_at:
+            mismatch["timing"] = {
+                "predicted_at": prediction.created_at,
+                "action_started_at": action.started_at,
+                "reason": "prediction was generated after the action began"}
+        # Measurement scope: an attempt-scope prediction is never scored
+        # against a task-scope total (and vice versa).
+        if (spec.measurement_scope != "attempt"
+                and getattr(record_scope, "measurement_scope", "attempt")
+                != spec.measurement_scope):
+            mismatch["measurement_scope"] = {
+                "predicted": spec.measurement_scope,
+                "actual": getattr(record_scope, "measurement_scope",
+                                  "attempt")}
         prediction.bound_action_id = action.action_id
         prediction.binding_mismatch = mismatch or None
         self._save(prediction)

@@ -237,7 +237,13 @@ class ActionLog:
         record.status = status
         record.ended_at = time.time()
         record.outcome = copy.deepcopy(outcome or {})
-        record.cost = cost
+        # Cost: an explicit cost REPLACES (the caller states the action's
+        # total spend); NO cost argument PRESERVES whatever was already
+        # amended onto the action (e.g. world-model call costs charged to
+        # a running selection action) — ending without a cost must not
+        # silently erase recorded spend.
+        if cost is not None:
+            record.cost = cost
         record.post_snapshot_id = (post_snapshot.snapshot_id
                                    if post_snapshot is not None else None)
         if linked_execution_id is not None:
@@ -308,6 +314,30 @@ class ActionLog:
             record.cost = CostVector(measured=set())
         for d, v in dimensions.items():
             setattr(record.cost, d, float(v))
+        record.cost.mark_measured(*dimensions)
+        self._update(record)
+        return record
+
+    def amend_action_cost_increment(self, action_id: str,
+                                    **dimensions: float) -> ActionRecord:
+        """Incremental cost amendment: each call is an ADDITIONAL measured
+        amount within the action's scope.
+
+        Used for repeated real spends under one parent action (e.g. two
+        world-model calls under one selection action): 50 + 50 = 100 —
+        replace semantics would silently drop the first call. Dimensions
+        not yet present start from zero; the measured mask only grows."""
+        record = self.get(action_id)
+        if record is None:
+            raise StorageError(f"unknown action_id {action_id!r}")
+        unknown = set(dimensions) - set(COST_DIMENSIONS)
+        if unknown:
+            raise StorageError(f"unknown cost dimensions: {sorted(unknown)}")
+        if record.cost is None:
+            record.cost = CostVector(measured=set())
+        for d, v in dimensions.items():
+            setattr(record.cost, d,
+                    float(getattr(record.cost, d)) + float(v))
         record.cost.mark_measured(*dimensions)
         self._update(record)
         return record

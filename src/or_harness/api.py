@@ -438,28 +438,51 @@ class ORHarness:
         snap = self.snapshot(task, episode_id)
         prediction = self.predictions.predict_outcome(
             task, action_spec, snap)
-        if parent_action_id is not None and prediction.call_cost is not None:
-            # Charge the model call's real cost to the parent action (own
-            # cost — the predicted action's cost is a PREDICTION and stays
-            # inside the prediction record).
-            parent = self.actions.get(parent_action_id)
-            if parent is None:
-                raise StorageError(
-                    f"unknown parent_action_id {parent_action_id!r}")
+        if prediction.call_cost is not None:
             dims = {d: getattr(prediction.call_cost, d) for d in
                     prediction.call_cost.measured_dims()}
             if dims:
-                self.actions.amend_action_cost(parent_action_id, **dims)
+                if parent_action_id is not None:
+                    # Charge the model call's real cost to the parent
+                    # action. INCREMENT semantics: each prediction call is
+                    # a separate real spend — two 50-token calls under one
+                    # selection action total 100, never overwrite each
+                    # other.
+                    parent = self.actions.get(parent_action_id)
+                    if parent is None:
+                        raise StorageError(
+                            f"unknown parent_action_id "
+                            f"{parent_action_id!r}")
+                    self.actions.amend_action_cost_increment(
+                        parent_action_id, **dims)
+                    # Mark the prediction so the budget view counts this
+                    # spend on the parent action ONLY (never twice).
+                    prediction.model_info["charged_to_parent_action"] = \
+                        parent_action_id
+                    self.predictions._save(prediction)
+                # No parent action: the call cost stays recorded on the
+                # prediction itself AND is aggregated into the budget view
+                # by PredictionLedger (see budget.py) — never silently
+                # dropped.
         return prediction
 
     def bind_outcome(self, prediction_id: str,
                      action_id: str) -> OutcomePrediction:
-        """Bind a prediction to the real action that ran (type/strategy/
-        solver checked; mismatches recorded, not silently compared)."""
+        """Bind a prediction to the real action that ran. Request identity
+        is checked (type/task/episode/strategy/solver/timing/scope);
+        mismatches recorded, not silently compared."""
         action = self.actions.get(action_id)
         if action is None:
             raise StorageError(f"unknown action_id {action_id!r}")
-        return self.predictions.bind_outcome(prediction_id, action)
+        # The linked execution's measurement scope (when the execution is
+        # already staged/recorded) — an attempt-scope prediction must not
+        # be scored against a task-scope total.
+        record_scope = None
+        if action.linked_execution_id is not None:
+            record_scope = (self.bank.get_pending(action.linked_execution_id)
+                            or self.bank.get(action.linked_execution_id))
+        return self.predictions.bind_outcome(prediction_id, action,
+                                             record_scope=record_scope)
 
     def compare_prediction(self, prediction_id: str) -> OutcomePrediction:
         """Compare the frozen prediction against the bound action's real

@@ -45,6 +45,7 @@ class BudgetLedger:
     def __init__(self, bank: ExperienceBank, actions: ActionLog):
         self.bank = bank
         self.actions = actions
+        self.store = actions.store  # same store; used for prediction rows
 
     # -- consumption ----------------------------------------------------------
 
@@ -150,11 +151,54 @@ class BudgetLedger:
                 "cost_measured": sorted(measured),
             })
 
+        # World-model call costs with NO parent action: the prediction
+        # records carry their own real spend (the model call's tokens and
+        # latency). Predictions whose cost was charged to a parent action
+        # are marked (model_info.charged_to_parent_action) and excluded
+        # here — they are already counted on that action above. This way an
+        # unparented prediction call never silently vanishes from the
+        # budget view, and a parented one is never double-counted.
+        prediction_costs: List[Dict[str, Any]] = []
+        try:
+            pred_rows = self.store.conn.execute(
+                "SELECT payload FROM world_model_predictions "
+                "WHERE task_id=?", (task_id,)).fetchall()
+        except Exception:
+            pred_rows = []
+        for row in pred_rows:
+            from or_harness.world_model.prediction import \
+                OutcomePrediction
+            try:
+                pred = OutcomePrediction.from_dict(
+                    self.store.loads(row["payload"]))
+            except Exception:
+                continue
+            if pred.call_cost is None:
+                continue
+            if (pred.model_info or {}).get("charged_to_parent_action"):
+                continue  # already counted on the parent action
+            if episode_id is not None and pred.action_spec.episode_id \
+                    not in (None, episode_id):
+                continue
+            measured = pred.call_cost.measured_dims()
+            for d in COST_DIMENSIONS:
+                if d in measured:
+                    n_measured[d] += 1
+                    if d != "latency_s":
+                        total[d] += getattr(pred.call_cost, d)
+            prediction_costs.append({
+                "prediction_id": pred.prediction_id,
+                "cost": pred.call_cost.to_dict(),
+                "cost_measured": sorted(measured),
+            })
+
         # A dimension is unknown when at least one contributing item
-        # (execution or action, measured or not) exists and any of them did
-        # not measure it. latency_s is never summed but IS a declared budget
-        # dimension, so its measurement state still matters for honesty.
-        n_items = len(recorded) + len(staged) + len(action_costs)
+        # (execution, action, or unparented prediction call, measured or
+        # not) exists and any of them did not measure it. latency_s is
+        # never summed but IS a declared budget dimension, so its
+        # measurement state still matters for honesty.
+        n_items = (len(recorded) + len(staged) + len(action_costs)
+                   + len(prediction_costs))
         unknown_dims = [d for d in COST_DIMENSIONS
                         if n_items > 0 and n_measured[d] < n_items]
         unattributed_summary = None
@@ -174,6 +218,7 @@ class BudgetLedger:
             "n_staged": len(staged),
             "attempts": per_attempt,
             "action_costs": action_costs,
+            "prediction_call_costs": prediction_costs,
             "unattributed": unattributed_summary,
             "total_cost": {d: (round(total[d], 4) if n_measured[d] > 0
                                else None)

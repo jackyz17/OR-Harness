@@ -445,5 +445,133 @@ class TestShadowLoop(HarnessTestCase):
             [r["score"] for r in recs_wm["recommendations"]])
 
 
+class TestBugfixRegressions(HarnessTestCase):
+    """Regressions for the reviewed M2 defects (binding identity, call
+    cost accounting)."""
+
+    def _harness(self, provider=None):
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        return h
+
+    def _solve_script(self, name="solve_fix.py"):
+        from pathlib import Path
+        script = Path(self.home) / name
+        script.write_text(
+            "import json\n"
+            "json.dump({'status': 'feasible', 'objective_value': 90.0,\n"
+            "           'objective_bound': 100.0, 'mip_gap': 0.1,\n"
+            "           'runtime_seconds': 2.0}, open('result.json', 'w'))\n")
+        return script
+
+    def test_cross_task_binding_rejected(self):
+        """P1: a prediction for task A never scores task B's execution."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        # Predict for task A.
+        prediction = h.predict_outcome(_task("taskA"), _spec(
+            task_id="taskA"), "ep1")
+        # Execute task B (same strategy/solver — only the task differs).
+        task_b = _task("taskB")
+        record = h.execute(task_b, "S01", str(self._solve_script()),
+                           self.home, solver="highs", episode_id="ep1")
+        h.bind_outcome(prediction.prediction_id, record.action_id)
+        prediction = h.compare_prediction(prediction.prediction_id)
+        self.assertFalse(prediction.feedback["compared"])
+        self.assertIn("task_id", prediction.feedback["mismatch"])
+
+    def test_post_hoc_prediction_not_scored(self):
+        """P1: a prediction generated AFTER the action started is
+        hindsight — recorded as a timing mismatch, never scored."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        task = _task()
+        record = h.execute(task, "S01", str(self._solve_script()),
+                            self.home, solver="highs", episode_id="ep1")
+        # Predict AFTER the execution already happened.
+        prediction = h.predict_outcome(task, _spec(), "ep1")
+        h.bind_outcome(prediction.prediction_id, record.action_id)
+        prediction = h.compare_prediction(prediction.prediction_id)
+        self.assertFalse(prediction.feedback["compared"])
+        self.assertIn("timing", prediction.feedback["mismatch"])
+
+    def test_scope_mismatch_recorded(self):
+        """P1: an attempt-scope prediction vs a task-scope record is a
+        mismatch, not a comparison."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        task = _task()
+        record = h.execute(task, "S01", str(self._solve_script()),
+                            self.home, solver="highs", episode_id="ep1")
+        # A task-scope spec against an attempt-scope execution.
+        prediction = h.predict_outcome(task, _spec(
+            measurement_scope="task"), "ep1")
+        h.bind_outcome(prediction.prediction_id, record.action_id)
+        prediction = h.compare_prediction(prediction.prediction_id)
+        self.assertFalse(prediction.feedback["compared"])
+        self.assertIn("measurement_scope",
+                      prediction.feedback["mismatch"])
+
+    def test_repeated_call_costs_accumulate_on_parent(self):
+        """P2: two 50-token predictions under one selection action total
+        100 — increment, never overwrite."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        task = _task()
+        begin = h.begin_action("select_strategy", task, "ep1")
+        h.predict_outcome(task, _spec(), "ep1",
+                          parent_action_id=begin["action_id"])
+        h.predict_outcome(task, _spec(), "ep1",
+                          parent_action_id=begin["action_id"])
+        action = h.actions.get(begin["action_id"])
+        self.assertEqual(action.cost.llm_tokens, 100.0)
+
+    def test_ending_parent_without_cost_keeps_amended_spend(self):
+        """P2: ending the parent action with no cost argument preserves
+        the already-recorded call spend."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        task = _task()
+        begin = h.begin_action("select_strategy", task, "ep1")
+        h.predict_outcome(task, _spec(), "ep1",
+                          parent_action_id=begin["action_id"])
+        h.end_action(begin["action_id"], status="completed",
+                     outcome={"strategy_id": "S01"})
+        action = h.actions.get(begin["action_id"])
+        self.assertIsNotNone(action.cost)
+        self.assertEqual(action.cost.llm_tokens, 50.0)
+        # And the budget view still sees it.
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         50.0)
+
+    def test_unparented_call_cost_enters_budget(self):
+        """P2: a prediction with no parent action still counts in the
+        budget view (via the prediction's own call cost)."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        h.predict_outcome(_task(), _spec(), "ep1")  # no parent action
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         50.0)
+        self.assertEqual(
+            len(view["consumption"]["prediction_call_costs"]), 1)
+
+    def test_parented_call_cost_not_double_counted(self):
+        """P2: a parented prediction's cost appears on the action, NOT
+        again as an unparented prediction cost."""
+        provider = _ScriptedProvider(_GOOD_PAYLOAD)
+        h = self._harness(provider)
+        task = _task()
+        begin = h.begin_action("select_strategy", task, "ep1")
+        h.predict_outcome(task, _spec(), "ep1",
+                          parent_action_id=begin["action_id"])
+        view = h.budget_view("t1", episode_id="ep1")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         50.0)  # once, not twice
+        self.assertEqual(
+            view["consumption"]["prediction_call_costs"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
