@@ -131,6 +131,43 @@ with ≥70% hit rate ON TOP of the passed admission check.
 
 The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and never enter scoring — the framework cannot verify a sentence, so it does not pretend to.
 
+## World-model outcome predictions (M2): shadow hypotheses, never decisions
+
+A *world-model prediction* is a structured hypothesis about what ONE
+candidate action would do from the current frozen state: expected status,
+feasibility, quality, failure risk, per-dimension cost, and successor state
+changes. It is produced by an explicitly configured provider
+(`--world-model URL::MODEL`, OpenAI-compatible; credentials from the
+environment, never persisted) and lives in its own log table — it is not a
+third knowledge bank, not an ExecutionRecord, and not a StrategicEntry.
+
+The discipline that makes these predictions useful rather than corrosive:
+
+- **Shadow mode.** A prediction never changes a recommendation, a score, or
+  a route. You decide; the prediction is compared afterwards.
+- **Frozen before the act.** The input snapshot is frozen at prediction
+  time. Predicting after executing and calling it a forecast is not
+  evidence — it is hindsight wearing a costume.
+- **Both sides defined, or not compared.** Comparison covers only fields
+  the prediction defined AND the execution measured (the same
+  both-sides-measured rule as cost feedback). A predicted-but-unmeasured
+  cost dimension is listed as not-compared, never scored as zero error.
+- **No counterfactuals.** A candidate that never ran has no result. A
+  prediction for strategy A is never scored against strategy B's
+  execution — the mismatch is recorded and the comparison is skipped.
+- **Two costs, never confused.** The PREDICTED cost of the action is a
+  hypothesis inside the prediction record; the model call's OWN cost
+  (tokens, latency) is real spend, recorded on the prediction and charged
+  to the calling action when one is named.
+- **Uncalibrated confidence.** The model's self-reported confidence is
+  data about the model, not a probability you may bank on. Calibration is
+  what the accumulated prediction-vs-outcome record is FOR — that is the
+  entire point of the shadow loop.
+- **Knowledge stays gated.** Prediction feedback records facts and errors
+  online; it never promotes, revises, or publishes anything. Knowledge
+  changes only through explicit offline induction with admission
+  verification, exactly as before.
+
 ## Applicability: the structural cell, not a declared ladder
 
 There is no ladder of generalization levels and no `widen`/`tighten` command.

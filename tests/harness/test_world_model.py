@@ -895,10 +895,11 @@ class TestLegacyCompatibility(HarnessTestCase):
         self.addCleanup(store2.close)
         row = store2.conn.execute(
             "SELECT value FROM meta WHERE key='schema_version'").fetchone()
-        self.assertEqual(row["value"], "wm1")
+        self.assertEqual(row["value"], "wm2")
         # Tables exist and are queryable.
         store2.conn.execute("SELECT COUNT(*) FROM belief_snapshots")
         store2.conn.execute("SELECT COUNT(*) FROM action_records")
+        store2.conn.execute("SELECT COUNT(*) FROM world_model_predictions")
 
     def test_action_record_roundtrip(self):
         log = ActionLog(self.store)

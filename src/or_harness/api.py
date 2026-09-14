@@ -41,6 +41,15 @@ from or_harness.world_model.actions import (
     ActionLog,
 )
 from or_harness.world_model.budget import BudgetLedger
+from or_harness.world_model.prediction import (
+    ActionSpec,
+    OutcomePrediction,
+)
+from or_harness.world_model.provider import (
+    NotConfiguredProvider,
+    WorldModelProvider,
+)
+from or_harness.world_model.service import PredictionService
 from or_harness.world_model.state import (
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
@@ -59,7 +68,8 @@ class ORHarness:
                  alpha: float = 1.0, beta: float = 1.0, gamma: float = 1.0,
                  cost_weights: Optional[Dict[str, float]] = None,
                  catalog_path: Optional[str] = None,
-                 executor: Optional[SafePythonExecutor] = None):
+                 executor: Optional[SafePythonExecutor] = None,
+                 world_model: Optional[WorldModelProvider] = None):
         self.home = resolve_home(home)
         self.store = Store(self.home)
         self.bank = ExperienceBank(self.store)
@@ -76,6 +86,13 @@ class ORHarness:
         # facilities — NOT a third knowledge bank).
         self.actions = ActionLog(self.store)
         self.budget = BudgetLedger(self.bank, self.actions)
+        # World-model M2: structured outcome predictions (shadow mode).
+        # The provider is EXPLICITLY injected by the caller — never a
+        # hidden default model, never an implicit network call. Without one,
+        # predict_outcome returns not_configured and every existing path
+        # is untouched.
+        self.world_model = world_model or NotConfiguredProvider()
+        self.predictions = PredictionService(self.store, self.world_model)
         # Episode budget declarations (task_id/episode_id -> {dim: limit}),
         # in-memory only: the harness re-declares per session; snapshots
         # freeze the declaration they were taken under.
@@ -396,6 +413,83 @@ class ORHarness:
         record = self.actions.amend_action_cost(action_id, **dimensions)
         return {"action_id": record.action_id,
                 "cost": record.cost.to_dict() if record.cost else None}
+
+    # -- world-model M2: structured outcome prediction (shadow) ------------------
+
+    def predict_outcome(self, task: Dict[str, Any],
+                        action_spec: ActionSpec,
+                        episode_id: Optional[str] = None,
+                        *, parent_action_id: Optional[str] = None
+                        ) -> OutcomePrediction:
+        """Predict the consequences of a CANDIDATE action from the current
+        frozen state — explicitly, in shadow mode.
+
+        The input snapshot is frozen BEFORE anything else happens; the
+        provider is invoked exactly once; the prediction (including its
+        own call cost) is persisted frozen. The existing strategy flow is
+        untouched: this prediction never changes recall, predict_cost,
+        execute, or record behaviour.
+
+        ``parent_action_id`` (optional): the action this prediction call
+        belongs to (e.g. the selection process that is evaluating
+        candidates). The model call's own cost is charged to it as an
+        own-cost amendment — never to the PREDICTED action, which has not
+        happened."""
+        snap = self.snapshot(task, episode_id)
+        prediction = self.predictions.predict_outcome(
+            task, action_spec, snap)
+        if parent_action_id is not None and prediction.call_cost is not None:
+            # Charge the model call's real cost to the parent action (own
+            # cost — the predicted action's cost is a PREDICTION and stays
+            # inside the prediction record).
+            parent = self.actions.get(parent_action_id)
+            if parent is None:
+                raise StorageError(
+                    f"unknown parent_action_id {parent_action_id!r}")
+            dims = {d: getattr(prediction.call_cost, d) for d in
+                    prediction.call_cost.measured_dims()}
+            if dims:
+                self.actions.amend_action_cost(parent_action_id, **dims)
+        return prediction
+
+    def bind_outcome(self, prediction_id: str,
+                     action_id: str) -> OutcomePrediction:
+        """Bind a prediction to the real action that ran (type/strategy/
+        solver checked; mismatches recorded, not silently compared)."""
+        action = self.actions.get(action_id)
+        if action is None:
+            raise StorageError(f"unknown action_id {action_id!r}")
+        return self.predictions.bind_outcome(prediction_id, action)
+
+    def compare_prediction(self, prediction_id: str) -> OutcomePrediction:
+        """Compare the frozen prediction against the bound action's real
+        execution (appended feedback; idempotent; never re-invokes the
+        model)."""
+        prediction = self.predictions.get(prediction_id)
+        if prediction is None:
+            raise StorageError(
+                f"unknown prediction_id {prediction_id!r}")
+        if prediction.bound_action_id is None:
+            raise StorageError(
+                f"prediction {prediction_id!r} is not bound to an action")
+        action = self.actions.get(prediction.bound_action_id)
+        if action is None or action.linked_execution_id is None:
+            raise StorageError(
+                f"bound action has no linked execution to compare against")
+        record = self.bank.get_pending(action.linked_execution_id) \
+            or self.bank.get(action.linked_execution_id)
+        if record is None:
+            raise StorageError(
+                f"linked execution {action.linked_execution_id!r} not found")
+        return self.predictions.compare_prediction(prediction_id, record)
+
+    def get_prediction(self, prediction_id: str) -> Optional[OutcomePrediction]:
+        return self.predictions.get(prediction_id)
+
+    def predictions_query(self, *, task_id: Optional[str] = None,
+                          episode_id: Optional[str] = None
+                          ) -> List[OutcomePrediction]:
+        return self.predictions.query(task_id=task_id, episode_id=episode_id)
 
     def understand(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """Pre-model coupling-aware understanding.
@@ -948,8 +1042,12 @@ class ORHarness:
             snaps = self.snapshots(task_id=task_id)
             return {"bank": "snapshots", "count": len(snaps),
                     "snapshots": [s.to_dict() for s in snaps]}
+        if bank == "predictions":
+            preds = self.predictions_query(task_id=task_id)
+            return {"bank": "predictions", "count": len(preds),
+                    "predictions": [p.to_dict() for p in preds]}
         raise ValueError("bank must be experience|strategic|archive|"
-                         "actions|snapshots")
+                         "actions|snapshots|predictions")
 
     def collect_garbage(self, mode: str = "compact",
                         dry_run: bool = False) -> Dict[str, Any]:

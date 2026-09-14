@@ -50,8 +50,23 @@ def _harness(args) -> ORHarness:
     if getattr(args, "cost_weights", None):
         weights = {k: float(v) for k, v in
                    (pair.split("=") for pair in args.cost_weights.split(","))}
+    provider = None
+    wm = getattr(args, "world_model", None)
+    if wm:
+        from or_harness.world_model.provider import HttpChatProvider
+        parts = wm.split("::", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                "--world-model must be BASE_URL::MODEL (api key comes from "
+                "the OR_WM_API_KEY environment variable)")
+        import os
+        api_key = os.environ.get("OR_WM_API_KEY", "")
+        provider = HttpChatProvider(parts[0], parts[1], api_key,
+                                    timeout_s=getattr(args, "wm_timeout", 30)
+                                    or 30.0)
     return ORHarness(home=args.home, alpha=args.alpha, beta=args.beta,
-                     gamma=args.gamma, cost_weights=weights)
+                     gamma=args.gamma, cost_weights=weights,
+                     world_model=provider)
 
 
 def _summarize_recall(result: Dict[str, Any]) -> str:
@@ -358,7 +373,8 @@ def cmd_inspect(args) -> int:
         count = result["count"]
         noun = {"experience": "records", "strategic": "entries",
                 "archive": "cards", "actions": "actions",
-                "snapshots": "snapshots"}[args.bank]
+                "snapshots": "snapshots",
+                "predictions": "predictions"}[args.bank]
         if count == 1:
             noun = noun[:-1]           # "1 card", not "1 cards"
         detail = ""
@@ -456,6 +472,95 @@ def cmd_budget(args) -> int:
         h.close()
 
 
+def cmd_predict_outcome(args) -> int:
+    h = _harness(args)
+    try:
+        from or_harness.world_model.prediction import ActionSpec
+        task = _load_json_arg(args.task)
+        spec = ActionSpec.from_dict(_load_json_arg(args.action_spec))
+        prediction = h.predict_outcome(
+            task, spec, args.episode,
+            parent_action_id=args.parent_action)
+        result = {"prediction": prediction.to_dict(),
+                  "prediction_id": prediction.prediction_id}
+        if prediction.status == "not_configured":
+            return _fail(f"prediction not enabled: {prediction.error}", 2)
+        if prediction.status != "valid":
+            return _emit(result,
+                         f"Prediction {prediction.prediction_id} failed "
+                         f"with status {prediction.status}: "
+                         f"{prediction.error or 'no detail'}. The call cost "
+                         "(if any) is recorded on the prediction.")
+        predicted = prediction.predicted
+        parts = [f"Prediction {prediction.prediction_id} (shadow) for "
+                 f"{spec.action_type}"
+                 + (f" {spec.strategy_id}" if spec.strategy_id else "")
+                 + ": "]
+        if "outcome_status" in predicted:
+            parts.append(f"expected status "
+                         f"{predicted['outcome_status']}; ")
+        if "quality" in predicted:
+            parts.append(f"E[Q]={predicted['quality']}; ")
+        if "failure_prob" in predicted:
+            parts.append(f"P(fail)={predicted['failure_prob']}; ")
+        cost = predicted.get("cost") or {}
+        if cost:
+            parts.append(f"cost={ {k: round(v, 2) for k, v in cost.items()} }; ")
+        if prediction.unsupported_fields:
+            parts.append(f"not predicted: "
+                         f"{', '.join(prediction.unsupported_fields)}; ")
+        parts.append("This is a hypothesis — it changes nothing. Execute "
+                     "the action yourself, then `orx bind-outcome "
+                     f"--prediction {prediction.prediction_id} --action "
+                     "<id>`.")
+        return _emit(result, "".join(parts))
+    finally:
+        h.close()
+
+
+def cmd_bind_outcome(args) -> int:
+    h = _harness(args)
+    try:
+        prediction = h.bind_outcome(args.prediction, args.action)
+        if prediction.binding_mismatch:
+            summary = (f"Prediction {args.prediction} bound to action "
+                       f"{args.action} WITH MISMATCH: "
+                       f"{prediction.binding_mismatch}. The comparison "
+                       "covers only matching parts; mismatched fields are "
+                       "recorded, not scored.")
+        else:
+            prediction = h.compare_prediction(args.prediction)
+            fb = prediction.feedback or {}
+            if fb.get("compared"):
+                fields = fb.get("compared_fields") or {}
+                matched = sum(1 for k in ("outcome_status", "feasible")
+                              if fields.get(k, {}).get("match"))
+                total = sum(1 for k in ("outcome_status", "feasible")
+                            if k in fields)
+                parts = [f"Prediction {args.prediction} bound and compared"
+                         f" against execution {fb.get('execution_id')}: "
+                         f"category {matched}/{total} matched."]
+                if "quality" in fields:
+                    parts.append(f"quality error "
+                                 f"{fields['quality']['abs_error']}; ")
+                if "cost" in fields:
+                    dims = ", ".join(
+                        f"{d}(log_err {v['log_error']})"
+                        for d, v in fields["cost"].items())
+                    parts.append(f"cost: {dims}.")
+                skipped = fb.get("not_compared") or {}
+                if skipped:
+                    parts.append(f"Not compared: "
+                                 f"{', '.join(skipped)}.")
+            else:
+                parts = [f"Prediction {args.prediction} bound but NOT "
+                         f"compared: {fb.get('reason')}."]
+            summary = " ".join(parts)
+        return _emit({"prediction": prediction.to_dict()}, summary)
+    finally:
+        h.close()
+
+
 def cmd_gc(args) -> int:
     h = _harness(args)
     try:
@@ -521,6 +626,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-weights", default=None,
                         help="per-dimension cost weights, e.g. "
                              "'llm_tokens=1.0,retries=2.0'")
+    parser.add_argument("--world-model", default=None, metavar="URL::MODEL",
+                        help="world-model provider for outcome predictions: "
+                             "OpenAI-compatible base URL and model name "
+                             "(api key from $OR_WM_API_KEY). Omitted = "
+                             "predictions return not_configured; no other "
+                             "command is affected")
+    parser.add_argument("--wm-timeout", type=float, default=30.0,
+                        help="world-model call timeout in seconds")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("understand",
@@ -632,7 +745,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("inspect", help="query the memory layers")
     p.add_argument("--bank", default="experience",
                    choices=["experience", "strategic", "archive",
-                            "actions", "snapshots"])
+                            "actions", "snapshots", "predictions"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
@@ -675,6 +788,29 @@ def build_parser() -> argparse.ArgumentParser:
                    help="declare a budget, e.g. 'llm_tokens=50000,"
                         "solver_runtime_s=600'")
     p.set_defaults(func=cmd_budget)
+
+    p = sub.add_parser("predict-outcome",
+                       help="ask the configured world model for a "
+                            "structured prediction of ONE candidate "
+                            "action's consequences (shadow: never changes "
+                            "recommendations)")
+    p.add_argument("--task", required=True)
+    p.add_argument("--action-spec", required=True,
+                   help="candidate action JSON (literal or file): "
+                        '{"action_type": "execute_strategy", "strategy_id": '
+                        '"S01", "solver": "highs", ...}')
+    p.add_argument("--episode", default=None)
+    p.add_argument("--parent-action", default=None, metavar="ACTION_ID",
+                   help="action this prediction call belongs to (its model "
+                        "call cost is charged there as own cost)")
+    p.set_defaults(func=cmd_predict_outcome)
+
+    p = sub.add_parser("bind-outcome",
+                       help="bind a prediction to the real action that ran, "
+                            "then compare (type/strategy/solver checked)")
+    p.add_argument("--prediction", required=True)
+    p.add_argument("--action", required=True)
+    p.set_defaults(func=cmd_bind_outcome)
 
     p = sub.add_parser("gc", help="dispose of the derived layer (harness's call)")
     p.add_argument("--mode", default="compact", choices=["compact", "purge"])

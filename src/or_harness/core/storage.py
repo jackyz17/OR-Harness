@@ -89,11 +89,24 @@ CREATE TABLE IF NOT EXISTS action_records (
 );
 CREATE INDEX IF NOT EXISTS idx_actions_task ON action_records(task_id);
 CREATE INDEX IF NOT EXISTS idx_actions_episode ON action_records(episode_id);
+
+-- World-model M2: frozen outcome predictions (shadow evaluation). A LOG
+-- table — predictions are hypotheses, never knowledge; nothing here enters
+-- the Strategy Bank or execution statistics.
+CREATE TABLE IF NOT EXISTS world_model_predictions (
+    prediction_id TEXT PRIMARY KEY,
+    task_id      TEXT NOT NULL,
+    episode_id   TEXT,
+    created_at   REAL NOT NULL,
+    payload      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_predictions_task ON world_model_predictions(task_id);
 """
 
-#: Schema version marker (idempotent). Written once per store; M1 = "wm1".
+#: Schema version marker (idempotent). Written once per store; M1 = "wm1",
+#: M2 = "wm2" (adds world_model_predictions).
 SCHEMA_VERSION_KEY = "schema_version"
-SCHEMA_VERSION = "wm1"
+SCHEMA_VERSION = "wm2"
 
 
 class StorageError(Exception):
