@@ -419,5 +419,129 @@ class TestExecutionReplan(HarnessTestCase):
                          ["epistemic"], "fact")
 
 
+class TestReviewFixes(HarnessTestCase):
+    """Regression tests for the four reviewed defects (2026-09-15)."""
+
+    def test_cost_weights_inherited_from_harness(self):
+        """Bug 1: planning inherits the harness's alpha/beta/gamma and
+        cost weights; an expensive candidate loses to a cheap one when
+        quality and risk tie."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.8, "cost": {"solver_runtime_s": 100.0}},
+            "S02": {"quality": 0.8, "cost": {"solver_runtime_s": 1.0}},
+        })
+        h = ORHarness(home=self.home, world_model=provider,
+                      beta=1.0, cost_weights={"solver_runtime_s": 1.0})
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        self.assertEqual(plan["limits"]["cost_weights"],
+                         {"solver_runtime_s": 1.0})
+        self.assertEqual(plan["suggested"]["strategy_id"], "S02")
+        paths = {p["steps"][0]["action_spec"]["strategy_id"]: p
+                 for p in plan["paths"]}
+        self.assertGreater(paths["S01"]["c_path"], paths["S02"]["c_path"])
+        # Explicit override wins over inheritance.
+        plan2 = h.plan_next(TASK, "ep1",
+                            candidates=[_spec("S01"), _spec("S02")],
+                            limits={"horizon": 1, "cost_weights": {}})
+        self.assertEqual(plan2["limits"]["cost_weights"], {})
+        self.assertEqual(plan2["suggested"]["strategy_id"], "S01")
+
+    def test_unknown_risk_and_cost_never_auto_win(self):
+        """Bug 2: unknown failure risk is a deficit (charged full gamma),
+        and an unpredicted cost dimension is not a predicted zero."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.8, "failure_prob": 0.1},
+            "S02": {"quality": 0.8, "failure_prob": None},  # risk unknown
+        })
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        self.assertEqual(plan["suggested"]["strategy_id"], "S01")
+        paths = {p["steps"][0]["action_spec"]["strategy_id"]: p
+                 for p in plan["paths"]}
+        self.assertIn("risk", paths["S02"]["incomparable"])
+        self.assertIsNone(paths["S02"]["r_terminal"])
+        # Unknown cost: S01 predicts only tokens, S02 predicts tokens AND
+        # solver time. The shared basis is tokens only — but a candidate
+        # that predicted NOTHING comparable must not score as cheap.
+        provider2 = ScriptableProvider(per_strategy={
+            "S03": {"quality": 0.8, "cost": {"llm_tokens": 10.0}},
+            "S04": {"quality": 0.8},  # no cost predicted at all
+        })
+        h2 = ORHarness(home=self.home, world_model=provider2,
+                       cost_weights={"llm_tokens": 1.0})
+        self.addCleanup(h2.close)
+        plan2 = h2.plan_next(TASK, "ep1",
+                             candidates=[_spec("S03"), _spec("S04")],
+                             limits={"horizon": 1})
+        self.assertEqual(plan2["suggested"]["strategy_id"], "S03")
+        paths2 = {p["steps"][0]["action_spec"]["strategy_id"]: p
+                  for p in plan2["paths"]}
+        self.assertIn("cost", paths2["S04"]["incomparable"])
+
+    def test_budget_rechecked_and_exceeded_withholds_suggestion(self):
+        """Bug 3: planning re-checks the REAL budget per call and after
+        the spend lands; an exceeded budget never returns ok."""
+        provider = ScriptableProvider(per_strategy={
+            f"S0{i}": {"quality": 0.5} for i in range(1, 5)})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        # 3 candidates x 50 tokens each = 150 > 60 declared.
+        h.declare_budget("t1", {"llm_tokens": 60.0}, episode_id="ep1")
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02"),
+                                       _spec("S03")],
+                           limits={"horizon": 1})
+        self.assertNotEqual(plan["status"], "ok")
+        self.assertEqual(plan["budget_confirmation"], "exceeded")
+        self.assertIsNone(plan["suggested"])
+        # The real spend still landed on the books (never lost).
+        view = h.budget_view("t1", "ep1")
+        self.assertEqual(view["status"], "exceeded")
+        self.assertGreater(plan["model_calls_made"], 0)
+
+    def test_time_budget_truncates(self):
+        """Bug 3 (time): a near-zero time budget truncates evaluation
+        instead of reporting ok after slow calls."""
+        class SlowProvider(ScriptableProvider):
+            def predict(self, request):
+                import time as _time
+                _time.sleep(0.05)
+                return super().predict(request)
+        provider = SlowProvider(per_strategy={"S01": {"quality": 0.8},
+                                              "S02": {"quality": 0.7}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1, "time_budget_s": 0.01})
+        self.assertEqual(plan["status"], "truncated")
+        self.assertIn("time", plan["truncation_reason"])
+
+    def test_candidate_identity_conflict_rejected(self):
+        """Bug 4: a candidate naming another task/episode is rejected,
+        never planned under this root state."""
+        provider = ScriptableProvider(
+            per_strategy={"S01": {"quality": 0.8}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        foreign = _spec("S01", task_id="other", episode_id="other_ep")
+        plan = h.plan_next(TASK, "ep1", candidates=[foreign, _spec("S01")],
+                           limits={"horizon": 1})
+        self.assertIn("identity conflict", plan["truncation_reason"])
+        # Only the matching candidate was evaluated.
+        self.assertEqual(len(plan["paths"]), 1)
+        self.assertEqual(
+            plan["paths"][0]["steps"][0]["action_spec"]["task_id"], "t1")
+        # All-conflicting => no candidates at all.
+        plan2 = h.plan_next(TASK, "ep1", candidates=[foreign])
+        self.assertEqual(plan2["status"], "no_candidates")
+
+
 if __name__ == "__main__":
     unittest.main()

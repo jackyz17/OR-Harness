@@ -162,8 +162,12 @@ class PredictionService:
         if isinstance(payload.get("cost"), dict):
             dims = {d: float(v) for d, v in payload["cost"].items()
                     if d in COST_DIMENSIONS and v is not None}
-            predicted["cost"] = CostVector(
-                **dims, measured=set(dims)).to_dict()
+            cost_vector = CostVector(**dims, measured=set(dims))
+            predicted["cost"] = cost_vector.to_dict()
+            # Persist the measured mask alongside: an explicitly predicted
+            # zero is a prediction, a missing dimension is NOT — the mask
+            # is the only way downstream consumers can tell them apart.
+            predicted["cost_measured"] = sorted(dims)
         confidence = payload.get("confidence")
         prediction = OutcomePrediction(
             prediction_id=OutcomePrediction.new_id(),

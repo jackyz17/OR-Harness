@@ -86,10 +86,14 @@ class PlanLimits:
     horizon: int = 1
     max_model_calls: int = 6
     time_budget_s: float = 120.0
-    alpha: float = 1.0
-    beta: float = 1.0
-    gamma: float = 1.0
-    cost_weights: Dict[str, float] = field(default_factory=dict)
+    #: alpha/beta/gamma/cost_weights of None = "not overridden" — the
+    #: caller (ORHarness.plan_next) fills them from its own configured
+    #: evaluation yardstick. An explicit value (including an explicit
+    #: empty cost_weights dict) always wins.
+    alpha: Optional[float] = None
+    beta: Optional[float] = None
+    gamma: Optional[float] = None
+    cost_weights: Optional[Dict[str, float]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -97,10 +101,11 @@ class PlanLimits:
             "horizon": int(self.horizon),
             "max_model_calls": int(self.max_model_calls),
             "time_budget_s": float(self.time_budget_s),
-            "alpha": float(self.alpha),
-            "beta": float(self.beta),
-            "gamma": float(self.gamma),
-            "cost_weights": dict(self.cost_weights),
+            "alpha": self.alpha,
+            "beta": self.beta,
+            "gamma": self.gamma,
+            "cost_weights": (dict(self.cost_weights)
+                             if self.cost_weights is not None else None),
         }
 
     @classmethod
@@ -112,10 +117,14 @@ class PlanLimits:
             horizon=int(data.get("horizon", 1)),
             max_model_calls=int(data.get("max_model_calls", 6)),
             time_budget_s=float(data.get("time_budget_s", 120.0)),
-            alpha=float(data.get("alpha", 1.0)),
-            beta=float(data.get("beta", 1.0)),
-            gamma=float(data.get("gamma", 1.0)),
-            cost_weights=dict(data.get("cost_weights") or {}),
+            alpha=(None if data.get("alpha") is None
+                   else float(data["alpha"])),
+            beta=(None if data.get("beta") is None
+                  else float(data["beta"])),
+            gamma=(None if data.get("gamma") is None
+                   else float(data["gamma"])),
+            cost_weights=(None if data.get("cost_weights") is None
+                          else dict(data["cost_weights"])),
         )
 
 
@@ -272,17 +281,27 @@ class PlanResult:
 
 
 def predicted_cost_vector(prediction: OutcomePrediction) -> CostVector:
-    """The predicted incremental cost of ONE step (placeholder zeros for
-    unpredicted dimensions; the measured mask says which are real)."""
+    """The predicted incremental cost of ONE step.
+
+    The measured mask comes from the persisted ``cost_measured`` key
+    (written by PredictionService). Dimensions absent from the mask are
+    UNKNOWN, never silently treated as a predicted zero — a candidate
+    that predicted only tokens must not be scored as "zero solver
+    runtime". Legacy rows without the mask fall back to "non-null value
+    implies predicted" (value-level, same discipline as CostVector)."""
     raw = (prediction.predicted or {}).get("cost")
-    if isinstance(raw, dict):
-        vector = CostVector(
-            **{d: float(v) for d, v in raw.items()
-               if d in COST_DIMENSIONS and v is not None})
+    if not isinstance(raw, dict):
+        return CostVector(measured=set())
+    vector = CostVector(
+        **{d: float(v) for d, v in raw.items()
+           if d in COST_DIMENSIONS and v is not None})
+    mask = (prediction.predicted or {}).get("cost_measured")
+    if isinstance(mask, list):
+        vector.measured = {str(d) for d in mask if d in COST_DIMENSIONS}
+    else:
         vector.measured = {d for d, v in raw.items()
                            if d in COST_DIMENSIONS and v is not None}
-        return vector
-    return CostVector(measured=set())
+    return vector
 
 
 def terminal_quality(prediction: OutcomePrediction) -> Optional[float]:
@@ -340,10 +359,18 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
     if q is None:
         path.incomparable["quality"] = ("terminal quality not predicted "
                                         "(unknown never auto-scores)")
+    # Unknown risk is a DEFICIT, not a zero: a candidate whose failure
+    # risk is unknown must not beat one with a known non-zero risk. It is
+    # charged the full risk weight and reported.
+    risk_effective = r if r is not None else 1.0
     if r is None:
-        path.incomparable["risk"] = "terminal failure risk not predicted"
+        path.incomparable["risk"] = (
+            "terminal failure risk not predicted; charged the full gamma "
+            "weight (unknown risk is a deficit, never free)")
     # Path cost: predicted increments of every VALID step, restricted to
-    # the common comparable dimensions of this decision.
+    # the common comparable dimensions of this decision. A candidate with
+    # NO predicted cost on the basis is likewise charged at the most
+    # expensive comparable candidate (unknown cost is never free).
     c_path = 0.0
     cost_known = False
     for prediction in valid:
@@ -352,32 +379,50 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
         if shared:
             cost_known = True
         for dim in shared:
-            c_path += (limits.cost_weights.get(dim, 0.0)
-                       * getattr(vector, dim) / max(norms.get(dim, 1.0), 1e-9))
-    if not cost_known:
-        path.incomparable["cost"] = ("no predicted cost dimension shared "
-                                     "with the comparison basis")
+            c_path += ((limits.cost_weights or {}).get(dim, 0.0)
+                       * getattr(vector, dim)
+                       / max(norms.get(dim, 1.0), 1e-9))
+    if not cost_known and cost_basis:
+        c_path = max(norms.get("_max_c_path", 0.0), 0.0)
+        path.incomparable["cost"] = (
+            "no predicted cost dimension shared with the comparison "
+            "basis; charged at the most expensive comparable candidate "
+            "(unknown cost is never free)")
+    elif not cost_known:
+        path.incomparable["cost"] = ("no candidate carried comparable "
+                                     "cost predictions; cost term is zero "
+                                     "for everyone")
     path.q_terminal = q
     path.r_terminal = r
     path.c_path = round(c_path, 6)
+    alpha = limits.alpha if limits.alpha is not None else 1.0
+    beta = limits.beta if limits.beta is not None else 1.0
+    gamma = limits.gamma if limits.gamma is not None else 1.0
     path.utility = round(
-        limits.alpha * (q if q is not None else 0.0)
-        - limits.beta * c_path
-        - limits.gamma * (r if r is not None else 0.0), 6)
+        alpha * (q if q is not None else 0.0)
+        - beta * c_path
+        - gamma * risk_effective, 6)
     if path.incomparable:
         path.notes.append(
-            "incomparable fields treated as 0 in the utility but reported "
-            "explicitly; unknown does NOT earn a higher score by default "
-            "(see incomparable)")
+            "incomparable fields are charged conservatively (unknown "
+            "risk => full gamma weight; unknown cost => most expensive "
+            "comparable candidate) and reported explicitly — unknown "
+            "never auto-wins")
     return path
 
 
-def comparison_norms(predictions: List[OutcomePrediction]
+def comparison_norms(predictions: List[OutcomePrediction],
+                     cost_weights: Optional[Dict[str, float]] = None
                      ) -> tuple[List[str], Dict[str, float]]:
     """The common cost yardstick for one comparison: dimensions predicted
     by EVERY valid prediction (intersection), and per-dimension
     normalization divisors from the candidate range (selector-style pure
-    computation — no bank reads)."""
+    computation — no bank reads).
+
+    Also computes ``_max_c_path``: the largest weighted cost among
+    candidates that DID predict on the basis — the conservative charge
+    for a candidate whose cost is unknown (unknown cost never wins by
+    default)."""
     valid = [p for p in predictions if p.status == "valid"]
     if not valid:
         return [], {}
@@ -390,6 +435,17 @@ def comparison_norms(predictions: List[OutcomePrediction]
     for dim in basis:
         peak = max(getattr(predicted_cost_vector(p), dim) for p in valid)
         norms[dim] = float(peak) if peak > 0 else 1.0
+    # Per-step maximum weighted cost (for the unknown-cost fallback).
+    weights = cost_weights or {}
+    max_step_cost = 0.0
+    for prediction in valid:
+        vector = predicted_cost_vector(prediction)
+        step_cost = sum(
+            weights.get(dim, 0.0) * getattr(vector, dim)
+            / max(norms.get(dim, 1.0), 1e-9)
+            for dim in vector.measured_dims() & set(basis))
+        max_step_cost = max(max_step_cost, step_cost)
+    norms["_max_c_path"] = max_step_cost
     return basis, norms
 
 

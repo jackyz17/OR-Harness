@@ -634,6 +634,19 @@ class ORHarness:
         limits = (limits if isinstance(limits, PlanLimits)
                   else PlanLimits.from_dict(limits))
         limits.horizon = max(1, min(2, limits.horizon))
+        # Inherit the harness's configured evaluation yardstick unless the
+        # caller explicitly overrode it: planning must not silently ignore
+        # the alpha/beta/gamma and cost weights the rest of the system
+        # scores with (an empty default would have made every cost
+        # dimension weight zero).
+        if limits.alpha is None:
+            limits.alpha = self.selector.alpha
+        if limits.beta is None:
+            limits.beta = self.selector.beta
+        if limits.gamma is None:
+            limits.gamma = self.selector.gamma
+        if limits.cost_weights is None:
+            limits.cost_weights = dict(self.selector.cost_weights)
         task_id = str(task.get("task_id", ""))
         plan = PlanResult(plan_id=PlanResult.new_id(),
                           root_snapshot_id="",
@@ -664,18 +677,45 @@ class ORHarness:
                 "planning would spend more — returning without model "
                 "calls. Report the current best solution instead.")
             return plan.to_dict()
-        # (2) Bounded candidate list.
+        # (2) Bounded candidate list, with identity validation: every
+        # candidate must belong to THIS task/episode (a spec naming
+        # another task or episode is rejected, never silently re-labelled
+        # — the root state and the prediction must describe the same
+        # decision).
         specs = self._candidate_specs(task, episode_id, candidates,
                                       limits.max_root_candidates)
-        specs = [s for s in specs
+        valid_specs = []
+        identity_conflicts = []
+        for spec in specs:
+            if spec.task_id and spec.task_id != task_id:
+                identity_conflicts.append(
+                    f"{spec.action_type}/{spec.strategy_id}: task_id "
+                    f"{spec.task_id!r} != {task_id!r}")
+                continue
+            if (spec.episode_id is not None and episode_id is not None
+                    and spec.episode_id != episode_id):
+                identity_conflicts.append(
+                    f"{spec.action_type}/{spec.strategy_id}: episode_id "
+                    f"{spec.episode_id!r} != {episode_id!r}")
+                continue
+            spec.task_id = task_id
+            spec.episode_id = episode_id
+            valid_specs.append(spec)
+        if identity_conflicts:
+            plan.truncation_reason = (
+                "candidate identity conflict (rejected): "
+                + "; ".join(identity_conflicts))
+        specs = [s for s in valid_specs
                  if s.action_type in PLANNABLE_ACTION_TYPES]
         if not specs:
             plan.status = "no_candidates"
-            plan.truncation_reason = (
-                "no plannable candidates: planning currently supports "
-                f"{PLANNABLE_ACTION_TYPES} only, after applicability and "
-                "tool-capability filtering. Fall back to `recall` for a "
-                "memory-based ordering.")
+            reason = ("no plannable candidates: planning currently "
+                      f"supports {PLANNABLE_ACTION_TYPES} only, after "
+                      "applicability and tool-capability filtering. Fall "
+                      "back to `recall` for a memory-based ordering.")
+            if plan.truncation_reason:
+                reason = plan.truncation_reason + ". " + reason
+            plan.truncation_reason = reason
             return plan.to_dict()
         # (3) Decision (parent) action: the planning spend lands here.
         decision = self.actions.begin_action(
@@ -688,6 +728,20 @@ class ORHarness:
         calls_made = 0
         stop_reason: Optional[str] = None
         hypothetical_snaps: Dict[str, str] = {}  # pred_id -> snapshot_id
+        def _real_budget_exceeded() -> Optional[str]:
+            """Re-check the REAL ledger before the next model call: the
+            budget view is refreshed (planning spend itself lands in it),
+            so an overrun mid-decision stops further calls instead of
+            reporting ok against an already-exceeded budget."""
+            if not declared:
+                return None
+            view = self.budget.view(task_id, episode_id, budget=declared)
+            if view["status"] == "exceeded":
+                return ("declared budget exceeded by real consumption "
+                        "(including this planning's own spend); no "
+                        "further model calls")
+            return None
+
         for spec in specs:
             if calls_made >= limits.max_model_calls:
                 stop_reason = (f"model-call budget exhausted "
@@ -696,6 +750,10 @@ class ORHarness:
             if time.monotonic() - started > limits.time_budget_s:
                 stop_reason = ("planning time budget exhausted "
                                f"({limits.time_budget_s}s)")
+                break
+            exceeded = _real_budget_exceeded()
+            if exceeded:
+                stop_reason = exceeded
                 break
             prediction = self.predictions.predict_outcome(task, spec, root)
             calls_made += 1
@@ -713,6 +771,10 @@ class ORHarness:
                     break
                 if time.monotonic() - started > limits.time_budget_s:
                     stop_reason = ("planning time budget exhausted")
+                    break
+                exceeded = _real_budget_exceeded()
+                if exceeded:
+                    stop_reason = exceeded
                     break
                 if first.status != "valid":
                     continue
@@ -744,7 +806,8 @@ class ORHarness:
         # (5) Common yardstick, then per-path evaluation.
         all_predictions = predictions + [p for ps in continuation.values()
                                          for p in ps]
-        cost_basis, norms = comparison_norms(all_predictions)
+        cost_basis, norms = comparison_norms(all_predictions,
+                                             limits.cost_weights)
         for first in predictions:
             steps = [first] + continuation.get(first.prediction_id, [])
             if (limits.horizon == 2 and first.status == "valid"
@@ -793,7 +856,31 @@ class ORHarness:
                         "once to the decision action as own cost — sunk, "
                         "never part of any path's utility",
             }
-        # (7) Suggestion (first step only).
+        # (7) Budget re-check AFTER the planning spend is on the books,
+        # BEFORE the suggestion: an exceeded real budget withholds the
+        # suggestion (the plan's own cost is real and stays recorded).
+        if declared:
+            final_view = self.budget.view(task_id, episode_id,
+                                          budget=declared)
+            plan.budget_confirmation = final_view["status"]
+            if final_view["status"] == "exceeded":
+                plan.status = "fallback"
+                plan.truncation_reason = (
+                    "declared budget exceeded by real consumption "
+                    "(including this planning's own spend); the "
+                    "suggestion is withheld — report the current best "
+                    "solution instead.")
+                self.actions.end_action(
+                    decision.action_id, status="completed",
+                    outcome={"kind": "plan_next_evaluation",
+                             "plan_id": plan.plan_id,
+                             "n_paths": len(plan.paths),
+                             "suggested": None,
+                             "suggestion_withheld": True,
+                             "status": plan.status,
+                             "truncation_reason": plan.truncation_reason})
+                return plan.to_dict()
+        # (8) Suggestion (first step only).
         comparable = [p for p in plan.paths if p.utility is not None]
         suggested_path = (max(comparable, key=lambda p: p.utility)
                           if comparable else None)
@@ -815,7 +902,8 @@ class ORHarness:
             plan.suggestion_basis = ("shadow mode: paths evaluated and "
                                      "recorded; suggestion withheld")
         plan.status = "truncated" if stop_reason else "ok"
-        plan.truncation_reason = stop_reason
+        if stop_reason:
+            plan.truncation_reason = stop_reason
         # (8) End the decision action. The outcome records the evaluation
         # (references + decomposition) — NOT a selection: X.selected_plan
         # is written only by choose_next.
