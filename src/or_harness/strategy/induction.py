@@ -65,7 +65,8 @@ class InductionEngine:
     def induce(self, profile: ProblemProfile, strategy_id: str, *,
                notes: Optional[List[str]] = None,
                dry_run: bool = False, force: bool = False,
-               verify: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+               verify: Optional[Dict[str, Any]] = None,
+               execution_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """Create or refresh the entry for (strategy, evidence set).
 
         Guard rails:
@@ -96,7 +97,14 @@ class InductionEngine:
         created ``unverified`` — a candidate that is NOT published as
         strategic knowledge.
         """
-        records = self.stats.evidence(profile, strategy_id)
+        if execution_ids is not None:
+            # Explicit evidence scope (M4 bundle adoption): restrict to
+            # the specified execution IDs — no silent scope widening.
+            allowed = set(execution_ids)
+            records = [r for r in self.stats.evidence(profile, strategy_id)
+                       if r.execution_id in allowed]
+        else:
+            records = self.stats.evidence(profile, strategy_id)
         cell = self.stats.aggregate(group_key(profile), strategy_id, records)
         if cell.n < 2:
             return {"created": None, "skipped": "fewer than 2 supporting executions",

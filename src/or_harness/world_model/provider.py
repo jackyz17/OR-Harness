@@ -76,6 +76,36 @@ SYSTEM_PROMPT = (
 )
 
 
+#: The system prompt for offline knowledge induction (M4).
+SYSTEM_PROMPT_INDUCE = (
+    "You are a world model for an operations-research knowledge bank. "
+    "Given the current strategic knowledge state and a proposed evidence "
+    "bundle for an induction or revision action, predict the consequences "
+    "and long-term value of performing this induction.\n"
+    "OUTPUT RULES (read first, follow strictly):\n"
+    "1. Respond with EXACTLY ONE raw JSON object and NOTHING else. No "
+    "markdown, no code fences, no explanation before or after the JSON.\n"
+    "2. Every field below is OPTIONAL. Omit any field you lack evidence "
+    "for — never write \"unknown\", null, or placeholders.\n"
+    "3. All numbers must be valid JSON numbers.\n"
+    "Fields (all optional):\n"
+    "- candidate_formation_prob: number in [0,1] (probability a valid claim "
+    "forms)\n"
+    "- expected_reuse_benefit: number in [0,1] (expected incremental benefit "
+    "per future matching task relative to current knowledge)\n"
+    "- generalization_risk: number in [0,1] (risk the induced claim fails on "
+    "future matching problems)\n"
+    "- quality: number in [0,1] (expected quality level of the induced claim)\n"
+    "- failure_prob: number in [0,1] (expected failure rate under the claim)\n"
+    "- cost: object of {llm_tokens, tool_calls, solver_runtime_s, retries, "
+    "latency_s} — expected per-task execution cost under this strategy\n"
+    "- confidence: number in [0,1]\n"
+    "- evidence_basis: list of evidence keys you relied on\n"
+    "- unsupported_fields: object of {field: reason}\n"
+    "Do NOT fabricate evidence. Output the JSON object only."
+)
+
+
 class ProviderError(Exception):
     """A provider call failed (timeout, HTTP error, bad payload).
 
@@ -106,11 +136,19 @@ class WorldModelProvider:
        "error": str | None, "latency_s": float}``
 
     Subclasses implement the actual model call. ``describe`` returns the
-    model identity and non-sensitive configuration summary."""
+    model identity and non-sensitive configuration summary.
+
+    ``timeout_s`` (optional): the caller's remaining time budget for THIS
+    call. A provider that can bound its own wait (e.g. an HTTP client)
+    uses ``min(timeout_s, its own configured timeout)``; a synchronous
+    provider that CANNOT be safely interrupted mid-call must declare that
+    limitation honestly — the budget is a request, not a guarantee, and
+    the caller re-checks the clock after the call returns."""
 
     name = "abstract"
 
-    def predict(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    def predict(self, request: Dict[str, Any],
+                timeout_s: Optional[float] = None) -> Dict[str, Any]:
         raise NotImplementedError
 
     def describe(self) -> Dict[str, Any]:
@@ -123,7 +161,8 @@ class NotConfiguredProvider(WorldModelProvider):
 
     name = "not-configured"
 
-    def predict(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    def predict(self, request: Dict[str, Any],
+                timeout_s: Optional[float] = None) -> Dict[str, Any]:
         return {
             "payload": None,
             "usage": None,
@@ -167,17 +206,30 @@ class HttpChatProvider(WorldModelProvider):
             # No credentials here, ever.
         }
 
-    def predict(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    def predict(self, request: Dict[str, Any],
+                timeout_s: Optional[float] = None) -> Dict[str, Any]:
         """One explicit POST to {base_url}/chat/completions.
 
         Returns the parsed payload and usage, or a structured error with
         whatever partial cost is known. No retries are attempted here —
         the caller decides whether to re-issue (each real attempt's cost
-        is recorded separately)."""
+        is recorded separately).
+
+        ``timeout_s``: the caller's remaining time budget for this call.
+        The effective socket timeout is ``min(timeout_s, self.timeout_s)``
+        — the provider never waits longer than the caller's budget
+        allows."""
+        effective_timeout = self.timeout_s
+        if timeout_s is not None:
+            effective_timeout = max(0.001, min(float(timeout_s),
+                                               self.timeout_s))
+        action_type = (request.get("action_spec") or {}).get("action_type")
+        prompt = (SYSTEM_PROMPT_INDUCE if action_type == "induce"
+                  else SYSTEM_PROMPT)
         body = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": prompt},
                 {"role": "user", "content": json.dumps(
                     request, ensure_ascii=False, default=str)},
             ],
@@ -193,7 +245,7 @@ class HttpChatProvider(WorldModelProvider):
             method="POST")
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout_s) as resp:
+            with urllib.request.urlopen(req, timeout=effective_timeout) as resp:
                 raw = resp.read().decode("utf-8", "replace")
             latency = time.monotonic() - started
         except urllib.error.HTTPError as exc:

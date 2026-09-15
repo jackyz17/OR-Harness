@@ -45,8 +45,10 @@ PREDICTION_STATUSES = ("valid", "invalid_output", "provider_error",
 PROMPT_TEMPLATE_VERSION = "wm2/1"
 
 #: Action types the M2 single-step prediction path supports. Others return
-#: ``unsupported_action`` rather than a fabricated result.
-SUPPORTED_ACTION_TYPES = ("execute_strategy",)
+#: ``unsupported_action`` rather than a fabricated result. ``induce`` is
+#: supported for M4 offline maintenance assessment (knowledge-maintenance
+#: consequence prediction, not solution-quality prediction).
+SUPPORTED_ACTION_TYPES = ("execute_strategy", "induce")
 
 
 @dataclass
@@ -231,8 +233,13 @@ def validate_prediction_payload(payload: Dict[str, Any],
     if not isinstance(payload, dict):
         return ["payload must be a JSON object"]
     # A "prediction" with no predicted content is not a prediction.
+    # Induce actions (M4 maintenance) carry their own content vocabulary.
     content_keys = ("outcome_status", "feasible", "quality", "failure_prob",
                     "cost", "state_changes", "expected_error_kinds")
+    if action_spec.action_type == "induce":
+        content_keys = content_keys + (
+            "candidate_formation_prob", "expected_reuse_benefit",
+            "generalization_risk")
     if not any(k in payload for k in content_keys):
         problems.append("no predicted content: at least one of "
                          + ", ".join(content_keys) + " is required")
@@ -271,9 +278,47 @@ def validate_prediction_payload(payload: Dict[str, Any],
     kinds = payload.get("expected_error_kinds")
     if kinds is not None and not isinstance(kinds, list):
         problems.append("expected_error_kinds must be a list")
+    # The remaining contract fields are validated HERE, before the
+    # prediction object is constructed — a malformed value must become
+    # invalid_output, never an exception escaping into the caller's
+    # planning loop.
+    unsupported = payload.get("unsupported_fields")
+    if unsupported is not None:
+        if not isinstance(unsupported, dict):
+            problems.append("unsupported_fields must be a JSON object "
+                            "of {field: reason}")
+        elif not all(isinstance(k, str) and isinstance(v, str)
+                     for k, v in unsupported.items()):
+            problems.append("unsupported_fields keys and reasons must "
+                            "be strings")
+    basis = payload.get("evidence_basis")
+    if basis is not None:
+        if not isinstance(basis, list):
+            problems.append("evidence_basis must be a list")
+        elif not all(isinstance(e, (str, int, float))
+                     and not isinstance(e, bool) for e in basis):
+            problems.append("evidence_basis entries must be scalars "
+                            "(strings or numbers)")
+    confidence = payload.get("confidence")
+    if confidence is not None:
+        if not _finite(confidence) or isinstance(confidence, bool):
+            problems.append("confidence is not a finite number")
+        elif not (0.0 <= float(confidence) <= 1.0):
+            problems.append("confidence must be in [0, 1]")
     # Action semantics: an execute_strategy prediction without a strategy_id
     # in the spec is meaningless (the model cannot know it either).
     if (action_spec.action_type == "execute_strategy"
             and not action_spec.strategy_id):
         problems.append("execute_strategy spec requires strategy_id")
+    # Induce semantics: an induce action predicts knowledge-maintenance
+    # consequences (candidate formation, quality/cost claim, reuse benefit).
+    # Content must include at least one maintenance-relevant or standard field.
+    if action_spec.action_type == "induce":
+        induce_keys = ("candidate_formation_prob", "expected_reuse_benefit",
+                       "generalization_risk", "quality", "cost",
+                       "failure_prob")
+        if not any(k in payload for k in induce_keys):
+            problems.append(
+                "induce payload requires at least one of "
+                + ", ".join(induce_keys))
     return problems

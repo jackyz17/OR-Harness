@@ -301,6 +301,39 @@ class TestPlanning(HarnessTestCase):
                                  deviation_note="budget too tight")
         self.assertTrue(rejected["rejected"])
 
+    def test_rejection_preserves_earlier_selection(self):
+        """R3 regression: choosing S01, then receiving an S04 suggestion
+        and REJECTING it must leave X.selected_plan = S01. The rejection
+        is recorded as its own queryable event, never as a selection
+        overwrite."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.9}, "S04": {"quality": 0.85}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        # 1. Plan + explicitly choose S01.
+        plan1 = h.plan_next(TASK, "ep1", candidates=[_spec("S01")])
+        h.choose_next(plan1["decision_action_id"], chosen=_spec("S01"))
+        snap1 = h.snapshot(TASK, "ep1")
+        selected = (snap1.task_progress.get("selected_plan") or {}) \
+            .get("value", {}).get("selected", {})
+        self.assertEqual(selected.get("strategy_id"), "S01")
+        # 2. A new plan suggests S04; the agent REJECTS it.
+        plan2 = h.plan_next(TASK, "ep1", candidates=[_spec("S04")])
+        rejected = h.choose_next(plan2["decision_action_id"],
+                                 rejected=True,
+                                 deviation_note="keeping S01")
+        self.assertTrue(rejected["rejected"])
+        # 3. The current selection is STILL S01.
+        snap2 = h.snapshot(TASK, "ep1")
+        selected_after = (snap2.task_progress.get("selected_plan") or {}) \
+            .get("value", {}).get("selected", {})
+        self.assertEqual(selected_after.get("strategy_id"), "S01")
+        # 4. The rejection event is recorded and queryable.
+        rejection = (snap2.task_progress.get("last_rejected_suggestion")
+                     or {})
+        self.assertEqual(rejection.get("provenance"), "agent_reported")
+        self.assertTrue((rejection.get("value") or {}).get("rejected"))
+
     def test_budget_bounds_and_unknown_not_claimed_ok(self):
         provider = ScriptableProvider(
             per_strategy={f"S0{i}": {"quality": 0.5} for i in range(1, 7)})
@@ -379,6 +412,103 @@ class TestPlanning(HarnessTestCase):
         self.assertEqual(plan["model_calls_made"], 2)
         decision = h.actions.get(plan["decision_action_id"])
         self.assertEqual(decision.cost.llm_tokens, 20.0)  # 2 x 10 (failed)
+
+    def test_malformed_fields_become_invalid_output_not_crash(self):
+        """R2 regression: a structurally valid JSON payload whose
+        ``unsupported_fields`` is a STRING (not an object) used to escape
+        validation and crash the prediction-object construction with
+        ValueError — aborting plan_next mid-loop, losing the second call
+        from the log, and leaving the decision action running forever.
+        Now: the malformed payload is validated BEFORE construction,
+        becomes an explicit invalid_output with its known cost kept, the
+        decision ends failed (not running, not completed)."""
+
+        class MalformedProvider(WorldModelProvider):
+            """Returns valid JSON with a malformed unsupported_fields on
+            the SECOND call (the first is clean)."""
+            name = "malformed"
+
+            def __init__(self):
+                self.calls = 0
+
+            def predict(self, request):
+                self.calls += 1
+                if self.calls == 2:
+                    return {"payload": {
+                                "outcome_status": "feasible",
+                                "quality": 0.7,
+                                "unsupported_fields": "retries"},
+                            "usage": {"completion_tokens": 30},
+                            "error": None, "latency_s": 0.01}
+                return {"payload": {"outcome_status": "feasible",
+                                    "quality": 0.9},
+                        "usage": {"completion_tokens": 50},
+                        "error": None, "latency_s": 0.01}
+
+        provider = MalformedProvider()
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        # Both calls are traceable in the prediction log.
+        self.assertEqual(provider.calls, 2)
+        self.assertEqual(plan["model_calls_made"], 2)
+        # The malformed second call is an explicit invalid_output, not a
+        # crash — its known cost is preserved.
+        predictions = h.predictions_query(task_id="t1")
+        self.assertEqual(len(predictions), 2)
+        statuses = sorted(p.status for p in predictions)
+        self.assertEqual(statuses, ["invalid_output", "valid"])
+        bad = next(p for p in predictions if p.status == "invalid_output")
+        self.assertIn("unsupported_fields", bad.error)
+        self.assertEqual(bad.call_cost.llm_tokens, 30.0)
+        # The decision action did NOT stay running and was NOT silently
+        # completed: S01's valid prediction still yields a suggestion
+        # (the invalid one is incomparable), and the decision completes.
+        decision = h.actions.get(plan["decision_action_id"])
+        self.assertNotEqual(decision.status, "running")
+        self.assertEqual(decision.status, "completed")
+        self.assertEqual(decision.cost.llm_tokens, 80.0)  # 50 + 30
+
+    def test_planning_exception_ends_decision_failed(self):
+        """R2 (closing path): when the prediction machinery itself raises
+        mid-loop (not a payload problem — an internal error), plan_next
+        must not leave the decision running: the completed part is kept,
+        known cost is charged, and the decision ends failed."""
+
+        class CrashProvider(WorldModelProvider):
+            """Second call raises an unexpected internal error."""
+            name = "crash"
+
+            def __init__(self):
+                self.calls = 0
+
+            def predict(self, request):
+                self.calls += 1
+                if self.calls == 2:
+                    raise RuntimeError("synthetic internal crash")
+                return {"payload": {"outcome_status": "feasible",
+                                    "quality": 0.9},
+                        "usage": {"completion_tokens": 50},
+                        "error": None, "latency_s": 0.01}
+
+        provider = CrashProvider()
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        # A provider-raised exception is caught by the service layer as
+        # provider_error (a prediction record), so planning continues —
+        # but if the service layer itself failed, the planning-level
+        # safety net ends the decision failed. Both layers keep the cost.
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        decision = h.actions.get(plan["decision_action_id"])
+        self.assertNotEqual(decision.status, "running")
+        predictions = h.predictions_query(task_id="t1")
+        self.assertEqual(len(predictions), 2)
+        statuses = sorted(p.status for p in predictions)
+        self.assertEqual(statuses, ["provider_error", "valid"])
 
     def test_shadow_mode_withholds_suggestion(self):
         provider = ScriptableProvider(
@@ -508,6 +638,74 @@ class TestReviewFixes(HarnessTestCase):
                   for p in plan2["paths"]}
         self.assertIn("cost", paths2["S04"]["incomparable"])
 
+    def test_unknown_cost_never_erases_measured_differences(self):
+        """R1 regression: the A/B/C case — A and B have comparable
+        measured costs (A expensive, B cheap), C predicts NO cost at all.
+        The old intersection basis collapsed to empty, zeroing every
+        candidate's cost term and letting the input order decide. Now:
+        the union basis keeps A/B's measured difference, and C is
+        charged the peak normalized share (never free).
+
+        Quality and risk tie across all three; the ONLY differentiator
+        is cost. B must win regardless of C's presence or ordering."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.8, "failure_prob": 0.1,
+                    "cost": {"solver_runtime_s": 100.0}},   # A: expensive
+            "S02": {"quality": 0.8, "failure_prob": 0.1,
+                    "cost": {"solver_runtime_s": 1.0}},     # B: cheap
+            "S03": {"quality": 0.8, "failure_prob": 0.1},   # C: cost unknown
+        })
+        h = ORHarness(home=self.home, world_model=provider,
+                      beta=1.0, cost_weights={"solver_runtime_s": 1.0})
+        self.addCleanup(h.close)
+        # Baseline: without C, B wins on cost.
+        plan_ab = h.plan_next(TASK, "ep1",
+                              candidates=[_spec("S01"), _spec("S02")],
+                              limits={"horizon": 1})
+        self.assertEqual(plan_ab["suggested"]["strategy_id"], "S02")
+        # With C added (in BOTH orderings): B still wins; A/B's cost
+        # difference is preserved; C never gets a free cost pass.
+        for ordering in (("S01", "S02", "S03"), ("S03", "S02", "S01")):
+            plan = h.plan_next(TASK, "ep1",
+                               candidates=[_spec(s) for s in ordering],
+                               limits={"horizon": 1})
+            self.assertEqual(plan["suggested"]["strategy_id"], "S02",
+                             f"ordering {ordering}: C must not win by "
+                             "staying silent on cost")
+            paths = {p["steps"][0]["action_spec"]["strategy_id"]: p
+                     for p in plan["paths"]}
+            # A's measured cost difference vs B is preserved (not zeroed).
+            self.assertGreater(paths["S01"]["c_path"],
+                               paths["S02"]["c_path"])
+            # C is charged the peak share (== A's normalized cost, the
+            # peak) — strictly more than B, never zero.
+            self.assertGreater(paths["S03"]["c_path"],
+                               paths["S02"]["c_path"])
+            self.assertAlmostEqual(paths["S03"]["c_path"],
+                                   paths["S01"]["c_path"], places=3)
+            self.assertIn("cost", paths["S03"]["incomparable"])
+        # Explicit predicted zero stays a zero (measured), distinct from
+        # unknown: a candidate predicting solver_runtime_s=0 is cheaper
+        # than B and wins.
+        provider_zero = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.8, "failure_prob": 0.1,
+                    "cost": {"solver_runtime_s": 100.0}},
+            "S02": {"quality": 0.8, "failure_prob": 0.1,
+                    "cost": {"solver_runtime_s": 0.0}},  # explicit zero
+        })
+        h_zero = ORHarness(home=self.home, world_model=provider_zero,
+                           beta=1.0, cost_weights={"solver_runtime_s": 1.0})
+        self.addCleanup(h_zero.close)
+        plan_zero = h_zero.plan_next(TASK, "ep1",
+                                     candidates=[_spec("S01"), _spec("S02")],
+                                     limits={"horizon": 1})
+        self.assertEqual(plan_zero["suggested"]["strategy_id"], "S02")
+        zero_path = next(p for p in plan_zero["paths"]
+                         if p["steps"][0]["action_spec"]["strategy_id"]
+                         == "S02")
+        self.assertEqual(zero_path["c_path"], 0.0)
+        self.assertNotIn("cost", zero_path["incomparable"])
+
     def test_budget_rechecked_and_exceeded_withholds_suggestion(self):
         """Bug 3: planning re-checks the REAL budget per call and after
         the spend lands; an exceeded budget never returns ok."""
@@ -547,6 +745,50 @@ class TestReviewFixes(HarnessTestCase):
         self.assertEqual(plan["status"], "truncated")
         self.assertIn("time", plan["truncation_reason"])
 
+    def test_single_candidate_timeout_reports_truncated(self):
+        """R5 regression: ONE candidate whose single call exceeds the
+        time budget must NOT report ok — the post-call deadline check
+        catches the over-budget return and reports truncation with the
+        cost preserved."""
+        class SlowProvider(ScriptableProvider):
+            def predict(self, request):
+                import time as _time
+                _time.sleep(0.06)
+                return super().predict(request)
+        provider = SlowProvider(per_strategy={"S01": {"quality": 0.8}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")],
+                           limits={"horizon": 1, "time_budget_s": 0.01})
+        # The call happened (cost is real) but the result is truncated,
+        # never a quiet ok.
+        self.assertEqual(plan["status"], "truncated")
+        self.assertIn("time budget", plan["truncation_reason"])
+        self.assertEqual(plan["model_calls_made"], 1)
+        decision = h.actions.get(plan["decision_action_id"])
+        self.assertEqual(decision.cost.llm_tokens, 50.0)
+
+    def test_last_candidate_timeout_reports_truncated(self):
+        """R5 regression: the LAST candidate's call exceeding the budget
+        is caught by the post-call check (no further loop iteration
+        would catch it)."""
+        class SlowProvider(ScriptableProvider):
+            def predict(self, request):
+                import time as _time
+                _time.sleep(0.06)
+                return super().predict(request)
+        provider = SlowProvider(per_strategy={"S01": {"quality": 0.8},
+                                              "S02": {"quality": 0.7}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        # Budget fits exactly one call; the second call's return is
+        # already over budget.
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1, "time_budget_s": 0.08})
+        self.assertEqual(plan["status"], "truncated")
+        self.assertEqual(plan["model_calls_made"], 2)
+
     def test_candidate_identity_conflict_rejected(self):
         """Bug 4: a candidate naming another task/episode is rejected,
         never planned under this root state."""
@@ -565,6 +807,83 @@ class TestReviewFixes(HarnessTestCase):
         # All-conflicting => no candidates at all.
         plan2 = h.plan_next(TASK, "ep1", candidates=[foreign])
         self.assertEqual(plan2["status"], "no_candidates")
+
+    def test_second_step_identity_conflict_rejected(self):
+        """R4 regression: a second-step candidate explicitly naming
+        ANOTHER task must not produce a model call or a misattributed
+        prediction — the conflict is rejected before the provider runs,
+        and the caller's spec object is never mutated."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.8}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        foreign_second = ActionSpec(action_type="execute_strategy",
+                                    task_id="other_task",
+                                    episode_id="ep1",
+                                    strategy_id="S01")
+        plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")],
+                           second_step=[foreign_second],
+                           limits={"horizon": 2})
+        # The root step ran (1 call), but the conflicting second step
+        # produced NO model call and NO prediction record.
+        self.assertEqual(plan["model_calls_made"], 1)
+        predictions = h.predictions_query(task_id="t1")
+        self.assertEqual(len(predictions), 1)
+        foreign_preds = h.predictions_query(task_id="other_task")
+        self.assertEqual(len(foreign_preds), 0)
+        # The conflict is reported, not silently overwritten.
+        self.assertIn("second-step identity conflict",
+                      plan["truncation_reason"])
+        # The caller's spec object was not mutated.
+        self.assertEqual(foreign_second.task_id, "other_task")
+
+    def test_planning_basis_persisted_and_recoverable_after_reopen(self):
+        """R6 regression: closing and re-opening the harness must fully
+        recover the planning decision — root snapshot, candidates, paths
+        with decomposition, prediction refs, comparison basis/norms,
+        budget confirmation, and suggestion. Later knowledge changes
+        must NOT rewrite the historical judgment."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.9, "cost": {"solver_runtime_s": 10.0}},
+            "S02": {"quality": 0.6, "cost": {"solver_runtime_s": 1.0}},
+        })
+        h = ORHarness(home=self.home, world_model=provider,
+                      beta=1.0, cost_weights={"solver_runtime_s": 1.0})
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        decision_id = plan["decision_action_id"]
+        h.close()
+
+        # Re-open with a FRESH harness instance (different config / alpha).
+        h2 = ORHarness(home=self.home, alpha=99.0)
+        self.addCleanup(h2.close)
+        decision = h2.plan_decision(decision_id)
+        self.assertIsNotNone(decision)
+        outcome = decision.get("outcome") or {}
+        self.assertEqual(outcome.get("plan_id"), plan["plan_id"])
+        self.assertEqual(outcome.get("root_snapshot_id"),
+                         plan["root_snapshot_id"])
+        self.assertEqual(outcome.get("status"), "ok")
+        self.assertEqual(len(outcome.get("paths") or []), 2)
+        # Prediction references are recoverable.
+        path_s1 = next(p for p in outcome["paths"]
+                       if p["steps"][0]["action_spec"]["strategy_id"] == "S01")
+        pred_id = path_s1["steps"][0]["prediction_id"]
+        self.assertTrue(pred_id.startswith("wp_"))
+        stored_pred = h2.get_prediction(pred_id)
+        self.assertIsNotNone(stored_pred)
+        # Utility decomposition is preserved as computed at the time.
+        self.assertEqual(path_s1["q_terminal"], 0.9)
+        self.assertEqual(path_s1["c_path"], 1.0)
+        # Comparison basis and norms are preserved.
+        self.assertEqual(outcome.get("cost_basis"), ["solver_runtime_s"])
+        self.assertEqual(outcome.get("cost_norms"),
+                         {"solver_runtime_s": 10.0, "_max_c_path": 1.0})
+        # Suggestion and its basis string.
+        self.assertEqual((outcome.get("suggested") or {}).get("strategy_id"),
+                         "S02")
+        self.assertTrue(outcome.get("suggestion_basis"))
 
 
 if __name__ == "__main__":

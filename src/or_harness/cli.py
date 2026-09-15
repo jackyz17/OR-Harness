@@ -391,6 +391,32 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
     return " ".join(parts)
 
 
+def cmd_assess_induction(args) -> int:
+    """Evaluate induction candidates using the world model (M4)."""
+    h = _harness(args)
+    try:
+        if args.candidates_only:
+            bundles = h.induction_candidates()
+            return _emit({"count": len(bundles), "candidates": bundles},
+                         f"Found {len(bundles)} induction candidate(s).")
+        if args.bundle:
+            bundle = _load_json_arg(args.bundle)
+        else:
+            bundles = h.induction_candidates()
+            if not bundles:
+                return _emit({"status": "no_candidates", "candidates": []},
+                             "No induction candidates with sufficient evidence.")
+            bundle = bundles[0]
+        workload = _load_json_arg(args.workload) if args.workload else None
+        res = h.assess_induction(bundle, workload_forecast=workload)
+        summary = (f"Induction assessment {res.get('assessment_id')}: "
+                   f"recommendation={res.get('recommendation')} "
+                   f"({res.get('recommendation_basis', '')})")
+        return _emit(res, summary)
+    finally:
+        h.close()
+
+
 def cmd_inspect(args) -> int:
     h = _harness(args)
     try:
@@ -944,6 +970,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--note", default=None,
                    help="free-text note (e.g. deviation reason)")
     p.set_defaults(func=cmd_choose_next)
+
+    p = sub.add_parser("assess-induction",
+                       help="evaluate induction/revision candidates using the "
+                            "world model (M4)")
+    p.add_argument("--bundle", default=None,
+                   help="InductionCandidateBundle JSON (literal or @file); "
+                        "omitted = auto-scan candidate bundles from bank")
+    p.add_argument("--candidates-only", action="store_true",
+                   help="scan and return candidate bundles without evaluating")
+    p.add_argument("--workload", default=None,
+                   help="workload forecast JSON (e.g. expected_matching_tasks)")
+    p.set_defaults(func=cmd_assess_induction)
 
     p = sub.add_parser("gc", help="dispose of the derived layer (harness's call)")
     p.add_argument("--mode", default="compact", choices=["compact", "purge"])

@@ -64,13 +64,15 @@ class PredictionService:
     def predict_outcome(self, task: Dict[str, Any],
                         action_spec: ActionSpec,
                         snapshot,  # BeliefSnapshot (already frozen by caller)
+                        *, timeout_s: Optional[float] = None,
                         ) -> OutcomePrediction:
         """Assemble the input view, call the provider, validate, persist.
 
         ``snapshot`` must be the FROZEN pre-action state (the caller takes
         it before this method runs). The prediction is persisted with
         whatever the provider returned — including failures, which keep
-        their known call cost."""
+        their known call cost. ``timeout_s`` (optional) is the caller's
+        remaining time budget for this call, forwarded to the provider."""
         if action_spec.action_type not in SUPPORTED_ACTION_TYPES:
             prediction = OutcomePrediction(
                 prediction_id=OutcomePrediction.new_id(),
@@ -97,7 +99,12 @@ class PredictionService:
             "state": view,
         }
         try:
-            result = self.provider.predict(request)
+            # Backwards compatibility: existing / custom providers that
+            # only take `predict(request)` are accepted without error.
+            try:
+                result = self.provider.predict(request, timeout_s=timeout_s)
+            except TypeError:
+                result = self.provider.predict(request)
         except Exception as exc:  # provider adapter failure
             prediction = OutcomePrediction(
                 prediction_id=OutcomePrediction.new_id(),
@@ -158,7 +165,12 @@ class PredictionService:
         predicted = {k: copy.deepcopy(v) for k, v in payload.items()
                      if k in ("outcome_status", "feasible", "quality",
                               "failure_prob", "expected_error_kinds",
-                              "state_changes")}
+                              "state_changes",
+                              # M4 maintenance-assessment fields (induce
+                              # action semantics).
+                              "candidate_formation_prob",
+                              "expected_reuse_benefit",
+                              "generalization_risk")}
         if isinstance(payload.get("cost"), dict):
             dims = {d: float(v) for d, v in payload["cost"].items()
                     if d in COST_DIMENSIONS and v is not None}

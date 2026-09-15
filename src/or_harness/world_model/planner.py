@@ -368,31 +368,51 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
         path.incomparable["risk"] = (
             "terminal failure risk not predicted; charged the full gamma "
             "weight (unknown risk is a deficit, never free)")
-    # Path cost: predicted increments of every VALID step, restricted to
-    # the common comparable dimensions of this decision. A candidate with
-    # NO predicted cost on the basis is likewise charged at the most
-    # expensive comparable candidate (unknown cost is never free).
+    # Path cost: predicted increments of every VALID step over the
+    # decision's common basis (the UNION of dimensions any candidate
+    # measured). A step that did not measure a basis dimension is charged
+    # that dimension's PEAK normalized share — the conservative penalty
+    # keeps unknown cost from ever being free, and one silent candidate
+    # can never erase the measured cost differences between the others.
+    # Explicit predicted zeros stay zeros (they were measured); only a
+    # MISSING dimension is charged the penalty.
     c_path = 0.0
     cost_known = False
+    missing_dims: List[str] = []
+    weights = limits.cost_weights or {}
     for prediction in valid:
         vector = predicted_cost_vector(prediction)
-        shared = vector.measured_dims() & set(cost_basis)
-        if shared:
+        measured = vector.measured_dims()
+        if set(cost_basis) & measured:
             cost_known = True
-        for dim in shared:
-            c_path += ((limits.cost_weights or {}).get(dim, 0.0)
-                       * getattr(vector, dim)
-                       / max(norms.get(dim, 1.0), 1e-9))
-    if not cost_known and cost_basis:
-        c_path = max(norms.get("_max_c_path", 0.0), 0.0)
+        for dim in cost_basis:
+            if dim in measured:
+                c_path += (weights.get(dim, 0.0)
+                           * getattr(vector, dim)
+                           / max(norms.get(dim, 1.0), 1e-9))
+            else:
+                # Unknown on this basis dimension: peak normalized share
+                # (weight * peak/peak = weight). A missing step never
+                # gives the path a free advantage on that dimension.
+                c_path += weights.get(dim, 0.0)
+                if dim not in missing_dims:
+                    missing_dims.append(dim)
+    if missing_dims:
         path.incomparable["cost"] = (
-            "no predicted cost dimension shared with the comparison "
-            "basis; charged at the most expensive comparable candidate "
-            "(unknown cost is never free)")
-    elif not cost_known:
-        path.incomparable["cost"] = ("no candidate carried comparable "
-                                     "cost predictions; cost term is zero "
-                                     "for everyone")
+            f"cost dimensions {sorted(missing_dims)} not predicted by "
+            "every step; charged each at the peak normalized share of "
+            "the candidates that measured them (unknown cost is never "
+            "free)")
+    if not cost_known and cost_basis:
+        path.incomparable.setdefault(
+            "cost_basis",
+            "no step measured any basis dimension; the entire cost term "
+            "is the conservative penalty, not a measurement — no cost "
+            "optimization claim is made on this basis")
+    elif not cost_basis:
+        path.incomparable["cost"] = ("no candidate carried any cost "
+                                     "prediction; the cost basis is "
+                                     "incomparable, never fabricated")
     path.q_terminal = q
     path.r_terminal = r
     path.c_path = round(c_path, 6)
@@ -406,45 +426,62 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
     if path.incomparable:
         path.notes.append(
             "incomparable fields are charged conservatively (unknown "
-            "risk => full gamma weight; unknown cost => most expensive "
-            "comparable candidate) and reported explicitly — unknown "
-            "never auto-wins")
+            "risk => full gamma weight; unknown cost dimension => the "
+            "peak normalized share of the candidates that measured it) "
+            "and reported explicitly — unknown never auto-wins")
     return path
 
 
 def comparison_norms(predictions: List[OutcomePrediction],
                      cost_weights: Optional[Dict[str, float]] = None
                      ) -> tuple[List[str], Dict[str, float]]:
-    """The common cost yardstick for one comparison: dimensions predicted
-    by EVERY valid prediction (intersection), and per-dimension
-    normalization divisors from the candidate range (selector-style pure
-    computation — no bank reads).
+    """The common cost yardstick for one comparison: every dimension
+    predicted by AT LEAST ONE valid prediction (union), and per-dimension
+    normalization divisors from the candidates that DID measure it
+    (selector-style pure computation — no bank reads).
 
-    Also computes ``_max_c_path``: the largest weighted cost among
-    candidates that DID predict on the basis — the conservative charge
-    for a candidate whose cost is unknown (unknown cost never wins by
-    default)."""
+    A candidate that did NOT measure a basis dimension is NOT let off:
+    ``evaluate_path`` charges it that dimension's maximum normalized
+    share (the conservative penalty — unknown cost never wins by
+    default, and one silent candidate never erases the cost differences
+    between the others). A dimension NO candidate measured is simply
+    absent from the basis (reported as incomparable, never fabricated).
+
+    Also computes ``_max_c_path``: the largest weighted per-step cost
+    among candidates that DID predict on the basis — kept for backward
+    compatibility with stored plans."""
     valid = [p for p in predictions if p.status == "valid"]
     if not valid:
         return [], {}
     measured_sets = [predicted_cost_vector(p).measured_dims() for p in valid]
-    common = set(measured_sets[0])
-    for dims in measured_sets[1:]:
-        common &= dims
-    basis = sorted(common)
+    basis: List[str] = sorted(set().union(*measured_sets))
     norms: Dict[str, float] = {}
+    # Per-dimension peak among the candidates that MEASURED it (a
+    # candidate that did not measure a dimension contributes nothing to
+    # its yardstick — its share is charged later at this peak).
     for dim in basis:
-        peak = max(getattr(predicted_cost_vector(p), dim) for p in valid)
+        measured_values = [getattr(predicted_cost_vector(p), dim)
+                           for p in valid
+                           if dim in predicted_cost_vector(p).measured_dims()]
+        peak = max(measured_values) if measured_values else 0.0
         norms[dim] = float(peak) if peak > 0 else 1.0
-    # Per-step maximum weighted cost (for the unknown-cost fallback).
+    # Per-step maximum weighted cost over the basis dimensions the
+    # candidate measured (unmeasured dims charged at full peak share).
     weights = cost_weights or {}
     max_step_cost = 0.0
     for prediction in valid:
         vector = predicted_cost_vector(prediction)
-        step_cost = sum(
-            weights.get(dim, 0.0) * getattr(vector, dim)
-            / max(norms.get(dim, 1.0), 1e-9)
-            for dim in vector.measured_dims() & set(basis))
+        measured = vector.measured_dims()
+        step_cost = 0.0
+        for dim in basis:
+            if dim in measured:
+                step_cost += (weights.get(dim, 0.0)
+                              * getattr(vector, dim)
+                              / max(norms.get(dim, 1.0), 1e-9))
+            else:
+                # Unknown on this dimension: charged at the dimension's
+                # peak normalized share (i.e. weight * peak/peak = weight).
+                step_cost += weights.get(dim, 0.0)
         max_step_cost = max(max_step_cost, step_cost)
     norms["_max_c_path"] = max_step_cost
     return basis, norms
