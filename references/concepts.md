@@ -133,7 +133,7 @@ with ≥70% hit rate ON TOP of the passed admission check.
 
 The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and never enter scoring — the framework cannot verify a sentence, so it does not pretend to.
 
-## World-model outcome predictions (M2): shadow hypotheses, never decisions
+## World-model outcome predictions: shadow hypotheses, never decisions
 
 A *world-model prediction* is a structured hypothesis about what ONE
 candidate action would do from the current frozen state: expected status,
