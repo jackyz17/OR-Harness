@@ -903,6 +903,19 @@ class ORHarness:
         plan.status = "truncated" if stop_reason else "ok"
         if stop_reason:
             plan.truncation_reason = stop_reason
+        # Honesty: when EVERY candidate's prediction was unusable (all
+        # paths incomparable), "ok" would falsely suggest the evaluation
+        # succeeded. Report the real reason — no valid prediction — so
+        # the caller never mistakes "model output unusable" for a quiet
+        # "no recommendation".
+        if not comparable and plan.status == "ok":
+            plan.status = "no_valid_predictions"
+            statuses = sorted({p.status for p in all_predictions})
+            plan.truncation_reason = (
+                "no candidate carried a usable prediction "
+                f"(statuses: {statuses}); no suggestion is possible. "
+                "This is the model output's problem, not a framework "
+                "failure — the calls happened and their cost is recorded.")
         # (8) End the decision action. The outcome records the evaluation
         # (references + decomposition) — NOT a selection: X.selected_plan
         # is written only by choose_next.

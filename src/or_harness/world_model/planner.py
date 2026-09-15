@@ -220,7 +220,8 @@ class PlanResult:
     #: recommendation could be made (see ``status``/``truncation_reason``).
     suggested: Optional[ActionSpec] = None
     suggestion_basis: str = ""
-    status: str = "ok"  # ok | truncated | fallback | no_candidates | disabled
+    status: str = "ok"  # ok | truncated | fallback | no_candidates |
+                        # no_valid_predictions | disabled
     truncation_reason: Optional[str] = None
     #: REAL planning spend: model calls made and their aggregated measured
     #: cost (also charged to the decision action as own cost). Sunk cost —

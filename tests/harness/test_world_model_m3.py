@@ -356,6 +356,30 @@ class TestPlanning(HarnessTestCase):
         # 50 (S01) + 10 (failed S02) = 60 tokens of REAL spend.
         self.assertEqual(decision.cost.llm_tokens, 60.0)
 
+    def test_all_predictions_invalid_reports_honestly(self):
+        """When EVERY candidate's prediction is unusable, status must NOT
+        be "ok" — the caller would mistake "model output unusable" for a
+        quiet "no recommendation". Reported as no_valid_predictions with
+        the real statuses; the calls still happened and their cost is
+        recorded. (Surfaced by the first real-endpoint M4 run: MiniMax
+        returned non-JSON for one candidate and illegal cost values for
+        the other.)"""
+        provider = ScriptableProvider(fail={"S01", "S02"})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        plan = h.plan_next(TASK, "ep1",
+                           candidates=[_spec("S01"), _spec("S02")],
+                           limits={"horizon": 1})
+        self.assertEqual(plan["status"], "no_valid_predictions")
+        self.assertIsNone(plan["suggested"])
+        self.assertIn("no candidate carried a usable prediction",
+                      plan["truncation_reason"])
+        self.assertIn("invalid_output", plan["truncation_reason"])
+        # The calls still happened and their real spend is recorded.
+        self.assertEqual(plan["model_calls_made"], 2)
+        decision = h.actions.get(plan["decision_action_id"])
+        self.assertEqual(decision.cost.llm_tokens, 20.0)  # 2 x 10 (failed)
+
     def test_shadow_mode_withholds_suggestion(self):
         provider = ScriptableProvider(
             per_strategy={"S01": {"quality": 0.8}})
