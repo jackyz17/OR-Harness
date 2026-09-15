@@ -26,6 +26,7 @@ non-sensitive configuration.
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.request
@@ -36,19 +37,31 @@ from typing import Any, Dict, Optional
 PROTOCOL_VERSION = "openai-chat/1"
 
 #: The system prompt sent to the model. The model is asked for STRUCTURED
-#: JSON only; the framework validates everything.
+#: JSON only; the framework validates everything. Field omissions are
+#: preferred over placeholder values — an absent field stays unknown.
 SYSTEM_PROMPT = (
     "You are a world model for an operations-research harness. Given the "
     "current information state (belief snapshot view) and ONE candidate "
     "action, predict the consequences of executing that action.\n"
-    "Respond with a single JSON object with these optional fields:\n"
+    "OUTPUT RULES (read first, follow strictly):\n"
+    "1. Respond with EXACTLY ONE raw JSON object and NOTHING else. No "
+    "markdown, no code fences, no explanation before or after the JSON.\n"
+    "2. Every field below is OPTIONAL. If you lack evidence for a field, "
+    "OMIT it entirely — never write \"unknown\", null, -1, or a guess as a "
+    "placeholder value.\n"
+    "3. All numbers must be valid JSON numbers (not strings).\n"
+    "Fields (all optional):\n"
     "- outcome_status: one of optimal|feasible|infeasible|unbounded|"
-    "timeout|error|unknown (the execution status you expect)\n"
-    "- feasible: boolean (whether a usable solution will be obtained)\n"
-    "- quality: number in [0,1] (expected solution quality; 1 = optimal)\n"
-    "- failure_prob: number in [0,1] (probability the attempt fails)\n"
-    "- cost: object of {llm_tokens, tool_calls, solver_runtime_s, retries, "
-    "latency_s} — only dimensions you have evidence for, non-negative\n"
+    "timeout|error (omit if you cannot judge)\n"
+    "- feasible: boolean\n"
+    "- quality: number in [0,1] — solution quality where 1.0 = optimal, "
+    "0.7-0.9 = good feasible, 0.4-0.6 = marginal/uncertain, below 0.4 = "
+    "poor. Do NOT default to 0.5; omit the field when you have no "
+    "quality-relevant evidence\n"
+    "- failure_prob: number in [0,1]\n"
+    "- cost: object containing only the dimensions you have evidence for, "
+    "each a non-negative JSON number: {llm_tokens, tool_calls, "
+    "solver_runtime_s, retries, latency_s}\n"
     "- expected_error_kinds: list of error categories you expect\n"
     "- state_changes: object describing the successor task state you "
     "expect (e.g. current_solution will hold a solution)\n"
@@ -59,7 +72,7 @@ SYSTEM_PROMPT = (
     "cannot or will not predict\n"
     "Do NOT fabricate evidence. If the provided state contains no relevant "
     "experience or knowledge for the action, say so in unsupported_fields "
-    "and give low confidence. Output JSON only."
+    "and give low confidence. Output the JSON object only."
 )
 
 
@@ -68,6 +81,21 @@ class ProviderError(Exception):
 
     Carries whatever partial call cost is known — a failed call may still
     have consumed resources."""
+
+
+_FENCE_RE = re.compile(
+    r"^\s*```(?:json|JSON)?\s*\n(?P<body>.*?)\n?\s*```\s*$", re.DOTALL)
+
+
+def _strip_code_fence(content: str) -> str:
+    """Extract the JSON body from a markdown code fence when the model
+    wrapped its answer in ```json ... ``` despite instructions. Bare JSON
+    passes through unchanged; prose around the fence is NOT salvaged (the
+    error stays honest)."""
+    match = _FENCE_RE.match(content)
+    if match:
+        return match.group("body").strip()
+    return content.strip()
 
 
 class WorldModelProvider:
@@ -190,8 +218,9 @@ class HttpChatProvider(WorldModelProvider):
         payload = None
         parse_error = None
         if isinstance(content, str) and content.strip():
+            cleaned = _strip_code_fence(content)
             try:
-                payload = json.loads(content)
+                payload = json.loads(cleaned)
             except json.JSONDecodeError as exc:
                 parse_error = f"model content is not valid JSON: {exc}"
         elif content is None:

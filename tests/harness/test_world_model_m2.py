@@ -212,6 +212,57 @@ class TestHttpChatProviderProtocol(HarnessTestCase):
         self.assertIsNone(result["payload"])
         self.assertIn("not valid JSON", result["error"])
 
+    def test_code_fenced_json_is_salvaged(self):
+        """A model that wraps valid JSON in a ```json fence (the most
+        common format drift) is recovered — prose around it is NOT."""
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                fenced = "```json\n" + json.dumps(_GOOD_PAYLOAD) + "\n```"
+                result = {"choices": [{"message": {"content": fenced}}],
+                          "usage": {"prompt_tokens": 10,
+                                    "completion_tokens": 20}}
+                data = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        base_url = self._serve(Handler)
+        provider = HttpChatProvider(base_url, "m", "k")
+        result = provider.predict({"x": 1})
+        self.assertIsNotNone(result["payload"])
+        self.assertEqual(result["payload"]["outcome_status"], "feasible")
+        self.assertEqual(result["usage"]["completion_tokens"], 20)
+
+    def test_prose_around_fence_is_not_salvaged(self):
+        """Explanation text around the fence is not valid JSON even after
+        fence stripping — the error stays honest."""
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.rfile.read(int(self.headers["Content-Length"]))
+                result = {"choices": [{"message": {"content":
+                    "Here is my prediction:\n```json\n{}\n```\nHope it helps!"}}]}
+                data = json.dumps(result).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        base_url = self._serve(Handler)
+        provider = HttpChatProvider(base_url, "m", "k")
+        result = provider.predict({"x": 1})
+        self.assertIsNone(result["payload"])
+        self.assertIn("not valid JSON", result["error"])
+
 
 class TestPredictionContract(HarnessTestCase):
     """Requirements 3/4: contract validation and meaningful content."""
