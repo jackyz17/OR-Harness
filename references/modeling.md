@@ -1,6 +1,6 @@
 # The model representation
 
-Before writing solver code, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field. The framework verifies it deterministically (no LLM) and measures structural coupling directly from the declared constraints — the single best coupling source the profiler has. This is a convention, not a requirement: everything works without it, but every later step (profiling, grouping, strategy selection) gets weaker.
+The model representation is the intermediate artifact between **choosing a strategy** and **writing solver code**: once the strategy is decided, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field, then translate it into solve.py. The framework verifies it deterministically (no LLM) and measures structural coupling directly from the declared constraints — the single best coupling source the profiler has. It is NOT a prerequisite for strategy selection: choosing a strategy relies on the task text, the CIR, the profile, and the evidence's expected quality/cost/risk. Without a `model` field everything still works — the profile derivation falls back to CIR > spec > supplied — but once written it sharpens the derivation and enables the CIR ↔ model cross-check.
 
 ## Why before code
 
@@ -66,7 +66,7 @@ The CIR is an explicit, inspectable structured representation of *how* the compo
 
 ### When to use it
 
-Run `orx understand --task t.json` as the **first step** in the workflow, before writing the `model` field. The CIR lives in the task JSON's optional `coupling` field. The `model` field may later cross-check the CIR (`--cir` on `profile`), but is never required to create one.
+Submit the CIR via `orx profile --task t.json` (the single analysis entry) **before choosing a strategy** — it is the understanding artifact that improves both the profile derivation and the model you write later. The CIR lives in the task JSON's optional `coupling` field and never requires a `model` field. After the strategy is chosen and the `model` is written, re-run `orx profile` to cross-check the two (`cir_warnings`).
 
 ### Schema (domain-general — all `kind`/`type` fields are free-form strings)
 

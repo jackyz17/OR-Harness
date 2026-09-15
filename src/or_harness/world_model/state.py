@@ -179,7 +179,7 @@ class BeliefSnapshot:
     #: P — problem state: profile + task digest + optional task_ref /
     #: cir_snapshot / model_digest.
     problem_state: Dict[str, Any] = field(default_factory=dict)
-    #: X — task progress: labelled fields (understanding, model_artifact,
+    #: X — task progress: labelled fields (model_artifact,
     #: selected_plan, current_solution, errors, verification_evidence,
     #: finished).
     task_progress: Dict[str, Dict[str, Any]] = field(default_factory=dict)

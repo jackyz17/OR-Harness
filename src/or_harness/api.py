@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.adapters.solver import available_families, probe_all
-from or_harness.core.coupling import understand as cir_understand
 from or_harness.core.schema import (
     COST_DIMENSIONS,
     CostVector,
@@ -395,7 +394,7 @@ class ORHarness:
                       cost: Optional[Dict[str, float]] = None,
                       started_at: Optional[float] = None,
                       ended_at: Optional[float] = None) -> Dict[str, Any]:
-        """Report an action the OUTER agent performed (understand / model /
+        """Report an action the OUTER agent performed (model /
         select_strategy / verify / finish_task). The library did not execute
         it — the report is the caller's statement, labelled agent_reported.
         A missing pre snapshot is recorded as missing, never fabricated.
@@ -1004,16 +1003,6 @@ class ORHarness:
         return record.to_dict() if record is not None else None
 
     # -- world-model M3: bounded planning ------------------------------------
-    def understand(self, task: Dict[str, Any]) -> Dict[str, Any]:
-        """Pre-model coupling-aware understanding.
-
-        Validates the task's optional ``coupling`` field (a CIR), infers
-        structural relations deterministically, derives coupling groups, and
-        renders modeling guidance — all *before* the canonical model is
-        written.  When no CIR is supplied, returns a prompt to submit one.
-        """
-        return cir_understand(task)
-
     def profile(self, task: Dict[str, Any], code: Optional[str] = None,
                 cir: Optional[Any] = None) -> ProblemProfile:
         return profile_task(task, code, cir=cir)
@@ -1543,8 +1532,7 @@ class ORHarness:
                                          episode_id=episode_id,
                                          action_type=strategy_id
                                          if strategy_id and strategy_id
-                                         in ("understand", "model",
-                                             "select_strategy",
+                                         in ("model", "select_strategy",
                                              "execute_strategy", "verify",
                                              "finish_task", "induce")
                                          else None,

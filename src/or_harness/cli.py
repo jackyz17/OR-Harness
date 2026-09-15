@@ -94,61 +94,86 @@ def _summarize_recall(result: Dict[str, Any]) -> str:
 
 
 def cmd_profile(args) -> int:
+    """The single analysis entry: CIR validation + modeling guidance +
+    problem profile + derivation report, in one call.
+
+    A task WITHOUT a ``model`` field is a normal state: strategy selection
+    relies on the task text, the CIR, and the profile — the model is an
+    intermediate representation written AFTER the strategy is chosen, and
+    re-running profile then adds the CIR ↔ model cross-check."""
     h = _harness(args)
     try:
+        from or_harness.core.coupling import (
+            CouplingAwareIR,
+            cross_check_cir_model,
+            derive_coupling_groups,
+            infer_structural_relations,
+            render_modeling_guidance,
+            validate_cir,
+        )
+        from or_harness.profiling.model_syntax import verify_model
         task = _load_json_arg(args.task)
         code = Path(args.code).read_text(encoding="utf-8") if args.code else None
-        cir = None
+        # -- CIR side (validation, structural inference, groups, guidance) --
+        coupling: Dict[str, Any] = {"cir": None, "modeling_guidance": [],
+                                    "cir_warnings": []}
+        cir_obj = None
         if args.cir:
-            from or_harness.core.coupling import CouplingAwareIR
-            cir_data = _load_json_arg(args.cir)
-            cir = CouplingAwareIR.from_dict(cir_data)
-        profile = h.profile(task, code, cir=cir)
-        report = h.derivation_report(task, code, cir=cir)
-        return _emit({"profile": profile.to_dict(), "derivation": report},
-                     _summarize_profile(profile, report))
-    finally:
-        h.close()
-
-
-def cmd_understand(args) -> int:
-    """Pre-model coupling-aware understanding."""
-    h = _harness(args)
-    try:
-        task = _load_json_arg(args.task)
-        result = h.understand(task)
-        cir = result.get("cir")
-        if cir is None:
-            return _emit(result, result.get("message", "No CIR provided."))
-        groups = cir.get("coupling_groups") or []
-        guidance = result.get("modeling_guidance") or []
-        warnings = result.get("cir_warnings") or []
-        issues = cir.get("issues") or []
-        parts = [f"CIR validated: {len(cir.get('entities', []))} entities, "
-                 f"{len(cir.get('decisions', []))} decisions, "
-                 f"{len(cir.get('constraints', []))} constraints, "
-                 f"{len(cir.get('relations', []))} relations."]
-        if issues:
-            parts.append(f"Validation issues ({len(issues)}): "
-                         + "; ".join(f"[{i['layer']}] {i['code']}" for i in issues[:3])
-                         + (" ..." if len(issues) > 3 else ""))
-        if guidance:
-            parts.append(f"Modeling guidance ({len(guidance)}):")
-            for g in guidance:
-                parts.append(f"  - [{g['type']}] {g['implication']}")
+            cir_obj = CouplingAwareIR.from_dict(_load_json_arg(args.cir))
+        elif isinstance(task.get("coupling"), dict):
+            cir_obj = CouplingAwareIR.from_dict(task["coupling"])
+        if cir_obj is not None:
+            validate_cir(cir_obj)
+            parsed = None
+            model_text = task.get("model")
+            if isinstance(model_text, str) and model_text.strip():
+                try:
+                    parsed = verify_model(model_text).parsed
+                except Exception:
+                    parsed = None
+            infer_structural_relations(cir_obj, parsed)
+            derive_coupling_groups(cir_obj)
+            coupling = {
+                "cir": cir_obj.to_dict(),
+                "modeling_guidance": render_modeling_guidance(cir_obj),
+                "cir_warnings": cross_check_cir_model(cir_obj, parsed),
+            }
         else:
-            parts.append("No coupling groups detected — the CIR is structurally "
-                         "valid but no shared bottleneck or global constraint "
-                         "pattern was found.")
-        for w in warnings:
-            parts.append(f"WARNING: {w['code']}: {w['detail']}")
-        return _emit(result, " ".join(parts))
+            coupling["message"] = (
+                "No 'coupling' field found in the task. A CIR is optional "
+                "but recommended: it is the pre-model understanding that "
+                "improves both the profile derivation and the model you "
+                "write after choosing a strategy.")
+        # -- Profile side --
+        profile = h.profile(task, code, cir=cir_obj)
+        report = h.derivation_report(task, code, cir=cir_obj)
+        result = {"profile": profile.to_dict(), "derivation": report,
+                  "coupling": coupling}
+        return _emit(result, _summarize_profile(profile, report, coupling))
     finally:
         h.close()
 
 
-def _summarize_profile(profile, report) -> str:
-    parts = [f"Profile for {profile.problem_id} (family={profile.family}):"]
+def _summarize_profile(profile, report, coupling=None) -> str:
+    coupling = coupling or {}
+    cir = coupling.get("cir")
+    parts = []
+    if cir is not None:
+        parts.append(
+            f"CIR validated: {len(cir.get('entities', []))} entities, "
+            f"{len(cir.get('decisions', []))} decisions, "
+            f"{len(cir.get('constraints', []))} constraints, "
+            f"{len(cir.get('relations', []))} relations.")
+        guidance = coupling.get("modeling_guidance") or []
+        if guidance:
+            parts.append(f"Modeling guidance ({len(guidance)}): "
+                         + "; ".join(f"[{g['type']}] {g['implication']}"
+                                    for g in guidance[:4])
+                         + (" ..." if len(guidance) > 4 else ""))
+    elif coupling.get("message"):
+        parts.append(coupling["message"])
+    parts.append(f"Profile for {profile.problem_id} "
+                 f"(family={profile.family}):")
     for dim in ("resource_coupling", "temporal_coupling",
                 "route_complexity", "semantic_coupling"):
         entry = report.get(dim) or {}
@@ -169,6 +194,8 @@ def _summarize_profile(profile, report) -> str:
     warnings = report.get("coupling_warnings") or []
     for w in warnings:
         parts.append("WARNING: " + w["message"])
+    for w in coupling.get("cir_warnings") or []:
+        parts.append(f"WARNING: {w['code']}: {w['detail']}")
     return " ".join(parts)
 
 
@@ -708,16 +735,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="world-model call timeout in seconds")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("understand",
-                       help="pre-model coupling-aware understanding (CIR)")
-    p.add_argument("--task", required=True, help="task JSON literal or file")
-    p.set_defaults(func=cmd_understand)
-
-    p = sub.add_parser("profile", help="build a ProblemProfile for a task")
+    p = sub.add_parser("profile",
+                       help="the single analysis entry: CIR validation + "
+                            "modeling guidance + problem profile + "
+                            "derivation report (a task without a 'model' "
+                            "field is a normal state)")
     p.add_argument("--task", required=True, help="task JSON literal or file")
     p.add_argument("--code", default=None, help="optional solve script for AST derivation")
     p.add_argument("--cir", default=None,
-                   help="optional CIR JSON literal/file for CIR↔model cross-check")
+                   help="optional CIR JSON literal/file (overrides the "
+                        "task's 'coupling' field)")
     p.set_defaults(func=cmd_profile)
 
     p = sub.add_parser("recall", help="recall accumulated experience for a task")
@@ -834,7 +861,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("action",
                        help="report an action the outer agent performed "
-                            "(understand/model/select_strategy/verify/"
+                            "(model/select_strategy/verify/"
                             "finish_task) or amend an action's cost")
     p.add_argument("--report", default=None, metavar="TYPE",
                    help="action type to report (agent_reported)")

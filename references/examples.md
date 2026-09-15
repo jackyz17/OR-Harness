@@ -2,37 +2,43 @@
 
 Four complete walkthroughs. JSON fragments are real CLI output shapes (abridged where marked with `...`).
 
-## Example 0: coupling-aware understanding (the pre-model step)
+## Example 0: profile — the single analysis entry (before choosing a strategy)
 
-**T0.** A scheduling task arrives: three production modes (M1, M2, M3) all feed into the same downstream LDA capacity. Before writing any model, you extract the coupling structure and submit it as a CIR:
+**T0.** A scheduling task arrives: three production modes (M1, M2, M3) all feed into the same downstream LDA capacity. Before choosing a strategy, you extract the coupling structure as a CIR and run the analysis entry:
 
 ```bash
-$ orx understand --task t.json
+$ orx profile --task t.json
 {"result": {
-  "cir": {
-    "entities": [{"name": "LDA", "kind": "resource"}, ...],
-    "decisions": [{"name": "x_M1", "kind": "production"}, {"name": "x_M2", ...}, {"name": "x_M3", ...}],
-    "constraints": [{"id": "C1", "kind": "capacity", "expr": "sum(x_M1, x_M2, x_M3) <= cap_LDA"}],
-    "relations": [
-      {"source": "x_M1", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
-      {"source": "x_M2", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
-      {"source": "x_M3", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...}
-    ],
-    "coupling_groups": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
-      "resource": "LDA", "implication": "Multiple decisions (x_M1, x_M2, x_M3) consume the same
-      resource (LDA); ensure one aggregate capacity constraint covers all relevant decisions."}],
-    "issues": []
-  },
-  "modeling_guidance": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
-    "resource": "LDA", "implication": "...aggregate capacity constraint..."}],
-  "cir_warnings": []
+  "profile": {"problem_id": "t0", "family": "scheduling",
+    "resource_coupling": 1.0, "temporal_coupling": 0.0, ...},
+  "derivation": {"resource_coupling": {"value": 1.0, "origin": "cir"}, ...},
+  "coupling": {
+    "cir": {
+      "entities": [{"name": "LDA", "kind": "resource"}, ...],
+      "decisions": [{"name": "x_M1", "kind": "production"}, {"name": "x_M2", ...}, {"name": "x_M3", ...}],
+      "constraints": [{"id": "C1", "kind": "capacity", "expr": "sum(x_M1, x_M2, x_M3) <= cap_LDA"}],
+      "relations": [
+        {"source": "x_M1", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
+        {"source": "x_M2", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...},
+        {"source": "x_M3", "target": "LDA", "type": "uses_resource", "evidence": "semantic", ...}
+      ],
+      "coupling_groups": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
+        "resource": "LDA", "implication": "Multiple decisions (x_M1, x_M2, x_M3) consume the same
+        resource (LDA); ensure one aggregate capacity constraint covers all relevant decisions."}],
+      "issues": []
+    },
+    "modeling_guidance": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
+      "resource": "LDA", "implication": "...aggregate capacity constraint..."}],
+    "cir_warnings": []
+  }
 },
  "summary": "CIR validated: 1 entities, 3 decisions, 1 constraints, 3 relations. Modeling guidance (1):
-   - [shared_bottleneck] Multiple decisions (x_M1, x_M2, x_M3) consume the same resource (LDA);
-     ensure one aggregate capacity constraint covers all relevant decisions."}
+   [shared_bottleneck] Multiple decisions (x_M1, x_M2, x_M3) consume the same resource (LDA);
+     ensure one aggregate capacity constraint covers all relevant decisions. Profile for t0
+     (family=scheduling): resource_coupling=1.0 (cir) ..."}
 ```
 
-**Verification**: entity `LDA` covers the shared capacity mentioned in the task. All three modes have `uses_resource` edges to `LDA`. The `shared_bottleneck` group matches the task's coupling pattern. `issues` is empty. You carry this guidance into step 2 (write the canonical model with an aggregate capacity constraint `sum(x_M1, x_M2, x_M3) <= cap_LDA`).
+**Verification**: entity `LDA` covers the shared capacity mentioned in the task. All three modes have `uses_resource` edges to `LDA`. The `shared_bottleneck` group matches the task's coupling pattern. `issues` is empty. No `model` field exists yet — that is normal: you next compare strategies (`orx recall` / `orx plan-next`) on expected quality/cost/risk, choose one, and only then write the canonical model (with the aggregate capacity constraint `sum(x_M1, x_M2, x_M3) <= cap_LDA`) as the blueprint for solve.py.
 
 ### Do not do this (CIR negative example)
 

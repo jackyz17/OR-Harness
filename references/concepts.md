@@ -41,23 +41,25 @@ Post-strategy information (solver diagnostics, model diagnostics) is stored sepa
 
 ## Coupling-Aware Intermediate Representation (CIR)
 
-The four scalar coupling dimensions are **derived summaries**, not the primary representation. The primary representation is the CIR — an explicit, inspectable set of entities, decisions, constraints, and relations that captures *how* the problem's components interact. The CIR is produced **before** the canonical model, from the natural-language task description, and provides modeling guidance that improves the correctness of the canonical representation.
+The four scalar coupling dimensions are **derived summaries**, not the primary representation. The primary representation is the CIR — an explicit, inspectable set of entities, decisions, constraints, and relations that captures *how* the problem's components interact. The CIR is produced **before** the canonical model, from the natural-language task description, and provides modeling guidance that improves the correctness of the canonical representation (which is written only after the strategy is chosen).
 
 The architectural shift:
 
 ```
 Old:  Task → scalar coupling scores → strategy matching → model
-New:  Task → CIR (entities/relations) → modeling guidance → canonical model
-                → derived scalar signature → strategy retrieval
+New:  Task → profile (CIR: entities/relations → understanding + retrieval key)
+                → strategy comparison on expected quality/cost/risk
+                → canonical model (after the strategy is chosen) → solve.py
 ```
 
 Key principles:
 
-- **CIR before model**: the CIR does not require a `model` field. The model may later cross-check the CIR, but is never required to create one.
+- **CIR before model**: the CIR does not require a `model` field. The model is an intermediate representation written AFTER the strategy is chosen; re-running `orx profile` then cross-checks CIR ↔ model, but the model is never required to create a CIR.
+- **The profile retrieves, evidence decides**: the profile (including the CIR-derived scalar signature) is only the retrieval key — it decides WHICH historical evidence is comparable to this problem. The strategy choice itself rests on the expected quality/cost/risk carried by that evidence (entries, conditional statistics, or world-model predictions), never on the profile alone.
 - **Structure first, scalars second**: scalar coupling scores (rc, tc, rx) are derived from the structure; they are summaries, never substitutes for the structure itself.
 - **Co-occurrence is structural evidence only**: constraint-variable co-occurrence produces generic `depends_on` edges. A semantic relation (`uses_resource`, `shares_resource`, `competes_for`) requires additional entity/constraint semantics.
 - **Domain-general**: all `kind`/`type` fields in the CIR are free-form strings — the schema never hard-codes supply-chain-specific vocabulary.
-- **Dual downstream**: CIR feeds both modeling guidance (primary, via `orx understand`) and strategy retrieval (via the scalar ProblemSignature — `profile`/`recall`/`execute` derive rc/tc/rx from the CIR structure with priority CIR > model > spec > supplied). Coupling-aware understanding works even when Strategic Memory is empty.
+- **Dual downstream**: CIR feeds both modeling guidance and strategy retrieval via the single `orx profile` entry (rc/tc/rx derive from the CIR structure with priority CIR > model > spec > supplied). Coupling-aware understanding works even when Strategic Memory is empty.
 
 See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, and validation rules.
 

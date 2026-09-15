@@ -9,7 +9,7 @@ Covers:
 - semantic upgrade: capacity keyword + resource-kind entity → uses_resource
 - shared_bottleneck derivation
 - CIR ↔ model cross-check (missing decisions, relation not in model)
-- understand() high-level entry (no coupling field, with coupling, with model)
+- the merged `orx profile` analysis output (CIR + guidance + profile)
 """
 import unittest
 
@@ -29,7 +29,6 @@ from or_harness.core.coupling import (
     render_modeling_guidance,
     cross_check_cir_model,
     coupling_from_cir,
-    understand,
 )
 from or_harness.profiling.model_syntax import parse_model
 from or_harness.api import ORHarness
@@ -591,13 +590,31 @@ class TestProfileWiring(HarnessTestCase):
             h.close()
 
 
-class TestUnderstand(HarnessTestCase):
-    """High-level understand() entry point."""
+class TestProfileAnalysisEntry(HarnessTestCase):
+    """The merged `orx profile` analysis output: CIR + guidance + profile
+    in one call (the understand entry was consolidated into profile)."""
+
+    def _run_profile_cli(self, task):
+        import json
+        from or_harness.cli import main
+        import io, contextlib, tempfile, os
+        with tempfile.TemporaryDirectory() as home:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = main(["--home", home, "profile",
+                             "--task", json.dumps(task)])
+            out = json.loads(buf.getvalue())
+        return code, out
 
     def test_no_coupling_field(self):
-        result = understand({"task_id": "t1", "family": "routing"})
-        self.assertIsNone(result["cir"])
-        self.assertIn("message", result)
+        code, out = self._run_profile_cli(
+            {"task_id": "t1", "family": "routing"})
+        self.assertEqual(code, 0)
+        result = out["result"]
+        self.assertIsNone(result["coupling"]["cir"])
+        self.assertIn("message", result["coupling"])
+        # The profile itself is still produced.
+        self.assertEqual(result["profile"]["family"], "routing")
 
     def test_with_coupling_field(self):
         task = {
@@ -621,24 +638,23 @@ class TestUnderstand(HarnessTestCase):
                 ],
             },
         }
-        result = understand(task)
-        cir = result["cir"]
+        code, out = self._run_profile_cli(task)
+        self.assertEqual(code, 0)
+        coupling = out["result"]["coupling"]
+        cir = coupling["cir"]
         self.assertIsNotNone(cir)
         self.assertEqual(len(cir["entities"]), 1)
-        # Structural edges should be upgraded to uses_resource because:
-        # - target entity R1 has kind="resource" (resource-like)
-        # - constraint C1 has "cap" keyword (capacity semantics)
         uses = [r for r in cir["relations"] if r["type"] == "uses_resource"]
         self.assertEqual(len(uses), 2)
-        # shared_bottleneck should be derived
         groups = [g for g in cir["coupling_groups"]
                   if g["type"] == "shared_bottleneck"]
         self.assertEqual(len(groups), 1)
         self.assertEqual(groups[0]["resource"], "R1")
-        # Guidance should be rendered
-        guidance = result["modeling_guidance"]
+        guidance = coupling["modeling_guidance"]
         self.assertEqual(len(guidance), 1)
         self.assertIn("aggregate", guidance[0]["implication"].lower())
+        # CIR-derived coupling feeds the profile derivation.
+        self.assertIsNotNone(out["result"]["profile"]["resource_coupling"])
 
     def test_with_model_cross_check(self):
         task = {
@@ -660,15 +676,16 @@ CONSTRAINTS:
  C1: sum(i, x[i]) <= limit[i]
 """,
         }
-        result = understand(task)
-        warnings = result["cir_warnings"]
-        codes = [w["code"] for w in warnings]
+        code, out = self._run_profile_cli(task)
+        self.assertEqual(code, 0)
+        codes = [w["code"] for w in out["result"]["coupling"]["cir_warnings"]]
         self.assertIn("cir_decision_not_in_model", codes)
 
     def test_bad_coupling_data(self):
-        result = understand({"task_id": "t1", "family": "f",
-                             "coupling": "not_a_dict"})
-        self.assertIsNone(result["cir"])
+        code, out = self._run_profile_cli(
+            {"task_id": "t1", "family": "f", "coupling": "not_a_dict"})
+        self.assertEqual(code, 0)
+        self.assertIsNone(out["result"]["coupling"]["cir"])
 
 
 if __name__ == "__main__":

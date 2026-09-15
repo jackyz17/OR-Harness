@@ -392,7 +392,7 @@ class TestShadowLoop(HarnessTestCase):
         snap = h.snapshot(_task(), "ep1")
         service = PredictionService(h.store, provider)
         prediction = service.predict_outcome(
-            _task(), _spec(action_type="understand"), snap)
+            _task(), _spec(action_type="model"), snap)
         self.assertEqual(prediction.status, "unsupported_action")
         self.assertEqual(provider.calls, 0)  # never invoked
 

@@ -1,6 +1,6 @@
-"""Unified action log: the seven action classes and real transitions (M1).
+"""Unified action log: the six action classes and real transitions (M1).
 
-An ActionRecord is one action of the unified contract — understand / model /
+An ActionRecord is one action of the unified contract — model /
 select_strategy / execute_strategy / verify / finish_task / induce — with a
 two-phase lifecycle:
 
@@ -45,9 +45,13 @@ from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.storage import Store, StorageError
 from or_harness.world_model.state import MAINTENANCE_TASK_ID, BeliefSnapshot
 
-#: The seven action classes of the unified contract.
-ACTION_TYPES = ("understand", "model", "select_strategy", "execute_strategy",
+#: The six action classes of the unified contract.
+ACTION_TYPES = ("model", "select_strategy", "execute_strategy",
                 "verify", "finish_task", "induce")
+
+#: Retired action types: historical records stay READABLE (a frozen log is
+#: never rewritten), but new writes are rejected.
+LEGACY_ACTION_TYPES = ("understand",)
 
 #: Lifecycle statuses. ``running`` = begun, not ended (interrupted actions
 #: stay here). ``no_valid_entry`` is induce-specific: the induction ran and
@@ -129,7 +133,7 @@ class ActionRecord:
         if not isinstance(data, dict) or not data.get("action_id"):
             raise ValueError("ActionRecord.action_id is required")
         action_type = str(data.get("action_type", ""))
-        if action_type not in ACTION_TYPES:
+        if action_type not in ACTION_TYPES + LEGACY_ACTION_TYPES:
             raise ValueError(
                 f"action_type must be one of {ACTION_TYPES}")
         status = str(data.get("status", "running"))
@@ -222,17 +226,15 @@ class ActionLog:
         if record is None:
             raise StorageError(f"unknown action_id {action_id!r}")
         if record.status != "running":
-            # Replay rule mirrors the completion rule below: a call WITHOUT
-            # a cost argument means "preserve whatever cost is recorded",
-            # so the replay fingerprint compares the EFFECTIVE cost (the
-            # stored one), not the absent argument. Otherwise a legitimate
-            # replay of an action whose cost was amended beforehand would
-            # be misjudged as a conflict.
+            # cost=None replay = PRESERVE semantics: ending without a cost
+            # re-states no new spend, so the fingerprint is computed against
+            # the already-recorded cost — an idempotent re-end after a cost
+            # amendment is NOT a false conflict.
             effective_cost = cost if cost is not None else record.cost
             fingerprint = _outcome_fingerprint(status, outcome or {},
                                                effective_cost)
             stored = _outcome_fingerprint(record.status, record.outcome,
-                                          record.cost)
+                                         record.cost)
             if fingerprint == stored:
                 return record  # idempotent replay of the same ending
             raise StorageError(
@@ -446,7 +448,6 @@ class ActionLog:
 #: post-state update rules). ``induce`` updates no single-task progress —
 #: it belongs to the maintenance scope.
 PROGRESS_UPDATES: Dict[str, str] = {
-    "understand": "understanding",
     "model": "model_artifact",
     "select_strategy": "selected_plan",
     "execute_strategy": "current_solution",

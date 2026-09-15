@@ -356,8 +356,8 @@ class TestFrozenSnapshotAndBaseline(HarnessTestCase):
 
     def test_paused_compaction_and_retention_mark_intact(self):
         """Acceptance 9: GC compaction stays deferred (touches nothing),
-        explicit retention marks are preserved, and the CIR understand flow
-        remains available."""
+        explicit retention marks are preserved, and profiling works without
+        a CIR (the consolidated analysis entry)."""
         rec = self.make_record(execution_id="ex_keep", task_id="tk")
         outcome = self.h.record(rec, retain_reason="contrast")
         stored = self.h.bank.get(outcome["execution_id"])
@@ -366,10 +366,10 @@ class TestFrozenSnapshotAndBaseline(HarnessTestCase):
         gc_result = self.h.collect_garbage(mode="compact", dry_run=False)
         self.assertTrue(gc_result.get("deferred"))
         self.assertEqual(self.h.bank.count(), n_before)
-        # CIR pre-model understanding flow is intact (no coupling supplied
-        # -> cir=None with a prompt, not an error).
-        result = self.h.understand({"task_id": "t_cir", "family": "routing"})
-        self.assertIn("cir", result)
+        # The consolidated analysis entry works without a CIR: the profile
+        # is still produced (no error, no separate understand step).
+        profile = self.h.profile({"task_id": "t_cir", "family": "routing"})
+        self.assertEqual(profile.family, "routing")
 
 
 class TestLegacyEntryCompatibility(HarnessTestCase):

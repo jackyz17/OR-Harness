@@ -142,13 +142,13 @@ class TestBeliefSnapshot(HarnessTestCase):
 
 
 class TestActionLog(HarnessTestCase):
-    """Requirements 2/3/5: seven action classes, lifecycle, idempotency."""
+    """Requirements 2/3/5: action classes, lifecycle, idempotency."""
 
     def setUp(self):
         super().setUp()
         self.log = ActionLog(self.store)
 
-    def test_all_seven_action_types_recordable(self):
+    def test_all_action_types_recordable(self):
         for action_type in ACTION_TYPES:
             record = self.log.begin_action(action_type, "t1", "ep1")
             self.assertEqual(record.status, "running")
@@ -156,8 +156,32 @@ class TestActionLog(HarnessTestCase):
                                         status="completed")
             self.assertEqual(ended.status, "completed")
 
+    def test_legacy_understand_records_readable_not_writable(self):
+        """The retired ``understand`` type: historical records stay
+        readable, new writes are rejected."""
+        import json as _json
+        from or_harness.world_model.actions import ActionRecord
+        payload = {
+            "action_id": "ac_legacy", "action_type": "understand",
+            "task_id": "t1", "episode_id": "ep1", "started_at": 1.0,
+            "status": "completed", "source": "executed",
+        }
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO action_records "
+                "(action_id, action_type, task_id, episode_id, source, "
+                " status, started_at, payload) VALUES (?,?,?,?,?,?,?,?)",
+                ("ac_legacy", "understand", "t1", "ep1", "executed",
+                 "completed", 1.0, _json.dumps(payload)))
+        record = self.log.get("ac_legacy")
+        self.assertEqual(record.action_type, "understand")
+        with self.assertRaises(ValueError):
+            self.log.begin_action("understand", "t1", "ep1")
+        with self.assertRaises(ValueError):
+            self.log.report_action("understand", "t1", "ep1")
+
     def test_running_action_visible_after_interrupt(self):
-        record = self.log.begin_action("understand", "t1", "ep1")
+        record = self.log.begin_action("model", "t1", "ep1")
         running = self.log.running(task_id="t1")
         self.assertEqual([r.action_id for r in running],
                          [record.action_id])
@@ -757,7 +781,7 @@ class TestBugfixRegressions(HarnessTestCase):
         """P2-7: the SQLite status column matches the payload — a
         completed action is found by status=completed, not by running()."""
         h = self._harness()
-        action = h.actions.begin_action("understand", "t1", "ep1")
+        action = h.actions.begin_action("model", "t1", "ep1")
         self.assertEqual(h.actions.running(task_id="t1").__len__(), 1)
         h.actions.end_action(action.action_id, status="completed")
         self.assertEqual(h.actions.running(task_id="t1"), [])
