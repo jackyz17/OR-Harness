@@ -40,16 +40,24 @@ $ orx profile --task t.json
 
 **Verification**: entity `LDA` covers the shared capacity mentioned in the task. All three modes have `uses_resource` edges to `LDA`. The `shared_bottleneck` group matches the task's coupling pattern. `issues` is empty. No `model` field exists yet — that is normal: you next compare strategies (`orx recall` / `orx plan-next`) on expected quality/cost/risk, choose one, and only then write the canonical model (with the aggregate capacity constraint `sum(x_M1, x_M2, x_M3) <= cap_LDA`) as the blueprint for solve.py.
 
-### Do not do this (CIR negative example)
+### Evidence level: wrong then right
 
-Do not submit a CIR with a `shares_resource` relation based only on variable name similarity:
+A `shares_resource` relation built on variable name similarity gets rejected:
 
 ```json
-// BAD: no semantic evidence — "x_M1" and "x_M2" both contain "M" so they "share" something
+// WRONG: "x_M1" and "x_M2" both contain "M", so they supposedly "share" something
 {"source": "x_M1", "target": "x_M2", "type": "shares_resource", "evidence": "structural"}
 ```
 
-Co-occurrence in a constraint is structural evidence only — it produces a generic `depends_on` edge, never a semantic `shares_resource`. To claim `shares_resource`, both decisions must link to the same resource entity with `uses_resource` edges, or the agent must declare it with `evidence="declared"` and validate it against the model.
+Co-occurrence in a constraint is structural evidence, and it yields a generic `depends_on` edge. The semantic claim needs both decisions linked to the same resource entity:
+
+```json
+// RIGHT: both decisions use the same resource, so the sharing is derivable
+{"source": "x_M1", "target": "LDA", "type": "uses_resource", "evidence": "semantic"}
+{"source": "x_M2", "target": "LDA", "type": "uses_resource", "evidence": "semantic"}
+```
+
+When you believe two decisions compete for a resource that no entity models yet, declare it with `evidence="declared"` and validate it against the model.
 
 ## Example 1: cold start → first induction (and the restraint that isn't a bug)
 

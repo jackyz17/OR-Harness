@@ -66,9 +66,9 @@ Recalls accumulated experience through **two independent channels**. They answer
 }
 ```
 
-Field discipline: `observed_*` (facts) and `expected_*` (knowledge commitments) are separate fields — a promise is never read as a measurement. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the exact contradiction and `unknown` means the value needed to decide is missing (**missing information is never applicability**). `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are excluded **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled.`stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
+Field discipline: `observed_*` (what happened) and `expected_*` (what the knowledge claims) are separate fields — a promise is never read as a measurement. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the contradiction and `unknown` means a value needed to decide is missing. `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are filtered out **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled. `stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
 
-**Degradation is always explicit.** When the text channel cannot run, `result.degraded = {"path": "profile_only", "reason": ...}` explains it, and the structural result is returned intact:
+**Degradation is explicit.** When the text channel cannot run, `result.degraded = {"path": "profile_only", "reason": ...}` explains it, and the structural result is returned intact:
 
 | Situation | `degraded.reason` |
 |---|---|
@@ -78,7 +78,7 @@ Field discipline: `observed_*` (facts) and `expected_*` (knowledge commitments) 
 | Index built by a different embedding model | `embedding model changed (was X, now Y)` |
 | Embedding call failed | `embedding backend error: ...` |
 
-`vector_recall.unindexed` counts current memories with no vector — legacy records whose text was never captured, or a write whose index sync was deferred — and states where to find them (`orx inspect --bank experience|strategic`, `--bank texts`, and the profile channel). They are labelled, never silently dropped.
+`vector_recall.unindexed` counts current memories with no vector — legacy records whose text was never captured, or a write whose index sync was deferred — and states where to find them (`orx inspect --bank experience|strategic`, `--bank texts`, and the profile channel).
 
 `--include-unverified` is the offline/inspection view: unpublished candidates appear in BOTH channels (the structural path returns them with a warning; the text path stops filtering by admission state).
 
@@ -163,7 +163,7 @@ Report an action **you** performed (TYPE ∈ model/select_strategy/verify/finish
 
 ## `orx budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]`
 
-The honest budget view for a task/episode: consumption over ALL real action costs — recorded AND staged-but-unrecorded executions (deduplicated by execution_id) plus own-cost actions (a macro's reference cost is never re-counted; its own additional spend is). Status: `exceeded` (a measured dimension over the limit; a declared latency budget is judged per-attempt), `ok` (every declared dimension measured and within), `unconfirmed` (known spend within limits but a declared dimension is unknown — NOT confirmed within budget), `no_budget_declared`. Executions of the task with no episode linkage (legacy records) are reported separately as `unattributed` and never charged to a fresh episode. Declarations persist in the store, so separate CLI invocations see the same budget. Hypothetical actions are excluded from every real consumption view.
+The budget view for a task/episode: consumption over ALL real action costs — recorded AND staged-but-unrecorded executions (deduplicated by execution_id) plus own-cost actions (a macro's reference cost is never re-counted; its own additional spend is). Status: `exceeded` (a measured dimension over the limit; a declared latency budget is judged per-attempt), `ok` (every declared dimension measured and within), `unconfirmed` (known spend within limits but a declared dimension is unknown — NOT confirmed within budget), `no_budget_declared`. Executions of the task with no episode linkage are reported separately as `unattributed` and never charged to a fresh episode. Declarations persist in the store, so separate CLI invocations see the same budget. Hypothetical actions are excluded from every real consumption view.
 
 `orx execute --episode ep1` and `orx induce` automatically record their actions in the unified log: execute as a macro (`pre` snapshot before execution, `post` after, `rollup=reference`, linked to the execution id); induce in the **maintenance scope** (`__maintenance__` / `maint_<ts>`) with a real pre/post knowledge state, verification results, a knowledge delta, and a business result that separates `created` (verified) from `created_unverified` (a candidate is NOT knowledge growth), `updated` / `revised` / `refused` / `unchanged`. A crashed induction still leaves a `failed` action with its pre state. Dry-run persists nothing.
 
@@ -194,9 +194,9 @@ Query predictions with `orx inspect --bank predictions [--task ID]`.
 5. suggests the FIRST step of the best path.
 
 - **Candidates**: `--candidates` (your own ActionSpec list, recommended when you have domain hypotheses), or the catalog vocabulary filtered by applicability and available solvers. Without memory, candidates carry no fabricated performance claims — consequences come from the world model.
-- **Hard bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.
+- **Bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.
 - **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
-- **Honesty**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
+- **Unknowns**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
 - **Requirements**: a configured `--world-model` provider. Without one every path is `not_configured` and no suggestion is made. Planning supports `execute_strategy` candidates; other action types are reported as not plannable.
 
 ## `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
@@ -209,7 +209,7 @@ Record YOUR explicit choice after a plan: accept the suggestion, pick another ca
 
 ## `orx gc [--mode compact|purge] [--dry-run]`
 
-Disposes only of the derived layer. `compact` is **deferred**: lossy evidence compaction is paused until the summary consumption contract exists (statistics and induction currently ignore `source="compacted"` rows, so summarizing raw facts would bias conditional statistics — e.g. 90 successes + 10 failures would read as 100% failure rate). The command still runs and honestly reports the deferral; raw facts are never touched. `purge` lists retirement candidates (suspect/dormant entries) but never retires them itself.
+Disposes only of the derived layer. `compact` is **deferred**: lossy evidence compaction is paused until the summary consumption contract exists (statistics and induction currently ignore `source="compacted"` rows, so summarizing raw facts would bias conditional statistics — e.g. 90 successes + 10 failures would read as 100% failure rate). The command still runs and reports the deferral; raw facts are untouched. `purge` lists retirement candidates (suspect/dormant entries) without retiring them.
 
 ## `orx retire --entry ID --reason "..."`
 
@@ -225,7 +225,7 @@ Explicit retrieval-index maintenance — the only command that embeds in bulk an
 
 Not a routine path: `record` refreshes the execution item, `induce` refreshes the knowledge items, and `retire` drops the retired vector.
 
-`--dry-run` counts what would be indexed and **writes nothing at all** — no embedding call, no index file, not even the index directory. Content that cannot be honestly indexed is reported as `unindexable` (a record whose text was never captured is never fabricatingly indexed). The index is derived data: rebuilding it never changes a fact or an entry.
+`--dry-run` counts what would be indexed and **writes nothing** — no embedding call, no index file, not even the index directory. Content that cannot be indexed is reported as `unindexable` (a record whose text was never captured is not indexed). The index is derived data: rebuilding it never changes a fact or an entry.
 
 Result: `{dry_run, layers: {"execution_evidence"|"strategic_knowledge": {items, model_id, dimension, unindexable}}, backend}`. Without a configured backend and without `--dry-run`, the command fails with exit code 2 and an explicit message rather than silently doing nothing.
 

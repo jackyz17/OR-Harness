@@ -168,7 +168,7 @@ Three outcomes, deliberately distinct:
   execution itself failed. **A crash is not a refutation.**;
 - `refuted` — the check ran on real evidence and did not hold.
 
-Two things that are NOT verification, however convenient they look:
+Two things that are NOT verification:
 
 - a program's own printed verdict (`print('{"principle_failed": false}')`
   proves the program ran, nothing about the claim);
@@ -177,10 +177,7 @@ Two things that are NOT verification, however convenient they look:
   `insufficient_evidence` — use `semantic_probe` when the framework should
   evaluate the condition itself).
 
-`surviving forward calibration` cannot substitute either: five frozen hits
-raise an entry's calibration confidence, but a `candidate` reaches
-`validated` **only** if its claim was verified. (A `refuted` claim can never
-be `validated`; the bank refuses the write.)
+Forward calibration cannot substitute either: five frozen hits raise an entry's calibration confidence, but a `candidate` reaches `validated` **only** if its claim was verified. (A `refuted` claim can never be `validated`; the bank refuses the write.)
 
 **Unverified candidates are recorded, not published.** Recall does not present
 them as strategic knowledge (it falls back to `conditional_stats`), and they
@@ -204,7 +201,7 @@ The report of what changed comes back as `result.revisions` (`forward` counters,
 
 Prediction intervals are honest to sample size: with n=2 the floor width is 0.50 — you may not pretend to more certainty than the data supports.
 
-## Ability boundaries (be honest about these)
+## Ability boundaries
 
 - **C1/C2/C3/C6** read the target's structural cell only — never the whole
   family, so a different region's behaviour cannot drive or dilute a contrast.
@@ -221,7 +218,7 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 
 ## Applicability notes
 
-`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and **never enter scoring** — they are your phrasing for your own future reading, not a verified fact. The framework deliberately does not pretend to validate a sentence.
+`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact.
 
 ## Cold archive (anti-resurrection)
 

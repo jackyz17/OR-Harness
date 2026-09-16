@@ -96,7 +96,7 @@ The task-text versions captured on the write paths (`task_texts`, keyed by `(tas
 
 The strategy catalog (S01–S10) is a **cold-start vocabulary**: it carries structural knowledge — applicability conditions (which coupling profiles a strategy suits), modeling actions, fallback chains, and solver-family hints — but **no prior quality/cost/risk scores**.
 
-Without accumulated experience, `recall` honestly returns `evidence="no_memory"` with `score=-inf` and `confidence=0`. The system does not fabricate priors to fill the gap. This is deliberate: fabricated priors would prejudice the learning loop toward whatever numbers were guessed, rather than letting evidence accumulate from real executions. The catalog vocabulary is still useful at cold start — applicability filtering narrows the candidate menu — but the selection is your call, not a score ranking.
+Without accumulated experience, `recall` returns `evidence="no_memory"` with `score=-inf` and `confidence=0` rather than fabricated priors. Fabricated priors would prejudice the learning loop toward whatever numbers were guessed, instead of letting evidence accumulate from real executions. The catalog vocabulary is still useful at cold start — applicability filtering narrows the candidate menu — but the selection is your call, not a score ranking.
 
 ## CostVector: five dimensions, never folded at rest
 
@@ -141,7 +141,7 @@ why entries are born `candidate`, why intervals are floored by sample size
 (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions
 with ≥70% hit rate ON TOP of the passed admission check.
 
-The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and never enter scoring — the framework cannot verify a sentence, so it does not pretend to.
+The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and sit outside scoring — a sentence cannot be verified, so it is not scored.
 
 ## World-model outcome predictions: shadow hypotheses, never decisions
 
