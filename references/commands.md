@@ -99,6 +99,7 @@ The honest budget view for a task/episode: consumption over ALL real action cost
 
 - **Configuration boundary**: `--world-model BASE_URL::MODEL` (OpenAI-compatible endpoint; API key from `$OR_WM_API_KEY`). Credentials never persist. Without the flag, the command returns an explicit `not_configured` error — and NO other command ever invokes a model.
 - **Shadow discipline**: the prediction changes NOTHING. `recall`, `predict`, `execute`, `record` behave identically whether or not you predict. You remain the decision-maker.
+- **Calibration duty**: with a world model configured, one predict–bind pair per executed action is the required loop — executed prediction–comparison pairs are the only source of calibration evidence, and skipping them is legitimate only when no provider is configured (`not_configured`). After a `plan-next` selection, bind the selected path's prediction instead of predicting again.
 - **Call cost**: the model call's own spend (tokens/latency from provider usage) is recorded on the prediction and, with `--parent-action`, charged to that action's own cost — separate from the PREDICTED cost of the target action.
 - **Timing**: predict BEFORE executing. The input snapshot is frozen at prediction time; later bank changes never rewrite it.
 
