@@ -383,6 +383,7 @@ def _target_index(targets: Sequence[KnowledgeTarget]
     return entries, strategies
 def validate_knowledge_changes(payload: Any,
                                targets: Optional[Sequence[KnowledgeTarget]] = None,
+                               action_strategy_id: Optional[str] = None,
                                ) -> Tuple[List[Dict[str, Any]], List[str]]:
     """Structural + tiered validation of the model's ``knowledge_changes``.
 
@@ -392,6 +393,25 @@ def validate_knowledge_changes(payload: Any,
     is well-formed but not backed by this decision's proposal set is NOT a
     malformed payload — it is dropped and keeps a ``rejected`` note so a
     model cannot invent knowledge entries out of thin air.
+
+    The two target kinds are checked DIFFERENTLY on purpose, because they
+    make different claims:
+
+    - **existing_entry** asserts something about a claim that already
+      exists, so its ``entry_id`` must be one this decision actually
+      surfaced. A model may not invent knowledge.
+    - **hypothesis** asserts that a claim is worth TESTING. It is not a
+      statement about existing knowledge, so requiring it to be in the
+      proposal set would confine predictions to whatever the framework's
+      heuristics happened to propose — and at cold start, when no structural
+      target exists at all, that set is empty and every sound hypothesis
+      would be discarded. It must instead name the strategy actually under
+      test (``action_strategy_id``), and the structural layer still demands
+      an expected observation and a check condition.
+
+    Allowing a hypothesis is NOT allowing knowledge to be published: the
+    prediction never enters the bank, and admission verification still
+    gates everything downstream.
 
     ``targets=None`` performs STRUCTURAL validation only. That split is
     deliberate: the request contract can check the shape of
@@ -488,9 +508,10 @@ def validate_knowledge_changes(payload: Any,
                             "strings")
             continue
         # Tiered target check (only when a proposal set was supplied). A
-        # model may not invent knowledge: an existing_entry target must name
-        # an entry this decision actually surfaced, and a hypothesis must
-        # name the strategy under test.
+        # model may not invent EXISTING knowledge: an existing_entry target
+        # must name an entry this decision actually surfaced. A hypothesis
+        # is held to the different standard its claim deserves — see the
+        # docstring — namely that it names the strategy under test.
         if not tiered:
             accepted.append(dict(item))
             continue
@@ -503,7 +524,14 @@ def validate_knowledge_changes(payload: Any,
                 accepted.append(item)
                 continue
         else:
-            if target.get("strategy_id") not in strategy_ids:
+            under_test = strategy_ids
+            if action_strategy_id:
+                # The strategy this action actually runs is always a
+                # legitimate subject, whether or not a heuristic proposed
+                # it — otherwise a cold start would discard every sound
+                # hypothesis about the action's own strategy.
+                under_test = set(under_test) | {action_strategy_id}
+            if target.get("strategy_id") not in under_test:
                 item = dict(item)
                 item["rejected"] = ("target_unresolved: strategy is not "
                                     "under test in this decision")
@@ -678,6 +706,18 @@ def knowledge_value(targets: Sequence[KnowledgeTarget],
                                       "costed scope")
             detail["targets"].append(record)
             continue
+        # The extra spend the predicted gain REQUIRES travels with the
+        # value: a value whose enabling cost is never charged would let a
+        # prediction buy influence it has not paid for. The caller charges
+        # it (see planner.evaluate_path); this module only reports it.
+        extra = item.get("expected_extra_cost")
+        if isinstance(extra, dict) and extra:
+            record["expected_extra_cost"] = {
+                str(d): float(v) for d, v in extra.items()}
+            detail.setdefault("expected_extra_cost", {})
+            for dim, value in record["expected_extra_cost"].items():
+                detail["expected_extra_cost"][dim] = (
+                    detail["expected_extra_cost"].get(dim, 0.0) + value)
         contribution = _clamp(need * _clamp(float(effect))
                               * realizability)
         record["contribution"] = round(contribution, 6)

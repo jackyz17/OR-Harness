@@ -666,12 +666,28 @@ class ORHarness:
                 continue
             if prediction.status != "valid":
                 continue
+            # A binding already reported as mismatched means the executed
+            # strategy/solver differs from the predicted candidate: this
+            # execution is evidence about a DIFFERENT claim, so no H verdict
+            # may be drawn from it. (The X/B comparison already records the
+            # mismatch and skips scoring; the knowledge channel must agree.)
+            if prediction.binding_mismatch:
+                continue
+            # The judgement is about THIS execution, so the prediction's
+            # action must be the one that produced it.
+            if action.linked_execution_id != record.execution_id:
+                continue
             targets = self._prediction_targets(prediction)
             for index, stage in unresolved_stages(prediction):
                 if stage != STAGE_EXECUTION:
                     continue
                 item = prediction.predicted["knowledge_changes"][index]
                 target = self._match_target(targets, item)
+                # Let the verdict know which task the prediction was made
+                # for, so an `independent_replication` precondition can be
+                # judged (it needs evidence from a DIFFERENT task).
+                item = dict(item)
+                item["_predicted_for_task"] = prediction.action_spec.task_id
                 status, detail = evaluate_execution(item, target, record)
                 detail["targets_available"] = bool(targets)
                 entry = self._record_knowledge_verdict(
@@ -750,15 +766,20 @@ class ORHarness:
         """Judge the ``after_consolidation`` knowledge predictions an
         induction just made possible (M6, slow channel).
 
-        The opportunity window comes from the induction's OWN recorded
-        transition: a prediction is eligible only if the induction actually
-        touched the entry it named, or formed an entry for the strategy it
-        named. A prediction about some other cell had no chance to resolve
-        and correctly stays ``pending``.
+        Eligibility has THREE requirements, and dropping any one of them
+        lets an untouched prediction be scored as a hit:
 
-        This is the loop the first M6 plan missed: the maintenance
-        assessment's own binding could not evaluate what an ORDINARY action
-        predicted about the knowledge it fed.
+        1. **the prediction was bound to a real action** — an unexecuted
+           prediction describes something that never happened, so no
+           induction can be its outcome;
+        2. **that action's execution is inside the induction's own evidence
+           scope** — the induction must have actually consolidated the
+           evidence the prediction was about, not merely run nearby;
+        3. **the induction touched the entry or strategy the prediction
+           named** — the opportunity window must really be open.
+
+        A prediction failing any of these has not had its chance and stays
+        ``pending``; it is never counted as a miss, and never as a hit.
         """
         from or_harness.world_model.knowledge_track import (
             STAGE_CONSOLIDATION,
@@ -769,8 +790,12 @@ class ORHarness:
         entry_changes = delta["entry_changes"]
         created = delta["created"]
         knowledge_after = delta["knowledge_after"]
-        if not entry_changes and not created:
-            return {}
+        # NOTE: an induction that changed nothing is NOT a no-op for
+        # evaluation purposes. If it genuinely ran over a prediction's own
+        # evidence and its own strategy, the opportunity HAS arrived and the
+        # absence of a change is a real (negative) outcome. Returning early
+        # here would leave such predictions unevaluated forever and bias the
+        # reliability statistics toward the cases that succeeded.
         created_strategies: List[str] = []
         # ``knowledge_after`` travels in two shapes: the layered view
         # (verified/unverified/legacy_unknown, also used by the induction
@@ -785,11 +810,46 @@ class ORHarness:
                 created_strategies.append(
                     str(entry.get("strategy_id") or ""))
         touched = {c.get("entry_id") for c in entry_changes}
+        # The induction's evidence scope. Two shapes, because the caller may
+        # or may not name one:
+        #
+        # - an explicit ``execution_ids`` (the bundle path) is a STRICT
+        #   scope: only those executions took part.
+        # - without one, ``induce`` consolidates whatever evidence the
+        #   covered cells hold, so the scope is every real execution of the
+        #   strategies this induction acted on. Demanding an explicit scope
+        #   there would empty the whole channel on the normal CLI path.
+        #
+        # Either way the scope is about REAL, RECORDED evidence: an
+        # execution that was never banked cannot be inside it.
+        explicit_scope = {str(e) for e in (execution_ids or ())}
+        banked = {r.execution_id for r in self.bank.all()}
         out: Dict[str, Any] = {}
         for prediction in self.predictions_query():
             if prediction.status != "valid":
                 continue
             if prediction.action_spec.action_type != "execute_strategy":
+                continue
+            # (1) A prediction that was never bound to a real action
+            #     describes an action that never ran: no induction can be
+            #     its outcome, so it is not evaluable at all. Left
+            #     untouched (and therefore still pending), never scored as
+            #     a hit.
+            action = (self.actions.get(prediction.bound_action_id)
+                      if prediction.bound_action_id else None)
+            if action is None:
+                continue
+            # A binding already reported as mismatched means the executed
+            # action differs from the predicted candidate: whatever
+            # evidence exists is evidence about a DIFFERENT claim.
+            if prediction.binding_mismatch:
+                continue
+            # (2) The execution must be real, recorded evidence, and inside
+            #     the induction's scope when one was named.
+            execution_id = action.linked_execution_id
+            if not execution_id or execution_id not in banked:
+                continue
+            if explicit_scope and execution_id not in explicit_scope:
                 continue
             targets = self._prediction_targets(prediction)
             for index, stage in unresolved_stages(prediction):
@@ -797,31 +857,38 @@ class ORHarness:
                     continue
                 item = prediction.predicted["knowledge_changes"][index]
                 target = self._match_target(targets, item)
-                # Opportunity window: the induction must have touched what
-                # the prediction named, or covered the strategy it named.
-                # Otherwise the prediction had no chance to resolve and
-                # stays pending — never "missed".
+                # (3) Opportunity window: the induction must have touched
+                #     what the prediction named, or covered the strategy it
+                #     named. Otherwise it had no chance to resolve and
+                #     stays pending — never "missed".
                 if target is None:
                     continue
-                in_window = (
+                touched_now = (
                     (target.entry_id is not None
                      and target.entry_id in touched)
                     or (target.entry_id is not None
                         and target.entry_id in set(created))
-                    or (target.strategy_id in created_strategies)
-                    # A scoped ``induce(strategy_id=...)`` only touched one
-                    # strategy, so a prediction about another cell had no
-                    # chance to resolve.
-                    or (strategy_id is not None
-                        and target.strategy_id == strategy_id
-                        and bool(entry_changes)))
-                if not in_window:
+                    or (target.strategy_id in created_strategies))
+                # A scoped induction that ran for THIS prediction's own
+                # strategy over its own recorded evidence is an opportunity
+                # even when it changed nothing: the empty transition is
+                # precisely what makes the prediction `missed` rather than
+                # permanently pending. Returning early on "no change" would
+                # leave such predictions unevaluated forever and bias the
+                # reliability statistics toward the successes.
+                scoped_to_this = (strategy_id is not None
+                                  and target.strategy_id == strategy_id)
+                if not (touched_now or scoped_to_this):
                     continue
                 status, detail = evaluate_consolidation(
                     item, target, entry_changes, created, created_strategies)
-                if execution_ids:
-                    detail["consolidated_executions"] = sorted(
-                        set(execution_ids))
+                detail["consolidated_execution"] = execution_id
+                detail["scope_basis"] = ("explicit execution_ids"
+                                         if explicit_scope
+                                         else "cell evidence of the "
+                                              "covered strategy")
+                if not entry_changes and not created:
+                    detail["induction_changed_nothing"] = True
                 entry = self._record_knowledge_verdict(
                     prediction, index, stage, status, detail)
                 if entry is not None:
@@ -1538,6 +1605,11 @@ class ORHarness:
             target_strategy_id=b.strategy_id,
             target_family=b.family,
             workload_forecast=copy.deepcopy(workload_forecast),
+            # The evidence scope travels with the assessment so a later
+            # ``accept_induction`` can restrict the induction to exactly the
+            # bundle's own executions (no silent widening) and so the
+            # delayed binding can verify the scope it judges against.
+            execution_ids=list(b.execution_ids),
         )
         if self.induction_assessment_mode == "disabled":
             assessment.status = "disabled"
@@ -1551,6 +1623,7 @@ class ORHarness:
         decision = self.actions.begin_action(
             "induce", MAINTENANCE_TASK_ID, episode_id,
             params={"kind": "induction_assessment",
+                    "assessment_id": assessment.assessment_id,
                     "bundle_id": b.bundle_id,
                     "target_strategy_id": b.strategy_id,
                     "target_family": b.family,
@@ -1731,6 +1804,13 @@ class ORHarness:
                 "(only 'induce_new' and 'revise' can be accepted)")
 
         # Record explicit adoption action.
+        #
+        # The action is reported BEFORE the induction (the adoption decision
+        # is what triggers it), then AMENDED with the induction's own result.
+        # Without the amendment, ``bind_induction_outcome`` would have to
+        # guess which induction followed this decision; carrying the result
+        # and its evidence scope on the record makes the binding verifiable
+        # rather than inferred.
         decision_id = assessment_dict.get("decision_action_id")
         adoption = self.actions.report_action(
             "induce", MAINTENANCE_TASK_ID,
@@ -1738,7 +1818,9 @@ class ORHarness:
             params={"assessment_id": assessment_dict.get("assessment_id"),
                     "bundle_id": bundle_id,
                     "action": "accepted",
-                    "recommendation": recommendation},
+                    "recommendation": recommendation,
+                    "execution_ids": list(assessment_dict.get(
+                        "execution_ids") or [])},
             outcome={"accepted": True,
                      "assessment_id": assessment_dict.get("assessment_id")},
             status="completed")
@@ -1755,6 +1837,22 @@ class ORHarness:
             notes=notes,
             force=force,
             execution_ids=rec_ids)
+        # Amend the adoption record with the induction that actually ran:
+        # its transition, the evidence scope it consolidated, and the
+        # assessment it answers. This is the reference the delayed binding
+        # reads.
+        adoption.outcome = {
+            "accepted": True,
+            "assessment_id": assessment_dict.get("assessment_id"),
+            "induction_result": {
+                "assessment_id": assessment_dict.get("assessment_id"),
+                "business_result": induce_res.get("business_result"),
+                "knowledge_delta": induce_res.get("knowledge_delta"),
+                "knowledge_after": induce_res.get("knowledge_after"),
+                "execution_ids": list(rec_ids or []),
+            },
+        }
+        self.actions._update(adoption)
         return {
             "adoption_action_id": adoption.action_id,
             "assessment_id": assessment_dict.get("assessment_id"),
@@ -1784,19 +1882,33 @@ class ORHarness:
         assessment_action = None
         adoption_action = None
         for action in self.actions.query():
+            # The assessment ID lives in the decision action's OUTCOME (it is
+            # a result of running the assessment), while an adoption action
+            # repeats it in its params. Reading both is what makes the
+            # documented assess -> accept -> bind chain work.
             params = action.params or {}
-            if params.get("assessment_id") != assessment_id:
+            outcome = action.outcome or {}
+            if (params.get("assessment_id") != assessment_id
+                    and outcome.get("assessment_id") != assessment_id):
                 continue
-            if params.get("action") == "accepted" or params.get("action") \
-                    == "rejected":
+            if params.get("action") in ("accepted", "rejected"):
                 adoption_action = action
-            elif action.action_type == "induce":
+            elif outcome.get("kind") == "induction_assessment":
                 assessment_action = action
         if assessment_action is None:
             raise StorageError(
                 f"unknown assessment_id {assessment_id!r}: no assessment "
                 "action references it")
         outcome = assessment_action.outcome or {}
+        # The adoption action must BELONG to this assessment, not merely
+        # mention the id: an adoption carrying another assessment's result
+        # would bind this one to the wrong induction.
+        if adoption_action is not None:
+            linked = ((adoption_action.outcome or {})
+                      .get("induction_result") or {})
+            if linked and linked.get("assessment_id") not in (
+                    None, assessment_id):
+                adoption_action = None
         prediction_id = outcome.get("prediction_id")
         if not prediction_id:
             return {"assessment_id": assessment_id, "compared": False,

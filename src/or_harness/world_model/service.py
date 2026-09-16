@@ -230,13 +230,20 @@ class PredictionService:
             from or_harness.world_model.knowledge import (
                 validate_knowledge_changes,
             )
+            # The strategy this action actually runs is passed through, so
+            # a hypothesis about the action's own subject stays admissible
+            # even when the framework's heuristics proposed no target (the
+            # cold-start case). Existing-entry claims remain strictly
+            # checked against what was really surfaced.
             accepted, _ = validate_knowledge_changes(
-                predicted["knowledge_changes"], knowledge_targets)
+                predicted["knowledge_changes"], knowledge_targets,
+                action_strategy_id=action_spec.strategy_id)
             predicted["knowledge_changes"] = accepted
-            if knowledge_targets is None:
+            if not knowledge_targets:
                 predicted["knowledge_basis"] = (
                     "no structural targets were proposed for this "
-                    "decision; knowledge targets cannot be resolved")
+                    "decision; only hypotheses about this action's own "
+                    "strategy could be resolved")
         if isinstance(payload.get("cost"), dict):
             dims = {d: float(v) for d, v in payload["cost"].items()
                     if d in COST_DIMENSIONS and v is not None}
@@ -473,9 +480,15 @@ class PredictionService:
                 f"prediction {prediction_id!r} has status "
                 f"{prediction.status!r}: only a valid prediction is "
                 "comparable")
-        if prediction.feedback is not None:
-            # Idempotent replay: the stored feedback stands; the model is
-            # never re-invoked and nothing is re-counted.
+        if prediction.feedback is not None \
+                and "compared" in prediction.feedback:
+            # Idempotent replay of the X/B comparison ONLY: the stored
+            # verdict stands, the model is never re-invoked and nothing is
+            # re-counted. The guard is deliberately narrower than "feedback
+            # is non-empty" — the knowledge channel writes into its own
+            # ``knowledge`` partition of the same block, and a present
+            # knowledge verdict must not block the X/B calibration it was
+            # never part of.
             return prediction
         if prediction.binding_mismatch:
             # A mismatched binding is recorded as such — its comparable

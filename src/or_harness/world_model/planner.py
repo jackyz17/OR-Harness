@@ -463,6 +463,30 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
         k_detail = dict(raw_detail or {})
     path.knowledge_detail = k_detail
     path.delta_knowledge = round(delta * (k_value or 0.0), 6)
+    # The ENABLING spend of a predicted knowledge gain is a real cost and is
+    # charged like any other: a path may not collect a knowledge benefit
+    # while ignoring the contrast run / consolidation / verification it
+    # depends on. Charged only when the gain was actually granted, and only
+    # for the dimensions the prediction declared (an undeclared dimension
+    # stays unknown — and a gain depending on an uncosted condition was
+    # already refused by knowledge.precondition_realizability, so it never
+    # reaches this line).
+    k_extra_cost = 0.0
+    extra_dims = (k_detail.get("expected_extra_cost") or {}) if k_value \
+        else {}
+    if extra_dims:
+        weights = limits.cost_weights or {}
+        for dim, value in extra_dims.items():
+            k_extra_cost += (weights.get(dim, 0.0)
+                             * float(value)
+                             / max(norms.get(dim, 1.0), 1.0))
+        path.knowledge_detail["extra_cost_charged"] = {
+            "cost": {d: round(float(v), 6) for d, v in extra_dims.items()},
+            "normalized": round(k_extra_cost, 6),
+            "note": ("the spend the predicted knowledge gain requires, "
+                     "charged into the utility so a gain cannot be bought "
+                     "without paying for its conditions"),
+        }
     if delta and k_value is None:
         path.incomparable["knowledge"] = (
             "no justified knowledge value on this path; the knowledge term "
@@ -472,7 +496,8 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
         alpha * (q if q is not None else 0.0)
         - beta * c_path
         - gamma * risk_effective
-        + path.delta_knowledge, 6)
+        + path.delta_knowledge
+        - k_extra_cost, 6)
     if path.incomparable:
         path.notes.append(
             "incomparable fields are charged conservatively (unknown "

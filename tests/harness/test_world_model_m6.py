@@ -82,13 +82,26 @@ class KnowledgeProvider(WorldModelProvider):
 
     def __init__(self, *, quality=0.7, change="candidate_forms",
                  horizon="after_consolidation", uncertainty=0.0,
-                 self_value=1.0, extra_cost=None):
+                 self_value=1.0, extra_cost=None,
+                 propose_at_cold_start=False,
+                 observation=None):
         self.quality = quality
         self.change = change
         self.horizon = horizon
         self.uncertainty = uncertainty
         self.self_value = self_value
         self.extra_cost = extra_cost
+        # Whether to propose a hypothesis about the action's own strategy
+        # when the framework offered no structural targets. Off by default
+        # here so the "no targets -> no knowledge_changes" assertions stay
+        # meaningful; the cold-start path has its own tests.
+        self.propose_at_cold_start = propose_at_cold_start
+        # What the prediction expects to SEE. Must name fields that really
+        # exist on an execution record (the prompt says which): an
+        # expectation the framework cannot check cannot confirm a claim,
+        # so the verdict would stay pending forever.
+        self.observation = (observation if observation is not None
+                            else {"feasible": True})
         self.requests = []
 
     def predict(self, request):
@@ -108,7 +121,7 @@ class KnowledgeProvider(WorldModelProvider):
                 "horizon": self.horizon,
                 "uncertainty": self.uncertainty,
                 "expected_knowledge_value": self.self_value,
-                "expected_observation": {"new_entry": True},
+                "expected_observation": self.observation,
                 "check_condition": "an entry exists afterwards",
             }
             if self.extra_cost is not None:
@@ -542,6 +555,10 @@ class TestDelayedFeedbackLoop(Base):
         h.world_model = cons_provider
         h.predictions.provider = cons_provider
         cons_pred = h.predict_outcome(TASK, spec, "ep2")
+        cons_record = h.execute(TASK, "S01", str(self.script), str(self.work),
+                                solver="highs", episode_id="ep2")
+        h.bind_outcome(cons_pred.prediction_id, cons_record.action_id)
+        h.record(cons_record, override={"llm_tokens": 1500.0})
         self.seed(h, "t2")
         induced = h.induce(strategy_id="S01", all_=True)
         self.assertIn("knowledge_feedback", induced,
@@ -569,24 +586,65 @@ class TestDelayedFeedbackLoop(Base):
         self.assertEqual(
             len(knowledge_feedback(prediction)["0"]), 2)
 
-    def test_pending_can_still_resolve(self):
-        """A22: pending is not terminal — a later stage can resolve it."""
-        h = self.make_harness()
+    def test_xb_comparison_is_not_blocked_by_a_knowledge_verdict(self):
+        """A2a: the knowledge channel writes into its own partition, so its
+        verdict must not suppress the X/B calibration of the same
+        prediction."""
+        provider = KnowledgeProvider(change="adds_evidence",
+                                     horizon="after_execution")
+        h = self.make_harness(provider)
+        self.seed(h, "t1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        record_stage_verdict(prediction, 0, STAGE_CONSOLIDATION, "pending",
+        record = h.execute(TASK, "S01", str(self.script), str(self.work),
+                           solver="highs", episode_id="ep1")
+        h.bind_outcome(prediction.prediction_id, record.action_id)
+        # record() runs the H evaluation first, writing the knowledge block.
+        h.record(record, override={"llm_tokens": 1500.0})
+        after = h.get_prediction(prediction.prediction_id)
+        self.assertIn("knowledge", after.feedback or {})
+        # The X/B comparison must still happen.
+        compared = h.compare_prediction(prediction.prediction_id)
+        self.assertTrue((compared.feedback or {}).get("compared"),
+                        "a knowledge verdict must not brick the X/B "
+                        "comparison")
+        # ... and re-running it stays idempotent.
+        again = h.compare_prediction(prediction.prediction_id)
+        self.assertEqual((again.feedback or {}).get("execution_id"),
+                         (compared.feedback or {}).get("execution_id"))
+
+    def test_pending_can_still_resolve(self):
+        """A22: pending is not terminal — it must be promotable once the
+        opportunity arrives. A terminal verdict, by contrast, is final."""
+        h = self.make_harness(KnowledgeProvider(
+            change="adds_evidence", horizon="after_execution"))
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        self.seed(h)
+        prediction = h.predict_outcome(TASK, spec, "ep1")
+        # The prediction declares which stage can resolve here; a stage it
+        # never declared is not on its work list at all.
+        stage = (prediction.predicted["knowledge_changes"][0]["horizon"])
+        self.assertEqual(stage, STAGE_EXECUTION)
+        record_stage_verdict(prediction, 0, stage, "pending",
                              {"reason": "not yet"})
-        self.assertEqual(stage_verdict(prediction, 0,
-                                       STAGE_CONSOLIDATION)["status"],
+        self.assertEqual(stage_verdict(prediction, 0, stage)["status"],
                          "pending")
-        changed = record_stage_verdict(prediction, 0, STAGE_CONSOLIDATION,
-                                       "fulfilled", {"reason": "later"})
-        self.assertFalse(changed,
-                         "a stage verdict is written once; the same stage is "
-                         "never rewritten")
-        # The OTHER stage is still free.
-        self.assertTrue(record_stage_verdict(
-            prediction, 0, STAGE_EXECUTION, "missed", {}))
+        # A pending item is still the framework's work list.
+        self.assertIn((0, stage), unresolved_stages(prediction))
+        changed = record_stage_verdict(prediction, 0, stage, "fulfilled",
+                                       {"reason": "later"})
+        self.assertTrue(changed,
+                        "a pending verdict records that the opportunity has "
+                        "not arrived; it must be promotable")
+        promoted = stage_verdict(prediction, 0, stage)
+        self.assertEqual(promoted["status"], "fulfilled")
+        self.assertEqual(promoted.get("promoted_from"), "pending")
+        # ... and once terminal it is final.
+        self.assertFalse(record_stage_verdict(prediction, 0, stage,
+                                              "missed", {}))
+        self.assertEqual(stage_verdict(prediction, 0, stage)["status"],
+                         "fulfilled")
+        self.assertNotIn((0, stage), unresolved_stages(prediction))
 
     def test_repeated_evaluation_is_idempotent(self):
         """A12 (repeat feedback): re-running the same stage changes nothing."""

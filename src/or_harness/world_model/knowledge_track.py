@@ -54,9 +54,16 @@ import copy
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from or_harness.world_model.knowledge import MEASUREMENT_PREFIX
+
 #: Knowledge-evaluation states (see module docstring).
 KNOWLEDGE_STATUSES = ("pending", "fulfilled", "contradicted", "missed",
                       "inconclusive")
+
+#: Terminal states: an evaluation that has actually decided something.
+#: ``pending`` is deliberately NOT one of them — it records that the
+#: opportunity has not arrived, so it must remain promotable.
+TERMINAL_STATUSES = ("fulfilled", "contradicted", "missed", "inconclusive")
 
 #: Evaluation stages.
 STAGE_EXECUTION = "after_execution"
@@ -103,11 +110,18 @@ def record_stage_verdict(prediction, change_index: int, stage: str,
                          status: str, detail: Dict[str, Any]) -> bool:
     """Write one stage verdict; return True when it changed something.
 
-    Idempotent per ``(change_index, stage)``: an existing verdict for the
-    SAME stage is never overwritten (evidence does not get rewritten by a
-    later re-run), while another stage of the same change remains writable.
-    This is what lets the immediate evaluation and the delayed one coexist
-    on one prediction."""
+    Idempotency is per ``(change_index, stage)`` with one deliberate
+    exception: a ``pending`` verdict may be PROMOTED to a terminal one. A
+    pending verdict says "the opportunity has not arrived", which is a
+    statement about the current moment, not a settled judgement — refusing
+    to promote it would freeze the item at pending forever and silently
+    drop it from :func:`unresolved_stages`, so the prediction would never
+    be evaluated at all.
+
+    A TERMINAL verdict is final: a settled judgement is never rewritten by
+    a later evaluation pass, so evidence cannot be retro-edited. Another
+    stage of the same change stays independently writable throughout.
+    """
     if status not in KNOWLEDGE_STATUSES:
         raise ValueError(f"status must be one of {KNOWLEDGE_STATUSES}")
     if stage not in STAGES:
@@ -118,20 +132,32 @@ def record_stage_verdict(prediction, change_index: int, stage: str,
         raise ValueError("prediction.feedback must be a JSON object")
     partition = prediction.feedback.setdefault(KNOWLEDGE_FEEDBACK_KEY, {})
     slot = partition.setdefault(str(change_index), {})
-    if stage in slot:
-        return False
+    previous = slot.get(stage)
+    if isinstance(previous, dict):
+        previous_status = previous.get("status")
+        if previous_status in TERMINAL_STATUSES:
+            return False
+        if status == "pending":
+            # Re-confirming a pending verdict changes nothing observable.
+            return False
     slot[stage] = {
         "status": status,
         "stage": stage,
         "evaluated_at": time.time(),
+        **({"promoted_from": previous.get("status")}
+           if isinstance(previous, dict) else {}),
         **copy.deepcopy(detail),
     }
     return True
 
 
 def unresolved_stages(prediction) -> List[Tuple[int, str]]:
-    """Every ``(change_index, stage)`` of this prediction still lacking a
-    verdict — the work list for the next evaluation pass."""
+    """Every ``(change_index, stage)`` of this prediction still awaiting a
+    TERMINAL verdict — the work list for the next evaluation pass.
+
+    A ``pending`` verdict is still unresolved: the opportunity may arrive
+    later, so the item must stay eligible rather than be dropped.
+    """
     partition = knowledge_feedback(prediction)
     out: List[Tuple[int, str]] = []
     for item_index, item in enumerate(
@@ -142,7 +168,8 @@ def unresolved_stages(prediction) -> List[Tuple[int, str]]:
         stage = item.get("horizon")
         if stage not in STAGES:
             continue
-        if stage not in (partition.get(str(item_index)) or {}):
+        recorded = (partition.get(str(item_index)) or {}).get(stage) or {}
+        if recorded.get("status") not in TERMINAL_STATUSES:
             out.append((item_index, stage))
     return out
 
@@ -176,16 +203,146 @@ def _claim_interval(item: Dict[str, Any],
     return None
 
 
+def _observation_satisfied(observation: Any,
+                           record: Any) -> Optional[bool]:
+    """Whether the execution's REAL observations satisfy the expected
+    observation, or None when the expectation cannot be checked.
+
+    The check is deliberately literal: every ``key: value`` the prediction
+    named must be present on the execution with the same value. A key the
+    framework cannot read produces ``None`` (uncheckable) rather than a
+    silent pass — believing an unchecked expectation would let a prediction
+    be confirmed by an execution that says nothing about it.
+
+    ``check_condition`` is free text a model wrote; the framework cannot
+    evaluate prose, and this function does NOT pretend to. What it CAN do
+    is refuse to call an unverified expectation fulfilled.
+    """
+    if not isinstance(observation, dict) or not observation:
+        return None
+    observed: Dict[str, Any] = {}
+    quality = getattr(record, "quality", None)
+    if isinstance(quality, dict):
+        observed.update(quality)
+    features = getattr(record, "execution_features", None)
+    if isinstance(features, dict):
+        observed.update({k: v for k, v in features.items()
+                         if k not in observed})
+    checkable = 0
+    for key, expected in observation.items():
+        if key not in observed:
+            continue
+        checkable += 1
+        actual = observed[key]
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            if bool(actual) != bool(expected):
+                return False
+        elif actual != expected:
+            return False
+    if checkable == 0:
+        return None
+    return True
+
+
+def _preconditions_unmet(item: Dict[str, Any],
+                         record: Any,
+                         observation_ok: Optional[bool]
+                         ) -> List[str]:
+    """The standing conditions this execution demonstrably did NOT satisfy.
+
+    A precondition names work that must happen for the predicted change to
+    be observable. Only conditions the framework can actually adjudicate
+    are reported here; the rest are treated as unmet for the purpose of
+    granting a fulfilment (an unverifiable precondition must not silently
+    count as met).
+
+    - ``contrast_execution``: requires a genuine contrast — a companion
+      execution of the same task under a different strategy. One execution
+      alone cannot be a contrast.
+    - ``independent_replication``: requires evidence from a task other than
+      the one this prediction was made under.
+    - ``verification_check``: requires an admission verdict, which by
+      construction does not exist yet at execution time.
+    - ``additional_measurement:<dim>``: requires that dimension to be
+      measured on THIS execution.
+    """
+    unmet: List[str] = []
+    for precondition in item.get("preconditions") or []:
+        precondition = str(precondition)
+        if precondition == "contrast_execution":
+            if not _is_contrast_evidence(record):
+                unmet.append(precondition)
+        elif precondition == "independent_replication":
+            if str(getattr(record, "task_id", "")) \
+                    == str(item.get("_predicted_for_task") or ""):
+                unmet.append(precondition)
+        elif precondition == "verification_check":
+            unmet.append(precondition)
+        elif precondition.startswith(MEASUREMENT_PREFIX):
+            dim = precondition[len(MEASUREMENT_PREFIX):]
+            cost = getattr(record, "cost", None)
+            measured = (cost.measured_dims() if cost is not None
+                        and hasattr(cost, "measured_dims") else set())
+            if dim not in measured:
+                unmet.append(precondition)
+    return unmet
+
+
+def _is_contrast_evidence(record: Any) -> bool:
+    """Whether the record's own labels mark it as contrast evidence.
+
+    The framework records contrast intent explicitly (``retention_reason``,
+    or a ``contrast`` marker in the execution features). Absent that, the
+    execution is ordinary evidence and cannot satisfy a contrast condition.
+    """
+    reason = str(getattr(record, "retention_reason", "") or "").lower()
+    if "contrast" in reason:
+        return True
+    features = getattr(record, "execution_features", None) or {}
+    return bool(features.get("contrast"))
+
+
+def _observed_quality(record) -> Tuple[Optional[float], Optional[str]]:
+    """The quality actually observed, with the basis that justifies it.
+
+    Returns ``(None, reason)`` when no MEASURED quality exists. The strategy
+    layer's ``quality_score`` is NOT used as an observation here: it falls
+    back to a 0.5 heuristic for a feasible result with no gap or optimality
+    basis, and treating that placeholder as measured quality would let
+    "a record was produced" masquerade as "the expected knowledge was
+    supported". The knowledge channel judges claims, so it may only use
+    measurements.
+    """
+    quality = getattr(record, "quality", None)
+    if not isinstance(quality, dict) or not quality.get("feasible"):
+        return None, "the execution produced no feasible result"
+    gap = quality.get("gap")
+    if gap is not None:
+        return max(0.0, min(1.0, 1.0 - float(gap))), "measured gap"
+    if quality.get("status") == "optimal":
+        return 1.0, "optimal status"
+    return None, ("the result is feasible but carries no gap or optimality "
+                  "basis: its quality is not measured, so no claim can be "
+                  "judged against it")
+
+
 def evaluate_execution(item: Dict[str, Any],
                        target: Any,
                        record) -> Tuple[str, Dict[str, Any]]:
     """Verdict for an ``after_execution`` knowledge change.
 
-    Evidence-based and immediate: the execution either landed in the
-    predicted cell (``adds_evidence``) or its observed quality sat inside /
-    outside the claim's own interval (``supports`` / ``refutes``). A
-    precondition that the execution did not satisfy leaves the item
-    ``pending`` — not ``missed``.
+    The predicted PROPOSITION is what gets judged:
+
+    1. a standing precondition that this execution did not satisfy leaves
+       the item ``pending`` — the opportunity has not arrived, which is not
+       a failure;
+    2. a predicted ``expected_observation`` that the real result contradicts
+       yields ``contradicted``;
+    3. ``adds_evidence`` asks exactly what it says — did the execution land
+       in the predicted cell (and meet the conditions);
+    4. support/refute/revise/narrow verdicts need a MEASURED quality and
+       the claim's own interval; without a measurement the item stays
+       ``pending`` rather than being judged against a placeholder.
     """
     change = item.get("change")
     detail: Dict[str, Any] = {"change": change,
@@ -194,32 +351,47 @@ def evaluate_execution(item: Dict[str, Any],
     if target is None:
         return "inconclusive", {**detail,
                                 "reason": "target no longer resolvable"}
-    # A different cell than predicted: the evidence did not land where the
-    # prediction said it would.
+    # (1) Standing conditions come FIRST: a change whose preconditions were
+    #     never met has not had its opportunity, whatever else is true.
+    observation_ok = _observation_satisfied(
+        item.get("expected_observation"), record)
+    if observation_ok is False:
+        detail["expected_observation"] = item.get("expected_observation")
+        detail["reason"] = ("the observed result contradicts the expected "
+                            "observation the prediction named")
+        return "contradicted", detail
+    unmet = _preconditions_unmet(item, record, observation_ok)
+    if unmet:
+        detail["unmet_preconditions"] = unmet
+        detail["reason"] = ("the execution did not satisfy the standing "
+                            "condition(s) " + ", ".join(unmet)
+                            + ": the opportunity has not arrived")
+        return "pending", detail
+    # (2) The evidence must belong where the prediction said it would.
     predicted_cell = _target_value(target, "cell_token")
-    actual_cell = None
-    profile = getattr(record, "profile_snapshot", None)
-    if profile is not None:
-        try:
-            from or_harness.core.schema import group_key
-            actual_cell = group_key(profile)
-        except Exception:
-            actual_cell = None
+    actual_cell = _record_cell(record)
     if predicted_cell and actual_cell and predicted_cell != actual_cell:
         detail["predicted_cell"] = predicted_cell
         detail["actual_cell"] = actual_cell
         return "missed", {**detail,
                           "reason": "the execution landed in a different "
                                     "structural cell than predicted"}
+    # (3) A hypothesis carrying an expectation we could not check is NOT
+    #     thereby fulfilled: an unchecked expectation is unknown.
+    if item.get("expected_observation") and observation_ok is None:
+        detail["reason"] = ("the expected observation could not be checked "
+                            "against the execution's own fields; the "
+                            "expectation stays unevaluated")
+        return "pending", detail
     if change == "adds_evidence":
         detail["reason"] = ("the execution is a new observation in the "
                             "predicted cell")
         return "fulfilled", detail
-    quality = _observed_quality(record)
+    quality, basis = _observed_quality(record)
     if quality is None:
         return "pending", {**detail,
-                           "reason": "no observed quality yet: nothing to "
-                                     "judge the claim against"}
+                           "reason": f"no measured quality to judge the "
+                                     f"claim against: {basis}"}
     interval = _claim_interval(item, target)
     if interval is None:
         return "pending", {**detail,
@@ -227,24 +399,25 @@ def evaluate_execution(item: Dict[str, Any],
                                      "movement cannot be judged"}
     lo, hi = interval
     detail["observed_quality"] = round(float(quality), 6)
+    detail["quality_basis"] = basis
     detail["claim_interval"] = [lo, hi]
     inside = lo <= float(quality) <= hi
     if change == "supports":
         if inside:
-            detail["reason"] = ("observed quality is inside the claim's own "
+            detail["reason"] = ("measured quality is inside the claim's own "
                                 "interval; this is statistical movement in "
                                 "the predicted direction, not proof")
             return "fulfilled", detail
-        detail["reason"] = ("observed quality fell outside the claim's own "
+        detail["reason"] = ("measured quality fell outside the claim's own "
                             "interval, the opposite of a supporting "
                             "observation")
         return "contradicted", detail
     if change in ("refutes", "revises", "narrows"):
         if not inside:
-            detail["reason"] = ("observed quality fell outside the claim's "
+            detail["reason"] = ("measured quality fell outside the claim's "
                                 "own interval, in the predicted direction")
             return "fulfilled", detail
-        detail["reason"] = ("observed quality stayed inside the claim's own "
+        detail["reason"] = ("measured quality stayed inside the claim's own "
                             "interval; the claim was not moved")
         return "missed", detail
     return "inconclusive", {**detail,
@@ -252,16 +425,14 @@ def evaluate_execution(item: Dict[str, Any],
                                       "execution evidence"}
 
 
-def _observed_quality(record) -> Optional[float]:
-    """The quality actually observed for one execution, or None."""
-    quality = getattr(record, "quality", None)
-    if not isinstance(quality, dict):
+def _record_cell(record) -> Optional[str]:
+    """The structural cell an execution actually landed in."""
+    profile = getattr(record, "profile_snapshot", None)
+    if profile is None:
         return None
-    if quality.get("feasible") is False:
-        return 0.0
     try:
-        from or_harness.strategy.stats import quality_score
-        return float(quality_score(record))
+        from or_harness.core.schema import group_key
+        return group_key(profile)
     except Exception:
         return None
 
@@ -411,24 +582,68 @@ def dedupe_attribution(entries: Sequence[Dict[str, Any]]
 # ---------------------------------------------------------------------------
 
 
+def _dedupe_resolved(records: Sequence[Dict[str, Any]]
+                     ) -> List[Dict[str, Any]]:
+    """Collapse repeated PROPOSITIONS so one outcome is credited once.
+
+    Two actions predicting the same ``(target, change, horizon)`` are
+    predicting the same thing about the world, so when it resolves the event
+    must not be counted once per action — that would inflate the class's
+    measured reliability, which is exactly the self-correction signal the
+    decision layer trusts.
+
+    The EARLIEST prediction in each proposition group is kept (the others
+    are the ones that merely followed it), and its verdict is what counts.
+    ``adds_evidence`` is exempt: observations genuinely accumulate per
+    action, so pooling them is not double counting. Records carrying no
+    proposition identity are kept as-is rather than silently merged.
+    """
+    groups: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
+    passthrough: List[Dict[str, Any]] = []
+    for record in records:
+        proposition = record.get("proposition")
+        if not proposition or record.get("change") == "adds_evidence":
+            passthrough.append(record)
+            continue
+        key = tuple(str(p) for p in proposition)
+        groups.setdefault(key, []).append(record)
+    kept = list(passthrough)
+    for group in groups.values():
+        ordered = sorted(group,
+                         key=lambda r: (r.get("created_at") or 0.0,
+                                        str(r.get("prediction_id") or "")))
+        kept.append(ordered[0])
+    return kept
+
+
 def class_reliability(records: Iterable[Dict[str, Any]],
-                      *, min_samples: int = MIN_CLASS_SAMPLES
+                      *, min_samples: int = MIN_CLASS_SAMPLES,
+                      dedupe: bool = True
                       ) -> Dict[str, Any]:
     """Measured reliability per ``(change, horizon)`` class.
 
     ``records`` are resolved knowledge verdicts: ``{"change", "horizon",
-    "status"}``. ``fulfilled`` counts as a hit, ``contradicted`` and
+    "status"}. ``fulfilled`` counts as a hit, ``contradicted`` and
     ``missed`` as misses, ``inconclusive`` is excluded (it carries no
     information either way), and ``pending`` never reaches here.
 
+    ``dedupe`` (default on) collapses repeated proposions so that ONE
+    knowledge outcome is credited once: several actions predicting the same
+    proposition would otherwise each score a hit for a single event, and
+    the class would look more reliable than it is. Evidence accumulation
+    (``adds_evidence``) is exempt — that genuinely accumulates per action.
+
     A class below ``min_samples`` resolves to ``None`` — unknown stays
     unknown, because a reliability guessed from two samples would be worse
-    than admitting we do not know it."""
+    than admitting we do not know it.
+    """
+    resolved = [r for r in records
+                if r.get("status") not in ("pending", "inconclusive", None)]
+    if dedupe:
+        resolved = _dedupe_resolved(resolved)
     buckets: Dict[Tuple[str, str], Dict[str, int]] = {}
-    for record in records:
+    for record in resolved:
         status = record.get("status")
-        if status in ("pending", "inconclusive", None):
-            continue
         key = (str(record.get("change") or ""),
                str(record.get("horizon") or ""))
         bucket = buckets.setdefault(key, {"hits": 0, "misses": 0})
@@ -503,9 +718,12 @@ def collect_verdicts(predictions: Iterable[Any]) -> List[Dict[str, Any]]:
                     "prediction_id": getattr(prediction, "prediction_id",
                                              None),
                     "action_id": getattr(prediction, "bound_action_id", None),
+                    "created_at": getattr(prediction, "created_at", None),
                     "change": item.get("change"),
                     "horizon": stage,
                     "status": verdict.get("status"),
+                    # The proposition identity drives the one-credit-per-
+                    # outcome rule in class_reliability.
                     "proposition": proposition_key(item),
                 })
     return out

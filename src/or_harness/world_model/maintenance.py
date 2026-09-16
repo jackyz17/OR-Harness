@@ -149,6 +149,11 @@ class InductionAssessment:
     unsupported_fields: Dict[str, str] = field(default_factory=dict)
     # Workload forecast context (when supplied by caller).
     workload_forecast: Optional[Dict[str, Any]] = None
+    #: The evidence scope this assessment speaks about: the exact execution
+    #: ids of its bundle. Carried so (a) acceptance can restrict the
+    #: induction to that scope instead of re-deriving it, and (b) the
+    #: delayed binding can verify which evidence it is judging against.
+    execution_ids: List[str] = field(default_factory=list)
     # Audit trail.
     prediction_id: Optional[str] = None
     status: str = "ok"  # ok | truncated | fallback | not_configured
@@ -179,6 +184,7 @@ class InductionAssessment:
             "evidence_gaps": list(self.evidence_gaps),
             "unsupported_fields": copy.deepcopy(self.unsupported_fields),
             "workload_forecast": copy.deepcopy(self.workload_forecast),
+            "execution_ids": list(self.execution_ids),
             "prediction_id": self.prediction_id,
             "status": self.status,
             "assessment_cost": copy.deepcopy(self.assessment_cost),
@@ -209,6 +215,7 @@ class InductionAssessment:
             unsupported_fields=dict(data.get("unsupported_fields") or {}),
             workload_forecast=dict(data["workload_forecast"])
                 if data.get("workload_forecast") else None,
+            execution_ids=list(data.get("execution_ids") or []),
             prediction_id=data.get("prediction_id"),
             status=str(data.get("status", "ok")),
             assessment_cost=dict(data["assessment_cost"])
