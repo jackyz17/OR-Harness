@@ -131,6 +131,12 @@ def _solve_script(quality: float, cost_scale: float) -> str:
 
 MEMORY_MODES = ("none", "cases", "strategic", "cost-aware")
 
+#: M6 prediction modes — ORTHOGONAL to the memory ablation above. The two
+#: axes answer different questions: MEMORY_MODES asks "which memory layer
+#: is consulted", PREDICTION_MODES asks "what does the world model predict,
+#: and may its knowledge prediction influence the choice".
+PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
+
 
 @dataclass
 class RunMetrics:

@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from or_harness.api import ORHarness
+from or_harness.api import ORHarness, PREDICTION_MODES
 from or_harness.core.schema import ExecutionRecord
 from or_harness.core.storage import StorageError
 
@@ -45,11 +45,24 @@ def _load_json_arg(value: str) -> Any:
     return json.loads(value)
 
 
+def _parse_dimension_pairs(text: str) -> Dict[str, float]:
+    """Parse 'llm_tokens=1500,tool_calls=8' into a float-valued dict.
+
+    One parser for the three places a command takes dimension=value input
+    (cost weights, cost overrides, budget declarations): they must agree on
+    what a malformed pair means, and a second copy would be a second answer."""
+    try:
+        return {k: float(v) for k, v in
+                (pair.split("=") for pair in text.split(","))}
+    except ValueError as exc:
+        raise ValueError(
+            f"expected 'name=value,name=value', got {text!r}: {exc}") from exc
+
+
 def _harness(args) -> ORHarness:
     weights = None
     if getattr(args, "cost_weights", None):
-        weights = {k: float(v) for k, v in
-                   (pair.split("=") for pair in args.cost_weights.split(","))}
+        weights = _parse_dimension_pairs(args.cost_weights)
     provider = None
     wm = getattr(args, "world_model", None)
     if wm:
@@ -66,6 +79,9 @@ def _harness(args) -> ORHarness:
                                     or 30.0)
     return ORHarness(home=args.home, alpha=args.alpha, beta=args.beta,
                      gamma=args.gamma, cost_weights=weights,
+                     delta=getattr(args, "delta", 0.0),
+                     prediction_mode=getattr(args, "prediction_mode",
+                                            "h-x-b-value"),
                      world_model=provider)
 
 
@@ -313,8 +329,7 @@ def cmd_record(args) -> int:
                          "--from-staged <id>, or --record-file")
         override = None
         if args.override:
-            override = {k: float(v) for k, v in
-                        (pair.split("=") for pair in args.override.split(","))}
+            override = _parse_dimension_pairs(args.override)
         prediction = None
         if args.prediction:
             from or_harness.core.schema import PredictionSnapshot
@@ -539,8 +554,7 @@ def cmd_budget(args) -> int:
     h = _harness(args)
     try:
         if args.declare:
-            budget = {k: float(v) for k, v in
-                      (pair.split("=") for pair in args.declare.split(","))}
+            budget = _parse_dimension_pairs(args.declare)
             h.declare_budget(args.task, budget, episode_id=args.episode)
         result = h.budget_view(args.task, episode_id=args.episode)
         cons = result["consumption"]
@@ -643,6 +657,24 @@ def cmd_bind_outcome(args) -> int:
         h.close()
 
 
+def cmd_bind_induction_outcome(args) -> int:
+    h = _harness(args)
+    try:
+        result = h.bind_induction_outcome(args.assessment)
+    except StorageError as exc:
+        return _fail(str(exc))
+    verdict = result.get("verdict") or {}
+    if result.get("compared"):
+        return _emit(result, f"Induction assessment {args.assessment} "
+                             f"bound: {verdict.get('status')} "
+                             f"(entries created: "
+                             f"{len(verdict.get('entries_created') or [])}). "
+                             "An entry forming is not the same as "
+                             "publishable knowledge.")
+    return _emit(result, f"Induction assessment {args.assessment} not "
+                         f"compared: {result.get('reason') or verdict.get('reason')}")
+
+
 def cmd_plan_next(args) -> int:
     h = _harness(args)
     try:
@@ -655,7 +687,10 @@ def cmd_plan_next(args) -> int:
                 return _fail("--candidates must be a JSON list of "
                              "ActionSpec objects")
             candidates = [ActionSpec.from_dict(c) for c in raw]
-        limits = {"horizon": args.horizon, "max_model_calls": args.max_calls}
+        limits = {"horizon": args.horizon,
+                  "max_model_calls": args.max_calls}
+        if getattr(args, "delta", None) is not None:
+            limits["delta"] = args.delta
         plan = h.plan_next(task, episode_id=args.episode,
                            candidates=candidates, limits=limits)
         result = {"plan": plan, "decision_action_id": plan.get(
@@ -836,6 +871,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cost-weights", default=None,
                         help="per-dimension cost weights, e.g. "
                              "'llm_tokens=1.0,retries=2.0'")
+    parser.add_argument("--delta", type=float, default=0.0,
+                        help="weight of the predicted knowledge term "
+                             "(U = alpha*Q - beta*C - gamma*R + delta*K). "
+                             "Default 0.0: an unknown knowledge value is "
+                             "never rewarded, so a positive delta is a "
+                             "deliberate experimental choice")
+    parser.add_argument("--prediction-mode", default="h-x-b-value",
+                        choices=list(PREDICTION_MODES),
+                        help="what the world model predicts: 'x-b-only' "
+                             "X/B only, 'h-x-b' also H (recorded, not "
+                             "scored), 'h-x-b-value' also H with the "
+                             "knowledge term live. Default h-x-b-value, "
+                             "whose delta is still 0 unless set")
     parser.add_argument("--world-model", default=None, metavar="URL::MODEL",
                         help="world-model provider for outcome predictions: "
                              "OpenAI-compatible base URL and model name "
@@ -1043,7 +1091,29 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--horizon", type=int, default=1, choices=[1, 2])
     p.add_argument("--max-calls", type=int, default=6,
                    help="max world-model calls for the whole decision")
+    p.add_argument("--delta", type=float, default=argparse.SUPPRESS,
+                   help="weight of the predicted knowledge term in the path "
+                        "utility (U = alpha*Q - beta*C - gamma*R + delta*K). "
+                        "Omitted = this harness's configured value, which is "
+                        "0.0 unless set: an unknown knowledge value is NOT "
+                        "rewarded, so a positive delta is a deliberate "
+                        "experimental choice. Overrides the global --delta "
+                        "for this one decision")
+    p.add_argument("--prediction-mode", default=argparse.SUPPRESS,
+                   choices=["x-b-only", "h-x-b", "h-x-b-value"],
+                   help="what the world model predicts: 'x-b-only' predicts "
+                        "X/B only (no knowledge targets, knowledge term "
+                        "off), 'h-x-b' predicts H as well but keeps the "
+                        "knowledge value out of the decision, "
+                        "'h-x-b-value' lets it influence the choice")
     p.set_defaults(func=cmd_plan_next)
+
+    p = sub.add_parser("bind-induction-outcome",
+                       help="bind an induction assessment's predictions to "
+                            "the REAL induction outcome and record the "
+                            "verdict (the assessment's own slow feedback)")
+    p.add_argument("--assessment", required=True, metavar="ASSESSMENT_ID")
+    p.set_defaults(func=cmd_bind_induction_outcome)
 
     p = sub.add_parser("choose-next",
                        help="record your explicit choice after a plan: "

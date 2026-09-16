@@ -41,8 +41,10 @@ PREDICTION_STATUSES = ("valid", "invalid_output", "provider_error",
                        "not_configured", "unsupported_action")
 
 #: Prompt template version — bumped when the request schema changes, so
-#: stored predictions stay interpretable.
-PROMPT_TEMPLATE_VERSION = "wm2/1"
+#: stored predictions stay interpretable. ``wm2/2`` added the no-solving
+#: rule, the state-shape reword of ``state_changes``, and the
+#: ``knowledge_changes`` prediction contract.
+PROMPT_TEMPLATE_VERSION = "wm2/2"
 
 #: Action types the M2 single-step prediction path supports. Others return
 #: ``unsupported_action`` rather than a fabricated result. ``induce`` is
@@ -235,7 +237,12 @@ def validate_prediction_payload(payload: Dict[str, Any],
     # A "prediction" with no predicted content is not a prediction.
     # Induce actions (M4 maintenance) carry their own content vocabulary.
     content_keys = ("outcome_status", "feasible", "quality", "failure_prob",
-                    "cost", "state_changes", "expected_error_kinds")
+                    "cost", "state_changes", "expected_error_kinds",
+                    # M6: predicting what the action does to the harness's
+                    # strategic knowledge IS predicted content — a payload
+                    # carrying only this is a knowledge prediction, not an
+                    # empty one.
+                    "knowledge_changes")
     if action_spec.action_type == "induce":
         content_keys = content_keys + (
             "candidate_formation_prob", "expected_reuse_benefit",
@@ -278,6 +285,18 @@ def validate_prediction_payload(payload: Dict[str, Any],
     kinds = payload.get("expected_error_kinds")
     if kinds is not None and not isinstance(kinds, list):
         problems.append("expected_error_kinds must be a list")
+    # M6 knowledge-evolution contract: STRUCTURAL validation only here — the
+    # tiered "does this target really exist" check needs the decision's own
+    # proposal set, so it runs where those proposals are known. A malformed
+    # item fails the whole payload (the same reject-all semantics as every
+    # other field); a well-formed item is kept and resolved later.
+    if payload.get("knowledge_changes") is not None:
+        from or_harness.world_model.knowledge import (
+            validate_knowledge_changes,
+        )
+        _, knowledge_problems = validate_knowledge_changes(
+            payload["knowledge_changes"], targets=None)
+        problems.extend(knowledge_problems)
     # The remaining contract fields are validated HERE, before the
     # prediction object is constructed — a malformed value must become
     # invalid_output, never an exception escaping into the caller's

@@ -94,6 +94,11 @@ class PlanLimits:
     beta: Optional[float] = None
     gamma: Optional[float] = None
     cost_weights: Optional[Dict[str, float]] = None
+    #: Weight of the knowledge term. ``None`` = not overridden (inherits
+    #: the harness's configured value, which defaults to 0.0, so an
+    #: unmodified call scores EXACTLY as it did before this term existed).
+    #: A positive value must be chosen explicitly.
+    delta: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -104,6 +109,7 @@ class PlanLimits:
             "alpha": self.alpha,
             "beta": self.beta,
             "gamma": self.gamma,
+            "delta": self.delta,
             "cost_weights": (dict(self.cost_weights)
                              if self.cost_weights is not None else None),
         }
@@ -123,6 +129,8 @@ class PlanLimits:
                   else float(data["beta"])),
             gamma=(None if data.get("gamma") is None
                    else float(data["gamma"])),
+            delta=(None if data.get("delta") is None
+                   else float(data["delta"])),
             cost_weights=(None if data.get("cost_weights") is None
                           else dict(data["cost_weights"])),
         )
@@ -173,6 +181,13 @@ class CandidatePath:
     #: Snapshot id of the hypothetical successor this path's second step
     #: was conditioned on (horizon=2 only).
     hypothetical_snapshot_id: Optional[str] = None
+    #: Knowledge term of this path: the value actually added to the utility
+    #: and an honest label of what it is. ``delta_knowledge`` is 0.0 when no
+    #: justified value existed (unknown upside is NEVER rewarded) — the
+    #: ``knowledge_detail`` says whether that zero means "computed as zero"
+    #: or "no justified value was claimable".
+    delta_knowledge: float = 0.0
+    knowledge_detail: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -184,6 +199,8 @@ class CandidatePath:
             "incomparable": dict(self.incomparable),
             "notes": list(self.notes),
             "hypothetical_snapshot_id": self.hypothetical_snapshot_id,
+            "delta_knowledge": self.delta_knowledge,
+            "knowledge_detail": copy.deepcopy(self.knowledge_detail),
         }
 
     @classmethod
@@ -197,6 +214,8 @@ class CandidatePath:
             incomparable=dict(data.get("incomparable") or {}),
             notes=[str(n) for n in data.get("notes") or []],
             hypothetical_snapshot_id=data.get("hypothetical_snapshot_id"),
+            delta_knowledge=float(data.get("delta_knowledge") or 0.0),
+            knowledge_detail=dict(data.get("knowledge_detail") or {}),
         )
 
 
@@ -336,14 +355,28 @@ def terminal_risk(prediction: OutcomePrediction) -> Optional[float]:
 def evaluate_path(steps_predictions: List[OutcomePrediction],
                   limits: PlanLimits,
                   norms: Dict[str, float],
-                  cost_basis: List[str]) -> CandidatePath:
-    """Utility of one path: U = alpha*Q_terminal - beta*C_path - gamma*R.
+                  cost_basis: List[str],
+                  knowledge: Optional[tuple] = None) -> CandidatePath:
+    """Utility of one path: U = αQ − βC − γR + δK.
 
     ``norms``/``cost_basis`` are the COMMON yardstick of this comparison
     (computed once over all candidates' predicted costs, restricted to
     dimensions every predicted cost measured — missing data never scores
     as cheap). The path cost sums only the steps' predicted INCREMENTAL
-    costs; the planning calls' own spend is sunk and excluded."""
+    costs; the planning calls' own spend is sunk and excluded.
+
+    ``knowledge`` (M6) is an optional ``(K, detail)`` pair for this path.
+    The knowledge term is added as ``delta * K``, and a MISSING K adds
+    NOTHING:
+
+    - ``K`` of None means no justified value could be claimed. Unknown
+      UPSIDE is never rewarded — granting it the full weight would make the
+      system prefer the action it understands least. (Unknown RISK is
+      handled the opposite way, and deliberately so: an unknown downside is
+      charged in full.) The zero is reported with its reason so "no
+      justified value" is never read as "measured as worthless".
+    - ``limits.delta`` of None means the term is not enabled at all.
+    """
     steps = [PathStep(action_spec=p.action_spec,
                       prediction_id=p.prediction_id,
                       status=p.status)
@@ -419,10 +452,27 @@ def evaluate_path(steps_predictions: List[OutcomePrediction],
     alpha = limits.alpha if limits.alpha is not None else 1.0
     beta = limits.beta if limits.beta is not None else 1.0
     gamma = limits.gamma if limits.gamma is not None else 1.0
+    delta = limits.delta if limits.delta is not None else 0.0
+    # Knowledge term. A missing K contributes exactly zero — see the
+    # docstring: unknown upside must not be rewarded, the mirror image of
+    # charging unknown risk in full.
+    k_value: Optional[float] = None
+    k_detail: Dict[str, Any] = {}
+    if knowledge is not None:
+        k_value, raw_detail = knowledge
+        k_detail = dict(raw_detail or {})
+    path.knowledge_detail = k_detail
+    path.delta_knowledge = round(delta * (k_value or 0.0), 6)
+    if delta and k_value is None:
+        path.incomparable["knowledge"] = (
+            "no justified knowledge value on this path; the knowledge term "
+            "adds nothing (an unpredicted upside is NOT reward — the "
+            "opposite of the treatment of unknown risk)")
     path.utility = round(
         alpha * (q if q is not None else 0.0)
         - beta * c_path
-        - gamma * risk_effective, 6)
+        - gamma * risk_effective
+        + path.delta_knowledge, 6)
     if path.incomparable:
         path.notes.append(
             "incomparable fields are charged conservatively (unknown "
@@ -487,6 +537,36 @@ def comparison_norms(predictions: List[OutcomePrediction],
     return basis, norms
 
 
+def real_incumbent_available(progress: Dict[str, Any]) -> bool:
+    """Whether a REAL execution has an incumbent it may depend on.
+
+    The counterpart to :func:`second_step_dependency_ok`, and the place the
+    no-solving discipline actually bites: a rollout may reason over an
+    imagined solution, but an execution that needs a real incumbent must
+    get it from a real solution artifact. A progress field whose
+    ``epistemic`` is ``inferred``, or whose evidence came from a
+    prediction, describes something that did not happen — it is not an
+    incumbent, no matter how complete it looks.
+
+    Reads the labelled shape every progress field already carries
+    (``evidence_ref`` / ``epistemic``), so no new bookkeeping is needed.
+    """
+    field = progress.get("current_solution")
+    if not isinstance(field, dict):
+        return False
+    if field.get("epistemic") != "fact":
+        return False
+    if field.get("provenance") == "agent_reported" \
+            and field.get("hypothetical"):
+        return False
+    value = field.get("value")
+    if value is None:
+        return False
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
 def build_hypothetical_successor(root: BeliefSnapshot,
                                  prediction: OutcomePrediction,
                                  task: Dict[str, Any]) -> "BeliefSnapshot":
@@ -513,12 +593,20 @@ def build_hypothetical_successor(root: BeliefSnapshot,
     progress = copy.deepcopy(root.task_progress)
     if changes:
         solution = changes.get("current_solution", changes)
+        # Provenance is ``agent_reported``, NOT ``observed``: the value was
+        # produced by the world model, not by the harness's own execution.
+        # ``epistemic="inferred"`` + ``hypothetical=True`` keep it out of
+        # every real-state read; ``answer_like`` records whether the model
+        # handed back a solved ANSWER (objective/solution/decision values)
+        # instead of a state shape — a downstream execution that needs a
+        # real incumbent must not treat that as one.
         progress["current_solution"] = {
             "value": copy.deepcopy(solution),
-            "provenance": "observed",
+            "provenance": "agent_reported",
             "epistemic": "inferred",
             "evidence_ref": prediction.prediction_id,
             "hypothetical": True,
+            "answer_like": _looks_like_solved_answer(solution),
         }
     budget = copy.deepcopy(root.budget_state)
     vector = predicted_cost_vector(prediction)
@@ -546,11 +634,50 @@ def second_step_dependency_ok(prediction: OutcomePrediction) -> bool:
     """Whether the first prediction established what a follow-up execution
     needs: a predicted current_solution (incumbent) or an explicit
     feasible outcome. A bare target value is NOT a usable incumbent; when
-    the dependency is unmet the second step is conditional-only."""
+    the dependency is unmet the second step is conditional-only.
+
+    This judges the ROLLOUT, and a rollout over a predicted successor state
+    is legitimate reasoning — the imagined incumbent may carry concrete
+    numbers and the second step may be predicted from it. What is forbidden
+    is treating that value as a real observation, a verified solution, or an
+    executable solution artifact; see :func:`real_incumbent_available`,
+    which is what a REAL execution must consult. Keeping the two separate is
+    the point: a prediction conditions a prediction, never an execution.
+    """
     if prediction.status != "valid":
         return False
     predicted = prediction.predicted or {}
     changes = predicted.get("state_changes") or {}
-    if changes.get("current_solution"):
-        return True
+    incumbent = changes.get("current_solution")
+    if incumbent:
+        return not _is_unusable_incumbent(incumbent)
     return predicted.get("feasible") is True
+
+
+def _is_unusable_incumbent(value: Any) -> bool:
+    """Whether a predicted ``current_solution`` is too thin to reason from.
+
+    A rollout needs SOME description of the successor state; a bare number
+    or an empty object describes nothing, so nothing can be built on it.
+    A structured object — even one carrying solved values — IS usable for
+    a rollout (see :func:`second_step_dependency_ok`)."""
+    if isinstance(value, dict):
+        return not value
+    return not isinstance(value, str)
+
+
+#: Fields a real solver fills in. Their presence in a PREDICTED
+#: ``current_solution`` means the model answered the problem instead of
+#: predicting the execution. Nothing is blocked on this (a rollout may
+#: still reason over it) — it is recorded so the prediction's character is
+#: auditable, and so an execution-time guard like
+#: :func:`real_incumbent_available` has the signal it needs.
+_ANSWER_KEYS = ("objective_value", "objective", "optimum", "optimal_value",
+                "solution", "decision_values")
+
+
+def _looks_like_solved_answer(value: Any) -> bool:
+    """Whether a predicted solution carries solved ANSWER values."""
+    if not isinstance(value, dict):
+        return False
+    return any(value.get(key) is not None for key in _ANSWER_KEYS)

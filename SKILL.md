@@ -67,6 +67,10 @@ OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden stat
 | You predicted one strategy/solver and executed another | `bind-outcome` records the mismatch and skips the comparison — bind the action that actually ran |
 | A hint rests on repeated runs of one `task_id` | A claim needs ≥2 distinct tasks. Either record a genuinely independent instance under its own `task_id`, or record a second task first |
 | `record` reports `index_sync: deferred` | The fact is saved but not yet text-searchable. Recover with `orx rebuild-index` |
+| A task's requirements, capacity or objective change | That is a NEW task context: use a new `task_id` (or episode). Progress from a differently-versioned task is not inherited, and a prediction is scored against the version it was made under — not the current one |
+| A knowledge class reports `reliability: null` / `insufficient_history` | Too few resolved samples. That is honest unknown, not a failure — the class grants no value until it has history |
+| A task's requirements, capacity or objective change | That is a NEW task context: use a new `task_id` (or episode). The old X is not inherited — progress from a differently-versioned task is refused, and a prediction is scored against the version it was made under, not the current one |
+| You see `reliability: null` / `insufficient_history` on a knowledge class | Too few resolved samples. That is honest unknown, not a failure — the class simply grants no value yet |
 
 ## Coupling dimensions (operational definitions)
 
@@ -136,9 +140,10 @@ Every command prints one JSON line: `{"result": {...}, "summary": "2-4 sentence 
 | `snapshot --task t.json [--episode ep1]` | Freeze and persist the current belief state |
 | `action --report TYPE --task t.json [--episode ep1]` | Report an action YOU performed |
 | `budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]` | Consumption view over all real action costs |
-| `predict-outcome` / `bind-outcome` | World-model shadow prediction, then its comparison against the real action |
-| `plan-next` / `choose-next` | Bounded planning over predicted consequences, then your explicit choice |
+| `predict-outcome` / `bind-outcome` | World-model shadow prediction, then its comparison against the real action. With knowledge targets in play, the prediction also covers **H** (`knowledge_changes`) and is judged at two stages: on `record` (evidence landed) and on the next `induce` (a claim formed / moved) |
+| `plan-next` / `choose-next` | Bounded planning over predicted consequences, then your explicit choice. `--delta W` weights the predicted knowledge term (`U = αQ − βC − γR + δK`); `--prediction-mode` selects what is predicted |
 | `assess-induction [--bundle f.json \| --candidates-only]` | Evaluate an induction's value before committing |
+| `bind-induction-outcome --assessment ID` | Judge an induction assessment's predictions against the induction that actually ran |
 | `gc [--mode compact\|purge] [--dry-run]` / `retire --entry ID --reason "..."` | Derived-layer disposal |
 | `rebuild-index [--layer both\|execution\|strategic] [--dry-run]` | First build or repair of the retrieval index |
 | `doctor` | Environment and retrieval-index self-check |

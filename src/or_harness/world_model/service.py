@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import copy
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.storage import Store, StorageError
@@ -48,8 +48,31 @@ from or_harness.world_model.provider import WorldModelProvider
 #: The snapshot fields the input view is assembled from. The SAME memory
 #: views the snapshot already carries — no second retrieval system, no
 # double-counted support.
+#:
+#: ``harness_state`` joins them so H is a COMPLETE prediction condition.
+#: Only its EXPERIENCE and TOOL-CONFIG components are sent: the knowledge
+#: component already travels inside ``coverage.knowledge_layers``, and
+#: sending the same ``KnowledgeRef`` batch twice would double-count support
+#: in exactly the way the state module's docstring warns against.
 INPUT_VIEW_KEYS = ("problem_state", "coverage", "budget_state",
-                   "task_progress")
+                   "task_progress", "harness_condition")
+
+
+def harness_condition(snapshot) -> Dict[str, Any]:
+    """The H components that are NOT already in the coverage view.
+
+    Experience volume says how thick the accumulated evidence is; tool
+    configuration says which solvers are physically available, which is
+    what makes a feasibility prediction answerable at all. Knowledge refs
+    are deliberately excluded here (they arrive via ``coverage``).
+    """
+    state = getattr(snapshot, "harness_state", None) or {}
+    out: Dict[str, Any] = {}
+    if state.get("experience"):
+        out["experience"] = copy.deepcopy(state["experience"])
+    if state.get("tool_config"):
+        out["tool_config"] = copy.deepcopy(state["tool_config"])
+    return out
 
 
 class PredictionService:
@@ -65,6 +88,8 @@ class PredictionService:
                         action_spec: ActionSpec,
                         snapshot,  # BeliefSnapshot (already frozen by caller)
                         *, timeout_s: Optional[float] = None,
+                        knowledge_targets: Optional[Sequence[Any]] = None,
+                        reliability: Optional[Dict[str, Any]] = None,
                         ) -> OutcomePrediction:
         """Assemble the input view, call the provider, validate, persist.
 
@@ -72,7 +97,16 @@ class PredictionService:
         it before this method runs). The prediction is persisted with
         whatever the provider returned — including failures, which keep
         their known call cost. ``timeout_s`` (optional) is the caller's
-        remaining time budget for this call, forwarded to the provider."""
+        remaining time budget for this call, forwarded to the provider.
+
+        ``knowledge_targets`` (M6): the framework's structural proposal set
+        for THIS decision. When supplied, the model's ``knowledge_changes``
+        are resolved against it and only targets it really proposed survive;
+        when ``None`` no proposal was made and every target is unresolved.
+
+        ``reliability`` (M6): measured reliability of past predictions by
+        class, forwarded to the model as its own track record.
+        """
         if action_spec.action_type not in SUPPORTED_ACTION_TYPES:
             prediction = OutcomePrediction(
                 prediction_id=OutcomePrediction.new_id(),
@@ -91,13 +125,30 @@ class PredictionService:
         # stored prediction shows exactly what the model was given.
         view: Dict[str, Any] = {}
         for key in INPUT_VIEW_KEYS:
-            value = getattr(snapshot, key, None)
+            if key == "harness_condition":
+                value = harness_condition(snapshot)
+            else:
+                value = getattr(snapshot, key, None)
             if value:
                 view[key] = copy.deepcopy(value)
         request = {
             "action_spec": action_spec.to_dict(),
             "state": view,
         }
+        # M6: the framework's structural proposal set — what the harness
+        # believes could be learned here, with the quantities a value
+        # estimate would need. The framework PROPOSES; the model picks a
+        # direction from each target's candidate changes.
+        if knowledge_targets:
+            request["candidate_knowledge_targets"] = [
+                t.to_dict() for t in knowledge_targets]
+        # Measured reliability of PAST predictions of each class. Sent as
+        # its own request key (it comes from the prediction LOG, not from
+        # the snapshot, so it is not an INPUT_VIEW_KEY) and deliberately
+        # separate from the model's own confidence: the model is told what
+        # its predictions have historically been worth.
+        if reliability is not None:
+            request["prediction_reliability"] = copy.deepcopy(reliability)
         try:
             # Backwards compatibility: existing / custom providers that
             # only take `predict(request)` are accepted without error.
@@ -166,11 +217,26 @@ class PredictionService:
                      if k in ("outcome_status", "feasible", "quality",
                               "failure_prob", "expected_error_kinds",
                               "state_changes",
+                              # M6: what the action does to H. Kept only
+                              # after the tiered target check, so a model
+                              # cannot invent knowledge entries.
+                              "knowledge_changes",
                               # M4 maintenance-assessment fields (induce
                               # action semantics).
                               "candidate_formation_prob",
                               "expected_reuse_benefit",
                               "generalization_risk")}
+        if "knowledge_changes" in predicted:
+            from or_harness.world_model.knowledge import (
+                validate_knowledge_changes,
+            )
+            accepted, _ = validate_knowledge_changes(
+                predicted["knowledge_changes"], knowledge_targets)
+            predicted["knowledge_changes"] = accepted
+            if knowledge_targets is None:
+                predicted["knowledge_basis"] = (
+                    "no structural targets were proposed for this "
+                    "decision; knowledge targets cannot be resolved")
         if isinstance(payload.get("cost"), dict):
             dims = {d: float(v) for d, v in payload["cost"].items()
                     if d in COST_DIMENSIONS and v is not None}
@@ -227,6 +293,28 @@ class PredictionService:
         return vector
 
     # -- bind -------------------------------------------------------------------
+
+    def _snapshot_task_digest(self, snapshot_id: Optional[str]
+                              ) -> Optional[str]:
+        """The task-version digest recorded on one snapshot, or None.
+
+        Unknown (a missing snapshot, or a legacy one written before digests
+        existed) returns None rather than a guess: an unestablished version
+        must never be reported as a mismatch."""
+        if not snapshot_id:
+            return None
+        try:
+            row = self.store.conn.execute(
+                "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
+                (snapshot_id,)).fetchone()
+            if row is None:
+                return None
+            from or_harness.world_model.state import BeliefSnapshot
+            snap = BeliefSnapshot.from_dict(self.store.loads(row["payload"]))
+            value = (snap.problem_state or {}).get("task_digest")
+            return str(value) if value else None
+        except Exception:
+            return None
 
     def bind_outcome(self, prediction_id: str, action,
                      record_scope=None) -> OutcomePrediction:
@@ -305,6 +393,26 @@ class PredictionService:
                 (None, spec.solver)):
             mismatch["solver"] = {"predicted": spec.solver,
                                   "actual": action.params.get("solver")}
+        # Task VERSION identity (M6): compare the version the prediction was
+        # made under against the version in force when the action ran. Both
+        # sides come from their OWN frozen snapshots — deliberately NOT from
+        # the current task JSON, because a task edited after the action
+        # would otherwise make a perfectly good (merely late) prediction
+        # look like a mismatch.
+        predicted_digest = self._snapshot_task_digest(
+            prediction.input_snapshot_id)
+        actual_digest = (self._snapshot_task_digest(action.pre_snapshot_id)
+                         if getattr(action, "pre_snapshot_id", None)
+                         else None)
+        if (predicted_digest and actual_digest
+                and predicted_digest != actual_digest):
+            mismatch["task_digest"] = {
+                "predicted": predicted_digest,
+                "actual": actual_digest,
+                "reason": "the task's content changed between the prediction "
+                          "and the execution: this is a different task "
+                          "context, so the prediction is not scored against "
+                          "it"}
         # Timing: the prediction must have been made BEFORE the action
         # started. A post-hoc "prediction" is hindsight, not evidence.
         if prediction.created_at > action.started_at:

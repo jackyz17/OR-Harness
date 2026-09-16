@@ -180,6 +180,45 @@ The discipline that makes these predictions useful rather than corrosive:
   changes only through explicit offline induction with admission
   verification, exactly as before.
 
+### H is a prediction subject, not only a condition
+
+The state the model conditions on is H/P/X/B, and what it predicts covers
+X, B **and H** — how the action changes accumulated experience and
+strategic knowledge. Predicting only X/B and then updating H after the fact
+would make the harness unable to reason about *which action is worth taking
+for what it teaches*, which is the capability this layer exists to provide.
+
+A knowledge change is predicted against a target that is either an existing
+entry (it must really exist — a model cannot invent knowledge) or a
+hypothesis (allowed, but it must state what would be observed and how that
+observation would be judged). Each item names a change, a horizon, and any
+standing preconditions, because the timescales genuinely differ: evidence
+lands when the execution is recorded, while a claim only forms, moves or
+narrows after an offline induction.
+
+**Unknown upside is not rewarded.** The knowledge term is `δ·K` with `δ`
+defaulting to 0, and a K that cannot be justified contributes exactly zero.
+This is the deliberate mirror image of how unknown *risk* is treated: an
+unknown downside is charged in full, but an unknown upside is paid nothing —
+otherwise the system would prefer whichever action it understands least.
+`K = None` means "no justified value", never "worth nothing".
+
+**The model cannot raise its own value.** K's magnitude comes from
+framework-side quantities (how thin the support is, how much room the
+claim's interval still has above its honest floor, how much *independent*
+cross-task reuse the cell has). The model contributes a direction and any
+preconditions. Its `uncertainty` and its self-scored
+`expected_knowledge_value` are recorded for later calibration but never
+consumed as value.
+
+**Feedback is judged in stages, and pending is not failure.** A prediction's
+verdicts are partitioned by stage, so an already-compared X/B prediction can
+still receive its knowledge verdict later. A precondition that never
+arrived leaves the item `pending` — it is not counted as a miss. Only a
+class with enough resolved samples earns a measured reliability, and that
+measured reliability (never the model's own confidence) is what later
+predictions may draw on.
+
 ## Applicability: the structural cell, not a declared ladder
 
 There is no ladder of generalization levels and no `widen`/`tighten` command.

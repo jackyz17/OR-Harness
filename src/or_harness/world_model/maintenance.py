@@ -14,9 +14,10 @@ world-model prediction:
    :meth:`reject_induction`): the outer agent explicitly accepts or
    rejects the recommendation. Acceptance invokes the existing
    ``induce`` machinery strictly on the chosen bundle's scope.
-4. Consequence binding (:func:`bind_induction_outcome`): compares the
-   assessment's predictions against the actual induction outcome
-   (entries created/updated, verification verdict, business result).
+4. Consequence binding (:meth:`ORHarness.bind_induction_outcome`):
+   compares the assessment's predictions against the actual induction
+   outcome (entries created/updated, verification verdict, business
+   result) and records the verdict on the assessment's feedback partition.
 
 This is a MAINTENANCE-SCOPE facility — it does NOT modify the online M3
 search tree, does not run background loops, and does not create a third

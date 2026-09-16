@@ -177,21 +177,99 @@ The budget view for a task/episode: consumption over ALL real action costs — r
 - **Call cost**: the model call's own spend (tokens/latency from provider usage) is recorded on the prediction and, with `--parent-action`, charged to that action's own cost — separate from the PREDICTED cost of the target action.
 - **Timing**: predict BEFORE executing. The input snapshot is frozen at prediction time; later bank changes never rewrite it.
 
+### What the model is asked to predict (H included)
+
+The prediction covers X and B **and H** — what the action does to accumulated
+experience and strategic knowledge. Which of these are requested depends on
+`--prediction-mode` (global flag, or per-`plan-next`):
+
+| Mode | Requested | Knowledge term in scoring |
+|---|---|---|
+| `x-b-only` | X/B only (no knowledge targets sent) | off |
+| `h-x-b` | X/B and H | forced off |
+| `h-x-b-value` (default) | X/B and H | live at `--delta` (default **0.0**) |
+
+A `knowledge_changes` item names a **target** — an existing entry (it must
+truly exist in the frozen knowledge view; a model cannot invent knowledge) or
+a hypothesis (allowed, but it must declare `expected_observation` and
+`check_condition`) — plus a **change** (`adds_evidence` / `supports` /
+`revises` / `refutes` / `candidate_forms` / `narrows`), a **horizon**
+(`after_execution` or `after_consolidation`), optional **preconditions**, and
+a **prediction basis**. The framework supplies the candidate targets and all
+magnitudes; the model contributes a direction, so it cannot raise its own
+value by asserting confidence.
+
+### How knowledge predictions are judged
+
+Verdicts are **stage-partitioned** so the stages never block each other: the
+immediate X/B comparison and the knowledge verdicts coexist on one prediction,
+and a later stage can still be written after an earlier one.
+
+| Stage | Triggered by | Judged against |
+|---|---|---|
+| `after_execution` | `record` | the evidence that execution produced (did it land in the predicted cell; is the observed quality inside the claim's own interval) |
+| `after_consolidation` | the next `induce` | the induction's recorded transition (`entries_created` / `entry_changes`) |
+
+States: `pending` (opportunity not yet arrived, or a precondition unmet —
+**never counted as a failure**), `fulfilled`, `contradicted`, `missed`,
+`inconclusive`. A stage verdict is written once; re-running is a no-op.
+
+Honesty boundaries: an entry **forming** is not publishable strategic
+knowledge (admission verification still decides that), and a cell's mean
+quality moving does not **prove** a rule — the verdict text says so.
+
+Resolved verdicts aggregate into `prediction_class_reliability` (per change ×
+horizon). That measured reliability — never the model's self-reported
+confidence — is what later predictions may draw on; a class below the minimum
+sample count reports `reliability: null` (`insufficient_history`) and grants
+no value.
+
+## `orx bind-induction-outcome --assessment ASSESSMENT_ID`
+
+Bind an `assess-induction` assessment's predictions to the induction that
+actually ran, and record the verdict. This is the **maintenance decision's**
+own slow feedback: "was it right to expect this induction to form a claim?"
+
+It is deliberately **not** the same as the ordinary-action knowledge
+evaluation above: that one judges what a *solving* action predicted about the
+knowledge it fed; this one judges the *induction decision's* expectation. Both
+are needed and neither substitutes for the other.
+
+The verdict is computed from the induction that actually followed — never from
+the assessment's own opinion of itself. A rejected or deferred recommendation
+is `inconclusive`, not a miss: the predicted consequence was never given a
+chance to occur. Idempotent: a second call returns the stored verdict.
+
 ## `orx bind-outcome --prediction ID --action ACTION_ID`
 
 Bind a prediction to the real action that ran, then compare. Type/strategy/solver are checked: a mismatch (you predicted strategy A, executed B) is recorded and NOT scored — no counterfactual truth is fabricated. The comparison covers only fields both sides define: status category, feasibility, quality (when the execution produced a solution), and cost per dimension (both sides measured — the same both-sides-measured discipline as cost feedback). Missing comparisons are listed with reasons. The feedback is APPENDED to the frozen prediction — the original is never modified, and re-running the comparison is idempotent (the model is never re-invoked). Online comparison records facts and errors only; knowledge updates still go through explicit offline induction with verification.
 
 Query predictions with `orx inspect --bank predictions [--task ID]`.
 
-## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N]`
+## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N] [--delta W] [--prediction-mode M]`
 
 **Bounded next-step planning.** Compare a small set of candidate actions by their PREDICTED consequences and get a suggested first step. The decision:
 
 1. freezes ONE root snapshot for the whole comparison (all candidates see the same state);
 2. predicts each root candidate's first-step consequences (default ≤3 candidates, ≤6 model calls total);
 3. with `--horizon 2`, builds a HYPOTHETICAL successor state from each first prediction's `state_changes` and predicts the continuation FROM that successor (a genuine state-conditioned two-step rollout — never two independent root predictions);
-4. scores each path as `U = alpha*Q_terminal − beta*C_path − gamma*R_terminal` (terminal quality / incremental predicted cost on the common measured dimensions / terminal failure risk — longer paths never win by accumulating quality terms; step risks are never summed or multiplied);
+4. scores each path as `U = alpha*Q_terminal − beta*C_path − gamma*R_terminal + delta*K` (terminal quality / incremental predicted cost on the common measured dimensions / terminal failure risk / knowledge value — longer paths never win by accumulating quality terms; step risks are never summed or multiplied);
 5. suggests the FIRST step of the best path.
+
+**The knowledge term `delta*K`.** `K` combines a framework-side structural need
+(how thin the support is, how much room the claim's interval still has above
+its honest floor, how much *independent* cross-task reuse the cell has) with
+the model's predicted direction. `--delta` defaults to **0.0**, so an
+unmodified call scores exactly as it did before the term existed.
+
+**A missing `K` adds NOTHING** (`path.incomparable["knowledge"]` says so).
+This is the deliberate mirror of unknown risk: an unknown *downside* is charged
+in full, but an unknown *upside* is paid nothing — paying it would make the
+system prefer whichever action it understands least. `K = None` means "no
+justified value", never "worth nothing". `delta_knowledge` and
+`knowledge_detail` on each path show the term and why it came out that way,
+labelled `heuristic_uncalibrated` (it is a transparent heuristic, not a
+calibrated expected value).
 
 - **Candidates**: `--candidates` (your own ActionSpec list, recommended when you have domain hypotheses), or the catalog vocabulary filtered by applicability and available solvers. Without memory, candidates carry no fabricated performance claims — consequences come from the world model.
 - **Bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.

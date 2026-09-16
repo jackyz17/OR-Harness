@@ -76,10 +76,14 @@ from or_harness.world_model.state import (
 #: width (relative slack keeps wide honest intervals meaningful).
 PREDICTION_HIT_SLACK = 0.15
 
+#: M6 experiment modes (see ORHarness.__init__).
+PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
+
 
 class ORHarness:
     def __init__(self, home: Optional[str] = None, *,
                  alpha: float = 1.0, beta: float = 1.0, gamma: float = 1.0,
+                 delta: float = 0.0,
                  cost_weights: Optional[Dict[str, float]] = None,
                  catalog_path: Optional[str] = None,
                  executor: Optional[SafePythonExecutor] = None,
@@ -87,7 +91,8 @@ class ORHarness:
                  embedding: Optional[EmbeddingBackend] = None,
                  planning: bool = True,
                  plan_mode: str = "advise",
-                 induction_assessment: str = "advise"):
+                 induction_assessment: str = "advise",
+                 prediction_mode: str = "h-x-b-value"):
         self.home = resolve_home(home)
         self.store = Store(self.home)
         self.bank = ExperienceBank(self.store)
@@ -129,6 +134,25 @@ class ORHarness:
             raise ValueError(
                 "induction_assessment must be 'advise', 'shadow', or 'disabled'")
         self.induction_assessment_mode = induction_assessment
+        # World-model M6: what the world model is asked to predict, and
+        # whether a knowledge term may influence the choice.
+        #
+        #   x-b-only     predict X/B only: no knowledge targets are
+        #                proposed and knowledge_changes are not requested
+        #   h-x-b        predict H too (targets proposed, changes kept and
+        #                evaluated) but the knowledge term is forced off
+        #   h-x-b-value  the knowledge term is live at the configured delta
+        #
+        # ``delta`` DEFAULTS TO 0.0 on purpose: an unmodified call must
+        # score exactly as it did before the term existed. A positive delta
+        # is a deliberate experimental choice pulled from this instance's
+        # own configuration, never inherited implicitly.
+        if prediction_mode not in PREDICTION_MODES:
+            raise ValueError(
+                f"prediction_mode must be one of {PREDICTION_MODES}")
+        self.prediction_mode = prediction_mode
+        self.delta = float(delta)
+        self.selector.delta = self.delta
         # Retrieval embedding backend: EXPLICITLY injected by the caller
         # (same discipline as ``world_model``), else read from the
         # OR_EMBEDDING_* environment, else None. None is a first-class
@@ -155,7 +179,9 @@ class ORHarness:
     # -- capabilities ----------------------------------------------------------
 
     def _episode_progress(self, task_id: str,
-                          episode_id: Optional[str]) -> Dict[str, Any]:
+                          episode_id: Optional[str],
+                          *, task_digest: Optional[str] = None
+                          ) -> Dict[str, Any]:
         """The episode's CURRENT information state (X): the latest real
         task_progress among this episode's snapshots.
 
@@ -163,12 +189,27 @@ class ORHarness:
         update into the accumulated state, so the next action's pre state
         inherits what earlier actions established (selected_plan, model
         artifact, current solution, verification evidence...). Hypothetical
-        snapshots NEVER contribute — an imagined outcome is not progress."""
+        snapshots NEVER contribute — an imagined outcome is not progress.
+
+        Task boundary (M6): progress is inherited only from snapshots taken
+        under the SAME task version. The caller passes the current
+        ``task_digest``; a snapshot whose recorded ``problem_state``
+        digest differs describes a DIFFERENT task context and must not be
+        inherited. Checking here — at state-construction time — is what
+        keeps a stale X from being used for a whole planning round before
+        anything downstream notices; the bind-time check alone would be too
+        late. Unknown digests (legacy snapshots without one) are treated as
+        matching, since their version cannot be established either way.
+        """
         if episode_id is None:
             return {}
         best: Optional[BeliefSnapshot] = None
         for snap in self.snapshots(task_id=task_id):
             if snap.episode_id != episode_id or snap.hypothetical:
+                continue
+            recorded = (snap.problem_state or {}).get("task_digest")
+            if (task_digest is not None and recorded is not None
+                    and recorded != task_digest):
                 continue
             if best is None or (snap.created_at, snap.snapshot_id) > \
                     (best.created_at, best.snapshot_id):
@@ -215,7 +256,8 @@ class ORHarness:
         budget_state = self.budget.view(
             str(task.get("task_id", "")), episode_id, budget=budget)
         progress = self._episode_progress(
-            str(task.get("task_id", "")), episode_id)
+            str(task.get("task_id", "")), episode_id,
+            task_digest=task_text_digest(task))
         if task_progress:
             progress.update(copy.deepcopy(task_progress))
         snap = BeliefSnapshot.build(
@@ -505,38 +547,302 @@ class ORHarness:
                                           "call": episode_id}
             action_spec.episode_id = episode_id
         snap = self.snapshot(task, episode_id)
+        targets = self.knowledge_targets(snap, action_spec)
         prediction = self.predictions.predict_outcome(
-            task, action_spec, snap)
+            task, action_spec, snap,
+            knowledge_targets=targets,
+            reliability=self.prediction_reliability_table())
+        # The full target set is frozen WITH the prediction: a later verdict
+        # needs the claim's interval / entry id / strategy as they were at
+        # prediction time, not a re-read of banks that may have moved since.
+        prediction.model_info["knowledge_targets_proposed"] = [
+            t.strategy_id for t in targets]
+        prediction.model_info["knowledge_targets_proposed_full"] = [
+            t.to_dict() for t in targets]
+        self.predictions._save(prediction)
         if adjusted:
             prediction.model_info["identity_adjusted"] = adjusted
             self.predictions._save(prediction)
-        if prediction.call_cost is not None:
-            dims = {d: getattr(prediction.call_cost, d) for d in
-                    prediction.call_cost.measured_dims()}
-            if dims:
-                if parent_action_id is not None:
-                    # Charge the model call's real cost to the parent
-                    # action. INCREMENT semantics: each prediction call is
-                    # a separate real spend — two 50-token calls under one
-                    # selection action total 100, never overwrite each
-                    # other.
-                    parent = self.actions.get(parent_action_id)
-                    if parent is None:
-                        raise StorageError(
-                            f"unknown parent_action_id "
-                            f"{parent_action_id!r}")
-                    self.actions.amend_action_cost_increment(
-                        parent_action_id, **dims)
-                    # Mark the prediction so the budget view counts this
-                    # spend on the parent action ONLY (never twice).
-                    prediction.model_info["charged_to_parent_action"] = \
-                        parent_action_id
-                    self.predictions._save(prediction)
-                # No parent action: the call cost stays recorded on the
-                # prediction itself AND is aggregated into the budget view
-                # by BudgetLedger.consumption (see budget.py,
-                # prediction_call_costs) — never silently dropped.
+        self._charge_call_cost(prediction, parent_action_id)
         return prediction
+
+    @staticmethod
+    def _call_cost_dims(prediction) -> Dict[str, float]:
+        """The model call's OWN measured spend, per dimension (empty when
+        the provider reported no usage — unknown, never zero)."""
+        if prediction.call_cost is None:
+            return {}
+        return {d: getattr(prediction.call_cost, d) for d in
+                prediction.call_cost.measured_dims()}
+
+    def _charge_call_cost(self, prediction,
+                          parent_action_id: Optional[str]
+                          ) -> Dict[str, float]:
+        """Record the model call's own spend, charged to the parent action
+        when one is named.
+
+        INCREMENT semantics throughout: each prediction call is a separate
+        real spend, so two 50-token calls under one selection action total
+        100 rather than overwriting each other. With no parent action the
+        cost stays on the prediction itself and is aggregated into the
+        budget view by ``BudgetLedger.consumption`` — never silently
+        dropped, and never counted twice (the
+        ``charged_to_parent_action`` mark keeps it on one side only)."""
+        dims = self._call_cost_dims(prediction)
+        if not dims or parent_action_id is None:
+            return dims
+        if self.actions.get(parent_action_id) is None:
+            raise StorageError(
+                f"unknown parent_action_id {parent_action_id!r}")
+        self.actions.amend_action_cost_increment(parent_action_id, **dims)
+        prediction.model_info["charged_to_parent_action"] = parent_action_id
+        self.predictions._save(prediction)
+        return dims
+
+    def knowledge_targets(self, snapshot, action_spec) -> List[Any]:
+        """The framework's structural knowledge-target proposals for ONE
+        candidate action (M6).
+
+        A transparent heuristic, not a value estimate: it says what COULD
+        be learned and which quantities a value would need. Under
+        ``x-b-only`` no targets are proposed at all, which is exactly what
+        makes that mode reproduce the pre-M6 request byte for byte.
+
+        The cell's real evidence records are fetched via
+        ``ConditionalStats.evidence`` because ``GroupStats`` carries no
+        distinct-task count, and reuse basis must count INDEPENDENT TASKS
+        (repeat runs of one task are one replication).
+        """
+        if self.prediction_mode == "x-b-only":
+            return []
+        from or_harness.world_model.knowledge import learning_needs
+        strategy_id = getattr(action_spec, "strategy_id", None)
+        records = None
+        if strategy_id:
+            try:
+                profile = ProblemProfile.from_dict(
+                    (snapshot.problem_state or {}).get("profile") or {})
+                records = self.stats.evidence(profile, strategy_id)
+            except Exception:
+                records = None
+        return learning_needs(snapshot, action_spec, records=records)
+
+    def evaluate_knowledge_execution(self, record: ExecutionRecord
+                                     ) -> Dict[str, Any]:
+        """Judge the ``after_execution`` knowledge predictions a REAL
+        execution just made possible (M6, fast channel).
+
+        Finds the predictions bound to this record's action, re-reads the
+        targets those predictions were made against, and records one verdict
+        per unresolved ``after_execution`` item. Stage-partitioned: a
+        prediction whose immediate X/B comparison already ran is still
+        eligible here, and re-running this is a no-op for stages that
+        already have a verdict.
+
+        Prediction-conditioned targets live on the prediction itself
+        (``predicted.knowledge_changes``), so this needs no new linkage: no
+        side table, no event log.
+        """
+        from or_harness.world_model.knowledge_track import (
+            STAGE_EXECUTION,
+            evaluate_execution,
+            unresolved_stages,
+        )
+        action_id = getattr(record, "action_id", None)
+        action = self.actions.get(action_id) if action_id else None
+        if action is None:
+            # The record may have been appended without the action handle
+            # (a bare ``record`` call). Fall back to the action whose
+            # linked execution is this one, matched over the same task.
+            for candidate in self.actions.query(task_id=record.task_id):
+                if candidate.linked_execution_id == record.execution_id:
+                    action = candidate
+                    break
+        if action is None:
+            return {}
+        out: Dict[str, Any] = {}
+        for prediction in self.predictions_query(task_id=record.task_id):
+            if prediction.bound_action_id != action.action_id:
+                continue
+            if prediction.status != "valid":
+                continue
+            targets = self._prediction_targets(prediction)
+            for index, stage in unresolved_stages(prediction):
+                if stage != STAGE_EXECUTION:
+                    continue
+                item = prediction.predicted["knowledge_changes"][index]
+                target = self._match_target(targets, item)
+                status, detail = evaluate_execution(item, target, record)
+                detail["targets_available"] = bool(targets)
+                entry = self._record_knowledge_verdict(
+                    prediction, index, stage, status, detail)
+                if entry is not None:
+                    out[prediction.prediction_id] = entry
+        return out
+
+    @staticmethod
+    def _prediction_targets(prediction) -> List[Any]:
+        """The structural targets a prediction was made against.
+
+        Read from the prediction's own frozen copy, never re-derived from
+        the current banks: a verdict must judge the claim as it stood when
+        the prediction was made, and an entry's interval may have moved
+        since."""
+        from or_harness.world_model.knowledge import KnowledgeTarget
+        return [KnowledgeTarget.from_dict(t) for t in
+                (prediction.model_info.get("knowledge_targets_proposed_full")
+                 or [])]
+
+    def _record_knowledge_verdict(self, prediction, index: int, stage: str,
+                                  status: str, detail: Dict[str, Any]
+                                  ) -> Optional[Dict[str, Any]]:
+        """Persist one stage verdict; return its result entry, or None when
+        that stage already had one (the write is idempotent per stage)."""
+        from or_harness.world_model.knowledge_track import record_stage_verdict
+        if not record_stage_verdict(prediction, index, stage, status, detail):
+            return None
+        self.predictions._save(prediction)
+        return {"change_index": index, "stage": stage, "status": status}
+
+    @staticmethod
+    def _match_target(targets: List[Any], item: Dict[str, Any]):
+        """The proposed target a knowledge-change item refers to, or None."""
+        target = item.get("target") or {}
+        if target.get("kind") == "existing_entry":
+            for candidate in targets:
+                if (candidate.kind == "existing_entry"
+                        and candidate.entry_id == target.get("entry_id")):
+                    return candidate
+        for candidate in targets:
+            if candidate.strategy_id == target.get("strategy_id"):
+                return candidate
+        return None
+
+    @staticmethod
+    def _induction_transition(result: Dict[str, Any]) -> Dict[str, Any]:
+        """The knowledge transition an ``induce`` call recorded.
+
+        Accepts all three shapes the transition travels in: the ``induce``
+        result's own flat keys, the action summary nested under ``action``,
+        and the maintenance action outcome that summary was built from. The
+        delta is a before/after transition, computed where both states are
+        known; this only locates it, and returns empty pieces when the
+        induction never ran (dry run, or a refusal)."""
+        source = result or {}
+        action = source.get("action") or {}
+        outcome = action.get("outcome") or {}
+        delta = (source.get("knowledge_delta")
+                 or action.get("knowledge_delta")
+                 or outcome.get("knowledge_delta") or {})
+        after = (source.get("knowledge_after")
+                 or action.get("knowledge_after")
+                 or outcome.get("knowledge_after") or {})
+        return {
+            "entry_changes": delta.get("entry_changes") or [],
+            "created": delta.get("entries_created") or [],
+            "knowledge_after": after,
+        }
+
+    def evaluate_knowledge_consolidation(self, result: Dict[str, Any],
+                                         execution_ids: Sequence[str] = (),
+                                         strategy_id: Optional[str] = None
+                                         ) -> Dict[str, Any]:
+        """Judge the ``after_consolidation`` knowledge predictions an
+        induction just made possible (M6, slow channel).
+
+        The opportunity window comes from the induction's OWN recorded
+        transition: a prediction is eligible only if the induction actually
+        touched the entry it named, or formed an entry for the strategy it
+        named. A prediction about some other cell had no chance to resolve
+        and correctly stays ``pending``.
+
+        This is the loop the first M6 plan missed: the maintenance
+        assessment's own binding could not evaluate what an ORDINARY action
+        predicted about the knowledge it fed.
+        """
+        from or_harness.world_model.knowledge_track import (
+            STAGE_CONSOLIDATION,
+            evaluate_consolidation,
+            unresolved_stages,
+        )
+        delta = self._induction_transition(result)
+        entry_changes = delta["entry_changes"]
+        created = delta["created"]
+        knowledge_after = delta["knowledge_after"]
+        if not entry_changes and not created:
+            return {}
+        created_strategies: List[str] = []
+        # ``knowledge_after`` travels in two shapes: the layered view
+        # (verified/unverified/legacy_unknown, also used by the induction
+        # ACTION) and the flat ``{"entries": [...], "entry_count": N}``
+        # form the action summary carries. Reading both keeps one code path.
+        entries_after: List[Dict[str, Any]] = []
+        for layer in ("verified", "unverified", "legacy_unknown"):
+            entries_after.extend(knowledge_after.get(layer) or [])
+        entries_after.extend(knowledge_after.get("entries") or [])
+        for entry in entries_after:
+            if entry.get("entry_id") in set(created):
+                created_strategies.append(
+                    str(entry.get("strategy_id") or ""))
+        touched = {c.get("entry_id") for c in entry_changes}
+        out: Dict[str, Any] = {}
+        for prediction in self.predictions_query():
+            if prediction.status != "valid":
+                continue
+            if prediction.action_spec.action_type != "execute_strategy":
+                continue
+            targets = self._prediction_targets(prediction)
+            for index, stage in unresolved_stages(prediction):
+                if stage != STAGE_CONSOLIDATION:
+                    continue
+                item = prediction.predicted["knowledge_changes"][index]
+                target = self._match_target(targets, item)
+                # Opportunity window: the induction must have touched what
+                # the prediction named, or covered the strategy it named.
+                # Otherwise the prediction had no chance to resolve and
+                # stays pending — never "missed".
+                if target is None:
+                    continue
+                in_window = (
+                    (target.entry_id is not None
+                     and target.entry_id in touched)
+                    or (target.entry_id is not None
+                        and target.entry_id in set(created))
+                    or (target.strategy_id in created_strategies)
+                    # A scoped ``induce(strategy_id=...)`` only touched one
+                    # strategy, so a prediction about another cell had no
+                    # chance to resolve.
+                    or (strategy_id is not None
+                        and target.strategy_id == strategy_id
+                        and bool(entry_changes)))
+                if not in_window:
+                    continue
+                status, detail = evaluate_consolidation(
+                    item, target, entry_changes, created, created_strategies)
+                if execution_ids:
+                    detail["consolidated_executions"] = sorted(
+                        set(execution_ids))
+                entry = self._record_knowledge_verdict(
+                    prediction, index, stage, status, detail)
+                if entry is not None:
+                    out[prediction.prediction_id] = entry
+        return out
+
+    def prediction_reliability_table(self) -> Dict[str, Any]:
+        """Measured reliability of PAST knowledge predictions, by class.
+
+        This is the self-correction channel: what the model's predictions
+        have actually been worth, computed by the framework from evaluated
+        verdicts. It is deliberately NOT the model's own confidence — that
+        would let a model raise its own standing by asserting it. Classes
+        with too few resolved samples report ``None``, and an unknown
+        reliability grants no knowledge value.
+        """
+        from or_harness.world_model.knowledge_track import (
+            class_reliability,
+            collect_verdicts,
+        )
+        return class_reliability(collect_verdicts(self.predictions_query()))
 
     def bind_outcome(self, prediction_id: str,
                      action_id: str) -> OutcomePrediction:
@@ -686,6 +992,16 @@ class ORHarness:
             limits.gamma = self.selector.gamma
         if limits.cost_weights is None:
             limits.cost_weights = dict(self.selector.cost_weights)
+        if limits.delta is None:
+            # Defaults to this harness's configured delta, which is 0.0
+            # unless the caller deliberately chose otherwise — so an
+            # unmodified call is scored exactly as before the knowledge
+            # term existed, while ``prediction_mode="x-b-only"`` forces it
+            # off regardless of configuration.
+            limits.delta = (0.0 if self.prediction_mode == "x-b-only"
+                            else self.delta)
+        if self.prediction_mode != "h-x-b-value":
+            limits.delta = 0.0
         task_id = str(task.get("task_id", ""))
         plan = PlanResult(plan_id=PlanResult.new_id(),
                           root_snapshot_id="",
@@ -767,6 +1083,11 @@ class ORHarness:
         calls_made = 0
         stop_reason: Optional[str] = None
         hypothetical_snaps: Dict[str, str] = {}  # pred_id -> snapshot_id
+        # M6: the structural targets proposed per root candidate, plus the
+        # measured reliability of past predictions by class. Both are read
+        # ONCE per decision (the banks are not re-read mid-decision).
+        knowledge_targets: Dict[str, List[Any]] = {}
+        reliability_table = self.prediction_reliability_table()
         def _real_budget_exceeded() -> Optional[str]:
             """Re-check the REAL ledger before the next model call: the
             budget view is refreshed (planning spend itself lands in it),
@@ -781,18 +1102,25 @@ class ORHarness:
                         "further model calls")
             return None
 
-        for spec in specs:
+        def _bounds_exhausted() -> Optional[str]:
+            """The shared budget gate, re-evaluated BEFORE every model call.
+
+            All three bounds are checked in one place so the root loop and
+            the horizon-2 loop cannot drift apart in what they enforce:
+            the model-call count, the wall clock, and the REAL ledger (whose
+            view is refreshed each time so planning's own spend counts
+            against the decision that is spending it)."""
             if calls_made >= limits.max_model_calls:
-                stop_reason = (f"model-call budget exhausted "
-                               f"({limits.max_model_calls})")
-                break
+                return (f"model-call budget exhausted "
+                        f"({limits.max_model_calls})")
             if time.monotonic() - started > limits.time_budget_s:
-                stop_reason = ("planning time budget exhausted "
-                               f"({limits.time_budget_s}s)")
-                break
-            exceeded = _real_budget_exceeded()
-            if exceeded:
-                stop_reason = exceeded
+                return ("planning time budget exhausted "
+                        f"({limits.time_budget_s}s)")
+            return _real_budget_exceeded()
+
+        for spec in specs:
+            stop_reason = _bounds_exhausted()
+            if stop_reason:
                 break
             # Remaining time budget caps THIS call's own timeout: the
             # provider never waits longer than the decision's budget
@@ -803,8 +1131,23 @@ class ORHarness:
                 stop_reason = ("planning time budget exhausted "
                                f"({limits.time_budget_s}s)")
                 break
+            target_set = self.knowledge_targets(root, spec)
+            for target in target_set:
+                knowledge_targets.setdefault(target.strategy_id, []).append(
+                    target)
             prediction = self.predictions.predict_outcome(
-                task, spec, root, timeout_s=remaining)
+                task, spec, root, timeout_s=remaining,
+                knowledge_targets=target_set,
+                reliability=reliability_table)
+            prediction.model_info["knowledge_targets_proposed"] = [
+                t.strategy_id for t in target_set]
+            # The FULL targets are kept too: judging a later verdict needs
+            # the claim's own interval / entry id / strategy, and re-deriving
+            # them after the fact would read banks that may have changed
+            # since the prediction was frozen.
+            prediction.model_info["knowledge_targets_proposed_full"] = [
+                t.to_dict() for t in target_set]
+            self.predictions._save(prediction)
             calls_made += 1
             predictions.append(prediction)
         # (4) Horizon=2: condition the second step on the first step's
@@ -816,16 +1159,8 @@ class ORHarness:
             if limits.horizon == 2 and stop_reason is None:
                 followups = list(second_step or [])
                 for first in predictions:
-                    if calls_made >= limits.max_model_calls:
-                        stop_reason = (f"model-call budget exhausted "
-                                       f"({limits.max_model_calls})")
-                        break
-                    if time.monotonic() - started > limits.time_budget_s:
-                        stop_reason = ("planning time budget exhausted")
-                        break
-                    exceeded = _real_budget_exceeded()
-                    if exceeded:
-                        stop_reason = exceeded
+                    stop_reason = _bounds_exhausted()
+                    if stop_reason:
                         break
                     if first.status != "valid":
                         continue
@@ -899,10 +1234,26 @@ class ORHarness:
                                              limits.cost_weights)
         for first in predictions:
             steps = [first] + continuation.get(first.prediction_id, [])
+            # Knowledge value of THIS path, assembled from the structural
+            # needs of the root candidate that produced it. Skipped entirely
+            # when the term is off, so a disabled term costs nothing and
+            # changes nothing.
+            knowledge: Optional[tuple] = None
+            if limits.delta:
+                from or_harness.world_model.knowledge import knowledge_value
+                from or_harness.world_model.knowledge_track import (
+                    reliability_lookup,
+                )
+                targets = knowledge_targets.get(
+                    first.action_spec.strategy_id or "", [])
+                knowledge = knowledge_value(
+                    targets, steps,
+                    reliability=reliability_lookup(reliability_table))
             if (limits.horizon == 2 and first.status == "valid"
                     and not continuation.get(first.prediction_id)):
                 # Second step was required but could not be produced.
-                path = evaluate_path([first], limits, norms, cost_basis)
+                path = evaluate_path([first], limits, norms, cost_basis,
+                                     knowledge=knowledge)
                 if stop_reason is None:
                     path.notes.append(
                         "conditional_unsupported: the first prediction did "
@@ -912,7 +1263,8 @@ class ORHarness:
                 else:
                     path.notes.append(f"second step truncated: {stop_reason}")
             else:
-                path = evaluate_path(steps, limits, norms, cost_basis)
+                path = evaluate_path(steps, limits, norms, cost_basis,
+                                     knowledge=knowledge)
             if first.prediction_id in hypothetical_snaps:
                 path.hypothetical_snapshot_id = \
                     hypothetical_snaps[first.prediction_id]
@@ -1237,19 +1589,13 @@ class ORHarness:
         assessment.prediction_id = prediction.prediction_id
 
         # (5) Real call cost -> decision action own cost.
-        if prediction.call_cost is not None:
-            dims = {d: getattr(prediction.call_cost, d) for d in
-                    prediction.call_cost.measured_dims()}
-            if dims:
-                self.actions.amend_action_cost_increment(
-                    decision.action_id, **dims)
-                prediction.model_info["charged_to_parent_action"] =                     decision.action_id
-                self.predictions._save(prediction)
-                assessment.assessment_cost = {
-                    "cost": {d: round(dims[d], 4) for d in sorted(dims)},
-                    "measured": sorted(dims),
-                    "note": "REAL spend of the maintenance assessment call",
-                }
+        dims = self._charge_call_cost(prediction, decision.action_id)
+        if dims:
+            assessment.assessment_cost = {
+                "cost": {d: round(dims[d], 4) for d in sorted(dims)},
+                "measured": sorted(dims),
+                "note": "REAL spend of the maintenance assessment call",
+            }
 
         # (6) Form recommendation from prediction + evidence.
         if prediction.status != "valid":
@@ -1415,6 +1761,112 @@ class ORHarness:
             "accepted": True,
             "induction_result": induce_res,
         }
+
+    def bind_induction_outcome(self, assessment_id: str) -> Dict[str, Any]:
+        """Compare an induction assessment's predictions against the REAL
+        induction outcome and record the verdict (M6).
+
+        This is the delayed feedback of the MAINTENANCE decision: it
+        answers "was it right to expect this induction to form a claim /
+        yield a usable entry?" — the slow counterpart of
+        :meth:`compare_prediction`, which judges the fast X/B predictions.
+
+        Deliberately NOT the same as :meth:`evaluate_knowledge_consolidation`:
+        that one judges what an ORDINARY solving action predicted about the
+        knowledge it fed; this one judges the induction DECISION's own
+        expectation. Both are needed, and neither substitutes for the other.
+
+        The verdict is computed from the induction that actually followed
+        the assessment (found through the actions that reference it), never
+        from the assessment's own opinion of itself. Idempotent: a second
+        call returns the stored verdict rather than recomputing it.
+        """
+        assessment_action = None
+        adoption_action = None
+        for action in self.actions.query():
+            params = action.params or {}
+            if params.get("assessment_id") != assessment_id:
+                continue
+            if params.get("action") == "accepted" or params.get("action") \
+                    == "rejected":
+                adoption_action = action
+            elif action.action_type == "induce":
+                assessment_action = action
+        if assessment_action is None:
+            raise StorageError(
+                f"unknown assessment_id {assessment_id!r}: no assessment "
+                "action references it")
+        outcome = assessment_action.outcome or {}
+        prediction_id = outcome.get("prediction_id")
+        if not prediction_id:
+            return {"assessment_id": assessment_id, "compared": False,
+                    "reason": "the assessment recorded no prediction id"}
+        prediction = self.predictions.get(prediction_id)
+        if prediction is None:
+            return {"assessment_id": assessment_id, "compared": False,
+                    "reason": "the referenced prediction no longer exists"}
+        if prediction.feedback is not None \
+                and prediction.feedback.get("induction_binding"):
+            return {"assessment_id": assessment_id, "compared": True,
+                    "verdict": prediction.feedback["induction_binding"],
+                    "note": "already bound: the stored verdict stands"}
+        if adoption_action is None:
+            return {"assessment_id": assessment_id, "compared": False,
+                    "reason": "no accept/reject decision was recorded for "
+                              "this assessment; nothing to bind against"}
+        adopted = bool((adoption_action.params or {}).get("action")
+                       == "accepted")
+        if not adopted:
+            # A rejection is not a wrong prediction: the agent declined to
+            # act, so the assessment's expectations were never given a
+            # chance to come true. Recorded, never scored as a miss.
+            verdict = {
+                "compared": False,
+                "status": "inconclusive",
+                "reason": "the recommendation was rejected or deferred, so "
+                          "the predicted consequence was never given a "
+                          "chance to occur",
+                "adoption_action_id": adoption_action.action_id,
+            }
+            prediction.feedback = dict(prediction.feedback or {})
+            prediction.feedback["induction_binding"] = verdict
+            self.predictions._save(prediction)
+            return {"assessment_id": assessment_id, "compared": False,
+                    "verdict": verdict}
+        induction_result = ((adoption_action.outcome or {}).get(
+            "induction_result") or {})
+        delta = self._induction_transition(induction_result)
+        created = delta["created"]
+        predicted = prediction.predicted or {}
+        formed = bool(created)
+        formation_pred = predicted.get("candidate_formation_prob")
+        compared: Dict[str, Any] = {}
+        not_compared: Dict[str, str] = {}
+        if formation_pred is None:
+            not_compared["candidate_formation_prob"] = "not predicted"
+        else:
+            compared["candidate_formation_prob"] = {
+                "predicted": formation_pred,
+                "actual": 1.0 if formed else 0.0,
+                "match": (float(formation_pred) >= 0.5) == formed,
+            }
+        status = "fulfilled" if formed else "missed"
+        verdict = {
+            "compared": True,
+            "status": status,
+            "entries_created": list(created),
+            "compared_fields": compared,
+            "not_compared": not_compared,
+            "adoption_action_id": adoption_action.action_id,
+            "note": ("an entry FORMING is not the same as publishable "
+                     "strategic knowledge: admission verification still "
+                     "decides that, and this verdict does not speak to it"),
+        }
+        prediction.feedback = dict(prediction.feedback or {})
+        prediction.feedback["induction_binding"] = verdict
+        self.predictions._save(prediction)
+        return {"assessment_id": assessment_id, "compared": True,
+                "verdict": verdict}
 
     def reject_induction(self, assessment_dict: Dict[str, Any], *,
                          reason: Optional[str] = None) -> Dict[str, Any]:
@@ -1847,6 +2299,14 @@ class ORHarness:
         }
         if cost_feedback is not None:
             result["cost_feedback"] = cost_feedback
+        # M6: a NORMAL solving action's knowledge prediction is evaluated
+        # here, against the evidence this very execution produced. This is
+        # the fast channel of the H loop — without it the knowledge
+        # predictions of ordinary executions would never be judged, which
+        # was the largest gap in the M6 plan's first version.
+        knowledge_feedback = self.evaluate_knowledge_execution(record)
+        if knowledge_feedback:
+            result["knowledge_feedback"] = knowledge_feedback
         # Index sync happens AFTER the fact is durable: the memory exists
         # whether or not the embedding call works, and the outcome is always
         # reported (never a silent divergence between bank and index).
@@ -1935,6 +2395,21 @@ class ORHarness:
         # nothing at all — a rehearsal must not touch the index either.
         if not dry_run:
             result["index_sync"] = self.index_sync.sync_entries()
+            # M6 slow channel: the knowledge predictions of the ORDINARY
+            # actions whose evidence this induction consolidated are judged
+            # now, against what the induction actually changed. Running it
+            # after the knowledge delta exists is what makes the verdict
+            # speak about a real transition rather than a rehearsal.
+            try:
+                scope_ids = execution_ids or result.get("execution_ids") \
+                    or []
+                consolidation = self.evaluate_knowledge_consolidation(
+                    result, scope_ids, strategy_id=strategy_id)
+                if consolidation:
+                    result["knowledge_feedback"] = consolidation
+            except Exception as exc:  # never fail a real induction for this
+                result["knowledge_feedback_error"] = (
+                    f"{type(exc).__name__}: {exc}")
         return result
 
     def _begin_induce_action(self, strategy_id: Optional[str],
@@ -2054,7 +2529,15 @@ class ORHarness:
             outcome=outcome)
         return {"action_id": maintenance["action_id"],
                 "episode_id": maintenance["episode_id"],
-                "business_result": business}
+                "business_result": business,
+                # The transition itself travels back with the summary so a
+                # caller (and the delayed knowledge evaluation) can judge
+                # what the induction changed without re-reading the action
+                # record. The full outcome stays persisted on the action —
+                # this is a convenience view of the same data, not a second
+                # source of truth.
+                "knowledge_delta": outcome["knowledge_delta"],
+                "knowledge_after": outcome["knowledge_after"]}
 
     def _enrich_entry(self, entry_id: str) -> None:
         """Inherit catalog vocabulary (strategy_type, actions) into an entry.
