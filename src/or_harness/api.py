@@ -30,13 +30,24 @@ from or_harness.core.storage import StorageError, Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
 from or_harness.profiling.profiler import derivation_report, profile_task
 from or_harness.strategy.catalog import load_catalog
+from or_harness.strategy.embedding_index import (
+    EmbeddingBackend,
+    EmbeddingIndex,
+    create_embedding_backend,
+    index_dir_for,
+)
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.gc import GarbageCollector
+from or_harness.strategy.index_sync import IndexSynchronizer
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank
 from or_harness.strategy.triggers import check_triggers, solver_advisories
+from or_harness.strategy.vector_recall import (
+    VectorRecallUnavailable,
+    recall_vectors,
+)
 from or_harness.world_model.actions import (
     ActionLog,
 )
@@ -54,6 +65,9 @@ from or_harness.world_model.state import (
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
     KnowledgeRef,
+    task_text,
+    task_text_digest,
+    task_text_from_payload,
     verified_knowledge_view,
 )
 
@@ -70,6 +84,7 @@ class ORHarness:
                  catalog_path: Optional[str] = None,
                  executor: Optional[SafePythonExecutor] = None,
                  world_model: Optional[WorldModelProvider] = None,
+                 embedding: Optional[EmbeddingBackend] = None,
                  planning: bool = True,
                  plan_mode: str = "advise",
                  induction_assessment: str = "advise"):
@@ -114,6 +129,22 @@ class ORHarness:
             raise ValueError(
                 "induction_assessment must be 'advise', 'shadow', or 'disabled'")
         self.induction_assessment_mode = induction_assessment
+        # Retrieval embedding backend: EXPLICITLY injected by the caller
+        # (same discipline as ``world_model``), else read from the
+        # OR_EMBEDDING_* environment, else None. None is a first-class
+        # state, not a failure: retrieval falls back to the profile path and
+        # says so (``degraded``). The backend is a DISCOVERY capability —
+        # it never scores, filters, or widens applicability.
+        self.embedding_backend = (embedding if embedding is not None
+                                 else create_embedding_backend())
+        self.embedding_index = (EmbeddingIndex(
+            index_dir_for(self.home), self.embedding_backend)
+            if self.embedding_backend is not None else None)
+        # Index synchronization (writes) — deliberately separate from recall
+        # (read-only). A failed sync is reported, never fatal.
+        self.index_sync = IndexSynchronizer(self.bank, self.sbank,
+                                           self.catalog, self.store,
+                                           self.embedding_index)
         # Episode budget declarations (task_id/episode_id -> {dim: limit}).
         # Declarations PERSIST in the store's meta table (declare_budget);
         # this dict is only an in-memory cache of what this instance has
@@ -1432,10 +1463,34 @@ class ORHarness:
     def recall(self, task: Dict[str, Any], *, top: int = 3,
                exclude: Optional[Sequence[str]] = None,
                memory_mode: str = "cost-aware",
-               code: Optional[str] = None) -> Dict[str, Any]:
+               code: Optional[str] = None,
+               include_unverified: bool = False,
+               vector_top_k: Optional[int] = None) -> Dict[str, Any]:
+        """Recall accumulated experience for this task.
+
+        TWO INDEPENDENT CHANNELS, never blended into one number:
+
+        - ``recommendations`` / ``available_solver_families`` /
+          ``solver_advisories``: the structural channel, unchanged —
+          applicable candidates with their evidence-based scores.
+        - ``vector_recall``: the text-similarity channel (embedding), which
+          surfaces memories whose TEXT is close regardless of structural
+          cell. Its ``similarity`` is a discovery signal only; it is never a
+          quality, cost, or risk estimate, and a cross-cell hit never enters
+          the target cell's statistics.
+
+        When the text channel cannot run (no backend, no task text, missing
+        or model-incompatible index, backend error) the structural result is
+        returned BY ITSELF with ``degraded`` explaining why, rather than
+        silently looking like a text search that found nothing.
+
+        READ-ONLY: the query text is embedded in memory and never written;
+        no index item is created and no migration is triggered.
+        """
         profile = self.profile(task, code)
         recs = self.selector.recall(profile, top=top, exclude=exclude,
-                                    memory_mode=memory_mode)
+                                    memory_mode=memory_mode,
+                                    include_unverified=include_unverified)
         solvers = available_families()
         result = {
             "profile": profile.to_dict(),
@@ -1446,6 +1501,17 @@ class ORHarness:
         profiling = profile.annotations.get("profiling") or {}
         if profiling.get("coupling_warnings"):
             result["coupling_warnings"] = profiling["coupling_warnings"]
+        # Text-similarity channel (discovery only). A failure here NEVER
+        # removes or modifies a structural result — it only explains itself.
+        try:
+            result["vector_recall"] = recall_vectors(
+                self, task_text(task),
+                top_k=vector_top_k or max(1, top),
+                include_unverified=include_unverified,
+                task_profile=profile)
+        except VectorRecallUnavailable as exc:
+            result["degraded"] = {"path": "profile_only",
+                                  "reason": str(exc)}
         return result
 
     def predict_cost(self, task: Dict[str, Any], strategy_id: str,
@@ -1510,6 +1576,69 @@ class ORHarness:
                                   note="no attempt-scope cost evidence for "
                                        "this strategy×profile pair")
 
+    # -- task texts (the retrieval document's source) ----------------------------
+
+    def capture_task_text(self, task: Dict[str, Any]) -> Optional[str]:
+        """Persist the task's text as ONE VERSION and return its digest.
+
+        Called on the write paths (``execute`` / ``record``) only — never on
+        a read path. Idempotent per version: the same task solved twice
+        re-uses the same row. A task carrying no textual field stores
+        nothing (an empty retrieval document would be matched against every
+        memory as a zero vector) and returns None, so the fact is honestly
+        reported as unindexed instead of being indexed as noise.
+        """
+        text = task_text(task)
+        if not text.strip():
+            return None
+        digest = task_text_digest(task)
+        self.store.put_task_text(str(task.get("task_id", "")), text, digest)
+        return digest
+
+    def _recover_task_text(self, record: ExecutionRecord) -> Optional[str]:
+        """Recover the text of an execution recorded without ``execute``.
+
+        Priority: (1) the digest the caller already supplied, looked up in
+        the task-text store; (2) the most recent REAL belief snapshot of the
+        task (``hypothetical=False``), whose frozen ``task_payload`` is the
+        task as it was — rebuilt through the SAME reader used at capture
+        time, and re-keyed by the FULL task digest (a snapshot's payload is
+        a subset of the task, so only the whole-task digest the snapshot
+        stores is authoritative); (3) nothing.
+
+        Nothing is ever INVENTED: no snapshot and no digest means the record
+        stays unindexed, visible only through profile retrieval,
+        ``inspect`` and ``task_texts_for``.
+        """
+        if record.task_text_digest:
+            stored = self.store.get_task_text(record.task_id,
+                                             record.task_text_digest)
+            if stored is not None:
+                return record.task_text_digest
+            # The caller named a version this memory does not hold: fall
+            # through to snapshot recovery rather than failing the record.
+        latest: Optional[BeliefSnapshot] = None
+        for snap in self.snapshots(task_id=record.task_id):
+            if snap.hypothetical:
+                continue
+            problem = snap.problem_state or {}
+            if not problem.get("task_digest"):
+                continue
+            if latest is None or (snap.created_at, snap.snapshot_id) > \
+                    (latest.created_at, latest.snapshot_id):
+                latest = snap
+        if latest is None:
+            return None
+        problem = latest.problem_state or {}
+        text = task_text_from_payload(problem.get("task_payload") or {})
+        digest = str(problem.get("task_digest"))
+        if not text.strip():
+            # No textual payload was frozen (the task carried a task_ref or
+            # had no text): the digest alone cannot reconstruct a document.
+            return None
+        self.store.put_task_text(record.task_id, text, digest)
+        return digest
+
     @staticmethod
     def _scale_mismatch(profile, cell) -> Optional[str]:
         """Lightweight scale-comparability check: a target scale feature
@@ -1547,6 +1676,11 @@ class ORHarness:
         # a self-reinforcing loop (strategy → code → profile → grouping →
         # future strategy choice).
         profile = self.profile(task)
+        # The text channel's source document: persisted here (a write path)
+        # so a later recall can embed this exact version. The digest goes on
+        # the record, making "the text this execution was produced under"
+        # checkable; a task with no text stores nothing.
+        task_text_ver = self.capture_task_text(task)
         # Unified action record (macro): the PRE snapshot is frozen BEFORE
         # execution; the action ends when the execution ends (independent
         # of the harness's later record decision — execute/record
@@ -1566,6 +1700,8 @@ class ORHarness:
         # extraction and coupling understanding are untouched.
         if task.get("coupling"):
             record.cir_snapshot = dict(task["coupling"])
+        if record.task_text_digest is None:
+            record.task_text_digest = task_text_ver
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -1647,7 +1783,19 @@ class ORHarness:
 
         Also reports staged-but-unrecorded executions for the same task, so
         the harness notices a dropped failure (e.g. an abandoned first
-        attempt) before it is forgotten."""
+        attempt) before it is forgotten.
+
+        Task text: ``record`` can be reached WITHOUT ``execute`` (the agent
+        may append a record directly), so the text link is resolved here too
+        — from the digest the caller supplied, else from the task's most
+        recent real belief snapshot (see :meth:`_recover_task_text`). A
+        legacy execution whose text cannot be honestly recovered keeps
+        ``task_text_digest=None`` and is simply not vector-indexed; it is
+        never fabricated.
+
+        Index synchronization is BEST EFFORT: the fact is appended first, and
+        an embedding failure is reported as ``index_sync`` (deferred) rather
+        than rolling anything back."""
         # Persist failure classification once — a first-class fact, not a
         # re-derived view (environment vs model errors feed solver advisories
         # and future failure-pattern induction).
@@ -1655,6 +1803,8 @@ class ORHarness:
         for failure in record.failures:
             if failure.error_class is None:
                 failure.error_class = classify_failure(record)
+        if record.task_text_digest is None:
+            record.task_text_digest = self._recover_task_text(record)
         # Explicit retention mark wins; otherwise keep the record's value.
         if retain_reason and retain_reason.strip():
             record.retention_reason = retain_reason.strip()
@@ -1697,6 +1847,10 @@ class ORHarness:
         }
         if cost_feedback is not None:
             result["cost_feedback"] = cost_feedback
+        # Index sync happens AFTER the fact is durable: the memory exists
+        # whether or not the embedding call works, and the outcome is always
+        # reported (never a silent divergence between bank and index).
+        result["index_sync"] = self.index_sync.sync_execution(record)
         if unrecorded:
             result["unrecorded_staged_executions"] = unrecorded
         return result
@@ -1776,6 +1930,11 @@ class ORHarness:
             raise
         if maintenance is not None:
             result["action"] = self._end_induce_action(maintenance, result)
+        # Knowledge changed, so the knowledge documents changed: refresh
+        # their index items (best effort, never blocking). A dry run writes
+        # nothing at all — a rehearsal must not touch the index either.
+        if not dry_run:
+            result["index_sync"] = self.index_sync.sync_entries()
         return result
 
     def _begin_induce_action(self, strategy_id: Optional[str],
@@ -1962,8 +2121,27 @@ class ORHarness:
             preds = self.predictions_query(task_id=task_id)
             return {"bank": "predictions", "count": len(preds),
                     "predictions": [p.to_dict() for p in preds]}
+        if bank == "texts":
+            # The retrieval SOURCE documents (not a knowledge bank): the
+            # documented look-up entry point for records that carry no
+            # vector. Without --task, every retained version is listed.
+            if task_id is None:
+                rows = self.store.conn.execute(
+                    "SELECT task_id, text_digest, text, created_at FROM "
+                    "task_texts ORDER BY task_id ASC, created_at DESC"
+                ).fetchall()
+                entries = [{"task_id": str(r["task_id"]),
+                            "text_digest": str(r["text_digest"]),
+                            "text": str(r["text"]),
+                            "created_at": float(r["created_at"])}
+                           for r in rows]
+            else:
+                entries = [{"task_id": task_id, **row}
+                           for row in self.store.task_texts_for(task_id)]
+            return {"bank": "texts", "count": len(entries),
+                    "task_texts": entries}
         raise ValueError("bank must be experience|strategic|archive|"
-                         "actions|snapshots|predictions")
+                         "actions|snapshots|predictions|texts")
 
     def collect_garbage(self, mode: str = "compact",
                         dry_run: bool = False) -> Dict[str, Any]:
@@ -1971,7 +2149,34 @@ class ORHarness:
 
     def retire(self, entry_id: str, reason: str) -> Dict[str, Any]:
         card = self.sbank.retire(entry_id, reason=reason)
+        # The entry left the hot store, so its vector must leave the index
+        # too: a vector that outlives its record would surface a claim that
+        # no longer exists.
+        self.index_sync.forget_entry(entry_id)
         return {"retired": entry_id, "cold_archive_card": card.to_dict()}
+
+    # -- retrieval index maintenance ----------------------------------------------
+
+    def rebuild_index(self, layer: str = "both",
+                      dry_run: bool = False) -> Dict[str, Any]:
+        """Rebuild the retrieval index from the current facts and entries.
+
+        EXPLICIT maintenance (first build, repair after a model change,
+        settling a deferred sync) — not a routine path: ``record`` /
+        ``induce`` keep the index fresh incrementally. ``layer`` is
+        ``"both"`` / ``"execution"`` / ``"strategic"``; ``dry_run`` counts
+        what would be indexed and touches nothing.
+
+        This is a WRITE operation, so it is the right place for it: unlike
+        ``recall`` / ``inspect`` / ``doctor`` it may embed, write files and
+        re-key vectors. It never rewrites a fact or an entry — only derived
+        index data.
+        """
+        return self.index_sync.rebuild(layer=layer, dry_run=dry_run)
+
+    def index_health(self) -> Dict[str, Any]:
+        """Read-only index health (counts, model id, stale/missing items)."""
+        return self.index_sync.health()
 
     def doctor(self) -> Dict[str, Any]:
         reports = probe_all()
@@ -1988,6 +2193,7 @@ class ORHarness:
             # open path never rewrites a bank) so an upgraded database is
             # visibly diagnosed instead of silently mysterious.
             "index_health": self.bank.index_health(),
+            "retrieval_index": self.index_health(),
             "pending_staged_executions": [
                 {"execution_id": p.execution_id, "task_id": p.task_id,
                  "strategy_id": p.strategy_id,

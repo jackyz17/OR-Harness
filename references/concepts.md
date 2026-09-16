@@ -56,6 +56,7 @@ Key principles:
 
 - **CIR before model**: the CIR does not require a `model` field. The model is an intermediate representation written AFTER the strategy is chosen; re-running `orx profile` then cross-checks CIR ↔ model, but the model is never required to create a CIR.
 - **The profile retrieves, evidence decides**: the profile (including the CIR-derived scalar signature) is only the retrieval key — it decides WHICH historical evidence is comparable to this problem. The strategy choice itself rests on the expected quality/cost/risk carried by that evidence (entries, conditional statistics, or world-model predictions), never on the profile alone.
+- **Discovery and reuse are separate operations**: text similarity (embedding) decides which memories are SEEN; structural keys and applicability predicates decide whether a seen memory may be APPLIED. Two nearly identical tasks whose coupling lands in different cells are invisible to each other through the structural channel — that is the aggregation rule working as intended, not a defect — so the text channel exists to surface them. What must never happen is the reverse leak: a `different_cell` hit's observed numbers joining the target cell's statistics, or a text similarity being read as a quality/cost/risk estimate. The score formula, `for_profile`, `evidence_predicates` and `group_key` are therefore untouched by retrieval, and `similarity` is reported as its own field, never folded into a score.
 - **Structure first, scalars second**: scalar coupling scores (rc, tc, rx) are derived from the structure; they are summaries, never substitutes for the structure itself.
 - **Co-occurrence is structural evidence only**: constraint-variable co-occurrence produces generic `depends_on` edges. A semantic relation (`uses_resource`, `shares_resource`, `competes_for`) requires additional entity/constraint semantics.
 - **Domain-general**: all `kind`/`type` fields in the CIR are free-form strings — the schema never hard-codes supply-chain-specific vocabulary.
@@ -81,6 +82,15 @@ A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this grou
 Strict Evidence ↔ Knowledge linkage is an **induction-time** requirement **by target design**: evidence must support and validate a candidate before admission. This is a migration target — today entries are born `candidate` and forward prediction checks still run online; moving admission validation offline is the next Induction round's job. Once admitted (and also under the current regime), an entry's continued validity does NOT depend on preserving its original supporting evidence — compacting or deleting old evidence never invalidates an entry. New evidence accumulates normally and influences knowledge again at the **next induction cycle**.
 
 When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet.
+
+## Task texts: a retrieval attachment, not a third bank
+
+The task-text versions captured on the write paths (`task_texts`, keyed by `(task_id, text_digest)`) are neither facts about outcomes nor derived beliefs. They are the **source documents** of text retrieval: a task's own text, keyed by a digest of the whole task payload (`task_digest`), referenced from each `ExecutionRecord` via `task_text_digest`. Consequences of that distinction:
+
+- They enter no statistic, carry no lifecycle, and cannot be recalled as evidence — they are input to the discovery channel, never an answer.
+- One `task_id` may have SEVERAL versions: solving the same problem with changed requirements produces different digests, so each execution stays bound to the text that was actually in force. Re-capturing the same version is idempotent (the primary key is `(task_id, text_digest)`).
+- A legacy record whose text was never captured keeps `task_text_digest = None` and is simply not vector-indexed. It is labelled (counted under `vector_recall.unindexed`) and remains fully visible through the profile channel and `orx inspect --bank texts`, and the text is never reconstructed from a guess.
+- The index built from them (`{home}/index/*.embedding.json`) stores `{id, doc_digest, vector}` only — never a snapshot of the record. Recall re-reads the current record by id, so validity is always current and a changed document is detected by digest mismatch (reported as `stale`, excluded) rather than being served as a current similarity.
 
 ## The catalog: structural vocabulary, not prior knowledge
 

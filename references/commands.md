@@ -29,15 +29,83 @@ The `modeling_guidance` entries each carry `{type, members, resource, implicatio
 
 **Profile side** (`result.profile` + `result.derivation`): coupling derivation priority — CIR (task JSON `coupling` field, best — derived from its relations/indexes) > task JSON `model` field (measured from declared constraints) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. The `derivation` report carries per-dimension value/origin/notes, `model_verification` (L1+L2 issues) when a model is given, `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary, and `cir_warnings` when both CIR and model are present. The retrieval signature and the modeling guidance come from the SAME structure, not two parallel lines.
 
-## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--code solve.py]`
+## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--include-unverified] [--code solve.py]`
 
-Recalls accumulated experience for the task's problem signature. Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: **published** Strategic Knowledge entry → conditional statistics → **no evidence** (`evidence="no_memory"`, `score=-inf`, `confidence=0`). An entry that is not published (an unverified candidate, or one whose admission check was `refuted` / `insufficient_evidence`) is skipped, so recall falls back to the statistics — which is what "we have a candidate but no knowledge yet" should look like. `--include-unverified` is the offline/inspection view that returns such an entry with a warning.
+Recalls accumulated experience through **two independent channels**. They answer different questions and are never blended into one number.
+
+**Structural channel — "what may I REUSE?"** (`result.recommendations[]`). Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: **published** Strategic Knowledge entry → conditional statistics → **no evidence** (`evidence="no_memory"`, `score=-inf`, `confidence=0`). An entry that is not published (an unverified candidate, or one whose admission check was `refuted` / `insufficient_evidence`) is skipped, so recall falls back to the statistics — which is what "we have a candidate but no knowledge yet" should look like.
+
+**Text channel — "what should I LOOK AT?"** (`result.vector_recall`). The task text is embedded and compared with every indexed memory, **with no structural pre-filter**, so a nearly identical problem from a different structural cell still surfaces. `similarity` is the raw text cosine: it is **never** a quality, cost, or risk estimate and never enters a score.
+
+```jsonc
+"vector_recall": {
+  "backend": {"source": "remote|local-hashing", "model_id": "...", "dimension": 384},
+  "execution_evidence": [{
+    "execution_id": "ex_...", "task_id": "t1", "strategy_id": "S04",
+    "similarity": 0.87,                 // discovery signal only
+    "task_text_excerpt": "…first 200 chars of the memory's own text…",
+    "task_text_digest": "…",
+    "observed_quality": {...}, "observed_cost": {...},   // what ACTUALLY happened
+    "failures": 2, "status": "feasible", "measurement_scope": "attempt",
+    "profile_cell": "family=vrp|rc[0.25,0.50]|...",
+    "structural_match": "same_cell|different_cell|unknown"
+  }],
+  "strategic_knowledge": [{
+    "entry_id": "se_...", "strategy_id": "S04", "similarity": 0.81,
+    "claim_text": "…applicability notes + strategy description + readable predicates…",
+    "expected_quality_hat": 0.9, "expected_cost_hat": {...},
+    "cost_measured": [...], "failure_prob": 0.1,
+    "status": "candidate", "verification_state": "verified", "support_n": 3,
+    "applicability": [...], "risk_conditions": [...], "predicates": {...},
+    "structural_match": "applies|conflicts|unknown",
+    "reusable": true, "reason": "…present when not reusable…"
+  }],
+  "stale_indexed": {"execution_evidence": 0, "strategic_knowledge": 0},
+  "unindexed": {"execution_evidence": 0, "strategic_knowledge": 0,
+                "note": "query these via `orx inspect --bank experience|strategic`"}
+}
+```
+
+Field discipline: `observed_*` (facts) and `expected_*` (knowledge commitments) are separate fields — a promise is never read as a measurement. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the exact contradiction and `unknown` means the value needed to decide is missing (**missing information is never applicability**). `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are excluded **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled.`stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
+
+**Degradation is always explicit.** When the text channel cannot run, `result.degraded = {"path": "profile_only", "reason": ...}` explains it, and the structural result is returned intact:
+
+| Situation | `degraded.reason` |
+|---|---|
+| No embedding backend configured (no env, no injection) | `no embedding backend configured` |
+| Task JSON has no textual field | `no task text in task JSON` |
+| No index file yet | `index missing; run orx rebuild-index` |
+| Index built by a different embedding model | `embedding model changed (was X, now Y)` |
+| Embedding call failed | `embedding backend error: ...` |
+
+`vector_recall.unindexed` counts current memories with no vector — legacy records whose text was never captured, or a write whose index sync was deferred — and states where to find them (`orx inspect --bank experience|strategic`, `--bank texts`, and the profile channel). They are labelled, never silently dropped.
+
+`--include-unverified` is the offline/inspection view: unpublished candidates appear in BOTH channels (the structural path returns them with a warning; the text path stops filtering by admission state).
 
 When no experience exists for any strategy, all candidates return with `evidence="no_memory"` — the catalog still provides the strategy vocabulary (applicability, actions, fallback, solver family) but makes no quality/cost/risk claims. Pick based on structural fit and your own judgment.
 
-Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before). Note: when `evidence="conditional_stats"`, the `expected` fields report OBSERVED means (a recount from the Evidence Bank), not a knowledge commitment — no interval, no calibration track, no lifecycle.
+Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis, cost_known_dims, cost_basis_dims}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before). Note: when `evidence="conditional_stats"`, the `expected` fields report OBSERVED means (a recount from the Evidence Bank), not a knowledge commitment — no interval, no calibration track, no lifecycle.
 
 `--memory-mode`: `none` (no memory consulted; all candidates return `no_memory`) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
+
+**Read-only.** `recall` writes nothing — the query text is embedded in memory only, no text row is created, no index item is touched, no migration runs. Text is persisted on the WRITE paths (`execute` / `record`).
+
+## Embedding configuration (the text channel)
+
+The text channel is **off unless a real embedding model is configured**, deliberately: a lexical hash is not semantic retrieval, and presenting one as semantic similarity would make text matching look meaningful when it is not.
+
+| Setting | Meaning |
+|---|---|
+| `OR_EMBEDDING_BASE_URL` | OpenAI-compatible endpoint base (e.g. `https://host/v1`) |
+| `OR_EMBEDDING_MODEL` | embedding model name |
+| `OR_EMBEDDING_API_KEY` | credential (sent as a bearer header, never persisted) |
+| `OR_EMBEDDING_BACKEND` | optional: `auto` (default), `local-hashing`, `none` |
+
+These are NOT the `OR_WM_*` chat-model variables: the two models may be different endpoints with different dimensions. `auto` uses the endpoint only when all three of base URL / model / key are present, and otherwise returns no backend at all. It never silently substitutes the local hashing backend — that one is selected explicitly (`OR_EMBEDDING_BACKEND=local-hashing`) for hermetic offline runs and tests, and its index (`model_id=local-hashing-embedding-v1`) is invisible to a real model and vice versa, so two vector spaces never mix. A backend can also be injected directly in Python: `ORHarness(home=..., embedding=MyBackend())`.
+
+The index lives in `{home}/index/execution_evidence.embedding.json` and `{home}/index/strategic_knowledge.embedding.json`. Each item is `{id, doc_digest, vector}` — **no record snapshot**: recall re-reads each hit's CURRENT record by id and compares `doc_digest`, so a stale item can only cause a miss (reported under `vector_recall.stale_indexed`), never a wrong answer. The whole index is derived data: safe to delete, rebuildable at any time.
+
+If the text is English/CJK mixed, both are handled (the local backend tokenizes CJK per character; a real model does its own tokenization).
 
 ## `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME [--verification basic]`
 
@@ -45,7 +113,9 @@ You write `solve.py` following the strategy's actions (the framework never gener
 
 The profile used in `execute` is the same frozen pre-strategy signature from `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only.
 
-Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` UNMEASURED — that dimension is yours to backfill, `cost_measured` mask, `solver_runtime_provenance`, `execution_features` with solver diagnostics if the solver reported any, and `cir_snapshot` = the CIR that was actually solved when the task carries a `coupling` field). **Nothing is recorded yet.**
+Every execution is automatically staged in a pending area (successes and failures alike) — staging is a safety net, not recording. Result: `result.execution` = a full ExecutionRecord (id, quality check, CostVector with `llm_tokens=0` UNMEASURED — that dimension is yours to backfill, `cost_measured` mask, `solver_runtime_provenance`, `execution_features` with solver diagnostics if the solver reported any, `cir_snapshot` = the CIR that was actually solved when the task carries a `coupling` field, and `task_text_digest` = the task-text VERSION this execution was produced under). **Nothing is recorded yet.**
+
+`execute` also persists the task text (`task_texts`, keyed by `(task_id, text_digest)`) — that is where the retrieval document comes from. Solving the SAME `task_id` with different content creates separate versions, so each execution stays linked to the text actually in force, and the two can never be confused later.
 
 ## `orx predict --task t.json --strategy S [--code solve.py]`
 
@@ -58,6 +128,8 @@ Appends the fact to the Execution Evidence Bank, then runs the automatic chain: 
 **Recording never changes knowledge.** No entry is promoted, demoted, or woken here — the frozen checks are replayed by the next `orx induce`.
 
 `--retain-reason <free text>` explicitly marks this episode as representative evidence, reserved for future compaction policies. When omitted, any mark the record already carries is preserved — no automatic marking is performed.
+
+**Task text and index sync (best effort).** `record` can be reached WITHOUT `execute`, so it resolves the text link itself: the digest the caller supplied, else the task's most recent real belief snapshot (`hypothetical=False`, whose frozen `task_payload` is rebuilt through the same reader used at capture time). If neither exists, `task_text_digest` stays `None` and the record is simply not vector-indexed — the text is **never invented**, and the memory keeps its full profile-based visibility. After the fact is durable, the execution's index item is refreshed; an embedding failure does **not** roll anything back and is reported as `result.index_sync = {state: "deferred", reason: ...}` (recover later with `orx rebuild-index`). `state` is `synced` / `deferred` / `skipped` (`skipped` = no backend configured, or the text is unavailable).
 
 Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
 
@@ -73,11 +145,13 @@ What the verdict requires, concretely: a declared criterion the framework can ev
 
 Each element of `result.results` reports `created` (entry id) / `updated` (entry id) / `skipped` (human-readable reason: fewer than 2 executions, needs independent evidence, cold-archive veto, restatement, or `recorded as an unverified candidate`), plus `verification` when a check ran — read the reason, it tells you what the memory is still missing.
 
-`--note "TEXT"` (optional, repeatable, you phrase it): free-text applicability notes attached to the entries this call creates or refreshes. They are kept for the reader and shown by `inspect`; they never enter scoring — the framework does not pretend to verify a sentence.
+`--note "TEXT"` (optional, repeatable, you phrase it): free-text applicability notes attached to the entries this call creates or refreshes. They are kept for the reader and shown by `inspect`; they never enter scoring — the framework does not pretend to verify a sentence. Because these notes are part of an entry's retrieval document, the knowledge index items are refreshed after this call (`result.index_sync`, best effort — same `synced`/`deferred`/`skipped` contract as `record`). `--dry-run` writes nothing, index included.
 
-## `orx inspect --bank experience|strategic|archive|actions|snapshots [--task ID] [--strategy S] [--status candidate] [--episode EP]`
+## `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts [--task ID] [--strategy S] [--status candidate] [--episode EP]`
 
 Queries a memory layer. Strategic entries include `prediction_track {n_predictions, hit_rate, calibration_error, consecutive_misses}`, `status` (candidate|validated|suspect|dormant), `provenance` (execution ids). `actions` / `snapshots` query the world-model substrate (below): the unified action log and the frozen belief snapshots.
+
+`--bank texts` is the **retrieval source documents** — the task-text versions captured on the write paths, keyed by `(task_id, text_digest)`. It is not a knowledge bank: it makes no claim, feeds no statistic, and has no lifecycle; it exists so the embedding index has a source and so a memory with no vector is still findable. Use it to inspect **which text version an execution was produced under**: every execution carries `task_text_digest`, and `--task ID` lists that task's versions. With `--task` omitted, every retained version is listed. This is the documented look-up entry point for the records counted under `vector_recall.unindexed`.
 
 ## `orx snapshot --task t.json [--episode ep1]`
 
@@ -139,8 +213,24 @@ Disposes only of the derived layer. `compact` is **deferred**: lossy evidence co
 
 ## `orx retire --entry ID --reason "..."`
 
-Your explicit, irreversible confirmation: moves an entry to the cold archive.
+Your explicit, irreversible confirmation: moves an entry to the cold archive. Its vector leaves the retrieval index with it, so a later `recall` can never surface the retired advice.
+
+## `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
+
+Explicit retrieval-index maintenance — the only command that embeds in bulk and the only place index vectors are (re)created in volume. It is needed in exactly three situations:
+
+1. **First build.** Until an index exists, `recall` reports `degraded` ("index missing; run `orx rebuild-index`") and uses the structural channel only.
+2. **Embedding-model change.** An index built by another `model_id` is refused WHOLESALE — vectors from two models are not comparable, so it is never partially reused.
+3. **Settling a deferred sync.** If an embedding call failed during `record` / `induce`, that memory is unindexed (`result.index_sync.state = "deferred"`) until a rebuild picks it up.
+
+Not a routine path: `record` refreshes the execution item, `induce` refreshes the knowledge items, and `retire` drops the retired vector.
+
+`--dry-run` counts what would be indexed and **writes nothing at all** — no embedding call, no index file, not even the index directory. Content that cannot be honestly indexed is reported as `unindexable` (a record whose text was never captured is never fabricatingly indexed). The index is derived data: rebuilding it never changes a fact or an entry.
+
+Result: `{dry_run, layers: {"execution_evidence"|"strategic_knowledge": {items, model_id, dimension, unindexable}}, backend}`. Without a configured backend and without `--dry-run`, the command fails with exit code 2 and an explicit message rather than silently doing nothing.
 
 ## `orx doctor`
 
-Self-check: solver availability (7 adapters probed), memory sizes, staged-but-unrecorded executions (audit your pending area), home path.
+Self-check: solver availability (7 adapters probed), memory sizes, staged-but-unrecorded executions (audit your pending area), home path, and **retrieval-index health** (`result.retrieval_index`).
+
+Index health per layer reports the index item count vs the number of CURRENT documents, plus `stale` (indexed with an out-of-date document digest), `missing` (a current document with no item), and `orphaned` (an item whose record is gone). `configured: false` means no embedding backend is present, so recall will use the structural channel only. **Read-only**: `doctor` builds nothing and never triggers an index write — a missing index is reported with the `orx rebuild-index` hint instead.

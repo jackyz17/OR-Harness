@@ -241,7 +241,6 @@ class Selector:
             return self._from_stats(strategy, cell, memory_mode,
                                     norms, cost_basis=cost_basis)
         return self._from_no_evidence(strategy, norms=norms)
-
     def _entry_confidence(self, entry: StrategicEntry, profile: ProblemProfile) -> float:
         # Confidence scales with support (new entries get a grace floor), and
         # cross-family generalization is explicitly discounted.
@@ -263,7 +262,17 @@ class Selector:
     def _from_entry(self, strategy: Strategy, profile: ProblemProfile,
                     entry: StrategicEntry, memory_mode: str,
                     norms: Optional[Dict[str, float]] = None,
-                    cost_basis: Optional[List[str]] = None) -> Recommendation:
+                    cost_basis: Optional[List[str]] = None
+                    ) -> Recommendation:
+        """Recommendation from a Strategic Knowledge entry.
+
+        An entry that is not publishable is only reachable through the
+        explicit offline view (``include_unverified=True``): the framework
+        HOLDS that claim, it has not admitted it as knowledge. Scoring it the
+        same way while attaching an explicit warning keeps the inspection
+        view useful without letting the caller mistake an unchecked claim for
+        a verified one.
+        """
         confidence = self._entry_confidence(entry, profile)
         cross_family = self._is_cross_family(entry, profile)
         cost = entry.expected_cost_hat
@@ -272,6 +281,12 @@ class Selector:
                  - self.beta * cost_term
                  - self.gamma * entry.failure_prob)
         warnings: List[str] = []
+        if not is_publishable(entry):
+            warnings.append(
+                f"UNPUBLISHED candidate {entry.entry_id} "
+                f"(verification={entry.verification_state}): the framework "
+                "holds this claim, it has not been admitted as knowledge — "
+                "its estimates support inspection, not a decision")
         if entry.status == "suspect":
             score *= SUSPECT_SCORE_FACTOR
             warnings.append(

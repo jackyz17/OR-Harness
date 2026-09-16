@@ -78,6 +78,58 @@ def _task_payload(task: Dict[str, Any]) -> Dict[str, Any]:
             if task.get(k) is not None}
 
 
+#: Keys whose CONTENT is the problem's own text, in reading order. A subset
+#: of :data:`_TASK_PAYLOAD_KEYS` so the text of a task can be rebuilt from a
+#: stored belief snapshot's ``problem_state.task_payload`` with IDENTICAL
+#: output — that is how ``record`` recovers the text of an execution that
+#: never went through ``execute``. ``family`` is excluded on purpose: it is a
+#: grouping LABEL, not prose, and counting it would make almost every task
+#: "have text" — hiding the honest "no task text" state behind a one-word
+#: document that matches nothing meaningfully.
+TEXT_TASK_KEYS = ("description", "objective", "requirements",
+                  "business_rules", "constraints", "spec")
+
+
+def task_text(task: Dict[str, Any]) -> str:
+    """The task's own text — the retrieval document's dominant input.
+
+    Reading order over the textual task fields; non-string values are
+    serialized compactly so a structured ``spec`` still contributes. Empty
+    string when the task JSON carries no textual field at all: an empty
+    retrieval document is reported as "no task text" rather than matched
+    against every memory as a zero vector.
+    """
+    return task_text_from_payload(_task_payload(task))
+
+
+def task_text_from_payload(payload: Optional[Dict[str, Any]]) -> str:
+    """The text of a stored task payload (see :func:`task_text`)."""
+    data = payload or {}
+    parts: List[str] = []
+    for key in TEXT_TASK_KEYS:
+        value = data.get(key)
+        if value is None:
+            continue
+        text = (value.strip() if isinstance(value, str)
+                else json.dumps(value, ensure_ascii=False, sort_keys=True))
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
+
+def task_text_digest(task: Dict[str, Any]) -> str:
+    """Version key of a task text: the digest of the WHOLE task payload.
+
+    Reuses :func:`_stable_digest` — the same convention
+    ``BeliefSnapshot.problem_state.task_digest`` already uses — so one task
+    version has ONE identity across the snapshot layer, the execution fact,
+    and the retrieval index. The digest moves whenever any part of the task
+    changes (including annotations or the model), which is exactly what makes
+    "the text this execution was produced under" checkable.
+    """
+    return _stable_digest(task)
+
+
 @dataclass
 class KnowledgeRef:
     """A value copy of one strategic entry's decision-relevant fields.

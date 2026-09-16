@@ -71,15 +71,38 @@ def _harness(args) -> ORHarness:
 
 def _summarize_recall(result: Dict[str, Any]) -> str:
     recs = result["recommendations"]
+    parts: List[str] = []
     if not recs:
-        return "No applicable strategies."
-    top = recs[0]
-    parts = [f"Top candidate: {top['strategy_id']} ({top['name']}), "
-             f"score {top['score']}, evidence={top['evidence']}, "
-             f"E[Q]={top['expected']['quality']}, "
-             f"P(fail)={top['expected']['failure_prob']}."]
-    if top["risk_warnings"]:
-        parts.append("Warnings: " + "; ".join(top["risk_warnings"]))
+        parts.append("No applicable strategies.")
+    else:
+        top = recs[0]
+        parts.append(f"Top candidate: {top['strategy_id']} ({top['name']}), "
+                     f"score {top['score']}, evidence={top['evidence']}, "
+                     f"E[Q]={top['expected']['quality']}, "
+                     f"P(fail)={top['expected']['failure_prob']}.")
+        if top["risk_warnings"]:
+            parts.append("Warnings: " + "; ".join(top["risk_warnings"]))
+    vector = result.get("vector_recall")
+    if vector:
+        n_exec = len(vector.get("execution_evidence") or [])
+        n_kn = len(vector.get("strategic_knowledge") or [])
+        backend = vector.get("backend") or {}
+        parts.append(f"Text similarity ({backend.get('model_id')}): "
+                     f"{n_exec} execution(s), {n_kn} knowledge entr(y/ies) "
+                     "surfaced. Similarity is a DISCOVERY signal only — "
+                     "cross-cell hits are labels, never reusable "
+                     "statistics.")
+        unindexed = vector.get("unindexed") or {}
+        if unindexed.get("execution_evidence") or \
+                unindexed.get("strategic_knowledge"):
+            parts.append(f"{unindexed.get('execution_evidence', 0)} rejected "
+                         "candidate(s) are excluded from the text channel "
+                         "(no vector yet); they remain visible via "
+                         "profile retrieval and `orx inspect`. See "
+                         "vector_recall.unindexed.note.")
+    elif result.get("degraded"):
+        parts.append(f"Text search skipped ({result['degraded']['reason']}); "
+                     "recall fell back to profile matching.")
     advisories = result.get("solver_advisories") or []
     for adv in advisories:
         parts.append(f"Solver advisory: {adv['solver']} has "
@@ -206,7 +229,8 @@ def cmd_recall(args) -> int:
         code = Path(args.code).read_text(encoding="utf-8") if args.code else None
         result = h.recall(task, top=args.top,
                           exclude=args.exclude or [],
-                          memory_mode=args.memory_mode, code=code)
+                          memory_mode=args.memory_mode, code=code,
+                          include_unverified=args.include_unverified)
         return _emit(result, _summarize_recall(result))
     finally:
         h.close()
@@ -427,7 +451,7 @@ def cmd_inspect(args) -> int:
         noun = {"experience": "records", "strategic": "entries",
                 "archive": "cards", "actions": "actions",
                 "snapshots": "snapshots",
-                "predictions": "predictions"}[args.bank]
+                "predictions": "predictions", "texts": "task texts"}[args.bank]
         if count == 1:
             noun = noun[:-1]           # "1 card", not "1 cards"
         detail = ""
@@ -442,6 +466,11 @@ def cmd_inspect(args) -> int:
             detail = (" Actions carry lifecycle status (running = begun, "
                       "not ended) and, for induce, a business result "
                       "separate from the lifecycle status.")
+        elif args.bank == "texts":
+            detail = (" These are the retrieval SOURCE documents, not a "
+                      "knowledge bank: they feed the embedding index and "
+                      "are the look-up entry point for records that carry "
+                      "no vector.")
         return _emit(result, f"{count} {noun} in {args.bank} bank"
                              + (f" (status={args.status})" if args.status else "")
                              + "." + detail)
@@ -718,6 +747,40 @@ def cmd_retire(args) -> int:
         h.close()
 
 
+def cmd_rebuild_index(args) -> int:
+    """Explicit retrieval-index maintenance (first build / repair / model
+    change). The only path allowed to embed in bulk — recall never writes."""
+    h = _harness(args)
+    try:
+        result = h.rebuild_index(layer=args.layer, dry_run=args.dry_run)
+        if h.embedding_index is None and not args.dry_run:
+            return _fail("no embedding backend configured: set "
+                         "OR_EMBEDDING_BASE_URL, OR_EMBEDDING_MODEL, and "
+                         "OR_EMBEDDING_API_KEY before rebuilding the index")
+        if args.dry_run:
+            layers = result.get("layers") or {}
+            detail = "; ".join(
+                f"{name}: {info['would_index']} document(s)"
+                + (f", {info['unindexable']} unindexable"
+                   if info.get("unindexable") else "")
+                for name, info in layers.items())
+            return _emit(result, f"Index rebuild dry run — {detail}. No "
+                                 "embedding call was made and no index file "
+                                 "was written or modified.")
+        layers = result.get("layers") or {}
+        detail = "; ".join(
+            f"{name}: {info.get('items')} item(s) under "
+            f"{info.get('model_id')}"
+            + (f", {info['unindexable']} unindexable"
+               if info.get("unindexable") else "")
+            for name, info in layers.items())
+        return _emit(result, f"Retrieval index rebuilt — {detail}. The index "
+                             "is derived data: it can be rebuilt at any time "
+                             "and never changes a fact or an entry.")
+    finally:
+        h.close()
+
+
 def cmd_doctor(args) -> int:
     h = _harness(args)
     try:
@@ -728,11 +791,33 @@ def cmd_doctor(args) -> int:
         index_note = (f" {stale} row(s) carry a stale group_l1 index (read "
                       "correctly; the index is derived from family)."
                       if stale else "")
+        retrieval = result.get("retrieval_index") or {}
+        if not retrieval.get("configured"):
+            retrieval_note = (" Text retrieval: no embedding backend "
+                              "configured — recall uses profile matching "
+                              "only (reported as degraded).")
+        else:
+            pieces = []
+            for name, info in (retrieval.get("layers") or {}).items():
+                if not info.get("exists"):
+                    pieces.append(f"{name}: index missing "
+                                  "(`orx rebuild-index`)")
+                elif not info.get("usable"):
+                    pieces.append(f"{name}: unusable — {info.get('reason')}")
+                else:
+                    pieces.append(
+                        f"{name}: {info.get('count')} item(s) vs "
+                        f"{info.get('documents')} current document(s), "
+                        f"{info.get('stale')} stale, "
+                        f"{info.get('missing')} missing, "
+                        f"{info.get('orphaned')} orphaned")
+            retrieval_note = (f" Text retrieval ({retrieval.get('backend')}): "
+                              + "; ".join(pieces) + ".")
         return _emit(result,
                      f"Home: {result['home']}. Available solvers: "
                      f"{', '.join(avail) or 'none'}. Missing: "
                      f"{', '.join(missing) or 'none'}. Memory: "
-                     f"{result['memory']}." + index_note)
+                     f"{result['memory']}." + index_note + retrieval_note)
     finally:
         h.close()
 
@@ -780,6 +865,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--exclude", nargs="*", default=[])
     p.add_argument("--memory-mode", default="cost-aware",
                    choices=["none", "cases", "strategic", "cost-aware"])
+    p.add_argument("--include-unverified", action="store_true",
+                   help="offline/inspection view: also surface UNPUBLISHED "
+                        "candidates (unverified / insufficient_evidence) "
+                        "in both channels. Default excludes them: a candidate "
+                        "is held by the framework, not knowledge.")
     p.set_defaults(func=cmd_recall)
 
     p = sub.add_parser("predict",
@@ -870,7 +960,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("inspect", help="query the memory layers")
     p.add_argument("--bank", default="experience",
                    choices=["experience", "strategic", "archive",
-                            "actions", "snapshots", "predictions"])
+                            "actions", "snapshots", "predictions", "texts"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
@@ -992,6 +1082,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--entry", required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_retire)
+
+    p = sub.add_parser(
+        "rebuild-index",
+        help="rebuild the retrieval (embedding) index from the current facts "
+             "and entries — explicit maintenance, not a routine path")
+    p.add_argument("--layer", default="both",
+                   choices=["both", "execution", "strategic"],
+                   help="which index to rebuild (default: both)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="count what would be indexed; touches nothing — no "
+                        "embedding call, no index file written")
+    p.set_defaults(func=cmd_rebuild_index)
 
     p = sub.add_parser("doctor", help="environment self-check")
     p.set_defaults(func=cmd_doctor)

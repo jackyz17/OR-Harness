@@ -765,6 +765,15 @@ class ExecutionRecord:
     #: against a post-hoc re-read of current estimates. None when no
     #: prediction was supplied.
     prediction_snapshot: Optional[PredictionSnapshot] = None
+    #: The task-text VERSION this execution was produced under
+    #: (``task_texts.text_digest``). It is the retrieval document's identity:
+    #: the same ``task_id`` solved with different content yields different
+    #: digests, so each execution stays linked to the text actually in force.
+    #: None for LEGACY records and for tasks whose text was never captured —
+    #: an absent link is never back-filled with a guess (the text cannot be
+    #: recovered honestly, so the record is simply not vector-indexed and
+    #: stays visible through profile-only retrieval and ``task_texts_for``).
+    task_text_digest: Optional[str] = None
     #: The unified action record this execution belongs to (world-model M1
     #: macro action). Not serialized into the fact payload — the linkage
     #: lives on the action side (``action_records.linked_execution_id``);
@@ -822,6 +831,7 @@ class ExecutionRecord:
             "prediction_snapshot": (self.prediction_snapshot.to_dict()
                                     if self.prediction_snapshot is not None
                                     else None),
+            "task_text_digest": self.task_text_digest,
         }
 
     @classmethod
@@ -861,6 +871,8 @@ class ExecutionRecord:
             measurement_scope=str(data.get("measurement_scope", "attempt")),
             solver_runtime_provenance=data.get("solver_runtime_provenance"),
             prediction_snapshot=snapshot,
+            task_text_digest=(str(data["task_text_digest"])
+                              if data.get("task_text_digest") else None),
         )
 
 
