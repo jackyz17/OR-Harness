@@ -32,6 +32,7 @@ from or_harness.world_model.contracts import (  # noqa: E402
     CONTRACT_VERSION,
     LEGACY_CONTRACT_VERSION,
     LEGACY_UNMAPPABLE,
+    LEGACY_UNMAPPABLE_SCOPES,
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
@@ -43,6 +44,7 @@ from or_harness.world_model.contracts import (  # noqa: E402
     ExperienceScope,
     HarnessCapabilityEvidence,
     LearningOperation,
+    PredictionServiceStatus,
     PredictionTrace,
     RiskEvent,
     RiskStatement,
@@ -52,6 +54,7 @@ from or_harness.world_model.contracts import (  # noqa: E402
     UnsupportedContractVersion,
     VerificationCondition,
     capability_evidence_from_legacy_harness_state,
+    contract_status_from_legacy_status,
     detect_payload_version,
     legacy_prediction_view,
     load_contract_payload,
@@ -64,9 +67,37 @@ from or_harness.world_model.execution_window import (  # noqa: E402
     DEFAULT_AUXILIARY_ACTION_TYPES,
     DEFAULT_IN_SCOPE_ACTION_TYPES,
     build_execution_window,
+    parse_window_id,
     window_id_for,
+    window_identity_problems,
 )
 from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.provider import (  # noqa: E402
+    NotConfiguredProvider,
+    WorldModelProvider,
+)
+
+
+class _CountingProvider(WorldModelProvider):
+    """A configured provider that COUNTS its calls.
+
+    Used to prove the P1 rule: a provider being attached never makes a
+    prediction happen, so building a contract must leave the count at zero
+    and the status at ``contract_only``.
+    """
+
+    name = "counting-test"
+
+    def __init__(self):
+        self.calls = 0
+
+    def predict(self, request, timeout_s=None):
+        self.calls += 1
+        return {"payload": {"quality": 0.5, "confidence": 0.5},
+                "usage": None, "error": None, "latency_s": 0.0}
+
+    def describe(self):
+        return {"provider": self.name}
 
 TASK = {"task_id": "t1", "family": "routing", "description": "toy routing",
         "spec": {"n_vars": 100, "n_constraints": 50},
@@ -205,7 +236,6 @@ class TestValidationRules(HarnessTestCase):
                                   input_snapshot_id="bs_1"))
         defaults.update(kwargs)
         return StrategyOutcomePrediction(**defaults)
-
     def test_benefit_value_without_baseline_is_rejected(self):
         prediction = self._base(benefit=BenefitEstimate(
             kind="solution_quality", metric="q", value=0.8))
@@ -217,9 +247,38 @@ class TestValidationRules(HarnessTestCase):
         self.assertTrue(any("prediction service" in p
                             for p in validate_strategy_outcome(prediction)))
 
-    def test_contract_only_contradicting_service_is_rejected(self):
-        prediction = self._base(service_available=True)
-        self.assertTrue(any("contradicts" in p
+    def test_contract_only_with_content_and_service_is_rejected(self):
+        """Carrying a real prediction while claiming none was made.
+
+        The corrected rule: a configured provider does NOT contradict
+        ``contract_only`` (the service may be unimplemented, or simply not
+        have produced anything yet). What IS contradictory is holding
+        predicted content AND an available service while still saying no
+        prediction was made.
+        """
+        prediction = self._base(service_available=True, benefit=_benefit())
+        self.assertTrue(any("contradictory" in p
+                            for p in validate_strategy_outcome(prediction)))
+
+    def test_configured_provider_without_a_prediction_is_contract_only(self):
+        """A configured provider with zero model calls is NOT a forecast.
+
+        This is the P1 regression: the object used to come back ``valid``
+        with empty benefit/cost/risk and no model call ever made.
+        """
+        prediction = self._base(provider_configured=True,
+                                service_available=True,
+                                service_implemented=True)
+        self.assertEqual(prediction.status, "contract_only")
+        self.assertFalse(prediction.has_predicted_content)
+        self.assertFalse(prediction.prediction_made)
+        self.assertEqual(validate_strategy_outcome(prediction), [])
+
+    def test_valid_without_predicted_content_is_rejected(self):
+        prediction = self._base(status="valid", service_available=True,
+                                provider_configured=True,
+                                service_implemented=True)
+        self.assertTrue(any("predicted content" in p
                             for p in validate_strategy_outcome(prediction)))
 
     def test_window_scope_requires_a_recorded_window(self):
@@ -713,6 +772,295 @@ class TestApiContracts(HarnessTestCase):
         # And it is NOT reported as a current-contract prediction.
         self.assertEqual(detect_payload_version(prediction.to_dict()),
                          LEGACY_CONTRACT_VERSION)
+
+
+class TestServiceStateIsThreeFacts(HarnessTestCase):
+    """P1 regression: provider configured != service available != predicted.
+
+    The reported defect: with a provider configured, building a contract
+    returned ``status="valid"`` while the model was called **0 times** and
+    benefit/cost/risk were all empty, and the unimplemented
+    capability-evolution service was reported as available.
+    """
+
+    def _harness(self, provider=None):
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        return h
+
+    def test_provider_configured_without_prediction_stays_contract_only(self):
+        provider = _CountingProvider()
+        h = self._harness(provider)
+        prediction = h.build_strategy_outcome_contract(
+            TASK, CandidateRef(action_type="execute_strategy",
+                               strategy_id="S01"), "ep1")
+        self.assertEqual(prediction.status, "contract_only")
+        self.assertEqual(provider.calls, 0, "building a contract must not "
+                         "call the model")
+        self.assertIsNone(prediction.benefit)
+        self.assertIsNone(prediction.cost)
+        self.assertIsNone(prediction.risk)
+        self.assertFalse(prediction.prediction_made)
+        self.assertFalse(prediction.has_predicted_content)
+        # The three facts are reported SEPARATELY, so a reader can tell
+        # "provider attached" from "a prediction happened".
+        self.assertTrue(prediction.provider_configured)
+        self.assertTrue(prediction.service_available)
+        self.assertFalse(prediction.prediction_made)
+
+    def test_status_becomes_valid_only_after_a_real_prediction(self):
+        h = self._harness(_CountingProvider())
+        prediction = h.build_strategy_outcome_contract(
+            TASK, CandidateRef(action_type="execute_strategy",
+                               strategy_id="S01"), "ep1",
+            benefit=_benefit())
+        self.assertEqual(prediction.status, "valid")
+        self.assertTrue(prediction.prediction_made)
+        self.assertEqual(validate_strategy_outcome(prediction), [])
+
+    def test_unimplemented_capability_service_is_not_available(self):
+        """A configured provider must not make an unimplemented service look
+        available — the capability-evolution service does not exist yet."""
+        h = self._harness(_CountingProvider())
+        self.assertTrue(h.prediction_service_status(
+            "strategy_outcome").service_available)
+        status = h.prediction_service_status("capability_evolution")
+        self.assertTrue(status.provider_configured)
+        self.assertFalse(status.service_implemented)
+        self.assertFalse(status.service_available)
+        self.assertFalse(
+            h.prediction_service_available("capability_evolution"))
+        evolution = h.build_capability_evolution_contract(
+            TASK, horizon="next 10 matching tasks")
+        self.assertEqual(evolution.status, "contract_only")
+        self.assertFalse(evolution.service_available)
+        self.assertTrue(evolution.provider_configured)
+        self.assertFalse(evolution.service_implemented)
+
+    def test_service_status_reports_the_three_facts(self):
+        h = self._harness(_CountingProvider())
+        dumped = h.prediction_service_status(
+            "strategy_outcome", prediction_completed=True).to_dict()
+        self.assertTrue(dumped["provider_configured"])
+        self.assertTrue(dumped["service_implemented"])
+        self.assertTrue(dumped["prediction_completed"])
+        self.assertEqual(dumped["status_justified"], "valid")
+        with self.assertRaises(ValueError):
+            h.prediction_service_status("nonsense")
+
+    def test_legacy_status_maps_without_upgrading_a_refusal(self):
+        self.assertEqual(contract_status_from_legacy_status("valid"), "valid")
+        self.assertEqual(
+            contract_status_from_legacy_status("not_configured"),
+            "contract_only")
+        self.assertEqual(
+            contract_status_from_legacy_status("unsupported_action"),
+            "unsupported")
+        self.assertEqual(contract_status_from_legacy_status("provider_error"),
+                         "invalid")
+
+
+class TestWindowComparabilityIsEarned(HarnessTestCase):
+    """P1 regression: an unfinished or mismatched window is not comparable.
+
+    The reported defect: a window with one completed attempt and one still
+    running returned ``comparable=True``, and a window belonging to another
+    task / episode / strategy was accepted for the current candidate and
+    marked comparable.
+    """
+
+    class _Action:
+        def __init__(self, action_id, action_type, *, status="completed",
+                     strategy_id=None, source="executed", rollup="own",
+                     cost=None, execution_id=None, started_at=0.0,
+                     episode_id="ep1", task_id="t1"):
+            self.action_id = action_id
+            self.action_type = action_type
+            self.task_id = task_id
+            self.episode_id = episode_id
+            self.source = source
+            self.status = status
+            self.rollup = rollup
+            self.cost = cost
+            self.linked_execution_id = execution_id
+            self.started_at = started_at
+            self.ended_at = started_at + 1.0
+            self.params = ({"strategy_id": strategy_id}
+                           if strategy_id else {})
+
+    def _window(self, actions, **kwargs):
+        kwargs.setdefault("strategy_id", "S01")
+        return build_execution_window(actions, task_id="t1", episode_id="ep1",
+                                      **kwargs)
+
+    def test_one_running_attempt_makes_the_whole_window_not_comparable(self):
+        window = self._window([
+            self._Action("ac_1", "execute_strategy", strategy_id="S01",
+                         execution_id="ex_1"),
+            self._Action("ac_2", "execute_strategy", status="running",
+                         strategy_id="S01", execution_id="ex_2"),
+        ])
+        self.assertFalse(window.comparable)
+        self.assertEqual(window.n_unfinished, 1)
+        self.assertTrue(any("have not ended" in r
+                            for r in window.not_comparable_reasons))
+
+    def test_one_attempt_without_a_linked_execution_blocks_comparability(self):
+        window = self._window([
+            self._Action("ac_1", "execute_strategy", strategy_id="S01",
+                         execution_id="ex_1"),
+            self._Action("ac_2", "execute_strategy", strategy_id="S01",
+                         execution_id=None),
+        ])
+        self.assertFalse(window.comparable)
+        self.assertTrue(any("no linked execution" in r
+                            for r in window.not_comparable_reasons))
+
+    def test_all_attempts_finished_is_comparable(self):
+        window = self._window([
+            self._Action("ac_1", "execute_strategy", strategy_id="S01",
+                         execution_id="ex_1"),
+            self._Action("ac_2", "execute_strategy", strategy_id="S01",
+                         execution_id="ex_2"),
+        ])
+        self.assertTrue(window.comparable)
+        self.assertEqual(window.n_unfinished, 0)
+
+    def test_window_identity_mismatch_is_detected(self):
+        other = build_execution_window(
+            [self._Action("ac_9", "execute_strategy", strategy_id="S09",
+                          execution_id="ex_9", episode_id="ep9", task_id="t9")],
+            task_id="t9", episode_id="ep9", strategy_id="S09")
+        problems = window_identity_problems(
+            other, task_id="t1", episode_id="ep1", strategy_id="S01")
+        self.assertEqual(len(problems), 3)
+        self.assertTrue(all("win::t9::ep9::S09" in p for p in problems))
+        # The matching identity is accepted.
+        self.assertEqual(
+            window_identity_problems(other, task_id="t9", episode_id="ep9",
+                                     strategy_id="S09"), [])
+
+    def test_window_id_round_trips_through_parse(self):
+        wid = window_id_for("t1", "ep1", "S01")
+        identity = parse_window_id(wid)
+        self.assertEqual(identity.task_id, "t1")
+        self.assertEqual(identity.episode_id, "ep1")
+        self.assertEqual(identity.strategy_id, "S01")
+        self.assertIsNone(parse_window_id("not-a-window-id"))
+        self.assertIsNone(parse_window_id("win::broken"))
+
+    def test_candidate_window_id_from_another_task_is_rejected(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        with self.assertRaises(ValueError) as ctx:
+            h.build_strategy_outcome_contract(
+                TASK, CandidateRef(action_type="execute_strategy",
+                                   strategy_id="S01", task_id="t1",
+                                   scope="strategy_window",
+                                   window_id=window_id_for("t_other", "ep1",
+                                                           "S01")),
+                "ep1")
+        self.assertIn("does not describe this candidate", str(ctx.exception))
+
+    def test_supplied_window_from_another_episode_is_rejected(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        other = build_execution_window(
+            [self._Action("ac_9", "execute_strategy", strategy_id="S01",
+                          execution_id="ex_9", episode_id="ep9")],
+            task_id="t1", episode_id="ep9", strategy_id="S01")
+        self.assertTrue(other.comparable)
+        with self.assertRaises(ValueError) as ctx:
+            h.build_strategy_outcome_contract(
+                TASK, CandidateRef(action_type="execute_strategy",
+                                   strategy_id="S01", task_id="t1",
+                                   scope="strategy_window"),
+                "ep1", window=other)
+        self.assertIn("does not describe this candidate", str(ctx.exception))
+
+    def test_unfinished_window_cannot_become_a_valid_prediction(self):
+        """A window-scope prediction on a still-running window is refused."""
+        h = ORHarness(home=self.home, world_model=_CountingProvider())
+        self.addCleanup(h.close)
+        running = build_execution_window(
+            [self._Action("ac_1", "execute_strategy", status="running",
+                          strategy_id="S01", execution_id="ex_1")],
+            task_id="t1", episode_id="ep1", strategy_id="S01")
+        prediction = h.build_strategy_outcome_contract(
+            TASK, CandidateRef(action_type="execute_strategy",
+                               strategy_id="S01", task_id="t1",
+                               scope="strategy_window"),
+            "ep1", window=running, benefit=_benefit())
+        self.assertFalse(prediction.trace.comparable)
+        self.assertNotEqual(prediction.status, "valid")
+        self.assertTrue(any("NOT comparable" in n
+                            for n in prediction.notes))
+
+
+class TestLegacyCandidateFidelity(HarnessTestCase):
+    """P2 regression: legacy adaptation must not lose the execution
+    conditions or silently change the measurement scope.
+
+    The reported defect: ``time_limit=60, mip_gap=0.01, seed=42`` were all
+    dropped, and ``measurement_scope="task"`` was silently rewritten to
+    ``"attempt"`` — making the new contract describe a DIFFERENT candidate
+    than the one actually proposed.
+    """
+
+    def test_execution_affecting_config_is_preserved_verbatim(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01",
+                          params={"time_limit": 60, "mip_gap": 0.01,
+                                  "seed": 42})
+        candidate = CandidateRef.from_action_spec(spec)
+        self.assertEqual(candidate.config["time_limit"], 60)
+        self.assertEqual(candidate.config["mip_gap"], 0.01)
+        self.assertEqual(candidate.config["seed"], 42)
+
+    def test_budget_hint_is_preserved(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01",
+                          budget_hint={"solver_runtime_s": 30.0})
+        candidate = CandidateRef.from_action_spec(spec)
+        self.assertEqual(candidate.config["budget_hint"],
+                         {"solver_runtime_s": 30.0})
+
+    def test_legacy_task_scope_is_refused_not_shrunk(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01", measurement_scope="task")
+        with self.assertRaises(ValueError) as ctx:
+            CandidateRef.from_action_spec(spec)
+        message = str(ctx.exception)
+        self.assertIn("'task'", message)
+        self.assertIn("no contract equivalent", message)
+
+    def test_explicit_scope_takes_responsibility_for_the_narrowing(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01", measurement_scope="task")
+        candidate = CandidateRef.from_action_spec(spec, scope="attempt")
+        self.assertEqual(candidate.scope, "attempt")
+        self.assertEqual(candidate.scope_basis, "declared")
+
+    def test_legacy_attempt_scope_maps_and_records_its_basis(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01", measurement_scope="attempt")
+        candidate = CandidateRef.from_action_spec(spec)
+        self.assertEqual(candidate.scope, "attempt")
+        self.assertEqual(candidate.scope_basis, "legacy_attempt")
+
+    def test_scope_basis_survives_the_round_trip(self):
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01", measurement_scope="attempt",
+                          params={"time_limit": 60})
+        candidate = CandidateRef.from_action_spec(spec)
+        dumped = candidate.to_dict()
+        self.assertEqual(CandidateRef.from_dict(dumped).to_dict(), dumped)
+        self.assertEqual(dumped["scope_basis"], "legacy_attempt")
+        self.assertEqual(dumped["config"]["time_limit"], 60)
+
+    def test_unmappable_scope_table_is_exported_and_documented(self):
+        self.assertIn("task", LEGACY_UNMAPPABLE_SCOPES)
+        self.assertTrue(LEGACY_UNMAPPABLE_SCOPES["task"])
 
 
 class TestCliContract(HarnessTestCase):

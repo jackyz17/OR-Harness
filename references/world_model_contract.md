@@ -32,9 +32,25 @@ and the profile. You also do not need to fill everything in: every field is
 optional, and an absent field stays absent (never a placeholder zero).
 
 **Nothing here calls a model.** Building a contract performs no network
-call. With no prediction service configured, the returned object carries
-`status="contract_only"` — the schema is implemented, the service is not
-attached — and its notes say so.
+call. Three DIFFERENT facts are kept apart, because conflating them is how
+an empty object came to be read as a forecast:
+
+| Fact | Meaning |
+|---|---|
+| `provider_configured` | a provider object is attached to this instance |
+| `service_available` | this build **implements** the service for this kind **and** a provider is configured |
+| `prediction_made` | a prediction really was produced and passed validation |
+
+Only the third yields `status="valid"`. Merely constructing a contract
+returns `contract_only` **even when a provider is configured** — a
+configured provider with zero model calls is not a prediction, and an
+empty benefit/cost/risk is not a forecast.
+
+`capability_evolution` has a **contract and no service**: this build does
+not implement capability-evolution prediction at all, so configuring a
+provider does NOT make that kind available. Check
+`ORHarness.prediction_service_status(kind)` (or the `service_implemented`
+field) rather than assuming "a provider exists" means "this works".
 
 ---
 
@@ -155,9 +171,23 @@ Rules the framework enforces:
 
 - A window-scope prediction **must** reference a real `window_id`
   (`validate_strategy_outcome` rejects one without it).
-- A window with no in-scope executed attempt, or whose in-scope actions
-  have no linked execution, is `comparable=False` with the reasons listed.
-  **Only a comparable window may be scored.**
+- A window is `comparable` **only when it is a completed real scope**. Every
+  one of these makes it `comparable=False` with the reasons listed:
+  - no in-scope executed attempt at all;
+  - an in-scope attempt with **no linked execution**;
+  - an in-scope attempt that has **not ended** (status `running`) — a
+    window that is still moving has no final numbers;
+  - the window's task / episode / strategy does **not** match the candidate
+    it is used for.
+  **Only a comparable window may be scored.** A `valid` window-scope
+  prediction must be comparable: `validate_strategy_outcome` rejects one
+  that is not.
+- Window identity is checked, not trusted. A `candidate.window_id` naming
+  another task / episode / strategy is refused, and so is a `window=`
+  object handed in for a different candidate. Use
+  `window_identity_problems(window, task_id=…, episode_id=…,
+  strategy_id=…)` to check one yourself; `parse_window_id(wid)` splits an id
+  back into its identity.
 - Auxiliary actions are reported separately (`auxiliary_cost`) and are
   counted in the budget ledger — "the strategy was cheap" can never be
   claimed by omitting the modeling work that made it possible.
@@ -183,8 +213,8 @@ these contracts twice, and the two are never summed:
 | Value | Means |
 |---|---|
 | `draft` | being built, not yet validated |
-| `contract_only` | **the contract is implemented, no prediction service is attached** — this build's state |
-| `valid` | a real prediction, produced and validated (requires `service_available=true`) |
+| `contract_only` | **the contract is implemented, no prediction was made** — this build's state, and also the state whenever a provider is configured but produced nothing |
+| `valid` | a real prediction, produced and validated (requires `service_available=true` **and** predicted content) |
 | `unsupported` | the request is outside the supported prediction path; nothing was predicted |
 | `invalid` | a prediction was attempted and failed validation |
 
@@ -237,7 +267,7 @@ no table is rewritten, no old API is removed.**
 | `confidence` | `uncertainty` (`source=model_self_report`) | recorded as **uncalibrated**, never as a probability |
 | `call_cost` | `trace.call_cost` | the prediction call's own spend, unchanged |
 | `evidence_basis` / `unsupported_fields` | `trace.*` | preserved verbatim |
-| `action_spec` | `CandidateRef` | mechanical mapping (`measurement_scope="attempt"` → `scope="attempt"`) |
+| `action_spec` | `CandidateRef` | mechanical mapping; the spec's execution `params` and `budget_hint` are carried through **verbatim**. `measurement_scope="attempt"` → `scope="attempt"` (recorded as `scope_basis="legacy_attempt"`); a legacy `"task"` scope is **refused**, never silently shrunk — pass `scope=` to declare the narrowing yourself |
 | `OutcomePrediction`, snapshots, config, logs | unchanged | still readable; the old path still returns `not_configured` with no provider |
 
 **Not convertible, on purpose** (the full list is `LEGACY_UNMAPPABLE` in
@@ -284,10 +314,16 @@ action vocabulary (the six action types stay), reviving the retired
 ## 10. Verification checklist for a consuming agent
 
 - [ ] Did I get `status="contract_only"`? Then **no prediction was made** —
-      do not read the object as a forecast.
+      do not read the object as a forecast. Check `prediction_made` and
+      `provider_configured` separately: a configured provider is not a
+      prediction.
+- [ ] Is `service_available` true for `capability_evolution`? It should not
+      be — this build implements no capability-evolution service, and a
+      configured provider must not make it look available.
 - [ ] Is `benefit.value` present? Then a `baseline` must be present too.
 - [ ] Is `scope="strategy_window"`? Then check `trace.comparable` — if it
-      is `False`, the prediction may not be scored.
+      is `False`, the prediction may not be scored. Also confirm the window
+      really belongs to this task / episode / strategy.
 - [ ] Am I about to treat a knowledge entry appearing as a capability gain?
       That is `prediction_made`, not `effect_verified`.
 - [ ] Am I reading a legacy payload? Check `legacy_view.gaps` and

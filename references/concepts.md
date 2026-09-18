@@ -229,6 +229,38 @@ Three consequences that are easy to get wrong:
   twice in the contracts and the two are never summed: the *predicted* cost
   of the candidate, and the *measured* spend of the prediction call itself.
 
+Three facts about a prediction service that are routinely collapsed into
+one, and must not be:
+
+| Fact | What it means |
+|---|---|
+| `provider_configured` | a provider object is attached to this instance |
+| `service_available` | this build **implements** that kind **and** a provider is configured |
+| `prediction_made` | a prediction really was produced and passed validation |
+
+Only the third makes a contract `valid`. **Merely building a contract makes
+no model call**, so it returns `contract_only` even when a provider is
+configured — a configured provider with zero calls and empty
+benefit/cost/risk is not a forecast. And `capability_evolution` has a
+*contract* and no *service*: this build does not implement it, so a
+configured provider must never make that kind look available.
+
+**A scope must be finished and matching before it is comparable.** A
+strategy execution window is `comparable` only when every in-scope attempt
+has ended, has a linked execution, and the window's task / episode /
+strategy really matches the candidate. A window still running has no final
+numbers; another task's window is a different scope. Only a comparable
+window may be scored, and a `valid` window-scope prediction must be
+comparable.
+
+**Adapting a legacy candidate must not change it.** Mapping a legacy
+`ActionSpec` carries its execution configuration (a time limit, a MIP gap
+target, a seed) and its budget hint through verbatim, and **refuses** an
+unmappable legacy `measurement_scope` such as `"task"` instead of silently
+shrinking a whole-task measurement into one solve attempt. A contract that
+describes a different candidate than the one proposed is worse than no
+contract.
+
 A knowledge change is predicted against a target that is either an existing
 entry (it must really exist — a model cannot invent knowledge) or a
 hypothesis (allowed, but it must state what would be observed and how that

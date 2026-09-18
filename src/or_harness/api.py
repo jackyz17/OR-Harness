@@ -57,6 +57,7 @@ from or_harness.world_model.contracts import (
     LEGACY_UNMAPPABLE,
     PAYLOAD_VERSION_UNKNOWN_PREFIX,
     PREDICTION_KINDS,
+    SERVICE_IMPLEMENTED_KINDS,
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
@@ -67,6 +68,7 @@ from or_harness.world_model.contracts import (
     ExperienceScope,
     HarnessCapabilityEvidence,
     LearningOperation,
+    PredictionServiceStatus,
     PredictionTrace,
     RiskStatement,
     StrategyOutcomePrediction,
@@ -82,7 +84,9 @@ from or_harness.world_model.contracts import (
 )
 from or_harness.world_model.execution_window import (
     StrategyExecutionWindow,
+    parse_window_id,
     window_from_records,
+    window_identity_problems,
 )
 from or_harness.world_model.prediction import (
     ActionSpec,
@@ -438,18 +442,30 @@ class ORHarness:
             evidence_basis: Optional[Sequence[EvidenceRef]] = None,
             unsupported_fields: Optional[Dict[str, str]] = None,
             window: Optional[StrategyExecutionWindow] = None,
+            prediction_completed: Optional[bool] = None,
             ) -> StrategyOutcomePrediction:
         """Build (and validate) a :class:`StrategyOutcomePrediction`.
 
         The trace is filled from what the framework already knows: the
         frozen input snapshot, its task digest, the prediction-service
-        availability of THIS instance, and the generation time. A caller
-        never re-types the contract version or the prediction type.
+        state of THIS instance, and the generation time. A caller never
+        re-types the contract version or the prediction type.
 
-        With no prediction service configured the returned contract carries
-        ``status="contract_only"`` — the contract is implemented, the
-        service is not attached — and the notes say so. Nothing is invented
-        to make it look like a prediction happened.
+        **Three different facts are kept apart**, because conflating them is
+        how an empty object came to be labelled a forecast:
+
+        1. ``provider_configured`` — a provider object is attached;
+        2. ``service_available`` — this build implements the service AND a
+           provider is configured;
+        3. ``prediction_completed`` — a prediction really was produced and
+           passed validation.
+
+        Only (3) yields ``status="valid"``. Merely constructing a contract
+        returns ``contract_only``: the contract is implemented, no forecast
+        was made — and a configured provider with zero model calls is NOT a
+        prediction. ``prediction_completed`` is inferred from the supplied
+        content (a benefit/cost/risk/uncertainty object is what a prediction
+        IS) and may be set explicitly by a caller that knows better.
         """
         if isinstance(candidate, ActionSpec):
             candidate = CandidateRef.from_action_spec(candidate)
@@ -465,6 +481,21 @@ class ORHarness:
             candidate.task_id = snapshot.task_id
         if candidate.episode_id is None:
             candidate.episode_id = episode_id
+        # A caller-supplied window_id must name THIS candidate's window. A
+        # string pointing at another task/episode/strategy is an outright
+        # mismatch, never a comparable scope.
+        if candidate.window_id:
+            parsed = parse_window_id(candidate.window_id)
+            if parsed is not None:
+                mismatches = window_identity_problems(
+                    parsed,
+                    task_id=candidate.task_id,
+                    episode_id=candidate.episode_id,
+                    strategy_id=candidate.strategy_id)
+                if mismatches:
+                    raise ValueError(
+                        "candidate.window_id does not describe this "
+                        "candidate: " + "; ".join(mismatches))
         trace = PredictionTrace(
             prediction_kind="strategy_outcome",
             input_snapshot_id=snapshot.snapshot_id,
@@ -479,31 +510,64 @@ class ORHarness:
             window = window or self.strategy_execution_window(
                 snapshot.task_id, episode_id,
                 strategy_id=candidate.strategy_id)
+            # A window handed in by the caller is checked against the
+            # candidate it is being used for: a window of another task,
+            # episode or strategy may NOT become this prediction's scope.
+            mismatches = window_identity_problems(
+                window, task_id=candidate.task_id,
+                episode_id=candidate.episode_id,
+                strategy_id=candidate.strategy_id)
+            if mismatches:
+                raise ValueError(
+                    "the supplied window does not describe this candidate: "
+                    + "; ".join(mismatches))
             candidate.window_id = candidate.window_id or window.window_id
             trace.comparable = bool(window.comparable)
             trace.not_comparable_reasons = list(window.not_comparable_reasons)
             notes.append(
                 "window scope: " + window.scope_rationale)
+            if not window.comparable:
+                notes.append(
+                    "NOT comparable: this window is not a completed real "
+                    "scope, so no window-scope result may be scored against "
+                    "it (" + "; ".join(window.not_comparable_reasons) + ")")
         else:
             trace.comparable = True
             notes.append(
                 "attempt scope: this prediction covers ONE solve attempt, "
                 "not the whole strategy execution (modeling / repair / "
                 "verify are auxiliary and reported separately)")
-        service = self.prediction_service_available("strategy_outcome")
-        if not service:
+        has_content = any(value is not None for value in
+                          (benefit, cost, risk, uncertainty))
+        completed = bool(has_content if prediction_completed is None
+                         else prediction_completed)
+        service = self.prediction_service_status(
+            "strategy_outcome", prediction_completed=completed)
+        if not service.provider_configured:
             notes.append(
-                "contract_only: no prediction service is attached to this "
+                "contract_only: no prediction provider is attached to this "
                 "instance, so no benefit/cost/risk values were produced")
+        elif not service.service_available:
+            notes.append(
+                "contract_only: a provider is configured but this build "
+                "implements no service for this kind")
+        elif not completed:
+            notes.append(
+                "contract_only: a provider is configured but NO prediction "
+                "was produced for this candidate (no benefit/cost/risk/"
+                "uncertainty content), so no forecast was made — a "
+                "configured provider is not a prediction")
         prediction = StrategyOutcomePrediction(
             candidate=candidate,
-            status="valid" if service else "contract_only",
+            status=service.status,
             benefit=benefit,
             cost=cost,
             risk=risk,
             uncertainty=uncertainty,
             trace=trace,
-            service_available=service,
+            service_available=service.service_available,
+            provider_configured=service.provider_configured,
+            service_implemented=service.service_implemented,
             notes=notes,
         )
         problems = validate_strategy_outcome(prediction)
@@ -529,15 +593,20 @@ class ORHarness:
                 Sequence[VerificationCondition]] = None,
             evidence_basis: Optional[Sequence[EvidenceRef]] = None,
             unsupported_fields: Optional[Dict[str, str]] = None,
+            prediction_completed: Optional[bool] = None,
             ) -> CapabilityEvolutionPrediction:
         """Build (and validate) a :class:`CapabilityEvolutionPrediction`.
 
         The current capability evidence is read from the frozen snapshot
-        when one is available, otherwise from the live banks. Without a
-        prediction service the contract is returned as ``contract_only``:
-        the schema is implemented, the capability prediction service is NOT
-        — and the object says exactly that instead of implying a capability
-        forecast was made.
+        when one is available, otherwise from the live banks.
+
+        This kind has a CONTRACT and NO service: this build does not
+        implement capability-evolution prediction at all. Configuring a
+        provider therefore does NOT make it available — the object stays
+        ``contract_only``, because a configured provider with nothing behind
+        it is not a forecast. Only a caller that really produced the
+        observable consequences (``expected_changes``) can mark it complete,
+        and even then ``service_implemented`` gates the status.
         """
         if snapshot is None and task is not None:
             snapshot = self.snapshot(task)
@@ -557,13 +626,27 @@ class ORHarness:
             comparable=False,
         )
         notes: List[str] = []
-        service = self.prediction_service_available("capability_evolution")
-        if not service:
+        changes = list(expected_changes or [])
+        completed = bool(changes if prediction_completed is None
+                         else prediction_completed)
+        service = self.prediction_service_status(
+            "capability_evolution", prediction_completed=completed)
+        if not service.service_implemented:
             notes.append(
                 "contract_only: this build implements the capability "
-                "evolution CONTRACT; no capability prediction service is "
-                "attached, so no performance change is forecast. H is judged "
-                "through observable consequences, never a latent vector")
+                "evolution CONTRACT but NO service for it, so no "
+                "performance change is forecast — configuring a provider "
+                "does not implement the service. H is judged through "
+                "observable consequences, never a latent vector")
+        elif not service.provider_configured:
+            notes.append(
+                "contract_only: no prediction provider is attached to this "
+                "instance")
+        elif not completed:
+            notes.append(
+                "contract_only: a provider is configured but NO capability "
+                "forecast was produced (no expected_changes), so nothing "
+                "was predicted")
         if not verification_conditions:
             notes.append(
                 "no verification condition declared: predicting, binding "
@@ -572,19 +655,21 @@ class ORHarness:
         prediction = CapabilityEvolutionPrediction(
             current_evidence=evidence,
             candidate_operation=operation,
-            status="valid" if service else "contract_only",
+            status=service.status,
             experience_scope=experience_scope,
             task_targeting=task_targeting,
             baseline=baseline,
             horizon=horizon,
             horizon_tasks=horizon_tasks,
-            expected_changes=list(expected_changes or []),
+            expected_changes=changes,
             learning_cost=learning_cost,
             degradation_risk=degradation_risk,
             uncertainty=uncertainty,
             verification_conditions=list(verification_conditions or []),
             trace=trace,
-            service_available=service,
+            service_available=service.service_available,
+            provider_configured=service.provider_configured,
+            service_implemented=service.service_implemented,
             notes=notes,
         )
         problems = validate_capability_evolution(prediction)
@@ -593,16 +678,45 @@ class ORHarness:
             prediction.notes.extend(f"validation: {p}" for p in problems)
         return prediction
 
-    def prediction_service_available(self, kind: str) -> bool:
-        """Whether a real prediction SERVICE is attached for one kind.
+    def prediction_service_status(
+            self, kind: str, *,
+            prediction_completed: bool = False) -> PredictionServiceStatus:
+        """The THREE separate facts about a prediction service for a kind.
 
-        Both kinds share this build's single explicit provider; the split is
-        named per kind so a future deployment can wire them independently
-        without changing the contract.
+        Kept apart on purpose, because reporting one as another is exactly
+        how an empty contract gets read as a forecast:
+
+        1. ``provider_configured`` — a provider object is attached to this
+           instance;
+        2. ``service_available`` — this build IMPLEMENTS a service for this
+           kind *and* a provider is configured. Configuring a provider does
+           not implement a service: ``capability_evolution`` has a contract
+           and no service, so it stays unavailable no matter what is
+           configured.
+        3. ``prediction_completed`` — a prediction really was produced and
+           passed validation. Only this makes a contract ``valid``.
         """
         if kind not in PREDICTION_KINDS:
             raise ValueError(f"unknown prediction kind {kind!r}")
-        return not isinstance(self.world_model, NotConfiguredProvider)
+        configured = not isinstance(self.world_model, NotConfiguredProvider)
+        return PredictionServiceStatus(
+            kind=kind,
+            provider_configured=configured,
+            service_implemented=kind in SERVICE_IMPLEMENTED_KINDS,
+            prediction_completed=bool(prediction_completed),
+            provider_name=self.prediction_service_version(),
+        )
+
+    def prediction_service_available(self, kind: str) -> bool:
+        """Whether a usable prediction SERVICE exists for one kind.
+
+        Deliberately stronger than "a provider is configured": a provider
+        serves nothing for a kind this build does not implement. It is still
+        weaker than "a prediction was made" — see
+        :meth:`prediction_service_status`, and note that constructing a
+        contract never makes a prediction happen.
+        """
+        return self.prediction_service_status(kind).service_available
 
     def prediction_service_version(self) -> str:
         """Version label of the attached prediction service (or its absence)."""

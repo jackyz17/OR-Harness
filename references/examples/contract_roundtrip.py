@@ -13,6 +13,14 @@ It demonstrates the three things an outer harness agent actually needs:
 3. reading a legacy unversioned prediction payload through the legacy view,
    and seeing which old fields have no honest new-contract equivalent.
 
+And two things it must never get wrong:
+
+4. a legacy ``ActionSpec`` is adapted WITHOUT losing its execution
+   configuration, and an unmappable legacy scope is REFUSED rather than
+   silently shrunk;
+5. a window with an unfinished attempt, or one belonging to another task /
+   episode / strategy, is NOT comparable.
+
 It also asserts its own invariants, so a regression makes the script fail
 rather than quietly printing a plausible-looking object.
 """
@@ -45,6 +53,11 @@ from or_harness.world_model.contracts import (  # noqa: E402
     VerificationCondition,
     detect_payload_version,
 )
+from or_harness.world_model.execution_window import (  # noqa: E402
+    build_execution_window,
+    window_identity_problems,
+)
+from or_harness.world_model.prediction import ActionSpec  # noqa: E402
 
 # A task with NO 'model' field: a normal state, not a defect.
 TASK = {
@@ -128,7 +141,9 @@ def main() -> int:
         )
 
         print(f"status              : {prediction.status}")
+        print(f"provider_configured : {prediction.provider_configured}")
         print(f"service_available   : {prediction.service_available}")
+        print(f"prediction_made     : {prediction.prediction_made}")
         print(f"scope               : {prediction.scope}")
         print(f"comparable          : {prediction.trace.comparable}")
         print(f"benefit             : {prediction.benefit.value} "
@@ -148,6 +163,12 @@ def main() -> int:
         # Invariants this example asserts.
         assert prediction.status == "contract_only", (
             "no prediction service is attached: the contract must say so")
+        # Even with a provider configured, merely CONSTRUCTING a contract
+        # makes no model call — so it can never be 'valid'. (Here there is
+        # not even a provider: provider_configured is False.)
+        assert prediction.provider_configured is False
+        assert prediction.prediction_made is False, (
+            "a built contract with no provider is not a forecast")
         assert prediction.risk is None, "an unpredicted risk stays absent"
         assert prediction.trace.call_cost is None, (
             "building a contract makes no model call, so there is no call "
@@ -210,6 +231,8 @@ def main() -> int:
                 effect_verified=False)],
         )
         print(f"status              : {evolution.status}")
+        print(f"provider_configured : {evolution.provider_configured}")
+        print(f"service_implemented : {evolution.service_implemented}")
         print(f"service_available   : {evolution.service_available}")
         print(f"horizon             : {evolution.horizon} "
               f"({evolution.horizon_tasks} tasks)")
@@ -230,6 +253,10 @@ def main() -> int:
             "the capability prediction SERVICE is not attached — this is a "
             "schema-level object, not a capability forecast")
         assert evolution.service_available is False
+        assert evolution.service_implemented is False, (
+            "this build implements no capability-evolution service: a "
+            "configured provider must not make it look available")
+        assert evolution.prediction_made is False
         assert evolution.current_evidence.score_scheme == "no_composite_score"
         assert not hasattr(evolution.current_evidence, "composite_score"), (
             "no composite H score exists, by design")
@@ -269,6 +296,76 @@ def main() -> int:
               f"({unknown['contract_version']})")
         assert unknown["supported"] is False
         assert "contract" not in unknown and "legacy_view" not in unknown
+
+        # ------------------------------------------------------------------
+        banner("5. Legacy adaptation must not change the candidate")
+        # ------------------------------------------------------------------
+        legacy_spec = ActionSpec(
+            action_type="execute_strategy", task_id="t_demo",
+            strategy_id="S04", measurement_scope="attempt",
+            params={"time_limit": 60, "mip_gap": 0.01, "seed": 42},
+            budget_hint={"solver_runtime_s": 30.0})
+        candidate = CandidateRef.from_action_spec(legacy_spec)
+        print(f"config preserved    : {candidate.config}")
+        print(f"scope / basis       : {candidate.scope} / "
+              f"{candidate.scope_basis}")
+        # The execution conditions survive: a time-limited, gap-targeted,
+        # seeded run is NOT the same candidate as an unbounded one.
+        assert candidate.config["time_limit"] == 60
+        assert candidate.config["mip_gap"] == 0.01
+        assert candidate.config["seed"] == 42
+        assert candidate.config["budget_hint"] == {"solver_runtime_s": 30.0}
+        assert candidate.scope_basis == "legacy_attempt"
+
+        # A legacy 'task' scope covers the WHOLE task: it has no contract
+        # equivalent, so it is refused instead of silently becoming "one
+        # attempt".
+        legacy_spec.measurement_scope = "task"
+        try:
+            CandidateRef.from_action_spec(legacy_spec)
+            raise AssertionError("a legacy 'task' scope must be refused")
+        except ValueError as exc:
+            print(f"legacy 'task' scope : refused ({str(exc)[:64]}...)")
+
+        # ------------------------------------------------------------------
+        banner("6. An unfinished window is not comparable")
+        # ------------------------------------------------------------------
+        class _Action:
+            def __init__(self, action_id, status, execution_id):
+                self.action_id = action_id
+                self.action_type = "execute_strategy"
+                self.task_id = "t_demo"
+                self.episode_id = "ep1"
+                self.source = "executed"
+                self.status = status
+                self.rollup = "own"
+                self.cost = None
+                self.linked_execution_id = execution_id
+                self.started_at = 0.0
+                self.ended_at = 1.0
+                self.params = {"strategy_id": "S04"}
+
+        running = build_execution_window(
+            [_Action("ac_1", "completed", "ex_1"),
+             _Action("ac_2", "running", "ex_2")],
+            task_id="t_demo", episode_id="ep1", strategy_id="S04")
+        print(f"n_attempts          : {running.n_attempts}")
+        print(f"n_unfinished        : {running.n_unfinished}")
+        print(f"comparable          : {running.comparable}")
+        for reason in running.not_comparable_reasons:
+            print(f"  - {reason}")
+        assert running.comparable is False, (
+            "a window with an attempt still running has no final numbers")
+        assert running.n_unfinished == 1
+
+        # And a window of ANOTHER identity may not be used for this one.
+        foreign = build_execution_window(
+            [_Action("ac_9", "completed", "ex_9")],
+            task_id="t_demo", episode_id="ep1", strategy_id="S09")
+        problems = window_identity_problems(
+            foreign, task_id="t_demo", episode_id="ep1", strategy_id="S04")
+        print(f"foreign window      : {problems}")
+        assert problems and "S09" in problems[0]
 
         banner("All assertions passed")
         print(f"contract version    : {CONTRACT_VERSION}")

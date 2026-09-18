@@ -22,9 +22,10 @@ from or_harness.cli import build_parser  # noqa: E402
 #: (command, [flags]) that the docs tell an agent to use.
 DOCUMENTED_FLAGS = [
     ("contract", ["--kind", "--payload", "--task", "--spec", "--episode",
-                  "--benefit", "--cost", "--operation", "--operation-desc",
-                  "--scope", "--targeting", "--baseline", "--horizon",
-                  "--horizon-tasks", "--expected-change", "--verification"]),
+                  "--benefit", "--cost", "--risk", "--operation",
+                  "--operation-desc", "--scope", "--targeting", "--baseline",
+                  "--horizon", "--horizon-tasks", "--expected-change",
+                  "--verification"]),
     ("profile", ["--task", "--code", "--cir"]),
     ("recall", ["--task", "--top", "--exclude", "--memory-mode",
                 "--include-unverified"]),
@@ -65,6 +66,9 @@ DOCUMENTED_IMPORTS = [
         "prediction_kinds_for_mode", "validate_strategy_outcome",
         "validate_capability_evolution", "StrategyExecutionWindow",
         "build_execution_window", "window_id_for",
+        "PredictionServiceStatus", "SERVICE_IMPLEMENTED_KINDS",
+        "LEGACY_UNMAPPABLE_SCOPES", "contract_status_from_legacy_status",
+        "parse_window_id", "window_identity_problems",
     ]),
     ("or_harness.world_model.contracts", ["LEGACY_UNMAPPABLE"]),
 ]

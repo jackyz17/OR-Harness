@@ -92,6 +92,25 @@ SUPPORTED_CONTRACT_VERSIONS = (CONTRACT_VERSION,)
 #: Prediction module kinds.
 PREDICTION_KINDS = ("strategy_outcome", "capability_evolution")
 
+#: Which prediction kinds this build has a real SERVICE for. A kind can have
+#: a fully implemented CONTRACT and no service — that is the whole point of
+#: the ``contract_only`` status, and the two must never be conflated:
+#: configuring a provider makes a provider AVAILABLE, it does not make a
+#: capability-evolution prediction service exist.
+SERVICE_IMPLEMENTED_KINDS: Tuple[str, ...] = ("strategy_outcome",)
+
+#: How a completed legacy ``OutcomePrediction`` status maps onto a contract
+#: status. Only ``valid`` (a real prediction, produced and validated) yields
+#: ``valid``: a contract may never claim to be a prediction merely because a
+#: provider object is configured.
+LEGACY_STATUS_TO_CONTRACT_STATUS: Dict[str, str] = {
+    "valid": "valid",
+    "not_configured": "contract_only",
+    "unsupported_action": "unsupported",
+    "invalid_output": "invalid",
+    "provider_error": "invalid",
+}
+
 #: Lifecycle of a contract object.
 #:
 #: - ``draft``: being built, not yet validated.
@@ -131,6 +150,17 @@ LEARNING_OPERATION_TYPES = ("induce", "revise", "reverify", "retire")
 
 #: Measurement scopes a prediction may declare.
 PREDICTION_SCOPES = ("attempt", "strategy_window")
+
+#: Legacy ``measurement_scope`` values with NO contract equivalent. Reading
+#: one must report it as UNSUPPORTED: silently shrinking a whole-task
+#: measurement to a single attempt would compare two different units while
+#: claiming they are the same thing.
+LEGACY_UNMAPPABLE_SCOPES: Dict[str, str] = {
+    "task": (
+        "a legacy 'task' scope covers the WHOLE task (every attempt plus its "
+        "auxiliary work), which is neither one attempt nor one strategy "
+        "execution window; this contract cannot express it"),
+}
 
 #: The two legacy contract generations this module knows how to identify.
 PAYLOAD_VERSION_UNKNOWN_PREFIX = "unknown/"
@@ -350,6 +380,90 @@ class PredictionTrace:
 # ---------------------------------------------------------------------------
 # capability evidence (about H — not a measured H)
 # ---------------------------------------------------------------------------
+
+
+@dataclass
+class PredictionServiceStatus:
+    """The three DIFFERENT facts a caller keeps conflating.
+
+    "A provider is configured", "this build implements a service for this
+    prediction kind" and "a prediction actually completed" are three
+    independent facts, and a contract may only be ``valid`` when all three
+    hold. Reporting the first as the third is how an empty contract came to
+    be labelled a forecast.
+    """
+
+    kind: str
+    #: A provider object is attached to the instance (not the no-op
+    #: :class:`~or_harness.world_model.provider.NotConfiguredProvider`).
+    provider_configured: bool = False
+    #: This build has a real service implementation for this kind. A kind
+    #: can have a complete CONTRACT and no service at all.
+    service_implemented: bool = False
+    #: A prediction really completed and passed validation.
+    prediction_completed: bool = False
+    #: Version label of the attached provider (never credentials).
+    provider_name: str = "not-attached"
+
+    def __post_init__(self) -> None:
+        if self.kind not in PREDICTION_KINDS:
+            raise ValueError(f"unknown prediction kind {self.kind!r}")
+
+    @property
+    def service_available(self) -> bool:
+        """A usable prediction SERVICE exists for this kind.
+
+        Requires BOTH a configured provider and an implementation for the
+        kind: a configured provider alone does not make an unimplemented
+        service available.
+        """
+        return bool(self.provider_configured and self.service_implemented)
+
+    @property
+    def status(self) -> str:
+        """The contract status this service state justifies.
+
+        Only a completed prediction yields ``valid``. Everything else is
+        ``contract_only``: the schema is implemented, no forecast was made.
+        """
+        if self.prediction_completed and self.service_available:
+            return "valid"
+        return "contract_only"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "provider_configured": bool(self.provider_configured),
+            "service_implemented": bool(self.service_implemented),
+            "service_available": self.service_available,
+            "prediction_completed": bool(self.prediction_completed),
+            "provider_name": self.provider_name,
+            "status_justified": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "PredictionServiceStatus":
+        data = data or {}
+        return cls(
+            kind=str(data.get("kind", "")),
+            provider_configured=bool(data.get("provider_configured", False)),
+            service_implemented=bool(data.get("service_implemented", False)),
+            prediction_completed=bool(data.get("prediction_completed",
+                                              False)),
+            provider_name=str(data.get("provider_name", "not-attached")),
+        )
+
+
+def contract_status_from_legacy_status(legacy_status: str) -> str:
+    """Map a completed legacy prediction's status onto a contract status.
+
+    Only ``valid`` becomes ``valid``: that is the one legacy status that
+    means "a prediction was produced and validated". Everything else is a
+    refusal of one kind or another and must not be dressed up as a
+    forecast.
+    """
+    return LEGACY_STATUS_TO_CONTRACT_STATUS.get(
+        str(legacy_status), "invalid")
 
 
 @dataclass
@@ -710,6 +824,12 @@ class CandidateRef:
     #: Id of the recorded execution window this candidate maps to, when one
     #: exists. Without it a window-scope prediction cannot be comparable.
     window_id: Optional[str] = None
+    #: How ``scope`` was established: ``declared`` (the caller said so),
+    #: ``legacy_attempt`` (the legacy spec's ``measurement_scope`` was
+    #: ``attempt``) or ``default``. Recorded because "one attempt" is a
+    #: narrower claim than "the whole task", and a reader must be able to
+    #: tell which one was actually made.
+    scope_basis: str = "default"
 
     def __post_init__(self) -> None:
         if self.scope not in PREDICTION_SCOPES:
@@ -728,6 +848,7 @@ class CandidateRef:
             "task_id": self.task_id,
             "episode_id": self.episode_id,
             "scope": self.scope,
+            "scope_basis": self.scope_basis,
             "window_id": self.window_id,
         }
 
@@ -750,6 +871,7 @@ class CandidateRef:
             episode_id=(str(data["episode_id"])
                         if data.get("episode_id") else None),
             scope=str(data.get("scope", "attempt")),
+            scope_basis=str(data.get("scope_basis", "default")),
             window_id=(str(data["window_id"]) if data.get("window_id")
                        else None),
         )
@@ -759,25 +881,55 @@ class CandidateRef:
                          ) -> "CandidateRef":
         """Build from the legacy :class:`ActionSpec` (mechanical mapping).
 
-        The legacy spec's ``measurement_scope`` names the same distinction
-        with older vocabulary; ``attempt`` maps to ``attempt`` and anything
-        else maps to ``strategy_window`` only when the caller says so — the
-        legacy spec never claimed a window it did not record.
+        Two things this mapping refuses to do silently:
+
+        - **Lose execution-affecting configuration.** The legacy spec's
+          ``params`` (a time limit, a MIP gap target, a seed, a solver
+          family, ...) and its ``budget_hint`` are carried through
+          VERBATIM. Dropping them would produce a contract that describes a
+          *different* candidate than the one that was actually proposed — a
+          ``time_limit=60, mip_gap=0.01, seed=42`` run is not the same
+          candidate as an unbounded one.
+        - **Shrink a measurement scope.** The legacy ``measurement_scope``
+          only maps mechanically when it is ``attempt`` (or
+          ``strategy_window``). A legacy ``"task"`` scope covers the whole
+          task — every attempt plus auxiliary work — which is neither of
+          this contract's scopes; passing it raises rather than quietly
+          relabelling a task-wide measurement as one solve attempt.
+
+        Pass ``scope=`` explicitly to declare the scope yourself (that is
+        the caller taking responsibility for the narrowing).
         """
-        params = dict(getattr(spec, "params", None) or {})
+        params = copy.deepcopy(dict(getattr(spec, "params", None) or {}))
+        budget_hint = getattr(spec, "budget_hint", None)
+        if budget_hint:
+            # The legacy budget hint is an execution limit, not decoration:
+            # keep it under its own key so it stays distinguishable from
+            # the strategy's own parameters.
+            params.setdefault("budget_hint", copy.deepcopy(dict(budget_hint)))
+        declared = getattr(spec, "measurement_scope", "attempt")
+        declared = str(declared or "attempt")
+        if scope is not None:
+            resolved, basis = str(scope), "declared"
+        elif declared in PREDICTION_SCOPES:
+            resolved = declared
+            basis = "legacy_attempt" if declared == "attempt" else "legacy"
+        else:
+            raise ValueError(
+                f"legacy measurement_scope {declared!r} has no contract "
+                f"equivalent: {LEGACY_UNMAPPABLE_SCOPES.get(declared, 'it is ' + 'not one of ' + str(PREDICTION_SCOPES))} "
+                f"Pass scope=... explicitly to declare "
+                f"{'/'.join(PREDICTION_SCOPES)} instead of silently "
+                "shrinking it to one attempt")
         return cls(
             action_type=str(getattr(spec, "action_type", "")),
             strategy_id=getattr(spec, "strategy_id", None),
             solver=getattr(spec, "solver", None),
-            config={k: v for k, v in params.items()
-                    if k in ("strategy_name", "strategy_type", "actions",
-                             "fallback_strategy_id", "solver_family",
-                             "verification_level")},
+            config=params,
             task_id=str(getattr(spec, "task_id", "")),
             episode_id=getattr(spec, "episode_id", None),
-            scope=scope or (str(getattr(spec, "measurement_scope", "attempt"))
-                            if getattr(spec, "measurement_scope", "attempt")
-                            in PREDICTION_SCOPES else "attempt"),
+            scope=resolved,
+            scope_basis=basis,
         )
 
 
@@ -1192,8 +1344,15 @@ class StrategyOutcomePrediction:
     trace: Optional[PredictionTrace] = None
     #: Whether a prediction SERVICE is deployed for this kind in this build.
     #: False is a first-class state: the contract is implemented, the
-    #: service is not attached.
+    #: service is not attached. It requires BOTH a configured provider and
+    #: an implementation for the kind.
     service_available: bool = False
+    #: A provider object is attached (a weaker fact than
+    #: ``service_available``: a configured provider does not by itself make
+    #: any prediction happen).
+    provider_configured: bool = False
+    #: This build implements a service for this kind at all.
+    service_implemented: bool = False
     notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -1211,13 +1370,38 @@ class StrategyOutcomePrediction:
     def scope(self) -> str:
         return self.candidate.scope
 
+    @property
+    def prediction_made(self) -> bool:
+        """Whether a real prediction was produced (not just a schema).
+
+        Deliberately narrower than ``status == 'valid'``: this is the
+        single question "did a model actually produce and pass a
+        prediction here?".
+        """
+        return self.status == "valid"
+
+    @property
+    def has_predicted_content(self) -> bool:
+        """Whether any predicted quantity is present at all.
+
+        An all-empty contract is a schema object, never a forecast — the
+        check that stops "no prediction was made" from being labelled
+        ``valid``.
+        """
+        return any(value is not None for value in
+                   (self.benefit, self.cost, self.risk, self.uncertainty))
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "contract_version": self.contract_version,
             "prediction_id": self.prediction_id,
             "prediction_type": self.prediction_type,
             "status": self.status,
+            "prediction_made": self.prediction_made,
+            "has_predicted_content": self.has_predicted_content,
             "service_available": bool(self.service_available),
+            "provider_configured": bool(self.provider_configured),
+            "service_implemented": bool(self.service_implemented),
             "scope": self.candidate.scope,
             "candidate": self.candidate.to_dict(),
             "benefit": (self.benefit.to_dict()
@@ -1264,6 +1448,8 @@ class StrategyOutcomePrediction:
                          if isinstance(raw_unc, dict) else None),
             trace=PredictionTrace.from_dict(raw_trace or {}),
             service_available=bool(data.get("service_available", False)),
+            provider_configured=bool(data.get("provider_configured", False)),
+            service_implemented=bool(data.get("service_implemented", False)),
             notes=[str(n) for n in (data.get("notes") or [])],
         )
 
@@ -1307,6 +1493,12 @@ class CapabilityEvolutionPrediction:
         default_factory=list)
     trace: Optional[PredictionTrace] = None
     service_available: bool = False
+    #: A provider object is attached (weaker than ``service_available``).
+    provider_configured: bool = False
+    #: This build implements a capability-evolution service. It does NOT:
+    #: the contract exists, the service does not — so a configured provider
+    #: must never make this kind look available.
+    service_implemented: bool = False
     notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -1321,13 +1513,25 @@ class CapabilityEvolutionPrediction:
             raise ValueError("trace.prediction_kind must be "
                              "'capability_evolution'")
 
+    @property
+    def prediction_made(self) -> bool:
+        """Whether a real capability prediction was produced.
+
+        A capability forecast needs its observable consequences, not just a
+        status: this requires ``valid`` AND at least one expected change.
+        """
+        return self.status == "valid" and bool(self.expected_changes)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "contract_version": self.contract_version,
             "prediction_id": self.prediction_id,
             "prediction_type": self.prediction_type,
             "status": self.status,
+            "prediction_made": self.prediction_made,
             "service_available": bool(self.service_available),
+            "provider_configured": bool(self.provider_configured),
+            "service_implemented": bool(self.service_implemented),
             "current_evidence": self.current_evidence.to_dict(),
             "candidate_operation": self.candidate_operation.to_dict(),
             "experience_scope": (self.experience_scope.to_dict()
@@ -1407,6 +1611,8 @@ class CapabilityEvolutionPrediction:
                                       or [])],
             trace=PredictionTrace.from_dict(data.get("trace") or {}),
             service_available=bool(data.get("service_available", False)),
+            provider_configured=bool(data.get("provider_configured", False)),
+            service_implemented=bool(data.get("service_implemented", False)),
             notes=[str(n) for n in (data.get("notes") or [])],
         )
 
@@ -1450,11 +1656,26 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
         problems.append(
             "status='valid' requires a prediction service: a contract with "
             "no service attached is 'contract_only'")
-    if prediction.status == "contract_only" and prediction.service_available:
+    if prediction.status == "valid" and not prediction.has_predicted_content:
         problems.append(
-            "status='contract_only' contradicts service_available=True: a "
-            "deployed service that produced no values should be 'invalid' "
-            "or 'unsupported'")
+            "status='valid' requires predicted content: a contract with no "
+            "benefit/cost/risk/uncertainty is a SCHEMA object, not a "
+            "prediction — a configured provider does not by itself make a "
+            "forecast happen")
+    if prediction.status == "contract_only" \
+            and prediction.service_available \
+            and prediction.has_predicted_content:
+        problems.append(
+            "status='contract_only' with predicted content and an available "
+            "service is contradictory: carrying a real prediction while "
+            "claiming none was made is exactly the confusion this status "
+            "exists to prevent")
+    if prediction.status == "contract_only" \
+            and not prediction.provider_configured \
+            and not prediction.service_implemented:
+        # Not a problem: the honest default. Named here so the reader sees
+        # the state is deliberate.
+        pass
     if not prediction.candidate.strategy_id \
             and prediction.candidate.action_type == "execute_strategy":
         problems.append("an execute_strategy candidate requires a "
@@ -1464,6 +1685,13 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
         problems.append(
             "scope='strategy_window' requires a recorded window_id: a "
             "window-scope prediction with no real window is not comparable")
+    if prediction.candidate.scope == "strategy_window" \
+            and prediction.status == "valid" \
+            and not prediction.trace.comparable:
+        problems.append(
+            "a VALID window-scope prediction must be comparable: an "
+            "unfinished or mismatched window has no final numbers to score "
+            "against")
     benefit = prediction.benefit
     if benefit is not None:
         if benefit.value is not None and not _finite(benefit.value):
@@ -1543,9 +1771,17 @@ def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
         problems.append(
             "status='valid' requires a prediction service: a contract with "
             "no service attached is 'contract_only'")
-    if prediction.status == "contract_only" and prediction.service_available:
+    if prediction.status == "valid" and not prediction.prediction_made:
         problems.append(
-            "status='contract_only' contradicts service_available=True")
+            "status='valid' requires observable consequences: a capability "
+            "forecast with no expected_change is a SCHEMA object, not a "
+            "prediction")
+    if prediction.status == "contract_only" \
+            and prediction.service_available \
+            and prediction.expected_changes:
+        problems.append(
+            "status='contract_only' with expected changes and an available "
+            "service is contradictory: that is a 'valid' prediction")
     problems.extend(
         f"current_evidence: {p}" for p
         in validate_capability_evidence(prediction.current_evidence))

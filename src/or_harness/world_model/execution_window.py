@@ -18,11 +18,18 @@ intention. Its rules:
   default because that is what the legacy prediction path actually
   predicted; ``model`` / ``verify`` / ``select_strategy`` are auxiliary
   unless the caller explicitly declares otherwise.
-- **Only a real scope is comparable.** A window with no executed attempt,
-  or a window whose declared in-scope action types have no matching
-  records, is reported with ``comparable=False`` and the reasons. A
-  prediction may not be marked comparable against a scope that does not
-  exist.
+- **Only a COMPLETE real scope is comparable.** A window with no executed
+  attempt, an attempt with no linked execution, or an attempt that has not
+  ENDED is reported with ``comparable=False`` and the reasons. A prediction
+  may not be marked comparable against a scope that does not exist, or that
+  is still moving: a half-finished window has no final numbers to score
+  against.
+- **A window describes ONE identity.** Its task, episode and strategy are
+  checked against the candidate it is used for
+  (:func:`window_identity_problems`). A window of another task, another
+  episode or another strategy is a mismatch, never a comparable scope —
+  scoring across identities is the silent interchange this module exists to
+  prevent.
 - **Auxiliary cost is never hidden.** The auxiliary actions' own measured
   spend is reported separately (and is already counted by
   :class:`~or_harness.world_model.budget.BudgetLedger`), so "the strategy
@@ -33,10 +40,14 @@ intention. Its rules:
 from __future__ import annotations
 
 import copy
+from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+
+#: Prefix of a deterministic window id (see :func:`window_id_for`).
+WINDOW_ID_PREFIX = "win::"
 
 #: Action types that may belong to a strategy execution window.
 WINDOW_ACTION_TYPES = ("model", "select_strategy", "execute_strategy",
@@ -59,7 +70,69 @@ def window_id_for(task_id: str, episode_id: Optional[str],
     same id, so a prediction's ``window_id`` reference stays resolvable and
     a duplicate window cannot appear as two.
     """
-    return (f"win::{task_id}::{episode_id or '-'}::{strategy_id or '-'}")
+    return (f"{WINDOW_ID_PREFIX}{task_id}::{episode_id or '-'}::"
+            f"{strategy_id or '-'}")
+
+
+#: The identity that defines a window: (task, episode, strategy).
+WindowIdentity = namedtuple("WindowIdentity",
+                            ["task_id", "episode_id", "strategy_id"])
+
+
+def parse_window_id(window_id: str) -> Optional[WindowIdentity]:
+    """Split a window id back into the identity that defines it.
+
+    Returns ``None`` when the string was not produced by
+    :func:`window_id_for`. This is what lets a prediction REFUSE a
+    ``window_id`` that belongs to another task / episode / strategy instead
+    of trusting the caller's string.
+    """
+    if not isinstance(window_id, str) \
+            or not window_id.startswith(WINDOW_ID_PREFIX):
+        return None
+    parts = window_id[len(WINDOW_ID_PREFIX):].split("::")
+    if len(parts) != 3:
+        return None
+    task_id, episode, strategy = parts
+    if not task_id:
+        return None
+    return WindowIdentity(task_id,
+                          None if episode == "-" else episode,
+                          None if strategy == "-" else strategy)
+
+
+def window_identity_problems(window: Any, *,
+                             task_id: Optional[str],
+                             episode_id: Optional[str],
+                             strategy_id: Optional[str]) -> List[str]:
+    """Reasons a window does NOT describe the identity it is used for.
+
+    ``window`` may be a :class:`StrategyExecutionWindow` or a
+    :class:`WindowIdentity` (from :func:`parse_window_id`). An expected
+    value of ``None`` means "no expectation recorded" and is not a
+    mismatch; a window naming a DIFFERENT task / episode / strategy always
+    is. Callers must treat a non-empty result as a refusal to use the
+    window, never as a note to carry along.
+    """
+    problems: List[str] = []
+    window_task = getattr(window, "task_id", None)
+    window_episode = getattr(window, "episode_id", None)
+    window_strategy = getattr(window, "strategy_id", None)
+    label = getattr(window, "window_id", None) or (
+        f"window for task {window_task!r}")
+    if task_id is not None and window_task != task_id:
+        problems.append(
+            f"window {label!r} belongs to task {window_task!r}, "
+            f"not {task_id!r}")
+    if episode_id is not None and window_episode != episode_id:
+        problems.append(
+            f"window {label!r} belongs to episode {window_episode!r}, "
+            f"not {episode_id!r}")
+    if strategy_id is not None and window_strategy != strategy_id:
+        problems.append(
+            f"window {label!r} is about strategy {window_strategy!r}, "
+            f"not {strategy_id!r}")
+    return problems
 
 
 @dataclass
@@ -138,6 +211,16 @@ class StrategyExecutionWindow:
         return len(self.attempts)
 
     @property
+    def n_unfinished(self) -> int:
+        """In-scope attempts that have not ENDED (status ``running``).
+
+        A window with any unfinished attempt is not a completed scope, so it
+        is never ``comparable``: there are no final numbers to score
+        against.
+        """
+        return sum(1 for a in self.attempts if a.action_status == "running")
+
+    @property
     def attempt_cost(self) -> Dict[str, Any]:
         """Attempt cost over the window's in-scope attempts (see
         :func:`_aggregate`)."""
@@ -162,6 +245,7 @@ class StrategyExecutionWindow:
             "in_scope_action_types": list(self.in_scope_action_types),
             "auxiliary_action_types": list(self.auxiliary_action_types),
             "n_attempts": self.n_attempts,
+            "n_unfinished": self.n_unfinished,
             "attempts": [a.to_dict() for a in self.attempts],
             "auxiliary_actions": [a.to_dict() for a in self.auxiliary_actions],
             "attempt_cost": self.attempt_cost,
@@ -303,19 +387,30 @@ def build_execution_window(actions: Sequence[Any], *, task_id: str,
             ))
 
     # Comparability is decided from what was actually found, and every
-    # refusal carries its reason.
+    # refusal carries its reason. ALL of the checks below must pass: a
+    # single unfinished attempt is enough to make the whole window
+    # unscorable, because its total is not final yet.
     reasons: List[str] = []
     if not window.attempts:
         reasons.append(
             "no in-scope executed attempt in this window: a window-scope "
             "prediction cannot be compared against nothing")
     else:
-        with_execution = [a for a in window.attempts
-                          if a.execution_id and a.action_status != "running"]
-        if not with_execution:
+        without_execution = [a for a in window.attempts
+                             if not a.execution_id]
+        if without_execution:
             reasons.append(
-                "the window's in-scope attempts have no linked execution or "
-                "have not ended: the scope is not yet real")
+                f"{len(without_execution)} of {len(window.attempts)} "
+                "in-scope attempt(s) have no linked execution: the scope is "
+                "not backed by a real record")
+        unfinished = [a for a in window.attempts
+                      if a.action_status == "running"]
+        if unfinished:
+            reasons.append(
+                f"{len(unfinished)} of {len(window.attempts)} in-scope "
+                "attempt(s) have not ended (status 'running'): a window "
+                "that is still running has no final numbers, so it cannot "
+                "be compared against")
         if len(window.attempts) > 1:
             window.notes.append(
                 f"{len(window.attempts)} attempts in this window: attempt "
@@ -361,6 +456,7 @@ def window_ref(window: StrategyExecutionWindow) -> Dict[str, Any]:
         "episode_id": window.episode_id,
         "strategy_id": window.strategy_id,
         "n_attempts": window.n_attempts,
+        "n_unfinished": window.n_unfinished,
         "in_scope_action_types": list(window.in_scope_action_types),
         "comparable": bool(window.comparable),
         "not_comparable_reasons": list(window.not_comparable_reasons),

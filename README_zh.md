@@ -16,7 +16,7 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 - **沙箱执行**：AST 策略 + POSIX rlimit + 墙钟超时；基本验证；五维代价计量（retries 计入代价）。
 - **由你掌控的归纳**：每次 record 后 C1–C6 证据 hint；`induce` 永远是外层显式调用。经验适用范围 = 家族 + 支持证据所在的结构格（沿用旧版四区间，不用跨样本 min/max 跨度，避免把表现相反的区段合并）；建条目需要 ≥2 个不同任务的支持执行（重复同一任务不算复现）；**发布**需要入库验证通过（`induce --verify`：规则成立 / 修复有效 / 质量不降而代价下降），未验证候选只记录、不进推荐；冷归档防复活。触发准则不再引用先验分数，改为纯统计判据。
 - **七个求解器适配器**（highs、pulp、ortools、scip、copt、pyomo、gurobi）——仅做可用性探测，具体求解器由你按情况选择。
-- **统一世界模型契约**（`wm-contract/1`）：为两个预测模块提供有版本、可序列化、可校验的结构——**OR 策略后果预测**（收益携带指标/单位/基线，代价复用 `CostVector`，风险为具名事件，不确定性区分执行随机性与证据不足）与 **Harness 能力演化预测**（`H = F(M, W_OR, Pi, R, T)` 的能力证据、候选学习操作、基线与时间范围、学习代价、退化风险、验证条件）。**契约已实现，预测服务尚未接入**：构建出的契约会如实返回 `status="contract_only"`，而不是假装已经做过预测。旧无版本载荷通过显式 legacy 视图保持可读；未知契约版本明确失败，绝不猜测解析。详见 [references/world_model_contract.md](references/world_model_contract.md)。
+- **统一世界模型契约**（`wm-contract/1`）：为两个预测模块提供有版本、可序列化、可校验的结构——**OR 策略后果预测**（收益携带指标/单位/基线，代价复用 `CostVector`，风险为具名事件，不确定性区分执行随机性与证据不足）与 **Harness 能力演化预测**（`H = F(M, W_OR, Pi, R, T)` 的能力证据、候选学习操作、基线与时间范围、学习代价、退化风险、验证条件）。**契约已实现，预测服务尚未接入**：构建出的契约会如实返回 `status="contract_only"`，而不是假装已经做过预测；并且把 `provider_configured`（已挂载 provider）、`service_available`（本构建实现了该类服务）与 `prediction_made`（确实产生了预测）作为三个独立事实分别报告——仅配置了 provider 而模型调用次数为 0，永远不会是 `valid`。旧无版本载荷通过显式 legacy 视图保持可读；未知契约版本明确失败，绝不猜测解析。详见 [references/world_model_contract.md](references/world_model_contract.md)。
 
 ## 快速开始
 

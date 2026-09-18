@@ -69,7 +69,7 @@ OR-Harness never runs autonomously and keeps no hidden state: every command is a
 | `record` reports `index_sync: deferred` | The fact is saved but not yet text-searchable. Recover with `orx rebuild-index` |
 | A task's requirements, capacity or objective change | That is a NEW task context: use a new `task_id` (or episode). The old X is not inherited — progress from a differently-versioned task is refused, and a prediction is scored against the version it was made under, not the current one |
 | A knowledge class reports `reliability: null` / `insufficient_history` | Too few resolved samples. That is honest unknown, not a failure — the class grants no value until it has history |
-| `orx contract` returns `status: "contract_only"` | The contract is implemented but no prediction service is attached — no forecast was made. Do not read it as one; see [references/world_model_contract.md](references/world_model_contract.md) |
+| `orx contract` returns `status: "contract_only"` | No prediction was made — even if a provider is configured. Check `prediction_made` (a real forecast) separately from `provider_configured` (a provider is attached) and `service_available` (this build implements that kind). Do not read `contract_only` as a forecast; see [references/world_model_contract.md](references/world_model_contract.md) |
 
 ## Coupling dimensions (operational definitions)
 
@@ -175,7 +175,9 @@ A plan suggestion is a recommendation, not a decision: say which candidate you c
 These are the misconceptions that actually cost work — each is a positive rule, not a prohibition:
 
 - **A prediction is a shadow.** Choose on evidence; compare the prediction afterwards with `bind-outcome`. `plan-next` suggests, `choose-next` decides, `execute` acts — pick the one the moment calls for.
-- **A contract is not a prediction.** `orx contract` returns `status="contract_only"` when no provider is configured: the schema exists, no forecast was made. Reading it as a forecast is the same error as reading `not_configured` as a result.
+- **A contract is not a prediction.** `orx contract` returns `status="contract_only"` when no forecast was made — including when a provider IS configured but produced nothing. `provider_configured`, `service_available` and `prediction_made` are three different facts; only the last makes a contract `valid`. The capability-evolution kind has a contract and no service, so a configured provider never makes it available.
+- **A window must be finished and matching before it is comparable.** A window with an attempt still running, an attempt with no linked execution, or a task/episode/strategy that differs from the candidate is `comparable=False` — and only a comparable window may be scored. Never reuse another task's window for this candidate.
+- **Legacy adaptation must not change the candidate.** Mapping a legacy `ActionSpec` preserves its execution `params` and `budget_hint` verbatim, and REFUSES an unmappable `measurement_scope` such as `"task"` rather than silently shrinking a whole-task measurement to one attempt.
 - **A knowledge entry appearing is not a capability gain.** Predicting, binding the fact, and verifying the effect are three different things; only the third supports "the harness got stronger". The capability contracts carry no composite H score, and `harness_state` knowledge refs / experience counts / tool config are evidence ABOUT H, not measured H.
 - **An attempt is not a strategy window.** One `execute_strategy` call is one solve attempt; modeling / repair / verify are auxiliary overhead, reported separately and never folded into a predicted scope. A window-scope prediction is scored only when `trace.comparable` is true.
 - **Predict before acting.** The input snapshot freezes at prediction time; a prediction made after the execution is hindsight, and binding it to a different strategy's action records a mismatch instead of a score.

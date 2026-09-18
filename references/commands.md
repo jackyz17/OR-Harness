@@ -321,7 +321,16 @@ orx contract --kind strategy_outcome --task t.json \
   --benefit '{"kind":"solution_quality","metric":"normalized_objective_gap",
               "unit":"1-gap","value":0.8,
               "baseline":{"kind":"conditional_stats","value":0.7}}' \
-  --cost '{"expected":{"llm_tokens":1200},"expected_measured":["llm_tokens"]}'
+  --cost '{"expected":{"llm_tokens":1200},"expected_measured":["llm_tokens"]}' \
+  --risk '{"events":[{"event":"task_failure","probability":0.2}]}'
+
+# a LEGACY ActionSpec is accepted as --spec too: its execution params and
+# budget_hint are preserved verbatim, and an unmappable legacy scope such as
+# "task" is REFUSED (exit 2) instead of being silently shrunk to one attempt
+orx contract --kind strategy_outcome --task t.json \
+  --spec '{"action_type":"execute_strategy","strategy_id":"S01",
+           "measurement_scope":"attempt",
+           "params":{"time_limit":60,"mip_gap":0.01,"seed":42}}'
 
 # a candidate learning operation's predicted capability consequences
 orx contract --kind capability_evolution \
@@ -339,13 +348,24 @@ orx contract --payload prediction.json
 # -> exit 2 on an unsupported version: the payload is NEVER guessed at
 ```
 
-**Read `status` before reading anything else.** With no `--world-model`
-configured, a built contract is `status="contract_only"` — the contract is
-implemented, **the prediction service is not attached**, and no forecast was
-made. `valid` requires an attached service; `unsupported`/`invalid` mean
-nothing was predicted. The capability contract carries no composite H score,
-and a legacy payload is read through a view that derives **no** capability
-increment, risk severity or measurement.
+**Read `status` together with three SEPARATE facts.** A built contract is
+`status="contract_only"` unless a prediction was really produced and
+validated:
+
+| Field | Meaning |
+|---|---|
+| `provider_configured` | a provider is attached to this instance |
+| `service_available` | this build implements the service for this kind **and** a provider is configured |
+| `prediction_made` | a prediction was really produced and validated |
+
+Only `prediction_made` makes `status="valid"`. Building a contract returns
+`contract_only` **even with a provider configured** — zero model calls with
+empty benefit/cost/risk is not a forecast. The capability-evolution kind has
+a contract and **no service**, so it stays unavailable no matter what is
+configured. `unsupported`/`invalid` mean nothing was predicted. The
+capability contract carries no composite H score, and a legacy payload is
+read through a view that derives **no** capability increment, risk severity
+or measurement.
 
 Full contract definition, the attempt-vs-strategy-window scope rule, the
 `H = F(M, W_OR, Pi, R, T)` sources, and the migration table:

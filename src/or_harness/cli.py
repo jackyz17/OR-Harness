@@ -878,6 +878,7 @@ def cmd_contract(args) -> int:
         ExpectedCost,
         ExperienceScope,
         LearningOperation,
+        RiskStatement,
         TaskTargeting,
         VerificationCondition,
     )
@@ -922,17 +923,23 @@ def cmd_contract(args) -> int:
                     return _fail("--benefit needs a JSON object with at "
                                  "least 'metric' (and 'kind', 'value')")
                 benefit = BenefitEstimate.from_dict(data)
+            candidate = _candidate_from_spec(spec)
             prediction = h.build_strategy_outcome_contract(
-                task, CandidateRef.from_dict(spec),
+                task, candidate,
                 episode_id=getattr(args, "episode", None),
                 benefit=benefit,
                 cost=ExpectedCost.from_dict(_load_json_arg(args.cost))
-                if getattr(args, "cost", None) else None)
+                if getattr(args, "cost", None) else None,
+                risk=RiskStatement.from_dict(_load_json_arg(args.risk))
+                if getattr(args, "risk", None) else None)
             out = prediction.to_dict()
             return _emit(out,
                          f"Strategy outcome contract {prediction.status} "
                          f"(scope={prediction.scope}, "
-                         f"comparable={prediction.trace.comparable}). "
+                         f"comparable={prediction.trace.comparable}, "
+                         f"provider_configured="
+                         f"{prediction.provider_configured}, "
+                         f"prediction_made={prediction.prediction_made}). "
                          + " ".join(prediction.notes))
         # capability_evolution
         task = _load_json_arg(args.task) if args.task else None
@@ -979,10 +986,28 @@ def cmd_contract(args) -> int:
         return _emit(out,
                      f"Capability evolution contract {prediction.status} "
                      f"(operation={operation.operation_type}, "
-                     f"service_available={prediction.service_available}). "
+                     f"provider_configured={prediction.provider_configured}, "
+                     f"service_implemented={prediction.service_implemented}, "
+                     f"service_available={prediction.service_available}, "
+                     f"prediction_made={prediction.prediction_made}). "
                      + " ".join(prediction.notes))
     finally:
         h.close()
+
+
+def _candidate_from_spec(spec: Dict[str, Any]):
+    """Build a ``CandidateRef`` from either candidate or legacy spec JSON.
+
+    A payload naming ``measurement_scope`` is a LEGACY ``ActionSpec``: it is
+    routed through ``CandidateRef.from_action_spec`` so its execution
+    configuration and budget hint survive, and so an unmappable legacy scope
+    (``task``) is refused instead of silently shrunk to one attempt.
+    """
+    from or_harness.world_model.contracts import CandidateRef
+    from or_harness.world_model.prediction import ActionSpec
+    if "measurement_scope" in spec or "budget_hint" in spec:
+        return CandidateRef.from_action_spec(ActionSpec.from_dict(spec))
+    return CandidateRef.from_dict(spec)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1315,9 +1340,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="task JSON (literal or @file); required to build a "
                         "strategy_outcome contract, optional for capability_evolution")
     p.add_argument("--spec", default=None,
-                   help="CandidateRef JSON: action_type, strategy_id, solver, "
-                        "config, preconditions, expected_scope, "
-                        "stop_conditions, scope (attempt|strategy_window)")
+                   help="candidate JSON. A CandidateRef: action_type, "
+                        "strategy_id, solver, config, preconditions, "
+                        "expected_scope, stop_conditions, scope "
+                        "(attempt|strategy_window). A LEGACY ActionSpec "
+                        "(with measurement_scope / budget_hint) is also "
+                        "accepted and mapped through from_action_spec, "
+                        "which preserves its execution config and REFUSES "
+                        "an unmappable scope such as 'task'")
     p.add_argument("--episode", default=None)
     p.add_argument("--benefit", default=None,
                    help="BenefitEstimate JSON: {kind, metric, unit, value, "
@@ -1326,6 +1356,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cost", default=None,
                    help="ExpectedCost JSON: {expected:{<dimension>: <value>}, "
                         "expected_measured:[...]}")
+    p.add_argument("--risk", default=None,
+                   help="RiskStatement JSON: {events:[{event, probability, "
+                        "severity, basis}]} — risk events stay separate "
+                        "from cost")
     p.add_argument("--operation", default=None,
                    help="LearningOperation JSON: {operation_type: induce|"
                         "revise|reverify|retire, strategy_id, description, "
