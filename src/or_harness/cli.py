@@ -857,6 +857,134 @@ def cmd_doctor(args) -> int:
         h.close()
 
 
+def cmd_contract(args) -> int:
+    """Build or read a unified world-model contract (no model call).
+
+    Two modes:
+
+    - ``--payload``: READ a stored prediction payload (current contract,
+      legacy unversioned, or an explicitly unsupported version). Never
+      writes, never calls a model.
+    - ``--kind``: BUILD a contract object and return it. This is a
+      schema-level construction: with no prediction service configured the
+      object is returned as ``contract_only`` and says so — the contract is
+      implemented, the service is not attached.
+    """
+    from or_harness.world_model.contracts import (
+        BaselineStatement,
+        BenefitEstimate,
+        CandidateRef,
+        ExpectedChange,
+        ExpectedCost,
+        ExperienceScope,
+        LearningOperation,
+        TaskTargeting,
+        VerificationCondition,
+    )
+    h = _harness(args)
+    try:
+        if args.payload:
+            payload = _load_json_arg(args.payload)
+            if not isinstance(payload, dict):
+                return _fail("--payload must be a JSON object")
+            result = h.read_prediction_payload(payload)
+            version = result["contract_version"]
+            if not result.get("supported"):
+                return _fail(f"Unsupported contract version: {version}. "
+                             f"{result.get('error', '')} The payload was NOT "
+                             "parsed — an unknown version is never guessed at.")
+            if result.get("legacy"):
+                view = result["legacy_view"]
+                gaps = view.get("gaps") or []
+                return _emit(result,
+                             f"Legacy unversioned payload read through the "
+                             f"legacy view: {len(view['mapped_fields'])} "
+                             f"field(s) mapped, {len(gaps)} gap(s) where the "
+                             "old payload recorded nothing (left absent, not "
+                             "invented). Capability evidence is INDIRECT "
+                             "only; no capability increment is derived.")
+            return _emit(result,
+                         f"Contract payload {version} loaded "
+                         f"({result['contract'].get('prediction_type')}).")
+        kind = args.kind
+        if kind == "strategy_outcome":
+            task = _load_json_arg(args.task) if args.task else None
+            if task is None:
+                return _fail("--kind strategy_outcome requires --task")
+            spec = _load_json_arg(args.spec)
+            if not isinstance(spec, dict):
+                return _fail("--spec must be a JSON object")
+            benefit = None
+            raw = getattr(args, "benefit", None)
+            if raw:
+                data = _load_json_arg(raw)
+                if not isinstance(data, dict) or not data.get("metric"):
+                    return _fail("--benefit needs a JSON object with at "
+                                 "least 'metric' (and 'kind', 'value')")
+                benefit = BenefitEstimate.from_dict(data)
+            prediction = h.build_strategy_outcome_contract(
+                task, CandidateRef.from_dict(spec),
+                episode_id=getattr(args, "episode", None),
+                benefit=benefit,
+                cost=ExpectedCost.from_dict(_load_json_arg(args.cost))
+                if getattr(args, "cost", None) else None)
+            out = prediction.to_dict()
+            return _emit(out,
+                         f"Strategy outcome contract {prediction.status} "
+                         f"(scope={prediction.scope}, "
+                         f"comparable={prediction.trace.comparable}). "
+                         + " ".join(prediction.notes))
+        # capability_evolution
+        task = _load_json_arg(args.task) if args.task else None
+        op_raw = _load_json_arg(args.operation) if args.operation else None
+        if op_raw is not None and not isinstance(op_raw, dict):
+            return _fail("--operation must be a JSON object")
+        operation = (LearningOperation.from_dict(op_raw) if op_raw
+                     else LearningOperation(
+                         operation_type="induce",
+                         description=args.operation_desc or ""))
+        if args.operation_desc:
+            operation.description = args.operation_desc
+        scope = None
+        if args.scope:
+            scope_data = _load_json_arg(args.scope)
+            if not isinstance(scope_data, dict):
+                return _fail("--scope must be a JSON object")
+            scope = ExperienceScope.from_dict(scope_data)
+        targeting = None
+        if args.targeting:
+            targeting_data = _load_json_arg(args.targeting)
+            if not isinstance(targeting_data, dict):
+                return _fail("--targeting must be a JSON object")
+            targeting = TaskTargeting.from_dict(targeting_data)
+        changes = []
+        if args.expected_change:
+            raw = _load_json_arg(args.expected_change)
+            raw = raw if isinstance(raw, list) else [raw]
+            changes = [ExpectedChange.from_dict(c) for c in raw]
+        conditions = []
+        for raw in (args.verification or []):
+            data = _load_json_arg(raw)
+            conditions.append(VerificationCondition.from_dict(data))
+        prediction = h.build_capability_evolution_contract(
+            task, operation, experience_scope=scope,
+            task_targeting=targeting,
+            baseline=(BaselineStatement.from_dict(
+                _load_json_arg(args.baseline)) if args.baseline else None),
+            horizon=args.horizon or "",
+            horizon_tasks=args.horizon_tasks,
+            expected_changes=changes,
+            verification_conditions=conditions)
+        out = prediction.to_dict()
+        return _emit(out,
+                     f"Capability evolution contract {prediction.status} "
+                     f"(operation={operation.operation_type}, "
+                     f"service_available={prediction.service_available}). "
+                     + " ".join(prediction.notes))
+    finally:
+        h.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="orx",
@@ -1167,6 +1295,64 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("doctor", help="environment self-check")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "contract",
+        help="build or read a unified world-model contract "
+             "(strategy outcome / capability evolution). No model call is "
+             "made: building returns a contract_only object when no "
+             "prediction service is attached, and reading never parses an "
+             "unknown contract version")
+    p.add_argument("--kind", default=None,
+                   choices=["strategy_outcome", "capability_evolution"],
+                   help="which contract to BUILD (omit when reading "
+                        "--payload)")
+    p.add_argument("--payload", default=None,
+                   help="READ a stored prediction payload (literal or @file): "
+                        "current contract, legacy unversioned, or an "
+                        "explicitly unsupported version")
+    p.add_argument("--task", default=None,
+                   help="task JSON (literal or @file); required to build a "
+                        "strategy_outcome contract, optional for capability_evolution")
+    p.add_argument("--spec", default=None,
+                   help="CandidateRef JSON: action_type, strategy_id, solver, "
+                        "config, preconditions, expected_scope, "
+                        "stop_conditions, scope (attempt|strategy_window)")
+    p.add_argument("--episode", default=None)
+    p.add_argument("--benefit", default=None,
+                   help="BenefitEstimate JSON: {kind, metric, unit, value, "
+                        "baseline:{kind,value}} — 'metric' and a baseline are "
+                        "required whenever 'value' is present")
+    p.add_argument("--cost", default=None,
+                   help="ExpectedCost JSON: {expected:{<dimension>: <value>}, "
+                        "expected_measured:[...]}")
+    p.add_argument("--operation", default=None,
+                   help="LearningOperation JSON: {operation_type: induce|"
+                        "revise|reverify|retire, strategy_id, description, "
+                        "scope}")
+    p.add_argument("--operation-desc", default=None,
+                   help="free-text description for the learning operation")
+    p.add_argument("--scope", default=None,
+                   help="ExperienceScope JSON: {execution_ids, task_ids, "
+                        "family, cell_token}")
+    p.add_argument("--targeting", default=None,
+                   help="TaskTargeting JSON: {description, family, "
+                        "cell_token, predicates, task_ids}")
+    p.add_argument("--baseline", default=None,
+                   help="BaselineStatement JSON: {kind, value, note}")
+    p.add_argument("--horizon", default=None,
+                   help="what window the capability change is claimed over, "
+                        "e.g. 'next 10 matching tasks'")
+    p.add_argument("--horizon-tasks", type=int, default=None,
+                   help="task count of the horizon, when known")
+    p.add_argument("--expected-change", default=None,
+                   help="ExpectedChange JSON (repeatable): {metric, "
+                        "direction, value, baseline}")
+    p.add_argument("--verification", action="append", default=None,
+                   help="VerificationCondition JSON (repeatable): "
+                        "{condition, evaluable, check_basis} — what would "
+                        "actually CONFIRM the predicted change")
+    p.set_defaults(func=cmd_contract)
     return parser
 
 

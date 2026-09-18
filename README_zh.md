@@ -4,7 +4,9 @@
 
 > 给定一个不断演进的大规模工业优化任务流，OR agent 能否从既往执行中学到"哪些求解策略适合哪些问题结构"，并以更低执行成本持续获得同等或更优的解质量？
 
-OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是自治 agent：没有对话循环、没有运行时 LLM 调用、没有隐藏全局状态。外层 agent 负责编排；本能力层提供建议、执行与记忆。
+OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是自治 agent：没有对话循环、没有隐藏全局状态、没有无人值守的后台工作。外层 agent 负责编排；本能力层提供建议、执行与记忆。
+
+只有在你**显式配置**了 provider（`--world-model URL::MODEL`，或 `ORHarness(world_model=...)`）并**显式调用**预测命令时才会调用模型。未配置 provider 时，所有世界模型命令都返回明确的 `not_configured`，不发生任何网络活动。预测始终是影子假设：它不会变成事实，未执行候选的预测也不等于真实反馈。
 
 ## 核心能力
 
@@ -14,6 +16,7 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 - **沙箱执行**：AST 策略 + POSIX rlimit + 墙钟超时；基本验证；五维代价计量（retries 计入代价）。
 - **由你掌控的归纳**：每次 record 后 C1–C6 证据 hint；`induce` 永远是外层显式调用。经验适用范围 = 家族 + 支持证据所在的结构格（沿用旧版四区间，不用跨样本 min/max 跨度，避免把表现相反的区段合并）；建条目需要 ≥2 个不同任务的支持执行（重复同一任务不算复现）；**发布**需要入库验证通过（`induce --verify`：规则成立 / 修复有效 / 质量不降而代价下降），未验证候选只记录、不进推荐；冷归档防复活。触发准则不再引用先验分数，改为纯统计判据。
 - **七个求解器适配器**（highs、pulp、ortools、scip、copt、pyomo、gurobi）——仅做可用性探测，具体求解器由你按情况选择。
+- **统一世界模型契约**（`wm-contract/1`）：为两个预测模块提供有版本、可序列化、可校验的结构——**OR 策略后果预测**（收益携带指标/单位/基线，代价复用 `CostVector`，风险为具名事件，不确定性区分执行随机性与证据不足）与 **Harness 能力演化预测**（`H = F(M, W_OR, Pi, R, T)` 的能力证据、候选学习操作、基线与时间范围、学习代价、退化风险、验证条件）。**契约已实现，预测服务尚未接入**：构建出的契约会如实返回 `status="contract_only"`，而不是假装已经做过预测。旧无版本载荷通过显式 legacy 视图保持可读；未知契约版本明确失败，绝不猜测解析。详见 [references/world_model_contract.md](references/world_model_contract.md)。
 
 ## 快速开始
 
@@ -35,6 +38,7 @@ orx inspect   --bank strategic
 ## 文档
 
 - **[SKILL.md](SKILL.md)** —— harness agent 的薄契约（从这里开始，英文）
+- **[references/world_model_contract.md](references/world_model_contract.md)** —— 统一预测契约、`contract_only` 含义、attempt 与策略执行窗口之分、能力来源与迁移表（含可运行示例，英文）
 - **[references/concepts.md](references/concepts.md)** —— 双层记忆、CostVector、派生层处置（英文）
 - **[references/induction.md](references/induction.md)** —— C1–C6、适用范围=家族+结构格、入库门槛与入库验证、离线生命周期（英文）
 - **[references/examples.md](references/examples.md)** —— 四个完整走查实例（英文）

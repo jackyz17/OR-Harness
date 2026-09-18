@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Union
 
 from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import (
@@ -52,6 +52,38 @@ from or_harness.world_model.actions import (
     ActionLog,
 )
 from or_harness.world_model.budget import BudgetLedger
+from or_harness.world_model.contracts import (
+    LEGACY_CONTRACT_VERSION,
+    LEGACY_UNMAPPABLE,
+    PAYLOAD_VERSION_UNKNOWN_PREFIX,
+    PREDICTION_KINDS,
+    BaselineStatement,
+    BenefitEstimate,
+    CandidateRef,
+    CapabilityEvolutionPrediction,
+    EvidenceRef,
+    ExpectedChange,
+    ExpectedCost,
+    ExperienceScope,
+    HarnessCapabilityEvidence,
+    LearningOperation,
+    PredictionTrace,
+    RiskStatement,
+    StrategyOutcomePrediction,
+    TaskTargeting,
+    UncertaintyStatement,
+    VerificationCondition,
+    capability_evidence_from_legacy_harness_state,
+    detect_payload_version,
+    legacy_prediction_view,
+    load_contract_payload,
+    validate_capability_evolution,
+    validate_strategy_outcome,
+)
+from or_harness.world_model.execution_window import (
+    StrategyExecutionWindow,
+    window_from_records,
+)
 from or_harness.world_model.prediction import (
     ActionSpec,
     OutcomePrediction,
@@ -238,20 +270,7 @@ class ORHarness:
         and from episode progress inheritance."""
         profile = self.profile(task)
         knowledge = verified_knowledge_view(profile, self.sbank)
-        recent = self.bank.query(task_id=str(task.get("task_id", "")))
-        harness_state = {
-            "knowledge": knowledge,
-            "experience": {
-                "task_execution_count": len(recent),
-                "total_executions": self.bank.count(),
-                "recent_execution_ids": [r.execution_id for r in recent[:20]],
-            },
-            "tool_config": {
-                "available_solver_families": available_families(),
-                "executor_timeout_seconds": getattr(
-                    self.executor, "timeout_seconds", None),
-            },
-        }
+        harness_state = self._harness_state_view(task, knowledge)
         budget = self._load_budget(str(task.get("task_id", "")), episode_id)
         budget_state = self.budget.view(
             str(task.get("task_id", "")), episode_id, budget=budget)
@@ -315,6 +334,317 @@ class ORHarness:
                         "structural cell; no quality claim is made for them",
             },
         }
+
+    def _harness_state_view(self, task: Dict[str, Any],
+                            knowledge: Dict[str, Any]) -> Dict[str, Any]:
+        """The frozen ``harness_state`` block of a belief snapshot.
+
+        This is EVIDENCE ABOUT H, not a measured H: value-copied knowledge
+        references, experience volume, and tool configuration. The name and
+        the shape are kept for backward compatibility with stored snapshots;
+        the unified capability view is
+        :meth:`capability_evidence`, which labels each item's evidential
+        status and defines no composite score.
+        """
+        recent = self.bank.query(task_id=str(task.get("task_id", "")))
+        return {
+            "knowledge": knowledge,
+            "experience": {
+                "task_execution_count": len(recent),
+                "total_executions": self.bank.count(),
+                "recent_execution_ids": [r.execution_id for r in recent[:20]],
+            },
+            "tool_config": {
+                "available_solver_families": available_families(),
+                "executor_timeout_seconds": getattr(
+                    self.executor, "timeout_seconds", None),
+            },
+        }
+
+    # -- unified world-model contracts ------------------------------------------
+
+    def capability_evidence(self, task: Optional[Dict[str, Any]] = None, *,
+                            snapshot: Optional[BeliefSnapshot] = None
+                            ) -> HarnessCapabilityEvidence:
+        """Observable evidence about the harness capability state H.
+
+        ``H = F(M, W_OR, Pi, R, T)``: five interacting sources, carried with
+        an explicit evidence STATUS each and NO composite score. Knowledge
+        references, experience counts and tool configuration are evidence
+        ABOUT H — they are never renamed into a measured capability level.
+
+        Built from a belief snapshot when one is supplied (its frozen
+        ``harness_state`` + ``coverage``), otherwise from the live banks.
+        Sources nothing has observed stay ``no_evidence`` rather than being
+        filled from an unrelated count.
+
+        A ``task`` is optional: with neither a task nor a snapshot the
+        knowledge component cannot be scoped to a structural cell, so it is
+        omitted (and said to be omitted) rather than reported as an empty
+        knowledge base — "not consulted" and "nothing there" are different
+        facts.
+        """
+        if snapshot is not None:
+            return capability_evidence_from_legacy_harness_state(
+                getattr(snapshot, "harness_state", None) or {},
+                coverage=getattr(snapshot, "coverage", None) or {})
+        if task is not None:
+            return self.capability_evidence(
+                snapshot=self.snapshot(task))
+        evidence = capability_evidence_from_legacy_harness_state({
+            "experience": {"total_executions": self.bank.count()},
+            "tool_config": {
+                "available_solver_families": available_families(),
+                "executor_timeout_seconds": getattr(
+                    self.executor, "timeout_seconds", None),
+            },
+        })
+        evidence.notes.append(
+            "no task or snapshot supplied: the knowledge component is "
+            "cell-scoped and was NOT consulted, so M reports evidence "
+            "volume only — an empty cell list is not evidence of no "
+            "knowledge")
+        return evidence
+
+    def strategy_execution_window(self, task_id: str,
+                                  episode_id: Optional[str] = None, *,
+                                  strategy_id: Optional[str] = None,
+                                  in_scope_action_types: Optional[
+                                      Sequence[str]] = None,
+                                  auxiliary_action_types: Optional[
+                                      Sequence[str]] = None
+                                  ) -> StrategyExecutionWindow:
+        """The REAL strategy execution window derived from the action log.
+
+        One ``execute_strategy`` call is one attempt; a window is the larger
+        scope a strategy actually occupies (modeling, solving, repairing,
+        verifying). Only a window that really corresponds to recorded
+        actions is ``comparable`` — the flag a window-scope prediction needs
+        before it may be scored.
+        """
+        return window_from_records(
+            self, task_id, episode_id, strategy_id,
+            in_scope_action_types=in_scope_action_types,
+            auxiliary_action_types=auxiliary_action_types)
+
+    def build_strategy_outcome_contract(
+            self, task: Dict[str, Any],
+            candidate: Union[CandidateRef, ActionSpec],
+            episode_id: Optional[str] = None,
+            *, benefit: Optional[BenefitEstimate] = None,
+            cost: Optional[ExpectedCost] = None,
+            risk: Optional[RiskStatement] = None,
+            uncertainty: Optional[UncertaintyStatement] = None,
+            evidence_basis: Optional[Sequence[EvidenceRef]] = None,
+            unsupported_fields: Optional[Dict[str, str]] = None,
+            window: Optional[StrategyExecutionWindow] = None,
+            ) -> StrategyOutcomePrediction:
+        """Build (and validate) a :class:`StrategyOutcomePrediction`.
+
+        The trace is filled from what the framework already knows: the
+        frozen input snapshot, its task digest, the prediction-service
+        availability of THIS instance, and the generation time. A caller
+        never re-types the contract version or the prediction type.
+
+        With no prediction service configured the returned contract carries
+        ``status="contract_only"`` — the contract is implemented, the
+        service is not attached — and the notes say so. Nothing is invented
+        to make it look like a prediction happened.
+        """
+        if isinstance(candidate, ActionSpec):
+            candidate = CandidateRef.from_action_spec(candidate)
+        elif isinstance(candidate, dict):
+            candidate = CandidateRef.from_dict(candidate)
+        snapshot = self.snapshot(task, episode_id)
+        if candidate.task_id and candidate.task_id != snapshot.task_id:
+            raise ValueError(
+                f"candidate.task_id {candidate.task_id!r} does not match the "
+                f"task being predicted for ({snapshot.task_id!r})")
+        candidate = copy.deepcopy(candidate)
+        if not candidate.task_id:
+            candidate.task_id = snapshot.task_id
+        if candidate.episode_id is None:
+            candidate.episode_id = episode_id
+        trace = PredictionTrace(
+            prediction_kind="strategy_outcome",
+            input_snapshot_id=snapshot.snapshot_id,
+            input_version=(snapshot.problem_state or {}).get("task_digest"),
+            prediction_version=self.prediction_service_version(),
+            evidence_basis=list(evidence_basis or []),
+            unsupported_fields=dict(unsupported_fields or {}),
+            comparable=False,
+        )
+        notes: List[str] = []
+        if candidate.scope == "strategy_window":
+            window = window or self.strategy_execution_window(
+                snapshot.task_id, episode_id,
+                strategy_id=candidate.strategy_id)
+            candidate.window_id = candidate.window_id or window.window_id
+            trace.comparable = bool(window.comparable)
+            trace.not_comparable_reasons = list(window.not_comparable_reasons)
+            notes.append(
+                "window scope: " + window.scope_rationale)
+        else:
+            trace.comparable = True
+            notes.append(
+                "attempt scope: this prediction covers ONE solve attempt, "
+                "not the whole strategy execution (modeling / repair / "
+                "verify are auxiliary and reported separately)")
+        service = self.prediction_service_available("strategy_outcome")
+        if not service:
+            notes.append(
+                "contract_only: no prediction service is attached to this "
+                "instance, so no benefit/cost/risk values were produced")
+        prediction = StrategyOutcomePrediction(
+            candidate=candidate,
+            status="valid" if service else "contract_only",
+            benefit=benefit,
+            cost=cost,
+            risk=risk,
+            uncertainty=uncertainty,
+            trace=trace,
+            service_available=service,
+            notes=notes,
+        )
+        problems = validate_strategy_outcome(prediction)
+        if problems:
+            prediction.status = "invalid"
+            prediction.notes.extend(f"validation: {p}" for p in problems)
+        return prediction
+
+    def build_capability_evolution_contract(
+            self, task: Optional[Dict[str, Any]] = None,
+            operation: Optional[LearningOperation] = None, *,
+            snapshot: Optional[BeliefSnapshot] = None,
+            experience_scope: Optional[ExperienceScope] = None,
+            task_targeting: Optional[TaskTargeting] = None,
+            baseline: Optional[BaselineStatement] = None,
+            horizon: str = "",
+            horizon_tasks: Optional[int] = None,
+            expected_changes: Optional[Sequence[ExpectedChange]] = None,
+            learning_cost: Optional[ExpectedCost] = None,
+            degradation_risk: Optional[RiskStatement] = None,
+            uncertainty: Optional[UncertaintyStatement] = None,
+            verification_conditions: Optional[
+                Sequence[VerificationCondition]] = None,
+            evidence_basis: Optional[Sequence[EvidenceRef]] = None,
+            unsupported_fields: Optional[Dict[str, str]] = None,
+            ) -> CapabilityEvolutionPrediction:
+        """Build (and validate) a :class:`CapabilityEvolutionPrediction`.
+
+        The current capability evidence is read from the frozen snapshot
+        when one is available, otherwise from the live banks. Without a
+        prediction service the contract is returned as ``contract_only``:
+        the schema is implemented, the capability prediction service is NOT
+        — and the object says exactly that instead of implying a capability
+        forecast was made.
+        """
+        if snapshot is None and task is not None:
+            snapshot = self.snapshot(task)
+        evidence = self.capability_evidence(task, snapshot=snapshot)
+        operation = operation or LearningOperation(
+            operation_type="induce",
+            description="(no candidate operation supplied)")
+        trace = PredictionTrace(
+            prediction_kind="capability_evolution",
+            input_snapshot_id=(snapshot.snapshot_id
+                               if snapshot is not None else ""),
+            input_version=((snapshot.problem_state or {}).get("task_digest")
+                           if snapshot is not None else None),
+            prediction_version=self.prediction_service_version(),
+            evidence_basis=list(evidence_basis or []),
+            unsupported_fields=dict(unsupported_fields or {}),
+            comparable=False,
+        )
+        notes: List[str] = []
+        service = self.prediction_service_available("capability_evolution")
+        if not service:
+            notes.append(
+                "contract_only: this build implements the capability "
+                "evolution CONTRACT; no capability prediction service is "
+                "attached, so no performance change is forecast. H is judged "
+                "through observable consequences, never a latent vector")
+        if not verification_conditions:
+            notes.append(
+                "no verification condition declared: predicting, binding "
+                "the fact, and verifying the effect are three different "
+                "things, and only the third supports a claim of improvement")
+        prediction = CapabilityEvolutionPrediction(
+            current_evidence=evidence,
+            candidate_operation=operation,
+            status="valid" if service else "contract_only",
+            experience_scope=experience_scope,
+            task_targeting=task_targeting,
+            baseline=baseline,
+            horizon=horizon,
+            horizon_tasks=horizon_tasks,
+            expected_changes=list(expected_changes or []),
+            learning_cost=learning_cost,
+            degradation_risk=degradation_risk,
+            uncertainty=uncertainty,
+            verification_conditions=list(verification_conditions or []),
+            trace=trace,
+            service_available=service,
+            notes=notes,
+        )
+        problems = validate_capability_evolution(prediction)
+        if problems:
+            prediction.status = "invalid"
+            prediction.notes.extend(f"validation: {p}" for p in problems)
+        return prediction
+
+    def prediction_service_available(self, kind: str) -> bool:
+        """Whether a real prediction SERVICE is attached for one kind.
+
+        Both kinds share this build's single explicit provider; the split is
+        named per kind so a future deployment can wire them independently
+        without changing the contract.
+        """
+        if kind not in PREDICTION_KINDS:
+            raise ValueError(f"unknown prediction kind {kind!r}")
+        return not isinstance(self.world_model, NotConfiguredProvider)
+
+    def prediction_service_version(self) -> str:
+        """Version label of the attached prediction service (or its absence)."""
+        if isinstance(self.world_model, NotConfiguredProvider):
+            return "not-attached"
+        return str(getattr(self.world_model, "name", "unknown"))
+
+    @staticmethod
+    def read_prediction_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Read any stored prediction payload, whatever generation it is.
+
+        Returns a dict with ``contract_version`` (as identified, never
+        guessed), ``legacy`` (True for an unversioned payload), and either
+        ``contract`` (a loaded current-contract object) or ``legacy_view``
+        (the mapped view of an old payload) plus ``unmappable`` explaining
+        what could NOT be converted.
+        """
+        version = detect_payload_version(payload)
+        if version == LEGACY_CONTRACT_VERSION:
+            view = legacy_prediction_view(payload)
+            return {"contract_version": version, "legacy": True,
+                    "supported": True, "legacy_view": view,
+                    "unmappable": dict(LEGACY_UNMAPPABLE),
+                    "note": ("read through the legacy view: the old "
+                             "semantics are preserved and no new capability "
+                             "increment, risk severity or measurement is "
+                             "derived")}
+        if version.startswith(PAYLOAD_VERSION_UNKNOWN_PREFIX):
+            return {"contract_version": version, "legacy": False,
+                    "supported": False,
+                    "error": (f"unsupported contract version "
+                              f"{version[len(PAYLOAD_VERSION_UNKNOWN_PREFIX):]!r}: "
+                              "this build will not guess at its semantics")}
+        try:
+            contract = load_contract_payload(payload)
+        except ValueError as exc:
+            return {"contract_version": version, "legacy": False,
+                    "supported": False, "error": str(exc)}
+        return {"contract_version": version, "legacy": False,
+                "supported": True, "contract": contract.to_dict()}
+
+    # -- budget / actions ------------------------------------------------------
 
     def declare_budget(self, task_id: str, budget: Dict[str, float],
                        episode_id: Optional[str] = None) -> Dict[str, Any]:

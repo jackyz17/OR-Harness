@@ -4,7 +4,9 @@ A small, composable, harness-friendly **strategy-learning capability layer** for
 
 > Given an evolving stream of large-scale industrial optimization tasks, can an OR agent learn from previous executions which solving strategies are appropriate for particular problem structures, and increasingly achieve similar or better solution quality at lower execution cost?
 
-OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an autonomous agent: no conversation loop, no runtime LLM calls, no hidden global state. The outer agent orchestrates; this layer advises, executes, and remembers.
+OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an autonomous agent: no conversation loop, no hidden global state, no unattended background work. The outer agent orchestrates; this layer advises, executes, and remembers.
+
+A model is called **only** when you explicitly configure a provider (`--world-model URL::MODEL`, or `ORHarness(world_model=...)`) and explicitly invoke a prediction command. With no provider configured, every world-model command returns an explicit `not_configured` and no network activity happens. A prediction is a shadow hypothesis: it never becomes a fact, and an unexecuted candidate's prediction is never real feedback.
 
 ## What it provides
 
@@ -14,6 +16,7 @@ OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an aut
 - **Sandboxed execution**: AST policy + POSIX rlimits + wall-clock timeout for your solve scripts; basic verification; five-dimensional cost metering (retries count).
 - **Induction you control**: C1–C6 evidence hints after every record; `induce` is always your explicit call. A claim's applicability is the family plus the structural cell its evidence occupies (legacy four-interval quantization — never a cross-sample span that would pool opposite regions); creating one needs ≥2 executions from ≥2 distinct tasks (repetition is not reproduction); publishing it needs a passed admission check (`induce --verify`: rule / repair / quality-preserving cost saving), so an unverified candidate is recorded but not recommended; cold archive with anti-resurrection.
 - **Seven solver adapters** (highs, pulp, ortools, scip, copt, pyomo, gurobi) — availability probing only; you pick the concrete solver per situation.
+- **Unified world-model contracts** (`wm-contract/1`): a versioned, serializable, validatable shape for two prediction modules — **OR strategy consequence prediction** (benefit with its metric/unit/baseline, `CostVector` cost, named risk events, uncertainty split into execution randomness vs evidence gap) and **harness capability evolution prediction** (capability evidence for `H = F(M, W_OR, Pi, R, T)`, a candidate learning operation, baseline and horizon, learning cost, degradation risk, verification conditions). The CONTRACT is implemented; the prediction SERVICE is not attached — a built contract says `status="contract_only"` rather than pretending a forecast was made. Legacy unversioned payloads stay readable through an explicit legacy view; an unknown contract version fails instead of being guessed at. See [references/world_model_contract.md](references/world_model_contract.md).
 
 ## Quick start
 
@@ -35,6 +38,7 @@ Memory lives in an explicit directory (`--home` or `$OR_HARNESS_HOME`), stored a
 ## Documentation
 
 - **[SKILL.md](SKILL.md)** — the thin contract for harness agents (start here)
+- **[references/world_model_contract.md](references/world_model_contract.md)** — the unified prediction contracts, `contract_only`, attempt vs strategy window, capability sources, migration table (with a runnable example)
 - **[references/concepts.md](references/concepts.md)** — two-layer memory, CostVector, disposal ladder
 - **[references/induction.md](references/induction.md)** — C1–C6, applicability as family + structural cell, creation gate and admission verification, offline lifecycle
 - **[references/examples.md](references/examples.md)** — four complete walkthroughs

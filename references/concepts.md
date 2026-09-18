@@ -141,7 +141,12 @@ why entries are born `candidate`, why intervals are floored by sample size
 (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions
 with ≥70% hit rate ON TOP of the passed admission check.
 
-The only LLM involvement is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and sit outside scoring — a sentence cannot be verified, so it is not scored.
+The only text a model writes into the knowledge layer is *phrasing*: you may
+attach applicability notes at induce time (`--note`). They are stored for the
+reader and sit outside scoring — a sentence cannot be verified, so it is not
+scored. (A configured world model may separately produce *predictions*, but
+those live in their own log and never enter an entry, a statistic, or a
+verdict; see [world_model_contract.md](world_model_contract.md).)
 
 ## World-model outcome predictions: shadow hypotheses, never decisions
 
@@ -183,10 +188,46 @@ The discipline that makes these predictions useful rather than corrosive:
 ### H is a prediction subject, not only a condition
 
 The state the model conditions on is H/P/X/B, and what it predicts covers
-X, B **and H** — how the action changes accumulated experience and
-strategic knowledge. Predicting only X/B and then updating H after the fact
-would make the harness unable to reason about *which action is worth taking
-for what it teaches*, which is the capability this layer exists to provide.
+X, B **and** the capability side — how the action changes accumulated
+experience and strategic knowledge. Predicting only X/B and then updating H
+after the fact would make the harness unable to reason about *which action
+is worth taking for what it teaches*, which is the capability this layer
+exists to provide.
+
+**The unified contract for this is defined in
+[world_model_contract.md](world_model_contract.md)** — that page is the
+single authority for the two prediction modules
+(`StrategyOutcomePrediction` and `CapabilityEvolutionPrediction`), the
+status vocabulary, the attempt-vs-strategy-window scope rule, and the
+migration table. What follows here is the *why* behind the design.
+
+`H = F(M, W_OR, Pi, R, T)` — five INTERACTING capability sources, not five
+score dimensions and not a sum:
+
+| Source | What it covers |
+|---|---|
+| M | Execution Evidence / Strategic Knowledge **and how usable it actually is** |
+| W_OR | consequence prediction and reliability judgement for OR solving |
+| Pi | strategy generation, composition, comparison, selection, switching, stopping |
+| R | knowledge retrieval, applicability matching, context adaptation (**not** the final decision) |
+| T | tool/solver selection, composition, invocation, result handling |
+
+Three consequences that are easy to get wrong:
+
+- **H is not its evidence.** `harness_state` knowledge refs, experience
+  counts and tool configuration are *evidence about* H. They map to M and T
+  as `indirect_evidence` only; nothing in the old state observed W_OR, Pi or
+  R, so those stay `no_evidence` rather than being filled from an unrelated
+  count. There is no composite H score in this build, and the validator
+  rejects a payload that tries to add one.
+- **There is no `E_hist` capability term.** Historical experience is not a
+  sixth component — it is the substrate the sources are evidenced from. The
+  H-evolution predictor's own quality is assessed separately; it is not part
+  of its own claim to have got stronger.
+- **B is not a predicted world-state object.** Budget declarations,
+  execution limits and the real ledger stay in `BudgetLedger`. Cost appears
+  twice in the contracts and the two are never summed: the *predicted* cost
+  of the candidate, and the *measured* spend of the prediction call itself.
 
 A knowledge change is predicted against a target that is either an existing
 entry (it must really exist — a model cannot invent knowledge) or a
@@ -195,6 +236,13 @@ observation would be judged). Each item names a change, a horizon, and any
 standing preconditions, because the timescales genuinely differ: evidence
 lands when the execution is recorded, while a claim only forms, moves or
 narrows after an offline induction.
+
+**Prediction, fact binding and verified effect are three different things.**
+Adding knowledge entries, accumulating evidence, or a model asserting an
+improvement confirms none of them; only an observed improvement in future
+task performance does. The contract records all three flags separately, and
+a capability prediction is judged through those observable consequences —
+never through a latent vector.
 
 **Unknown upside is not rewarded.** The knowledge term is `δ·K` with `δ`
 defaulting to 0, and a K that cannot be justified contributes exactly zero.

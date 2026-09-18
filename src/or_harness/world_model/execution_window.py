@@ -1,0 +1,373 @@
+"""Attempt vs strategy execution window: the scope a prediction covers.
+
+One ``execute_strategy`` call is ONE EXECUTION ATTEMPT — a single solve
+invocation with its own staged/recorded ExecutionRecord. A STRATEGY
+EXECUTION WINDOW is the larger thing a strategy actually is in practice:
+writing the model, running the solver (possibly more than once), repairing,
+verifying. Those are different units, and the difference is not cosmetic:
+scoring a window-scope prediction against one attempt's numbers (or the
+reverse) silently compares two different things.
+
+This module derives a window from the REAL action log — never from an
+intention. Its rules:
+
+- **The predicted scope is declared, not assumed.** A window states which
+  action types are IN scope (the ones the prediction speaks about) and
+  which are AUXILIARY overhead (real spend, counted in the ledger, but not
+  part of what was predicted). ``execute_strategy`` attempts are in scope by
+  default because that is what the legacy prediction path actually
+  predicted; ``model`` / ``verify`` / ``select_strategy`` are auxiliary
+  unless the caller explicitly declares otherwise.
+- **Only a real scope is comparable.** A window with no executed attempt,
+  or a window whose declared in-scope action types have no matching
+  records, is reported with ``comparable=False`` and the reasons. A
+  prediction may not be marked comparable against a scope that does not
+  exist.
+- **Auxiliary cost is never hidden.** The auxiliary actions' own measured
+  spend is reported separately (and is already counted by
+  :class:`~or_harness.world_model.budget.BudgetLedger`), so "the strategy
+  was cheap" cannot be claimed by omitting the modeling work that made it
+  possible.
+"""
+
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence
+
+from or_harness.core.schema import COST_DIMENSIONS, CostVector
+
+#: Action types that may belong to a strategy execution window.
+WINDOW_ACTION_TYPES = ("model", "select_strategy", "execute_strategy",
+                       "verify", "finish_task")
+
+#: The action types IN the predicted scope by default. This is exactly what
+#: the existing single-step prediction path predicts: one solve attempt.
+DEFAULT_IN_SCOPE_ACTION_TYPES = ("execute_strategy",)
+
+#: Action types that are real work but auxiliary to the predicted scope by
+#: default: they cost real budget and are reported, never predicted.
+DEFAULT_AUXILIARY_ACTION_TYPES = ("model", "select_strategy", "verify")
+
+
+def window_id_for(task_id: str, episode_id: Optional[str],
+                  strategy_id: Optional[str]) -> str:
+    """A deterministic window id from the identity that defines it.
+
+    Deterministic on purpose: the same real window asked for twice gets the
+    same id, so a prediction's ``window_id`` reference stays resolvable and
+    a duplicate window cannot appear as two.
+    """
+    return (f"win::{task_id}::{episode_id or '-'}::{strategy_id or '-'}")
+
+
+@dataclass
+class WindowAttempt:
+    """One real execution attempt inside a window."""
+
+    action_id: str
+    execution_id: Optional[str] = None
+    action_status: str = "running"
+    measurement_scope: str = "attempt"
+    cost: Optional[CostVector] = None
+    cost_measured: List[str] = field(default_factory=list)
+    started_at: Optional[float] = None
+    ended_at: Optional[float] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "execution_id": self.execution_id,
+            "action_status": self.action_status,
+            "measurement_scope": self.measurement_scope,
+            "cost": (self.cost.to_dict() if self.cost is not None else None),
+            "cost_measured": list(self.cost_measured),
+            "started_at": self.started_at,
+            "ended_at": self.ended_at,
+        }
+
+
+@dataclass
+class AuxiliaryAction:
+    """A real action inside the window that the prediction does NOT cover."""
+
+    action_id: str
+    action_type: str
+    action_status: str = "completed"
+    rollup: str = "own"
+    cost: Optional[CostVector] = None
+    cost_measured: List[str] = field(default_factory=list)
+    counted_in_ledger: bool = True
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "action_id": self.action_id,
+            "action_type": self.action_type,
+            "action_status": self.action_status,
+            "rollup": self.rollup,
+            "cost": (self.cost.to_dict() if self.cost is not None else None),
+            "cost_measured": list(self.cost_measured),
+            "counted_in_ledger": bool(self.counted_in_ledger),
+            "note": ("auxiliary overhead: real spend, counted in the budget "
+                     "ledger, NOT part of the predicted scope"),
+        }
+
+
+@dataclass
+class StrategyExecutionWindow:
+    """A real strategy execution window, derived from the action log."""
+
+    window_id: str
+    task_id: str
+    episode_id: Optional[str]
+    strategy_id: Optional[str]
+    in_scope_action_types: List[str] = field(
+        default_factory=lambda: list(DEFAULT_IN_SCOPE_ACTION_TYPES))
+    auxiliary_action_types: List[str] = field(
+        default_factory=lambda: list(DEFAULT_AUXILIARY_ACTION_TYPES))
+    attempts: List[WindowAttempt] = field(default_factory=list)
+    auxiliary_actions: List[AuxiliaryAction] = field(default_factory=list)
+    scope_rationale: str = ""
+    comparable: bool = False
+    not_comparable_reasons: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def n_attempts(self) -> int:
+        return len(self.attempts)
+
+    @property
+    def attempt_cost(self) -> Dict[str, Any]:
+        """Attempt cost over the window's in-scope attempts (see
+        :func:`_aggregate`)."""
+        return _aggregate([a.cost for a in self.attempts])
+
+    @property
+    def auxiliary_cost(self) -> Dict[str, Any]:
+        """Auxiliary overhead cost (``rollup="own"`` actions only).
+
+        ``rollup="reference"`` actions are excluded: their cost references a
+        child already counted, and summing them again would double-count.
+        """
+        return _aggregate([a.cost for a in self.auxiliary_actions
+                           if a.rollup == "own"])
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "window_id": self.window_id,
+            "task_id": self.task_id,
+            "episode_id": self.episode_id,
+            "strategy_id": self.strategy_id,
+            "in_scope_action_types": list(self.in_scope_action_types),
+            "auxiliary_action_types": list(self.auxiliary_action_types),
+            "n_attempts": self.n_attempts,
+            "attempts": [a.to_dict() for a in self.attempts],
+            "auxiliary_actions": [a.to_dict() for a in self.auxiliary_actions],
+            "attempt_cost": self.attempt_cost,
+            "auxiliary_cost": self.auxiliary_cost,
+            "scope_rationale": self.scope_rationale,
+            "comparable": bool(self.comparable),
+            "not_comparable_reasons": list(self.not_comparable_reasons),
+            "notes": list(self.notes),
+        }
+
+
+def _aggregate(costs: Sequence[Optional[CostVector]]) -> Dict[str, Any]:
+    """Per-dimension total over costs, with the measurement state reported.
+
+    For each dimension:
+
+    - ``total``: the sum over the items that MEASURED it, or ``None`` when
+      none did;
+    - ``n_measured``: how many items measured it;
+    - ``n_items``: how many items exist;
+    - ``complete``: True only when EVERY item measured it.
+
+    An incomplete total is reported as ``partial=True`` alongside the count,
+    never silently presented as the whole picture — and never collapsed to
+    ``None`` either, which would throw away real observations. A dimension
+    no item measured stays ``None``: unknown, not a zero.
+    """
+    dims: Dict[str, Any] = {}
+    for dim in COST_DIMENSIONS:
+        values: List[float] = []
+        for cost in costs:
+            if cost is None:
+                continue
+            if dim not in cost.measured_dims():
+                continue
+            values.append(float(getattr(cost, dim)))
+        dims[dim] = {
+            "total": round(sum(values), 6) if values else None,
+            "n_measured": len(values),
+            "n_items": len(costs),
+            "complete": bool(costs) and len(values) == len(costs),
+            "partial": bool(values) and len(values) != len(costs),
+        }
+    return dims
+
+
+def build_execution_window(actions: Sequence[Any], *, task_id: str,
+                           episode_id: Optional[str],
+                           strategy_id: Optional[str] = None,
+                           in_scope_action_types: Optional[Sequence[str]] = None,
+                           auxiliary_action_types: Optional[Sequence[str]] = None,
+                           ) -> StrategyExecutionWindow:
+    """Derive a window from REAL action records (see module docstring).
+
+    ``actions`` are :class:`~or_harness.world_model.actions.ActionRecord`
+    objects (or anything with the same attributes). Hypothetical actions are
+    excluded outright: an imagined action is not part of a real window.
+
+    The window's ``comparable`` flag is the guard the contract needs: a
+    window with no in-scope executed attempt, or whose in-scope actions were
+    only reported rather than executed, is NOT comparable, and a
+    window-scope prediction may then not be scored.
+    """
+    in_scope = list(in_scope_action_types or DEFAULT_IN_SCOPE_ACTION_TYPES)
+    auxiliary = list(auxiliary_action_types
+                     or DEFAULT_AUXILIARY_ACTION_TYPES)
+    unknown_types = [t for t in in_scope + auxiliary
+                     if t not in WINDOW_ACTION_TYPES]
+    if unknown_types:
+        raise ValueError(
+            f"unknown window action type(s) {sorted(set(unknown_types))}; "
+            f"expected a subset of {WINDOW_ACTION_TYPES}")
+    overlap = set(in_scope) & set(auxiliary)
+    if overlap:
+        raise ValueError(
+            f"action types {sorted(overlap)} cannot be both in scope and "
+            "auxiliary: the scope of a prediction is one or the other")
+
+    window = StrategyExecutionWindow(
+        window_id=window_id_for(task_id, episode_id, strategy_id),
+        task_id=task_id,
+        episode_id=episode_id,
+        strategy_id=strategy_id,
+        in_scope_action_types=in_scope,
+        auxiliary_action_types=auxiliary,
+    )
+    window.scope_rationale = (
+        "in-scope action types "
+        f"{in_scope} are what this prediction speaks about; "
+        f"{auxiliary} are real auxiliary overhead, reported separately and "
+        "never folded into the predicted scope")
+
+    candidates = []
+    for action in actions or []:
+        if getattr(action, "task_id", None) not in (None, task_id):
+            continue
+        if episode_id is not None \
+                and getattr(action, "episode_id", None) != episode_id:
+            continue
+        if getattr(action, "source", "executed") == "hypothetical":
+            continue
+        candidates.append(action)
+    candidates.sort(key=lambda a: (getattr(a, "started_at", 0.0) or 0.0,
+                                   getattr(a, "action_id", "")))
+
+    strategy_mismatch = 0
+    for action in candidates:
+        action_type = getattr(action, "action_type", "")
+        params = dict(getattr(action, "params", None) or {})
+        action_strategy = params.get("strategy_id")
+        # Strategy filter: a window is about ONE strategy. An action naming
+        # a different strategy belongs to that strategy's window.
+        if strategy_id is not None and action_strategy is not None \
+                and action_strategy != strategy_id:
+            strategy_mismatch += 1
+            continue
+        cost = getattr(action, "cost", None)
+        measured = (sorted(cost.measured_dims())
+                    if isinstance(cost, CostVector) else [])
+        if action_type in in_scope:
+            window.attempts.append(WindowAttempt(
+                action_id=getattr(action, "action_id", ""),
+                execution_id=getattr(action, "linked_execution_id", None),
+                action_status=getattr(action, "status", "running"),
+                measurement_scope="attempt",
+                cost=cost,
+                cost_measured=measured,
+                started_at=getattr(action, "started_at", None),
+                ended_at=getattr(action, "ended_at", None),
+            ))
+        elif action_type in auxiliary:
+            window.auxiliary_actions.append(AuxiliaryAction(
+                action_id=getattr(action, "action_id", ""),
+                action_type=action_type,
+                action_status=getattr(action, "status", "completed"),
+                rollup=getattr(action, "rollup", "own"),
+                cost=cost,
+                cost_measured=measured,
+            ))
+
+    # Comparability is decided from what was actually found, and every
+    # refusal carries its reason.
+    reasons: List[str] = []
+    if not window.attempts:
+        reasons.append(
+            "no in-scope executed attempt in this window: a window-scope "
+            "prediction cannot be compared against nothing")
+    else:
+        with_execution = [a for a in window.attempts
+                          if a.execution_id and a.action_status != "running"]
+        if not with_execution:
+            reasons.append(
+                "the window's in-scope attempts have no linked execution or "
+                "have not ended: the scope is not yet real")
+        if len(window.attempts) > 1:
+            window.notes.append(
+                f"{len(window.attempts)} attempts in this window: attempt "
+                "costs are reported per attempt, and a retry count of the "
+                "window is NOT the same as one attempt's retries")
+    if not window.auxiliary_actions:
+        window.notes.append(
+            "no auxiliary action was recorded in this window; the window "
+            "therefore covers the solve attempt(s) only — it is NOT "
+            "evidence that modeling and repair cost nothing")
+    window.comparable = not reasons
+    window.not_comparable_reasons = reasons
+    if strategy_mismatch:
+        window.notes.append(
+            f"{strategy_mismatch} action(s) naming another strategy were "
+            "excluded from this window")
+    return window
+
+
+def window_from_records(harness, task_id: str, episode_id: Optional[str],
+                        strategy_id: Optional[str] = None, **kwargs
+                        ) -> StrategyExecutionWindow:
+    """Convenience wrapper over ``harness.actions.query``.
+
+    Kept here (not in the API layer) so the derivation rule has one home;
+    the API exposes the same thing as ``ORHarness.strategy_execution_window``.
+    """
+    actions = harness.actions.query(task_id=task_id, episode_id=episode_id)
+    return build_execution_window(actions, task_id=task_id,
+                                  episode_id=episode_id,
+                                  strategy_id=strategy_id, **kwargs)
+
+
+def window_ref(window: StrategyExecutionWindow) -> Dict[str, Any]:
+    """The minimal window reference a prediction carries.
+
+    Deliberately small: the prediction references the window, it does not
+    copy it — the action log remains the single source of truth.
+    """
+    return {
+        "window_id": window.window_id,
+        "task_id": window.task_id,
+        "episode_id": window.episode_id,
+        "strategy_id": window.strategy_id,
+        "n_attempts": window.n_attempts,
+        "in_scope_action_types": list(window.in_scope_action_types),
+        "comparable": bool(window.comparable),
+        "not_comparable_reasons": list(window.not_comparable_reasons),
+    }
+
+
+def copy_window(window: StrategyExecutionWindow
+                ) -> StrategyExecutionWindow:
+    """A value copy (windows are handed to callers, never shared mutable)."""
+    return copy.deepcopy(window)

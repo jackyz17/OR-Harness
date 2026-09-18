@@ -19,7 +19,7 @@ description: >
 
 You are the orchestrator. This capability layer only advises and executes — you retain full control: you may refuse any recommendation, request alternatives, execute without recording, override recorded costs, and you alone decide when to induce and when to collect garbage.
 
-OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden state: every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`).
+OR-Harness never runs autonomously and keeps no hidden state: every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`). It calls a model ONLY when you explicitly configure a provider (`--world-model URL::MODEL` or `ORHarness(world_model=...)`) and explicitly invoke a prediction command — no command reaches out on its own, and with no provider configured every world-model command returns `not_configured`. A prediction is a shadow hypothesis you may ignore; it never becomes a fact, and an unexecuted candidate's prediction is never real feedback.
 
 ## Core workflow (the loop to run for every optimization task)
 
@@ -67,10 +67,9 @@ OR-Harness never calls an LLM, never runs autonomously, and keeps no hidden stat
 | You predicted one strategy/solver and executed another | `bind-outcome` records the mismatch and skips the comparison — bind the action that actually ran |
 | A hint rests on repeated runs of one `task_id` | A claim needs ≥2 distinct tasks. Either record a genuinely independent instance under its own `task_id`, or record a second task first |
 | `record` reports `index_sync: deferred` | The fact is saved but not yet text-searchable. Recover with `orx rebuild-index` |
-| A task's requirements, capacity or objective change | That is a NEW task context: use a new `task_id` (or episode). Progress from a differently-versioned task is not inherited, and a prediction is scored against the version it was made under — not the current one |
-| A knowledge class reports `reliability: null` / `insufficient_history` | Too few resolved samples. That is honest unknown, not a failure — the class grants no value until it has history |
 | A task's requirements, capacity or objective change | That is a NEW task context: use a new `task_id` (or episode). The old X is not inherited — progress from a differently-versioned task is refused, and a prediction is scored against the version it was made under, not the current one |
-| You see `reliability: null` / `insufficient_history` on a knowledge class | Too few resolved samples. That is honest unknown, not a failure — the class simply grants no value yet |
+| A knowledge class reports `reliability: null` / `insufficient_history` | Too few resolved samples. That is honest unknown, not a failure — the class grants no value until it has history |
+| `orx contract` returns `status: "contract_only"` | The contract is implemented but no prediction service is attached — no forecast was made. Do not read it as one; see [references/world_model_contract.md](references/world_model_contract.md) |
 
 ## Coupling dimensions (operational definitions)
 
@@ -140,7 +139,8 @@ Every command prints one JSON line: `{"result": {...}, "summary": "2-4 sentence 
 | `snapshot --task t.json [--episode ep1]` | Freeze and persist the current belief state |
 | `action --report TYPE --task t.json [--episode ep1]` | Report an action YOU performed |
 | `budget --task ID [--episode ep1] [--declare llm_tokens=50000,...]` | Consumption view over all real action costs |
-| `predict-outcome` / `bind-outcome` | World-model shadow prediction, then its comparison against the real action. With knowledge targets in play, the prediction also covers **H** (`knowledge_changes`) and is judged at two stages: on `record` (evidence landed) and on the next `induce` (a claim formed / moved) |
+| `predict-outcome` / `bind-outcome` | World-model shadow prediction, then its comparison against the real action. With knowledge targets in play, the prediction also covers the capability-evolution side (`knowledge_changes`) and is judged at two stages: on `record` (evidence landed) and on the next `induce` (a claim formed / moved) |
+| `contract` | Build or read a **unified world-model contract** (no model call): `--kind strategy_outcome` / `capability_evolution` builds a versioned, serializable object; `--payload <json>` reads a stored prediction and reports its version (current / legacy / unsupported). With no provider configured the built object says `status="contract_only"` — the contract is implemented, the prediction service is NOT. See [references/world_model_contract.md](references/world_model_contract.md) |
 | `plan-next` / `choose-next` | Bounded planning over predicted consequences, then your explicit choice. `--delta W` weights the predicted knowledge term (`U = αQ − βC − γR + δK`); `--prediction-mode` selects what is predicted |
 | `assess-induction [--bundle f.json \| --candidates-only]` | Evaluate an induction's value before committing |
 | `bind-induction-outcome --assessment ID` | Judge an induction assessment's predictions against the induction that actually ran |
@@ -175,6 +175,9 @@ A plan suggestion is a recommendation, not a decision: say which candidate you c
 These are the misconceptions that actually cost work — each is a positive rule, not a prohibition:
 
 - **A prediction is a shadow.** Choose on evidence; compare the prediction afterwards with `bind-outcome`. `plan-next` suggests, `choose-next` decides, `execute` acts — pick the one the moment calls for.
+- **A contract is not a prediction.** `orx contract` returns `status="contract_only"` when no provider is configured: the schema exists, no forecast was made. Reading it as a forecast is the same error as reading `not_configured` as a result.
+- **A knowledge entry appearing is not a capability gain.** Predicting, binding the fact, and verifying the effect are three different things; only the third supports "the harness got stronger". The capability contracts carry no composite H score, and `harness_state` knowledge refs / experience counts / tool config are evidence ABOUT H, not measured H.
+- **An attempt is not a strategy window.** One `execute_strategy` call is one solve attempt; modeling / repair / verify are auxiliary overhead, reported separately and never folded into a predicted scope. A window-scope prediction is scored only when `trace.comparable` is true.
 - **Predict before acting.** The input snapshot freezes at prediction time; a prediction made after the execution is hindsight, and binding it to a different strategy's action records a mismatch instead of a score.
 - **The model comes after the strategy, before the code.** Strategy selection uses the task text, the CIR, the profile, and the evidence; the `model` is the blueprint you then write, and solve.py translates it.
 - **Measure coupling from structure.** The problem's name is not evidence; two independent resource constraints mean rc≈0 however resource-flavoured the task sounds.
@@ -189,6 +192,7 @@ These are the misconceptions that actually cost work — each is a positive rule
 
 ## References (read on demand)
 
+- [references/world_model_contract.md](references/world_model_contract.md) — the unified prediction contracts (strategy outcome / capability evolution), what `contract_only` means, the attempt-vs-strategy-window scope rule, the `H = F(M, W_OR, Pi, R, T)` capability sources, and the legacy migration table. Read before building a prediction contract or interpreting a stored one.
 - [references/modeling.md](references/modeling.md) — the GAMS-style model representation: syntax, constraint label rules, verification layers, and the Coupling-Aware Intermediate Representation (CIR) schema. Read before writing your first model or CIR.
 - [references/concepts.md](references/concepts.md) — why the two-layer memory, CostVector dimensions, and disposal ladder are designed this way. Read when you need the "why" behind a mechanism.
 - [references/induction.md](references/induction.md) — C1–C6 semantics (including cross-execution recovery), how applicability is read off evidence, the offline lifecycle. Read before your first `induce`, and whenever a hint's meaning is unclear.

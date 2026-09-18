@@ -307,6 +307,50 @@ Not a routine path: `record` refreshes the execution item, `induce` refreshes th
 
 Result: `{dry_run, layers: {"execution_evidence"|"strategic_knowledge": {items, model_id, dimension, unindexable}}, backend}`. Without a configured backend and without `--dry-run`, the command fails with exit code 2 and an explicit message rather than silently doing nothing.
 
+## `orx contract [--kind strategy_outcome|capability_evolution] [--payload JSON]`
+
+**Unified world-model contract: build one, or read a stored one. No model call is ever made.**
+
+`--kind` BUILDS a versioned, serializable contract object:
+
+```bash
+# a candidate strategy's predicted consequences (metric + baseline required
+# whenever a benefit value is given)
+orx contract --kind strategy_outcome --task t.json \
+  --spec '{"action_type":"execute_strategy","strategy_id":"S01","scope":"attempt"}' \
+  --benefit '{"kind":"solution_quality","metric":"normalized_objective_gap",
+              "unit":"1-gap","value":0.8,
+              "baseline":{"kind":"conditional_stats","value":0.7}}' \
+  --cost '{"expected":{"llm_tokens":1200},"expected_measured":["llm_tokens"]}'
+
+# a candidate learning operation's predicted capability consequences
+orx contract --kind capability_evolution \
+  --operation '{"operation_type":"induce","strategy_id":"S01"}' \
+  --horizon "next 10 matching routing tasks" --horizon-tasks 10 \
+  --verification '{"condition":"interval holds on 5 unseen tasks","evaluable":true}'
+```
+
+`--payload` READS a stored prediction payload and reports its contract version:
+
+```bash
+orx contract --payload prediction.json
+# -> {"contract_version":"wm-contract/1", "legacy":false, "supported":true, "contract":{...}}
+# -> {"contract_version":"legacy/unversioned", "legacy":true, "legacy_view":{...}}
+# -> exit 2 on an unsupported version: the payload is NEVER guessed at
+```
+
+**Read `status` before reading anything else.** With no `--world-model`
+configured, a built contract is `status="contract_only"` — the contract is
+implemented, **the prediction service is not attached**, and no forecast was
+made. `valid` requires an attached service; `unsupported`/`invalid` mean
+nothing was predicted. The capability contract carries no composite H score,
+and a legacy payload is read through a view that derives **no** capability
+increment, risk severity or measurement.
+
+Full contract definition, the attempt-vs-strategy-window scope rule, the
+`H = F(M, W_OR, Pi, R, T)` sources, and the migration table:
+[world_model_contract.md](world_model_contract.md).
+
 ## `orx doctor`
 
 Self-check: solver availability (7 adapters probed), memory sizes, staged-but-unrecorded executions (audit your pending area), home path, and **retrieval-index health** (`result.retrieval_index`).
