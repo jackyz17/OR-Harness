@@ -107,10 +107,11 @@ class M4Case(HarnessTestCase):
         self.addCleanup(self.h.close)
 
     def solve(self, task, strategy="S04", objective=100.0,
-              episode_id="ep1", status="optimal", gap=None):
+              episode_id="ep1", status="optimal", gap=None, tag=None):
         """Execute and record one real attempt (deterministic fixture)."""
         from pathlib import Path
-        work = Path(self.home) / f"ws_{task['task_id']}_{strategy}"
+        label = tag or f"{task['task_id']}_{strategy}_{episode_id}"
+        work = Path(self.home) / f"ws_{label}"
         work.mkdir(parents=True, exist_ok=True)
         script = work / "solve.py"
         script.write_text(
@@ -375,15 +376,34 @@ class TestCloseoutBoundaries(M4Case):
         self.assertEqual(summary["n_evaluations_total"],
                          len(first["evaluations"]))
 
-    def test_unfinished_action_is_reported_not_fabricated(self):
+    def test_unfinished_action_blocks_closeout(self):
         task = _task("t1")
-        # A running action: begun, never ended.
+        # A running action: begun, never ended. The close-out must be
+        # REFUSED (pending), never a completed record whose pending
+        # scopes could not be back-filled later.
         snap = self.h.snapshot(task, "ep1")
         self.h.actions.begin_action("model", "t1", "ep1",
                                     pre_snapshot=snap)
         result = self.h.close_episode("t1", "ep1")
-        closeout = result["closeout"]
-        self.assertEqual(len(closeout["unfinished_actions"]), 1)
+        self.assertIsNone(result["closeout"])
+        self.assertEqual(result["state"], "pending")
+        self.assertEqual(len(result["unfinished_actions"]), 1)
+        self.assertIsNone(self.h.episode_closeout_record("t1", "ep1"))
+        # No calibration was published from the refused close-out.
+        self.assertEqual(self.h.calibration_summary()
+                         ["n_evaluations_total"], 0)
+
+    def test_closeout_after_actions_end_succeeds(self):
+        task = _task("t1")
+        snap = self.h.snapshot(task, "ep1")
+        running = self.h.actions.begin_action("model", "t1", "ep1",
+                                              pre_snapshot=snap)
+        # The action ends; NOW the close-out goes through.
+        self.h.actions.end_action(running.action_id, status="completed")
+        result = self.h.close_episode("t1", "ep1")
+        self.assertIsNotNone(result["closeout"])
+        self.assertEqual(result["closeout"]["terminal_state"],
+                         "completed")
 
     def test_failed_episode_closes_honestly(self):
         task = _task("t1")
@@ -552,7 +572,7 @@ class TestCalibrationChannel(M4Case):
         self.assertEqual(calibration["protocol"], "wm-so/1")
         self.assertEqual(calibration["n_evaluations_total"], 1)
         group = calibration["groups"][
-            "strategy_outcome|normalized_objective_gap"]
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["n_samples"], 1)
         # Below the default minimum: insufficient evidence, no figure.
         self.assertEqual(group["basis"], "insufficient_evidence")
@@ -600,9 +620,10 @@ class TestCalibrationChannel(M4Case):
         self.h.close_episode("t1", "ep1", min_calibration_samples=1)
         summary = self.h.calibration_summary(min_samples=1)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap"]
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["basis"], "measured")
         self.assertEqual(summary["min_samples"], 1)
+        self.assertEqual(summary["min_samples_basis"], "distinct episodes")
 
     def test_calibration_separate_from_knowledge_reliability(self):
         task = _task("t1")
@@ -622,7 +643,249 @@ class TestCalibrationChannel(M4Case):
 
 
 # ---------------------------------------------------------------------------
-# 6. CLI surface
+# 6. bug-fix regressions (the four review findings)
+# ---------------------------------------------------------------------------
+
+
+class TestWindowScopeAggregation(M4Case):
+    """P1-1: a strategy-window prediction is scored against the WHOLE
+    window of its selection round, not the bound action's single
+    execution."""
+
+    def _window_prediction(self, task):
+        return self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04", "scope": "strategy_window",
+                   "window_id": "win::t1::ep1::S04"}, "ep1")
+
+    def test_window_cost_sums_all_attempts(self):
+        task = _task("t1")
+        prediction = self._window_prediction(task)
+        # Two attempts of the same window.
+        first = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="w1")
+        second = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="w2")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     second.action_id)
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        runtime = evaluation["cost"]["per_dim"]["solver_runtime_s"]
+        # BOTH attempts' runtimes aggregate: the old behaviour reported
+        # only the bound action's single execution.
+        self.assertEqual(runtime["actual"],
+                         first.cost.solver_runtime_s
+                         + second.cost.solver_runtime_s)
+        # The summary's scope covered both executions (tool_calls=2).
+        from or_harness.world_model.episode_closeout import (
+            summarize_real_outcome,
+        )
+        stored = self.h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        scope_summary = summarize_real_outcome(self.h, stored)
+        self.assertEqual(len(scope_summary.execution_ids), 2)
+        self.assertEqual(scope_summary.cost["tool_calls"]["total"], 2.0)
+
+    def test_failed_retry_is_included_in_window_cost(self):
+        task = _task("t1")
+        prediction = self._window_prediction(task)
+        from pathlib import Path
+        # A FAILED attempt (error), then a repaired one.
+        work = Path(self.home) / "ws_fail"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(
+            "raise RuntimeError('model invalid')\n", encoding="utf-8")
+        failed = self.h.execute(task, "S04", str(work / "solve.py"),
+                                str(work), solver="highs",
+                                episode_id="ep1")
+        self.h.record(failed)
+        repaired = self.solve(task, strategy="S04", episode_id="ep1",
+                              tag="w3")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     repaired.action_id)
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        # The failed retry is real spend inside the window's scope: the
+        # runtime total covers BOTH attempts.
+        self.assertAlmostEqual(
+            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
+            failed.cost.solver_runtime_s
+            + repaired.cost.solver_runtime_s, places=5)
+        # The benefit observation is the LAST qualified attempt's.
+        self.assertEqual(evaluation["benefit"]["observed"], 1.0)
+
+
+class TestUnobservedIsNotALabel(M4Case):
+    """P1-3: an unobservable metric or risk event is never converted into
+    a real label."""
+
+    def test_business_metric_is_not_relabelled(self):
+        # A prediction declaring a BUSINESS metric: the solver's 1-gap
+        # number must NOT be re-labelled as it.
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["benefit"]["metric"] = "business_cost_saving_ratio"
+        payload["benefit"]["unit"] = "ratio"
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        result = h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        self.assertEqual(evaluation["benefit"]["eligibility"],
+                         "scope_mismatch")
+        self.assertNotIn("observed", evaluation["benefit"])
+        self.assertIn("never re-labelled",
+                      evaluation["benefit"]["reason"])
+
+    def test_unobservable_risk_event_stays_unknown(self):
+        # A business risk with NO observation channel: "no failure log"
+        # must not become a not_occurred label.
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "customer_demand_shortfall", "probability": 0.3},
+            {"event": "model_invalid", "probability": 0.2},
+        ]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        result = h.close_episode("t1", "ep1")
+        risk = result["evaluations"][0]["risk"]
+        scored = {e["event"]: e for e in risk["scored"]}
+        unscored = {e["event"]: e for e in risk["unscored"]}
+        # The observable event IS scored (not_occurred).
+        self.assertIn("model_invalid", scored)
+        # The unobservable one is NOT scored — no fake label.
+        self.assertNotIn("customer_demand_shortfall", scored)
+        self.assertIn("customer_demand_shortfall", unscored)
+        self.assertIn("no observation channel",
+                      unscored["customer_demand_shortfall"]["reason"])
+
+    def test_budget_exhausted_is_observable(self):
+        # budget_exhausted HAS a channel: a declared budget exceeded by
+        # real consumption is an observed event.
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "budget_exhausted", "probability": 0.5}]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        result = h.close_episode("t1", "ep1")
+        risk = result["evaluations"][0]["risk"]
+        self.assertEqual(risk["scored"][0]["label"], "occurred")
+        self.assertEqual(risk["scored"][0]["brier"], 0.25)
+
+
+class TestCalibrationGrouping(M4Case):
+    """P2: calibration groups by metric/unit/scope, scores risk events
+    per name, and the threshold counts DISTINCT EPISODES."""
+
+    def _close_with_predictions(self, n, task_id="t1", episode="ep1",
+                                metric="normalized_objective_gap",
+                                unit="1-gap"):
+        """Close one episode with n predictions bound to ONE execution.
+
+        The predictions are all made BEFORE the execution runs (the honest
+        re-planning shape: several candidates predicted, one executed) —
+        otherwise the timing check correctly marks later ones as
+        post-hoc."""
+        task = _task(task_id)
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["benefit"]["metric"] = metric
+        payload["benefit"]["unit"] = unit
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        predictions = [h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, episode)
+            for _ in range(n)]
+        record = self.solve(task, strategy="S04", episode_id=episode)
+        for prediction in predictions:
+            h.bind_strategy_outcome(prediction.prediction_id,
+                                    record.action_id)
+        h.close_episode(task_id, episode)
+        return h
+
+    def test_correlated_predictions_do_not_cross_the_threshold(self):
+        # FIVE predictions bound to ONE execution (one episode): the old
+        # behaviour counted the predictions and reported "measured".
+        self._close_with_predictions(n=5)
+        summary = self.h.calibration_summary(min_samples=5)
+        group = summary["groups"][
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+        self.assertEqual(group["n_samples"], 5)
+        self.assertEqual(group["n_distinct_episodes"], 1)
+        self.assertEqual(group["correlated_predictions"], 4)
+        # ONE distinct episode < 5: insufficient evidence, no figure.
+        self.assertEqual(group["basis"], "insufficient_evidence")
+        self.assertIsNone(group["reliability"])
+
+    def test_different_unit_is_a_different_group(self):
+        self._close_with_predictions(n=1, metric="normalized_objective_gap",
+                                     unit="1-gap")
+        self._close_with_predictions(n=1, metric="normalized_objective_gap",
+                                     unit="percent", episode="ep2")
+        summary = self.h.calibration_summary()
+        keys = set(summary["groups"])
+        self.assertIn("strategy_outcome|normalized_objective_gap|1-gap"
+                      "|attempt", keys)
+        self.assertIn("strategy_outcome|normalized_objective_gap|percent"
+                      "|attempt", keys)
+
+    def test_brier_reported_per_event_name(self):
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "model_invalid", "probability": 0.2},
+            {"event": "timeout", "probability": 0.4},
+        ]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        h.close_episode("t1", "ep1")
+        summary = h.calibration_summary(min_samples=1)
+        group = summary["groups"][
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+        # Per-event means, never one pooled Brier.
+        self.assertIn("model_invalid", group["mean_brier_by_event"])
+        self.assertIn("timeout", group["mean_brier_by_event"])
+        self.assertNotIn("mean_brier", group)
+
+
+# ---------------------------------------------------------------------------
+# 7. CLI surface
 # ---------------------------------------------------------------------------
 
 

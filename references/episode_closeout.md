@@ -55,15 +55,20 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
 
 What it does (in order):
 
-1. **refuses nothing silently**: actions still `running` are REPORTED
-   (`unfinished_actions`), their predictions stay `pending` — an
-   unfinished scope is never fabricated into an ending;
-2. **summarizes and evaluates** every BOUND strategy-outcome prediction of
-   the episode against its real outcome (see §3–4);
+1. **refuses while actions are still running**: an episode with a
+   `running` action returns `state="pending"` with the
+   `unfinished_actions` listed — a running scope has no final numbers,
+   and closing anyway would freeze a record their results could never
+   enter (a re-close just returns the stored record). End the running
+   actions (or let them finish), then close;
+2. **summarizes and evaluates** every BOUND strategy-outcome prediction
+   of the episode against its real outcome (see §3–4);
 3. **records the close-out once** — idempotent: re-closing (after a
    restart, or by mistake) returns the stored record and counts nothing
    twice;
-4. **publishes the calibration summary** (see §5).
+4. **publishes the calibration summary** (see §5) — built AFTER the
+   evaluations and the close-out record are persisted, so the first
+   close-out's own return already includes this round's samples.
 
 What it never does: run a solver, call the prediction model, trigger
 induction, or rewrite a stored prediction. `--terminal failed|aborted|
@@ -80,25 +85,38 @@ prediction:
 
 - **benefit observations** use the prediction's OWN declared
   metric/unit/baseline (the yardstick is frozen at prediction time; it is
-  never re-chosen after the result is known). This build observes
-  NORMALIZED solution quality (`optimal` → 1.0; otherwise `1-gap`). A
-  feasible solution with no gap/bound is the 0.5 heuristic — reported
-  `unverified`, never scored. Other benefit kinds have no observation
-  adapter: reported `scope_mismatch`, not evaluated.
+  never re-chosen after the result is known). This build has an
+  observation adapter for exactly ONE metric — the solver's normalized
+  gap (`optimal` → 1.0; otherwise `1-gap`). A prediction declaring any
+  other metric (a business cost-saving ratio, a completion rate) is
+  reported `scope_mismatch`: the solver's 1-gap number is never
+  re-labelled as a metric it did not measure. A feasible solution with
+  no gap/bound is the 0.5 heuristic — reported `unverified`, never
+  scored. Other benefit kinds have no observation adapter either:
+  reported, not evaluated.
 - **window benefit rule** (declared before evaluation, applied
   uniformly): the LAST qualified in-scope attempt's solution is the
   window's benefit observation. All in-scope failed retries' measured
   costs still count.
-- **cost** is scoped: only the prediction's declared scope's executions
-  enter the comparison; modelling/verification/other attempts are
+- **cost** is scoped: an ATTEMPT-scope prediction is compared against
+  the bound action's own execution; a STRATEGY-WINDOW-scope prediction
+  is compared against the WHOLE window of its selection round — every
+  in-scope execution, failed retries included (an 11s-then-17s window
+  reports 28s, not 17s). Modelling/verification/other attempts are
   auxiliary overhead — real spend, reported separately, never charged to
   the predicted scope. Per-dimension totals carry completeness
   (`complete` only when every in-scope item measured the dimension);
   `latency_s` is never summed.
-- **risk events** get labels `occurred` / `not_occurred` / unknown. A
-  completed scope with no recorded failure is a `not_occurred` label of
-  ONE trajectory (the basis says so); no failure log over an unobserved
-  window is `unknown` — absence of a log is not proof of absence.
+- **risk events** get labels `occurred` / `not_occurred` / unknown —
+  and only events with a real OBSERVATION CHANNEL can ever be labelled:
+  the in-scope executions' statuses and failure classes
+  (`model_invalid`, `no_feasible_solution`, `timeout`,
+  `environment_failure`/`model_failure`) and the episode's budget view
+  (`budget_exhausted`). A business risk with no observation channel keeps
+  label `unknown` whatever the logs show — "no failure log" is not
+  evidence it did not happen — and is excluded from scoring. A completed
+  scope with no such observed event is a `not_occurred` label of ONE
+  trajectory (the basis says so).
 - **verification**: solver `optimal` does not prove business
   requirements; the summary reports the verification evidence that
   exists (verify actions, executor checks), nothing more.
@@ -136,14 +154,20 @@ orx calibration [--min-samples N]
 
 Aggregated from **closed episodes only** — an open episode never
 calibrates anything, least of all itself. Grouped by
-(protocol, metric) so different definitions never mix, each group
-reports: sample count, DISTINCT episode count (one truth bound to several
-re-planning predictions is marked `correlated_predictions`, never counted
-as independent tasks), mean absolute benefit error, mean per-dimension
-cost log-error, interval coverage rate, and mean Brier score. A group
-below the sample minimum (`--min-samples`, default 5, effective value
-recorded on the summary) reports `insufficient_evidence` with
-`reliability: null` — no figure is invented.
+(metric, unit, scope) so different definitions never mix (the same
+metric under a different unit or scope is a DIFFERENT group), risk
+events are scored PER EVENT NAME (different events are different random
+variables; their Brier scores are reported separately, never pooled
+into one mean), and each group reports: sample count, DISTINCT episode
+count, mean absolute benefit error, mean per-dimension cost log-error,
+interval coverage rate, and per-event Brier means. The sample threshold
+counts DISTINCT EPISODES (independent truths) — one truth bound to
+several re-planning predictions is marked `correlated_predictions`,
+never counted as independent samples, so five predictions over one
+execution cannot cross the threshold. A group below the sample minimum
+(`--min-samples`, default 5, effective value and basis recorded on the
+summary) reports `insufficient_evidence` with `reliability: null` — no
+figure is invented.
 
 This is a **measured record, not a promise**: writing the summary does
 not claim future predictions improve, and it is NOT a fitted calibrator
@@ -188,7 +212,8 @@ reason. Legacy three-part window ids still parse (`round_index=None`).
 ## 8. Verification checklist for a consuming agent
 
 - [ ] Did the episode really end? `close-episode` on an episode with
-      running actions reports them; their predictions stay pending.
+      running actions is REFUSED (`state="pending"`): end them first,
+      then close — their results could never enter a frozen record.
 - [ ] Is the terminal state honest? `failed`/`aborted`/`budget_exhausted`
       are endings, not failures of the close-out.
 - [ ] Am I reading an `excluded` evaluation as a miss? Excluded is
@@ -198,8 +223,9 @@ reason. Legacy three-part window ids still parse (`round_index=None`).
 - [ ] Did a later episode's context change? It should not: stored
       contexts are frozen; only NEW contexts read the published summary.
 - [ ] Am I counting one truth twice? Re-planning predictions bound to
-      the same outcome are marked correlated; the distinct-episode count
-      is the honest sample base.
+      the same outcome are marked correlated; the DISTINCT-EPISODE count
+      is the sample base and the threshold counts episodes, never
+      predictions.
 - [ ] Am I treating the calibration as a capability gain? It is a record
       of past errors. H evidence about the world model comes only from
       these real evaluations — never from the model's self-assessment.

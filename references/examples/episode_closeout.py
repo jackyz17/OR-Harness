@@ -228,10 +228,11 @@ def main() -> int:
     ctx2 = h.build_prediction_context(task, "ep2")
     calibration = ctx2.strategy_calibration
     group = calibration["groups"][
-        "strategy_outcome|normalized_objective_gap"]
+        "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
     print(f"episode-2 context      : {ctx2.context_id}")
     print(f"calibration samples    : {group['n_samples']} "
-          f"(min {calibration['min_samples']})")
+          f"({group['n_distinct_episodes']} distinct episode, "
+          f"min {calibration['min_samples']})")
     print(f"calibration basis      : {group['basis']} "
           f"(reliability={group['reliability']})")
     assert group["basis"] == "insufficient_evidence"

@@ -85,6 +85,41 @@ FIELD_ELIGIBILITY = ("evaluable", "missing", "unverified", "scope_mismatch",
                      "identity_mismatch", "not_predicted", "unobserved",
                      "unreliable_label")
 
+#: The ONE benefit metric this build can actually OBSERVE from an
+#: execution: the solver's normalized gap (``1 - mip_gap``; an ``optimal``
+#: status is a gap of 0). A prediction declaring any other metric is
+#: reported ``scope_mismatch`` — the observed number is never re-labelled
+#: as a business ratio it did not measure.
+OBSERVABLE_BENEFIT_METRIC = "normalized_objective_gap"
+
+#: Declared-metric spellings that map onto the observable metric.
+_BENEFIT_METRIC_ALIASES = {
+    "normalized_objective_gap": "normalized_objective_gap",
+    "solution_quality": "normalized_objective_gap",
+    "normalized_quality": "normalized_objective_gap",
+    "normalized_gap": "normalized_objective_gap",
+}
+
+#: Risk-event names this build can actually OBSERVE, and from what: the
+#: in-scope executions' statuses/failure classes and the episode's budget
+#: view. An event outside this vocabulary has NO observation channel —
+#: its label stays unknown and it is never scored, because "no failure
+#: log" is not evidence that a business risk did not happen.
+OBSERVABLE_RISK_EVENTS = ("model_invalid", "no_feasible_solution",
+                          "timeout", "environment_failure",
+                          "budget_exhausted")
+
+
+def _observable_benefit_metric(metric: Any) -> Optional[str]:
+    """The canonical observable metric a declared metric maps to, or None."""
+    name = str(metric or "").strip().lower()
+    name = name.replace(" ", "_").replace("-", "_")
+    return _BENEFIT_METRIC_ALIASES.get(name)
+
+
+def _normalize_event_name(name: Any) -> str:
+    return str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
+
 
 def _finite(value: Any) -> bool:
     try:
@@ -237,10 +272,52 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         }
         return summary
 
-    # The real scope: the bound action's own execution (attempt scope), or
-    # the whole window when the prediction declared a window scope.
+    # The real scope. An ATTEMPT-scope prediction is compared against the
+    # bound action's own execution. A STRATEGY-WINDOW-scope prediction is
+    # compared against the WHOLE window of its selection round: every
+    # in-scope execution of that (task, episode, strategy, round) — a
+    # failed first attempt and the repaired retry both count, so an
+    # 11s-then-17s window reports 28s of real solve time, not just the
+    # last attempt's 17s.
     records: List[Any] = []
-    if action.linked_execution_id:
+    if candidate.scope == "strategy_window":
+        window = harness.strategy_execution_window(
+            action.task_id, action.episode_id,
+            strategy_id=candidate.strategy_id)
+        window_actions = {a.action_id for a in window.attempts}
+        if action.action_id not in window_actions:
+            # The bound action is not in the derived window (it may be an
+            # agent-reported action the derivation cannot see): fall back
+            # to the bound action's own execution so the summary is never
+            # empty, and say so.
+            summary.notes.append(
+                "the bound action is not among the derived window "
+                "attempts; the summary covers the bound action's own "
+                "execution only")
+        for attempt in window.attempts:
+            if attempt.execution_id is None:
+                continue
+            record = (harness.bank.get_pending(attempt.execution_id)
+                      or harness.bank.get(attempt.execution_id))
+            if record is not None:
+                records.append(record)
+            else:
+                summary.eligibility["scope.execution"] = {
+                    "eligibility": "missing",
+                    "reason": (f"window attempt {attempt.action_id} has no "
+                               "execution in the bank (staged or "
+                               "recorded)"),
+                }
+        if not records and action.linked_execution_id:
+            record = (harness.bank.get_pending(action.linked_execution_id)
+                      or harness.bank.get(action.linked_execution_id))
+            if record is not None:
+                records.append(record)
+        summary.notes.append(
+            f"strategy-window scope: {len(records)} in-scope execution(s) "
+            "of this selection round aggregate into the real outcome "
+            "(failed retries included)")
+    if action.linked_execution_id and not records:
         record = (harness.bank.get_pending(action.linked_execution_id)
                   or harness.bank.get(action.linked_execution_id))
         if record is not None:
@@ -251,7 +328,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                 "reason": "the bound action's linked execution is not in "
                           "the bank (staged or recorded)",
             }
-    else:
+    elif not records and not action.linked_execution_id:
         summary.eligibility["scope.execution"] = {
             "eligibility": "missing",
             "reason": "the bound action has no linked execution",
@@ -269,58 +346,76 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     else:
         summary.scope_status = str(action.status)
         if records:
-            exec_status = records[0].quality.get("status")
+            exec_status = records[-1].quality.get("status")
             summary.scope_status = f"{action.status}/{exec_status}"
 
     # -- benefit observations -------------------------------------------
     # The yardstick is the PREDICTION's own declared metric/unit/baseline:
     # the comparison must not invent a more convenient one afterwards.
+    # Only ONE metric has an observation adapter in this build — the
+    # solver's normalized gap. A prediction declaring anything else (a
+    # business cost-saving ratio, a completion rate) is reported
+    # scope_mismatch: the solver's 1-gap number is never re-labelled as
+    # that metric, because it did not measure it.
     benefit = prediction.benefit
     if benefit is not None and benefit.kind == "solution_quality":
-        observed: List[float] = []
-        for record in records:
-            quality = record.quality or {}
-            gap = quality.get("gap")
-            status = quality.get("status")
-            if status == "optimal":
-                observed.append(1.0)
-            elif gap is not None and _finite(gap):
-                observed.append(max(0.0, 1.0 - float(gap)))
-            elif quality.get("feasible"):
-                # A feasible solution with no gap/bound: the 0.5 heuristic
-                # is NOT an observed quality truth.
-                summary.eligibility["benefit"] = {
-                    "eligibility": "unverified",
-                    "reason": "a feasible execution produced no gap/bound: "
-                              "the normalized quality is the 0.5 heuristic, "
-                              "not an observation",
-                }
-        if observed:
-            # Window rule (declared BEFORE evaluation): the LAST in-scope
-            # attempt's qualified solution is the window's benefit
-            # observation — the rule the prediction's scope statement
-            # implies, applied uniformly, never chosen per result.
-            summary.benefit = {
-                "kind": "solution_quality",
-                "metric": benefit.metric,
-                "unit": benefit.unit,
-                "observed": round(observed[-1], 6),
-                "rule": "last qualified in-scope attempt",
-                "n_observations": len(observed),
-                "all_observations": [round(v, 6) for v in observed],
-            }
-            if "benefit" not in summary.eligibility:
-                summary.eligibility["benefit"] = {
-                    "eligibility": "evaluable",
-                    "reason": "normalized quality observed on the in-scope "
-                              "execution(s)",
-                }
-        elif "benefit" not in summary.eligibility:
+        observable = _observable_benefit_metric(benefit.metric)
+        if observable is None:
             summary.eligibility["benefit"] = {
-                "eligibility": "unobserved",
-                "reason": "no in-scope execution produced a qualified "
-                          "solution quality",
+                "eligibility": "scope_mismatch",
+                "reason": (f"no observation adapter exists for the declared "
+                           f"metric {benefit.metric!r}: this build observes "
+                           f"only {OBSERVABLE_BENEFIT_METRIC!r} "
+                           "(the solver's normalized gap). The observed "
+                           "gap is never re-labelled as a metric it did "
+                           "not measure"),
             }
+        else:
+            observed: List[float] = []
+            for record in records:
+                quality = record.quality or {}
+                gap = quality.get("gap")
+                status = quality.get("status")
+                if status == "optimal":
+                    observed.append(1.0)
+                elif gap is not None and _finite(gap):
+                    observed.append(max(0.0, 1.0 - float(gap)))
+                elif quality.get("feasible"):
+                    # A feasible solution with no gap/bound: the 0.5
+                    # heuristic is NOT an observed quality truth.
+                    summary.eligibility["benefit"] = {
+                        "eligibility": "unverified",
+                        "reason": "a feasible execution produced no "
+                                  "gap/bound: the normalized quality is "
+                                  "the 0.5 heuristic, not an observation",
+                    }
+            if observed:
+                # Window rule (declared BEFORE evaluation): the LAST
+                # in-scope attempt's qualified solution is the window's
+                # benefit observation — the rule the prediction's scope
+                # statement implies, applied uniformly, never chosen per
+                # result.
+                summary.benefit = {
+                    "kind": "solution_quality",
+                    "metric": benefit.metric,
+                    "unit": benefit.unit,
+                    "observed": round(observed[-1], 6),
+                    "rule": "last qualified in-scope attempt",
+                    "n_observations": len(observed),
+                    "all_observations": [round(v, 6) for v in observed],
+                }
+                if "benefit" not in summary.eligibility:
+                    summary.eligibility["benefit"] = {
+                        "eligibility": "evaluable",
+                        "reason": "normalized quality observed on the "
+                                  "in-scope execution(s)",
+                    }
+            elif "benefit" not in summary.eligibility:
+                summary.eligibility["benefit"] = {
+                    "eligibility": "unobserved",
+                    "reason": "no in-scope execution produced a qualified "
+                              "solution quality",
+                }
     elif benefit is not None:
         summary.eligibility["benefit"] = {
             "eligibility": "scope_mismatch",
@@ -358,27 +453,53 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         "separately and never charged to this prediction's scope")
 
     # -- risk event observations -------------------------------------------
-    # An event is observed from the real failures of the in-scope
-    # executions. NO failure log does NOT prove absence: without a
-    # completed observation of the whole window the label is unknown.
+    # An event is observed ONLY through a channel this build really has:
+    # the in-scope executions' statuses and failure classes, and the
+    # episode's declared-budget view. An event outside that vocabulary
+    # (a business risk with no observation channel) keeps label=None —
+    # "no failure log" is not evidence it did not happen.
     observed_events: Dict[str, str] = {}
     for record in records:
+        status = (record.quality or {}).get("status")
+        if status == "error":
+            observed_events["model_invalid"] = "occurred"
+        elif status == "timeout":
+            observed_events["timeout"] = "occurred"
+        elif status == "infeasible":
+            observed_events["no_feasible_solution"] = "occurred"
         for failure in record.failures or []:
-            kind = str(getattr(failure, "error_class", None)
-                       or getattr(failure, "kind", "") or "error")
-            observed_events[kind] = "occurred"
+            error_class = str(getattr(failure, "error_class", None)
+                              or "model")
+            observed_events[f"{error_class}_failure"] = "occurred"
+    # The budget channel: a declared budget exceeded by real consumption
+    # is an OBSERVED budget_exhausted event.
+    declared_budget = (harness._load_budget(
+        candidate.task_id, candidate.episode_id) or {})
+    if declared_budget:
+        budget_view = harness.budget.view(
+            candidate.task_id, candidate.episode_id,
+            budget=declared_budget)
+        if budget_view.get("status") == "exceeded":
+            observed_events["budget_exhausted"] = "occurred"
     window_complete = bool(records) and action.status != "running"
     risk_events: List[Dict[str, Any]] = []
     predicted_events = (prediction.risk.events
                         if prediction.risk is not None else [])
     for event in predicted_events:
+        canonical = _normalize_event_name(event.event)
         label: Optional[str]
-        if event.event in observed_events:
+        if canonical in observed_events:
             label = "occurred"
-        elif window_complete and not records[0].failures:
-            # The scope completed and its record carries NO failure entry:
-            # the absence is an observation of THIS record. It is still a
-            # single-trajectory label — recorded with its basis.
+        elif canonical not in OBSERVABLE_RISK_EVENTS:
+            # No observation channel exists for this event name: the
+            # label stays unknown whatever the executions did — an
+            # unobserved business risk is never scored as "did not
+            # happen" on the strength of an absent log.
+            label = None
+        elif window_complete:
+            # The event IS in the observable vocabulary and the scope
+            # completed without it appearing: the absence is an
+            # observation of THIS scope (still a single trajectory).
             label = "not_occurred"
         else:
             label = None
@@ -386,13 +507,18 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             "event": event.event,
             "predicted_probability": event.probability,
             "label": label,
-            "label_basis": ("observed failure on the in-scope execution"
+            "label_basis": ("observed on the in-scope execution(s)"
                             if label == "occurred" else
-                            "completed scope with no recorded failure "
+                            "completed scope with no such observed event "
                             "(single trajectory)"
                             if label == "not_occurred" else
-                            "unknown: no failure log does not prove "
-                            "absence, and the scope was not fully observed"),
+                            (f"no observation channel exists for event "
+                             f"{event.event!r}: the label stays unknown "
+                             "and the event is excluded from scoring"
+                             if canonical not in OBSERVABLE_RISK_EVENTS
+                             else
+                             "unknown: the scope was not fully observed, "
+                             "so absence is not evidence")),
         })
     summary.risk_events = risk_events
 
@@ -435,6 +561,10 @@ class StrategyPredictionEvaluation:
     prediction_id: str = ""
     task_id: str = ""
     episode_id: Optional[str] = None
+    #: The prediction's declared measurement scope (attempt /
+    #: strategy_window): part of the calibration grouping key, so samples
+    #: under different scopes never pool.
+    scope: str = "attempt"
     created_at: float = field(default_factory=time.time)
     #: benefit / cost / risk / interval blocks, each with eligibility.
     benefit: Dict[str, Any] = field(default_factory=dict)
@@ -454,6 +584,7 @@ class StrategyPredictionEvaluation:
             "prediction_id": self.prediction_id,
             "task_id": self.task_id,
             "episode_id": self.episode_id,
+            "scope": self.scope,
             "created_at": self.created_at,
             "state": self.state,
             "benefit": copy.deepcopy(self.benefit),
@@ -473,6 +604,7 @@ class StrategyPredictionEvaluation:
             prediction_id=str(data.get("prediction_id", "")),
             task_id=str(data.get("task_id", "")),
             episode_id=data.get("episode_id"),
+            scope=str(data.get("scope", "attempt")),
             created_at=float(data.get("created_at", time.time())),
             state=str(data.get("state", "evaluated")),
             benefit=copy.deepcopy(dict(data.get("benefit") or {})),
@@ -513,6 +645,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         prediction_id=prediction.prediction_id,
         task_id=prediction.candidate.task_id,
         episode_id=prediction.candidate.episode_id,
+        scope=prediction.candidate.scope,
     )
     identity_problems = {k: v for k, v in summary.eligibility.items()
                          if k.startswith("identity.")}
@@ -803,19 +936,34 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
                      "stands, nothing was re-counted or re-billed"),
         }
 
-    # Unfinished actions: report them; a running action blocks the
-    # evaluation of ITS scope but not the close-out of the episode (the
-    # agent states the episode ended; the unfinished scope is recorded as
-    # unfinished, its predictions stay pending).
+    # Unfinished actions BLOCK the close-out: an episode with a running
+    # action has no final state to evaluate against, and closing anyway
+    # would freeze a "completed" record whose pending scopes can never be
+    # back-filled (a re-close just returns the stored record). The
+    # close-out stays PENDING — end the running actions first (or let them
+    # finish), then close. This is a refusal to fabricate an ending, not
+    # an error.
     unfinished = [a.action_id for a in harness.actions.query(
         task_id=task_id, episode_id=episode_id, status="running")]
+    if unfinished:
+        return {
+            "closeout": None,
+            "already_closed": False,
+            "state": "pending",
+            "unfinished_actions": unfinished,
+            "note": ("the episode still has running action(s): the "
+                     "close-out is REFUSED until they end. End them "
+                     "(or let them finish), then close — a running scope "
+                     "has no final numbers, and closing now would freeze "
+                     "a record their results could never enter"),
+        }
 
     closeout = EpisodeCloseout(
         task_id=task_id,
         episode_id=episode_id,
         terminal_state=terminal_state,
         finish_action_id=finish_action_id,
-        unfinished_actions=unfinished,
+        unfinished_actions=[],
     )
     if terminal_state != "completed":
         closeout.notes.append(
@@ -832,18 +980,27 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         evaluation = evaluate_strategy_prediction(prediction, summary)
         evaluations.append(evaluation)
 
-    # Persist the evaluations (append-only, keyed by evaluation id; a
-    # re-close is blocked by the closeout key above, so no duplicate
+    # Persist the evaluations FIRST (append-only, keyed by evaluation id;
+    # a re-close is blocked by the closeout key below, so no duplicate
     # contributions can appear).
     for evaluation in evaluations:
         _put_evaluation(store, evaluation)
         closeout.evaluation_ids.append(evaluation.evaluation_id)
 
-    # Publish the calibration summary: the aggregate over ALL closed
-    # episodes' eligible evaluations (this episode's included now).
+    # THEN record the close-out, and only afterwards build the summary:
+    # the summary aggregates CLOSED episodes' evaluations, so this
+    # episode's samples must be persisted AND its close-out recorded
+    # before the summary is generated — otherwise the first close-out's
+    # own return misses this round's samples.
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+            (key, store.dumps(closeout.to_dict())))
     summary_block = build_calibration_summary(
         harness, min_samples=min_calibration_samples)
     closeout.calibration_published = True
+    # Re-write the record with the publication flag (the summary itself
+    # is derived data; only the flag is stored).
     with store.transaction() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
@@ -921,13 +1078,22 @@ def build_calibration_summary(harness, *,
                               ) -> Dict[str, Any]:
     """Aggregate closed-episode evaluations into a versioned summary.
 
-    Grouped by (protocol, metric, scope) so different definitions never
-    mix. Each group reports: sample count, DISTINCT episode count (one
-    truth bound to several re-planning predictions is marked correlated,
-    never counted as independent tasks), mean absolute benefit error, mean
-    per-dimension cost log-error, interval coverage rate, and mean Brier
-    score. A group below ``min_samples`` reports
-    ``insufficient_evidence`` — no reliability figure is invented.
+    Grouped by (metric, unit, scope) so different definitions never mix —
+    the same metric name under a different unit or a different scope is a
+    DIFFERENT group, never pooled. Risk events are scored PER EVENT NAME:
+    different events are different random variables and their Brier
+    scores are never averaged together. The sample threshold counts
+    DISTINCT EPISODES (independent truths), not predictions: one truth
+    bound to five re-planning predictions is ONE episode's evidence, and
+    counting the predictions would let a single execution cross the
+    threshold five times over.
+
+    Each group reports: sample count, distinct-episode count (repeated
+    predictions marked correlated, never counted as independent), mean
+    absolute benefit error, mean per-dimension cost log-error, interval
+    coverage rate, and per-event Brier means. A group below
+    ``min_samples`` DISTINCT EPISODES reports ``insufficient_evidence`` —
+    no reliability figure is invented.
 
     This is measured EXPERIENCE reliability, not a fitted calibrator and
     not a model weight: writing the summary does not promise future
@@ -940,26 +1106,26 @@ def build_calibration_summary(harness, *,
     exclusions: Dict[str, int] = {}
     for evaluation in evaluations:
         if evaluation.state != "evaluated":
-            state = evaluation.state if evaluation.state != "evaluated" \
-                else "other"
+            state = evaluation.state or "other"
             exclusions[state] = exclusions.get(state, 0) + 1
             continue
-        # The prediction's own protocol version travels on the evaluation's
-        # task; re-read is avoided by grouping on the declared metric and
-        # scope from the evaluation blocks themselves.
         benefit = evaluation.benefit or {}
         metric = str(benefit.get("metric") or "(none)")
+        unit = str(benefit.get("unit") or "(none)")
+        scope = str(evaluation.scope or "(none)")
+        group_key = f"strategy_outcome|{metric}|{unit}|{scope}"
         group = groups.setdefault(
-            f"strategy_outcome|{metric}", {
+            group_key, {
                 "n": 0, "episodes": set(), "benefit_abs_errors": [],
                 "cost_log_errors": {}, "interval_covered": [],
-                "brier_scores": [], "correlated_predictions": 0,
+                "brier_by_event": {}, "correlated_predictions": 0,
             })
         group["n"] += 1
         group["episodes"].add(evaluation.episode_id or "")
-        if benefit.get("eligibility") == "evaluable":
+        if benefit.get("eligibility") == "evaluable" \
+                and benefit.get("abs_error") is not None:
             group["benefit_abs_errors"].append(
-                float(benefit.get("abs_error")))
+                float(benefit["abs_error"]))
         cost = evaluation.cost or {}
         for dim, entry in (cost.get("per_dim") or {}).items():
             if entry.get("log_error") is not None:
@@ -971,7 +1137,12 @@ def build_calibration_summary(harness, *,
                 1.0 if interval.get("covered") else 0.0)
         risk = evaluation.risk or {}
         for entry in risk.get("scored") or []:
-            group["brier_scores"].append(float(entry["brier"]))
+            # PER-EVENT accounting: different event names are different
+            # variables; their scores are reported separately and never
+            # averaged into one number.
+            event_name = str(entry.get("event") or "(unnamed)")
+            group["brier_by_event"].setdefault(event_name, []).append(
+                float(entry["brier"]))
 
     def _mean(values: Sequence[float]) -> Optional[float]:
         return round(sum(values) / len(values), 6) if values else None
@@ -991,14 +1162,27 @@ def build_calibration_summary(harness, *,
                     group["cost_log_errors"].items())},
             "interval_coverage": _mean(group["interval_covered"]),
             "n_interval_samples": len(group["interval_covered"]),
-            "mean_brier": _mean(group["brier_scores"]),
-            "n_brier_samples": len(group["brier_scores"]),
+            "mean_brier_by_event": {
+                event: _mean(values)
+                for event, values in sorted(
+                    group["brier_by_event"].items())},
+            "n_brier_samples_by_event": {
+                event: len(values)
+                for event, values in sorted(
+                    group["brier_by_event"].items())},
         }
-        if n < min_samples:
+        # The threshold counts DISTINCT EPISODES (independent truths).
+        # Predictions are correlated samples of the same truth: five
+        # re-planning predictions over one execution are one episode's
+        # evidence, and counting them as five would let a single outcome
+        # cross the threshold.
+        if distinct < min_samples:
             entry["reliability"] = None
             entry["basis"] = "insufficient_evidence"
-            entry["note"] = (f"{n} sample(s) < {min_samples}: no "
-                             "reliability figure is claimed")
+            entry["note"] = (f"{distinct} distinct episode(s) < "
+                             f"{min_samples}: no reliability figure is "
+                             "claimed (correlated predictions of the same "
+                             "truth do not count as independent samples)")
         else:
             entry["reliability"] = "measured_experience"
             entry["basis"] = "measured"
@@ -1012,13 +1196,16 @@ def build_calibration_summary(harness, *,
         "calibration_version": CALIBRATION_SUMMARY_VERSION,
         "protocol": "wm-so/1",
         "min_samples": int(min_samples),
+        "min_samples_basis": "distinct episodes",
         "n_evaluations_total": len(evaluations),
         "n_evaluated": sum(1 for e in evaluations
                            if e.state == "evaluated"),
         "exclusions": exclusions,
         "groups": out_groups,
         "note": ("experience calibration of the strategy-outcome "
-                 "prediction service, from CLOSED episodes only; kept "
+                 "prediction service, from CLOSED episodes only; grouped "
+                 "by metric/unit/scope, risk events scored per event name, "
+                 "and the sample threshold counts DISTINCT EPISODES — kept "
                  "separate from the legacy knowledge-prediction "
                  "reliability (a knowledge hit rate never proves OR "
                  "prediction accuracy), and never a model weight or a "
