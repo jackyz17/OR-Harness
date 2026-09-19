@@ -955,8 +955,28 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
                          {"llm_tokens": 9999.0})
         self.assertEqual(override["frozen_declared_budget"], frozen_budget)
 
+    def test_a_supplied_current_result_is_bounded_too(self):
+        """A supplied result does not get to smuggle later evidence in."""
+        h, _ = self._provider()
+        task = _task("t1")
+        snap = h.snapshot(task, "ep1")
+        # Evidence arrives after the snapshot, then a caller supplies a
+        # result gathered NOW.
+        self.solve(_task("t1"))
+        current = h.recall(task)
+        self.assertTrue((current.get("vector_recall") or {})
+                        .get("execution_evidence"),
+                        "the live channel must really see the new evidence")
+        ctx = h.build_prediction_context(task, "ep1", snapshot=snap,
+                                         recall_result=current)
+        hits = [x for x in ctx.retrieval.hits
+                if x["layer"] == "execution_evidence"]
+        self.assertEqual(hits, [], "the supplied result is bounded as well")
+        bounding = ctx.execution_constraints["retrieval_bounding"]
+        self.assertGreaterEqual(bounding["dropped"], 1)
+
     def test_a_context_built_with_a_historical_snapshot_does_not_see_new_facts(self):
-        """Building from a historical snapshot must not pull in later memory."""
+        """Building from a historical snapshot must not read today's memory."""
         from pathlib import Path
         h, _ = self._provider()
         task = _task("t1")
@@ -975,15 +995,87 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         h.record(h.execute(task, "S04", str(script), str(work),
                            solver="highs"))
         ctx = h.build_prediction_context(task, "ep1", snapshot=snap)
-        # The retrieval is bounded to the snapshot's own moment: the memory
-        # that arrived afterwards is excluded rather than entering a context
-        # that describes an earlier state.
+        # No retrieval was SAVED with the snapshot, so none is rebuilt:
+        # reading today's index would fabricate evidence for an earlier
+        # state. The gap is REPORTED rather than filled.
         execution_ids = {hit["evidence_id"] for hit in ctx.retrieval.hits
                          if hit["layer"] == "execution_evidence"}
         self.assertEqual(execution_ids, set())
         bounding = ctx.execution_constraints["retrieval_bounding"]
-        self.assertGreaterEqual(bounding["dropped"], 1)
-        self.assertTrue(any("bounded" in n for n in ctx.retrieval.notes))
+        self.assertEqual(bounding["rebuilt_from"], "none_saved")
+        self.assertTrue(any("no historical retrieval was saved" in m
+                            for m in ctx.retrieval.missing))
+        self.assertTrue(any("HISTORICAL reconstruction" in n
+                            for n in ctx.notes))
+
+    def test_a_revised_entry_does_not_leak_into_a_historical_context(self):
+        """P1: a revision AFTER the snapshot must not appear in it."""
+        entry = StrategicEntry(
+            entry_id="se_rev", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.60, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "verified", "claim": "c",
+                          "conclusion": "holds"})
+        self.h.sbank.add(entry)
+        task = _task("t1")
+        snap = self.h.snapshot(task, "ep1")      # freezes quality 0.60
+        revised = self.h.sbank.get("se_rev")
+        revised.expected_quality_hat = 0.95
+        self.h.sbank.update(revised)             # the entry moves to 0.95
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        blob = str(ctx.to_dict())
+        self.assertNotIn("0.95", blob,
+                         "a later revision must not enter a context that "
+                         "describes the earlier state")
+        layers = (ctx.snapshot.get("coverage") or {}).get("knowledge_layers") \
+            or {}
+        frozen = [x["expected_quality_hat"]
+                  for x in (layers.get("verified") or [])]
+        self.assertEqual(frozen, [0.60],
+                         "the FROZEN knowledge view keeps the value it had")
+
+    def test_historical_reconstruction_marks_what_was_not_saved(self):
+        """Missing history is reported, never filled from today's banks."""
+        self.h.sbank.add(StrategicEntry(
+            entry_id="se_h", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.7, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "verified", "claim": "c",
+                          "conclusion": "holds"}))
+        task = _task("t1")
+        snap = self.h.snapshot(task, "ep1")
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        joined = " ".join(ctx.missing)
+        self.assertIn("measured prediction reliability was not saved", joined)
+        self.assertIn("per-cell evidence counts were not saved", joined)
+        # And the reliability genuinely is empty rather than today's table.
+        self.assertEqual(ctx.reliability, {})
+        self.assertEqual(ctx.cell_evidence, {})
+        # The knowledge it DOES have came from the snapshot's frozen view.
+        self.assertTrue(any("FROZEN knowledge view" in m
+                            for m in ctx.missing))
+
+    def test_a_snapshot_without_a_frozen_knowledge_view_says_so(self):
+        """An absent frozen view is reported, not filled from the bank."""
+        self.h.sbank.add(StrategicEntry(
+            entry_id="se_gap", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.7, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "verified", "claim": "c",
+                          "conclusion": "holds"}))
+        task = _task("t1")
+        snap = self.h.snapshot(task, "ep1")
+        snap.coverage.pop("knowledge_layers", None)   # the gap to report
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        self.assertTrue(any("no frozen knowledge view" in m
+                            for m in ctx.missing))
+        self.assertNotIn("se_gap", str(ctx.capability))
 
 
 class TestOneCirForTheWholeRequest(ContextCase):
@@ -1173,6 +1265,87 @@ class TestMemoryContentVersion(ContextCase):
                        "legacy_unknown": [], "unverified": []})
         self.assertEqual(block["knowledge_by_layer"], {"verified": 1})
         self.assertIsInstance(block["digest"], str)
+
+
+class TestStructureConsistencyIsChecked(ContextCase):
+    """P2: a snapshot (or context) built under one structure may not be
+    combined with a different effective input.
+
+    The defect: the snapshot identity check ran BEFORE the explicit CIR was
+    merged, so supplying the original task's snapshot together with a NEW CIR
+    passed the check and kept a structurally inconsistent snapshot — the
+    joint representation reported 1.0/1.0/0.0 while the snapshot was built
+    from 0.3/0.1/0.2, and the prediction entry point still accepted the
+    resulting context.
+    """
+
+    STRONG = _cir()
+    WEAK = {"resource_coupling": 0.3, "temporal_coupling": 0.1,
+            "route_complexity": 0.2, "semantic_coupling": 0.5}
+
+    def _weak_task(self, task_id="t2"):
+        task = _task(task_id)
+        task["annotations"] = {"coupling": dict(self.WEAK)}
+        return task
+
+    def test_a_snapshot_of_another_structure_is_refused(self):
+        task = self._weak_task()
+        snap = self.h.snapshot(task, "ep1")      # frozen with WEAK structure
+        with self.assertRaises(ValueError) as caught:
+            self.h.build_prediction_context(task, "ep1", snapshot=snap,
+                                            cir=self.STRONG)
+        message = str(caught.exception)
+        self.assertIn("different structure", message)
+        self.assertIn("resource_coupling", message)
+        self.assertIn("Build a new context", message)
+
+    def test_a_matching_snapshot_and_cir_are_accepted(self):
+        task = self._weak_task()
+        snap = self.h.snapshot(task, "ep1")
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        self.assertEqual(ctx.joint.profile["resource_coupling"], 0.3)
+        self.assertEqual(ctx.snapshot_id, snap.snapshot_id)
+
+    def test_structure_problems_ignores_an_unmeasured_dimension(self):
+        from or_harness.world_model.context import structure_problems
+        # Unknown on one side is "cannot compare", not "disagrees".
+        self.assertEqual(structure_problems(
+            expected={"resource_coupling": 0.3, "temporal_coupling": None,
+                      "route_complexity": 0.2},
+            actual={"resource_coupling": 0.3, "temporal_coupling": 0.9,
+                    "route_complexity": 0.2},
+            label="artifact"), [])
+        # A KNOWN disagreement is always a refusal.
+        self.assertTrue(structure_problems(
+            expected={"resource_coupling": 1.0, "temporal_coupling": 0.1,
+                      "route_complexity": 0.2},
+            actual={"resource_coupling": 0.3, "temporal_coupling": 0.1,
+                    "route_complexity": 0.2},
+            label="artifact"))
+
+    def test_a_context_from_another_structure_is_refused_by_the_api(self):
+        from or_harness.world_model.context import task_with_effective_cir
+        task = self._weak_task()
+        ctx = self.h.build_prediction_context(task, "ep1")   # WEAK structure
+        strong_task = task_with_effective_cir(task, self.STRONG)
+        spec = ActionSpec("execute_strategy", "t2", strategy_id="S01")
+        with self.assertRaises(ValueError) as caught:
+            self.h.predict_outcome(strong_task, spec, "ep1", context=ctx)
+        self.assertIn("does not describe", str(caught.exception))
+
+    def test_the_effective_input_is_resolved_before_the_check(self):
+        """A supplied CIR defines the structure the snapshot must match."""
+        task = self._weak_task()
+        snap = self.h.snapshot(task, "ep1")
+        # Rebuilding with the SAME effective structure succeeds ...
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap,
+                                              cir=task["annotations"]
+                                              ["coupling"])
+        self.assertEqual(ctx.joint.sources["cir"], "caller_supplied")
+        # ... while a different one is refused, in that order.
+        with self.assertRaises(ValueError):
+            self.h.build_prediction_context(task, "ep1", snapshot=snap,
+                                            cir=self.STRONG)
 
 
 class TestPhaseOneFixesSurvive(ContextCase):

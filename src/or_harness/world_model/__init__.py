@@ -126,6 +126,8 @@ from or_harness.world_model.context import (
     context_identity_problems,
     dedupe_evidence,
     evidence_identity,
+    frozen_knowledge_available,
+    frozen_knowledge_view,
     knowledge_targets_from_context,
     math_attributes,
     memory_content_digest,
@@ -133,6 +135,7 @@ from or_harness.world_model.context import (
     retrieval_reuse_problems,
     snapshot_conditions,
     snapshot_from_context,
+    structure_problems,
     task_with_effective_cir,
 )
 from or_harness.world_model.state import (
@@ -191,6 +194,8 @@ __all__ = [
     "context_identity_problems",
     "dedupe_evidence",
     "evidence_identity",
+    "frozen_knowledge_available",
+    "frozen_knowledge_view",
     "knowledge_targets_from_context",
     "math_attributes",
     "memory_content_digest",
@@ -198,6 +203,7 @@ __all__ = [
     "retrieval_reuse_problems",
     "snapshot_conditions",
     "snapshot_from_context",
+    "structure_problems",
     "task_with_effective_cir",
     # unified contracts
     "CONTRACT_VERSION",

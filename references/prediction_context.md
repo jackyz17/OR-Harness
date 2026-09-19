@@ -171,6 +171,51 @@ in `degraded`). A memory whose creation time cannot be established is KEPT
 but counted under `unbounded_kept` — dropping it would discard real evidence,
 and keeping it silently would claim a bound that was never verified.
 
+### Historical reconstruction vs current gathering
+
+The two are kept apart, because creation-time filtering is **not** historical
+reconstruction: it cannot tell that an entry which already existed was later
+*revised*, so the old entry would still be read at its NEW value.
+
+| | Current gathering (no snapshot supplied) | Historical reconstruction (a snapshot supplied) |
+|---|---|---|
+| knowledge | `verified_knowledge_view(profile, sbank)` — today's bank | the snapshot's **frozen** `coverage.knowledge_layers` (`frozen_knowledge_view`) |
+| reliability | today's `prediction_reliability_table()` | **not saved** with a snapshot → empty, reported missing |
+| cell evidence | today's statistics | **not saved** → empty, reported missing |
+| retrieval | the live channels, bounded to the snapshot's time | only what was saved with the snapshot — nothing is rebuilt from today's index |
+| recorded choices | read from the action log | not read |
+
+A gap is **reported as missing** (`ctx.missing`), never filled from today's
+banks: reading today's bank to "complete" an earlier state would put
+after-the-fact information into a historical prediction input. Every
+historical build carries a note saying so, and a snapshot that carries no
+frozen knowledge view is reported as `MISSING` rather than silently
+consulted.
+
+There is deliberately **no historical database**: the snapshot itself is the
+saved history, and what it did not save is reported as absent.
+
+### Structure consistency is checked AFTER the effective input is resolved
+
+The snapshot identity check runs *after* the explicit CIR is merged, so a
+snapshot taken under one structure may not be combined with a different
+effective input. Supplying the original task's snapshot together with a new
+CIR is **refused**:
+
+```
+the supplied snapshot cannot be combined with this problem input: the
+supplied snapshot describes a different structure: resource_coupling=0.3 but
+the effective problem input has resource_coupling=1.0. Build a new context
+from the current input instead of reusing a snapshot taken under a different
+structure.
+```
+
+The same check guards reuse at the prediction entry point: a context built
+under another structure is refused with `does not describe this prediction`.
+A dimension that is unknown on either side is **not** a mismatch — "cannot be
+compared" is different from "disagrees", and refusing on an unmeasured value
+would reject legitimate inputs (`structure_problems`).
+
 ### Reuse sends the FROZEN conditions, never re-derived ones
 
 `predict_outcome(..., context=ctx)` conditions the request entirely on the

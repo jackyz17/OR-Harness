@@ -101,11 +101,14 @@ from or_harness.world_model.context import (
     cell_evidence_from_stats,
     context_identity_problems,
     evidence_identity,
+    frozen_knowledge_available,
+    frozen_knowledge_view,
     knowledge_targets_from_context,
     memory_content_digest,
     resolve_effective_cir,
     retrieval_reuse_problems,
     snapshot_from_context,
+    structure_problems,
     task_with_effective_cir,
 )
 from or_harness.world_model.prediction import (
@@ -599,6 +602,26 @@ class ORHarness:
             if problems:
                 raise ValueError("the supplied recall result cannot be "
                                  "reused: " + "; ".join(problems))
+
+        # ONE effective CIR for this request, resolved BEFORE any identity
+        # check. Routing the SAME structure into the profile, the snapshot
+        # and the recall is what stops one request from carrying two
+        # structural judgments; checking the supplied artifacts FIRST is what
+        # stops a snapshot built from a different structure from passing the
+        # identity check and then being kept alongside the new CIR.
+        effective_task = task_with_effective_cir(task, cir)
+        resolved_cir = effective_task.get("coupling")
+        profile = self.profile(effective_task, code)
+        derivation = derivation_report(profile)
+
+        # -- historical reconstruction vs current gathering -------------------
+        # A supplied snapshot is an HISTORICAL artifact: it fixes the moment
+        # this context describes. Everything the prediction conditions on
+        # must then come from what that snapshot SAVED, never from today's
+        # banks (a later revision of an entry would otherwise leak into a
+        # context describing the earlier state).
+        historical = snapshot is not None
+        history_notes: List[str] = []
         if snapshot is not None:
             problems = context_identity_problems(
                 PredictionContext(context_id="(supplied snapshot)",
@@ -622,48 +645,91 @@ class ORHarness:
             if hard:
                 raise ValueError("the supplied snapshot does not describe "
                                  "this task: " + "; ".join(hard))
-
-        # ONE effective CIR for this request. Resolving it here — and routing
-        # the SAME structure into the profile, the snapshot and the recall —
-        # is what stops one request from carrying two structural judgments
-        # (e.g. the joint representation seeing a supplied CIR while the
-        # snapshot and the retrieval fell back to the task's own coupling).
-        effective_task = task_with_effective_cir(task, cir)
-        resolved_cir = effective_task.get("coupling")
-        profile = self.profile(effective_task, code)
-        derivation = derivation_report(profile)
-        # A supplied HISTORICAL snapshot defines the moment this context
-        # describes. Memory that arrived after it is not part of that state,
-        # so the retrieval is bounded to the snapshot's own time.
-        as_of = (float(getattr(snapshot, "created_at", 0.0) or 0.0)
-                 if snapshot is not None else None)
-        bounding: Dict[str, Any] = {}
+            # Structure: the snapshot's own frozen profile must describe the
+            # SAME structure as the effective input. A conflict is refused —
+            # the joint representation would otherwise speak about one
+            # problem while the state spoke about another.
+            frozen_profile = (getattr(snapshot, "problem_state", None)
+                              or {}).get("profile")
+            structure = structure_problems(
+                expected=profile, actual=frozen_profile,
+                label="the supplied snapshot")
+            if structure:
+                raise ValueError(
+                    "the supplied snapshot cannot be combined with this "
+                    "problem input: " + "; ".join(structure) +
+                    ". Build a new context from the current input instead of "
+                    "reusing a snapshot taken under a different structure.")
         if snapshot is None:
             snapshot = self.snapshot(effective_task, episode_id)
-            as_of = float(getattr(snapshot, "created_at", 0.0) or 0.0)
-        if recall_result is None:
+
+        bounding: Dict[str, Any] = {}
+        if recall_result is not None:
+            # A SUPPLIED result is current-collected, so it may carry memory
+            # that postdates the historical snapshot. It is bounded the same
+            # way a freshly gathered one is — a supplied result does not get
+            # to smuggle later evidence into an earlier state.
+            if historical:
+                recall_result, bounding = self._bound_recall_result(
+                    recall_result,
+                    float(getattr(snapshot, "created_at", 0.0) or 0.0))
+        elif historical:
+            # No historical retrieval was SAVED with this snapshot, so
+            # there is none to rebuild. Reading today's index would
+            # fabricate a retrieval for an earlier state; the gap is
+            # reported instead.
+            recall_result = {"recommendations": []}
+            bounding = {"as_of": float(getattr(snapshot, "created_at",
+                                               0.0) or 0.0),
+                        "rebuilt_from": "none_saved",
+                        "dropped": 0, "dropped_items": [],
+                        "unbounded_kept": 0,
+                        "note": ("no retrieval was saved with this "
+                                 "historical snapshot, so no retrieval "
+                                 "was rebuilt: reading today's index "
+                                 "would fabricate evidence for an "
+                                 "earlier state. The evidence set is "
+                                 "EMPTY BECAUSE IT WAS NOT RECORDED, "
+                                 "not because nothing existed")}
+        else:
             recall_result = self.recall(
                 effective_task, top=top, code=code,
                 include_unverified=include_unverified,
                 vector_top_k=vector_top_k)
-            recall_result, bounding = self._bound_recall_result(recall_result,
-                                                               as_of)
-        knowledge = verified_knowledge_view(profile, self.sbank)
+            recall_result, bounding = self._bound_recall_result(
+                recall_result,
+                float(getattr(snapshot, "created_at", 0.0) or 0.0))
+
+        if historical:
+            # Knowledge and reliability come from the SNAPSHOT's saved
+            # content, and a gap is reported as missing.
+            if frozen_knowledge_available(snapshot):
+                knowledge = frozen_knowledge_view(snapshot)
+                history_notes.append(
+                    "knowledge was read from the snapshot's FROZEN "
+                    "knowledge view (the entries as they stood when the "
+                    "snapshot was taken), never from today's bank")
+            else:
+                knowledge = {"verified": [], "legacy_unknown": [],
+                             "unverified": []}
+                history_notes.append(
+                    "MISSING: this snapshot carries no frozen knowledge "
+                    "view, so the knowledge component is EMPTY BY ABSENCE — "
+                    "today's bank was NOT consulted to fill the gap")
+            reliability = {}
+            history_notes.append(
+                "MISSING: the measured prediction reliability was not saved "
+                "with this snapshot, so none is sent (today's prediction log "
+                "was NOT consulted)")
+        else:
+            knowledge = verified_knowledge_view(profile, self.sbank)
+            reliability = self.prediction_reliability_table()
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
-        if bounding:
-            retrieval_view.notes.append(bounding["note"])
-            if bounding["dropped"]:
-                retrieval_view.degraded.append({
-                    "part": "retrieval.bounding",
-                    "reason": (f"{bounding['dropped']} memory item(s) were "
-                               "created after the frozen moment and were "
-                               "excluded from this context")})
-        reliability = self.prediction_reliability_table()
         recorded_choices = self._recorded_choice_summary(
-            str(task.get("task_id", "")), episode_id)
+            str(task.get("task_id", "")), episode_id) if not historical else {}
         evidence = capability_evidence_with_sources(
             knowledge=knowledge,
             coverage=getattr(snapshot, "coverage", None),
@@ -689,7 +755,8 @@ class ORHarness:
             tools=constraints.get("available_solver_families") or [],
             knowledge_content=memory_content_digest(
                 knowledge=knowledge, retrieval=retrieval_view,
-                entries=self.sbank.list(include_dormant=True)))
+                entries=([] if historical
+                         else self.sbank.list(include_dormant=True))))
         # Freeze the structural proposal set and the cell evidence the
         # proposal was derived from. Both come from live banks, so a reused
         # context must carry them rather than re-derive them.
@@ -699,6 +766,17 @@ class ORHarness:
         for spec in spec_list:
             frozen_targets.extend(self.knowledge_targets(snapshot, spec))
         strategies = [s.strategy_id for s in spec_list if s.strategy_id]
+        if historical:
+            # Cell statistics describe the bank as it is NOW, so they are not
+            # part of a reconstruction. The gap is recorded instead.
+            cell_evidence: Dict[str, Any] = {}
+            history_notes.append(
+                "MISSING: per-cell evidence counts were not saved with this "
+                "snapshot, so the reconstruction carries none (today's "
+                "statistics were NOT consulted)")
+        else:
+            cell_evidence = cell_evidence_from_stats(self.stats, profile,
+                                                     strategies)
         context = build_context(
             task=task, profile=profile, snapshot=snapshot,
             recall_result=recall_result, derivation=derivation,
@@ -707,8 +785,7 @@ class ORHarness:
             execution_constraints=constraints,
             knowledge_targets=frozen_targets,
             reliability=reliability,
-            cell_evidence=cell_evidence_from_stats(
-                self.stats, profile, strategies),
+            cell_evidence=cell_evidence,
             cir_source=("caller_supplied" if cir is not None
                         else "task_coupling"),
             retrieval_bounding=bounding,
@@ -718,6 +795,13 @@ class ORHarness:
             context.execution_constraints = {
                 **(context.execution_constraints or {}),
                 "retrieval_bounding": copy.deepcopy(bounding)}
+        if historical:
+            context.missing.extend(history_notes)
+            context.notes.append(
+                "HISTORICAL reconstruction: every condition was taken from "
+                "the supplied snapshot's saved content; nothing was read "
+                "from today's banks, and each gap is reported as missing "
+                "rather than filled")
         context.notes.append(
             "this context is the FROZEN input of a prediction; building it "
             "performed no model call, no solver execution and no induction")
@@ -1397,6 +1481,13 @@ class ORHarness:
                 context, task_id=task_id,
                 task_digest=task_text_digest(task),
                 episode_id=episode_id)
+            # Structure too: a context built under another structural input
+            # may not be reused for this one — its joint representation and
+            # its retrieval would describe a different problem.
+            problems = problems + structure_problems(
+                expected=self.profile(task_with_effective_cir(task)),
+                actual=context.joint.profile,
+                label="the supplied prediction context")
             if problems:
                 raise ValueError(
                     "the supplied prediction context does not describe this "

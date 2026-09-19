@@ -154,6 +154,90 @@ def task_with_effective_cir(task: Dict[str, Any],
     return copy_task
 
 
+#: The dimensions that define a structural CELL. Two descriptions that
+#: disagree on any of these are describing different structures, so a
+#: snapshot (or a reused retrieval result) may not be combined with the
+#: other one.
+STRUCTURE_DIMENSIONS = ("resource_coupling", "temporal_coupling",
+                        "route_complexity")
+
+
+def _profile_dims(source: Any) -> Dict[str, Optional[float]]:
+    """The structural dims of a profile-like object or dict."""
+    if source is None:
+        return {}
+    out: Dict[str, Optional[float]] = {}
+    for dim in STRUCTURE_DIMENSIONS:
+        value = (source.get(dim) if isinstance(source, dict)
+                 else getattr(source, dim, None))
+        out[dim] = None if value is None else float(value)
+    return out
+
+
+def structure_problems(*, expected: Any, actual: Any, label: str,
+                       tolerance: float = 1e-9) -> List[str]:
+    """Reasons a frozen artifact's structure disagrees with the effective one.
+
+    Used AFTER the effective input (including any explicit CIR) has been
+    resolved: a snapshot or a reused recall result built from a DIFFERENT
+    structure may not be combined with this request, because the joint
+    representation would then describe one problem while the state and the
+    retrieval described another — and knowledge could be pulled from the
+    wrong structural cell.
+
+    A dimension that is unknown on either side is NOT a mismatch: "cannot be
+    compared" is different from "disagrees", and refusing on an unmeasured
+    value would reject legitimate inputs. ``label`` names the artifact in the
+    message so the caller can say which one conflicted.
+    """
+    expected_dims = _profile_dims(expected)
+    actual_dims = _profile_dims(actual)
+    if not expected_dims or not actual_dims:
+        return []
+    problems: List[str] = []
+    for dim in STRUCTURE_DIMENSIONS:
+        want = expected_dims.get(dim)
+        got = actual_dims.get(dim)
+        if want is None or got is None:
+            continue
+        if abs(want - got) > tolerance:
+            problems.append(
+                f"{label} describes a different structure: {dim}={got} but "
+                f"the effective problem input has {dim}={want}")
+    return problems
+
+
+def frozen_knowledge_view(snapshot: Any) -> Dict[str, List[Dict[str, Any]]]:
+    """The knowledge view a snapshot FROZE, by value.
+
+    A belief snapshot's ``coverage.knowledge_layers`` is the
+    ``verified_knowledge_view`` as it stood when the snapshot was taken
+    (``KnowledgeRef`` value copies, not ids). Historical reconstruction must
+    read THAT rather than today's bank: an entry that was revised after the
+    snapshot would otherwise be reported at its NEW expected quality inside a
+    context describing the earlier state.
+    """
+    layers = (getattr(snapshot, "coverage", None) or {}).get(
+        "knowledge_layers") or {}
+    return {
+        "verified": copy.deepcopy(list(layers.get("verified") or [])),
+        "legacy_unknown": copy.deepcopy(
+            list(layers.get("legacy_unknown") or [])),
+        "unverified": copy.deepcopy(list(layers.get("unverified") or [])),
+    }
+
+
+def frozen_knowledge_available(snapshot: Any) -> bool:
+    """Whether a snapshot actually carries a frozen knowledge view.
+
+    An absent/empty ``knowledge_layers`` means the view was never recorded,
+    which is NOT the same as "there was no knowledge" — the caller must
+    report it as missing rather than reading today's bank to fill the gap.
+    """
+    coverage = getattr(snapshot, "coverage", None) or {}
+    return isinstance(coverage.get("knowledge_layers"), dict)
+
+
 def _bounded(items: Sequence[Any], limit: int,
              notes: List[str], label: str) -> List[Any]:
     """First ``limit`` items, recording the truncation (never silent)."""
@@ -1402,6 +1486,12 @@ def build_context(
         retrieval.notes.append(str(retrieval_bounding.get("note") or ""))
         retrieval.structural["retrieval_bounding"] = copy.deepcopy(
             retrieval_bounding)
+        if retrieval_bounding.get("rebuilt_from") == "none_saved":
+            retrieval.missing.append(
+                "retrieval: no historical retrieval was saved with the "
+                "supplied snapshot, so none was rebuilt (the evidence set is "
+                "empty because it was not recorded, not because nothing "
+                "existed)")
         if retrieval_bounding.get("dropped"):
             retrieval.degraded.append({
                 "part": "retrieval.bounding",

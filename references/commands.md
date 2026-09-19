@@ -246,6 +246,20 @@ knowledge from the wrong cell.
 created AFTER it are excluded from the retrieval and reported under
 `execution_constraints.retrieval_bounding` (`dropped` / `unbounded_kept`).
 
+**Historical reconstruction is not creation-time filtering.** With a
+`--snapshot`, the knowledge view comes from the snapshot's **frozen**
+`coverage.knowledge_layers` (so an entry revised afterwards is read at the
+value it had), the retrieval is only what was saved with the snapshot, and
+the reliability and cell-evidence blocks — which a snapshot does not save —
+are reported MISSING rather than read from today's banks. Every historical
+build says so in `result.missing`.
+
+**Structure consistency is checked after the effective CIR is resolved.**
+A snapshot taken under a different structure than the effective input
+(explicit CIR included) is REFUSED with the conflicting dimension named;
+the same check guards context reuse at `predict-outcome`. An unmeasured
+dimension is not a mismatch.
+
 **The memory version digests content.**
 `result.capability_version.knowledge_content_digest` covers the
 decision-relevant content of the memory actually consulted (entry fields —

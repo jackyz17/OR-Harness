@@ -416,6 +416,76 @@ def main() -> int:
           f"{second.capability_version['knowledge_content']['excluded_keys']}")
     assert d_after != d_before, "a knowledge revision must move the digest"
 
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("12. Historical reconstruction reads only what was SAVED")
+    print("=" * 72)
+    hist_task = dict(TASK, task_id="ctx_demo_hist")
+    hist_entry = StrategicEntry(
+        entry_id="se_hist", strategy_id="S01",
+        pattern={"predicates": {"family": "routing"}},
+        expected_quality_hat=0.60, quality_interval=(0.5, 1.0),
+        expected_cost_hat=CostVector(llm_tokens=100.0,
+                                     measured={"llm_tokens"}),
+        failure_prob=0.1, status="candidate", support_n=2,
+        verification={"state": "verified", "claim": "c", "conclusion": "holds"})
+    h.sbank.add(hist_entry)
+    hist_snap = h.snapshot(hist_task, "ep1")     # freezes quality 0.60
+    moved = h.sbank.get("se_hist")
+    moved.expected_quality_hat = 0.95            # the entry is revised later
+    h.sbank.update(moved)
+    historical = h.build_prediction_context(hist_task, "ep1",
+                                            snapshot=hist_snap)
+    frozen_layers = ((historical.snapshot.get("coverage") or {})
+                     .get("knowledge_layers") or {})
+    frozen_by_id = {e.get("entry_id"): e.get("expected_quality_hat")
+                    for e in (frozen_layers.get("verified") or [])}
+    print(f"entry revised to        : 0.95")
+    print(f"frozen value for se_hist: {frozen_by_id.get('se_hist')}")
+    print(f"revision leaked in      : {'0.95' in str(historical.to_dict())}")
+    print(f"retrieval rebuilt from  : "
+          f"{historical.execution_constraints['retrieval_bounding']['rebuilt_from']}")
+    print("missing (reported, not filled):")
+    for item in historical.missing:
+        if "MISSING" in item:
+            print(f"   - {item[:88]}...")
+    assert frozen_by_id.get("se_hist") == 0.60, (
+        "the frozen view keeps the value the entry had at snapshot time")
+    assert "0.95" not in str(historical.to_dict()), (
+        "a later revision must not enter a historical context")
+    assert historical.reliability == {}, (
+        "reliability was not saved with the snapshot, so it is missing")
+    assert historical.cell_evidence == {}
+    assert any("MISSING" in m for m in historical.missing)
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("13. Structure consistency is checked against the EFFECTIVE input")
+    print("=" * 72)
+    weak_task = {k: v for k, v in TASK.items() if k != "coupling"}
+    weak_task["task_id"] = "ctx_demo_struct"
+    weak_task["annotations"] = {
+        "coupling": {"resource_coupling": 0.30, "temporal_coupling": 0.10,
+                     "route_complexity": 0.20, "semantic_coupling": 0.50}}
+    weak_snap = h.snapshot(weak_task, "ep1")     # frozen with WEAK structure
+    try:
+        h.build_prediction_context(weak_task, "ep1", snapshot=weak_snap,
+                                   cir=TASK["coupling"])
+    except ValueError as exc:
+        print(f"snapshot + new CIR REFUSED: {str(exc)[:120]}...")
+    else:  # pragma: no cover - the refusal is the point
+        raise AssertionError("a structurally inconsistent snapshot must be "
+                             "refused")
+    # A matching snapshot is accepted, and the same structure is used
+    # everywhere.
+    matching = h.build_prediction_context(weak_task, "ep1",
+                                          snapshot=weak_snap)
+    print(f"matching snapshot accepted: "
+          f"rc={matching.joint.profile['resource_coupling']}")
+    assert matching.joint.profile["resource_coupling"] == 0.30
+
     h.close()
     tmp.cleanup()
     print()

@@ -397,6 +397,24 @@ afterwards is excluded and reported, not absorbed into a description of an
 earlier state. An item whose creation time cannot be established is kept but
 counted as unbounded — neither silently dropped nor silently trusted.
 
+**Creation-time filtering is not historical reconstruction.** It cannot tell
+that an entry which already existed was later REVISED, so the old entry would
+still be read at its new value. Reconstruction therefore reads what the
+snapshot SAVED — its frozen knowledge view — and reports everything it did
+not save (reliability, cell evidence, the retrieval) as missing. Filling a
+historical gap from today's bank is the same error as reading today's bank
+directly: it puts after-the-fact information into an earlier prediction
+input. The snapshot itself is the saved history; no separate historical
+database is needed.
+
+**Structural consistency is checked against the EFFECTIVE input.** A
+snapshot or a reused context taken under one structure may not be combined
+with a different one — the joint representation would describe one problem
+while the state and the retrieval described another, and knowledge could be
+pulled from the wrong cell. So the effective input (explicit CIR included) is
+resolved FIRST and the artifacts are checked against it, with a conflict
+refused rather than carried. An unmeasured dimension is not a conflict.
+
 **A memory version must digest content, not counts.** A digest built from
 `len(...)` cannot tell a knowledge revision from an unchanged entry, so
 editing a claim's expected quality, interval, predicates, applicability
