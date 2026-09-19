@@ -311,6 +311,13 @@ Also deliberately out of scope: a universal H score, renaming the existing
 action vocabulary (the six action types stay), reviving the retired
 `understand` action, and replacing `BudgetLedger`.
 
+> **Phase 2 note.** The INPUT side of a prediction is now wired: see
+> [references/prediction_context.md](prediction_context.md). A prediction is
+> conditioned on a frozen `PredictionContext` (joint problem representation,
+> X/B, retrieval evidence, capability evidence, execution constraints). The
+> output protocol, the prompt and the decision loop are still unchanged —
+> that switch belongs to a later phase.
+
 ## 10. Verification checklist for a consuming agent
 
 - [ ] Did I get `status="contract_only"`? Then **no prediction was made** —

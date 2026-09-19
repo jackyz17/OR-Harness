@@ -167,10 +167,88 @@ The budget view for a task/episode: consumption over ALL real action costs — r
 
 `orx execute --episode ep1` and `orx induce` automatically record their actions in the unified log: execute as a macro (`pre` snapshot before execution, `post` after, `rollup=reference`, linked to the execution id); induce in the **maintenance scope** (`__maintenance__` / `maint_<ts>`) with a real pre/post knowledge state, verification results, a knowledge delta, and a business result that separates `created` (verified) from `created_unverified` (a candidate is NOT knowledge growth), `updated` / `revised` / `refused` / `unchanged`. A crashed induction still leaves a `failed` action with its pre state. Dry-run persists nothing.
 
-## `orx [--world-model URL::MODEL] predict-outcome --task t.json --action-spec spec.json [--episode ep1] [--parent-action ACTION_ID]`
+## `orx context --task t.json [--episode ep1] [--top 3] [--code solve.py] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
+## `orx context --context-id CTX_ID`
+
+**The frozen prediction input context (world-model phase 2).** One call gathers
+everything a prediction may condition on, freezes it, and persists it. Full
+spec: [references/prediction_context.md](prediction_context.md).
+
+Build mode (`--task`) freezes ONE belief snapshot, runs the EXISTING recall
+path once (both channels), and assembles:
+
+- the **joint problem representation**: the task's own text and payload, the
+  CIR's relations (kept as relations, not three coupling numbers), the math
+  attributes each with an **origin**, the structural profile and its
+  derivation report;
+- **X/B** from that same snapshot (accumulated progress + budget state);
+- the **retrieval evidence** of both channels, deduplicated by identity;
+- the **harness capability evidence** (`H = F(M, W_OR, Pi, R, T)`, evidence
+  statuses only, no composite score) plus a capability VERSION identity;
+- the **external execution constraints** (declared budget + consumption
+  status, available solver families, executor limits).
+
+```bash
+# a task with scene text and an optional CIR, and NO model field
+orx context --task t.json --episode ep1 --top 3
+
+# declare math attributes you actually know (origin recorded as 'declared')
+orx context --task t.json --math '{"linearity": "linear", "objective_kind": "min"}'
+
+# read a stored context back — re-runs NOTHING (no embedding, no model)
+orx context --context-id ctx_ab12cd34ef56
+```
+
+**What it does NOT do**: no prediction-model call, no solver execution, no
+induction, no capability re-measurement. The only external call is the
+configured embedding backend on the existing retrieval path — a read.
+
+**A task with no `model` field is a normal input.** So is a task with no CIR,
+and one with no textual field. Each absent part is listed in
+`result.missing` with what it means; nothing is guessed from `family`. Read
+`result.joint.math` — every attribute carries its `origins`, and
+`result.joint.unknowns` names what nothing established.
+
+**Degradation is per part.** `result.degraded[]` names the part and the
+reason:
+
+| Situation | `degraded[].reason` |
+|---|---|
+| No embedding backend configured | `no embedding backend configured` |
+| Task JSON has no textual field | `no task text in task JSON` |
+| No index file yet | `index missing; run orx rebuild-index` |
+| One layer's index unusable | the part is `retrieval.semantic.<layer>` |
+| Embedding call failed | `embedding backend error: ...` |
+| The channel ran and found nothing | **no `degraded` entry** — `semantic.status` is `ok` |
+
+An empty evidence set with a degraded channel is **not** "nothing comparable
+exists", and `result.retrieval.notes` says so.
+
+**Evidence classes** (`result.evidence_classes`) keep kinds apart:
+`execution_fact`, `verified_knowledge`, `unverified_knowledge`,
+`legacy_knowledge`, `structural_recommendation`. Retrieval never upgrades one
+into another, unverified candidates are hidden unless `--include-unverified`
+is passed, and one memory hit by both channels is ONE piece of evidence
+(`identity = layer:id`) carrying both channel names.
+
+**Reuse is version-verified.** `result.task_digest` is the task VERSION the
+context was built for. Passing a recall result or context whose version
+disagrees is refused with a named reason — never silently aligned.
+
+## `orx [--world-model URL::MODEL] predict-outcome --task t.json --action-spec spec.json [--episode ep1] [--parent-action ACTION_ID] [--context CTX_ID | --no-context]`
 
 **World-model outcome prediction (shadow mode).** Ask a configured world model for a structured prediction of ONE candidate action's consequences, from the frozen pre-action state. The candidate is an `ActionSpec` JSON (`{"action_type": "execute_strategy", "task_id": ..., "strategy_id": "S01", "solver": "highs", ...}`) — a hypothesis, NOT a recorded action. The prediction carries: expected execution status / feasibility / quality / failure risk / per-dimension cost, predicted successor state changes (hypothetical — never written to real state), the model's self-reported confidence (**uncalibrated**), its claimed evidence basis, and fields it explicitly declined to predict.
 
+- **Input context** (phase 2): by default one context is built for this call
+  and sent to the provider under the request's `prediction_context` key; the
+  stored prediction records `model_info.prediction_context_id` so the exact
+  frozen input can be resolved later. `--context CTX_ID` reuses a FROZEN
+  context (its identity is verified against this task/version/episode — the
+  way several candidates of one decision share one input, and the way a
+  stored context replays without reading today's banks). `--no-context`
+  sends no context at all, so the request keeps its pre-phase-2 shape
+  exactly. The context changes what the model is GIVEN, not the output
+  protocol — that switch belongs to the next phase.
 - **Configuration boundary**: `--world-model BASE_URL::MODEL` (OpenAI-compatible endpoint; API key from `$OR_WM_API_KEY`). Credentials never persist. Without the flag, the command returns an explicit `not_configured` error — and NO other command ever invokes a model.
 - **Shadow discipline**: the prediction changes NOTHING. `recall`, `predict`, `execute`, `record` behave identically whether or not you predict. You remain the decision-maker.
 - **Calibration duty**: with a world model configured, one predict–bind pair per executed action is the required loop — executed prediction–comparison pairs are the only source of calibration evidence, and skipping them is legitimate only when no provider is configured (`not_configured`). After a `plan-next` selection, bind the selected path's prediction instead of predicting again.

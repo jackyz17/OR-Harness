@@ -31,7 +31,7 @@ DOCUMENTED_FLAGS = [
                 "--include-unverified"]),
     ("predict", ["--task", "--strategy"]),
     ("predict-outcome", ["--task", "--action-spec", "--episode",
-                         "--parent-action"]),
+                         "--parent-action", "--context", "--no-context"]),
     ("bind-outcome", ["--prediction", "--action"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
                    "--max-calls", "--delta", "--prediction-mode"]),
@@ -44,6 +44,9 @@ DOCUMENTED_FLAGS = [
     ("gc", ["--mode", "--dry-run"]),
     ("retire", ["--entry", "--reason"]),
     ("rebuild-index", ["--layer", "--dry-run"]),
+    ("context", ["--task", "--episode", "--top", "--code", "--cir",
+                 "--math", "--include-unverified", "--context-id",
+                 "--no-persist"]),
 ]
 
 #: Global flags the docs promise.
@@ -69,6 +72,14 @@ DOCUMENTED_IMPORTS = [
         "PredictionServiceStatus", "SERVICE_IMPLEMENTED_KINDS",
         "LEGACY_UNMAPPABLE_SCOPES", "contract_status_from_legacy_status",
         "parse_window_id", "window_identity_problems",
+        "PredictionContext", "JointProblemRepresentation", "MathAttributes",
+        "RetrievalView", "UnsupportedContextVersion",
+        "PREDICTION_CONTEXT_VERSION", "JOINT_REPRESENTATION_VERSION",
+        "MATH_ATTRIBUTE_ORIGINS", "EVIDENCE_CLASSES",
+        "build_context", "build_joint_representation", "build_retrieval_view",
+        "capability_evidence_with_sources", "capability_version",
+        "classify_evidence", "context_identity_problems", "dedupe_evidence",
+        "evidence_identity", "math_attributes", "retrieval_reuse_problems",
     ]),
     ("or_harness.world_model.contracts", ["LEGACY_UNMAPPABLE"]),
 ]
@@ -111,6 +122,7 @@ def main() -> int:
     # Every markdown link target in the agent-facing docs must exist.
     for doc in ["SKILL.md", "README.md", "README_zh.md",
                 "references/world_model_contract.md",
+                "references/prediction_context.md",
                 "references/commands.md", "references/concepts.md"]:
         path = ROOT / doc
         if not path.exists():

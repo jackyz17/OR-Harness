@@ -88,6 +88,20 @@ from or_harness.world_model.execution_window import (
     window_from_records,
     window_identity_problems,
 )
+from or_harness.world_model.context import (
+    PREDICTION_CONTEXT_VERSION,
+    JointProblemRepresentation,
+    PredictionContext,
+    RetrievalView,
+    UnsupportedContextVersion,
+    build_context,
+    build_retrieval_view,
+    capability_evidence_with_sources,
+    capability_version,
+    context_identity_problems,
+    evidence_identity,
+    retrieval_reuse_problems,
+)
 from or_harness.world_model.prediction import (
     ActionSpec,
     OutcomePrediction,
@@ -430,6 +444,237 @@ class ORHarness:
             self, task_id, episode_id, strategy_id,
             in_scope_action_types=in_scope_action_types,
             auxiliary_action_types=auxiliary_action_types)
+
+    # -- world-model phase 2: the prediction input context -----------------------
+
+    def build_prediction_context(
+            self, task: Dict[str, Any],
+            episode_id: Optional[str] = None, *,
+            top: int = 3,
+            vector_top_k: Optional[int] = None,
+            include_unverified: bool = False,
+            code: Optional[str] = None,
+            cir: Optional[Any] = None,
+            math: Optional[Dict[str, Any]] = None,
+            recall_result: Optional[Dict[str, Any]] = None,
+            snapshot: Optional[BeliefSnapshot] = None,
+            persist: bool = True) -> PredictionContext:
+        """Build the FROZEN prediction input context for one decision.
+
+        This is the phase-2 entry point: ONE call gathers everything a
+        prediction may condition on, freezes it, and (by default) persists
+        it so the input can be reproduced later.
+
+        What it does:
+
+        - freezes ONE belief snapshot (unless one is supplied) — the X/B and
+          capability evidence are read from that same snapshot, so a bank
+          that moves afterwards cannot change the context;
+        - runs the EXISTING recall path once (both channels), or reuses a
+          supplied result after verifying it belongs to the CURRENT task
+          version;
+        - assembles the joint problem representation (task text + payload,
+          CIR relations, math attributes with origins, profile + derivation
+          report) and the capability evidence (phase-1 contract, plus what
+          this phase can really observe).
+
+        What it does NOT do: no prediction-model call, no solver execution,
+        no induction, no capability re-measurement. It may call the embedding
+        backend through the existing retrieval path — that is the one
+        external call, and it is a read.
+
+        ``recall_result`` reuse is refused when its recorded ``task_digest``
+        disagrees with the current task, and a supplied ``snapshot`` is
+        refused when it belongs to another task / episode / version. Build a
+        new context instead of silently conditioning on stale inputs.
+
+        ``persist=False`` skips the store write (useful when the caller only
+        wants the object, e.g. inside a planning call that already records
+        its own root snapshot).
+        """
+        if recall_result is not None:
+            supplied = recall_result.get("task_digest") \
+                if isinstance(recall_result, dict) else None
+            problems = retrieval_reuse_problems(
+                RetrievalView(task_digest=(str(supplied) if supplied
+                                           else None)),
+                task_digest=task_text_digest(task))
+            if problems:
+                raise ValueError("the supplied recall result cannot be "
+                                 "reused: " + "; ".join(problems))
+        if snapshot is not None:
+            problems = context_identity_problems(
+                PredictionContext(context_id="(supplied snapshot)",
+                                  task_id=str(getattr(snapshot, "task_id",
+                                                      "")),
+                                  task_digest=str(
+                                      (getattr(snapshot, "problem_state",
+                                               None) or {}).get(
+                                          "task_digest") or ""),
+                                  episode_id=getattr(snapshot, "episode_id",
+                                                     None)),
+                task_id=str(task.get("task_id", "")),
+                task_digest=task_text_digest(task),
+                episode_id=episode_id,
+                allow_unknown_digest=True)
+            # A snapshot of another episode is a mismatch; a snapshot with no
+            # recorded version cannot be established either way, so it is
+            # used but reported as unconfirmed.
+            hard = [p for p in problems if "records no task version"
+                    not in p]
+            if hard:
+                raise ValueError("the supplied snapshot does not describe "
+                                 "this task: " + "; ".join(hard))
+
+        profile = self.profile(task, code, cir=cir)
+        derivation = derivation_report(profile)
+        resolved_cir = cir if cir is not None else task.get("coupling")
+        if snapshot is None:
+            snapshot = self.snapshot(task, episode_id)
+        if recall_result is None:
+            recall_result = self.recall(task, top=top, code=code,
+                                        include_unverified=include_unverified,
+                                        vector_top_k=vector_top_k)
+        knowledge = verified_knowledge_view(profile, self.sbank)
+        retrieval_view = build_retrieval_view(
+            recall_result, task_digest=task_text_digest(task),
+            top_k=max(1, vector_top_k or top),
+            include_unverified=include_unverified)
+        reliability = self.prediction_reliability_table()
+        recorded_choices = self._recorded_choice_summary(
+            str(task.get("task_id", "")), episode_id)
+        evidence = capability_evidence_with_sources(
+            knowledge=knowledge,
+            coverage=getattr(snapshot, "coverage", None),
+            experience=(getattr(snapshot, "harness_state", None) or {}).get(
+                "experience"),
+            tools=(getattr(snapshot, "harness_state", None) or {}).get(
+                "tool_config"),
+            retrieval_view=retrieval_view,
+            reliability=reliability,
+            recorded_choices=recorded_choices)
+        constraints = self._execution_constraints_view(task, episode_id)
+        version_block = capability_version(
+            harness_config={
+                "alpha": self.selector.alpha, "beta": self.selector.beta,
+                "gamma": self.selector.gamma, "delta": self.delta,
+                "prediction_mode": self.prediction_mode,
+                "plan_mode": self.plan_mode,
+                "induction_assessment": self.induction_assessment_mode,
+            },
+            provider=self.world_model.describe(),
+            prompt_template_version=self._prompt_template_version(),
+            tools=constraints.get("available_solver_families") or [],
+            knowledge_content={
+                "verified": len((knowledge or {}).get("verified") or []),
+                "legacy_unknown": len((knowledge or {}).get(
+                    "legacy_unknown") or []),
+                "unverified": len((knowledge or {}).get("unverified") or []),
+                "executions": self.bank.count(),
+            })
+        context = build_context(
+            task=task, profile=profile, snapshot=snapshot,
+            recall_result=recall_result, derivation=derivation,
+            cir=resolved_cir, math_declared=math, capability=evidence,
+            capability_version_block=version_block,
+            execution_constraints=constraints,
+            top_k=max(1, vector_top_k or top),
+            include_unverified=include_unverified)
+        context.notes.append(
+            "this context is the FROZEN input of a prediction; building it "
+            "performed no model call, no solver execution and no induction")
+        if persist:
+            with self.store.transaction() as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO prediction_contexts "
+                    "(context_id, task_id, episode_id, created_at, payload) "
+                    "VALUES (?,?,?,?,?)",
+                    (context.context_id, context.task_id, context.episode_id,
+                     context.created_at, self.store.dumps(context.to_dict())))
+        return context
+
+    def get_prediction_context(self,
+                               context_id: str) -> Optional[PredictionContext]:
+        """Read a stored context back (never re-runs retrieval or a model).
+
+        The version is CHECKED, not guessed at: a payload written by a build
+        that used a different context schema is refused rather than
+        half-read."""
+        raw = self.store.get_prediction_context(context_id)
+        if raw is None:
+            return None
+        return PredictionContext.from_dict(self.store.loads(raw))
+
+    def prediction_contexts(self, *, task_id: Optional[str] = None,
+                            episode_id: Optional[str] = None
+                            ) -> List[PredictionContext]:
+        """Every stored context (newest first), optionally filtered."""
+        out: List[PredictionContext] = []
+        for raw in self.store.prediction_contexts_for(task_id=task_id,
+                                                      episode_id=episode_id):
+            try:
+                out.append(PredictionContext.from_dict(self.store.loads(raw)))
+            except (UnsupportedContextVersion, ValueError):
+                continue
+        return out
+
+    def _prompt_template_version(self) -> str:
+        from or_harness.world_model.prediction import PROMPT_TEMPLATE_VERSION
+        return PROMPT_TEMPLATE_VERSION
+
+    def _execution_constraints_view(self, task: Dict[str, Any],
+                                    episode_id: Optional[str]
+                                    ) -> Dict[str, Any]:
+        """External constraints on what may be executed for this task.
+
+        Real declarations and real availability only: the declared budget and
+        its consumption view, the solver families actually importable in
+        this environment, and the executor's limits. Nothing here is a
+        capability claim — availability is a precondition, not an ability.
+        """
+        task_id = str(task.get("task_id", ""))
+        # Reuse the ONE budget loader (its cache key format lives with it) so
+        # a declared budget is read the same way here as everywhere else.
+        declared = self._load_budget(task_id, episode_id)
+        budget = self.budget.view(task_id, episode_id, budget=declared)
+        return {
+            "declared_budget": copy.deepcopy(declared) if declared else None,
+            "budget_status": budget.get("status"),
+            "available_solver_families": available_families(),
+            "executor": {
+                "timeout_seconds": getattr(self.executor, "timeout_seconds",
+                                           None),
+                "workspace_policy": ("solve scripts must live inside their "
+                                     "execution workspace"),
+            },
+            "note": ("declared budget and real tool availability: these "
+                     "constrain what can be executed, they do not predict "
+                     "what it would achieve"),
+        }
+
+    def _recorded_choice_summary(self, task_id: str,
+                                 episode_id: Optional[str]
+                                 ) -> Dict[str, Any]:
+        """What choices were RECORDED for this task (evidence about Pi).
+
+        Observations only: a recorded selection or rejection says what was
+        decided, never that the decision was optimal. An empty result means
+        nothing was recorded, which is not evidence of poor selection.
+        """
+        actions = [a for a in self.actions.query(task_id=task_id)
+                   if a.action_type in ("select_strategy", "execute_strategy")]
+        if episode_id is not None:
+            actions = [a for a in actions if a.episode_id == episode_id]
+        chosen = [str((a.params or {}).get("strategy_id"))
+                  for a in actions
+                  if (a.params or {}).get("strategy_id")]
+        return {
+            "n_recorded": len(actions),
+            "strategies_seen": sorted(set(chosen)),
+            "note": ("recorded selections and executions are OBSERVATIONS of "
+                     "what was decided; they are not evidence that the "
+                     "decision was optimal"),
+        }
 
     def build_strategy_outcome_contract(
             self, task: Dict[str, Any],
@@ -955,7 +1200,8 @@ class ORHarness:
     def predict_outcome(self, task: Dict[str, Any],
                         action_spec: ActionSpec,
                         episode_id: Optional[str] = None,
-                        *, parent_action_id: Optional[str] = None
+                        *, parent_action_id: Optional[str] = None,
+                        context: Union[PredictionContext, bool, None] = None,
                         ) -> OutcomePrediction:
         """Predict the consequences of a CANDIDATE action from the current
         frozen state — explicitly, in shadow mode.
@@ -978,7 +1224,21 @@ class ORHarness:
         call arguments (explicit spec values that disagree are overridden
         and the adjustment recorded in ``model_info.identity_adjusted``) —
         an episode-less spec is never persisted as a wildcard that later
-        leaks this call's cost into every episode's budget."""
+        leaks this call's cost into every episode's budget.
+
+        ``context`` (phase 2) decides what the provider is GIVEN:
+
+        - ``None`` (default): one prediction input context is built for this
+          call (task representation + X/B + retrieval evidence + capability
+          evidence + execution constraints) and passed to the provider;
+        - a :class:`PredictionContext`: that FROZEN context is reused after
+          its identity is verified against this task/version/episode — the
+          way several candidates of one decision share one input, and the
+          way a stored context can be replayed without reading today's banks;
+        - ``False``: no context is assembled and the request is exactly what
+          this call sent before this phase existed (the compatibility
+          escape hatch, and what ``x-b-only`` byte-compatibility rests on).
+        """
         task_id = str(task.get("task_id", ""))
         adjusted: Dict[str, Any] = {}
         if action_spec.task_id != task_id:
@@ -991,11 +1251,27 @@ class ORHarness:
                                           "call": episode_id}
             action_spec.episode_id = episode_id
         snap = self.snapshot(task, episode_id)
+        if context is False:
+            resolved_context: Optional[PredictionContext] = None
+        elif isinstance(context, PredictionContext):
+            problems = context_identity_problems(
+                context, task_id=task_id,
+                task_digest=task_text_digest(task),
+                episode_id=episode_id)
+            if problems:
+                raise ValueError(
+                    "the supplied prediction context does not describe this "
+                    "prediction: " + "; ".join(problems))
+            resolved_context = context
+        else:
+            resolved_context = self.build_prediction_context(
+                task, episode_id, snapshot=snap)
         targets = self.knowledge_targets(snap, action_spec)
         prediction = self.predictions.predict_outcome(
             task, action_spec, snap,
             knowledge_targets=targets,
-            reliability=self.prediction_reliability_table())
+            reliability=self.prediction_reliability_table(),
+            prediction_context=resolved_context)
         # The full target set is frozen WITH the prediction: a later verdict
         # needs the claim's interval / entry id / strategy as they were at
         # prediction time, not a re-read of banks that may have moved since.
@@ -1003,6 +1279,16 @@ class ORHarness:
             t.strategy_id for t in targets]
         prediction.model_info["knowledge_targets_proposed_full"] = [
             t.to_dict() for t in targets]
+        if resolved_context is not None:
+            # Which frozen input this prediction was conditioned on. The
+            # reference is recorded on the prediction, so a later reader can
+            # resolve the CONTENT that was actually used.
+            prediction.model_info["prediction_context_id"] = \
+                resolved_context.context_id
+            prediction.model_info["prediction_context_version"] = \
+                resolved_context.version
+            prediction.model_info["prediction_context_task_digest"] = \
+                resolved_context.task_digest
         self.predictions._save(prediction)
         if adjusted:
             prediction.model_info["identity_adjusted"] = adjusted
@@ -1599,6 +1885,17 @@ class ORHarness:
         # ONCE per decision (the banks are not re-read mid-decision).
         knowledge_targets: Dict[str, List[Any]] = {}
         reliability_table = self.prediction_reliability_table()
+        # Phase 2: ONE shared prediction input context for the whole
+        # decision. Every root candidate is evaluated against the SAME
+        # problem representation, X/B, retrieval evidence, capability
+        # evidence and execution constraints — only the candidate's own
+        # config/scope changes. Building it per candidate would let a bank
+        # that moved mid-decision contaminate the comparison, and would
+        # re-embed the same query once per candidate.
+        plan_context = self.build_prediction_context(
+            task, episode_id, snapshot=root,
+            top=limits.max_root_candidates)
+
         def _real_budget_exceeded() -> Optional[str]:
             """Re-check the REAL ledger before the next model call: the
             budget view is refreshed (planning spend itself lands in it),
@@ -1649,7 +1946,8 @@ class ORHarness:
             prediction = self.predictions.predict_outcome(
                 task, spec, root, timeout_s=remaining,
                 knowledge_targets=target_set,
-                reliability=reliability_table)
+                reliability=reliability_table,
+                prediction_context=plan_context)
             prediction.model_info["knowledge_targets_proposed"] = [
                 t.strategy_id for t in target_set]
             # The FULL targets are kept too: judging a later verdict needs
@@ -1718,7 +2016,8 @@ class ORHarness:
                         stop_reason = ("planning time budget exhausted")
                         break
                     second = self.predictions.predict_outcome(
-                        task, second_spec, hypo, timeout_s=remaining)
+                        task, second_spec, hypo, timeout_s=remaining,
+                        prediction_context=plan_context)
                     calls_made += 1
                     continuation[first.prediction_id] = [second]
         except Exception as exc:
@@ -1900,8 +2199,16 @@ class ORHarness:
                      "budget_confirmation": plan.budget_confirmation,
                      "cost_basis": list(cost_basis),
                      "cost_norms": dict(norms),
+                     "prediction_context_id": plan_context.context_id,
+                     "prediction_context_version": plan_context.version,
                      "hypothetical_snapshots": dict(hypothetical_snaps)})
-        return plan.to_dict()
+        result = plan.to_dict()
+        # The ONE shared input context of this decision, referenced (not
+        # copied) on the plan record: every candidate of the comparison was
+        # conditioned on it, and the stored context resolves its content.
+        result["prediction_context_id"] = plan_context.context_id
+        result["prediction_context_version"] = plan_context.version
+        return result
 
     def choose_next(self, decision_action_id: str, *,
                     chosen: Optional[ActionSpec] = None,
@@ -2502,6 +2809,12 @@ class ORHarness:
         solvers = available_families()
         result = {
             "profile": profile.to_dict(),
+            # The task VERSION this result was produced for. Recorded so a
+            # caller that wants to reuse the result as frozen prediction
+            # input can PROVE it belongs to the current task version —
+            # an unversioned result must not be dressed up as aligned
+            # evidence (see world_model.context.retrieval_reuse_problems).
+            "task_digest": task_text_digest(task),
             "recommendations": [r.to_dict() for r in recs],
             "available_solver_families": solvers,
             "solver_advisories": solver_advisories(self.bank),

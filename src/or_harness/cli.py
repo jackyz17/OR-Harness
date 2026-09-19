@@ -574,9 +574,17 @@ def cmd_predict_outcome(args) -> int:
         from or_harness.world_model.prediction import ActionSpec
         task = _load_json_arg(args.task)
         spec = ActionSpec.from_dict(_load_json_arg(args.action_spec))
+        if args.no_context:
+            context = False
+        elif args.context:
+            context = h.get_prediction_context(args.context)
+            if context is None:
+                return _fail(f"unknown context_id {args.context!r}")
+        else:
+            context = None
         prediction = h.predict_outcome(
             task, spec, args.episode,
-            parent_action_id=args.parent_action)
+            parent_action_id=args.parent_action, context=context)
         result = {"prediction": prediction.to_dict(),
                   "prediction_id": prediction.prediction_id}
         if prediction.status == "not_configured":
@@ -995,6 +1003,84 @@ def cmd_contract(args) -> int:
         h.close()
 
 
+def cmd_context(args) -> int:
+    """Build or read the frozen prediction input context (world-model phase 2).
+
+    Two modes:
+
+    - ``--context-id``: READ a stored context back. Never re-runs retrieval,
+      never calls a model, never executes anything.
+    - ``--task``: BUILD a context — one snapshot, one recall over the two
+      existing channels, the joint problem representation, the capability
+      evidence and the external constraints, frozen and persisted.
+    """
+    h = _harness(args)
+    try:
+        if args.context_id:
+            ctx = h.get_prediction_context(args.context_id)
+            if ctx is None:
+                return _fail(f"unknown context_id {args.context_id!r}")
+            return _emit(ctx.to_dict(), _summarize_context(ctx, stored=True))
+        if not args.task:
+            return _fail("orx context requires --task (to build) or "
+                         "--context-id (to read)")
+        task = _load_json_arg(args.task)
+        if not isinstance(task, dict):
+            return _fail("--task must be a JSON object")
+        cir = _load_json_arg(args.cir) if args.cir else None
+        math = _load_json_arg(args.math) if args.math else None
+        if math is not None and not isinstance(math, dict):
+            return _fail("--math must be a JSON object")
+        ctx = h.build_prediction_context(
+            task, args.episode, top=args.top, code=args.code, cir=cir,
+            math=math, include_unverified=args.include_unverified,
+            persist=not args.no_persist)
+        return _emit(ctx.to_dict(), _summarize_context(ctx))
+    finally:
+        h.close()
+
+
+def _summarize_context(ctx, *, stored: bool = False) -> str:
+    """Agent-readable summary of a prediction input context."""
+    joint = ctx.joint
+    parts = [
+        (f"Stored context {ctx.context_id}" if stored
+         else f"Built frozen context {ctx.context_id}") + ":",
+        f"task version {ctx.task_digest},",
+        f"snapshot {ctx.snapshot_id or '(none)'}.",
+        f"Problem representation: text "
+        f"{'present' if joint.text.strip() else 'ABSENT'},"
+        f" CIR {'present' if joint.cir_present else 'absent'},"
+        f" model {'present' if joint.has_model else 'not written yet'}.",
+        "Math attributes: "
+        + (", ".join(f"{k}={v}" for k, v in joint.math.to_dict().items()
+                     if k in ("integrality", "linearity", "objective_kind")
+                     and v) or "none established")
+        + ("; unknown: " + ", ".join(joint.unknowns)
+           if joint.unknowns else "; none unknown") + ".",
+        f"Retrieval: channels {ctx.retrieval.channels_run or 'none'} ran,"
+        f" {ctx.n_evidence} piece(s) of evidence carried"
+        f" ({ctx.evidence_classes() or 'none'});"
+        f" {ctx.retrieval.deduplication.get('duplicates_collapsed', 0)}"
+        " duplicate hit(s) collapsed by identity.",
+        f"Capability evidence sources: "
+        + ", ".join(f"{k}={v.get('status')}"
+                    for k, v in (ctx.capability.get("sources") or {}).items())
+        + " (evidence ABOUT H, never a score).",
+        f"{len(ctx.degraded)} degraded part(s), {len(ctx.missing)} missing "
+        "part(s) reported.",
+        "Building this context made NO model call, ran NO solver and "
+        "induced nothing.",
+    ]
+    if ctx.degraded:
+        parts.append("Degraded: " + "; ".join(
+            f"{d['part']}: {d['reason']}" for d in ctx.degraded))
+    if not ctx.retrieval.hits:
+        parts.append("No evidence was carried: with a degraded channel this "
+                     "is NOT the same as 'nothing comparable exists'.")
+    return " ".join(parts)
+
+
 def _candidate_from_spec(spec: Dict[str, Any]):
     """Build a ``CandidateRef`` from either candidate or legacy spec JSON.
 
@@ -1219,6 +1305,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--parent-action", default=None, metavar="ACTION_ID",
                    help="action this prediction call belongs to (its model "
                         "call cost is charged there as own cost)")
+    p.add_argument("--context", default=None, metavar="CTX_ID",
+                   help="reuse a FROZEN prediction input context built by "
+                        "`orx context` (its identity is verified against this "
+                        "task/version/episode); default builds a fresh one")
+    p.add_argument("--no-context", action="store_true",
+                   help="send no prediction context at all: the request keeps "
+                        "its pre-phase-2 shape exactly (the compatibility "
+                        "escape hatch; `x-b-only` byte-compatibility rests "
+                        "on this)")
     p.set_defaults(func=cmd_predict_outcome)
 
     p = sub.add_parser("bind-outcome",
@@ -1387,6 +1482,40 @@ def build_parser() -> argparse.ArgumentParser:
                         "{condition, evaluable, check_basis} — what would "
                         "actually CONFIRM the predicted change")
     p.set_defaults(func=cmd_contract)
+
+    p = sub.add_parser(
+        "context",
+        help="build or read the FROZEN prediction input context (world-model "
+             "phase 2): the joint problem representation (text + CIR + math "
+             "attributes), X/B from one snapshot, the retrieval evidence of "
+             "both channels, the harness capability evidence and the "
+             "external execution constraints. No model call and no solver "
+             "run: the only external call is the configured embedding "
+             "backend on the existing retrieval path")
+    p.add_argument("--task", default=None,
+                   help="task JSON (literal or @file) to BUILD a context for")
+    p.add_argument("--episode", default=None)
+    p.add_argument("--top", type=int, default=3,
+                   help="bounded top-k for BOTH retrieval channels (default 3)")
+    p.add_argument("--code", default=None,
+                   help="solve.py used as a coupling source when profiling")
+    p.add_argument("--cir", default=None,
+                   help="CIR JSON (literal or @file); defaults to the task's "
+                        "own 'coupling' field")
+    p.add_argument("--math", default=None,
+                   help="explicit math attribute declarations JSON: "
+                        "{integrality, linearity, objective_kind, "
+                        "constraint_kinds} — the caller taking responsibility "
+                        "for a value it knows")
+    p.add_argument("--include-unverified", action="store_true",
+                   help="surface unverified candidates too (inspection view); "
+                        "they stay labelled, never published")
+    p.add_argument("--context-id", default=None, metavar="CTX_ID",
+                   help="READ a stored context instead of building one (never "
+                        "re-runs retrieval or a model call)")
+    p.add_argument("--no-persist", action="store_true",
+                   help="build without writing the context to the store")
+    p.set_defaults(func=cmd_context)
     return parser
 
 

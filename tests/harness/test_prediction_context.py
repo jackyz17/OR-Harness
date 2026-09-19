@@ -1,0 +1,847 @@
+"""Phase-2 tests: the prediction input context.
+
+What this file asserts, one behaviour per test class:
+
+1. the joint representation is available BEFORE a model exists, keeps the
+   semantics, the CIR relations and the sources, and never fabricates a math
+   attribute from the scenario's name;
+2. retrieval evidence keeps discovery and applicability apart, surfaces
+   cross-cell cases with their differences, deduplicates repeated hits by
+   identity (without inflating support), and never lets unverified knowledge
+   become verified by being retrieved;
+3. reuse is version-verified: a recall result or context from another task
+   version / episode is refused, not silently aligned;
+4. the context is FROZEN against later bank, task and tool changes, and a
+   stored context replays without reading today's facts;
+5. several candidates share ONE context while keeping their own config and
+   scope, and the provider really receives the new joint evidence;
+6. every refusal to run a channel is distinguishable (no backend, no task
+   text, missing index, backend error, and a healthy run that found nothing);
+7. capability evidence carries honest statuses — no fabricated source, no
+   composite score, and unverified knowledge / hypothetical predictions
+   never become real evidence;
+8. building a context runs no solver, calls no prediction model and induces
+   nothing; only an explicit prediction call reaches the provider; and the
+   phase-1 fixes do not regress.
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+
+from tests.harness.helpers import HarnessTestCase  # noqa: E402
+
+from or_harness.api import ORHarness  # noqa: E402
+from or_harness.core.schema import StrategicEntry  # noqa: E402
+from or_harness.strategy.embedding_index import (  # noqa: E402
+    LAYER_EXECUTION,
+    LAYER_STRATEGIC,
+    LocalHashEmbeddingBackend,
+)
+from or_harness.world_model.context import (  # noqa: E402
+    PREDICTION_CONTEXT_VERSION,
+    UnsupportedContextVersion,
+    build_joint_representation,
+    build_retrieval_view,
+    classify_evidence,
+    context_identity_problems,
+    dedupe_evidence,
+    evidence_identity,
+    math_attributes,
+    retrieval_reuse_problems,
+)
+from or_harness.world_model.prediction import ActionSpec  # noqa: E402
+from or_harness.world_model.provider import WorldModelProvider  # noqa: E402
+from or_harness.world_model.state import task_text_digest  # noqa: E402
+
+#: Every env var that can grant an ambient embedding backend. Tests that
+#: assert a DEGRADATION must own these, or an ambient variable would silently
+#: give the harness a backend and the assertion would test nothing.
+EMBEDDING_ENV_KEYS = ("OR_EMBEDDING_BACKEND", "OR_EMBEDDING_BASE_URL",
+                      "OR_EMBEDDING_MODEL", "OR_EMBEDDING_API_KEY")
+
+REQ_TEXT = ("A distribution centre must be loaded before the delivery window "
+            "opens; demand 100 units may not be deferred.")
+
+
+def _task(task_id="t1", *, description=REQ_TEXT, **coupling):
+    values = {"resource_coupling": 0.3, "temporal_coupling": 0.1,
+              "route_complexity": 0.2}
+    values.update(coupling)
+    return {"task_id": task_id, "family": "routing",
+            "description": description,
+            "spec": {"n_vars": 100, "n_constraints": 50, "n_int_vars": 100},
+            "annotations": {"coupling": {**values, "semantic_coupling": 0.5}}}
+
+
+def _cir(task_id="t1"):
+    return {
+        "entities": [{"name": "depot", "kind": "site"},
+                     {"name": "route", "kind": "route"}],
+        "decisions": [{"name": "load", "kind": "binary", "indexes": ["t"]}],
+        "constraints": [{"id": "C1", "kind": "capacity",
+                         "expr": "load[t] <= cap"}],
+        "relations": [{"source": "load", "target": "depot",
+                       "type": "uses_resource", "evidence": "declared"}],
+        "coupling_groups": [],
+        "issues": [],
+    }
+
+
+class RecordingProvider(WorldModelProvider):
+    """A stub provider that records exactly what it was handed."""
+
+    name = "recording-context-test"
+
+    def __init__(self, quality=0.7):
+        self.quality = quality
+        self.requests = []
+
+    def predict(self, request, timeout_s=None):
+        self.requests.append(request)
+        return {"payload": {"outcome_status": "feasible", "feasible": True,
+                            "quality": self.quality, "failure_prob": 0.1},
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                "error": None, "latency_s": 0.01}
+
+
+class ContextCase(HarnessTestCase):
+    """A harness with an explicitly injected local backend (hermetic)."""
+
+    def setUp(self):
+        super().setUp()
+        saved = {key: os.environ.pop(key, None) for key in EMBEDDING_ENV_KEYS}
+
+        def restore():
+            for key, value in saved.items():
+                if value is not None:
+                    os.environ[key] = value
+        self.addCleanup(restore)
+        self.backend = LocalHashEmbeddingBackend()
+        self.h = ORHarness(home=self.home, embedding=self.backend)
+        self.addCleanup(self.h.close)
+
+    def solve(self, task, strategy="S04", objective=100.0, description=None):
+        from pathlib import Path
+        work = Path(self.home) / f"ws_{task['task_id']}_{strategy}"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': "
+            f"{objective}, 'objective_bound': {objective}, "
+            "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
+        record = self.h.execute(task, strategy, str(script), str(work),
+                                solver="highs")
+        self.h.record(record)
+        return record
+
+
+# ---------------------------------------------------------------------------
+# 1. joint representation, before any model exists
+# ---------------------------------------------------------------------------
+
+
+class TestJointRepresentationBeforeModel(ContextCase):
+    def test_context_builds_with_no_model_and_no_solve_script(self):
+        ctx = self.h.build_prediction_context(_task(), "ep1")
+        self.assertFalse(ctx.joint.has_model)
+        self.assertIn("mathematical model: not written yet", " ".join(
+            ctx.missing))
+        # A build is not blocked by the missing model.
+        self.assertEqual(ctx.task_id, "t1")
+        self.assertEqual(ctx.task_digest, task_text_digest(_task()))
+
+    def test_math_attributes_are_never_guessed_from_the_family_name(self):
+        task = {"task_id": "t9", "family": "routing",
+                "description": "route vehicles"}
+        joint = build_joint_representation(task)
+        # "routing" says nothing about integrality or linearity.
+        self.assertIsNone(joint.math.integrality)
+        self.assertIsNone(joint.math.linearity)
+        self.assertIn("integrality", joint.math.unknowns)
+        self.assertIn("linearity", joint.math.unknowns)
+        self.assertEqual(joint.math.origin("integrality"), "unknown")
+
+    def test_declared_math_attributes_carry_their_origin(self):
+        task = {"task_id": "t9", "family": "routing",
+                "description": "x", "spec": {"n_vars": 10, "n_int_vars": 0}}
+        joint = build_joint_representation(
+            task, math_declared={"linearity": "linear",
+                                 "objective_kind": "min"})
+        self.assertEqual(joint.math.linearity, "linear")
+        self.assertEqual(joint.math.origin("linearity"), "declared")
+        # The spec still supplies what was not declared.
+        self.assertEqual(joint.math.integrality, "continuous")
+        self.assertEqual(joint.math.origin("integrality"), "spec")
+
+    def test_cir_relations_are_kept_as_relations_not_three_numbers(self):
+        task = dict(_task(), coupling=_cir())
+        joint = build_joint_representation(task)
+        self.assertTrue(joint.cir_present)
+        self.assertEqual(len(joint.cir["relations"]), 1)
+        self.assertEqual(joint.cir["relations"][0]["type"], "uses_resource")
+        self.assertEqual(joint.sources["cir"], "task_coupling")
+
+    def test_semantics_and_sources_survive_the_round_trip(self):
+        task = dict(_task(), coupling=_cir())
+        ctx = self.h.build_prediction_context(task, "ep1")
+        again = type(ctx).from_dict(ctx.to_dict())
+        self.assertEqual(again.joint.text, ctx.joint.text)
+        self.assertEqual(again.joint.cir["relations"],
+                         ctx.joint.cir["relations"])
+        self.assertEqual(again.sources, ctx.sources)
+        self.assertEqual(again.version, PREDICTION_CONTEXT_VERSION)
+
+    def test_absent_parts_are_reported_as_absent(self):
+        task = {"task_id": "t2", "family": "routing"}
+        joint = build_joint_representation(task)
+        self.assertEqual(joint.text, "")
+        self.assertIn("no CIR", " ".join(joint.notes))
+        joined = " ".join(joint.missing)
+        self.assertIn("task text", joined)
+        self.assertIn("CIR", joined)
+
+
+# ---------------------------------------------------------------------------
+# 2. retrieval evidence: discovery vs reuse, dedup, cross-cell
+# ---------------------------------------------------------------------------
+
+
+class TestRetrievalEvidence(ContextCase):
+    def test_semantic_hits_carry_content_not_just_ids(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        hits = [h for h in ctx.retrieval.hits
+                if h["layer"] == "execution_evidence"]
+        self.assertTrue(hits)
+        content = hits[0]["content"]
+        self.assertIn("task_text_excerpt", content)
+        self.assertIn("observed_quality", content)
+        self.assertIn("observed_cost", content)
+        self.assertIn("structural_match", content)
+
+    def test_cross_cell_similar_case_is_found_and_labelled(self):
+        # The past task is textually near-identical but structurally
+        # different: it must still be SEEN, and labelled as another cell.
+        self.solve(_task("t1", resource_coupling=0.9, temporal_coupling=0.9,
+                         route_complexity=0.9))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        cross = [h for h in ctx.retrieval.hits
+                 if h["layer"] == "execution_evidence"
+                 and h["content"].get("structural_match") == "different_cell"]
+        self.assertTrue(cross, "a textually similar cross-cell case must be "
+                               "surfaced")
+        self.assertEqual(cross[0]["evidence_class"], "execution_fact")
+
+    def test_different_cell_hit_does_not_touch_the_cell_statistics(self):
+        self.solve(_task("t1", resource_coupling=0.9, temporal_coupling=0.9,
+                         route_complexity=0.9), strategy="S04")
+        before = {sid: cell.n for sid, cell in
+                  self.h.stats.for_profile(
+                      self.h.profile(_task("t2"))).items()}
+        self.h.build_prediction_context(_task("t2"), "ep1")
+        after = {sid: cell.n for sid, cell in
+                 self.h.stats.for_profile(
+                     self.h.profile(_task("t2"))).items()}
+        self.assertEqual(before, after,
+                         "retrieval must never move an aggregation number")
+
+    def test_repeated_hits_are_deduplicated_by_identity(self):
+        hits = [
+            {"layer": "strategic_knowledge", "evidence_id": "se_1",
+             "identity": evidence_identity("strategic_knowledge", "se_1"),
+             "version": "v1", "channels": ["structural"],
+             "evidence_class": "verified_knowledge", "content": {}},
+            {"layer": "strategic_knowledge", "evidence_id": "se_1",
+             "identity": evidence_identity("strategic_knowledge", "se_1"),
+             "version": "v1", "channels": ["semantic"],
+             "evidence_class": "verified_knowledge", "content": {}},
+        ]
+        items, summary = dedupe_evidence(hits)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(sorted(items[0]["channels"]),
+                         ["semantic", "structural"])
+        self.assertEqual(summary["duplicates_collapsed"], 1)
+        self.assertEqual(summary["hits_seen"], 2)
+
+    def test_same_evidence_under_two_versions_is_reported_not_merged(self):
+        hits = [
+            {"layer": "execution_evidence", "evidence_id": "ex_1",
+             "identity": evidence_identity("execution_evidence", "ex_1"),
+             "version": "d1", "channels": ["semantic"],
+             "evidence_class": "execution_fact", "content": {}},
+            {"layer": "execution_evidence", "evidence_id": "ex_1",
+             "identity": evidence_identity("execution_evidence", "ex_1"),
+             "version": "d2", "channels": ["structural"],
+             "evidence_class": "execution_fact", "content": {}},
+        ]
+        items, summary = dedupe_evidence(hits)
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]["version_conflict"])
+        self.assertEqual(summary["version_conflicts"],
+                         ["execution_evidence:ex_1"])
+
+    def test_unverified_knowledge_is_not_surfaced_by_default(self):
+        entry = StrategicEntry(
+            entry_id="se_u", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "unverified", "claim": "c",
+                          "conclusion": "no verdict yet"})
+        self.h.sbank.add(entry)
+        ctx = self.h.build_prediction_context(_task(), "ep1")
+        ids = {h["evidence_id"] for h in ctx.retrieval.hits}
+        self.assertNotIn("se_u", ids)
+        ctx2 = self.h.build_prediction_context(
+            _task(), "ep1", include_unverified=True)
+        ids2 = {h["evidence_id"] for h in ctx2.retrieval.hits}
+        self.assertIn("se_u", ids2)
+        # Even when surfaced, it stays labelled unverified.
+        item = next(h for h in ctx2.retrieval.hits
+                    if h["evidence_id"] == "se_u")
+        self.assertNotEqual(item["evidence_class"], "verified_knowledge")
+
+    def test_evidence_classes_distinguish_the_five_kinds(self):
+        self.assertEqual(classify_evidence("execution_evidence", {}),
+                         "execution_fact")
+        self.assertEqual(classify_evidence(
+            "strategic_knowledge",
+            {"reusable": True, "verification_state": "verified"}),
+            "verified_knowledge")
+        self.assertEqual(classify_evidence(
+            "strategic_knowledge", {"reusable": False}),
+            "unverified_knowledge")
+        self.assertEqual(classify_evidence(
+            "strategic_knowledge", {"reusable": True,
+                                    "verification_state": "legacy"}),
+            "legacy_knowledge")
+        self.assertEqual(classify_evidence("recommendation", {}),
+                         "structural_recommendation")
+
+    def test_no_composite_retrieval_score_is_invented(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        # Scoped to the RETRIEVAL view on purpose: the capability block
+        # legitimately declares score_scheme="no_composite_score".
+        blob = str(ctx.retrieval.to_dict())
+        for forbidden in ("combined_score", "fused_score",
+                          "retrieval_score", "composite_score"):
+            self.assertNotIn(forbidden, blob)
+        # The two channels are reported separately, never blended.
+        self.assertEqual(ctx.retrieval.structural["status"], "ok")
+        self.assertEqual(ctx.retrieval.semantic["status"], "ok")
+        self.assertEqual(sorted(ctx.retrieval.channels_run),
+                         ["semantic", "structural"])
+
+
+# ---------------------------------------------------------------------------
+# 3. reuse is version-verified
+# ---------------------------------------------------------------------------
+
+
+class TestReuseIsVersionVerified(ContextCase):
+    def test_recall_result_without_a_version_cannot_be_reused(self):
+        problems = retrieval_reuse_problems(
+            type("R", (), {"task_digest": None})(),
+            task_digest="abc")
+        self.assertTrue(problems)
+        self.assertIn("records no task version", problems[0])
+
+    def test_recall_result_from_another_version_is_refused(self):
+        result = self.h.recall(_task("t1"))
+        # The SAME task_id, different content: a different problem version.
+        other = _task("t1", description="completely different requirement")
+        with self.assertRaises(ValueError) as caught:
+            self.h.build_prediction_context(other, "ep1",
+                                            recall_result=result)
+        self.assertIn("cannot be reused", str(caught.exception))
+
+    def test_matching_recall_result_is_reused(self):
+        task = _task("t1")
+        result = self.h.recall(task)
+        ctx = self.h.build_prediction_context(task, "ep1",
+                                              recall_result=result)
+        self.assertEqual(ctx.retrieval.task_digest, result["task_digest"])
+
+    def test_context_identity_problems_detect_task_version_and_episode(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        self.assertEqual(context_identity_problems(
+            ctx, task_id="t1", task_digest=ctx.task_digest, episode_id="ep1"),
+            [])
+        self.assertTrue(context_identity_problems(ctx, task_id="t9"))
+        self.assertTrue(context_identity_problems(ctx, episode_id="ep9"))
+        version_problems = context_identity_problems(
+            ctx, task_digest="deadbeef")
+        self.assertTrue(version_problems)
+        self.assertIn("task version", version_problems[0])
+
+    def test_unknown_version_is_reported_only_when_strictly_required(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        ctx.task_digest = ""
+        self.assertEqual(context_identity_problems(ctx, task_digest="x"), [])
+        strict = context_identity_problems(ctx, task_digest="x",
+                                           allow_unknown_digest=False)
+        self.assertTrue(strict)
+
+    def test_snapshot_of_another_episode_is_refused(self):
+        snap = self.h.snapshot(_task("t1"), "ep1")
+        with self.assertRaises(ValueError):
+            self.h.build_prediction_context(_task("t1"), "ep2",
+                                            snapshot=snap)
+
+    def test_supplied_recall_result_does_not_re_embed(self):
+        task = _task("t1")
+        result = self.h.recall(task)
+        calls = {"n": 0}
+        original = self.backend.embed_query
+
+        def counting(text):
+            calls["n"] += 1
+            return original(text)
+        self.backend.embed_query = counting
+        self.addCleanup(setattr, self.backend, "embed_query", original)
+        self.h.build_prediction_context(task, "ep1", recall_result=result)
+        self.assertEqual(calls["n"], 0,
+                         "a supplied result must not be re-embedded")
+
+
+# ---------------------------------------------------------------------------
+# 4. the context is frozen
+# ---------------------------------------------------------------------------
+
+
+class TestContextIsFrozen(ContextCase):
+    def test_later_bank_writes_do_not_change_a_built_context(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        before = ctx.to_dict()
+        self.solve(_task("t3"))
+        self.assertEqual(ctx.to_dict(), before)
+
+    def test_mutating_the_task_after_the_build_changes_nothing(self):
+        task = _task("t1")
+        ctx = self.h.build_prediction_context(task, "ep1")
+        text_before = ctx.joint.text
+        digest_before = ctx.task_digest
+        task["description"] = "HIJACKED"
+        task["task_id"] = "t-hijacked"
+        self.assertEqual(ctx.joint.text, text_before)
+        self.assertEqual(ctx.task_digest, digest_before)
+
+    def test_mutating_a_returned_dict_does_not_reach_the_stored_context(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        dumped = ctx.to_dict()
+        dumped["joint"]["text"] = "HIJACKED"
+        dumped["retrieval"]["hits"] = ["fake"]
+        again = self.h.get_prediction_context(ctx.context_id)
+        self.assertNotEqual(again.joint.text, "HIJACKED")
+        self.assertNotEqual(again.retrieval.hits, ["fake"])
+
+    def test_stored_context_replays_without_reading_todays_banks(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        stored = self.h.get_prediction_context(ctx.context_id)
+        self.assertEqual(stored.to_dict(), ctx.to_dict())
+        # A context is CONTENT, not a pointer: the stored copy carries the
+        # evidence it was built from.
+        self.assertEqual(stored.retrieval.hits, ctx.retrieval.hits)
+
+    def test_unknown_context_version_is_refused_not_guessed(self):
+        payload = self.h.build_prediction_context(_task("t1"), "ep1").to_dict()
+        payload["context_version"] = "wm-context/99"
+        with self.assertRaises(UnsupportedContextVersion):
+            type(self.h.build_prediction_context(_task(), "ep1"))\
+                .from_dict(payload)
+
+    def test_a_context_built_for_another_version_is_refused_by_the_api(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        other = _task("t1", description="a different requirement entirely")
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        with self.assertRaises(ValueError) as caught:
+            self.h.predict_outcome(other, spec, "ep1", context=ctx)
+        self.assertIn("does not describe", str(caught.exception))
+
+
+# ---------------------------------------------------------------------------
+# 5. one context, several candidates, and the provider really sees it
+# ---------------------------------------------------------------------------
+
+
+class TestOneContextSharedByCandidates(ContextCase):
+    def test_planning_shares_one_context_across_candidates(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        plan = h.plan_next(
+            _task("t1"), "ep1",
+            candidates=[ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S01"),
+                        ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S02")],
+            limits={"horizon": 1})
+        contexts = {r.get("prediction_context", {}).get("context_id")
+                    for r in provider.requests}
+        self.assertEqual(len(contexts), 1,
+                         "every candidate of one decision shares ONE context")
+        self.assertIsNotNone(plan.get("prediction_context_id"))
+
+    def test_candidates_keep_their_own_config_and_scope(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        specs = [ActionSpec("execute_strategy", "t1", strategy_id="S01",
+                            params={"time_limit": 60}),
+                 ActionSpec("execute_strategy", "t1", strategy_id="S02")]
+        for spec in specs:
+            h.predict_outcome(_task("t1"), spec, "ep1")
+        ids = [r["action_spec"]["strategy_id"] for r in provider.requests]
+        self.assertEqual(ids, ["S01", "S02"])
+        self.assertEqual(provider.requests[0]["action_spec"]["params"],
+                         {"time_limit": 60})
+
+    def test_the_provider_receives_the_new_joint_evidence(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(dict(_task("t1"), coupling=_cir()), spec, "ep1")
+        request = provider.requests[0]
+        self.assertIn("prediction_context", request)
+        block = request["prediction_context"]
+        self.assertEqual(block["context_version"], PREDICTION_CONTEXT_VERSION)
+        self.assertIn("joint_problem", block)
+        self.assertIn("retrieval_evidence", block)
+        self.assertIn("harness_capability", block)
+        self.assertIn("execution_constraints", block)
+        # The problem's semantics really arrived, not just a hash.
+        self.assertIn("distribution centre", block["joint_problem"]["text"])
+        self.assertEqual(len(block["joint_problem"]["cir"]["relations"]), 1)
+        self.assertIn("sources", block["joint_problem"])
+
+    def test_prediction_records_which_frozen_input_it_used(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        prediction = h.predict_outcome(_task("t1"), spec, "ep1")
+        ctx_id = prediction.model_info["prediction_context_id"]
+        self.assertTrue(ctx_id)
+        self.assertIsNotNone(h.get_prediction_context(ctx_id))
+
+    def test_no_context_keeps_the_request_shape_unchanged(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(_task("t1"), spec, "ep1", context=False)
+        request = provider.requests[0]
+        self.assertNotIn("prediction_context", request)
+        self.assertNotIn("prediction_context", request["state"])
+        # The request carries exactly what it carried before this phase:
+        # the action spec, the snapshot-derived state, and the pre-existing
+        # M6 reliability block.
+        self.assertEqual(sorted(request.keys()),
+                         ["action_spec", "prediction_reliability", "state"])
+
+    def test_reused_context_is_identical_for_both_candidates(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        ctx = h.build_prediction_context(_task("t1"), "ep1")
+        for sid in ("S01", "S02"):
+            h.predict_outcome(
+                _task("t1"),
+                ActionSpec("execute_strategy", "t1", strategy_id=sid),
+                "ep1", context=ctx)
+        blocks = [r["prediction_context"] for r in provider.requests]
+        self.assertEqual(blocks[0]["joint_problem"],
+                         blocks[1]["joint_problem"])
+        self.assertEqual(blocks[0]["retrieval_evidence"],
+                         blocks[1]["retrieval_evidence"])
+        self.assertEqual(blocks[0]["harness_capability"],
+                         blocks[1]["harness_capability"])
+
+
+# ---------------------------------------------------------------------------
+# 6. degradation is reported per part
+# ---------------------------------------------------------------------------
+
+
+class TestDegradationIsDistinguishable(ContextCase):
+    def _harness_without_backend(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        return h
+
+    def test_no_backend_is_reported_and_structural_survives(self):
+        h = self._harness_without_backend()
+        self.solve(_task("t1"))
+        ctx = h.build_prediction_context(_task("t2"), "ep1")
+        self.assertEqual(ctx.retrieval.channels_run, ["structural"])
+        self.assertTrue(ctx.degraded)
+        self.assertIn("semantic", ctx.degraded[0]["part"])
+        self.assertTrue(ctx.retrieval.structural["recommendations"] is not
+                        None)
+
+    def test_no_task_text_is_distinguished_from_no_hits(self):
+        task = {"task_id": "t2", "family": "routing",
+                "annotations": {"coupling": {"resource_coupling": 0.3,
+                                             "temporal_coupling": 0.1,
+                                             "route_complexity": 0.2,
+                                             "semantic_coupling": 0.5}}}
+        ctx = self.h.build_prediction_context(task, "ep1")
+        joined = " ".join(d["reason"] for d in ctx.degraded)
+        self.assertIn("no task text", joined)
+        # And the joint representation says the same thing on its own side.
+        self.assertIn("task text", " ".join(ctx.missing))
+
+    def test_missing_index_is_distinguished_from_a_healthy_empty_run(self):
+        task = _task("t2")
+        ctx = self.h.build_prediction_context(task, "ep1")
+        reasons = " ".join(d["reason"] for d in ctx.degraded)
+        self.assertIn("index missing", reasons)
+        # After a real solve the EXECUTION layer has an index, so the text
+        # channel really runs on it; whatever remains degraded names the
+        # layer that is still missing, rather than hiding both behind one
+        # vague message.
+        self.solve(_task("t1"))
+        ctx2 = self.h.build_prediction_context(task, "ep1")
+        parts = {d["part"] for d in ctx2.degraded}
+        self.assertNotIn("retrieval.semantic", parts,
+                         "the whole semantic channel is no longer skipped")
+        self.assertIn("semantic", ctx2.retrieval.channels_run)
+
+    def test_backend_error_is_reported_not_swallowed(self):
+        # A real index first: otherwise the missing index (a different
+        # fact) would be the reported reason instead of the backend error.
+        self.solve(_task("t1"))
+        def boom(text):
+            raise RuntimeError("backend exploded")
+        self.backend.embed_query = boom
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        reasons = " ".join(d["reason"] for d in ctx.degraded)
+        self.assertIn("backend exploded", reasons)
+        self.assertIn("semantic", ctx.degraded[0]["part"])
+
+    def test_degraded_and_no_hits_are_different_facts(self):
+        h = self._harness_without_backend()
+        ctx = h.build_prediction_context(_task("t2"), "ep1")
+        # No EXECUTION evidence was carried (the semantic channel never
+        # ran), and the context says so rather than reading as an empty bank.
+        layers = {hit["layer"] for hit in ctx.retrieval.hits}
+        self.assertNotIn("execution_evidence", layers)
+        # The two facts are reported separately: the semantic channel is
+        # DEGRADED (with a reason) while the structural one ran.
+        self.assertEqual(ctx.retrieval.structural["status"], "ok")
+        self.assertEqual(ctx.retrieval.semantic["status"], "degraded")
+        self.assertNotIn("semantic", ctx.retrieval.channels_run,
+                         "a channel that did not run is not reported as run")
+
+    def test_context_without_a_recall_result_says_it_was_omitted(self):
+        view = build_retrieval_view({}, task_digest="abc")
+        joined = " ".join(view.missing)
+        self.assertIn("no result supplied", joined)
+        self.assertEqual(view.channels_run, ["structural"])
+
+
+# ---------------------------------------------------------------------------
+# 7. capability evidence stays honest
+# ---------------------------------------------------------------------------
+
+
+class TestCapabilityEvidenceIsHonest(ContextCase):
+    def test_no_composite_capability_score_exists(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        self.assertEqual(ctx.capability.get("score_scheme"),
+                         "no_composite_score")
+        self.assertNotIn("composite_score", ctx.capability)
+        self.assertNotIn("h_score", ctx.capability)
+
+    def test_sources_without_observation_stay_no_evidence(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        sources = ctx.capability.get("sources") or {}
+        # Nothing observed W_OR / Pi here, so they must not be filled in.
+        for name in ("w_or", "pi"):
+            self.assertEqual(sources[name]["status"], "no_evidence",
+                             f"{name} must not be fabricated")
+        self.assertNotIn("direct_evidence",
+                         {s["status"] for s in sources.values()})
+
+    def test_r_is_indirect_when_retrieval_ran(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        r = ctx.capability["sources"]["r"]
+        self.assertEqual(r["status"], "indirect_evidence")
+        self.assertIn("channels_run", r["detail"])
+
+    def test_capability_version_separates_config_model_tools_memory(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        version = ctx.capability_version
+        for key in ("harness_config_digest", "provider",
+                    "prompt_template_version", "tools",
+                    "knowledge_content_digest"):
+            self.assertIn(key, version)
+        self.assertIn("not", version["note"].lower())
+
+    def test_knowledge_content_digest_is_not_an_ability_measurement(self):
+        self.solve(_task("t1"))
+        ctx = self.h.build_prediction_context(_task("t2"), "ep1")
+        digest = ctx.capability_version["knowledge_content_digest"]
+        self.assertIsInstance(digest, str)
+        self.assertNotIn("capability", digest)
+
+    def test_unverified_knowledge_never_becomes_real_evidence(self):
+        entry = StrategicEntry(
+            entry_id="se_u", strategy_id="S04",
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=0.95, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.05, status="candidate", support_n=2,
+            verification={"state": "unverified", "claim": "c",
+                          "conclusion": "no verdict yet"})
+        self.h.sbank.add(entry)
+        ctx = self.h.build_prediction_context(_task(), "ep1")
+        blob = str(ctx.to_dict())
+        self.assertNotIn("se_u", blob)
+
+
+# ---------------------------------------------------------------------------
+# 8. no side effects; explicit calls only
+# ---------------------------------------------------------------------------
+
+
+class TestBuildHasNoSideEffects(ContextCase):
+    def test_building_a_context_calls_no_prediction_model(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        h.build_prediction_context(_task("t1"), "ep1")
+        self.assertEqual(provider.requests, [],
+                         "building a context must not reach the provider")
+
+    def test_building_a_context_runs_no_solver_and_induces_nothing(self):
+        self.solve(_task("t1"))
+        entries_before = len(self.h.sbank.list(include_dormant=True))
+        executions_before = self.h.bank.count()
+        self.h.build_prediction_context(_task("t2"), "ep1")
+        self.assertEqual(self.h.bank.count(), executions_before)
+        self.assertEqual(len(self.h.sbank.list(include_dormant=True)),
+                         entries_before)
+
+    def test_building_writes_no_prediction(self):
+        self.h.build_prediction_context(_task("t1"), "ep1")
+        self.assertEqual(self.h.predictions_query(), [])
+
+    def test_build_persists_the_context_by_default_and_not_on_request(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        self.assertIsNotNone(self.h.get_prediction_context(ctx.context_id))
+        ctx2 = self.h.build_prediction_context(_task("t1"), "ep1",
+                                               persist=False)
+        self.assertIsNone(self.h.get_prediction_context(ctx2.context_id))
+
+    def test_reading_a_stored_context_calls_nothing(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        ctx = h.build_prediction_context(_task("t1"), "ep1")
+        calls = {"n": 0}
+        original = self.backend.embed_query
+
+        def counting(text):
+            calls["n"] += 1
+            return original(text)
+        self.backend.embed_query = counting
+        self.addCleanup(setattr, self.backend, "embed_query", original)
+        h.get_prediction_context(ctx.context_id)
+        self.assertEqual(calls["n"], 0)
+        self.assertEqual(provider.requests, [])
+
+    def test_only_an_explicit_prediction_call_reaches_the_provider(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        h.build_prediction_context(_task("t1"), "ep1")
+        self.assertEqual(provider.requests, [])
+        h.predict_outcome(
+            _task("t1"),
+            ActionSpec("execute_strategy", "t1", strategy_id="S01"), "ep1")
+        self.assertEqual(len(provider.requests), 1)
+
+    def test_declared_budget_reaches_the_execution_constraints(self):
+        task = _task("b1")
+        self.h.declare_budget("b1", {"llm_tokens": 50000}, "ep1")
+        ctx = self.h.build_prediction_context(task, "ep1")
+        self.assertEqual(ctx.execution_constraints["declared_budget"],
+                         {"llm_tokens": 50000.0})
+        self.assertEqual(ctx.execution_constraints["budget_status"], "ok")
+        # A fresh instance reads the PERSISTED declaration too (the CLI path
+        # builds a new harness per invocation).
+        h2 = ORHarness(home=self.home, embedding=self.backend)
+        self.addCleanup(h2.close)
+        ctx2 = h2.build_prediction_context(task, "ep1")
+        self.assertEqual(ctx2.execution_constraints["declared_budget"],
+                         {"llm_tokens": 50000.0})
+
+    def test_execution_constraints_name_tool_availability_only(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        constraints = ctx.execution_constraints
+        self.assertIn("available_solver_families", constraints)
+        self.assertIn("executor", constraints)
+        self.assertIn("do not predict", constraints["note"])
+
+
+# ---------------------------------------------------------------------------
+# 9. phase-1 fixes do not regress
+# ---------------------------------------------------------------------------
+
+
+class TestPhaseOneFixesSurvive(ContextCase):
+    def test_a_configured_provider_without_content_is_still_contract_only(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        contract = h.build_strategy_outcome_contract(
+            _task("t1"),
+            {"action_type": "execute_strategy", "strategy_id": "S01"})
+        self.assertEqual(contract.status, "contract_only")
+        self.assertTrue(contract.provider_configured)
+        self.assertFalse(contract.prediction_made)
+        self.assertEqual(provider.requests, [])
+
+    def test_legacy_candidate_adaptation_still_preserves_execution_config(self):
+        from or_harness.world_model.contracts import CandidateRef
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01",
+                          params={"time_limit": 60, "mip_gap": 0.01,
+                                  "seed": 42})
+        candidate = CandidateRef.from_action_spec(spec)
+        self.assertEqual(candidate.config["time_limit"], 60)
+        self.assertEqual(candidate.config["seed"], 42)
+        self.assertEqual(candidate.scope_basis, "legacy_attempt")
+
+    def test_unfinished_window_is_still_not_comparable(self):
+        begun = self.h.begin_action("execute_strategy", _task("t1"), "ep1",
+                                    params={"strategy_id": "S01"})
+        window = self.h.strategy_execution_window("t1", "ep1",
+                                                  strategy_id="S01")
+        self.assertFalse(window.comparable)
+        self.assertEqual(window.n_unfinished, 1)
+        self.assertTrue(begun.get("action_id"))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

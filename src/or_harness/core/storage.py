@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 try:  # POSIX flock; gracefully degrade elsewhere.
     import fcntl  # type: ignore
@@ -123,6 +123,21 @@ CREATE TABLE IF NOT EXISTS task_texts (
     PRIMARY KEY (task_id, text_digest)
 );
 CREATE INDEX IF NOT EXISTS idx_task_texts_task ON task_texts(task_id);
+
+-- World-model phase 2: FROZEN prediction input contexts. A LOG table, like
+-- world_model_predictions: a context is a frozen INPUT, not knowledge, and
+-- nothing here enters either bank. It is stored so a prediction can be
+-- reproduced from the content that was actually used (a mutable id alone
+-- would not be enough) and so a historical context can be replayed without
+-- reading today's banks.
+CREATE TABLE IF NOT EXISTS prediction_contexts (
+    context_id  TEXT PRIMARY KEY,
+    task_id     TEXT NOT NULL,
+    episode_id  TEXT,
+    created_at  REAL NOT NULL,
+    payload     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contexts_task ON prediction_contexts(task_id);
 """
 
 #: Schema version marker (idempotent). Written once per store; M1 = "wm1",
@@ -279,6 +294,70 @@ class Store:
     def count_task_texts(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM task_texts").fetchone()
+        return int(row["n"])
+
+    # -- prediction input contexts (frozen phase-2 inputs) ---------------------
+
+    def put_prediction_context(self, context_id: str, task_id: str,
+                               episode_id: Optional[str],
+                               payload: str,
+                               created_at: Optional[float] = None) -> None:
+        """Persist one FROZEN prediction input context.
+
+        ``INSERT OR REPLACE`` on the primary key is safe here (unlike the
+        banks) because a context id is generated fresh per build: the replace
+        only ever rewrites the SAME frozen object, and a caller that wants a
+        different input must build a new context — which is exactly the
+        versioning rule this phase requires.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO prediction_contexts "
+                "(context_id, task_id, episode_id, created_at, payload) "
+                "VALUES (?,?,?,?,?)",
+                (str(context_id), str(task_id), episode_id,
+                 float(created_at if created_at is not None else time.time()),
+                 str(payload)))
+
+    def get_prediction_context(self, context_id: str) -> Optional[str]:
+        """The stored payload of one context, or None when it is unknown.
+
+        Returns the RAW payload (a JSON string): storage stays a plain
+        substrate and the schema version check belongs to the caller, which
+        is the only layer that knows which versions it understands.
+        """
+        row = self.conn.execute(
+            "SELECT payload FROM prediction_contexts WHERE context_id=?",
+            (str(context_id),)).fetchone()
+        return str(row["payload"]) if row else None
+
+    def prediction_contexts_for(self, task_id: Optional[str] = None,
+                                episode_id: Optional[str] = None
+                                ) -> List[str]:
+        """Stored context payloads (newest first), optionally filtered.
+
+        An episode filter of ``None`` means "no episode filter" — an
+        episode-less context is a real state, and asking for one task's
+        contexts must not silently hide it.
+        """
+        sql = "SELECT payload FROM prediction_contexts"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            params.append(str(task_id))
+        if episode_id is not None:
+            clauses.append("episode_id=?")
+            params.append(episode_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at DESC, context_id DESC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [str(r["payload"]) for r in rows]
+
+    def count_prediction_contexts(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM prediction_contexts").fetchone()
         return int(row["n"])
 
     def close(self) -> None:

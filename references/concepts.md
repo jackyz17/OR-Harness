@@ -299,6 +299,82 @@ class with enough resolved samples earns a measured reliability, and that
 measured reliability (never the model's own confidence) is what later
 predictions may draw on.
 
+### The prediction input context: what a prediction is conditioned on
+
+Phase 1 settled *how* state, candidates and predictions are expressed. Phase
+2 settles *what a prediction actually uses* and how it gets there. The
+mechanism is one frozen bundle, `PredictionContext` (see
+[references/prediction_context.md](prediction_context.md)), built once per
+decision by `orx context` / `build_prediction_context`.
+
+**The problem's name is not evidence about its mathematics.** The joint
+representation carries math attributes (`integrality`, `linearity`,
+`objective_kind`, `constraint_kinds`) with an explicit ORIGIN each, taken
+from a declaration, the declared model, the structured spec, or the CIR. A
+task whose only content is the word "routing" gets `unknown` — not "MILP".
+The same discipline governs the CIR: its relations stay relations, because
+compressing them into three coupling numbers and discarding the structure
+loses exactly the information a prediction needs.
+
+**A model is not a precondition for a prediction input.** A task with no
+`model` field, no CIR and no solve.py still builds a context; the absent
+parts are listed with what they mean. This is the same principle as the
+snapshot's "unknown ≠ zero", applied to input assembly.
+
+**"Retrieved" is not "verified".** Every retrieved item carries an evidence
+CLASS — an execution fact was observed, verified knowledge was admitted, an
+unverified candidate was neither, a structural recommendation may be backed
+by nothing at all. Retrieval never upgrades one class into another, and a
+candidate does not become knowledge by being surfaced. Unverified items are
+hidden unless the inspection view is explicitly requested.
+
+**Two channels, never one number.** The structural channel answers "what may
+I reuse?" (applicability) and the text channel answers "what should I look
+at?" (discovery). They are reported side by side with their own statuses;
+blending them into a single score would hide which question was answered. A
+near-identical problem in a different structural cell stays VISIBLE and
+labelled `different_cell`, and its numbers never join the target cell's
+statistics.
+
+**One memory hit by two channels is one piece of evidence.** Evidence is
+identified as `layer:id`, so the two channels collapse onto one item that
+carries both channel names. Counting channels would inflate apparent
+support, exactly as counting repeat runs of one `task_id` would inflate the
+task count. When the two channels report *different versions* of one id,
+that disagreement is recorded rather than silently resolved.
+
+**Reuse must be provable.** A supplied recall result or context carries the
+task VERSION it was produced for; a mismatch is refused with a named reason,
+and a result with no recorded version cannot be confirmed either way and is
+also refused. An external result of unknown provenance must not masquerade
+as aligned frozen evidence — the same rule as "an unmeasured condition is
+not a satisfied one".
+
+**Freezing is content, not a pointer.** A built context is stored WITH the
+content it was built from, so replaying it reads nothing from today's banks.
+A stored id alone would not reproduce the input, because the bank it points
+at may have moved. A genuinely different input gets a new context, never a
+silent patch of an old one.
+
+**Degradation is per part, and "did not run" ≠ "found nothing".** No
+backend, no task text, a missing index and a failed backend call are four
+different facts with four different reasons, and all four differ from a
+healthy channel that ran and matched nothing. Collapsing them would make an
+unavailable channel look like an empty memory.
+
+**Capability evidence is evidence, not a level.** Which retrieval channels
+ran, which strategies were recorded, what a prediction track record
+measured — all of these are `indirect_evidence`, and a source nothing
+observed stays `no_evidence` rather than being filled in to complete a set
+of five. The capability VERSION block (config / model / prompt / tools /
+memory content) is an identity: a content digest says which memories were
+read, never how capable the harness is.
+
+**Building an input is not predicting.** Context assembly may read the
+embedding index, and it does nothing else: no prediction-model call, no
+solver execution, no induction. Only an explicit prediction call reaches the
+provider, and that call records which frozen input it used.
+
 ## Applicability: the structural cell, not a declared ladder
 
 There is no ladder of generalization levels and no `widen`/`tighten` command.

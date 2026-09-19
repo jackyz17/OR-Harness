@@ -90,6 +90,7 @@ class PredictionService:
                         *, timeout_s: Optional[float] = None,
                         knowledge_targets: Optional[Sequence[Any]] = None,
                         reliability: Optional[Dict[str, Any]] = None,
+                        prediction_context: Optional[Any] = None,
                         ) -> OutcomePrediction:
         """Assemble the input view, call the provider, validate, persist.
 
@@ -106,6 +107,14 @@ class PredictionService:
 
         ``reliability`` (M6): measured reliability of past predictions by
         class, forwarded to the model as its own track record.
+
+        ``prediction_context`` (phase 2): the frozen input context, when the
+        caller assembled one. It is attached under its own request key and
+        recorded in ``input_view_keys``/``model_info`` so the stored
+        prediction shows WHICH frozen input it was conditioned on. ``None``
+        sends a request byte-identical to the pre-phase-2 shape — that
+        compatibility is what keeps the ``x-b-only`` ablation and every
+        existing provider unchanged.
         """
         if action_spec.action_type not in SUPPORTED_ACTION_TYPES:
             prediction = OutcomePrediction(
@@ -149,6 +158,21 @@ class PredictionService:
         # its predictions have historically been worth.
         if reliability is not None:
             request["prediction_reliability"] = copy.deepcopy(reliability)
+        # Phase 2: the frozen input context — the joint problem
+        # representation, X/B, the retrieval evidence, the capability
+        # evidence and the external execution constraints, as ONE frozen
+        # bundle. Its own request key (it is not a snapshot field), and it
+        # is recorded on the prediction so a reader can resolve the exact
+        # content the model saw. Absent => the request keeps its previous
+        # shape exactly.
+        if prediction_context is not None:
+            request["prediction_context"] = (
+                prediction_context.provider_view())
+            view["prediction_context"] = {
+                "context_id": prediction_context.context_id,
+                "context_version": prediction_context.version,
+                "task_digest": prediction_context.task_digest,
+            }
         try:
             # Backwards compatibility: existing / custom providers that
             # only take `predict(request)` are accepted without error.
@@ -191,7 +215,7 @@ class PredictionService:
                 action_spec=action_spec,
                 status="invalid_output",
                 error=str(result.get("error") or "no payload"),
-                model_info=self._model_info(result),
+                model_info=self._model_info(result, prediction_context),
                 call_cost=call_cost,
                 input_view_keys=list(view.keys()),
             )
@@ -206,7 +230,7 @@ class PredictionService:
                 action_spec=action_spec,
                 status="invalid_output",
                 error="; ".join(problems),
-                model_info=self._model_info(result),
+                model_info=self._model_info(result, prediction_context),
                 call_cost=call_cost,
                 input_view_keys=list(view.keys()),
             )
@@ -265,16 +289,26 @@ class PredictionService:
                         if isinstance(confidence, (int, float)) else None),
             evidence_basis=[str(e) for e in
                             (payload.get("evidence_basis") or [])],
-            model_info=self._model_info(result),
+            model_info=self._model_info(result, prediction_context),
             call_cost=call_cost,
             input_view_keys=list(view.keys()),
         )
         self._save(prediction)
         return prediction
 
-    def _model_info(self, result: Dict[str, Any]) -> Dict[str, Any]:
+    def _model_info(self, result: Dict[str, Any],
+                    prediction_context: Optional[Any] = None
+                    ) -> Dict[str, Any]:
         info = dict(self.provider.describe())
         info["prompt_template_version"] = PROMPT_TEMPLATE_VERSION
+        if prediction_context is not None:
+            # Which frozen input this call was conditioned on — recorded on
+            # EVERY outcome (including failures), because a failed call was
+            # still made against this input.
+            info["prediction_context_id"] = prediction_context.context_id
+            info["prediction_context_version"] = prediction_context.version
+            info["prediction_context_task_digest"] = (
+                prediction_context.task_digest)
         latency = result.get("latency_s")
         if latency is not None:
             info["call_latency_s"] = round(float(latency), 4)
