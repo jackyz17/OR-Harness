@@ -250,13 +250,16 @@ def main() -> int:
             print(f"note                : {note}")
 
         assert evolution.status == "contract_only", (
-            "the capability prediction SERVICE is not attached — this is a "
-            "schema-level object, not a capability forecast")
-        assert evolution.service_available is False
-        assert evolution.service_implemented is False, (
-            "this build implements no capability-evolution service: a "
-            "configured provider must not make it look available")
-        assert evolution.prediction_made is False
+            "no capability forecast was produced — this is a schema-level "
+            "object, not a capability prediction")
+        assert evolution.service_implemented is True, (
+            "M5 implements the capability-evolution service (wm-ce/1)")
+        assert evolution.service_available is False, (
+            "this harness has NO provider attached, so nothing can serve "
+            "the service: implemented is not the same as available")
+        assert evolution.prediction_made is False, (
+            "but 'service available' is NOT 'a prediction happened': "
+            "building a contract calls no model and forecasts nothing")
         assert evolution.current_evidence.score_scheme == "no_composite_score"
         assert not hasattr(evolution.current_evidence, "composite_score"), (
             "no composite H score exists, by design")

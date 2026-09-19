@@ -818,24 +818,44 @@ class TestServiceStateIsThreeFacts(HarnessTestCase):
         self.assertTrue(prediction.prediction_made)
         self.assertEqual(validate_strategy_outcome(prediction), [])
 
-    def test_unimplemented_capability_service_is_not_available(self):
-        """A configured provider must not make an unimplemented service look
-        available — the capability-evolution service does not exist yet."""
+    def test_configured_provider_alone_does_not_make_a_prediction(self):
+        """A configured provider must not make an empty contract look like a
+        forecast — even now that BOTH kinds have services (M5).
+
+        The three facts stay separate: with a provider attached the service
+        IS available for both kinds, but no prediction has happened, so a
+        built contract is still ``contract_only`` and carries no numbers.
+        """
         h = self._harness(_CountingProvider())
         self.assertTrue(h.prediction_service_status(
             "strategy_outcome").service_available)
         status = h.prediction_service_status("capability_evolution")
         self.assertTrue(status.provider_configured)
-        self.assertFalse(status.service_implemented)
-        self.assertFalse(status.service_available)
-        self.assertFalse(
+        # M5 implemented the service: it is available with a provider...
+        self.assertTrue(status.service_implemented)
+        self.assertTrue(status.service_available)
+        self.assertTrue(
             h.prediction_service_available("capability_evolution"))
+        # ...but "available" is NOT "a prediction happened": building a
+        # contract performs no model call and yields no forecast.
         evolution = h.build_capability_evolution_contract(
             TASK, horizon="next 10 matching tasks")
         self.assertEqual(evolution.status, "contract_only")
-        self.assertFalse(evolution.service_available)
+        self.assertTrue(evolution.service_available)
         self.assertTrue(evolution.provider_configured)
-        self.assertFalse(evolution.service_implemented)
+        self.assertTrue(evolution.service_implemented)
+        self.assertFalse(evolution.prediction_made)
+        self.assertEqual(evolution.expected_changes, [])
+
+    def test_capability_service_status_without_a_provider_is_unavailable(self):
+        """No provider attached: the service exists but nothing can serve
+        it, so it must not be reported available."""
+        h = self._harness(None)
+        status = h.prediction_service_status("capability_evolution")
+        self.assertFalse(status.provider_configured)
+        self.assertTrue(status.service_implemented)
+        self.assertFalse(status.service_available)
+        self.assertEqual(status.status, "contract_only")
 
     def test_service_status_reports_the_three_facts(self):
         h = self._harness(_CountingProvider())

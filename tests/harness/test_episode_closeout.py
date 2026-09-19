@@ -623,7 +623,8 @@ class TestCalibrationChannel(M4Case):
             "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["basis"], "measured")
         self.assertEqual(summary["min_samples"], 1)
-        self.assertEqual(summary["min_samples_basis"], "distinct episodes")
+        self.assertEqual(summary["min_samples_basis"],
+                         "distinct (task_id, episode_id) pairs")
 
     def test_calibration_separate_from_knowledge_reliability(self):
         task = _task("t1")
@@ -1008,6 +1009,42 @@ class TestCalibrationGrouping(M4Case):
         self.assertIn("model_invalid", group["mean_brier_by_event"])
         self.assertIn("timeout", group["mean_brier_by_event"])
         self.assertNotIn("mean_brier", group)
+
+    def test_same_episode_name_across_tasks_is_distinct_episodes(self):
+        """Five DIFFERENT tasks that each used the episode id ``ep1`` are
+        five task-episodes, not one.
+
+        Episode ids are chosen per task, so the bare ``episode_id`` is not
+        an identity: deduplicating on it collapsed five independent
+        samples into one and kept the group below the threshold forever.
+        """
+        for index in range(5):
+            self._close_with_predictions(
+                n=1, task_id=f"task{index}", episode="ep1")
+        summary = self.h.calibration_summary(min_samples=5)
+        group = summary["groups"][
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+        self.assertEqual(group["n_samples"], 5)
+        self.assertEqual(
+            group["n_distinct_episodes"], 5,
+            "five tasks' ep1 are five task-episodes: the pair "
+            "(task_id, episode_id) is the identity")
+        self.assertEqual(group["correlated_predictions"], 0)
+        # The threshold is met by DISTINCT TASK-EPISODES.
+        self.assertEqual(group["basis"], "measured")
+        self.assertEqual(group["reliability"], "measured_experience")
+
+    def test_repeated_predictions_of_one_task_episode_stay_correlated(self):
+        """The task half of the identity must not weaken the episode
+        half: five predictions over ONE task-episode are still one sample.
+        """
+        self._close_with_predictions(n=5, task_id="t1", episode="ep1")
+        summary = self.h.calibration_summary(min_samples=2)
+        group = summary["groups"][
+            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+        self.assertEqual(group["n_samples"], 5)
+        self.assertEqual(group["n_distinct_episodes"], 1)
+        self.assertEqual(group["basis"], "insufficient_evidence")
 
 
 # ---------------------------------------------------------------------------

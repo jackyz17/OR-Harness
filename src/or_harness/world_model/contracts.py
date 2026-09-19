@@ -97,7 +97,21 @@ PREDICTION_KINDS = ("strategy_outcome", "capability_evolution")
 #: the ``contract_only`` status, and the two must never be conflated:
 #: configuring a provider makes a provider AVAILABLE, it does not make a
 #: capability-evolution prediction service exist.
-SERVICE_IMPLEMENTED_KINDS: Tuple[str, ...] = ("strategy_outcome",)
+SERVICE_IMPLEMENTED_KINDS: Tuple[str, ...] = ("strategy_outcome",
+                                              "capability_evolution")
+
+#: Which direction of an :class:`ExpectedChange` counts as an IMPROVEMENT
+#: for its metric. Fixed when the change is declared, never re-read after
+#: the result was seen: a lower runtime is a ``decrease`` and an
+#: improvement, a higher completion rate is an ``increase`` and an
+#: improvement. ``either`` exists for a metric whose sign carries no
+#: quality meaning.
+BENEFICIAL_DIRECTIONS = ("increase", "decrease", "either")
+
+#: How an :class:`ExpectedChange` value is expressed. ``absolute`` is the
+#: metric's own unit, ``relative`` is a ratio/percentage of the baseline.
+#: Recorded because adding a percentage to a unit count is meaningless.
+CHANGE_VALUE_KINDS = ("absolute", "relative")
 
 #: How a completed legacy ``OutcomePrediction`` status maps onto a contract
 #: status. Only ``valid`` (a real prediction, produced and validated) yields
@@ -1223,6 +1237,13 @@ class ExpectedChange:
     interval: Optional[Tuple[float, float]] = None
     unit: str = ""
     baseline: Optional[BaselineStatement] = None
+    #: Which direction is the IMPROVEMENT for this metric (see
+    #: :data:`BENEFICIAL_DIRECTIONS`). Without it a negative value is
+    #: ambiguous: a shorter runtime is good, a lower completion rate is
+    #: not.
+    beneficial_direction: str = "increase"
+    #: ``absolute`` or ``relative`` (see :data:`CHANGE_VALUE_KINDS`).
+    value_kind: str = "absolute"
     notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -1230,6 +1251,25 @@ class ExpectedChange:
                                   "unknown"):
             raise ValueError("direction must be increase/decrease/unchanged/"
                              "unknown")
+        if self.beneficial_direction not in BENEFICIAL_DIRECTIONS:
+            raise ValueError(f"beneficial_direction must be one of "
+                             f"{BENEFICIAL_DIRECTIONS}")
+        if self.value_kind not in CHANGE_VALUE_KINDS:
+            raise ValueError(f"value_kind must be one of "
+                             f"{CHANGE_VALUE_KINDS}")
+
+    @property
+    def is_improvement(self) -> Optional[bool]:
+        """Whether the predicted change is an improvement, when known.
+
+        ``None`` when the direction is unknown or the metric's sign
+        carries no quality meaning: an unstated direction is not
+        silently read as good news.
+        """
+        if self.direction == "unknown" or self.beneficial_direction == \
+                "either":
+            return None
+        return self.direction == self.beneficial_direction
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1241,6 +1281,8 @@ class ExpectedChange:
             "unit": self.unit,
             "baseline": (self.baseline.to_dict()
                          if self.baseline is not None else None),
+            "beneficial_direction": self.beneficial_direction,
+            "value_kind": self.value_kind,
             "notes": list(self.notes),
         }
 
@@ -1261,6 +1303,9 @@ class ExpectedChange:
             unit=str(data.get("unit", "")),
             baseline=(BaselineStatement.from_dict(raw_baseline)
                       if isinstance(raw_baseline, dict) else None),
+            beneficial_direction=str(data.get("beneficial_direction",
+                                              "increase")),
+            value_kind=str(data.get("value_kind", "absolute")),
             notes=[str(n) for n in (data.get("notes") or [])],
         )
 
@@ -1825,6 +1870,19 @@ def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
             problems.append(
                 f"expected_changes[{index}]: a value with direction="
                 "'unknown' is contradictory")
+        if change.value is not None and change.baseline is None \
+                and prediction.baseline is None:
+            problems.append(
+                f"expected_changes[{index}]: a value requires a baseline "
+                "(its own or the prediction's): a change with nothing to "
+                "measure it against is not falsifiable")
+        if change.value_kind == "relative" and change.value is not None \
+                and not -1.0 <= float(change.value) <= 1.0:
+            problems.append(
+                f"expected_changes[{index}].value_kind='relative' requires "
+                "a RATIO in [-1, 1] (express 20% as 0.2); a relative "
+                "change outside that range is not a ratio, and a "
+                "percentage and a ratio must never be added together")
     cost = prediction.learning_cost
     if cost is not None and cost.expected is not None:
         for dim in COST_DIMENSIONS:

@@ -153,6 +153,22 @@ CREATE TABLE IF NOT EXISTS contract_predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_contract_preds_task
     ON contract_predictions(task_id);
+
+-- World-model M5: harness-capability-evolution predictions under the
+-- wm-ce/1 protocol. A SEPARATE table from contract_predictions on purpose:
+-- that table is read as strategy-outcome payloads by the budget ledger and
+-- the query entry, so a capability record stored there would either
+-- mis-deserialize as an OR prediction or silently disappear from the
+-- ledger. Both readers stay honest by keeping the generations apart.
+CREATE TABLE IF NOT EXISTS capability_predictions (
+    prediction_id TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL DEFAULT '',
+    episode_id    TEXT,
+    created_at    REAL NOT NULL,
+    payload       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capability_preds_task
+    ON capability_predictions(task_id);
 """
 
 #: Schema version marker (idempotent). Written once per store; M1 = "wm1",
@@ -419,6 +435,54 @@ class Store:
     def count_contract_predictions(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM contract_predictions").fetchone()
+        return int(row["n"])
+
+    # -- capability-evolution predictions (M5, wm-ce/1) -----------------------
+
+    def put_capability_prediction(self, prediction_id: str, task_id: str,
+                                  episode_id: Optional[str], payload: str,
+                                  created_at: Optional[float] = None) -> None:
+        """Persist one capability-evolution prediction (a frozen
+        hypothesis about FUTURE performance, never a fact)."""
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO capability_predictions "
+                "(prediction_id, task_id, episode_id, created_at, payload) "
+                "VALUES (?,?,?,?,?)",
+                (str(prediction_id), str(task_id or ""), episode_id,
+                 float(created_at if created_at is not None else time.time()),
+                 str(payload)))
+
+    def get_capability_prediction(self, prediction_id: str
+                                  ) -> Optional[str]:
+        """The stored payload of one capability prediction, or None."""
+        row = self.conn.execute(
+            "SELECT payload FROM capability_predictions "
+            "WHERE prediction_id=?", (str(prediction_id),)).fetchone()
+        return str(row["payload"]) if row else None
+
+    def capability_predictions_for(self, task_id: Optional[str] = None,
+                                   episode_id: Optional[str] = None
+                                   ) -> List[str]:
+        """Stored capability-prediction payloads (oldest first)."""
+        sql = "SELECT payload FROM capability_predictions"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            params.append(str(task_id))
+        if episode_id is not None:
+            clauses.append("episode_id=?")
+            params.append(episode_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at ASC, prediction_id ASC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [str(r["payload"]) for r in rows]
+
+    def count_capability_predictions(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM capability_predictions").fetchone()
         return int(row["n"])
 
     def close(self) -> None:

@@ -274,16 +274,23 @@ class HttpChatProvider(WorldModelProvider):
                                                self.timeout_s))
         # The system prompt follows the REQUEST's protocol: a
         # strategy-outcome request (wm-so/1) gets the strategy-outcome
-        # prompt, everything else keeps the legacy prompt. The request
-        # names its protocol explicitly, so the wire format is traceable
-        # to the prompt that produced it.
+        # prompt, a capability-evolution request (wm-ce/1) gets the
+        # capability-evolution prompt, everything else keeps the legacy
+        # prompt. The request names its protocol explicitly, so the wire
+        # format is traceable to the prompt that produced it.
         from or_harness.world_model.strategy_prediction import (
             STRATEGY_OUTCOME_PROTOCOL_VERSION,
             STRATEGY_OUTCOME_SYSTEM_PROMPT,
         )
-        if request.get("prediction_protocol") == \
-                STRATEGY_OUTCOME_PROTOCOL_VERSION:
+        from or_harness.world_model.capability_evolution import (
+            CAPABILITY_EVOLUTION_PROTOCOL_VERSION,
+            CAPABILITY_EVOLUTION_SYSTEM_PROMPT,
+        )
+        protocol = request.get("prediction_protocol")
+        if protocol == STRATEGY_OUTCOME_PROTOCOL_VERSION:
             prompt = STRATEGY_OUTCOME_SYSTEM_PROMPT
+        elif protocol == CAPABILITY_EVOLUTION_PROTOCOL_VERSION:
+            prompt = CAPABILITY_EVOLUTION_SYSTEM_PROMPT
         else:
             action_type = (request.get("action_spec") or {}).get(
                 "action_type")

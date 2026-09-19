@@ -164,7 +164,11 @@ interval coverage rate, and per-event Brier means. The sample threshold
 counts DISTINCT EPISODES (independent truths) — one truth bound to
 several re-planning predictions is marked `correlated_predictions`,
 never counted as independent samples, so five predictions over one
-execution cannot cross the threshold. A group below the sample minimum
+execution cannot cross the threshold. An episode's identity is the full
+`(task_id, episode_id)` pair, because episode ids are chosen per task:
+five different tasks that each used `ep1` are five independent
+task-episodes, and deduplicating on the bare `episode_id` would collapse
+them into one sample. A group below the sample minimum
 (`--min-samples`, default 5, effective value and basis recorded on the
 summary) reports `insufficient_evidence` with `reliability: null` — no
 figure is invented.

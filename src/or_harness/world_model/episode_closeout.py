@@ -1132,7 +1132,11 @@ def build_calibration_summary(harness, *,
     DISTINCT EPISODES (independent truths), not predictions: one truth
     bound to five re-planning predictions is ONE episode's evidence, and
     counting the predictions would let a single execution cross the
-    threshold five times over.
+    threshold five times over. An episode's identity is the FULL pair
+    ``(task_id, episode_id)``: episode ids are chosen per task, so five
+    different tasks that each used ``ep1`` are five independent
+    task-episodes, never one — deduplicating on the bare ``episode_id``
+    would silently collapse them into a single sample.
 
     Each group reports: sample count, distinct-episode count (repeated
     predictions marked correlated, never counted as independent), mean
@@ -1167,7 +1171,12 @@ def build_calibration_summary(harness, *,
                 "brier_by_event": {}, "correlated_predictions": 0,
             })
         group["n"] += 1
-        group["episodes"].add(evaluation.episode_id or "")
+        # Full identity: episode ids are only unique WITHIN a task, so
+        # the pair is what names one independent episode. Two tasks that
+        # both used "ep1" are two episodes, not one.
+        group["episodes"].add(
+            (str(evaluation.task_id or ""),
+             str(evaluation.episode_id or "")))
         if benefit.get("eligibility") == "evaluable" \
                 and benefit.get("abs_error") is not None:
             group["benefit_abs_errors"].append(
@@ -1242,7 +1251,7 @@ def build_calibration_summary(harness, *,
         "calibration_version": CALIBRATION_SUMMARY_VERSION,
         "protocol": "wm-so/1",
         "min_samples": int(min_samples),
-        "min_samples_basis": "distinct episodes",
+        "min_samples_basis": "distinct (task_id, episode_id) pairs",
         "n_evaluations_total": len(evaluations),
         "n_evaluated": sum(1 for e in evaluations
                            if e.state == "evaluated"),
