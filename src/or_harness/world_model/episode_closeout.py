@@ -281,9 +281,22 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     # last attempt's 17s.
     records: List[Any] = []
     if candidate.scope == "strategy_window":
+        # The DECLARED window identity (including its selection round, when
+        # the window_id carries one) decides which window aggregates into
+        # the real outcome: a round-1 prediction is scored against round
+        # 1's executions only, never the whole-episode aggregation.
+        declared_round = None
+        if candidate.window_id:
+            from or_harness.world_model.execution_window import (
+                parse_window_id,
+            )
+            parsed = parse_window_id(candidate.window_id)
+            if parsed is not None:
+                declared_round = parsed.round_index
         window = harness.strategy_execution_window(
             action.task_id, action.episode_id,
-            strategy_id=candidate.strategy_id)
+            strategy_id=candidate.strategy_id,
+            round_index=declared_round)
         window_actions = {a.action_id for a in window.attempts}
         if action.action_id not in window_actions:
             # The bound action is not in the derived window (it may be an
@@ -314,9 +327,10 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             if record is not None:
                 records.append(record)
         summary.notes.append(
-            f"strategy-window scope: {len(records)} in-scope execution(s) "
-            "of this selection round aggregate into the real outcome "
-            "(failed retries included)")
+            f"strategy-window scope (round "
+            f"{declared_round if declared_round is not None else 'all'}): "
+            f"{len(records)} in-scope execution(s) aggregate into the real "
+            "outcome (failed retries included)")
     if action.linked_execution_id and not records:
         record = (harness.bank.get_pending(action.linked_execution_id)
                   or harness.bank.get(action.linked_execution_id))
@@ -471,16 +485,38 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             error_class = str(getattr(failure, "error_class", None)
                               or "model")
             observed_events[f"{error_class}_failure"] = "occurred"
-    # The budget channel: a declared budget exceeded by real consumption
-    # is an OBSERVED budget_exhausted event.
+    # The budget channel, THREE states: a declared budget CONFIRMED
+    # exceeded by real consumption is an OBSERVED budget_exhausted event;
+    # a CONFIRMED within-budget verdict (status "ok") over a completed
+    # scope is a not_occurred observation; anything else — an UNCONFIRMED
+    # ledger (some cost dimension unmeasured), no declared budget, or an
+    # incomplete scope — keeps the label unknown: "not yet known to
+    # exceed" is NOT "did not exhaust".
+    budget_event_label: Optional[str] = None
+    budget_event_basis = ""
     declared_budget = (harness._load_budget(
         candidate.task_id, candidate.episode_id) or {})
     if declared_budget:
         budget_view = harness.budget.view(
             candidate.task_id, candidate.episode_id,
             budget=declared_budget)
-        if budget_view.get("status") == "exceeded":
-            observed_events["budget_exhausted"] = "occurred"
+        budget_status = budget_view.get("status")
+        if budget_status == "exceeded":
+            budget_event_label = "occurred"
+            budget_event_basis = ("declared budget exceeded by measured "
+                                  "real consumption")
+        elif budget_status == "ok":
+            budget_event_label = "not_occurred"
+            budget_event_basis = ("declared budget confirmed within "
+                                  "limits (every dimension measured)")
+        else:
+            # "unconfirmed" / "no_budget_declared": the ledger cannot
+            # establish either direction — the label stays unknown.
+            budget_event_label = None
+            budget_event_basis = (
+                f"budget status {budget_status!r}: the consumption cannot "
+                "be confirmed in either direction, so the label stays "
+                "unknown and the event is excluded from scoring")
     window_complete = bool(records) and action.status != "running"
     risk_events: List[Dict[str, Any]] = []
     predicted_events = (prediction.risk.events
@@ -490,6 +526,11 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         label: Optional[str]
         if canonical in observed_events:
             label = "occurred"
+        elif canonical == "budget_exhausted":
+            # The budget channel decides this event alone: the generic
+            # "completed scope without the event" branch never applies to
+            # it (an unconfirmed ledger is not evidence of no exhaustion).
+            label = budget_event_label
         elif canonical not in OBSERVABLE_RISK_EVENTS:
             # No observation channel exists for this event name: the
             # label stays unknown whatever the executions did — an
@@ -503,22 +544,27 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             label = "not_occurred"
         else:
             label = None
+        if canonical == "budget_exhausted":
+            basis = ("observed on the in-scope execution(s)"
+                     if label == "occurred" else budget_event_basis)
+        else:
+            basis = ("observed on the in-scope execution(s)"
+                     if label == "occurred" else
+                     "completed scope with no such observed event "
+                     "(single trajectory)"
+                     if label == "not_occurred" else
+                     (f"no observation channel exists for event "
+                      f"{event.event!r}: the label stays unknown "
+                      "and the event is excluded from scoring"
+                      if canonical not in OBSERVABLE_RISK_EVENTS
+                      else
+                      "unknown: the scope was not fully observed, "
+                      "so absence is not evidence"))
         risk_events.append({
             "event": event.event,
             "predicted_probability": event.probability,
             "label": label,
-            "label_basis": ("observed on the in-scope execution(s)"
-                            if label == "occurred" else
-                            "completed scope with no such observed event "
-                            "(single trajectory)"
-                            if label == "not_occurred" else
-                            (f"no observation channel exists for event "
-                             f"{event.event!r}: the label stays unknown "
-                             "and the event is excluded from scoring"
-                             if canonical not in OBSERVABLE_RISK_EVENTS
-                             else
-                             "unknown: the scope was not fully observed, "
-                             "so absence is not evidence")),
+            "label_basis": basis,
         })
     summary.risk_events = risk_events
 

@@ -1661,17 +1661,39 @@ class ORHarness:
                            "execution ran under cannot be established"),
             }
         model_info["bound_action_id"] = action_id
-        model_info["binding_mismatch"] = mismatch or None
-        model_info["binding_unknown"] = unknown or None
         # Comparability: only a completed, MATCHING real scope may be
         # scored. An unknown identity field does not by itself block the
         # linkage (the close-out decides field-by-field what may be
         # evaluated on it), but a mismatch always does.
         if candidate.scope == "strategy_window":
+            # The DECLARED window identity (including its selection round,
+            # when the window_id carries one) decides which window this
+            # prediction is about: a round-1 prediction is scored against
+            # round 1's window, never the whole-episode aggregation.
+            declared_round = None
+            if candidate.window_id:
+                parsed = parse_window_id(candidate.window_id)
+                if parsed is not None:
+                    declared_round = parsed.round_index
             window = self.strategy_execution_window(
                 action.task_id, action.episode_id,
-                strategy_id=candidate.strategy_id)
+                strategy_id=candidate.strategy_id,
+                round_index=declared_round)
+            # The bound action must be INSIDE the declared round's window:
+            # an action of another round is a different scope, never this
+            # prediction's truth.
+            if declared_round is not None \
+                    and action.action_id not in \
+                    {a.action_id for a in window.attempts}:
+                mismatch["window_round"] = {
+                    "predicted": candidate.window_id,
+                    "actual": (f"the bound action is not among round "
+                               f"{declared_round}'s window attempts"),
+                }
+            model_info["binding_mismatch"] = mismatch or None
+            model_info["binding_unknown"] = unknown or None
             model_info["bound_window_id"] = window.window_id
+            model_info["bound_window_round_index"] = window.round_index
             model_info["window_comparable"] = bool(window.comparable)
             model_info["window_not_comparable_reasons"] = list(
                 window.not_comparable_reasons)
@@ -1683,6 +1705,8 @@ class ORHarness:
                 ["binding mismatch: the executed action differs from the "
                  "predicted candidate"])
         else:
+            model_info["binding_mismatch"] = mismatch or None
+            model_info["binding_unknown"] = unknown or None
             comparable = bool(action.linked_execution_id
                               and action.status != "running"
                               and not mismatch)

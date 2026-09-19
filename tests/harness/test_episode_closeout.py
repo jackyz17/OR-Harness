@@ -686,6 +686,67 @@ class TestWindowScopeAggregation(M4Case):
         self.assertEqual(len(scope_summary.execution_ids), 2)
         self.assertEqual(scope_summary.cost["tool_calls"]["total"], 2.0)
 
+    def test_declared_round_window_excludes_other_rounds(self):
+        """A prediction declaring round r1 is scored against round 1's
+        executions ONLY — the first round's runtime must not leak into
+        the second round's totals."""
+        task = _task("t1")
+        # Round 0: choose S04, run it.
+        self.h.report_action("select_strategy", task, "ep1",
+                             params={"strategy_id": "S04"},
+                             outcome={"kind": "choice"})
+        first = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="r0")
+        # Round 1: choose S04 again, run it.
+        self.h.report_action("select_strategy", task, "ep1",
+                             params={"strategy_id": "S04"},
+                             outcome={"kind": "choice"})
+        # The prediction declares the ROUND-1 window and is made BEFORE
+        # the round-1 execution runs (the honest order).
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04", "scope": "strategy_window",
+                   "window_id": "win::t1::ep1::S04::r1"}, "ep1")
+        second = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="r1")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     second.action_id)
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        # ONLY round 1's runtime: the old behaviour aggregated the whole
+        # episode (first + second).
+        self.assertAlmostEqual(
+            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
+            second.cost.solver_runtime_s, places=5)
+        self.assertNotAlmostEqual(
+            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
+            first.cost.solver_runtime_s + second.cost.solver_runtime_s,
+            places=5)
+
+    def test_binding_action_of_another_round_is_a_mismatch(self):
+        task = _task("t1")
+        self.h.report_action("select_strategy", task, "ep1",
+                             params={"strategy_id": "S04"},
+                             outcome={"kind": "choice"})
+        # The ROUND-1 prediction is made BEFORE any round-1 execution.
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04", "scope": "strategy_window",
+                   "window_id": "win::t1::ep1::S04::r1"}, "ep1")
+        first = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="m0")
+        self.h.report_action("select_strategy", task, "ep1",
+                             params={"strategy_id": "S04"},
+                             outcome={"kind": "choice"})
+        second = self.solve(task, strategy="S04", episode_id="ep1",
+                          tag="m1")
+        # Bind the ROUND-0 action to the ROUND-1 prediction: a mismatch.
+        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+                                            first.action_id)
+        mismatch = bound.trace.model_info.get("binding_mismatch") or {}
+        self.assertIn("window_round", mismatch)
+        self.assertFalse(bound.trace.comparable)
+
     def test_failed_retry_is_included_in_window_cost(self):
         task = _task("t1")
         prediction = self._window_prediction(task)
@@ -774,6 +835,71 @@ class TestUnobservedIsNotALabel(M4Case):
         self.assertIn("customer_demand_shortfall", unscored)
         self.assertIn("no observation channel",
                       unscored["customer_demand_shortfall"]["reason"])
+
+    def test_unconfirmed_budget_keeps_label_unknown(self):
+        """An UNCONFIRMED ledger (partially unmeasured cost) is not
+        evidence of no exhaustion: the label stays unknown and the event
+        is excluded from scoring."""
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "budget_exhausted", "probability": 0.5}]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        # Declare a budget; the execution leaves llm_tokens UNMEASURED
+        # (the default), so the ledger verdict is UNCONFIRMED, not ok.
+        h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        view = h.budget.view("t1", "ep1",
+                             budget=h._load_budget("t1", "ep1"))
+        self.assertEqual(view["status"], "unconfirmed")
+        result = h.close_episode("t1", "ep1")
+        risk = result["evaluations"][0]["risk"]
+        # NOT scored: the unconfirmed ledger is not a not_occurred label.
+        self.assertEqual(risk["scored"], [])
+        self.assertIn("budget_exhausted",
+                      {e["event"] for e in risk["unscored"]})
+        self.assertTrue(any("cannot be confirmed" in e["reason"]
+                            for e in risk["unscored"]))
+
+    def test_confirmed_within_budget_scores_not_occurred(self):
+        """A CONFIRMED within-budget verdict (every contributing item
+        measured the declared dimension) over a completed scope IS a
+        not_occurred observation."""
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "budget_exhausted", "probability": 0.5}]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        # Backfill the execution's llm_tokens so EVERY contributing item
+        # (the execution AND the prediction call) measured the declared
+        # dimension — the ledger verdict is then a real "ok", not an
+        # "unconfirmed".
+        h.bank.update_cost(record.execution_id, llm_tokens=10)
+        h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        view = h.budget.view("t1", "ep1",
+                             budget=h._load_budget("t1", "ep1"))
+        self.assertEqual(view["status"], "ok")
+        result = h.close_episode("t1", "ep1")
+        risk = result["evaluations"][0]["risk"]
+        self.assertEqual(risk["scored"][0]["label"], "not_occurred")
+        self.assertEqual(risk["scored"][0]["brier"], 0.25)
 
     def test_budget_exhausted_is_observable(self):
         # budget_exhausted HAS a channel: a declared budget exceeded by
