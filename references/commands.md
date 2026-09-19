@@ -364,7 +364,19 @@ Bind a prediction to the real action that ran, then compare. Type/strategy/solve
 
 Query predictions with `orx inspect --bank predictions [--task ID]`.
 
-## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N] [--delta W] [--prediction-mode M]`
+## `orx [--world-model URL::MODEL] predict-strategy --task t.json --candidate c.json [--episode ep1] [--context CTX_ID] [--cir cir.json]`
+
+**Strategy-outcome prediction under the wm-so/1 protocol (world-model M3).** Predict ONE candidate strategy's benefit / cost / risk / uncertainty from a frozen prediction input context. The candidate is a `CandidateRef` JSON (`{"action_type": "execute_strategy", "strategy_id": "S01", "solver": "highs", "config": {"time_limit": 60}, "scope": "attempt"}`) or a legacy `ActionSpec` (execution params and budget hint preserved verbatim; an unmappable scope such as `"task"` is refused). Same strategy_id with a different solver/config is a DIFFERENT candidate — the config travels with the prediction into the choice and the execution binding.
+
+- **Input**: `--context CTX_ID` reuses a frozen context (identity verified against the task/version/episode AND the effective input version — pass the SAME `--cir` you built the context with); the default builds one fresh context for this call. The provider receives the full context CONTENT (joint problem representation, retrieval evidence, capability evidence, constraints), not ids.
+- **Output**: a `StrategyOutcomePrediction` — benefit with metric/unit/baseline (`solution_quality` must be NORMALIZED in [0,1]; a raw objective value is refused, never clamped), cost as a CostVector with a predicted-dimension mask, risk as named events separate from cost, uncertainty with the model's self-report recorded as explicitly UNCALIBRATED. Every failure state (not configured, provider error, empty payload, invalid JSON, NaN, out-of-range probability) is distinguishable and persisted with whatever usage the call consumed. One call, no retries, no defaults.
+- **Binding**: after you execute the candidate, `orx bind-strategy --prediction ID --action ACTION_ID` records the prediction–execution linkage (identity checked: task/episode/strategy/solver/config; a mismatch is recorded, never scored). Full spec: [strategy_outcome.md](strategy_outcome.md).
+
+## `orx bind-strategy --prediction ID --action ACTION_ID`
+
+Bind a strategy-outcome prediction to the real action that ran. The binding checks request identity (task/episode/strategy/solver and the candidate's execution config) and sets `trace.comparable` only when the bound action is a completed real scope. Idempotent; no model call; nothing re-billed. Window-level error aggregation itself lands in M4 — the binding records the linkage and the comparability flag.
+
+## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N] [--delta W] [--prediction-mode M] [--protocol legacy|strategy-outcome]`
 
 **Bounded next-step planning.** Compare a small set of candidate actions by their PREDICTED consequences and get a suggested first step. The decision:
 
@@ -394,6 +406,7 @@ calibrated expected value).
 - **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
 - **Unknowns**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
 - **Requirements**: a configured `--world-model` provider. Without one every path is `not_configured` and no suggestion is made. Planning supports `execute_strategy` candidates; other action types are reported as not plannable.
+- **`--protocol strategy-outcome`** (world-model M3): the same decision loop under the wm-so/1 protocol — ONE frozen context for the whole comparison, one strategy-outcome prediction per candidate (benefit/cost/risk/uncertainty), a conservative comparison (`U = alpha*G - beta*C - gamma*R`; unknown cost charged the peak share, unknown risk the full weight, unknown benefit nothing; the knowledge term is OFF), and a suggestion you accept through the SAME `choose-next`. Horizon is FIXED at 1 for this protocol (one macro comparison, then re-planning from the real observation); `--horizon 2` with it is refused. When no candidate carries a usable prediction the plan reports `no_valid_predictions` and suggests nothing — fall back to `recall`/Selector or choose yourself. Full spec: [strategy_outcome.md](strategy_outcome.md).
 
 ## `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
 

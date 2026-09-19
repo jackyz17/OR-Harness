@@ -138,6 +138,21 @@ CREATE TABLE IF NOT EXISTS prediction_contexts (
     payload     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_contexts_task ON prediction_contexts(task_id);
+
+-- World-model M3: strategy-outcome predictions under the wm-so/1 protocol.
+-- A LOG table like world_model_predictions: a prediction is a frozen
+-- hypothesis, never knowledge, and nothing here enters either bank. Stored
+-- so a prediction can be bound to the real execution that followed it and
+-- so the frozen input (context id) stays resolvable.
+CREATE TABLE IF NOT EXISTS contract_predictions (
+    prediction_id TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    episode_id    TEXT,
+    created_at    REAL NOT NULL,
+    payload       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_contract_preds_task
+    ON contract_predictions(task_id);
 """
 
 #: Schema version marker (idempotent). Written once per store; M1 = "wm1",
@@ -358,6 +373,52 @@ class Store:
     def count_prediction_contexts(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM prediction_contexts").fetchone()
+        return int(row["n"])
+
+    # -- strategy-outcome contract predictions (M3, wm-so/1) ------------------
+
+    def put_contract_prediction(self, prediction_id: str, task_id: str,
+                                episode_id: Optional[str], payload: str,
+                                created_at: Optional[float] = None) -> None:
+        """Persist one strategy-outcome prediction (a frozen hypothesis)."""
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO contract_predictions "
+                "(prediction_id, task_id, episode_id, created_at, payload) "
+                "VALUES (?,?,?,?,?)",
+                (str(prediction_id), str(task_id), episode_id,
+                 float(created_at if created_at is not None else time.time()),
+                 str(payload)))
+
+    def get_contract_prediction(self, prediction_id: str) -> Optional[str]:
+        """The stored payload of one contract prediction, or None."""
+        row = self.conn.execute(
+            "SELECT payload FROM contract_predictions "
+            "WHERE prediction_id=?", (str(prediction_id),)).fetchone()
+        return str(row["payload"]) if row else None
+
+    def contract_predictions_for(self, task_id: Optional[str] = None,
+                                 episode_id: Optional[str] = None
+                                 ) -> List[str]:
+        """Stored contract-prediction payloads (oldest first), filtered."""
+        sql = "SELECT payload FROM contract_predictions"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            params.append(str(task_id))
+        if episode_id is not None:
+            clauses.append("episode_id=?")
+            params.append(episode_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at ASC, prediction_id ASC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [str(r["payload"]) for r in rows]
+
+    def count_contract_predictions(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM contract_predictions").fetchone()
         return int(row["n"])
 
     def close(self) -> None:

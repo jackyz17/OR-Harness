@@ -100,6 +100,7 @@ from or_harness.world_model.context import (
     capability_version,
     cell_evidence_from_stats,
     context_identity_problems,
+    effective_input_version,
     evidence_identity,
     frozen_knowledge_available,
     frozen_knowledge_view,
@@ -175,6 +176,15 @@ class ORHarness:
         # is untouched.
         self.world_model = world_model or NotConfiguredProvider()
         self.predictions = PredictionService(self.store, self.world_model)
+        # World-model M3 (this round): the strategy-outcome prediction
+        # SERVICE under the wm-so/1 protocol. Same provider, same explicit
+        # injection discipline — the service is what turns a frozen context
+        # + a candidate into a StrategyOutcomePrediction.
+        from or_harness.world_model.strategy_prediction import (
+            StrategyOutcomeService,
+        )
+        self.strategy_predictions = StrategyOutcomeService(
+            self.store, self.world_model)
         # World-model M3: bounded planning. ``planning=False`` restores the
         # exact M2 behaviour (plan_next refuses with status=disabled);
         # ``plan_mode`` is "advise" (a suggestion is produced for the agent
@@ -551,6 +561,7 @@ class ORHarness:
             snapshot: Optional[BeliefSnapshot] = None,
             context_spec: Optional[ActionSpec] = None,
             candidates: Optional[Sequence[ActionSpec]] = None,
+            historical: Optional[bool] = None,
             persist: bool = True) -> PredictionContext:
         """Build the FROZEN prediction input context for one decision.
 
@@ -576,9 +587,30 @@ class ORHarness:
         backend through the existing retrieval path — that is the one
         external call, and it is a read.
 
+        **Current gathering vs historical reconstruction.** The two are
+        different operations and the ``historical`` flag is what separates
+        them — NOT the mere presence of a snapshot:
+
+        - ``historical=False`` (the default when no snapshot is supplied, or
+          when the caller explicitly passes it): this decision gathers the
+          CURRENT information and freezes it. A snapshot the CALLER supplies
+          is the frozen X/B to gather around (``plan_next`` passes its root
+          snapshot this way so the whole comparison shares one state); the
+          retrieval, the knowledge view, the reliability table and the cell
+          evidence are all read NOW and frozen.
+        - ``historical=True`` (the default when an EXTERNAL snapshot is
+          supplied without an explicit flag): the snapshot is an HISTORICAL
+          artifact fixing the moment this context describes, and everything
+          the prediction conditions on must come from what that snapshot
+          SAVED — never from today's banks (a later revision of an entry
+          would otherwise leak into a context describing the earlier state).
+
         ``recall_result`` reuse is refused when its recorded ``task_digest``
-        disagrees with the current task, and a supplied ``snapshot`` is
-        refused when it belongs to another task / episode / version. Build a
+        disagrees with the current task, a supplied ``snapshot`` is refused
+        when it belongs to another task / episode / version, and a supplied
+        recall result is REFUSED on the historical path (a result gathered
+        now cannot be proven to belong to the frozen moment — creation-time
+        filtering cannot see a later revision of an existing entry). Build a
         new context instead of silently conditioning on stale inputs.
 
         ``persist=False`` skips the store write (useful when the caller only
@@ -613,14 +645,22 @@ class ORHarness:
         resolved_cir = effective_task.get("coupling")
         profile = self.profile(effective_task, code)
         derivation = derivation_report(profile)
+        # The version identity of the EFFECTIVE input (task + resolved CIR).
+        # Identity checks below compare against THIS, not the plain task
+        # digest: a context built with an explicit CIR must be reusable
+        # against the same task, and the plain digests differ only because
+        # the caller-supplied task JSON differs.
+        effective_digest = effective_input_version(task, cir)
 
         # -- historical reconstruction vs current gathering -------------------
-        # A supplied snapshot is an HISTORICAL artifact: it fixes the moment
-        # this context describes. Everything the prediction conditions on
-        # must then come from what that snapshot SAVED, never from today's
-        # banks (a later revision of an entry would otherwise leak into a
-        # context describing the earlier state).
-        historical = snapshot is not None
+        # An EXTERNAL snapshot (one the caller did not just take for this
+        # decision) fixes a historical moment: everything must then come
+        # from what it SAVED. A snapshot the caller passes together with
+        # historical=False is the frozen X/B of a CURRENT gathering (the
+        # plan_next root-snapshot pattern) — the banks are read NOW and
+        # frozen, which is exactly what a live decision needs.
+        if historical is None:
+            historical = snapshot is not None
         history_notes: List[str] = []
         if snapshot is not None:
             problems = context_identity_problems(
@@ -665,11 +705,26 @@ class ORHarness:
 
         bounding: Dict[str, Any] = {}
         if recall_result is not None:
-            # A SUPPLIED result is current-collected, so it may carry memory
-            # that postdates the historical snapshot. It is bounded the same
-            # way a freshly gathered one is — a supplied result does not get
-            # to smuggle later evidence into an earlier state.
             if historical:
+                # A result gathered NOW cannot be PROVEN to belong to the
+                # frozen moment: creation-time filtering sees when a memory
+                # was created, not when an EXISTING entry was later revised,
+                # so a revised entry would slip through at its new value.
+                # The historical path accepts only retrieval that was SAVED
+                # with the snapshot; anything else is refused.
+                raise ValueError(
+                    "a recall result gathered now cannot be used for a "
+                    "historical reconstruction: it cannot be proven to "
+                    "belong to the frozen moment (an entry revised after "
+                    "the snapshot would enter at its NEW value). The "
+                    "historical path accepts only retrieval that was saved "
+                    "with the snapshot; build a current context instead")
+            if snapshot is not None:
+                # A SUPPLIED result is current-collected, so it may carry
+                # memory that postdates the snapshot this context freezes
+                # around. It is bounded the same way a freshly gathered one
+                # is — a supplied result does not get to smuggle later
+                # evidence past the moment the decision froze.
                 recall_result, bounding = self._bound_recall_result(
                     recall_result,
                     float(getattr(snapshot, "created_at", 0.0) or 0.0))
@@ -696,9 +751,14 @@ class ORHarness:
                 effective_task, top=top, code=code,
                 include_unverified=include_unverified,
                 vector_top_k=vector_top_k)
-            recall_result, bounding = self._bound_recall_result(
-                recall_result,
-                float(getattr(snapshot, "created_at", 0.0) or 0.0))
+            if snapshot is not None:
+                # A CURRENT gathering around a caller-supplied snapshot is
+                # still bounded to that snapshot's moment: the snapshot is
+                # the X/B this decision froze, and evidence that arrived
+                # AFTER it belongs to a later state.
+                recall_result, bounding = self._bound_recall_result(
+                    recall_result,
+                    float(getattr(snapshot, "created_at", 0.0) or 0.0))
 
         if historical:
             # Knowledge and reliability come from the SNAPSHOT's saved
@@ -740,8 +800,11 @@ class ORHarness:
             retrieval_view=retrieval_view,
             reliability=reliability,
             recorded_choices=recorded_choices)
-        constraints = self._execution_constraints_view(effective_task,
-                                                       episode_id)
+        if historical:
+            constraints = self._historical_constraints_view(snapshot)
+        else:
+            constraints = self._execution_constraints_view(effective_task,
+                                                           episode_id)
         version_block = capability_version(
             harness_config={
                 "alpha": self.selector.alpha, "beta": self.selector.beta,
@@ -763,8 +826,21 @@ class ORHarness:
         spec_list = ([context_spec] if context_spec is not None
                      else list(candidates or []))
         frozen_targets: List[Any] = []
-        for spec in spec_list:
-            frozen_targets.extend(self.knowledge_targets(snapshot, spec))
+        if historical:
+            # The knowledge-target heuristic reads the cell's REAL evidence
+            # records (``stats.evidence``) — a live bank read. A historical
+            # reconstruction may not consult today's records: an execution
+            # recorded after the snapshot would change the proposal. No
+            # proposal was SAVED with the snapshot, so none is made and the
+            # gap is reported.
+            history_notes.append(
+                "MISSING: the structural knowledge-target proposal was not "
+                "saved with this snapshot, and re-deriving it would read "
+                "today's evidence records, so no target is proposed for a "
+                "historical reconstruction")
+        else:
+            for spec in spec_list:
+                frozen_targets.extend(self.knowledge_targets(snapshot, spec))
         strategies = [s.strategy_id for s in spec_list if s.strategy_id]
         if historical:
             # Cell statistics describe the bank as it is NOW, so they are not
@@ -872,6 +948,36 @@ class ORHarness:
             "note": ("declared budget and real tool availability: these "
                      "constrain what can be executed, they do not predict "
                      "what it would achieve"),
+        }
+
+    def _historical_constraints_view(self,
+                                     snapshot: BeliefSnapshot) -> Dict[str, Any]:
+        """The execution constraints of a HISTORICAL reconstruction.
+
+        Only what the snapshot itself froze: its ``budget_state`` (the
+        declaration and consumption view as they stood). The CURRENT
+        declared budget, today's consumption and today's tool availability
+        describe a later state — presenting them as the conditions of an
+        earlier moment would fabricate history. Each gap is reported.
+        """
+        frozen_budget = copy.deepcopy(
+            getattr(snapshot, "budget_state", None) or {})
+        return {
+            "declared_budget": copy.deepcopy(frozen_budget.get("budget")
+                                             or None),
+            "budget_status": frozen_budget.get("status"),
+            "budget_state_frozen": frozen_budget,
+            "available_solver_families": None,
+            "executor": None,
+            "note": ("HISTORICAL constraints: the budget view is the one the "
+                     "snapshot FROZE; today's declared budget, consumption "
+                     "and tool availability were NOT consulted, so they are "
+                     "reported missing rather than substituted"),
+            "missing": [
+                "available_solver_families: today's tool availability is "
+                "not a condition of the frozen moment",
+                "executor limits: not saved with the snapshot",
+            ],
         }
 
     def _recorded_choice_summary(self, task_id: str,
@@ -1191,6 +1297,214 @@ class ORHarness:
             return "not-attached"
         return str(getattr(self.world_model, "name", "unknown"))
 
+    # -- world-model M3: strategy-outcome prediction service (wm-so/1) --------
+
+    def predict_strategy_outcome(
+            self, task: Dict[str, Any],
+            candidate: Union[CandidateRef, ActionSpec, Dict[str, Any]],
+            episode_id: Optional[str] = None, *,
+            context: Optional[PredictionContext] = None,
+            cir: Optional[Any] = None,
+            timeout_s: Optional[float] = None,
+            benefit_baseline_hint: Optional[Dict[str, Any]] = None,
+            ) -> "StrategyOutcomePrediction":
+        """Predict ONE candidate's consequences under the wm-so/1 protocol.
+
+        The input is a FROZEN context and a candidate; the output is a
+        :class:`~or_harness.world_model.contracts.StrategyOutcomePrediction`
+        (benefit G with metric/unit/baseline, resource cost c as a
+        CostVector with its predicted-dimension mask, risk L as named
+        events separate from cost, uncertainty with execution randomness
+        separated from the knowledge gap), persisted so it can be bound to
+        the real execution later.
+
+        ``context`` decides the frozen input: a supplied
+        :class:`PredictionContext` is reused after its identity (including
+        the EFFECTIVE input version — pass the same ``cir`` you built it
+        with) is verified; ``None`` builds one current context for this
+        call. ``cir`` resolves the effective problem input exactly as
+        ``build_prediction_context(..., cir=...)`` does.
+
+        The candidate may be a ``CandidateRef``, a legacy ``ActionSpec``
+        (mapped through ``from_action_spec``, which preserves its execution
+        config verbatim and refuses an unmappable scope), or a candidate
+        dict. Same strategy_id with different solver / time_limit / mip_gap
+        / seed / step scope is a DIFFERENT candidate — the config travels
+        with the candidate, so predictions, choices and executions bind to
+        the configuration actually proposed.
+
+        One provider call, no retries, no defaults: a failed call is a
+        persisted failure with whatever usage it consumed.
+        """
+        from or_harness.world_model.strategy_prediction import (
+            StrategyOutcomeService,
+        )
+        if isinstance(candidate, ActionSpec):
+            candidate_ref = CandidateRef.from_action_spec(candidate)
+        elif isinstance(candidate, dict):
+            candidate_ref = CandidateRef.from_dict(candidate)
+        else:
+            candidate_ref = copy.deepcopy(candidate)
+        task_id = str(task.get("task_id", ""))
+        if candidate_ref.task_id and candidate_ref.task_id != task_id:
+            raise ValueError(
+                f"candidate.task_id {candidate_ref.task_id!r} does not "
+                f"match the task being predicted for ({task_id!r})")
+        if not candidate_ref.task_id:
+            candidate_ref.task_id = task_id
+        if candidate_ref.episode_id is None:
+            candidate_ref.episode_id = episode_id
+
+        if context is None:
+            context = self.build_prediction_context(
+                task, episode_id, cir=cir, context_spec=None,
+                candidates=None)
+        else:
+            problems = context_identity_problems(
+                context, task_id=task_id,
+                task_digest=task_text_digest(task),
+                episode_id=episode_id,
+                effective_input_digest=effective_input_version(task, cir))
+            problems = problems + structure_problems(
+                expected=self.profile(task_with_effective_cir(task, cir)),
+                actual=context.joint.profile,
+                label="the supplied prediction context")
+            if problems:
+                raise ValueError(
+                    "the supplied prediction context does not describe this "
+                    "prediction: " + "; ".join(problems))
+        service: StrategyOutcomeService = self.strategy_predictions
+        prediction = service.predict(
+            context, candidate_ref, timeout_s=timeout_s,
+            benefit_baseline_hint=benefit_baseline_hint)
+        # The frozen input reference, on every outcome (failures included):
+        # a failed call was still made against this input.
+        prediction.trace.model_info["prediction_context_id"] = \
+            context.context_id
+        prediction.trace.model_info["prediction_context_version"] = \
+            context.version
+        prediction.trace.model_info["prediction_context_task_digest"] = \
+            context.task_digest
+        prediction.trace.model_info["effective_input_digest"] = \
+            context.effective_input_digest
+        service._save(prediction)
+        return prediction
+
+    def get_strategy_outcome_prediction(
+            self, prediction_id: str
+    ) -> Optional["StrategyOutcomePrediction"]:
+        """Read a stored strategy-outcome prediction (never calls a model)."""
+        return self.strategy_predictions.get(prediction_id)
+
+    def strategy_outcome_predictions(
+            self, *, task_id: Optional[str] = None,
+            episode_id: Optional[str] = None
+    ) -> List["StrategyOutcomePrediction"]:
+        """Stored strategy-outcome predictions, optionally filtered."""
+        return self.strategy_predictions.query(task_id=task_id,
+                                               episode_id=episode_id)
+
+    def bind_strategy_outcome(self, prediction_id: str,
+                              action_id: str) -> "StrategyOutcomePrediction":
+        """Bind a strategy-outcome prediction to the REAL action that ran.
+
+        The binding checks request identity — task, episode, strategy,
+        solver and the candidate's execution config (a different
+        time_limit/seed is a different candidate, and its result is not
+        this prediction's truth) — and records a mismatch rather than
+        silently comparing. The prediction's ``trace.comparable`` is set
+        only when the bound action's window is a completed real scope;
+        otherwise the reasons say why it is not.
+
+        Re-binding the same action is idempotent; binding another action
+        raises. No model call is made and nothing is re-billed.
+        """
+        prediction = self.strategy_predictions.get(prediction_id)
+        if prediction is None:
+            raise StorageError(
+                f"unknown prediction_id {prediction_id!r}")
+        action = self.actions.get(action_id)
+        if action is None:
+            raise StorageError(f"unknown action_id {action_id!r}")
+        model_info = prediction.trace.model_info
+        bound = model_info.get("bound_action_id")
+        if bound is not None:
+            if bound == action_id:
+                return prediction
+            raise StorageError(
+                f"prediction {prediction_id!r} is already bound to action "
+                f"{bound!r}")
+        candidate = prediction.candidate
+        mismatch: Dict[str, Any] = {}
+        if candidate.task_id and action.task_id != candidate.task_id:
+            mismatch["task_id"] = {"predicted": candidate.task_id,
+                                   "actual": action.task_id}
+        if (candidate.episode_id is not None
+                and action.episode_id is not None
+                and candidate.episode_id != action.episode_id):
+            mismatch["episode_id"] = {"predicted": candidate.episode_id,
+                                      "actual": action.episode_id}
+        params = dict(action.params or {})
+        if (candidate.strategy_id is not None
+                and params.get("strategy_id") not in
+                (None, candidate.strategy_id)):
+            mismatch["strategy_id"] = {"predicted": candidate.strategy_id,
+                                       "actual": params.get("strategy_id")}
+        if (candidate.solver is not None
+                and params.get("solver") not in (None, candidate.solver)):
+            mismatch["solver"] = {"predicted": candidate.solver,
+                                  "actual": params.get("solver")}
+        # Execution-config identity: the candidate's own config (time_limit,
+        # mip_gap, seed, ...) is what was predicted; an action that ran a
+        # DIFFERENT config is a different candidate's result.
+        for key, value in (candidate.config or {}).items():
+            actual = params.get(key)
+            if actual is not None and actual != value:
+                mismatch.setdefault(
+                    "config", {})[key] = {"predicted": value,
+                                          "actual": actual}
+        # Timing: the prediction must predate the action.
+        if prediction.trace.created_at > action.started_at:
+            mismatch["timing"] = {
+                "predicted_at": prediction.trace.created_at,
+                "action_started_at": action.started_at,
+                "reason": "prediction was generated after the action began"}
+        model_info["bound_action_id"] = action_id
+        model_info["binding_mismatch"] = mismatch or None
+        # Comparability: only a completed, matching real window may be
+        # scored. An attempt-scope prediction bound to a completed action
+        # with a linked execution is comparable; a window-scope prediction
+        # needs the window itself to be complete.
+        if candidate.scope == "strategy_window":
+            window = self.strategy_execution_window(
+                action.task_id, action.episode_id,
+                strategy_id=candidate.strategy_id)
+            model_info["bound_window_id"] = window.window_id
+            model_info["window_comparable"] = bool(window.comparable)
+            model_info["window_not_comparable_reasons"] = list(
+                window.not_comparable_reasons)
+            prediction.trace.comparable = bool(
+                window.comparable and not mismatch)
+            prediction.trace.not_comparable_reasons = list(
+                window.not_comparable_reasons) if not window.comparable else (
+                [] if not mismatch else
+                ["binding mismatch: the executed action differs from the "
+                 "predicted candidate"])
+        else:
+            comparable = bool(action.linked_execution_id
+                              and action.status != "running"
+                              and not mismatch)
+            prediction.trace.comparable = comparable
+            prediction.trace.not_comparable_reasons = (
+                [] if comparable else
+                (["binding mismatch: the executed action differs from the "
+                  "predicted candidate"] if mismatch else
+                 ["the bound action has no completed linked execution to "
+                  "score against"]))
+        model_info["binding_recorded_at"] = time.time()
+        self.strategy_predictions._save(prediction)
+        return prediction
+
     @staticmethod
     def read_prediction_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Read any stored prediction payload, whatever generation it is.
@@ -1424,6 +1738,7 @@ class ORHarness:
                         episode_id: Optional[str] = None,
                         *, parent_action_id: Optional[str] = None,
                         context: Union[PredictionContext, bool, None] = None,
+                        cir: Optional[Any] = None,
                         ) -> OutcomePrediction:
         """Predict the consequences of a CANDIDATE action from the current
         frozen state — explicitly, in shadow mode.
@@ -1460,6 +1775,13 @@ class ORHarness:
         - ``False``: no context is assembled and the request is exactly what
           this call sent before this phase existed (the compatibility
           escape hatch, and what ``x-b-only`` byte-compatibility rests on).
+
+        ``cir`` (optional) resolves the effective problem input the same way
+        ``build_prediction_context(..., cir=...)`` does. It is what lets a
+        context built with an EXPLICIT CIR be reused: pass the same CIR
+        again here, and the identity check compares the effective inputs
+        (which match) instead of the plain task digests (which differ only
+        because the caller-supplied task JSON differs).
         """
         task_id = str(task.get("task_id", ""))
         adjusted: Dict[str, Any] = {}
@@ -1480,12 +1802,13 @@ class ORHarness:
             problems = context_identity_problems(
                 context, task_id=task_id,
                 task_digest=task_text_digest(task),
-                episode_id=episode_id)
+                episode_id=episode_id,
+                effective_input_digest=effective_input_version(task, cir))
             # Structure too: a context built under another structural input
             # may not be reused for this one — its joint representation and
             # its retrieval would describe a different problem.
             problems = problems + structure_problems(
-                expected=self.profile(task_with_effective_cir(task)),
+                expected=self.profile(task_with_effective_cir(task, cir)),
                 actual=context.joint.profile,
                 label="the supplied prediction context")
             if problems:
@@ -1502,8 +1825,14 @@ class ORHarness:
             frozen_from_context = True
         else:
             snap = self.snapshot(task, episode_id)
+            # A CURRENT gathering around the snapshot this call just froze:
+            # the retrieval, knowledge view, reliability and cell evidence
+            # are read NOW and frozen into the context. Passing the snapshot
+            # explicitly is what keeps the context's X/B and the prediction's
+            # input_snapshot_id identical.
             resolved_context = self.build_prediction_context(
-                task, episode_id, snapshot=snap, context_spec=action_spec)
+                task, episode_id, snapshot=snap, historical=False,
+                context_spec=action_spec, cir=cir)
         if frozen_from_context:
             targets = knowledge_targets_from_context(resolved_context,
                                                      action_spec)
@@ -2032,7 +2361,8 @@ class ORHarness:
                   episode_id: Optional[str] = None, *,
                   candidates: Optional[Sequence[ActionSpec]] = None,
                   limits: Optional[Any] = None,
-                  second_step: Optional[Sequence[ActionSpec]] = None
+                  second_step: Optional[Sequence[ActionSpec]] = None,
+                  protocol: str = "legacy",
                   ) -> Dict[str, Any]:
         """Bounded next-step planning over predicted action consequences.
 
@@ -2041,6 +2371,21 @@ class ORHarness:
         the hypothetical successor state of the first), and recommends the
         first step of the best path — the agent then explicitly accepts,
         rejects, or overrides it (``choose_next``).
+
+        ``protocol`` selects the prediction protocol:
+
+        - ``"legacy"`` (the default): the existing ``OutcomePrediction``
+          path, unchanged — horizon 1 or 2, the old request shape and the
+          old scoring. This is the compatibility boundary; nothing about
+          it moved.
+        - ``"strategy-outcome"``: the M3 protocol. ONE frozen context is
+          built for the whole decision, every candidate is predicted under
+          the wm-so/1 strategy-outcome protocol (benefit/cost/risk/
+          uncertainty), the candidates are compared on a conservative
+          yardstick, and the suggestion is the first step of the best
+          candidate. Horizon is FIXED at 1 for this protocol (no
+          multi-step imagination tree is built for it); passing
+          ``horizon=2`` with it is refused rather than silently ignored.
 
         The decision is recorded as a real ``select_strategy`` action whose
         own cost carries the planning calls' spend (also aggregated in the
@@ -2081,6 +2426,19 @@ class ORHarness:
                             else self.delta)
         if self.prediction_mode != "h-x-b-value":
             limits.delta = 0.0
+        if protocol == "strategy-outcome":
+            if limits.horizon != 1:
+                raise ValueError(
+                    "the strategy-outcome protocol plans at horizon=1 only: "
+                    "one macro strategy comparison, then re-planning from "
+                    "the real observation. Pass horizon=1 (the default) or "
+                    "use the legacy protocol for two-step rollouts")
+            return self._plan_next_strategy_outcome(
+                task, episode_id, candidates=candidates, limits=limits)
+        if protocol not in ("legacy",):
+            raise ValueError(
+                f"unknown protocol {protocol!r}; expected 'legacy' or "
+                "'strategy-outcome'")
         task_id = str(task.get("task_id", ""))
         plan = PlanResult(plan_id=PlanResult.new_id(),
                           root_snapshot_id="",
@@ -2175,7 +2533,7 @@ class ORHarness:
         # that moved mid-decision contaminate the comparison, and would
         # re-embed the same query once per candidate.
         plan_context = self.build_prediction_context(
-            task, episode_id, snapshot=root,
+            task, episode_id, snapshot=root, historical=False,
             candidates=specs, top=limits.max_root_candidates)
 
         def _real_budget_exceeded() -> Optional[str]:
@@ -2490,6 +2848,271 @@ class ORHarness:
         # conditioned on it, and the stored context resolves its content.
         result["prediction_context_id"] = plan_context.context_id
         result["prediction_context_version"] = plan_context.version
+        return result
+
+    def _plan_next_strategy_outcome(
+            self, task: Dict[str, Any],
+            episode_id: Optional[str] = None, *,
+            candidates: Optional[Sequence[ActionSpec]] = None,
+            limits: Any = None) -> Dict[str, Any]:
+        """One macro strategy comparison under the wm-so/1 protocol.
+
+        The M3 decision loop: ONE frozen context for the whole decision,
+        one strategy-outcome prediction per candidate (a failed prediction
+        does not drag the others down), a conservative comparison, and a
+        suggestion the agent accepts, rejects or overrides through
+        ``choose_next`` — the SAME decision action and choice recording the
+        legacy protocol uses, so the downstream flow is one flow.
+
+        Fallback: when NO candidate carries a usable prediction (provider
+        down, every payload invalid), the plan reports
+        ``status="no_valid_predictions"`` with the reasons and NO
+        suggestion — the caller falls back to ``recall``/Selector or
+        chooses itself. The fallback is reported as what it is; it is never
+        dressed up as a completed world-model comparison.
+        """
+        from or_harness.world_model.planner import (
+            PlanResult,
+            score_strategy_outcome_predictions,
+        )
+        from or_harness.world_model.strategy_prediction import (
+            STRATEGY_OUTCOME_PROTOCOL_VERSION,
+        )
+        task_id = str(task.get("task_id", ""))
+        plan = PlanResult(plan_id=PlanResult.new_id(),
+                          root_snapshot_id="",
+                          decision_action_id=None,
+                          task_id=task_id,
+                          episode_id=episode_id,
+                          limits=limits)
+        if not self.planning:
+            plan.status = "disabled"
+            plan.truncation_reason = ("planning is disabled "
+                                      "(ORHarness(planning=False))")
+            return plan.to_dict()
+        root = self.snapshot(task, episode_id)
+        plan.root_snapshot_id = root.snapshot_id
+        declared = self._load_budget(task_id, episode_id)
+        budget_view = self.budget.view(task_id, episode_id, budget=declared)
+        plan.budget_confirmation = (
+            budget_view["status"] if declared else "unknown")
+        if budget_view["status"] == "exceeded":
+            plan.status = "fallback"
+            plan.truncation_reason = (
+                "declared budget already exceeded by real consumption; "
+                "planning would spend more — returning without model calls. "
+                "Report the current best solution instead.")
+            return plan.to_dict()
+        specs = self._candidate_specs(task, episode_id, candidates,
+                                      limits.max_root_candidates)
+        valid_specs = []
+        identity_conflicts = []
+        for spec in specs:
+            if spec.task_id and spec.task_id != task_id:
+                identity_conflicts.append(
+                    f"{spec.action_type}/{spec.strategy_id}: task_id "
+                    f"{spec.task_id!r} != {task_id!r}")
+                continue
+            if (spec.episode_id is not None and episode_id is not None
+                    and spec.episode_id != episode_id):
+                identity_conflicts.append(
+                    f"{spec.action_type}/{spec.strategy_id}: episode_id "
+                    f"{spec.episode_id!r} != {episode_id!r}")
+                continue
+            spec.task_id = task_id
+            spec.episode_id = episode_id
+            valid_specs.append(spec)
+        if identity_conflicts:
+            plan.truncation_reason = (
+                "candidate identity conflict (rejected): "
+                + "; ".join(identity_conflicts))
+        specs = [s for s in valid_specs
+                 if s.action_type == "execute_strategy"]
+        if not specs:
+            plan.status = "no_candidates"
+            reason = ("no execute_strategy candidates to compare under the "
+                      "strategy-outcome protocol")
+            if plan.truncation_reason:
+                reason = plan.truncation_reason + ". " + reason
+            plan.truncation_reason = reason
+            return plan.to_dict()
+        decision = self.actions.begin_action(
+            "select_strategy", task_id, episode_id, pre_snapshot=root,
+            params={"kind": "plan_next", "protocol": "strategy-outcome",
+                    "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
+                    "limits": limits.to_dict()})
+        plan.decision_action_id = decision.action_id
+        started = time.monotonic()
+        calls_made = 0
+        stop_reason: Optional[str] = None
+        # ONE frozen context for the whole decision: every candidate is
+        # conditioned on the SAME problem representation, X/B, retrieval
+        # evidence, capability evidence and constraints.
+        plan_context = self.build_prediction_context(
+            task, episode_id, snapshot=root, historical=False,
+            candidates=specs, top=limits.max_root_candidates)
+        predictions: List[Any] = []
+        for spec in specs:
+            if calls_made >= limits.max_model_calls:
+                stop_reason = (f"model-call budget exhausted "
+                               f"({limits.max_model_calls})")
+                break
+            if time.monotonic() - started > limits.time_budget_s:
+                stop_reason = ("planning time budget exhausted "
+                               f"({limits.time_budget_s}s)")
+                break
+            if declared:
+                view = self.budget.view(task_id, episode_id, budget=declared)
+                if view["status"] == "exceeded":
+                    stop_reason = ("declared budget exceeded by real "
+                                   "consumption (including this planning's "
+                                   "own spend); no further model calls")
+                    break
+            remaining = limits.time_budget_s - (time.monotonic() - started)
+            if remaining <= 0:
+                stop_reason = ("planning time budget exhausted "
+                               f"({limits.time_budget_s}s)")
+                break
+            prediction = self.predict_strategy_outcome(
+                task, spec, episode_id, context=plan_context,
+                timeout_s=max(0.001, remaining))
+            calls_made += 1
+            predictions.append((spec, prediction))
+        plan.model_calls_made = calls_made
+        # Conservative comparison on ONE yardstick.
+        only_predictions = [p for _spec, p in predictions]
+        scores = score_strategy_outcome_predictions(only_predictions, limits)
+        comparable = [s for s in scores if s.utility is not None]
+        suggested_spec: Optional[ActionSpec] = None
+        suggestion_basis = ""
+        if comparable and self.plan_mode == "advise":
+            best = max(comparable, key=lambda s: s.utility)
+            for spec, prediction in predictions:
+                if prediction.prediction_id == best.prediction_id:
+                    suggested_spec = spec
+                    break
+            suggestion_basis = (
+                f"U={best.utility} = {limits.alpha}*G({best.benefit_value})"
+                f" - {limits.beta}*C({best.cost_normalized}) - "
+                f"{limits.gamma}*R({best.risk_effective}); "
+                f"{len(scores)} candidate(s) compared under protocol "
+                f"{STRATEGY_OUTCOME_PROTOCOL_VERSION} from context "
+                f"{plan_context.context_id}; conservative yardstick "
+                "(unknown cost => peak share, unknown risk => full weight, "
+                "unknown benefit => nothing)")
+        elif comparable:
+            suggestion_basis = ("shadow mode: candidates evaluated and "
+                                "recorded; suggestion withheld")
+        # Real planning spend -> the decision action's own cost.
+        planning_total: Dict[str, float] = {}
+        planning_measured: set = set()
+        for _spec, prediction in predictions:
+            if prediction.trace.call_cost is None:
+                continue
+            for dim in prediction.trace.call_cost.measured_dims():
+                planning_total[dim] = planning_total.get(dim, 0.0) + \
+                    getattr(prediction.trace.call_cost, dim)
+                planning_measured.add(dim)
+        if planning_measured:
+            self.actions.amend_action_cost_increment(
+                decision.action_id,
+                **{d: planning_total[d] for d in planning_measured})
+            plan.planning_cost = {
+                "cost": {d: round(planning_total[d], 4)
+                         for d in sorted(planning_measured)},
+                "measured": sorted(planning_measured),
+                "note": ("REAL spend of the planning model calls (failed "
+                         "calls included), charged once to the decision "
+                         "action as own cost — sunk, never part of any "
+                         "candidate's utility"),
+            }
+        if declared:
+            final_view = self.budget.view(task_id, episode_id,
+                                          budget=declared)
+            plan.budget_confirmation = final_view["status"]
+            if final_view["status"] == "exceeded":
+                plan.status = "fallback"
+                plan.truncation_reason = (
+                    "declared budget exceeded by real consumption "
+                    "(including this planning's own spend); the suggestion "
+                    "is withheld — report the current best solution "
+                    "instead.")
+                self.actions.end_action(
+                    decision.action_id, status="completed",
+                    outcome={"kind": "plan_next_evaluation",
+                             "plan_id": plan.plan_id,
+                             "protocol": "strategy-outcome",
+                             "n_candidates": len(predictions),
+                             "suggested": None,
+                             "suggestion_withheld": True,
+                             "status": plan.status,
+                             "truncation_reason": plan.truncation_reason})
+                result = plan.to_dict()
+                result["prediction_context_id"] = plan_context.context_id
+                result["prediction_context_version"] = \
+                    plan_context.version
+                result["protocol"] = "strategy-outcome"
+                result["candidates"] = [
+                    {"action_spec": spec.to_dict(),
+                     "prediction_id": prediction.prediction_id,
+                     "prediction_status": prediction.status,
+                     "score": score.to_dict()}
+                    for (spec, prediction), score
+                    in zip(predictions, scores)]
+                return result
+        if suggested_spec is not None:
+            plan.suggested = suggested_spec
+            plan.suggestion_basis = suggestion_basis
+        elif comparable:
+            plan.suggestion_basis = suggestion_basis
+        plan.status = "truncated" if stop_reason else "ok"
+        if stop_reason:
+            plan.truncation_reason = stop_reason
+        if not comparable:
+            plan.status = "no_valid_predictions"
+            statuses = sorted({p.status for p in only_predictions})
+            plan.truncation_reason = (
+                "no candidate carried a usable strategy-outcome prediction "
+                f"(statuses: {statuses}); no suggestion is possible. Fall "
+                "back to `recall`/Selector ordering or choose yourself — "
+                "the calls that happened and their cost are recorded.")
+        self.actions.end_action(
+            decision.action_id,
+            status="completed",
+            outcome={"kind": "plan_next_evaluation",
+                     "plan_id": plan.plan_id,
+                     "protocol": "strategy-outcome",
+                     "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
+                     "root_snapshot_id": plan.root_snapshot_id,
+                     "n_candidates": len(predictions),
+                     "candidates": [
+                         {"action_spec": spec.to_dict(),
+                          "prediction_id": prediction.prediction_id,
+                          "prediction_status": prediction.status,
+                          "score": score.to_dict()}
+                         for (spec, prediction), score
+                         in zip(predictions, scores)],
+                     "suggested": (plan.suggested.to_dict()
+                                   if plan.suggested else None),
+                     "suggestion_basis": plan.suggestion_basis,
+                     "suggestion_withheld": self.plan_mode == "shadow",
+                     "status": plan.status,
+                     "truncation_reason": plan.truncation_reason,
+                     "model_calls_made": int(plan.model_calls_made),
+                     "planning_cost": copy.deepcopy(plan.planning_cost),
+                     "budget_confirmation": plan.budget_confirmation,
+                     "prediction_context_id": plan_context.context_id,
+                     "prediction_context_version": plan_context.version})
+        result = plan.to_dict()
+        result["prediction_context_id"] = plan_context.context_id
+        result["prediction_context_version"] = plan_context.version
+        result["protocol"] = "strategy-outcome"
+        result["candidates"] = [
+            {"action_spec": spec.to_dict(),
+             "prediction_id": prediction.prediction_id,
+             "prediction_status": prediction.status,
+             "score": score.to_dict()}
+            for (spec, prediction), score in zip(predictions, scores)]
         return result
 
     def choose_next(self, decision_action_id: str, *,

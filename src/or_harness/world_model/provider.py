@@ -272,9 +272,23 @@ class HttpChatProvider(WorldModelProvider):
         if timeout_s is not None:
             effective_timeout = max(0.001, min(float(timeout_s),
                                                self.timeout_s))
-        action_type = (request.get("action_spec") or {}).get("action_type")
-        prompt = (SYSTEM_PROMPT_INDUCE if action_type == "induce"
-                  else SYSTEM_PROMPT)
+        # The system prompt follows the REQUEST's protocol: a
+        # strategy-outcome request (wm-so/1) gets the strategy-outcome
+        # prompt, everything else keeps the legacy prompt. The request
+        # names its protocol explicitly, so the wire format is traceable
+        # to the prompt that produced it.
+        from or_harness.world_model.strategy_prediction import (
+            STRATEGY_OUTCOME_PROTOCOL_VERSION,
+            STRATEGY_OUTCOME_SYSTEM_PROMPT,
+        )
+        if request.get("prediction_protocol") == \
+                STRATEGY_OUTCOME_PROTOCOL_VERSION:
+            prompt = STRATEGY_OUTCOME_SYSTEM_PROMPT
+        else:
+            action_type = (request.get("action_spec") or {}).get(
+                "action_type")
+            prompt = (SYSTEM_PROMPT_INDUCE if action_type == "induce"
+                      else SYSTEM_PROMPT)
         body = {
             "model": self.model,
             "messages": [

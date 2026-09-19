@@ -706,3 +706,185 @@ def _looks_like_solved_answer(value: Any) -> bool:
     if not isinstance(value, dict):
         return False
     return any(value.get(key) is not None for key in _ANSWER_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# strategy-outcome protocol (M3): comparing StrategyOutcomePrediction objects
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StrategyOutcomeScore:
+    """The conservative comparison result for ONE strategy-outcome candidate.
+
+    The yardstick is deliberately simple and explainable:
+
+    - ``benefit_value``: the candidate's own benefit value, when the metric
+      is comparable (this build compares NORMALIZED solution-quality
+      benefits; a candidate whose benefit is absent or a different currency
+      reports ``None`` and never auto-wins);
+    - ``cost_normalized``: the predicted cost over the comparison's common
+      basis, with a missing dimension charged at the peak normalized share
+      of the candidates that DID predict it (unknown cost is never free);
+    - ``risk_effective``: the MAXIMUM event probability (one explicit risk
+      evaluation rule — events are never assumed independent, so
+      probabilities are neither summed nor multiplied); an event with no
+      probability basis charges the full weight as a deficit;
+    - ``utility``: ``alpha*G - beta*C - gamma*R`` with the SAME weights the
+      harness scores everything else with. The knowledge term is OFF for
+      this protocol (delta=0): an old knowledge-gain score is not an H
+      improvement and must not leak into the new comparison.
+    """
+
+    prediction_id: Optional[str] = None
+    benefit_value: Optional[float] = None
+    cost_normalized: Optional[float] = None
+    risk_effective: Optional[float] = None
+    utility: Optional[float] = None
+    incomparable: Dict[str, str] = field(default_factory=dict)
+    notes: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "prediction_id": self.prediction_id,
+            "benefit_value": self.benefit_value,
+            "cost_normalized": self.cost_normalized,
+            "risk_effective": self.risk_effective,
+            "utility": self.utility,
+            "incomparable": dict(self.incomparable),
+            "notes": list(self.notes),
+        }
+
+
+#: The benefit kinds this comparison can compare on one yardstick. A
+#: candidate whose benefit is a different currency is NOT silently
+#: converted — it reports incomparable instead.
+COMPARABLE_BENEFIT_KINDS = ("solution_quality",)
+
+
+def score_strategy_outcome_predictions(
+        predictions: List[Any], limits: PlanLimits
+        ) -> List[StrategyOutcomeScore]:
+    """Score strategy-outcome predictions on ONE conservative yardstick.
+
+    ``predictions`` are :class:`~or_harness.world_model.contracts
+    .StrategyOutcomePrediction` objects (one per candidate). The rules:
+
+    - only ``status="valid"`` predictions participate; a failed prediction
+      is incomparable (a candidate whose prediction failed must not win by
+      default, nor drag the others down);
+    - the cost basis is the UNION of the dimensions any candidate's cost
+      predicted; a candidate missing a basis dimension is charged that
+      dimension's peak normalized share;
+    - risk is the MAXIMUM event probability (no independence assumption);
+      an event with no probability is a full-weight deficit;
+    - a benefit whose kind is not in :data:`COMPARABLE_BENEFIT_KINDS` is
+      incomparable and contributes NOTHING (unknown upside is never
+      rewarded — the mirror of charging unknown risk in full);
+    - the knowledge term is OFF (delta=0) for this protocol.
+    """
+    valid = [p for p in predictions if p.status == "valid"]
+    # Common cost basis: every dimension any valid prediction predicted.
+    basis: List[str] = sorted({
+        dim for p in valid
+        if p.cost is not None and p.cost.expected is not None
+        for dim in p.cost.expected.measured_dims()})
+    norms: Dict[str, float] = {}
+    for dim in basis:
+        values = [float(getattr(p.cost.expected, dim))
+                  for p in valid
+                  if p.cost is not None and p.cost.expected is not None
+                  and dim in p.cost.expected.measured_dims()]
+        peak = max(values) if values else 0.0
+        norms[dim] = float(peak) if peak > 0 else 1.0
+    weights = limits.cost_weights or {}
+    alpha = limits.alpha if limits.alpha is not None else 1.0
+    beta = limits.beta if limits.beta is not None else 1.0
+    gamma = limits.gamma if limits.gamma is not None else 1.0
+
+    scores: List[StrategyOutcomeScore] = []
+    for prediction in predictions:
+        score = StrategyOutcomeScore(
+            prediction_id=prediction.prediction_id)
+        if prediction.status != "valid":
+            score.incomparable["prediction"] = (
+                f"the prediction failed with status "
+                f"{prediction.status!r}: no consequence comparison is "
+                "possible for this candidate")
+            scores.append(score)
+            continue
+        # Benefit: comparable currency only.
+        benefit = prediction.benefit
+        if benefit is None or benefit.value is None:
+            score.incomparable["benefit"] = (
+                "no benefit value was predicted; an unpredicted upside "
+                "contributes NOTHING (the mirror of charging unknown risk "
+                "in full)")
+        elif benefit.kind not in COMPARABLE_BENEFIT_KINDS:
+            score.incomparable["benefit"] = (
+                f"benefit kind {benefit.kind!r} is not on this comparison's "
+                "yardstick (normalized solution quality); it is reported, "
+                "never silently converted")
+        else:
+            score.benefit_value = float(benefit.value)
+        # Cost: over the common basis, missing dimensions charged at the
+        # peak normalized share.
+        cost_value = 0.0
+        missing_dims: List[str] = []
+        if prediction.cost is not None \
+                and prediction.cost.expected is not None:
+            measured = prediction.cost.expected.measured_dims()
+            for dim in basis:
+                if dim in measured:
+                    cost_value += (
+                        weights.get(dim, 0.0)
+                        * float(getattr(prediction.cost.expected, dim))
+                        / max(norms.get(dim, 1.0), 1e-9))
+                else:
+                    cost_value += weights.get(dim, 0.0)
+                    if dim not in missing_dims:
+                        missing_dims.append(dim)
+        elif basis:
+            cost_value = sum(weights.get(dim, 0.0) for dim in basis)
+            missing_dims = list(basis)
+        if missing_dims:
+            score.incomparable["cost"] = (
+                f"cost dimensions {sorted(missing_dims)} not predicted by "
+                "this candidate; charged each at the peak normalized share "
+                "of the candidates that measured them (unknown cost is "
+                "never free)")
+        score.cost_normalized = round(cost_value, 6)
+        # Risk: the MAXIMUM event probability; a probability-less event is
+        # a full-weight deficit.
+        risk = prediction.risk
+        risk_effective = 0.0
+        if risk is not None and risk.events:
+            probabilities = [e.probability for e in risk.events
+                             if e.probability is not None]
+            if probabilities:
+                risk_effective = max(float(p) for p in probabilities)
+            else:
+                risk_effective = 1.0
+                score.incomparable["risk"] = (
+                    "risk events were predicted with no probability basis; "
+                    "charged the full gamma weight (unknown risk is a "
+                    "deficit, never free)")
+        else:
+            risk_effective = 1.0
+            score.incomparable["risk"] = (
+                "no risk was predicted; charged the full gamma weight "
+                "(unknown risk is a deficit, never free)")
+        score.risk_effective = round(risk_effective, 6)
+        score.utility = round(
+            alpha * (score.benefit_value
+                     if score.benefit_value is not None else 0.0)
+            - beta * cost_value
+            - gamma * risk_effective, 6)
+        if score.incomparable:
+            score.notes.append(
+                "incomparable fields are charged conservatively (unknown "
+                "risk => full gamma weight; unknown cost dimension => the "
+                "peak normalized share; unknown benefit => nothing) and "
+                "reported explicitly — unknown never auto-wins")
+        scores.append(score)
+    return scores

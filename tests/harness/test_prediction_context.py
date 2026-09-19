@@ -956,7 +956,15 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         self.assertEqual(override["frozen_declared_budget"], frozen_budget)
 
     def test_a_supplied_current_result_is_bounded_too(self):
-        """A supplied result does not get to smuggle later evidence in."""
+        """A supplied result does not get to smuggle later evidence in.
+
+        The historical path REFUSES a recall result gathered now outright:
+        creation-time bounding cannot see that an EXISTING entry was later
+        revised, so a current result can never be PROVEN to belong to the
+        frozen moment. (The previous behaviour — bounding it by creation
+        time — was exactly the creation-time-filtering shortcut the phase
+        rejects.)
+        """
         h, _ = self._provider()
         task = _task("t1")
         snap = h.snapshot(task, "ep1")
@@ -967,13 +975,56 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         self.assertTrue((current.get("vector_recall") or {})
                         .get("execution_evidence"),
                         "the live channel must really see the new evidence")
+        with self.assertRaises(ValueError) as caught:
+            h.build_prediction_context(task, "ep1", snapshot=snap,
+                                       recall_result=current)
+        self.assertIn("cannot be proven to belong to the frozen moment",
+                      str(caught.exception))
+        # The same result IS usable for a CURRENT gathering around that
+        # snapshot: there the bounding to the snapshot's moment applies.
         ctx = h.build_prediction_context(task, "ep1", snapshot=snap,
-                                         recall_result=current)
+                                         recall_result=current,
+                                         historical=False)
         hits = [x for x in ctx.retrieval.hits
                 if x["layer"] == "execution_evidence"]
         self.assertEqual(hits, [], "the supplied result is bounded as well")
         bounding = ctx.execution_constraints["retrieval_bounding"]
         self.assertGreaterEqual(bounding["dropped"], 1)
+        # And the context is a CURRENT gathering, not a reconstruction:
+        # the knowledge view and reliability were read and frozen.
+        self.assertNotIn("HISTORICAL reconstruction", " ".join(ctx.notes))
+
+    def test_a_current_gathering_around_a_supplied_snapshot_reads_the_bank(
+            self):
+        """historical=False around a caller snapshot is CURRENT gathering.
+
+        This is the plan_next / predict_outcome pattern: the caller freezes
+        the X/B snapshot, and the context gathers the retrieval, knowledge
+        view, reliability and cell evidence NOW and freezes them. The
+        presence of a snapshot alone must NOT flip the build into a
+        historical reconstruction. The retrieval IS still bounded to the
+        snapshot's moment (the snapshot is the X/B this decision froze), so
+        evidence arriving after it stays out — what distinguishes the two
+        paths is whether the banks are read at all, not whether later
+        evidence is excluded.
+        """
+        h, _ = self._provider()
+        task = _task("t1")
+        # Evidence BEFORE the snapshot: a current gathering must see it.
+        self.solve(_task("t1"))
+        snap = h.snapshot(task, "ep1")
+        ctx = h.build_prediction_context(task, "ep1", snapshot=snap,
+                                         historical=False)
+        execution_ids = {hit["evidence_id"] for hit in ctx.retrieval.hits
+                         if hit["layer"] == "execution_evidence"}
+        self.assertTrue(execution_ids,
+                        "a current gathering reads the live channels")
+        # It is NOT marked as a historical reconstruction ...
+        self.assertNotIn("HISTORICAL reconstruction", " ".join(ctx.notes))
+        self.assertFalse(any("was not saved with this snapshot" in m
+                             for m in ctx.missing))
+        # ... and the snapshot's own X/B is what the context froze.
+        self.assertEqual(ctx.snapshot_id, snap.snapshot_id)
 
     def test_a_context_built_with_a_historical_snapshot_does_not_see_new_facts(self):
         """Building from a historical snapshot must not read today's memory."""

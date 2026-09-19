@@ -683,6 +683,86 @@ def cmd_bind_induction_outcome(args) -> int:
                          f"compared: {result.get('reason') or verdict.get('reason')}")
 
 
+def cmd_predict_strategy(args) -> int:
+    """Predict ONE candidate's consequences under the wm-so/1 protocol."""
+    h = _harness(args)
+    try:
+        from or_harness.world_model.prediction import ActionSpec
+        task = _load_json_arg(args.task)
+        raw = _load_json_arg(args.candidate)
+        if isinstance(raw, dict) and "measurement_scope" in raw:
+            candidate: Any = ActionSpec.from_dict(raw)
+        else:
+            candidate = raw
+        context = None
+        if args.context:
+            context = h.get_prediction_context(args.context)
+            if context is None:
+                return _fail(f"unknown context_id {args.context!r}")
+        cir = _load_json_arg(args.cir) if args.cir else None
+        prediction = h.predict_strategy_outcome(
+            task, candidate, args.episode, context=context, cir=cir)
+        result = {"prediction": prediction.to_dict(),
+                  "prediction_id": prediction.prediction_id}
+        if prediction.status == "contract_only" \
+                and not prediction.provider_configured:
+            return _fail(f"prediction not enabled: "
+                         f"{(prediction.notes or ['no provider'])[0]}", 2)
+        parts = [f"Strategy-outcome prediction {prediction.prediction_id} "
+                 f"({prediction.status}) for "
+                 f"{prediction.candidate.strategy_id or '(unnamed)'}: "]
+        if prediction.benefit is not None:
+            b = prediction.benefit
+            parts.append(f"G={b.value} ({b.kind}/{b.metric}"
+                         + (f", baseline {b.baseline.kind}" if b.baseline
+                            else "") + "); ")
+        if prediction.cost is not None and prediction.cost.expected:
+            dims = prediction.cost.expected.measured_dims()
+            parts.append("c={" + ", ".join(
+                f"{d}: {getattr(prediction.cost.expected, d)}"
+                for d in sorted(dims)) + "}; ")
+        if prediction.risk is not None and prediction.risk.events:
+            parts.append(f"L={len(prediction.risk.events)} event(s); ")
+        if prediction.uncertainty is not None:
+            parts.append("uncertainty "
+                         f"(source={prediction.uncertainty.source}); ")
+        if prediction.trace.unsupported_fields:
+            parts.append(f"not predicted: "
+                         f"{', '.join(sorted(prediction.trace.unsupported_fields))}; ")
+        parts.append("This is a hypothesis — execute the candidate "
+                     "yourself, then `orx bind-strategy --prediction "
+                     f"{prediction.prediction_id} --action <id>`.")
+        return _emit(result, "".join(parts))
+    finally:
+        h.close()
+
+
+def cmd_bind_strategy(args) -> int:
+    """Bind a strategy-outcome prediction to the real action that ran."""
+    h = _harness(args)
+    try:
+        prediction = h.bind_strategy_outcome(args.prediction, args.action)
+        info = prediction.trace.model_info
+        if info.get("binding_mismatch"):
+            summary = (f"Prediction {args.prediction} bound to action "
+                       f"{args.action} WITH MISMATCH: "
+                       f"{info['binding_mismatch']}. The prediction is NOT "
+                       "comparable — the executed action differs from the "
+                       "predicted candidate.")
+        elif prediction.trace.comparable:
+            summary = (f"Prediction {args.prediction} bound to action "
+                       f"{args.action} and COMPARABLE: the real execution "
+                       "may be scored against it. Window-level scoring "
+                       "itself lands in M4.")
+        else:
+            summary = (f"Prediction {args.prediction} bound to action "
+                       f"{args.action}, not yet comparable: "
+                       f"{prediction.trace.not_comparable_reasons}.")
+        return _emit({"prediction": prediction.to_dict()}, summary)
+    finally:
+        h.close()
+
+
 def cmd_plan_next(args) -> int:
     h = _harness(args)
     try:
@@ -699,10 +779,14 @@ def cmd_plan_next(args) -> int:
                   "max_model_calls": args.max_calls}
         if getattr(args, "delta", None) is not None:
             limits["delta"] = args.delta
+        protocol = getattr(args, "protocol", "legacy") or "legacy"
         plan = h.plan_next(task, episode_id=args.episode,
-                           candidates=candidates, limits=limits)
+                           candidates=candidates, limits=limits,
+                           protocol=protocol)
         result = {"plan": plan, "decision_action_id": plan.get(
             "decision_action_id")}
+        if plan.get("protocol"):
+            result["protocol"] = plan["protocol"]
         status = plan.get("status")
         if status in ("disabled", "no_candidates", "fallback"):
             return _emit(result, f"plan_next returned status={status}: "
@@ -1323,6 +1407,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--action", required=True)
     p.set_defaults(func=cmd_bind_outcome)
 
+    p = sub.add_parser(
+        "predict-strategy",
+        help="predict ONE candidate strategy's benefit/cost/risk/"
+             "uncertainty under the wm-so/1 protocol, from a frozen "
+             "prediction context (world-model M3)")
+    p.add_argument("--task", required=True,
+                   help="task JSON (literal or file)")
+    p.add_argument("--candidate", required=True,
+                   help="candidate JSON (literal or file): a CandidateRef "
+                        "{action_type, strategy_id, solver, config, scope} "
+                        "or a legacy ActionSpec (measurement_scope/"
+                        "budget_hint preserved verbatim)")
+    p.add_argument("--episode", default=None)
+    p.add_argument("--context", default=None, metavar="CTX_ID",
+                   help="reuse a FROZEN prediction input context built by "
+                        "`orx context` (identity verified, including the "
+                        "effective input version); default builds a fresh "
+                        "one for this call")
+    p.add_argument("--cir", default=None,
+                   help="CIR JSON (literal or file): the effective problem "
+                        "input. Pass the SAME CIR you built the context "
+                        "with when reusing one")
+    p.set_defaults(func=cmd_predict_strategy)
+
+    p = sub.add_parser(
+        "bind-strategy",
+        help="bind a strategy-outcome prediction to the real action that "
+             "ran (identity checked: task/episode/strategy/solver/config; "
+             "a mismatch is recorded, never scored)")
+    p.add_argument("--prediction", required=True)
+    p.add_argument("--action", required=True)
+    p.set_defaults(func=cmd_bind_strategy)
+
     p = sub.add_parser("plan-next",
                        help="bounded next-step planning over predicted "
                             "action consequences (M3): freeze one root "
@@ -1354,6 +1471,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "off), 'h-x-b' predicts H as well but keeps the "
                         "knowledge value out of the decision, "
                         "'h-x-b-value' lets it influence the choice")
+    p.add_argument("--protocol", default="legacy",
+                   choices=["legacy", "strategy-outcome"],
+                   help="prediction protocol: 'legacy' (default) keeps the "
+                        "existing OutcomePrediction path and horizon 1-2; "
+                        "'strategy-outcome' compares candidates under the "
+                        "wm-so/1 strategy-outcome protocol (benefit/cost/"
+                        "risk/uncertainty, horizon fixed at 1)")
     p.set_defaults(func=cmd_plan_next)
 
     p = sub.add_parser("bind-induction-outcome",

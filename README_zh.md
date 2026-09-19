@@ -18,6 +18,7 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 - **七个求解器适配器**（highs、pulp、ortools、scip、copt、pyomo、gurobi）——仅做可用性探测，具体求解器由你按情况选择。
 - **统一世界模型契约**（`wm-contract/1`）：为两个预测模块提供有版本、可序列化、可校验的结构——**OR 策略后果预测**（收益携带指标/单位/基线，代价复用 `CostVector`，风险为具名事件，不确定性区分执行随机性与证据不足）与 **Harness 能力演化预测**（`H = F(M, W_OR, Pi, R, T)` 的能力证据、候选学习操作、基线与时间范围、学习代价、退化风险、验证条件）。**契约已实现，预测服务尚未接入**：构建出的契约会如实返回 `status="contract_only"`，而不是假装已经做过预测；并且把 `provider_configured`（已挂载 provider）、`service_available`（本构建实现了该类服务）与 `prediction_made`（确实产生了预测）作为三个独立事实分别报告——仅配置了 provider 而模型调用次数为 0，永远不会是 `valid`。旧无版本载荷通过显式 legacy 视图保持可读；未知契约版本明确失败，绝不猜测解析。详见 [references/world_model_contract.md](references/world_model_contract.md)。
 - **冻结的预测输入上下文**（`wm-context/1`）：预测实际依据什么信息，以及这些信息如何一致、完整、可追溯地到达模型。一次 `orx context` 冻结一份上下文：**联合问题表征**（任务文本与载荷、CIR 关系——保留为关系而非压缩成三个数、带来源标注的数学属性、结构画像与推导报告）、**X/B**（来自同一快照）、**两条既有检索渠道的证据**（按证据身份去重，携带内容与适用性标注，跨格命中可见但不进入当前格统计）、**Harness 能力证据**（`H = F(M, W_OR, Pi, R, T)`，仅证据强度，无综合评分）与**外部执行约束**。**建模前即可构建**：没有 `model`、没有 CIR、没有文本都是正常输入，缺失部分逐项如实报告，不从 `family` 名称臆断数学性质。构建上下文**不调用预测模型、不执行 solver、不做归纳**；同一次候选比较共享同一份上下文，复用需通过任务版本校验。详见 [references/prediction_context.md](references/prediction_context.md)。
+- **策略后果预测服务**（`wm-so/1`，世界模型 M3）：基于冻结上下文的 training-free OR 策略后果预测服务。`orx predict-strategy` 预测单个候选的收益（带指标/单位/基线——`solution_quality` 必须是归一化值，原始目标值会被拒绝而非截断）、资源代价（`CostVector`，掩码标记的是预测维度）、风险（具名事件，与代价分开）与不确定性（模型自报，如实记录为未校准）；`orx plan-next --protocol strategy-outcome` 在同一保守口径下比较候选（未知代价按峰值份额计、未知风险按满权重计、未知收益不计——这是决策规则而非实测概率）并给出建议；`orx bind-strategy` 将真实执行与所提配置的预测关联，带身份校验与诚实的不匹配记录。所有失败状态（未配置、provider 错误、空/非法载荷、越界数值）可区分并连同真实调用开销一并持久化。旧 `predict_outcome` 路径保持不变。详见 [references/strategy_outcome.md](references/strategy_outcome.md)。
 
 ## 快速开始
 
@@ -41,6 +42,7 @@ orx inspect   --bank strategic
 - **[SKILL.md](SKILL.md)** —— harness agent 的薄契约（从这里开始，英文）
 - **[references/world_model_contract.md](references/world_model_contract.md)** —— 统一预测契约、`contract_only` 含义、attempt 与策略执行窗口之分、能力来源与迁移表（含可运行示例，英文）
 - **[references/prediction_context.md](references/prediction_context.md)** —— 冻结的预测输入上下文：联合问题表征与数学属性来源、两条检索渠道与证据类别、能力证据强度、一次构建与一致复用规则（含可运行示例，英文）
+- **[references/strategy_outcome.md](references/strategy_outcome.md)** —— 策略后果预测服务（wm-so/1）：协议、比较口径、预测—选择—执行关联（含可运行示例，英文）
 - **[references/concepts.md](references/concepts.md)** —— 双层记忆、CostVector、派生层处置（英文）
 - **[references/induction.md](references/induction.md)** —— C1–C6、适用范围=家族+结构格、入库门槛与入库验证、离线生命周期（英文）
 - **[references/examples.md](references/examples.md)** —— 四个完整走查实例（英文）

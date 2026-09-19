@@ -1687,19 +1687,23 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
             "window-scope prediction with no real window is not comparable")
     if prediction.candidate.scope == "strategy_window" \
             and prediction.status == "valid" \
-            and not prediction.trace.comparable:
+            and prediction.trace.comparable \
+            and prediction.trace.not_comparable_reasons:
         problems.append(
-            "a VALID window-scope prediction must be comparable: an "
-            "unfinished or mismatched window has no final numbers to score "
-            "against")
+            "a comparable window-scope prediction must carry no "
+            "not_comparable_reasons: the two flags contradict each other")
     benefit = prediction.benefit
     if benefit is not None:
         if benefit.value is not None and not _finite(benefit.value):
             problems.append("benefit.value is not a finite number")
         if benefit.kind == "solution_quality" and benefit.value is not None \
                 and not (0.0 <= float(benefit.value) <= 1.0):
-            problems.append("benefit.value for kind='solution_quality' must "
-                            "be in [0, 1]")
+            problems.append(
+                "benefit.value for kind='solution_quality' must be in "
+                "[0, 1]: this build's solution-quality currency is a "
+                "NORMALIZED metric (e.g. 1-gap). A raw objective value is "
+                "not silently clamped or rescaled — declare the metric you "
+                "actually mean (metric/unit) or use a different kind")
         if benefit.interval is not None:
             lo, hi = benefit.interval
             if not _finite(lo) or not _finite(hi) or lo > hi:
@@ -1737,11 +1741,16 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
             value = getattr(uncertainty, name)
             if value is not None and not _prob(value):
                 problems.append(f"uncertainty.{name} must be in [0, 1]")
-        if uncertainty.source == "model_self_report":
+        if uncertainty.source == "model_self_report" \
+                and (uncertainty.execution_randomness is not None
+                     or uncertainty.knowledge_gap is not None):
             problems.append(
-                "uncertainty.source='model_self_report' is not a calibrated "
-                "probability: keep it in notes/model_info, or mark the "
-                "components as framework_heuristic/measured")
+                "uncertainty.source='model_self_report' carrying numeric "
+                "components is not a calibrated probability: store the "
+                "model's self-report in notes/model_info, or restate the "
+                "components under an honest source "
+                "(framework_heuristic/measured). A self-report may not be "
+                "relabeled to pass validation")
     if prediction.trace is None:
         problems.append("trace is required (version, input, evidence, "
                         "unsupported fields)")

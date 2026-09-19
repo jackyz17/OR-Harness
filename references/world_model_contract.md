@@ -171,17 +171,20 @@ Rules the framework enforces:
 
 - A window-scope prediction **must** reference a real `window_id`
   (`validate_strategy_outcome` rejects one without it).
-- A window is `comparable` **only when it is a completed real scope**. Every
-  one of these makes it `comparable=False` with the reasons listed:
+- **Predicting before executing is legitimate; scoring is what waits.** A
+  window-scope prediction about an UNEXECUTED (or still-running) window is a
+  valid forecast with `trace.comparable=False` and the reasons — the window
+  has no final numbers yet. What is refused is a contradiction: a
+  `comparable=True` trace carrying `not_comparable_reasons`. A window is
+  `comparable` **only when it is a completed real scope**. Every one of
+  these makes it `comparable=False` with the reasons listed:
   - no in-scope executed attempt at all;
   - an in-scope attempt with **no linked execution**;
   - an in-scope attempt that has **not ended** (status `running`) — a
     window that is still moving has no final numbers;
   - the window's task / episode / strategy does **not** match the candidate
     it is used for.
-  **Only a comparable window may be scored.** A `valid` window-scope
-  prediction must be comparable: `validate_strategy_outcome` rejects one
-  that is not.
+  **Only a comparable window may be scored.**
 - Window identity is checked, not trusted. A `candidate.window_id` naming
   another task / episode / strategy is refused, and so is a `window=`
   object handed in for a different candidate. Use
@@ -300,8 +303,9 @@ The contract is one phase of a larger reconstruction. **Not implemented
 here**, and not to be described as done:
 
 - no new semantic extractor and no retrieval rework;
-- no switch of the full OR prediction service (the existing
-  `predict_outcome` shadow path is untouched);
+- no switch away from the legacy `predict_outcome` shadow path (it is
+  unchanged; the wm-so/1 service is a separate path — see
+  [strategy_outcome.md](strategy_outcome.md));
 - no task-closing scheduler, no automatic offline learning schedule;
 - no H evaluation system;
 - no multi-step latent rollouts;
@@ -314,9 +318,15 @@ action vocabulary (the six action types stay), reviving the retired
 > **Phase 2 note.** The INPUT side of a prediction is now wired: see
 > [references/prediction_context.md](prediction_context.md). A prediction is
 > conditioned on a frozen `PredictionContext` (joint problem representation,
-> X/B, retrieval evidence, capability evidence, execution constraints). The
-> output protocol, the prompt and the decision loop are still unchanged —
-> that switch belongs to a later phase.
+> X/B, retrieval evidence, capability evidence, execution constraints).
+>
+> **Phase 3 (M3) note.** The strategy-outcome prediction SERVICE is now
+> implemented under the `wm-so/1` protocol: see
+> [references/strategy_outcome.md](strategy_outcome.md). `predict-strategy`
+> fills a `StrategyOutcomePrediction` from a frozen context and one
+> candidate; `plan-next --protocol strategy-outcome` compares candidates on
+> it; `bind-strategy` links the real execution. The legacy
+> `predict_outcome` path is unchanged.
 
 ## 10. Verification checklist for a consuming agent
 

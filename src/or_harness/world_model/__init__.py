@@ -125,6 +125,7 @@ from or_harness.world_model.context import (
     classify_evidence,
     context_identity_problems,
     dedupe_evidence,
+    effective_input_version,
     evidence_identity,
     frozen_knowledge_available,
     frozen_knowledge_view,
@@ -146,6 +147,12 @@ from or_harness.world_model.state import (
     task_text_digest,
     verified_knowledge_view,
 )
+from or_harness.world_model.strategy_prediction import (
+    STRATEGY_OUTCOME_PROTOCOL_VERSION,
+    StrategyOutcomeService,
+    build_strategy_outcome_request,
+    parse_strategy_outcome_payload,
+)
 
 __all__ = [
     # state / actions / budget substrate
@@ -161,6 +168,11 @@ __all__ = [
     "task_text",
     "task_text_digest",
     "verified_knowledge_view",
+    # strategy-outcome prediction service (M3, wm-so/1)
+    "STRATEGY_OUTCOME_PROTOCOL_VERSION",
+    "StrategyOutcomeService",
+    "build_strategy_outcome_request",
+    "parse_strategy_outcome_payload",
     # execution window (attempt vs strategy window)
     "DEFAULT_AUXILIARY_ACTION_TYPES",
     "DEFAULT_IN_SCOPE_ACTION_TYPES",
@@ -193,6 +205,7 @@ __all__ = [
     "classify_evidence",
     "context_identity_problems",
     "dedupe_evidence",
+    "effective_input_version",
     "evidence_identity",
     "frozen_knowledge_available",
     "frozen_knowledge_view",

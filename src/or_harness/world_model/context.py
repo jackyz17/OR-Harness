@@ -154,6 +154,27 @@ def task_with_effective_cir(task: Dict[str, Any],
     return copy_task
 
 
+def effective_input_version(task: Dict[str, Any],
+                            cir: Optional[Any] = None) -> str:
+    """The version identity of the EFFECTIVE problem input of a request.
+
+    ``task_text_digest(task)`` digests the task JSON as the CALLER supplied
+    it, so the same problem expressed once through an explicit ``cir`` and
+    once through the task's own ``coupling`` field produces two DIFFERENT
+    digests — and a context built the first way was then refused when reused
+    the second way, even though both requests describe the same effective
+    problem. This digest is computed over the RESOLVED input: the task with
+    the effective CIR already merged in (``task_with_effective_cir``), so
+    the identity follows the problem the prediction actually conditions on.
+
+    Two different CIRs that happen to produce the same rc/tc/rx still
+    produce different digests here, because the RELATIONS are part of the
+    digested content — three coupling numbers agreeing is not relations
+    agreeing.
+    """
+    return _stable_digest(task_with_effective_cir(task, cir))
+
+
 #: The dimensions that define a structural CELL. Two descriptions that
 #: disagree on any of these are describing different structures, so a
 #: snapshot (or a reused retrieval result) may not be combined with the
@@ -1185,6 +1206,13 @@ class PredictionContext:
     task_id: str
     task_digest: str
     episode_id: Optional[str] = None
+    #: The version identity of the EFFECTIVE problem input (the task with
+    #: the resolved CIR merged in — see ``effective_input_version``). The
+    #: plain ``task_digest`` stays as the caller-supplied task's version,
+    #: kept for provenance; identity checks that decide whether an
+    #: artifact may be REUSED compare against THIS digest, because it is
+    #: the one that follows the problem the prediction conditions on.
+    effective_input_digest: str = ""
     snapshot_id: str = ""
     joint: JointProblemRepresentation = field(
         default_factory=lambda: JointProblemRepresentation("", ""))
@@ -1265,6 +1293,7 @@ class PredictionContext:
             "created_at": self.created_at,
             "task_id": self.task_id,
             "task_digest": self.task_digest,
+            "effective_input_digest": self.effective_input_digest,
             "episode_id": self.episode_id,
             "snapshot_id": self.snapshot_id,
             "joint_problem": self.joint.to_dict(),
@@ -1285,6 +1314,7 @@ class PredictionContext:
             "context_id": self.context_id,
             "task_id": self.task_id,
             "task_digest": self.task_digest,
+            "effective_input_digest": self.effective_input_digest,
             "episode_id": self.episode_id,
             "snapshot_id": self.snapshot_id,
             "created_at": self.created_at,
@@ -1320,6 +1350,8 @@ class PredictionContext:
             context_id=str(data["context_id"]),
             task_id=str(data.get("task_id", "")),
             task_digest=str(data.get("task_digest", "")),
+            effective_input_digest=str(data.get("effective_input_digest", "")
+                                       or data.get("task_digest", "")),
             episode_id=data.get("episode_id"),
             snapshot_id=str(data.get("snapshot_id", "")),
             joint=JointProblemRepresentation.from_dict(data.get("joint")),
@@ -1353,7 +1385,8 @@ def context_identity_problems(context: Any, *,
                               task_id: Optional[str] = None,
                               task_digest: Optional[str] = None,
                               episode_id: Optional[str] = None,
-                              allow_unknown_digest: bool = True
+                              allow_unknown_digest: bool = True,
+                              effective_input_digest: Optional[str] = None
                               ) -> List[str]:
     """Reasons a context does NOT belong to the identity it is used for.
 
@@ -1368,6 +1401,15 @@ def context_identity_problems(context: Any, *,
     ``allow_unknown_digest`` keeps a legacy context (built before digests
     existed) usable — its version cannot be established either way, which is
     different from a KNOWN disagreement.
+
+    ``effective_input_digest`` (when supplied) is checked against the
+    context's OWN effective-input digest — the version of the problem with
+    the resolved CIR merged in. This is the check that lets a context built
+    with an explicit ``cir`` be reused against the same task (the plain
+    task digests differ, because the caller-supplied task JSON differs);
+    the caller passes ``effective_input_version(task, cir)``. A context
+    whose effective-input digest disagrees describes a different problem
+    input, whatever the plain task digests say.
     """
     problems: List[str] = []
     label = getattr(context, "context_id", None) or "context"
@@ -1389,6 +1431,16 @@ def context_identity_problems(context: Any, *,
             problems.append(
                 f"context {label!r} records no task version, so it cannot be "
                 "confirmed as describing the current task")
+    if effective_input_digest is not None:
+        ctx_effective = getattr(context, "effective_input_digest", None)
+        if ctx_effective and ctx_effective != effective_input_digest:
+            problems.append(
+                f"context {label!r} was built for effective problem input "
+                f"{ctx_effective!r} but this request's effective input is "
+                f"{effective_input_digest!r}: the problem the prediction "
+                "would condition on differs (a different CIR is a different "
+                "problem input, even when the coupling numbers agree) — "
+                "build a new context instead")
     if episode_id is not None and ctx_episode != episode_id:
         problems.append(
             f"context {label!r} belongs to episode {ctx_episode!r}, not "
@@ -1512,6 +1564,7 @@ def build_context(
         context_id=context_id or PredictionContext.new_id(),
         task_id=str(task.get("task_id", "")),
         task_digest=digest,
+        effective_input_digest=effective_input_version(task, cir),
         episode_id=getattr(snapshot, "episode_id", None),
         snapshot_id=snapshot_id,
         joint=joint,

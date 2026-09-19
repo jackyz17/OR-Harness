@@ -978,8 +978,16 @@ class TestWindowComparabilityIsEarned(HarnessTestCase):
                 "ep1", window=other)
         self.assertIn("does not describe this candidate", str(ctx.exception))
 
-    def test_unfinished_window_cannot_become_a_valid_prediction(self):
-        """A window-scope prediction on a still-running window is refused."""
+    def test_unfinished_window_prediction_is_valid_but_not_comparable(self):
+        """A window-scope prediction BEFORE execution is a legitimate forecast.
+
+        The corrected rule: a prediction may be made about an UNEXECUTED
+        window (that is what predicting before acting means); what it may
+        not be is SCORED. ``trace.comparable=False`` with the reasons is the
+        honest state — the window has no final numbers yet. The old rule
+        (a valid window-scope prediction must be comparable) would have
+        forced either a fabricated window or execute-first-then-predict.
+        """
         h = ORHarness(home=self.home, world_model=_CountingProvider())
         self.addCleanup(h.close)
         running = build_execution_window(
@@ -991,10 +999,15 @@ class TestWindowComparabilityIsEarned(HarnessTestCase):
                                strategy_id="S01", task_id="t1",
                                scope="strategy_window"),
             "ep1", window=running, benefit=_benefit())
+        # The prediction itself is valid — a forecast was really produced.
+        self.assertEqual(prediction.status, "valid")
+        # But it is explicitly NOT comparable: no final numbers exist.
         self.assertFalse(prediction.trace.comparable)
-        self.assertNotEqual(prediction.status, "valid")
+        self.assertTrue(prediction.trace.not_comparable_reasons)
         self.assertTrue(any("NOT comparable" in n
                             for n in prediction.notes))
+        # And the two flags never contradict each other.
+        self.assertEqual(validate_strategy_outcome(prediction), [])
 
 
 class TestLegacyCandidateFidelity(HarnessTestCase):

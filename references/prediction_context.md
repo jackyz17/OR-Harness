@@ -1,7 +1,9 @@
 # Prediction input context (world-model phase 2)
 
-**Status: the INPUT is wired. The prediction SERVICE is not switched.**
-Read that sentence twice before using anything on this page.
+**Status: the INPUT is wired, and the M3 strategy-outcome prediction SERVICE
+now consumes it** (see
+[`references/strategy_outcome.md`](strategy_outcome.md)). The legacy
+`predict_outcome` protocol is unchanged and remains the compatibility path.
 
 Phase 1 defined HOW state, candidates and predictions are expressed. This
 phase defines **what information a prediction actually uses**, and how that
@@ -145,7 +147,7 @@ exists" — the context says so in `retrieval.notes`.
 
 ---
 
-### One CIR for the whole request
+### One CIR for the whole request, and ONE effective-input identity
 
 An explicit `--cir` (or `cir=`) is resolved ONCE and drives **all** of: the
 joint representation, the profile (hence the snapshot's structural cell and
@@ -160,6 +162,20 @@ joint representation seeing a supplied CIR while the snapshot and the
 retrieval fell back to the task's own weak coupling — and could retrieve
 knowledge from the wrong structural cell.
 
+**The effective-input version.** A context carries TWO digests:
+`task_digest` (the caller-supplied task JSON's version, kept for provenance)
+and `effective_input_digest` (the version of the task **with the resolved
+CIR merged in** — `effective_input_version(task, cir)`). Reuse checks
+compare against the EFFECTIVE one, because it follows the problem the
+prediction actually conditions on: a context built with an explicit CIR is
+reusable against the same task **when you pass the same CIR again**
+(`predict_outcome(..., context=ctx, cir=...)` /
+`predict_strategy_outcome(..., context=ctx, cir=...)`), while the plain task
+digests differ only because the caller-supplied JSON differs. Two different
+CIRs that happen to produce the same rc/tc/rx still produce different
+effective-input digests — the RELATIONS are part of the digested content,
+so three coupling numbers agreeing is not relations agreeing.
+
 ### Retrieval is bounded to the frozen moment
 
 A context built from a **historical snapshot** describes the state as it was.
@@ -173,17 +189,25 @@ and keeping it silently would claim a bound that was never verified.
 
 ### Historical reconstruction vs current gathering
 
-The two are kept apart, because creation-time filtering is **not** historical
-reconstruction: it cannot tell that an entry which already existed was later
-*revised*, so the old entry would still be read at its NEW value.
+The two are kept apart by an explicit `historical` flag, NOT by the mere
+presence of a snapshot — a caller that freezes a snapshot for THIS decision
+(`plan_next`, `predict_outcome`) passes `historical=False` and the banks are
+read NOW and frozen; an EXTERNAL snapshot (the default when one is supplied
+without the flag) fixes a historical moment and everything comes from what
+it SAVED. Creation-time filtering is **not** historical reconstruction: it
+cannot tell that an entry which already existed was later *revised*, so the
+old entry would still be read at its NEW value.
 
-| | Current gathering (no snapshot supplied) | Historical reconstruction (a snapshot supplied) |
+| | Current gathering (`historical=False`, the default with no snapshot) | Historical reconstruction (an external snapshot) |
 |---|---|---|
 | knowledge | `verified_knowledge_view(profile, sbank)` — today's bank | the snapshot's **frozen** `coverage.knowledge_layers` (`frozen_knowledge_view`) |
 | reliability | today's `prediction_reliability_table()` | **not saved** with a snapshot → empty, reported missing |
 | cell evidence | today's statistics | **not saved** → empty, reported missing |
+| knowledge targets | proposed from the snapshot + today's cell records | **not saved** → none proposed, reported missing |
 | retrieval | the live channels, bounded to the snapshot's time | only what was saved with the snapshot — nothing is rebuilt from today's index |
+| supplied recall result | accepted, bounded to the snapshot's moment | **REFUSED** — a result gathered now cannot be proven to belong to the frozen moment |
 | recorded choices | read from the action log | not read |
+| execution constraints | today's declared budget, consumption, tools | the snapshot's frozen `budget_state`; today's budget/tools reported missing |
 
 A gap is **reported as missing** (`ctx.missing`), never filled from today's
 banks: reading today's bank to "complete" an earlier state would put
@@ -360,10 +384,11 @@ This is the phase's most important engineering boundary.
 
 ## 8. What is NOT in this phase
 
-- **No switch of the OR prediction output protocol.** The provider still
-  receives and returns the existing payload shape; the new context travels
-  as an additional request key. Phase 3 owns the prompt/protocol switch and
-  the decision loop.
+- **The legacy `predict_outcome` protocol is unchanged.** The provider still
+  receives and returns the existing payload shape when that path is used;
+  the new context travels as an additional request key. The M3
+  strategy-outcome protocol is a SEPARATE path — see
+  [`references/strategy_outcome.md`](strategy_outcome.md).
 - **No capability-evolution service.** That kind still has a contract and no
   service.
 - **No task-closing scheduler, no offline learning schedule.**
