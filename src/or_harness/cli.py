@@ -749,16 +749,132 @@ def cmd_bind_strategy(args) -> int:
                        f"{info['binding_mismatch']}. The prediction is NOT "
                        "comparable — the executed action differs from the "
                        "predicted candidate.")
+        elif info.get("binding_unknown"):
+            summary = (f"Prediction {args.prediction} bound to action "
+                       f"{args.action} with UNKNOWN identity fields: "
+                       f"{sorted(info['binding_unknown'])}. Unknown is not "
+                       "a match: the fields that depend on them stay "
+                       "unevaluable at close-out.")
         elif prediction.trace.comparable:
             summary = (f"Prediction {args.prediction} bound to action "
                        f"{args.action} and COMPARABLE: the real execution "
-                       "may be scored against it. Window-level scoring "
-                       "itself lands in M4.")
+                       "may be scored against it at episode close-out "
+                       "(`orx close-episode`).")
         else:
             summary = (f"Prediction {args.prediction} bound to action "
                        f"{args.action}, not yet comparable: "
                        f"{prediction.trace.not_comparable_reasons}.")
         return _emit({"prediction": prediction.to_dict()}, summary)
+    finally:
+        h.close()
+
+
+def cmd_close_episode(args) -> int:
+    """Close one episode: evaluate bound predictions, publish calibration.
+
+    Reads what was recorded — no solver run, no model call, no induction.
+    Idempotent: re-closing returns the stored record and counts nothing
+    twice."""
+    h = _harness(args)
+    try:
+        result = h.close_episode(
+            args.task, args.episode, terminal_state=args.terminal,
+            finish_action_id=args.finish_action,
+            min_calibration_samples=args.min_samples
+            if args.min_samples is not None else None)
+        closeout = result["closeout"]
+        if result.get("already_closed"):
+            return _emit(result,
+                         f"Episode {args.task}/{args.episode} was already "
+                         f"closed (state {closeout['terminal_state']}); "
+                         "the stored record stands — nothing re-counted.")
+        n_evaluated = sum(1 for e in result.get("evaluations", [])
+                          if e.get("state") == "evaluated")
+        n_excluded = sum(1 for e in result.get("evaluations", [])
+                         if e.get("state") == "excluded")
+        parts = [f"Episode {args.task}/{args.episode} closed "
+                 f"({closeout['terminal_state']}).",
+                 f"{n_evaluated} prediction(s) evaluated, {n_excluded} "
+                 "excluded (excluded is neither hit nor miss)."]
+        if closeout.get("unfinished_actions"):
+            parts.append(f"{len(closeout['unfinished_actions'])} unfinished "
+                         "action(s) reported; their predictions stay "
+                         "pending.")
+        calibration = result.get("calibration_summary") or {}
+        groups = calibration.get("groups") or {}
+        if groups:
+            thin = [name for name, g in groups.items()
+                    if g.get("basis") == "insufficient_evidence"]
+            parts.append(f"Calibration published over {len(groups)} "
+                         f"group(s)"
+                         + (f"; {len(thin)} below the sample minimum "
+                            "(insufficient_evidence, no figure claimed)"
+                            if thin else "")
+                         + ".")
+        else:
+            parts.append("No calibration samples yet "
+                         "(insufficient_evidence until closed episodes "
+                         "accumulate).")
+        return _emit(result, " ".join(parts))
+    finally:
+        h.close()
+
+
+def cmd_calibration(args) -> int:
+    """Read the published experience-calibration summary (read-only)."""
+    h = _harness(args)
+    try:
+        result = h.calibration_summary(
+            min_samples=args.min_samples
+            if args.min_samples is not None else None)
+        groups = result.get("groups") or {}
+        if not groups:
+            summary = ("No calibration samples from closed episodes yet: "
+                       "reliability is unknown (insufficient_evidence), "
+                       "never guessed.")
+        else:
+            parts = []
+            for name, group in sorted(groups.items()):
+                if group.get("basis") == "insufficient_evidence":
+                    parts.append(f"{name}: {group['n_samples']} sample(s), "
+                                 "insufficient evidence")
+                else:
+                    parts.append(
+                        f"{name}: n={group['n_samples']} "
+                        f"({group['n_distinct_episodes']} episode(s)), "
+                        f"benefit MAE="
+                        f"{group.get('mean_benefit_abs_error')}, "
+                        f"interval coverage="
+                        f"{group.get('interval_coverage')}")
+            summary = ("Strategy-outcome experience calibration: "
+                       + "; ".join(parts)
+                       + ". A measured record of past closed episodes — "
+                         "not a promise that future predictions improve.")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
+def cmd_evaluations(args) -> int:
+    """List stored post-hoc prediction evaluations (read-only)."""
+    h = _harness(args)
+    try:
+        evaluations = h.strategy_prediction_evaluations(
+            task_id=args.task, episode_id=args.episode)
+        if args.evaluation:
+            single = h.get_strategy_evaluation(args.evaluation)
+            if single is None:
+                return _fail(f"unknown evaluation_id {args.evaluation!r}")
+            return _emit(single,
+                         f"Evaluation {args.evaluation}: state "
+                         f"{single.get('state')}.")
+        n_evaluated = sum(1 for e in evaluations
+                          if e.get("state") == "evaluated")
+        return _emit(
+            {"evaluations": evaluations, "count": len(evaluations)},
+            f"{len(evaluations)} evaluation(s) stored ({n_evaluated} "
+            "evaluated). Excluded evaluations are neither hits nor misses; "
+            "pending ones wait for their scope to end.")
     finally:
         h.close()
 
@@ -1435,10 +1551,53 @@ def build_parser() -> argparse.ArgumentParser:
         "bind-strategy",
         help="bind a strategy-outcome prediction to the real action that "
              "ran (identity checked: task/episode/strategy/solver/config; "
-             "a mismatch is recorded, never scored)")
+             "a mismatch is recorded, never scored; an UNKNOWN identity "
+             "field is recorded separately and never counts as a match)")
     p.add_argument("--prediction", required=True)
     p.add_argument("--action", required=True)
     p.set_defaults(func=cmd_bind_strategy)
+
+    p = sub.add_parser(
+        "close-episode",
+        help="close ONE episode (world-model M4): evaluate its bound "
+             "strategy-outcome predictions against their real outcomes and "
+             "publish the experience calibration. Reads what was recorded "
+             "— no solver, no model call, no induction. Idempotent")
+    p.add_argument("--task", required=True)
+    p.add_argument("--episode", default=None)
+    p.add_argument("--terminal", default="completed",
+                   choices=["completed", "failed", "aborted",
+                            "budget_exhausted"],
+                   help="the honest terminal state (only 'completed' "
+                        "claims success)")
+    p.add_argument("--finish-action", default=None, metavar="ACTION_ID",
+                   help="the finish_task action that ended the episode, "
+                        "when one was recorded")
+    p.add_argument("--min-samples", type=int, default=None,
+                   help="minimum resolved samples before a calibration "
+                        "group reports a figure (below it: "
+                        "insufficient_evidence)")
+    p.set_defaults(func=cmd_close_episode)
+
+    p = sub.add_parser(
+        "calibration",
+        help="read the published strategy-outcome experience-calibration "
+             "summary (closed episodes only; read-only)")
+    p.add_argument("--min-samples", type=int, default=None,
+                   help="override the minimum-sample threshold for this "
+                        "read (the effective value is recorded on the "
+                        "summary)")
+    p.set_defaults(func=cmd_calibration)
+
+    p = sub.add_parser(
+        "evaluations",
+        help="list stored post-hoc evaluations of strategy-outcome "
+             "predictions (read-only)")
+    p.add_argument("--task", default=None)
+    p.add_argument("--episode", default=None)
+    p.add_argument("--evaluation", default=None, metavar="EVALUATION_ID",
+                   help="read ONE evaluation instead of listing")
+    p.set_defaults(func=cmd_evaluations)
 
     p = sub.add_parser("plan-next",
                        help="bounded next-step planning over predicted "

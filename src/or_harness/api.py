@@ -446,6 +446,7 @@ class ORHarness:
     def strategy_execution_window(self, task_id: str,
                                   episode_id: Optional[str] = None, *,
                                   strategy_id: Optional[str] = None,
+                                  round_index: Optional[int] = None,
                                   in_scope_action_types: Optional[
                                       Sequence[str]] = None,
                                   auxiliary_action_types: Optional[
@@ -458,9 +459,16 @@ class ORHarness:
         verifying). Only a window that really corresponds to recorded
         actions is ``comparable`` — the flag a window-scope prediction needs
         before it may be scored.
+
+        ``round_index`` (M4) selects ONE selection round of this (task,
+        episode, strategy): the same strategy chosen again later (possibly
+        under a different config) is a DIFFERENT round and a different
+        evaluation sample. ``None`` keeps the legacy whole-episode
+        aggregation.
         """
         return window_from_records(
             self, task_id, episode_id, strategy_id,
+            round_index=round_index,
             in_scope_action_types=in_scope_action_types,
             auxiliary_action_types=auxiliary_action_types)
 
@@ -784,6 +792,24 @@ class ORHarness:
         else:
             knowledge = verified_knowledge_view(profile, self.sbank)
             reliability = self.prediction_reliability_table()
+        # M4: the published EXPERIENCE calibration of the strategy-outcome
+        # service (closed episodes only). Frozen into the context as its
+        # own block — separate from the legacy knowledge reliability, and
+        # carrying the summary's CONTENT (groups, counts, sources) so a
+        # later reader of the context sees what the model was told, not
+        # just an id. An active episode never sees its own not-yet-closed
+        # feedback: only closed episodes contribute.
+        if historical:
+            strategy_calibration = {}
+            history_notes.append(
+                "MISSING: the strategy-outcome experience calibration was "
+                "not saved with this snapshot, so none is sent (today's "
+                "summary was NOT consulted for a historical reconstruction)")
+        else:
+            from or_harness.world_model.episode_closeout import (
+                calibration_summary_for_context,
+            )
+            strategy_calibration = calibration_summary_for_context(self)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -862,6 +888,7 @@ class ORHarness:
             knowledge_targets=frozen_targets,
             reliability=reliability,
             cell_evidence=cell_evidence,
+            strategy_calibration=strategy_calibration,
             cir_source=("caller_supplied" if cir is not None
                         else "task_coupling"),
             retrieval_bounding=bounding,
@@ -1404,20 +1431,130 @@ class ORHarness:
         return self.strategy_predictions.query(task_id=task_id,
                                                episode_id=episode_id)
 
+    # -- world-model M4: episode close-out and experience calibration ------
+
+    def close_episode(self, task_id: str, episode_id: Optional[str] = None,
+                      *, terminal_state: str = "completed",
+                      finish_action_id: Optional[str] = None,
+                      min_calibration_samples: Optional[int] = None
+                      ) -> Dict[str, Any]:
+        """Close ONE episode: evaluate its bound predictions against their
+        real outcomes and publish the experience calibration.
+
+        The single M4 close-out entry. It reads what was recorded — no
+        solver run, no model call, no induction. Unfinished actions are
+        reported (their predictions stay pending, never fabricated into
+        endings); a failed/aborted/budget-exhausted episode closes honestly
+        under its own terminal state. Idempotent: closing an already-closed
+        episode returns the stored record and counts nothing twice.
+
+        ``finish_action_id`` optionally names the ``finish_task`` action
+        that ended the episode (the close-out links to it; it does not
+        create a second task lifecycle).
+        """
+        from or_harness.world_model.episode_closeout import (
+            DEFAULT_MIN_CALIBRATION_SAMPLES,
+            close_episode,
+        )
+        return close_episode(
+            self, task_id, episode_id, terminal_state=terminal_state,
+            finish_action_id=finish_action_id,
+            min_calibration_samples=(min_calibration_samples
+                                     if min_calibration_samples is not None
+                                     else DEFAULT_MIN_CALIBRATION_SAMPLES))
+
+    def episode_closeout_record(self, task_id: str,
+                                episode_id: Optional[str] = None
+                                ) -> Optional[Dict[str, Any]]:
+        """The stored close-out of one episode, or None while it is open.
+
+        Read-only: no model call, no re-evaluation, no re-billing."""
+        from or_harness.world_model.episode_closeout import (
+            episode_closeout_record,
+        )
+        record = episode_closeout_record(self, task_id, episode_id)
+        return record.to_dict() if record is not None else None
+
+    def get_strategy_evaluation(self, evaluation_id: str
+                                ) -> Optional[Dict[str, Any]]:
+        """Read one stored post-hoc prediction evaluation (read-only)."""
+        from or_harness.world_model.episode_closeout import get_evaluation
+        evaluation = get_evaluation(self.store, evaluation_id)
+        return evaluation.to_dict() if evaluation is not None else None
+
+    def strategy_prediction_evaluations(
+            self, *, task_id: Optional[str] = None,
+            episode_id: Optional[str] = None
+            ) -> List[Dict[str, Any]]:
+        """Stored post-hoc evaluations of strategy-outcome predictions.
+
+        Only CLOSED episodes' evaluations are admissible calibration
+        samples, but this query lists what exists (an open episode's
+        pending evaluations are visible as pending, never hidden)."""
+        from or_harness.world_model.episode_closeout import (
+            StrategyPredictionEvaluation,
+        )
+        rows = self.store.conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE "
+            "'strategy_evaluation|%' ORDER BY key").fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            try:
+                evaluation = StrategyPredictionEvaluation.from_dict(
+                    self.store.loads(row["value"]))
+            except Exception:
+                continue
+            if task_id is not None and evaluation.task_id != task_id:
+                continue
+            if episode_id is not None \
+                    and evaluation.episode_id != episode_id:
+                continue
+            out.append(evaluation.to_dict())
+        return out
+
+    def calibration_summary(self, *, min_samples: Optional[int] = None
+                            ) -> Dict[str, Any]:
+        """The published experience-calibration summary (wm-so/1).
+
+        Aggregated from CLOSED episodes' eligible evaluations only — an
+        active episode never reads its own not-yet-closed feedback. This
+        is the OR strategy-outcome reliability, kept separate from the
+        legacy knowledge-prediction reliability; it is a measured record,
+        not a fitted calibrator and not a promise of future accuracy."""
+        from or_harness.world_model.episode_closeout import (
+            DEFAULT_MIN_CALIBRATION_SAMPLES,
+            build_calibration_summary,
+        )
+        return build_calibration_summary(
+            self, min_samples=(min_samples
+                               if min_samples is not None
+                               else DEFAULT_MIN_CALIBRATION_SAMPLES))
+
     def bind_strategy_outcome(self, prediction_id: str,
                               action_id: str) -> "StrategyOutcomePrediction":
         """Bind a strategy-outcome prediction to the REAL action that ran.
 
-        The binding checks request identity — task, episode, strategy,
-        solver and the candidate's execution config (a different
+        The binding checks request identity — action type, task, episode,
+        strategy, solver and the candidate's execution config (a different
         time_limit/seed is a different candidate, and its result is not
         this prediction's truth) — and records a mismatch rather than
-        silently comparing. The prediction's ``trace.comparable`` is set
-        only when the bound action's window is a completed real scope;
-        otherwise the reasons say why it is not.
+        silently comparing.
 
-        Re-binding the same action is idempotent; binding another action
-        raises. No model call is made and nothing is re-billed.
+        **Unknown is not a match.** A field the executed action could not
+        observe (no episode recorded, a config key the action log never
+        carries) is recorded under ``binding_unknown`` — separately from a
+        KNOWN disagreement (``binding_mismatch``). Neither may enter an
+        evaluation that needs that identity evidence: a mismatch makes the
+        prediction not comparable, and an unknown makes the fields that
+        depend on it unevaluable (the close-out reports which).
+
+        The prediction's ``trace.comparable`` is set only when the bound
+        action's window is a completed real scope AND no mismatch exists.
+        Re-binding the same action is idempotent AND re-evaluates the
+        comparability (an action that was still running at the first bind
+        may have completed since — a pending binding must not stay pending
+        forever); binding another action raises. No model call is made and
+        nothing is re-billed.
         """
         prediction = self.strategy_predictions.get(prediction_id)
         if prediction is None:
@@ -1428,22 +1565,38 @@ class ORHarness:
             raise StorageError(f"unknown action_id {action_id!r}")
         model_info = prediction.trace.model_info
         bound = model_info.get("bound_action_id")
-        if bound is not None:
-            if bound == action_id:
-                return prediction
+        if bound is not None and bound != action_id:
             raise StorageError(
                 f"prediction {prediction_id!r} is already bound to action "
                 f"{bound!r}")
         candidate = prediction.candidate
         mismatch: Dict[str, Any] = {}
+        unknown: Dict[str, Any] = {}
+        # Action type: the prediction is about executing a strategy; a
+        # bound action of another type is a different thing entirely.
+        if action.action_type != candidate.action_type:
+            mismatch["action_type"] = {"predicted": candidate.action_type,
+                                       "actual": action.action_type}
         if candidate.task_id and action.task_id != candidate.task_id:
             mismatch["task_id"] = {"predicted": candidate.task_id,
                                    "actual": action.task_id}
-        if (candidate.episode_id is not None
-                and action.episode_id is not None
-                and candidate.episode_id != action.episode_id):
-            mismatch["episode_id"] = {"predicted": candidate.episode_id,
-                                      "actual": action.episode_id}
+        # Episode: three states. Both known and equal -> match; both known
+        # and different -> mismatch; the action's episode unknown -> an
+        # UNKNOWN (the prediction declared one, the record cannot confirm
+        # it — episode ownership is never guessed).
+        if candidate.episode_id is not None:
+            if action.episode_id is None:
+                unknown["episode_id"] = {
+                    "predicted": candidate.episode_id,
+                    "actual": None,
+                    "reason": ("the executed action records no episode id, "
+                               "so the prediction's episode claim cannot be "
+                               "confirmed or refuted"),
+                }
+            elif action.episode_id != candidate.episode_id:
+                mismatch["episode_id"] = {
+                    "predicted": candidate.episode_id,
+                    "actual": action.episode_id}
         params = dict(action.params or {})
         if (candidate.strategy_id is not None
                 and params.get("strategy_id") not in
@@ -1451,15 +1604,26 @@ class ORHarness:
             mismatch["strategy_id"] = {"predicted": candidate.strategy_id,
                                        "actual": params.get("strategy_id")}
         if (candidate.solver is not None
-                and params.get("solver") not in (None, candidate.solver)):
+                and params.get("solver") not in
+                (None, candidate.solver)):
             mismatch["solver"] = {"predicted": candidate.solver,
                                   "actual": params.get("solver")}
         # Execution-config identity: the candidate's own config (time_limit,
-        # mip_gap, seed, ...) is what was predicted; an action that ran a
-        # DIFFERENT config is a different candidate's result.
+        # mip_gap, seed, ...) is what was predicted. A key the action
+        # actually recorded with a DIFFERENT value is a mismatch; a key the
+        # action log never carries is an UNKNOWN — the predicted config is
+        # never copied onto the action to manufacture a match.
         for key, value in (candidate.config or {}).items():
             actual = params.get(key)
-            if actual is not None and actual != value:
+            if actual is None:
+                unknown.setdefault("config", {})[key] = {
+                    "predicted": value,
+                    "actual": None,
+                    "reason": ("the executed action records no value for "
+                               "this config key, so the predicted "
+                               "configuration cannot be confirmed for it"),
+                }
+            elif actual != value:
                 mismatch.setdefault(
                     "config", {})[key] = {"predicted": value,
                                           "actual": actual}
@@ -1469,12 +1633,40 @@ class ORHarness:
                 "predicted_at": prediction.trace.created_at,
                 "action_started_at": action.started_at,
                 "reason": "prediction was generated after the action began"}
+        # Effective problem version: the prediction's frozen input digest
+        # against the action's own pre-snapshot digest. Both sides come
+        # from frozen records; an unestablishable side is an unknown.
+        predicted_input = model_info.get("effective_input_digest")
+        actual_digest = None
+        if action.pre_snapshot_id:
+            pre_snap = self.get_snapshot(action.pre_snapshot_id)
+            if pre_snap is not None:
+                actual_digest = (pre_snap.problem_state or {}).get(
+                    "task_digest")
+        if predicted_input and actual_digest:
+            if predicted_input != actual_digest:
+                mismatch["effective_input"] = {
+                    "predicted": predicted_input,
+                    "actual": actual_digest,
+                    "reason": ("the task's content changed between the "
+                               "prediction and the execution: this is a "
+                               "different problem input"),
+                }
+        elif predicted_input and not actual_digest:
+            unknown["effective_input"] = {
+                "predicted": predicted_input,
+                "actual": None,
+                "reason": ("the executed action's pre snapshot records no "
+                           "task version, so the problem input the "
+                           "execution ran under cannot be established"),
+            }
         model_info["bound_action_id"] = action_id
         model_info["binding_mismatch"] = mismatch or None
-        # Comparability: only a completed, matching real window may be
-        # scored. An attempt-scope prediction bound to a completed action
-        # with a linked execution is comparable; a window-scope prediction
-        # needs the window itself to be complete.
+        model_info["binding_unknown"] = unknown or None
+        # Comparability: only a completed, MATCHING real scope may be
+        # scored. An unknown identity field does not by itself block the
+        # linkage (the close-out decides field-by-field what may be
+        # evaluated on it), but a mismatch always does.
         if candidate.scope == "strategy_window":
             window = self.strategy_execution_window(
                 action.task_id, action.episode_id,
@@ -2952,6 +3144,32 @@ class ORHarness:
             task, episode_id, snapshot=root, historical=False,
             candidates=specs, top=limits.max_root_candidates)
         predictions: List[Any] = []
+        # Per-call cost accounting, IN the loop: each prediction's known
+        # spend is charged to the decision action the MOMENT it returns, so
+        # the NEXT iteration's budget check sees the real consumption. The
+        # old behaviour (one bulk amendment after the loop) let a decision
+        # keep calling past an already-exceeded budget and only notice at
+        # the end — the ledger must see each call's cost before the next
+        # one is allowed.
+        planning_total: Dict[str, float] = {}
+        planning_measured: set = set()
+
+        def _charge_call(prediction) -> None:
+            if prediction.trace.call_cost is None:
+                return
+            for dim in prediction.trace.call_cost.measured_dims():
+                planning_total[dim] = planning_total.get(dim, 0.0) + \
+                    getattr(prediction.trace.call_cost, dim)
+                planning_measured.add(dim)
+            # Increment semantics: each call is a separate real spend.
+            self.actions.amend_action_cost_increment(
+                decision.action_id,
+                **{d: getattr(prediction.trace.call_cost, d)
+                   for d in prediction.trace.call_cost.measured_dims()})
+            prediction.trace.model_info[
+                "charged_to_parent_action"] = decision.action_id
+            self.strategy_predictions._save(prediction)
+
         for spec in specs:
             if calls_made >= limits.max_model_calls:
                 stop_reason = (f"model-call budget exhausted "
@@ -2977,6 +3195,10 @@ class ORHarness:
                 task, spec, episode_id, context=plan_context,
                 timeout_s=max(0.001, remaining))
             calls_made += 1
+            # Charge THIS call's known spend immediately (failed calls
+            # included: their tokens are real) so the loop's own budget
+            # gate sees them before the next call is considered.
+            _charge_call(prediction)
             predictions.append((spec, prediction))
         plan.model_calls_made = calls_made
         # Conservative comparison on ONE yardstick.
@@ -3003,28 +3225,18 @@ class ORHarness:
         elif comparable:
             suggestion_basis = ("shadow mode: candidates evaluated and "
                                 "recorded; suggestion withheld")
-        # Real planning spend -> the decision action's own cost.
-        planning_total: Dict[str, float] = {}
-        planning_measured: set = set()
-        for _spec, prediction in predictions:
-            if prediction.trace.call_cost is None:
-                continue
-            for dim in prediction.trace.call_cost.measured_dims():
-                planning_total[dim] = planning_total.get(dim, 0.0) + \
-                    getattr(prediction.trace.call_cost, dim)
-                planning_measured.add(dim)
+        # Real planning spend was charged to the decision action PER CALL
+        # inside the loop (see _charge_call): the totals below are the SAME
+        # numbers, reported once — never a second amendment.
         if planning_measured:
-            self.actions.amend_action_cost_increment(
-                decision.action_id,
-                **{d: planning_total[d] for d in planning_measured})
             plan.planning_cost = {
                 "cost": {d: round(planning_total[d], 4)
                          for d in sorted(planning_measured)},
                 "measured": sorted(planning_measured),
                 "note": ("REAL spend of the planning model calls (failed "
-                         "calls included), charged once to the decision "
-                         "action as own cost — sunk, never part of any "
-                         "candidate's utility"),
+                         "calls included), charged to the decision action "
+                         "as own cost AS EACH CALL RETURNED — sunk, never "
+                         "part of any candidate's utility"),
             }
         if declared:
             final_view = self.budget.view(task_id, episode_id,
@@ -3912,11 +4124,20 @@ class ORHarness:
         # of the harness's later record decision — execute/record
         # separation is unchanged).
         pre = self.snapshot(task, episode_id)
+        # The execution config ACTUALLY used, recorded on the action so a
+        # later binding can compare the predicted candidate's config
+        # against what really ran — never the other way round (copying the
+        # PREDICTED config onto the action would fabricate the proof it is
+        # supposed to provide). Only what this call really knows: the
+        # strategy, the solver, the verification level. Anything else
+        # (a time limit the outer agent applied inside solve.py, a seed)
+        # is NOT observable here and stays unknown.
+        exec_params: Dict[str, Any] = {
+            "strategy_id": strategy_id, "solver": solver,
+            "verification_level": verification_level}
         action = self.actions.begin_action(
             "execute_strategy", str(task["task_id"]), episode_id,
-            pre_snapshot=pre,
-            params={"strategy_id": strategy_id, "solver": solver,
-                    "verification_level": verification_level})
+            pre_snapshot=pre, params=exec_params)
         record = self.executor.execute(
             Path(code_path), Path(workspace), solver=solver,
             task_id=str(task["task_id"]), strategy_id=strategy_id,

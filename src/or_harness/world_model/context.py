@@ -1232,6 +1232,12 @@ class PredictionContext:
     #: Measured reliability of past predictions, frozen at build time (it
     #: comes from the prediction LOG, so a later call would change it).
     reliability: Dict[str, Any] = field(default_factory=dict)
+    #: The published EXPERIENCE calibration of the strategy-outcome
+    #: service (M4), frozen at build time. Closed episodes only: an active
+    #: episode never reads its own not-yet-closed feedback. Kept SEPARATE
+    #: from ``reliability`` (the legacy knowledge-prediction table): a
+    #: knowledge hit rate never proves OR prediction accuracy.
+    strategy_calibration: Dict[str, Any] = field(default_factory=dict)
     #: The frozen X/B + coverage + harness-condition blocks of the snapshot
     #: this context was built from, so a reused context can rebuild a
     #: snapshot that is BYTE-EQUIVALENT to the frozen one instead of taking a
@@ -1268,6 +1274,7 @@ class PredictionContext:
         self.execution_constraints = copy.deepcopy(self.execution_constraints)
         self.knowledge_targets = copy.deepcopy(self.knowledge_targets)
         self.reliability = copy.deepcopy(self.reliability)
+        self.strategy_calibration = copy.deepcopy(self.strategy_calibration)
         self.snapshot = copy.deepcopy(self.snapshot)
         self.cell_evidence = copy.deepcopy(self.cell_evidence)
         self.sources = dict(self.sources)
@@ -1302,6 +1309,8 @@ class PredictionContext:
             "harness_capability": copy.deepcopy(self.capability),
             "capability_version": copy.deepcopy(self.capability_version),
             "execution_constraints": copy.deepcopy(self.execution_constraints),
+            "strategy_outcome_calibration": copy.deepcopy(
+                self.strategy_calibration),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
             "missing": list(self.missing),
@@ -1327,6 +1336,7 @@ class PredictionContext:
             "execution_constraints": copy.deepcopy(self.execution_constraints),
             "knowledge_targets": copy.deepcopy(self.knowledge_targets),
             "reliability": copy.deepcopy(self.reliability),
+            "strategy_calibration": copy.deepcopy(self.strategy_calibration),
             "snapshot": copy.deepcopy(self.snapshot),
             "cell_evidence": copy.deepcopy(self.cell_evidence),
             "sources": dict(self.sources),
@@ -1366,6 +1376,8 @@ class PredictionContext:
             knowledge_targets=copy.deepcopy(
                 list(data.get("knowledge_targets") or [])),
             reliability=copy.deepcopy(dict(data.get("reliability") or {})),
+            strategy_calibration=copy.deepcopy(
+                dict(data.get("strategy_calibration") or {})),
             snapshot=copy.deepcopy(dict(data.get("snapshot") or {})),
             cell_evidence=copy.deepcopy(dict(data.get("cell_evidence") or {})),
             sources={str(k): str(v) for k, v in
@@ -1487,6 +1499,7 @@ def build_context(
         structural_recommendations: Optional[Sequence[Dict[str, Any]]] = None,
         knowledge_targets: Optional[Sequence[Any]] = None,
         reliability: Optional[Dict[str, Any]] = None,
+        strategy_calibration: Optional[Dict[str, Any]] = None,
         cell_evidence: Optional[Dict[str, Any]] = None,
         cir_source: Optional[str] = None,
         retrieval_bounding: Optional[Dict[str, Any]] = None,
@@ -1575,6 +1588,7 @@ def build_context(
         execution_constraints=copy.deepcopy(execution_constraints or {}),
         knowledge_targets=frozen_targets,
         reliability=copy.deepcopy(reliability or {}),
+        strategy_calibration=copy.deepcopy(strategy_calibration or {}),
         snapshot=snapshot_conditions(snapshot),
         cell_evidence=copy.deepcopy(cell_evidence or {}),
         sources={

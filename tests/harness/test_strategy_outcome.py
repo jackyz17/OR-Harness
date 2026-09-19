@@ -126,7 +126,8 @@ class StrategyCase(HarnessTestCase):
                            embedding=self.backend)
         self.addCleanup(self.h.close)
 
-    def solve(self, task, strategy="S04", objective=100.0):
+    def solve(self, task, strategy="S04", objective=100.0,
+              episode_id="ep1"):
         from pathlib import Path
         work = Path(self.home) / f"ws_{task['task_id']}_{strategy}"
         work.mkdir(parents=True, exist_ok=True)
@@ -138,7 +139,7 @@ class StrategyCase(HarnessTestCase):
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
         record = self.h.execute(task, strategy, str(script), str(work),
-                                solver="highs")
+                                solver="highs", episode_id=episode_id)
         self.h.record(record)
         return record
 
@@ -779,6 +780,8 @@ class TestCliStrategyCommands(StrategyCase):
             "bind-strategy", "--prediction", prediction.prediction_id,
             "--action", record.action_id])
         self.assertEqual(code, 0)
+        # The execution ran under episode "ep1" (self.solve passes it), so
+        # the identity is KNOWN and the binding is comparable.
         self.assertIn("COMPARABLE", payload["summary"])
 
     def test_plan_next_protocol_flag(self):

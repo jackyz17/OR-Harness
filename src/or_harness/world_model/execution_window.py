@@ -63,20 +63,31 @@ DEFAULT_AUXILIARY_ACTION_TYPES = ("model", "select_strategy", "verify")
 
 
 def window_id_for(task_id: str, episode_id: Optional[str],
-                  strategy_id: Optional[str]) -> str:
+                  strategy_id: Optional[str],
+                  round_index: Optional[int] = None) -> str:
     """A deterministic window id from the identity that defines it.
 
     Deterministic on purpose: the same real window asked for twice gets the
     same id, so a prediction's ``window_id`` reference stays resolvable and
     a duplicate window cannot appear as two.
+
+    ``round_index`` (M4) separates DISTINCT SELECTION ROUNDS of the same
+    (task, episode, strategy): a strategy chosen, abandoned, and chosen
+    again under a different config is TWO windows, not one aggregated
+    sample. ``None`` keeps the legacy three-part id (old references stay
+    resolvable); an explicit ``0`` is the first round.
     """
-    return (f"{WINDOW_ID_PREFIX}{task_id}::{episode_id or '-'}::"
+    base = (f"{WINDOW_ID_PREFIX}{task_id}::{episode_id or '-'}::"
             f"{strategy_id or '-'}")
+    if round_index is None:
+        return base
+    return f"{base}::r{int(round_index)}"
 
 
-#: The identity that defines a window: (task, episode, strategy).
+#: The identity that defines a window: (task, episode, strategy, round).
 WindowIdentity = namedtuple("WindowIdentity",
-                            ["task_id", "episode_id", "strategy_id"])
+                            ["task_id", "episode_id", "strategy_id",
+                             "round_index"])
 
 
 def parse_window_id(window_id: str) -> Optional[WindowIdentity]:
@@ -85,39 +96,64 @@ def parse_window_id(window_id: str) -> Optional[WindowIdentity]:
     Returns ``None`` when the string was not produced by
     :func:`window_id_for`. This is what lets a prediction REFUSE a
     ``window_id`` that belongs to another task / episode / strategy instead
-    of trusting the caller's string.
+    of trusting the caller's string. A fourth ``rN`` part (the selection
+    round, M4) is optional: a three-part id is a legacy/round-less window
+    and parses with ``round_index=None``.
     """
     if not isinstance(window_id, str) \
             or not window_id.startswith(WINDOW_ID_PREFIX):
         return None
     parts = window_id[len(WINDOW_ID_PREFIX):].split("::")
-    if len(parts) != 3:
+    if len(parts) not in (3, 4):
         return None
-    task_id, episode, strategy = parts
+    task_id, episode, strategy = parts[:3]
     if not task_id:
         return None
+    round_index: Optional[int] = None
+    if len(parts) == 4:
+        token = parts[3]
+        if not token.startswith("r"):
+            return None
+        try:
+            round_index = int(token[1:])
+        except ValueError:
+            return None
+        if round_index < 0:
+            return None
     return WindowIdentity(task_id,
                           None if episode == "-" else episode,
-                          None if strategy == "-" else strategy)
+                          None if strategy == "-" else strategy,
+                          round_index)
 
 
 def window_identity_problems(window: Any, *,
                              task_id: Optional[str],
                              episode_id: Optional[str],
-                             strategy_id: Optional[str]) -> List[str]:
+                             strategy_id: Optional[str],
+                             round_index: Optional[int] = None
+                             ) -> List[str]:
     """Reasons a window does NOT describe the identity it is used for.
 
-    ``window`` may be a :class:`StrategyExecutionWindow` or a
-    :class:`WindowIdentity` (from :func:`parse_window_id`). An expected
-    value of ``None`` means "no expectation recorded" and is not a
-    mismatch; a window naming a DIFFERENT task / episode / strategy always
-    is. Callers must treat a non-empty result as a refusal to use the
-    window, never as a note to carry along.
+    ``window`` may be a :class:`StrategyExecutionWindow`, a
+    :class:`WindowIdentity` (from :func:`parse_window_id`), or a window-id
+    STRING. An expected value of ``None`` means "no expectation recorded"
+    and is not a mismatch; a window naming a DIFFERENT task / episode /
+    strategy always is. Callers must treat a non-empty result as a refusal
+    to use the window, never as a note to carry along.
+
+    ``round_index`` (M4) participates only when BOTH sides record one: a
+    round-less legacy window is not a round mismatch, but a window of round
+    1 used for a round-0 candidate is.
     """
     problems: List[str] = []
+    if isinstance(window, str):
+        window = parse_window_id(window)
+        if window is None:
+            return [f"window id {window!r} is not a parseable window id"]
     window_task = getattr(window, "task_id", None)
     window_episode = getattr(window, "episode_id", None)
     window_strategy = getattr(window, "strategy_id", None)
+    window_round = getattr(window, "round_index", None)
     label = getattr(window, "window_id", None) or (
         f"window for task {window_task!r}")
     if task_id is not None and window_task != task_id:
@@ -132,6 +168,11 @@ def window_identity_problems(window: Any, *,
         problems.append(
             f"window {label!r} is about strategy {window_strategy!r}, "
             f"not {strategy_id!r}")
+    if (round_index is not None and window_round is not None
+            and window_round != round_index):
+        problems.append(
+            f"window {label!r} is selection round {window_round}, "
+            f"not round {round_index}")
     return problems
 
 
@@ -195,6 +236,12 @@ class StrategyExecutionWindow:
     task_id: str
     episode_id: Optional[str]
     strategy_id: Optional[str]
+    #: Which SELECTION ROUND of this (task, episode, strategy) the window
+    #: is (M4). ``None`` = a legacy/round-less window. The same strategy
+    #: chosen again later (possibly under a different config) is a
+    #: DIFFERENT round and a different evaluation sample — aggregating them
+    #: would average a config that failed into one that succeeded.
+    round_index: Optional[int] = None
     in_scope_action_types: List[str] = field(
         default_factory=lambda: list(DEFAULT_IN_SCOPE_ACTION_TYPES))
     auxiliary_action_types: List[str] = field(
@@ -242,6 +289,7 @@ class StrategyExecutionWindow:
             "task_id": self.task_id,
             "episode_id": self.episode_id,
             "strategy_id": self.strategy_id,
+            "round_index": self.round_index,
             "in_scope_action_types": list(self.in_scope_action_types),
             "auxiliary_action_types": list(self.auxiliary_action_types),
             "n_attempts": self.n_attempts,
@@ -297,12 +345,24 @@ def build_execution_window(actions: Sequence[Any], *, task_id: str,
                            strategy_id: Optional[str] = None,
                            in_scope_action_types: Optional[Sequence[str]] = None,
                            auxiliary_action_types: Optional[Sequence[str]] = None,
+                           round_index: Optional[int] = None,
+                           round_boundaries: Optional[Sequence[Any]] = None,
                            ) -> StrategyExecutionWindow:
     """Derive a window from REAL action records (see module docstring).
 
     ``actions`` are :class:`~or_harness.world_model.actions.ActionRecord`
     objects (or anything with the same attributes). Hypothetical actions are
     excluded outright: an imagined action is not part of a real window.
+
+    ``round_index`` (M4) selects ONE selection round of this (task,
+    episode, strategy). Rounds are delimited by ``round_boundaries`` — the
+    recorded ``select_strategy`` choice actions of this episode, in time
+    order; a new choice of the SAME strategy starts a new round (the agent
+    re-decided), and so does a choice of a different strategy in between
+    (the strategy was switched away and back). ``round_index=None`` keeps
+    the legacy whole-episode aggregation (all rounds in one window), which
+    stays readable but is NOT a single evaluation sample when the strategy
+    was chosen more than once.
 
     The window's ``comparable`` flag is the guard the contract needs: a
     window with no in-scope executed attempt, or whose in-scope actions were
@@ -325,10 +385,12 @@ def build_execution_window(actions: Sequence[Any], *, task_id: str,
             "auxiliary: the scope of a prediction is one or the other")
 
     window = StrategyExecutionWindow(
-        window_id=window_id_for(task_id, episode_id, strategy_id),
+        window_id=window_id_for(task_id, episode_id, strategy_id,
+                                round_index),
         task_id=task_id,
         episode_id=episode_id,
         strategy_id=strategy_id,
+        round_index=round_index,
         in_scope_action_types=in_scope,
         auxiliary_action_types=auxiliary,
     )
@@ -350,6 +412,65 @@ def build_execution_window(actions: Sequence[Any], *, task_id: str,
         candidates.append(action)
     candidates.sort(key=lambda a: (getattr(a, "started_at", 0.0) or 0.0,
                                    getattr(a, "action_id", "")))
+
+    # Round delimitation (M4): the episode's recorded select_strategy
+    # choices, in time order, cut the timeline into selection rounds. A
+    # round N window covers the actions from the Nth choice of THIS
+    # strategy up to (excluding) the next choice of any strategy.
+    if round_index is not None:
+        if round_boundaries is None:
+            round_boundaries = [
+                a for a in candidates
+                if getattr(a, "action_type", "") == "select_strategy"]
+        choices = sorted(
+            [a for a in round_boundaries
+             if getattr(a, "action_type", "") == "select_strategy"],
+            key=lambda a: (getattr(a, "started_at", 0.0) or 0.0,
+                           getattr(a, "action_id", "")))
+        # The choices OF THIS STRATEGY number the rounds; a choice of
+        # another strategy in between ENDS the current round (the strategy
+        # was switched away).
+        round_starts: List[Any] = []
+        for choice in choices:
+            chosen_strategy = ((choice.params or {}).get("strategy_id")
+                               or (choice.outcome or {}).get(
+                                   "selected", {}).get("strategy_id"))
+            if chosen_strategy == strategy_id:
+                round_starts.append(choice)
+        if round_index >= len(round_starts):
+            window.not_comparable_reasons.append(
+                f"round {round_index} does not exist: this strategy was "
+                f"chosen {len(round_starts)} time(s) in this episode")
+            window.comparable = False
+            return window
+        start = round_starts[round_index]
+        end = None
+        for choice in choices:
+            if (getattr(choice, "started_at", 0.0),
+                    getattr(choice, "action_id", "")) > \
+                    (getattr(start, "started_at", 0.0),
+                     getattr(start, "action_id", "")):
+                end = choice
+                break
+        def _in_round(action: Any) -> bool:
+            key = (getattr(action, "started_at", 0.0) or 0.0,
+                   getattr(action, "action_id", ""))
+            start_key = (getattr(start, "started_at", 0.0) or 0.0,
+                         getattr(start, "action_id", ""))
+            if key < start_key:
+                return False
+            if end is None:
+                return True
+            end_key = (getattr(end, "started_at", 0.0) or 0.0,
+                       getattr(end, "action_id", ""))
+            return key < end_key
+        candidates = [a for a in candidates if _in_round(a)]
+        window.notes.append(
+            f"selection round {round_index} of strategy {strategy_id}: "
+            f"actions from choice action {getattr(start, 'action_id', '')} "
+            f"up to the next recorded choice"
+            + (f" ({getattr(end, 'action_id', '')})" if end is not None
+               else " (end of episode)"))
 
     strategy_mismatch = 0
     for action in candidates:
@@ -431,7 +552,8 @@ def build_execution_window(actions: Sequence[Any], *, task_id: str,
 
 
 def window_from_records(harness, task_id: str, episode_id: Optional[str],
-                        strategy_id: Optional[str] = None, **kwargs
+                        strategy_id: Optional[str] = None,
+                        round_index: Optional[int] = None, **kwargs
                         ) -> StrategyExecutionWindow:
     """Convenience wrapper over ``harness.actions.query``.
 
@@ -441,7 +563,8 @@ def window_from_records(harness, task_id: str, episode_id: Optional[str],
     actions = harness.actions.query(task_id=task_id, episode_id=episode_id)
     return build_execution_window(actions, task_id=task_id,
                                   episode_id=episode_id,
-                                  strategy_id=strategy_id, **kwargs)
+                                  strategy_id=strategy_id,
+                                  round_index=round_index, **kwargs)
 
 
 def window_ref(window: StrategyExecutionWindow) -> Dict[str, Any]:
@@ -455,6 +578,7 @@ def window_ref(window: StrategyExecutionWindow) -> Dict[str, Any]:
         "task_id": window.task_id,
         "episode_id": window.episode_id,
         "strategy_id": window.strategy_id,
+        "round_index": window.round_index,
         "n_attempts": window.n_attempts,
         "n_unfinished": window.n_unfinished,
         "in_scope_action_types": list(window.in_scope_action_types),

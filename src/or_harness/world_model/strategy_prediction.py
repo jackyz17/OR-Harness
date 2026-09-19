@@ -232,7 +232,15 @@ def parse_strategy_outcome_payload(
         baseline = None
         raw_baseline = raw_benefit.get("baseline")
         if isinstance(raw_baseline, dict):
-            baseline = BaselineStatement.from_dict(raw_baseline)
+            # A malformed baseline (an unknown kind, a non-numeric value)
+            # is a PROBLEM about this payload, never an exception that
+            # escapes into the caller's planning loop and kills the other
+            # candidates' predictions.
+            try:
+                baseline = BaselineStatement.from_dict(raw_baseline)
+            except ValueError as exc:
+                problems.append(f"benefit.baseline: {exc}")
+                baseline = None
         elif value is not None:
             problems.append("benefit.value requires a baseline: a gain with "
                             "no baseline is not a prediction")
@@ -268,12 +276,17 @@ def parse_strategy_outcome_payload(
             else:
                 dims[dim] = float(value)
         if dims:
-            vector = CostVector(**dims, measured=set(dims))
-            cost = ExpectedCost(
-                expected=vector, measured=sorted(dims),
-                notes=["predicted by the model under the strategy-outcome "
-                       "protocol; the measured mask marks PREDICTED "
-                       "dimensions, not observed ones"])
+            try:
+                vector = CostVector(**dims, measured=set(dims))
+            except (TypeError, ValueError) as exc:
+                problems.append(f"cost: {exc}")
+                cost = None
+            else:
+                cost = ExpectedCost(
+                    expected=vector, measured=sorted(dims),
+                    notes=["predicted by the model under the strategy-outcome "
+                           "protocol; the measured mask marks PREDICTED "
+                           "dimensions, not observed ones"])
         elif not problems:
             unsupported["cost"] = ("no recognized cost dimension was "
                                    "predicted")
@@ -323,9 +336,14 @@ def parse_strategy_outcome_payload(
                     basis=(str(raw["basis"]) if raw.get("basis") else None),
                     notes=[str(n) for n in (raw.get("notes") or [])]))
             if events:
-                risk = RiskStatement(
-                    events=events,
-                    notes=[str(n) for n in (raw_risk.get("notes") or [])])
+                try:
+                    risk = RiskStatement(
+                        events=events,
+                        notes=[str(n) for n in
+                               (raw_risk.get("notes") or [])])
+                except ValueError as exc:
+                    problems.append(f"risk: {exc}")
+                    risk = None
 
     # -- uncertainty ----------------------------------------------------------
     uncertainty: Optional[UncertaintyStatement] = None
@@ -354,22 +372,28 @@ def parse_strategy_outcome_payload(
             # being passed off as calibrated, so the components are stored
             # in the notes and missing blocks instead of the numeric
             # fields, which a reader could mistake for calibrated values.
-            uncertainty = UncertaintyStatement(
-                source="model_self_report",
-                basis=[str(b) for b in (raw_unc.get("basis") or [])],
-                missing={str(k): str(v) for k, v in
-                         (raw_unc.get("missing") or {}).items()},
-                notes=[str(n) for n in (raw_unc.get("notes") or [])]
-                + [f"execution_randomness (self-reported, uncalibrated): "
-                   f"{components.get('execution_randomness')}"
-                   if "execution_randomness" in components else ""]
-                + [f"knowledge_gap (self-reported, uncalibrated): "
-                   f"{components.get('knowledge_gap')}"
-                   if "knowledge_gap" in components else ""]
-                + ["the model's self-reported uncertainty is recorded as "
-                   "an UNCALIBRATED estimate in these notes, never as a "
-                   "measured probability; it is not used as one anywhere"])
-            uncertainty.notes = [n for n in uncertainty.notes if n]
+            try:
+                uncertainty = UncertaintyStatement(
+                    source="model_self_report",
+                    basis=[str(b) for b in (raw_unc.get("basis") or [])],
+                    missing={str(k): str(v) for k, v in
+                             (raw_unc.get("missing") or {}).items()},
+                    notes=[str(n) for n in (raw_unc.get("notes") or [])]
+                    + [f"execution_randomness (self-reported, uncalibrated): "
+                       f"{components.get('execution_randomness')}"
+                       if "execution_randomness" in components else ""]
+                    + [f"knowledge_gap (self-reported, uncalibrated): "
+                       f"{components.get('knowledge_gap')}"
+                       if "knowledge_gap" in components else ""]
+                    + ["the model's self-reported uncertainty is recorded "
+                       "as an UNCALIBRATED estimate in these notes, never "
+                       "as a measured probability; it is not used as one "
+                       "anywhere"])
+            except ValueError as exc:
+                problems.append(f"uncertainty: {exc}")
+                uncertainty = None
+            else:
+                uncertainty.notes = [n for n in uncertainty.notes if n]
         elif not problems:
             unsupported["uncertainty"] = ("no uncertainty component was "
                                           "predicted")
@@ -505,9 +529,21 @@ class StrategyOutcomeService:
                 provider_result=result)
             self._save(prediction)
             return prediction
-        prediction = parse_strategy_outcome_payload(
-            payload, candidate, context=context,
-            provider_result=result)
+        try:
+            prediction = parse_strategy_outcome_payload(
+                payload, candidate, context=context,
+                provider_result=result)
+        except Exception as exc:
+            # A parse/validation crash is THIS candidate's invalid result,
+            # never an exception that escapes into the caller's planning
+            # loop and kills the remaining candidates' predictions. The
+            # call really happened, so whatever usage it consumed is kept.
+            prediction = self._failed(
+                context, candidate, "invalid",
+                f"payload could not be parsed: {type(exc).__name__}: {exc}",
+                provider_result=result)
+            self._save(prediction)
+            return prediction
         if prediction.status == "invalid" \
                 and not prediction.trace.model_info.get("parse_error"):
             prediction.trace.model_info["parse_error"] = (

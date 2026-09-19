@@ -153,6 +153,21 @@ from or_harness.world_model.strategy_prediction import (
     build_strategy_outcome_request,
     parse_strategy_outcome_payload,
 )
+from or_harness.world_model.episode_closeout import (
+    CALIBRATION_SUMMARY_VERSION,
+    DEFAULT_MIN_CALIBRATION_SAMPLES,
+    EPISODE_CLOSEOUT_VERSION,
+    EPISODE_TERMINAL_STATES,
+    EpisodeCloseout,
+    RealOutcomeSummary,
+    StrategyPredictionEvaluation,
+    build_calibration_summary,
+    calibration_summary_for_context,
+    close_episode,
+    evaluate_strategy_prediction,
+    episode_closeout_record,
+    summarize_real_outcome,
+)
 
 __all__ = [
     # state / actions / budget substrate
@@ -173,6 +188,20 @@ __all__ = [
     "StrategyOutcomeService",
     "build_strategy_outcome_request",
     "parse_strategy_outcome_payload",
+    # episode close-out and experience calibration (M4)
+    "CALIBRATION_SUMMARY_VERSION",
+    "DEFAULT_MIN_CALIBRATION_SAMPLES",
+    "EPISODE_CLOSEOUT_VERSION",
+    "EPISODE_TERMINAL_STATES",
+    "EpisodeCloseout",
+    "RealOutcomeSummary",
+    "StrategyPredictionEvaluation",
+    "build_calibration_summary",
+    "calibration_summary_for_context",
+    "close_episode",
+    "evaluate_strategy_prediction",
+    "episode_closeout_record",
+    "summarize_real_outcome",
     # execution window (attempt vs strategy window)
     "DEFAULT_AUXILIARY_ACTION_TYPES",
     "DEFAULT_IN_SCOPE_ACTION_TYPES",

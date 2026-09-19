@@ -179,14 +179,22 @@ prediction needs a completed linked execution; a window-scope prediction
 needs the window itself complete). Re-binding the same action is idempotent
 and re-bills nothing.
 
-**What is deliberately left to M4/M5:**
+**What is deliberately left to M5/M6:**
 
-- full window close-out and unified window-level error aggregation (M4);
-- scoring a comparable prediction against its bound execution's numbers —
-  the binding records the linkage and the comparability; the error
-  aggregation itself lands with M4's close-out;
 - capability-evolution prediction, offline learning decisions and their
-  effect verification (M5).
+  effect verification (M5);
+- closing the two known planner gaps (a candidate with no comparable
+  benefit can still be suggested; the unknown-cost/unknown-risk charges
+  are decision rules, not measurements) — M6, together with the
+  integration acceptance. The M4 close-out's evaluation does NOT depend
+  on the planner's utility or its suggestion: eligibility is decided by
+  the prediction–outcome match and the measurement basis only.
+
+The window-level error aggregation and the episode close-out are
+**implemented in M4**: after the real execution, `orx close-episode`
+evaluates every bound prediction field by field and publishes the
+experience calibration — see
+[`references/episode_closeout.md`](episode_closeout.md).
 
 Unexecuted candidates keep `unexecuted`/`unbound` semantics: no
 counterfactual truth is fabricated from the winner's result. After the real
@@ -224,6 +232,10 @@ or knowledge induction.
 - [ ] Did the suggestion change the selection? No — only `choose-next`
       writes `X.selected_plan`.
 - [ ] Am I binding an execution to a prediction of a DIFFERENT config?
-      The mismatch is recorded and the prediction is not comparable.
-- [ ] Do I want window-level error numbers? That is M4; the binding records
-      the linkage and the comparability flag only.
+      The mismatch is recorded and the prediction is not comparable. An
+      UNKNOWN identity field (no episode on the action, a config key the
+      log never carries) is recorded separately and never counts as a
+      match either.
+- [ ] Do I want window-level error numbers? Run `orx close-episode` when
+      the episode ends: every bound prediction is evaluated field by
+      field and the experience calibration is published.

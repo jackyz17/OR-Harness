@@ -374,7 +374,19 @@ Query predictions with `orx inspect --bank predictions [--task ID]`.
 
 ## `orx bind-strategy --prediction ID --action ACTION_ID`
 
-Bind a strategy-outcome prediction to the real action that ran. The binding checks request identity (task/episode/strategy/solver and the candidate's execution config) and sets `trace.comparable` only when the bound action is a completed real scope. Idempotent; no model call; nothing re-billed. Window-level error aggregation itself lands in M4 — the binding records the linkage and the comparability flag.
+Bind a strategy-outcome prediction to the real action that ran. The binding checks request identity (action type/task/episode/strategy/solver and the candidate's execution config) and sets `trace.comparable` only when the bound action is a completed real scope. **Unknown is not a match**: a field the executed action could not observe (no episode recorded, a config key the action log never carries) is recorded under `binding_unknown` — separately from a known `binding_mismatch` — and the fields that depend on it stay unevaluable at close-out. Idempotent (a re-bind re-evaluates the comparability); no model call; nothing re-billed. The per-field evaluation itself happens at episode close-out (`orx close-episode`); see [episode_closeout.md](episode_closeout.md).
+
+## `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
+
+**Episode close-out (world-model M4).** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice. Full spec: [episode_closeout.md](episode_closeout.md).
+
+## `orx calibration [--min-samples N]`
+
+Read the published strategy-outcome experience-calibration summary (read-only). Closed episodes only — an active episode never reads its own not-yet-closed feedback. Groups below the sample minimum report `insufficient_evidence` with `reliability: null`; no figure is invented. This is the OR strategy-outcome reliability, kept separate from the legacy knowledge-prediction reliability, and a measured record — not a promise that future predictions improve.
+
+## `orx evaluations [--task ID] [--episode ep1] [--evaluation EVALUATION_ID]`
+
+List (or read one) stored post-hoc evaluations of strategy-outcome predictions (read-only). Excluded evaluations are neither hits nor misses; pending ones wait for their scope to end.
 
 ## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N] [--delta W] [--prediction-mode M] [--protocol legacy|strategy-outcome]`
 

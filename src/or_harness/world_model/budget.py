@@ -151,6 +151,13 @@ class BudgetLedger:
         # here — they are already counted on that action above. This way an
         # unparented prediction call never silently vanishes from the
         # budget view, and a parented one is never double-counted.
+        #
+        # BOTH prediction generations are read: the legacy
+        # world_model_predictions rows AND the wm-so/1 contract_predictions
+        # rows. An independent strategy-outcome call (no parent action) is
+        # real spend of this episode exactly like a legacy one; before M4
+        # the new protocol's calls were invisible to the ledger, so a
+        # budget was reported "ok" while the tokens were being spent.
         prediction_costs: List[Dict[str, Any]] = []
         unattributed_prediction_costs: List[Dict[str, Any]] = []
         try:
@@ -159,6 +166,12 @@ class BudgetLedger:
                 "WHERE task_id=?", (task_id,)).fetchall()
         except Exception:
             pred_rows = []
+        try:
+            contract_rows = self.store.conn.execute(
+                "SELECT payload FROM contract_predictions "
+                "WHERE task_id=?", (task_id,)).fetchall()
+        except Exception:
+            contract_rows = []
         for row in pred_rows:
             from or_harness.world_model.prediction import \
                 OutcomePrediction
@@ -167,33 +180,28 @@ class BudgetLedger:
                     self.store.loads(row["payload"]))
             except Exception:
                 continue
-            if pred.call_cost is None:
+            self._add_prediction_cost(
+                pred.prediction_id, pred.call_cost,
+                getattr(pred.action_spec, "episode_id", None),
+                (pred.model_info or {}).get("charged_to_parent_action"),
+                episode_id, total, n_measured, prediction_costs,
+                unattributed_prediction_costs)
+        for row in contract_rows:
+            from or_harness.world_model.contracts import (
+                StrategyOutcomePrediction,
+            )
+            try:
+                pred = StrategyOutcomePrediction.from_dict(
+                    self.store.loads(row["payload"]))
+            except Exception:
                 continue
-            if (pred.model_info or {}).get("charged_to_parent_action"):
-                continue  # already counted on the parent action
-            if episode_id is not None:
-                # STRICT episode matching: a prediction whose episode is
-                # unknown (None) is NOT a wildcard — charging it to every
-                # episode would leak one call's cost into budgets it never
-                # consulted. Unattributable prediction costs are reported
-                # separately, never folded into this episode.
-                if pred.action_spec.episode_id is None:
-                    unattributed_prediction_costs.append({
-                        "prediction_id": pred.prediction_id,
-                        "cost": pred.call_cost.to_dict(),
-                        "cost_measured":
-                            sorted(pred.call_cost.measured_dims()),
-                    })
-                    continue
-                if pred.action_spec.episode_id != episode_id:
-                    continue
-            measured = pred.call_cost.measured_dims()
-            accumulate_measured_costs([pred.call_cost], total, n_measured)
-            prediction_costs.append({
-                "prediction_id": pred.prediction_id,
-                "cost": pred.call_cost.to_dict(),
-                "cost_measured": sorted(measured),
-            })
+            self._add_prediction_cost(
+                pred.prediction_id, pred.trace.call_cost,
+                pred.candidate.episode_id,
+                (pred.trace.model_info or {}).get(
+                    "charged_to_parent_action"),
+                episode_id, total, n_measured, prediction_costs,
+                unattributed_prediction_costs)
 
         # A dimension is unknown when at least one contributing item
         # (execution, action, or unparented prediction call, measured or
@@ -238,6 +246,51 @@ class BudgetLedger:
                 "budget is judged per-attempt, see view); unknown "
                 "dimensions reported as null, never zero"),
         }
+
+    def _add_prediction_cost(self, prediction_id: str,
+                             call_cost: Optional[CostVector],
+                             episode_of_prediction: Optional[str],
+                             charged_to_parent: Optional[str],
+                             episode_id: Optional[str],
+                             total: Dict[str, float],
+                             n_measured: Dict[str, int],
+                             prediction_costs: List[Dict[str, Any]],
+                             unattributed: List[Dict[str, Any]]) -> None:
+        """Fold ONE prediction call's own cost into the consumption view.
+
+        Shared by both prediction generations (legacy OutcomePrediction and
+        wm-so/1 StrategyOutcomePrediction) so the attribution rule is ONE
+        rule: a call charged to a parent action is skipped (counted there),
+        a call of an unknown episode is reported unattributed (never a
+        wildcard), and a call of THIS episode adds its measured dimensions.
+        """
+        from or_harness.core.schema import accumulate_measured_costs
+        if call_cost is None:
+            return
+        if charged_to_parent:
+            return  # already counted on the parent action
+        if episode_id is not None:
+            # STRICT episode matching: a prediction whose episode is
+            # unknown (None) is NOT a wildcard — charging it to every
+            # episode would leak one call's cost into budgets it never
+            # consulted. Unattributable prediction costs are reported
+            # separately, never folded into this episode.
+            if episode_of_prediction is None:
+                unattributed.append({
+                    "prediction_id": prediction_id,
+                    "cost": call_cost.to_dict(),
+                    "cost_measured": sorted(call_cost.measured_dims()),
+                })
+                return
+            if episode_of_prediction != episode_id:
+                return
+        measured = call_cost.measured_dims()
+        accumulate_measured_costs([call_cost], total, n_measured)
+        prediction_costs.append({
+            "prediction_id": prediction_id,
+            "cost": call_cost.to_dict(),
+            "cost_measured": sorted(measured),
+        })
 
     def _episode_of_execution(self, execution_id: str) -> Optional[str]:
         """The episode a recorded/staged execution belongs to (via its
