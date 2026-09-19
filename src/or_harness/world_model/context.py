@@ -113,6 +113,47 @@ def _excerpt(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:
     return collapsed[:limit]
 
 
+def resolve_effective_cir(task: Dict[str, Any],
+                          cir: Optional[Any] = None) -> Any:
+    """The ONE CIR this request is about.
+
+    An explicit ``cir`` wins over the task's own ``coupling`` field. This is
+    deliberately a single resolution point: the joint representation, the
+    profile (hence the snapshot's structural cell) and the retrieval channels
+    must all describe the SAME problem structure, or one request would carry
+    two structural judgments and could retrieve knowledge from the wrong
+    cell.
+    """
+    if cir is not None:
+        return cir
+    if isinstance(task, dict) and isinstance(task.get("coupling"), dict):
+        return task["coupling"]
+    return None
+
+
+def task_with_effective_cir(task: Dict[str, Any],
+                            cir: Optional[Any] = None) -> Dict[str, Any]:
+    """A value copy of ``task`` whose ``coupling`` IS the effective CIR.
+
+    Passing the task this way is how an explicit ``cir`` reaches every
+    existing consumer (``profile``, ``snapshot``, ``recall``) without adding
+    a parallel parameter to each — they already read ``task["coupling"]``, so
+    they end up reading the same structure the joint representation used.
+    With no effective CIR the task is returned with its ``coupling`` removed,
+    so a caller-supplied CIR REPLACES the task's own rather than being
+    silently overridden by it.
+    """
+    resolved = resolve_effective_cir(task, cir)
+    copy_task = dict(task or {})
+    if resolved is None:
+        copy_task.pop("coupling", None)
+    elif hasattr(resolved, "to_dict"):
+        copy_task["coupling"] = resolved.to_dict()
+    else:
+        copy_task["coupling"] = copy.deepcopy(dict(resolved))
+    return copy_task
+
+
 def _bounded(items: Sequence[Any], limit: int,
              notes: List[str], label: str) -> List[Any]:
     """First ``limit`` items, recording the truncation (never silent)."""
@@ -430,6 +471,7 @@ def build_joint_representation(
         cir: Any = None,
         math_declared: Optional[Dict[str, Any]] = None,
         text: Optional[str] = None,
+        cir_source: Optional[str] = None,
         notes: Optional[List[str]] = None) -> JointProblemRepresentation:
     """Assemble P's joint representation from what already exists.
 
@@ -458,6 +500,9 @@ def build_joint_representation(
     resolved_cir = cir
     if resolved_cir is None and isinstance(task.get("coupling"), dict):
         resolved_cir = task["coupling"]
+    if cir_source is None:
+        cir_source = ("caller_supplied" if cir is not None
+                      else "task_coupling")
     if resolved_cir is not None:
         raw = (resolved_cir.to_dict()
                if hasattr(resolved_cir, "to_dict") else dict(resolved_cir))
@@ -493,7 +538,7 @@ def build_joint_representation(
 
     sources: Dict[str, str] = {
         "text": "task_payload" if text.strip() else "none",
-        "cir": "task_coupling" if cir_dict["present"] else "none",
+        "cir": (cir_source if cir_dict["present"] else "none"),
         "model": "task_model" if has_model else "none",
         "profile": "profiler" if profile is not None else "none",
         "derivation": "profiler" if derivation else "none",
@@ -864,6 +909,132 @@ def build_retrieval_view(recall_result: Dict[str, Any], *,
 # ---------------------------------------------------------------------------
 
 
+#: Keys that record WHEN something was read rather than WHAT it says. They
+#: are excluded from the memory-content digest: a fresh read timestamp is not
+#: a change of content, and letting one move the digest would make every
+#: rebuild look like a knowledge revision.
+_VOLATILE_CONTENT_KEYS = ("snapshot_at", "created_at", "last_consulted_at",
+                          "last_consulted", "consulted_at", "as_of")
+
+
+def _strip_volatile(value: Any) -> Any:
+    """A copy of ``value`` with read timestamps removed (recursively)."""
+    if isinstance(value, dict):
+        return {str(k): _strip_volatile(v) for k, v in value.items()
+                if k not in _VOLATILE_CONTENT_KEYS}
+    if isinstance(value, (list, tuple)):
+        return [_strip_volatile(v) for v in value]
+    return value
+
+
+def memory_content_digest(*, knowledge: Optional[Dict[str, Any]] = None,
+                          retrieval: Optional[Any] = None,
+                          executions: Optional[Sequence[Any]] = None,
+                          entries: Optional[Sequence[Any]] = None
+                          ) -> Dict[str, Any]:
+    """Digest of the memory CONTENT a context actually used.
+
+    Counts alone are not a version: editing an entry's expected quality, its
+    interval, its predicates, its applicability notes or its strategy actions
+    changes the capability condition, and a digest built from ``len(...)``
+    would report the same value before and after that revision. So this
+    digests the decision-relevant FIELDS of the memory that was really
+    consulted — the layered knowledge view, the full entries behind it (whose
+    ``applicability`` / ``actions`` / ``risk_conditions`` the ``KnowledgeRef``
+    subset deliberately omits), and the evidence the retrieval carried —
+    while excluding read timestamps (which move on every read and mean
+    nothing about content).
+
+    Bounded by construction: it covers the entries of the scoped knowledge
+    view and the hits the context carries, never the whole bank, so no global
+    snapshot mechanism is introduced.
+    """
+    knowledge = dict(knowledge or {})
+    digest_entries: List[Dict[str, Any]] = []
+    for layer in ("verified", "legacy_unknown", "unverified"):
+        for entry in knowledge.get(layer) or []:
+            if not isinstance(entry, dict):
+                continue
+            digest_entries.append({"layer": layer,
+                                   **_strip_volatile(entry)})
+    # The full entries add the fields the KnowledgeRef subset omits — the
+    # harness-written applicability notes, the strategy actions and the risk
+    # conditions are all part of what the memory SAYS.
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            digest_entries.append(_strip_volatile(entry))
+            continue
+        digest_entries.append({
+            "entry_id": getattr(entry, "entry_id", None),
+            "strategy_id": getattr(entry, "strategy_id", None),
+            "expected_quality_hat": getattr(entry, "expected_quality_hat",
+                                            None),
+            "quality_interval": list(getattr(entry, "quality_interval",
+                                             ()) or ()),
+            "predicates": copy.deepcopy(
+                getattr(entry, "pattern", None) or {}),
+            "applicability": list(getattr(entry, "applicability", None) or []),
+            "risk_conditions": list(getattr(entry, "risk_conditions",
+                                            None) or []),
+            "actions": list(getattr(entry, "actions", None) or []),
+            "status": getattr(entry, "status", None),
+            "support_n": getattr(entry, "support_n", None),
+            "verification_state": getattr(entry, "verification_state", None),
+            "failure_prob": getattr(entry, "failure_prob", None),
+        })
+    digest_entries.sort(key=lambda e: (str(e.get("layer")),
+                                       str(e.get("entry_id"))))
+
+    hits: List[Dict[str, Any]] = []
+    if retrieval is not None:
+        for hit in getattr(retrieval, "hits", None) or []:
+            hits.append({
+                "identity": hit.get("identity"),
+                "version": hit.get("version"),
+                "evidence_class": hit.get("evidence_class"),
+                "content": _strip_volatile(hit.get("content") or {}),
+            })
+        hits.sort(key=lambda h: str(h.get("identity")))
+
+    execution_ids: List[Dict[str, Any]] = []
+    for record in executions or []:
+        if isinstance(record, dict):
+            execution_ids.append(_strip_volatile(record))
+        else:
+            execution_ids.append({
+                "execution_id": getattr(record, "execution_id", None),
+                "task_id": getattr(record, "task_id", None),
+                "strategy_id": getattr(record, "strategy_id", None),
+                "task_text_digest": getattr(record, "task_text_digest", None),
+            })
+    execution_ids.sort(key=lambda e: str(e.get("execution_id")))
+
+    content = {"knowledge": digest_entries, "retrieval_hits": hits,
+               "executions": execution_ids}
+    layer_counts: Dict[str, int] = {}
+    for entry in digest_entries:
+        key = str(entry.get("layer") or "entry")
+        layer_counts[key] = layer_counts.get(key, 0) + 1
+    # Only the digest and its COMPOSITION are returned, never the digested
+    # content: the version identity must not become a second, unbounded copy
+    # of the knowledge view (and an unverified candidate must not leak into
+    # the context merely by being counted in a version).
+    return {
+        "digest": _stable_digest(content),
+        "knowledge_entries": len(digest_entries),
+        "knowledge_by_layer": layer_counts,
+        "retrieval_hits": len(hits),
+        "executions": len(execution_ids),
+        "excluded_keys": list(_VOLATILE_CONTENT_KEYS),
+        "note": ("the digest covers the decision-relevant CONTENT of the "
+                 "memory actually consulted (entry fields — including "
+                 "applicability and actions — and retrieved hits), with read "
+                 "timestamps excluded: a knowledge revision moves it, a "
+                 "re-read does not. Only the digest and its composition are "
+                 "carried, never the digested content"),
+    }
+
+
 def capability_version(*, harness_config: Optional[Dict[str, Any]] = None,
                        provider: Optional[Dict[str, Any]] = None,
                        prompt_template_version: Optional[str] = None,
@@ -875,16 +1046,33 @@ def capability_version(*, harness_config: Optional[Dict[str, Any]] = None,
     Four things that can move independently, kept apart: harness
     configuration, model/prompt, tools, and the memory content the evidence
     was read from. This is an identity, not a capability level — a content
-    digest says WHICH memories were read, never how capable the harness is,
-    and a fresh read timestamp is not a capability change.
+    digest says WHICH memories were read and what they said, never how
+    capable the harness is, and a fresh read timestamp is not a capability
+    change.
+
+    ``knowledge_content`` should be the result of
+    :func:`memory_content_digest` (real content). A bare count mapping is
+    accepted for backwards compatibility but is NOT a version — it cannot
+    distinguish a knowledge revision from an unchanged entry.
     """
     knowledge_content = dict(knowledge_content or {})
+    content_digest = knowledge_content.get("digest")
+    if content_digest is None:
+        content_digest = _stable_digest(knowledge_content)
+        knowledge_content = {
+            **knowledge_content,
+            "digest": content_digest,
+            "note": ("derived from counts only: this is NOT a content "
+                     "version — it cannot distinguish a knowledge revision "
+                     "from an unchanged entry"),
+        }
     return {
         "harness_config_digest": _stable_digest(harness_config or {}),
         "provider": copy.deepcopy(provider or {}),
         "prompt_template_version": prompt_template_version,
         "tools": sorted(str(t) for t in (tools or [])),
-        "knowledge_content_digest": _stable_digest(knowledge_content),
+        "knowledge_content": knowledge_content,
+        "knowledge_content_digest": content_digest,
         "note": ("this is a version IDENTITY (what configuration, model, "
                  "tools and memory content the evidence was read under), not "
                  "a capability level; a content digest is not an ability "
@@ -924,6 +1112,24 @@ class PredictionContext:
     capability_version: Dict[str, Any] = field(default_factory=dict)
     #: External execution constraints (declared budget, consumption, tools).
     execution_constraints: Dict[str, Any] = field(default_factory=dict)
+    #: The framework's structural knowledge-target proposal set, frozen at
+    #: build time. A reused context must send THESE targets: re-deriving them
+    #: would read banks that may have moved since, so the prediction would
+    #: mix a frozen input with a current proposal.
+    knowledge_targets: List[Dict[str, Any]] = field(default_factory=list)
+    #: Measured reliability of past predictions, frozen at build time (it
+    #: comes from the prediction LOG, so a later call would change it).
+    reliability: Dict[str, Any] = field(default_factory=dict)
+    #: The frozen X/B + coverage + harness-condition blocks of the snapshot
+    #: this context was built from, so a reused context can rebuild a
+    #: snapshot that is BYTE-EQUIVALENT to the frozen one instead of taking a
+    #: fresh one (which would carry later progress).
+    snapshot: Dict[str, Any] = field(default_factory=dict)
+    #: Per strategy, the DISTINCT tasks whose executions supported that
+    #: cell's statistics at build time. ``learning_needs`` counts independent
+    #: tasks to decide whether a claim could form, so a reused context must
+    #: read that count from here rather than recounting today's bank.
+    cell_evidence: Dict[str, Any] = field(default_factory=dict)
     sources: Dict[str, str] = field(default_factory=dict)
     degraded: List[Dict[str, str]] = field(default_factory=list)
     missing: List[str] = field(default_factory=list)
@@ -948,6 +1154,10 @@ class PredictionContext:
         self.capability = copy.deepcopy(self.capability)
         self.capability_version = copy.deepcopy(self.capability_version)
         self.execution_constraints = copy.deepcopy(self.execution_constraints)
+        self.knowledge_targets = copy.deepcopy(self.knowledge_targets)
+        self.reliability = copy.deepcopy(self.reliability)
+        self.snapshot = copy.deepcopy(self.snapshot)
+        self.cell_evidence = copy.deepcopy(self.cell_evidence)
         self.sources = dict(self.sources)
         self.degraded = [dict(d) for d in self.degraded]
         self.missing = list(self.missing)
@@ -1001,6 +1211,10 @@ class PredictionContext:
             "capability": copy.deepcopy(self.capability),
             "capability_version": copy.deepcopy(self.capability_version),
             "execution_constraints": copy.deepcopy(self.execution_constraints),
+            "knowledge_targets": copy.deepcopy(self.knowledge_targets),
+            "reliability": copy.deepcopy(self.reliability),
+            "snapshot": copy.deepcopy(self.snapshot),
+            "cell_evidence": copy.deepcopy(self.cell_evidence),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
             "missing": list(self.missing),
@@ -1033,6 +1247,11 @@ class PredictionContext:
                 dict(data.get("capability_version") or {})),
             execution_constraints=copy.deepcopy(
                 dict(data.get("execution_constraints") or {})),
+            knowledge_targets=copy.deepcopy(
+                list(data.get("knowledge_targets") or [])),
+            reliability=copy.deepcopy(dict(data.get("reliability") or {})),
+            snapshot=copy.deepcopy(dict(data.get("snapshot") or {})),
+            cell_evidence=copy.deepcopy(dict(data.get("cell_evidence") or {})),
             sources={str(k): str(v) for k, v in
                      (data.get("sources") or {}).items()},
             degraded=[dict(d) for d in (data.get("degraded") or [])],
@@ -1130,6 +1349,11 @@ def build_context(
         capability_version_block: Optional[Dict[str, Any]] = None,
         execution_constraints: Optional[Dict[str, Any]] = None,
         structural_recommendations: Optional[Sequence[Dict[str, Any]]] = None,
+        knowledge_targets: Optional[Sequence[Any]] = None,
+        reliability: Optional[Dict[str, Any]] = None,
+        cell_evidence: Optional[Dict[str, Any]] = None,
+        cir_source: Optional[str] = None,
+        retrieval_bounding: Optional[Dict[str, Any]] = None,
         top_k: int = 5, include_unverified: bool = False,
         context_id: Optional[str] = None,
         created_at: Optional[float] = None) -> PredictionContext:
@@ -1137,16 +1361,22 @@ def build_context(
 
     A pure assembly step: every input is something the caller already has
     (a frozen snapshot, one recall result, the profile and its derivation
-    report, the phase-1 capability evidence). Nothing is executed, called or
+    report, the phase-1 capability evidence, the structural knowledge
+    targets and the measured reliability). Nothing is executed, called or
     induced here — that separation is what makes "the context build performs
     no model call" checkable.
+
+    The knowledge targets and the reliability table are frozen INTO the
+    context on purpose: both come from live banks/logs, and a reused context
+    must send the values as they stood at build time rather than re-deriving
+    them from banks that may have moved since.
     """
     from or_harness.world_model.state import task_text_digest
 
     digest = task_text_digest(task)
     joint = build_joint_representation(
         task, profile=profile, derivation=derivation, cir=cir,
-        math_declared=math_declared)
+        math_declared=math_declared, cir_source=cir_source)
     snapshot_id = str(getattr(snapshot, "snapshot_id", "") or "")
     problem_state = dict(getattr(snapshot, "problem_state", None) or {})
     solving_context = {
@@ -1164,6 +1394,20 @@ def build_context(
     retrieval = build_retrieval_view(recall_result, task_digest=digest,
                                      top_k=top_k,
                                      include_unverified=include_unverified)
+    if retrieval_bounding:
+        # The retrieval was bounded to a frozen moment. That is a fact about
+        # the evidence set, so it is recorded ON the view rather than only
+        # beside it — otherwise a reader would see the bounded hits without
+        # knowing anything was excluded.
+        retrieval.notes.append(str(retrieval_bounding.get("note") or ""))
+        retrieval.structural["retrieval_bounding"] = copy.deepcopy(
+            retrieval_bounding)
+        if retrieval_bounding.get("dropped"):
+            retrieval.degraded.append({
+                "part": "retrieval.bounding",
+                "reason": (f"{retrieval_bounding['dropped']} memory item(s) "
+                           "were created after the frozen moment and were "
+                           "excluded from this context")})
     if not recall_result.get("vector_recall") \
             and not recall_result.get("degraded"):
         retrieval.missing.append(
@@ -1172,6 +1416,8 @@ def build_context(
 
     evidence = capability or HarnessCapabilityEvidence()
     version_block = capability_version_block or capability_version()
+    frozen_targets = [t.to_dict() if hasattr(t, "to_dict") else dict(t)
+                      for t in (knowledge_targets or [])]
     ctx = PredictionContext(
         context_id=context_id or PredictionContext.new_id(),
         task_id=str(task.get("task_id", "")),
@@ -1184,6 +1430,10 @@ def build_context(
         capability=evidence.to_dict(),
         capability_version=version_block,
         execution_constraints=copy.deepcopy(execution_constraints or {}),
+        knowledge_targets=frozen_targets,
+        reliability=copy.deepcopy(reliability or {}),
+        snapshot=snapshot_conditions(snapshot),
+        cell_evidence=copy.deepcopy(cell_evidence or {}),
         sources={
             "snapshot": snapshot_id or "none",
             "task_version": digest,
@@ -1201,8 +1451,68 @@ def build_context(
         ctx.missing.append(
             "snapshot: the context was built without a frozen snapshot, so "
             "X and B are absent rather than empty")
+    if not frozen_targets:
+        ctx.notes.append(
+            "no structural knowledge target was proposed for this context: "
+            "the frozen proposal set is empty (a first-class answer, not an "
+            "error)")
     ctx.freeze()
     return ctx
+
+
+def snapshot_conditions(snapshot: Any) -> Dict[str, Any]:
+    """The frozen condition blocks of a snapshot, by value.
+
+    Only the pieces a prediction is conditioned on — the labelled task
+    progress (X), the budget state (B), the layered coverage view and the
+    harness condition (H) — plus the identity needed to rebuild an
+    equivalent snapshot. Read timestamps and the task payload are excluded:
+    they are not prediction conditions, and the joint representation already
+    carries the problem's own content.
+    """
+    return {
+        "task_id": str(getattr(snapshot, "task_id", "") or ""),
+        "episode_id": getattr(snapshot, "episode_id", None),
+        "snapshot_id": str(getattr(snapshot, "snapshot_id", "") or ""),
+        "task_progress": copy.deepcopy(
+            getattr(snapshot, "task_progress", None) or {}),
+        "budget_state": copy.deepcopy(
+            getattr(snapshot, "budget_state", None) or {}),
+        "coverage": copy.deepcopy(getattr(snapshot, "coverage", None) or {}),
+        "harness_state": copy.deepcopy(
+            getattr(snapshot, "harness_state", None) or {}),
+    }
+
+
+def snapshot_from_context(context: "PredictionContext") -> Any:
+    """Rebuild the FROZEN snapshot a reused context was conditioned on.
+
+    This is the fix for "reusing a context still took a fresh snapshot": the
+    rebuilt object carries the frozen snapshot's own id and condition blocks,
+    so the prediction request's ``state`` is the frozen X/B rather than the
+    episode's current progress, and the recorded ``input_snapshot_id``
+    matches the context's snapshot.
+
+    The object is NOT persisted: it is the frozen input being replayed, not a
+    new state observation, and writing it would add a snapshot that never
+    really happened. A context with no frozen snapshot returns a snapshot
+    with an empty id — the honest "this context has no X/B" state.
+    """
+    from or_harness.world_model.state import BeliefSnapshot
+
+    frozen = context.snapshot or {}
+    return BeliefSnapshot.build(
+        {"task_id": context.task_id},
+        context.episode_id,
+        harness_state=copy.deepcopy(frozen.get("harness_state") or {}),
+        problem_state={"task_digest": context.task_digest},
+        task_progress=copy.deepcopy(frozen.get("task_progress") or {}),
+        budget_state=copy.deepcopy(frozen.get("budget_state") or {}),
+        coverage=copy.deepcopy(frozen.get("coverage") or {}),
+        snapshot_id=(str(frozen.get("snapshot_id") or "")
+                     or context.snapshot_id or None),
+        created_at=context.created_at,
+    )
 
 
 def capability_evidence_with_sources(
@@ -1295,3 +1605,69 @@ def capability_evidence_with_sources(
                 "downgraded from direct_evidence: no evidence reference "
                 "supported the stronger claim")
     return evidence
+
+
+# ---------------------------------------------------------------------------
+# frozen per-strategy evidence (what a reused context must not re-count)
+# ---------------------------------------------------------------------------
+
+
+def cell_evidence_from_stats(stats: Any, profile: Optional[ProblemProfile],
+                             strategies: Sequence[str]) -> Dict[str, Any]:
+    """The supporting evidence per strategy, frozen at build time.
+
+    ``learning_needs`` counts DISTINCT TASKS behind a cell to decide whether
+    a claim could form, and it reads the cell's real records to do so. A
+    reused context must use the count as it stood when the context was
+    built — recounting today's bank would let evidence that arrived after the
+    snapshot change a frozen prediction condition.
+
+    Bounded on purpose: only the distinct-task count and the task ids are
+    kept per strategy, not the records themselves. The count is the quantity
+    the heuristic consumes; the ids make it checkable.
+    """
+    out: Dict[str, Any] = {}
+    for strategy_id in strategies or []:
+        if not strategy_id or profile is None:
+            continue
+        try:
+            records = stats.evidence(profile, strategy_id)
+        except Exception:
+            out[strategy_id] = {"distinct_tasks": None,
+                                "task_ids": [],
+                                "note": "cell evidence unavailable at build "
+                                        "time (unknown, never zero)"}
+            continue
+        task_ids = sorted({str(getattr(r, "task_id", "")) for r in records})
+        out[str(strategy_id)] = {
+            "distinct_tasks": len(task_ids),
+            "task_ids": task_ids,
+            "executions": len(records),
+        }
+    return out
+
+
+def knowledge_targets_from_context(context: "PredictionContext",
+                                   action_spec: Any) -> List[Any]:
+    """The FROZEN knowledge targets for one candidate strategy.
+
+    Reused contexts must send the proposal set as it stood at build time.
+    When the strategy's targets were not frozen (the strategy was not in the
+    context's candidate set), an empty list is returned with the reason
+    recorded in ``context.missing`` — an honest "not proposed", never a
+    silent re-derivation from today's banks.
+    """
+    from or_harness.world_model.knowledge import KnowledgeTarget
+
+    strategy_id = str(getattr(action_spec, "strategy_id", None) or "")
+    targets = [KnowledgeTarget.from_dict(t) for t in
+               (context.knowledge_targets or [])
+               if str((t or {}).get("strategy_id") or "") == strategy_id]
+    if not targets:
+        note = (f"frozen knowledge targets: none were proposed for strategy "
+                f"{strategy_id or '(unnamed)'} when this context was built, "
+                "so none are sent (the proposal is not re-derived from the "
+                "current bank)")
+        if note not in context.missing:
+            context.missing.append(note)
+    return targets

@@ -56,7 +56,11 @@ step: `orx context` profiles the task itself.
 | `capability` | `HarnessCapabilityEvidence` — evidence ABOUT H with an explicit status each (see §5) |
 | `capability_version` | the version IDENTITY of config / model / prompt / tools / memory content (see §5) |
 | `execution_constraints` | declared budget + consumption status, available solver families, executor limits |
-| `sources` | where each part came from (snapshot id, task version, channel list) |
+| `knowledge_targets` | the framework's structural proposal set, **frozen** (see §6) |
+| `reliability` | the measured reliability of past predictions, **frozen** |
+| `snapshot` | the frozen condition blocks (X/B + coverage + harness condition) of the snapshot this context was built from |
+| `cell_evidence` | per strategy, the distinct-task count behind the cell's statistics, **frozen** |
+| `sources` | where each part came from (snapshot id, task version, channel list, CIR origin) |
 | `degraded` | parts that did NOT run, each with its reason |
 | `missing` | parts that are absent, each with what it means |
 | `notes` | what the numbers above are, and are not |
@@ -138,6 +142,79 @@ These are **different facts** and the context keeps them apart:
 
 An empty evidence set with a degraded channel is **not** "nothing comparable
 exists" — the context says so in `retrieval.notes`.
+
+---
+
+### One CIR for the whole request
+
+An explicit `--cir` (or `cir=`) is resolved ONCE and drives **all** of: the
+joint representation, the profile (hence the snapshot's structural cell and
+its coverage view) and the retrieval channels. They already read
+`task["coupling"]`, so the effective CIR is routed to them through the task
+(`task_with_effective_cir`), and a supplied CIR **replaces** the task's own
+rather than being silently overridden by it. `joint.sources["cir"]` records
+which one won (`caller_supplied` / `task_coupling` / `none`).
+
+Without this, one request could carry two structural judgments — e.g. the
+joint representation seeing a supplied CIR while the snapshot and the
+retrieval fell back to the task's own weak coupling — and could retrieve
+knowledge from the wrong structural cell.
+
+### Retrieval is bounded to the frozen moment
+
+A context built from a **historical snapshot** describes the state as it was.
+A memory created *after* that moment belongs to a later state, so the
+retrieval is bounded to the snapshot's own time: postdating items are dropped
+and reported (`execution_constraints.retrieval_bounding`,
+`retrieval.structural.retrieval_bounding`, plus a `retrieval.bounding` entry
+in `degraded`). A memory whose creation time cannot be established is KEPT
+but counted under `unbounded_kept` — dropping it would discard real evidence,
+and keeping it silently would claim a bound that was never verified.
+
+### Reuse sends the FROZEN conditions, never re-derived ones
+
+`predict_outcome(..., context=ctx)` conditions the request entirely on the
+frozen content:
+
+| Condition | Where a reused context takes it from |
+|---|---|
+| `state` (X/B, coverage, harness condition) | `snapshot_from_context(ctx)` — the context's own frozen blocks and snapshot id |
+| `candidate_knowledge_targets` | `ctx.knowledge_targets` (proposed and frozen at build time) |
+| `prediction_reliability` | `ctx.reliability` |
+| the recorded `input_snapshot_id` | `ctx.snapshot_id` |
+
+Consequences worth knowing:
+
+- progress established *after* the context was built never appears in the
+  request, and the prediction's snapshot id equals the context's;
+- a strategy whose targets were not frozen gets **none** sent, with the
+  omission stated in `missing` — the proposal is never re-derived from
+  today's bank;
+- `model_info.conditions_source` says `frozen_context` when a reused context
+  supplied the conditions.
+
+The **budget** is the one deliberate exception: it is an external limit on
+whether a call may be made, not a prediction condition, so the pre-call check
+uses the CURRENT ledger. A difference is REPORTED
+(`model_info.budget_checked_at_call_time`) and the frozen constraint is left
+untouched — a move is never silently substituted.
+
+### The memory version digests content, not counts
+
+`capability_version.knowledge_content_digest` covers the decision-relevant
+**content** of the memory actually consulted: the layered knowledge entries
+(including the `applicability` notes and strategy `actions` the
+`KnowledgeRef` subset omits), the retrieved hits and the executions. Editing
+an entry's expected quality, its interval, its predicates or its actions
+therefore **moves** the digest, while a re-read does not — read timestamps
+(`snapshot_at`, `created_at`, `last_consulted_at`, …) are excluded and listed
+under `excluded_keys`.
+
+`capability_version.knowledge_content` carries the digest and its
+composition (`knowledge_by_layer`, counts) — never the digested content, so
+the version cannot become a second unbounded copy of the knowledge view.
+It is bounded by construction (the scoped knowledge view + the carried hits),
+so no global snapshot mechanism is introduced.
 
 ---
 
@@ -269,6 +346,20 @@ This is the phase's most important engineering boundary.
       never becomes publishable by being retrieved.
 - [ ] Am I reusing a recall result or a context? Check `task_digest`
       matches. A mismatch is refused for a reason.
+- [ ] Am I reusing a context and expecting the CURRENT state? A reused context
+      replays its frozen X/B, its frozen knowledge targets and its frozen
+      reliability. The budget is the only condition re-checked live, and a
+      difference is reported rather than substituted.
+- [ ] Did I pass `--cir`? Then check `joint.sources["cir"]` is
+      `caller_supplied` and that the snapshot/retrieval agreed with it — one
+      request must not carry two structural judgments.
+- [ ] Built from a historical snapshot? Read
+      `execution_constraints.retrieval_bounding` to see what was excluded as
+      postdating it, and `unbounded_kept` for items whose creation time could
+      not be established.
+- [ ] Does `capability_version.knowledge_content_digest` look unchanged after
+      a knowledge revision? It should have moved. It digests content, and
+      read timestamps are excluded on purpose.
 - [ ] Does a capability source read `direct_evidence`? In this phase it
       should not. `no_evidence` is the honest state when nothing observed a
       source.

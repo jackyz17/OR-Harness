@@ -319,6 +319,103 @@ def main() -> int:
     else:  # pragma: no cover - the refusal is the point
         raise AssertionError("a context from another version must be refused")
 
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("9. Reusing a context replays the FROZEN conditions")
+    print("=" * 72)
+    frozen = h.build_prediction_context(TASK, "ep1", context_spec=
+                                        ActionSpec("execute_strategy",
+                                                   "ctx_demo_1",
+                                                   strategy_id="S01"))
+    # Advance the real state AFTER the context was frozen.
+    h.snapshot(TASK, "ep1", task_progress={
+        "current_solution": {"value": {"objective": 999},
+                             "provenance": "observed",
+                             "epistemic": "fact"}})
+    before_calls = len(provider.requests)
+    replayed = h.predict_outcome(
+        TASK,
+        ActionSpec("execute_strategy", "ctx_demo_1", strategy_id="S01"),
+        "ep1", context=frozen)
+    request = provider.requests[before_calls]
+    print(f"frozen context progress : {frozen.snapshot['task_progress']}")
+    print(f"request state progress  : "
+          f"{request['state'].get('task_progress')}")
+    print(f"snapshot id matches ctx : "
+          f"{replayed.input_snapshot_id == frozen.snapshot_id}")
+    print(f"conditions_source       : "
+          f"{replayed.model_info.get('conditions_source')}")
+    print(f"frozen targets sent     : "
+          f"{[t['strategy_id'] for t in (request.get('candidate_knowledge_targets') or [])]}")
+    assert request["state"].get("task_progress") in (None, {}), (
+        "a reused context must not pick up later progress")
+    assert replayed.input_snapshot_id == frozen.snapshot_id
+    assert replayed.model_info["conditions_source"] == "frozen_context"
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("10. One CIR drives representation, snapshot AND retrieval")
+    print("=" * 72)
+    weakly_coupled = {k: v for k, v in TASK.items() if k != "coupling"}
+    weakly_coupled["annotations"] = {
+        "coupling": {"resource_coupling": 0.30, "temporal_coupling": 0.10,
+                     "route_complexity": 0.20, "semantic_coupling": 0.50}}
+    strongly = h.build_prediction_context(weakly_coupled, "ep1", cir=TASK["coupling"])
+    profile = strongly.joint.profile
+    print(f"task's own coupling     : rc=0.30 tc=0.10 rx=0.20")
+    print(f"joint profile (explicit): rc={profile['resource_coupling']} "
+          f"tc={profile['temporal_coupling']} "
+          f"rx={profile['route_complexity']}")
+    print(f"joint.sources['cir']    : {strongly.joint.sources['cir']}")
+    from or_harness.world_model.context import task_with_effective_cir
+    via_snapshot = h.profile(task_with_effective_cir(weakly_coupled,
+                                                     TASK["coupling"]))
+    print(f"snapshot/recall agree   : "
+          f"{via_snapshot.resource_coupling == profile['resource_coupling']}")
+    assert profile["resource_coupling"] == 1.0
+    assert strongly.joint.sources["cir"] == "caller_supplied"
+    assert via_snapshot.resource_coupling == profile["resource_coupling"]
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("11. The memory version digests CONTENT, not counts")
+    print("=" * 72)
+    from or_harness.core.schema import CostVector, StrategicEntry
+    entry = StrategicEntry(
+        entry_id="se_demo", strategy_id="S01",
+        pattern={"predicates": {"family": "routing"}},
+        expected_quality_hat=0.90, quality_interval=(0.5, 1.0),
+        expected_cost_hat=CostVector(llm_tokens=100.0,
+                                     measured={"llm_tokens"}),
+        failure_prob=0.1, status="candidate", support_n=2,
+        verification={"state": "verified", "claim": "c", "conclusion": "holds"})
+    h.sbank.add(entry)
+    first = h.build_prediction_context(TASK, "ep1")
+    d_before = first.capability_version["knowledge_content_digest"]
+    # Re-read with no revision: the digest must NOT move.
+    reread = h.build_prediction_context(TASK, "ep1")
+    print(f"digest (first read)     : {d_before}")
+    print(f"digest (re-read)        : "
+          f"{reread.capability_version['knowledge_content_digest']}")
+    assert reread.capability_version["knowledge_content_digest"] == d_before, (
+        "a re-read is not a content change")
+    # Revise the SAME entry: the digest MUST move, the count must not.
+    revised = h.sbank.get("se_demo")
+    revised.expected_quality_hat = 0.55
+    h.sbank.update(revised)
+    second = h.build_prediction_context(TASK, "ep1")
+    d_after = second.capability_version["knowledge_content_digest"]
+    print(f"digest (after revision) : {d_after}")
+    print(f"entry count before/after: "
+          f"{first.capability_version['knowledge_content']['knowledge_entries']}"
+          f"/{second.capability_version['knowledge_content']['knowledge_entries']}")
+    print(f"excluded read timestamps: "
+          f"{second.capability_version['knowledge_content']['excluded_keys']}")
+    assert d_after != d_before, "a knowledge revision must move the digest"
+
     h.close()
     tmp.cleanup()
     print()

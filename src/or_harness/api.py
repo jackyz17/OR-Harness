@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import (
@@ -98,9 +98,15 @@ from or_harness.world_model.context import (
     build_retrieval_view,
     capability_evidence_with_sources,
     capability_version,
+    cell_evidence_from_stats,
     context_identity_problems,
     evidence_identity,
+    knowledge_targets_from_context,
+    memory_content_digest,
+    resolve_effective_cir,
     retrieval_reuse_problems,
+    snapshot_from_context,
+    task_with_effective_cir,
 )
 from or_harness.world_model.prediction import (
     ActionSpec,
@@ -447,6 +453,88 @@ class ORHarness:
 
     # -- world-model phase 2: the prediction input context -----------------------
 
+    def _memory_created_at(self, layer: str,
+                           evidence_id: str) -> Optional[float]:
+        """When the memory behind one evidence id came into existence.
+
+        Used to bound a retrieval to a frozen moment: a memory created AFTER
+        a historical snapshot is not part of that state, so it must not enter
+        a context built from that snapshot.
+        """
+        try:
+            if layer == "execution_evidence":
+                record = self.bank.get(str(evidence_id))
+                return (float(record.created_at)
+                        if record is not None else None)
+            entry = self.sbank.get(str(evidence_id))
+            return float(entry.created_at) if entry is not None else None
+        except Exception:
+            return None
+
+    def _bound_recall_result(self, recall_result: Dict[str, Any],
+                             as_of: Optional[float]) -> Tuple[
+                                 Dict[str, Any], Dict[str, Any]]:
+        """Drop memories that POSTDATE ``as_of``, and report what was dropped.
+
+        A context built from a historical snapshot describes the state as it
+        was; evidence that arrived afterwards belongs to a later state and
+        must not leak in. A memory whose creation time cannot be established
+        is KEPT but counted as unbounded — dropping it would silently discard
+        real evidence, and keeping it silently would claim a bound that was
+        never verified.
+        """
+        if as_of is None:
+            return recall_result, {}
+        result = copy.deepcopy(recall_result)
+        dropped: List[Dict[str, Any]] = []
+        unbounded = 0
+
+        def _keep(layer: str, evidence_id: str) -> bool:
+            nonlocal unbounded
+            created = self._memory_created_at(layer, evidence_id)
+            if created is None:
+                unbounded += 1
+                return True
+            if created > as_of:
+                dropped.append({"layer": layer, "evidence_id": evidence_id,
+                                "created_at": created})
+                return False
+            return True
+
+        kept_recs = []
+        for rec in result.get("recommendations") or []:
+            refs = [str(r) for r in (rec.get("evidence_refs") or [])
+                    if str(r).startswith("se_")]
+            if refs:
+                if all(_keep("strategic_knowledge", r) for r in refs):
+                    kept_recs.append(rec)
+                continue
+            kept_recs.append(rec)
+        result["recommendations"] = kept_recs
+
+        vector = result.get("vector_recall")
+        if isinstance(vector, dict):
+            vector["execution_evidence"] = [
+                row for row in (vector.get("execution_evidence") or [])
+                if _keep("execution_evidence", str(row.get("execution_id")))]
+            vector["strategic_knowledge"] = [
+                row for row in (vector.get("strategic_knowledge") or [])
+                if _keep("strategic_knowledge", str(row.get("entry_id")))]
+
+        bounding = {
+            "as_of": float(as_of),
+            "dropped": len(dropped),
+            "dropped_items": dropped[:20],
+            "unbounded_kept": unbounded,
+            "note": ("this retrieval was bounded to the frozen moment: "
+                     "memories created AFTER it were dropped rather than "
+                     "entering a context that describes an earlier state"
+                     if dropped else
+                     "this retrieval was bounded to the frozen moment; no "
+                     "memory postdating it was encountered"),
+        }
+        return result, bounding
+
     def build_prediction_context(
             self, task: Dict[str, Any],
             episode_id: Optional[str] = None, *,
@@ -458,6 +546,8 @@ class ORHarness:
             math: Optional[Dict[str, Any]] = None,
             recall_result: Optional[Dict[str, Any]] = None,
             snapshot: Optional[BeliefSnapshot] = None,
+            context_spec: Optional[ActionSpec] = None,
+            candidates: Optional[Sequence[ActionSpec]] = None,
             persist: bool = True) -> PredictionContext:
         """Build the FROZEN prediction input context for one decision.
 
@@ -491,6 +581,13 @@ class ORHarness:
         ``persist=False`` skips the store write (useful when the caller only
         wants the object, e.g. inside a planning call that already records
         its own root snapshot).
+
+        ``context_spec`` / ``candidates`` name the candidate(s) this context
+        is for. The structural knowledge targets are proposed for them and
+        FROZEN into the context, so a reused context sends the proposal set
+        as it stood at build time. With neither, the context still carries
+        the representation, X/B, retrieval evidence and capability evidence —
+        it simply proposes no targets (and says so).
         """
         if recall_result is not None:
             supplied = recall_result.get("task_digest") \
@@ -526,20 +623,44 @@ class ORHarness:
                 raise ValueError("the supplied snapshot does not describe "
                                  "this task: " + "; ".join(hard))
 
-        profile = self.profile(task, code, cir=cir)
+        # ONE effective CIR for this request. Resolving it here — and routing
+        # the SAME structure into the profile, the snapshot and the recall —
+        # is what stops one request from carrying two structural judgments
+        # (e.g. the joint representation seeing a supplied CIR while the
+        # snapshot and the retrieval fell back to the task's own coupling).
+        effective_task = task_with_effective_cir(task, cir)
+        resolved_cir = effective_task.get("coupling")
+        profile = self.profile(effective_task, code)
         derivation = derivation_report(profile)
-        resolved_cir = cir if cir is not None else task.get("coupling")
+        # A supplied HISTORICAL snapshot defines the moment this context
+        # describes. Memory that arrived after it is not part of that state,
+        # so the retrieval is bounded to the snapshot's own time.
+        as_of = (float(getattr(snapshot, "created_at", 0.0) or 0.0)
+                 if snapshot is not None else None)
+        bounding: Dict[str, Any] = {}
         if snapshot is None:
-            snapshot = self.snapshot(task, episode_id)
+            snapshot = self.snapshot(effective_task, episode_id)
+            as_of = float(getattr(snapshot, "created_at", 0.0) or 0.0)
         if recall_result is None:
-            recall_result = self.recall(task, top=top, code=code,
-                                        include_unverified=include_unverified,
-                                        vector_top_k=vector_top_k)
+            recall_result = self.recall(
+                effective_task, top=top, code=code,
+                include_unverified=include_unverified,
+                vector_top_k=vector_top_k)
+            recall_result, bounding = self._bound_recall_result(recall_result,
+                                                               as_of)
         knowledge = verified_knowledge_view(profile, self.sbank)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
+        if bounding:
+            retrieval_view.notes.append(bounding["note"])
+            if bounding["dropped"]:
+                retrieval_view.degraded.append({
+                    "part": "retrieval.bounding",
+                    "reason": (f"{bounding['dropped']} memory item(s) were "
+                               "created after the frozen moment and were "
+                               "excluded from this context")})
         reliability = self.prediction_reliability_table()
         recorded_choices = self._recorded_choice_summary(
             str(task.get("task_id", "")), episode_id)
@@ -553,7 +674,8 @@ class ORHarness:
             retrieval_view=retrieval_view,
             reliability=reliability,
             recorded_choices=recorded_choices)
-        constraints = self._execution_constraints_view(task, episode_id)
+        constraints = self._execution_constraints_view(effective_task,
+                                                       episode_id)
         version_block = capability_version(
             harness_config={
                 "alpha": self.selector.alpha, "beta": self.selector.beta,
@@ -565,21 +687,37 @@ class ORHarness:
             provider=self.world_model.describe(),
             prompt_template_version=self._prompt_template_version(),
             tools=constraints.get("available_solver_families") or [],
-            knowledge_content={
-                "verified": len((knowledge or {}).get("verified") or []),
-                "legacy_unknown": len((knowledge or {}).get(
-                    "legacy_unknown") or []),
-                "unverified": len((knowledge or {}).get("unverified") or []),
-                "executions": self.bank.count(),
-            })
+            knowledge_content=memory_content_digest(
+                knowledge=knowledge, retrieval=retrieval_view,
+                entries=self.sbank.list(include_dormant=True)))
+        # Freeze the structural proposal set and the cell evidence the
+        # proposal was derived from. Both come from live banks, so a reused
+        # context must carry them rather than re-derive them.
+        spec_list = ([context_spec] if context_spec is not None
+                     else list(candidates or []))
+        frozen_targets: List[Any] = []
+        for spec in spec_list:
+            frozen_targets.extend(self.knowledge_targets(snapshot, spec))
+        strategies = [s.strategy_id for s in spec_list if s.strategy_id]
         context = build_context(
             task=task, profile=profile, snapshot=snapshot,
             recall_result=recall_result, derivation=derivation,
             cir=resolved_cir, math_declared=math, capability=evidence,
             capability_version_block=version_block,
             execution_constraints=constraints,
+            knowledge_targets=frozen_targets,
+            reliability=reliability,
+            cell_evidence=cell_evidence_from_stats(
+                self.stats, profile, strategies),
+            cir_source=("caller_supplied" if cir is not None
+                        else "task_coupling"),
+            retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
+        if bounding:
+            context.execution_constraints = {
+                **(context.execution_constraints or {}),
+                "retrieval_bounding": copy.deepcopy(bounding)}
         context.notes.append(
             "this context is the FROZEN input of a prediction; building it "
             "performed no model call, no solver execution and no induction")
@@ -1250,9 +1388,10 @@ class ORHarness:
                 adjusted["episode_id"] = {"spec": action_spec.episode_id,
                                           "call": episode_id}
             action_spec.episode_id = episode_id
-        snap = self.snapshot(task, episode_id)
+        frozen_from_context = False
         if context is False:
             resolved_context: Optional[PredictionContext] = None
+            snap = self.snapshot(task, episode_id)
         elif isinstance(context, PredictionContext):
             problems = context_identity_problems(
                 context, task_id=task_id,
@@ -1263,14 +1402,34 @@ class ORHarness:
                     "the supplied prediction context does not describe this "
                     "prediction: " + "; ".join(problems))
             resolved_context = context
+            # ALL prediction conditions come from the FROZEN context: the
+            # snapshot is rebuilt from the context's own condition blocks
+            # (never a fresh one, which would carry progress that happened
+            # AFTER the context was built), and the recorded
+            # input_snapshot_id is the context's snapshot.
+            snap = snapshot_from_context(context)
+            frozen_from_context = True
         else:
+            snap = self.snapshot(task, episode_id)
             resolved_context = self.build_prediction_context(
-                task, episode_id, snapshot=snap)
-        targets = self.knowledge_targets(snap, action_spec)
+                task, episode_id, snapshot=snap, context_spec=action_spec)
+        if frozen_from_context:
+            targets = knowledge_targets_from_context(resolved_context,
+                                                     action_spec)
+            reliability = copy.deepcopy(resolved_context.reliability or {})
+        else:
+            targets = self.knowledge_targets(snap, action_spec)
+            reliability = self.prediction_reliability_table()
+        # The pre-call budget check reads the CURRENT ledger on purpose: the
+        # budget is a real external constraint on whether a call may be made,
+        # not a prediction condition. It is recorded as an override so the
+        # frozen constraint the context carried is never silently replaced.
+        budget_override = self._budget_override_view(
+            task_id, episode_id, resolved_context)
         prediction = self.predictions.predict_outcome(
             task, action_spec, snap,
             knowledge_targets=targets,
-            reliability=self.prediction_reliability_table(),
+            reliability=reliability,
             prediction_context=resolved_context)
         # The full target set is frozen WITH the prediction: a later verdict
         # needs the claim's interval / entry id / strategy as they were at
@@ -1279,6 +1438,9 @@ class ORHarness:
             t.strategy_id for t in targets]
         prediction.model_info["knowledge_targets_proposed_full"] = [
             t.to_dict() for t in targets]
+        if budget_override:
+            prediction.model_info["budget_checked_at_call_time"] = \
+                budget_override
         if resolved_context is not None:
             # Which frozen input this prediction was conditioned on. The
             # reference is recorded on the prediction, so a later reader can
@@ -1289,12 +1451,41 @@ class ORHarness:
                 resolved_context.version
             prediction.model_info["prediction_context_task_digest"] = \
                 resolved_context.task_digest
+            prediction.model_info["conditions_source"] = (
+                "frozen_context" if frozen_from_context
+                else "context_built_for_this_call")
         self.predictions._save(prediction)
         if adjusted:
             prediction.model_info["identity_adjusted"] = adjusted
             self.predictions._save(prediction)
         self._charge_call_cost(prediction, parent_action_id)
         return prediction
+
+    def _budget_override_view(self, task_id: str, episode_id: Optional[str],
+                              context: Optional[PredictionContext]
+                              ) -> Dict[str, Any]:
+        """The CURRENT budget view, when it disagrees with the frozen one.
+
+        A reused context's ``execution_constraints`` recorded the budget
+        condition as it stood at build time. The real ledger may have moved
+        since, and a pre-call check must use the CURRENT state — but it must
+        not silently rewrite what the context froze. So a difference is
+        REPORTED as an override, and a matching view reports nothing.
+        """
+        if context is None:
+            return {}
+        frozen = (context.execution_constraints or {}).get("declared_budget")
+        current = self._load_budget(task_id, episode_id)
+        if (frozen or None) == (current or None):
+            return {}
+        return {
+            "frozen_declared_budget": copy.deepcopy(frozen),
+            "current_declared_budget": copy.deepcopy(current),
+            "note": ("the declared budget moved since this context was "
+                     "built; the pre-call check used the CURRENT value while "
+                     "the frozen constraint is left untouched — a budget is "
+                     "an external limit, not a prediction condition"),
+        }
 
     @staticmethod
     def _call_cost_dims(prediction) -> Dict[str, float]:
@@ -1894,7 +2085,7 @@ class ORHarness:
         # re-embed the same query once per candidate.
         plan_context = self.build_prediction_context(
             task, episode_id, snapshot=root,
-            top=limits.max_root_candidates)
+            candidates=specs, top=limits.max_root_candidates)
 
         def _real_budget_exceeded() -> Optional[str]:
             """Re-check the REAL ledger before the next model call: the

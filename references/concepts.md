@@ -375,6 +375,35 @@ embedding index, and it does nothing else: no prediction-model call, no
 solver execution, no induction. Only an explicit prediction call reaches the
 provider, and that call records which frozen input it used.
 
+**Freezing must cover the whole request, not just one field.** It is not
+enough for a context to carry a frozen problem representation while the
+request still takes a live snapshot, re-derives the knowledge targets and
+re-reads the reliability table: that mixes a frozen input with current
+conditions. Reusing a context therefore replays its frozen X/B (from its own
+snapshot id), its frozen target proposal set and its frozen reliability. The
+BUDGET is deliberately the exception — it is an external limit on whether a
+call may be made, not a prediction condition — and when it has moved the
+difference is REPORTED rather than silently substituted.
+
+**One CIR per request.** An explicit CIR must drive the joint
+representation, the profile (hence the snapshot's cell) and the retrieval
+alike; otherwise a single request carries two structural judgments and may
+retrieve knowledge from the wrong cell. A supplied CIR replaces the task's
+own rather than being quietly overridden by it.
+
+**A historical input must not read today's memory.** Building from a frozen
+snapshot means the retrieval is bounded to that moment: evidence created
+afterwards is excluded and reported, not absorbed into a description of an
+earlier state. An item whose creation time cannot be established is kept but
+counted as unbounded — neither silently dropped nor silently trusted.
+
+**A memory version must digest content, not counts.** A digest built from
+`len(...)` cannot tell a knowledge revision from an unchanged entry, so
+editing a claim's expected quality, interval, predicates, applicability
+notes or actions would leave the version identical. The digest covers the
+decision-relevant content of what was actually consulted, with read
+timestamps excluded — a revision moves it, a re-read does not.
+
 ## Applicability: the structural cell, not a declared ladder
 
 There is no ladder of generalization levels and no `widen`/`tighten` command.

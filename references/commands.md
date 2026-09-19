@@ -235,6 +235,25 @@ is passed, and one memory hit by both channels is ONE piece of evidence
 context was built for. Passing a recall result or context whose version
 disagrees is refused with a named reason — never silently aligned.
 
+**One CIR for the whole request.** `--cir` is resolved once and drives the
+joint representation, the snapshot's structural cell and the retrieval; a
+supplied CIR REPLACES the task's own `coupling` (check
+`result.joint.sources.cir`: `caller_supplied` / `task_coupling` / `none`).
+Without this one request could carry two structural judgments and retrieve
+knowledge from the wrong cell.
+
+**Bounded to the frozen moment.** With a historical `--snapshot`, memories
+created AFTER it are excluded from the retrieval and reported under
+`execution_constraints.retrieval_bounding` (`dropped` / `unbounded_kept`).
+
+**The memory version digests content.**
+`result.capability_version.knowledge_content_digest` covers the
+decision-relevant content of the memory actually consulted (entry fields —
+including `applicability` and `actions` — plus the carried hits). Revising an
+entry moves it; a re-read does not (read timestamps are listed under
+`excluded_keys`). Only the digest and its composition are carried, never the
+digested content.
+
 ## `orx [--world-model URL::MODEL] predict-outcome --task t.json --action-spec spec.json [--episode ep1] [--parent-action ACTION_ID] [--context CTX_ID | --no-context]`
 
 **World-model outcome prediction (shadow mode).** Ask a configured world model for a structured prediction of ONE candidate action's consequences, from the frozen pre-action state. The candidate is an `ActionSpec` JSON (`{"action_type": "execute_strategy", "task_id": ..., "strategy_id": "S01", "solver": "highs", ...}`) — a hypothesis, NOT a recorded action. The prediction carries: expected execution status / feasibility / quality / failure risk / per-dimension cost, predicted successor state changes (hypothetical — never written to real state), the model's self-reported confidence (**uncalibrated**), its claimed evidence basis, and fields it explicitly declined to predict.
@@ -245,10 +264,17 @@ disagrees is refused with a named reason — never silently aligned.
   frozen input can be resolved later. `--context CTX_ID` reuses a FROZEN
   context (its identity is verified against this task/version/episode — the
   way several candidates of one decision share one input, and the way a
-  stored context replays without reading today's banks). `--no-context`
-  sends no context at all, so the request keeps its pre-phase-2 shape
-  exactly. The context changes what the model is GIVEN, not the output
-  protocol — that switch belongs to the next phase.
+  stored context replays without reading today's banks). Reusing a context
+  replays its FROZEN conditions: the request's `state` (X/B), the
+  `candidate_knowledge_targets` and the `prediction_reliability` all come
+  from the context, and `model_info.conditions_source` says
+  `frozen_context`. The one exception is the BUDGET: it is an external limit,
+  not a prediction condition, so the pre-call check uses the current ledger
+  and a difference is REPORTED
+  (`model_info.budget_checked_at_call_time`) without rewriting the frozen
+  constraint. `--no-context` sends no context at all, so the request keeps
+  its pre-phase-2 shape exactly. The context changes what the model is
+  GIVEN, not the output protocol — that switch belongs to the next phase.
 - **Configuration boundary**: `--world-model BASE_URL::MODEL` (OpenAI-compatible endpoint; API key from `$OR_WM_API_KEY`). Credentials never persist. Without the flag, the command returns an explicit `not_configured` error — and NO other command ever invokes a model.
 - **Shadow discipline**: the prediction changes NOTHING. `recall`, `predict`, `execute`, `record` behave identically whether or not you predict. You remain the decision-maker.
 - **Calibration duty**: with a world model configured, one predict–bind pair per executed action is the required loop — executed prediction–comparison pairs are the only source of calibration evidence, and skipping them is legitimate only when no provider is configured (`not_configured`). After a `plan-next` selection, bind the selected path's prediction instead of predicting again.

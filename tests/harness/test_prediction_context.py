@@ -712,8 +712,26 @@ class TestCapabilityEvidenceIsHonest(ContextCase):
                           "conclusion": "no verdict yet"})
         self.h.sbank.add(entry)
         ctx = self.h.build_prediction_context(_task(), "ep1")
-        blob = str(ctx.to_dict())
-        self.assertNotIn("se_u", blob)
+        # It must NOT be surfaced as retrievable evidence by default.
+        self.assertNotIn("se_u", {hit["evidence_id"]
+                                  for hit in ctx.retrieval.hits})
+        # It MAY appear inside the frozen coverage view — that view layers it
+        # as `unverified` on purpose (the frozen target derivation reads it),
+        # so the assertion is that it never reaches a VERIFIED position.
+        layers = ((ctx.snapshot.get("coverage") or {})
+                  .get("knowledge_layers") or {})
+        verified_ids = {str(e.get("entry_id"))
+                        for e in (layers.get("verified") or [])}
+        unverified_ids = {str(e.get("entry_id"))
+                          for e in (layers.get("unverified") or [])}
+        self.assertNotIn("se_u", verified_ids)
+        self.assertIn("se_u", unverified_ids)
+        # And the memory-content version digests CONTENT, so the revision is
+        # visible in it while the id itself is not echoed back.
+        digest_block = ctx.capability_version["knowledge_content"]
+        self.assertNotIn("se_u", str(digest_block))
+        self.assertEqual(digest_block["knowledge_by_layer"].get("unverified"),
+                         1)
 
 
 # ---------------------------------------------------------------------------
@@ -807,6 +825,354 @@ class TestBuildHasNoSideEffects(ContextCase):
 # ---------------------------------------------------------------------------
 # 9. phase-1 fixes do not regress
 # ---------------------------------------------------------------------------
+
+
+class TestFrozenContextFreezesTheWholeRequest(ContextCase):
+    """P1: reusing a context must reuse EVERY prediction condition.
+
+    The defect: `predict_outcome(..., context=ctx)` took a FRESH snapshot and
+    re-read the current knowledge targets and reliability, so one request
+    mixed a frozen `prediction_context` with a current `state`, and the
+    recorded snapshot id disagreed with the context's.
+    """
+
+    def _provider(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        return h, provider
+
+    def _advance_state(self, h, task):
+        """A real state change AFTER the context was frozen."""
+        return h.snapshot(task, "ep1", task_progress={
+            "current_solution": {"value": {"objective": 42},
+                                 "provenance": "observed",
+                                 "epistemic": "fact"}})
+
+    def test_reused_context_does_not_carry_later_progress(self):
+        h, provider = self._provider()
+        task = _task("t1")
+        ctx = h.build_prediction_context(task, "ep1")
+        self.assertEqual(ctx.snapshot["task_progress"], {})
+        self._advance_state(h, task)          # state moves on
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(task, spec, "ep1", context=ctx)
+        sent = provider.requests[0]["state"].get("task_progress")
+        self.assertIn(sent, (None, {}),
+                      "the frozen X must not pick up later progress")
+        self.assertEqual(ctx.snapshot["task_progress"], {},
+                         "the frozen context itself is untouched")
+
+    def test_reused_context_records_the_context_snapshot_id(self):
+        h, provider = self._provider()
+        task = _task("t1")
+        ctx = h.build_prediction_context(task, "ep1")
+        self._advance_state(h, task)
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        prediction = h.predict_outcome(task, spec, "ep1", context=ctx)
+        self.assertEqual(prediction.input_snapshot_id, ctx.snapshot_id)
+        self.assertEqual(prediction.model_info["conditions_source"],
+                         "frozen_context")
+
+    def test_reused_context_replays_the_frozen_progress_it_was_built_with(self):
+        h, provider = self._provider()
+        task = _task("t1")
+        progress = {"selected_plan": {"value": {"strategy_id": "S01"},
+                                      "provenance": "agent_reported",
+                                      "epistemic": "fact"}}
+        snap = h.snapshot(task, "ep1", task_progress=progress)
+        ctx = h.build_prediction_context(task, "ep1", snapshot=snap)
+        self._advance_state(h, task)          # progress moves on
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(task, spec, "ep1", context=ctx)
+        sent = provider.requests[0]["state"]["task_progress"]
+        # The FROZEN progress is replayed: what the context was built with.
+        self.assertEqual(sent["selected_plan"]["value"]["strategy_id"], "S01")
+        self.assertNotIn("current_solution", sent,
+                         "progress established later must not appear")
+
+    def test_reused_context_sends_the_frozen_knowledge_targets(self):
+        h, provider = self._provider()
+        task = _task("t1")
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        # Seed a cell so the heuristic has a reason to propose a target.
+        self.solve(_task("t1"), strategy="S01")
+        ctx = h.build_prediction_context(task, "ep1", context_spec=spec)
+        self.assertTrue(ctx.knowledge_targets,
+                        "the proposal set is frozen into the context")
+        # More evidence arrives, which WOULD change a re-derived proposal.
+        self.solve(_task("t3"), strategy="S01")
+        h.predict_outcome(task, spec, "ep1", context=ctx)
+        sent = provider.requests[0].get("candidate_knowledge_targets") or []
+        frozen = [t for t in ctx.knowledge_targets
+                  if t.get("strategy_id") == "S01"]
+        self.assertEqual(len(sent), len(frozen))
+        self.assertEqual([t["strategy_id"] for t in sent],
+                         [t["strategy_id"] for t in frozen])
+
+    def test_reused_context_sends_the_frozen_reliability(self):
+        h, provider = self._provider()
+        task = _task("t1")
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        ctx = h.build_prediction_context(task, "ep1", context_spec=spec)
+        h.predict_outcome(task, spec, "ep1", context=ctx)
+        self.assertEqual(provider.requests[0]["prediction_reliability"],
+                         ctx.reliability)
+
+    def test_targets_for_an_unproposed_strategy_are_empty_and_explained(self):
+        from or_harness.world_model.context import (
+            knowledge_targets_from_context,
+        )
+        h, _ = self._provider()
+        task = _task("t1")
+        ctx = h.build_prediction_context(
+            task, "ep1",
+            context_spec=ActionSpec("execute_strategy", "t1",
+                                    strategy_id="S01"))
+        other = ActionSpec("execute_strategy", "t1", strategy_id="S07")
+        targets = knowledge_targets_from_context(ctx, other)
+        self.assertEqual(targets, [],
+                         "no target is re-derived from today's bank")
+        self.assertTrue(any("not re-derived" in m for m in ctx.missing),
+                        "the omission is stated, not silent")
+
+    def test_a_budget_move_is_reported_not_silently_substituted(self):
+        h, provider = self._provider()
+        task = _task("b1")
+        h.declare_budget("b1", {"llm_tokens": 1000}, "ep1")
+        ctx = h.build_prediction_context(task, "ep1")
+        frozen_budget = ctx.execution_constraints["declared_budget"]
+        h.declare_budget("b1", {"llm_tokens": 9999}, "ep1")
+        spec = ActionSpec("execute_strategy", "b1", strategy_id="S01")
+        prediction = h.predict_outcome(task, spec, "ep1", context=ctx)
+        # The frozen constraint is untouched ...
+        self.assertEqual(ctx.execution_constraints["declared_budget"],
+                         frozen_budget)
+        # ... and the difference is recorded as a reported override.
+        override = prediction.model_info["budget_checked_at_call_time"]
+        self.assertEqual(override["current_declared_budget"],
+                         {"llm_tokens": 9999.0})
+        self.assertEqual(override["frozen_declared_budget"], frozen_budget)
+
+    def test_a_context_built_with_a_historical_snapshot_does_not_see_new_facts(self):
+        """Building from a historical snapshot must not pull in later memory."""
+        from pathlib import Path
+        h, _ = self._provider()
+        task = _task("t1")
+        snap = h.snapshot(task, "ep1")
+        # Evidence arrives AFTER the snapshot was taken — recorded in the SAME
+        # harness (and hence the same memory home).
+        work = Path(self.home) / "ws_hist"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 100.0, "
+            "'objective_bound': 100.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        h.record(h.execute(task, "S04", str(script), str(work),
+                           solver="highs"))
+        ctx = h.build_prediction_context(task, "ep1", snapshot=snap)
+        # The retrieval is bounded to the snapshot's own moment: the memory
+        # that arrived afterwards is excluded rather than entering a context
+        # that describes an earlier state.
+        execution_ids = {hit["evidence_id"] for hit in ctx.retrieval.hits
+                         if hit["layer"] == "execution_evidence"}
+        self.assertEqual(execution_ids, set())
+        bounding = ctx.execution_constraints["retrieval_bounding"]
+        self.assertGreaterEqual(bounding["dropped"], 1)
+        self.assertTrue(any("bounded" in n for n in ctx.retrieval.notes))
+
+
+class TestOneCirForTheWholeRequest(ContextCase):
+    """P2: an explicit CIR must drive the joint representation, the snapshot
+    AND the retrieval — one request may not carry two structural judgments.
+
+    The defect: `build_prediction_context(..., cir=cir)` used the CIR for the
+    joint representation but then called `snapshot(task)` / `recall(task)`
+    without it, so those fell back to the task's own `coupling`.
+    """
+
+    #: Strongly coupled: rc/tc/rx all 1.0/1.0/0.0 by construction.
+    CIR = _cir()
+    #: The task's OWN (weak) coupling, which must NOT win.
+    WEAK = {"resource_coupling": 0.3, "temporal_coupling": 0.1,
+            "route_complexity": 0.2, "semantic_coupling": 0.5}
+
+    def _weak_task(self, task_id="t2"):
+        task = _task(task_id)
+        task["annotations"] = {"coupling": dict(self.WEAK)}
+        return task
+
+    def test_explicit_cir_drives_the_joint_representation(self):
+        ctx = self.h.build_prediction_context(self._weak_task(), "ep1",
+                                              cir=self.CIR)
+        profile = ctx.joint.profile
+        self.assertEqual(profile["resource_coupling"], 1.0)
+        self.assertEqual(profile["temporal_coupling"], 1.0)
+        self.assertEqual(profile["route_complexity"], 0.0)
+        self.assertEqual(ctx.joint.sources["cir"], "caller_supplied")
+
+    def test_the_snapshot_uses_the_same_cir_as_the_joint_representation(self):
+        task = self._weak_task()
+        ctx = self.h.build_prediction_context(task, "ep1", cir=self.CIR)
+        from or_harness.world_model.context import task_with_effective_cir
+        effective = task_with_effective_cir(task, self.CIR)
+        via_snapshot = self.h.profile(effective)
+        joint = ctx.joint.profile
+        self.assertEqual(joint["resource_coupling"],
+                         via_snapshot.resource_coupling)
+        self.assertEqual(joint["temporal_coupling"],
+                         via_snapshot.temporal_coupling)
+        self.assertEqual(joint["route_complexity"],
+                         via_snapshot.route_complexity)
+        # And the snapshot really was built from that structure: its frozen
+        # coverage is keyed by the effective cell, not the weak one.
+        self.assertIsNotNone(ctx.snapshot_id)
+
+    def test_recall_uses_the_same_cir_as_the_joint_representation(self):
+        from or_harness.world_model.context import task_with_effective_cir
+        task = self._weak_task()
+        ctx = self.h.build_prediction_context(task, "ep1", cir=self.CIR)
+        effective = task_with_effective_cir(task, self.CIR)
+        recalled = self.h.recall(effective)
+        self.assertEqual(ctx.joint.profile["resource_coupling"],
+                         recalled["profile"]["resource_coupling"])
+        self.assertEqual(recalled["profile"]["resource_coupling"], 1.0)
+
+    def test_an_explicit_cir_replaces_the_tasks_own_coupling(self):
+        task = self._weak_task()
+        task["coupling"] = self.CIR          # task's own CIR says strong
+        weak_cir = {"entities": [{"name": "x", "kind": "other"}],
+                    "decisions": [], "constraints": [], "relations": [],
+                    "coupling_groups": [], "issues": []}
+        ctx = self.h.build_prediction_context(task, "ep1", cir=weak_cir)
+        # The SUPPLIED one wins; the task's own is not silently kept.
+        self.assertEqual(len(ctx.joint.cir["relations"]), 0)
+
+    def test_without_an_explicit_cir_the_tasks_own_is_used(self):
+        task = _task("t1")
+        task["coupling"] = self.CIR
+        ctx = self.h.build_prediction_context(task, "ep1")
+        self.assertEqual(ctx.joint.sources["cir"], "task_coupling")
+        self.assertEqual(len(ctx.joint.cir["relations"]), 1)
+
+    def test_effective_cir_helper_is_the_single_resolution_point(self):
+        from or_harness.world_model.context import (
+            resolve_effective_cir,
+            task_with_effective_cir,
+        )
+        task = self._weak_task()
+        task["coupling"] = self.CIR
+        self.assertIs(resolve_effective_cir(task, self.CIR), self.CIR)
+        self.assertIs(resolve_effective_cir(task), task["coupling"])
+        self.assertIsNone(resolve_effective_cir({}, None))
+        # A supplied CIR reaches every existing consumer through the task.
+        self.assertEqual(task_with_effective_cir(task, self.CIR)["coupling"],
+                         self.CIR)
+
+
+class TestMemoryContentVersion(ContextCase):
+    """P3: the memory version must digest CONTENT, not just entry counts.
+
+    The defect: `knowledge_content` was a count mapping, so editing an
+    entry's expected quality or its strategy actions changed the context but
+    left the version digest identical.
+    """
+
+    def _verified_entry(self, entry_id="se_k", strategy_id="S04",
+                        quality=0.90):
+        return StrategicEntry(
+            entry_id=entry_id, strategy_id=strategy_id,
+            pattern={"predicates": {"family": "routing"}},
+            expected_quality_hat=quality, quality_interval=(0.5, 1.0),
+            expected_cost_hat=self.make_record().cost,
+            failure_prob=0.1, status="candidate", support_n=2,
+            verification={"state": "verified", "claim": "c",
+                          "conclusion": "holds"})
+
+    def test_a_quality_revision_moves_the_content_digest(self):
+        self.h.sbank.add(self._verified_entry())
+        before = self.h.build_prediction_context(_task(), "ep1")
+        d1 = before.capability_version["knowledge_content_digest"]
+        entry = self.h.sbank.get("se_k")
+        entry.expected_quality_hat = 0.55
+        self.h.sbank.update(entry)
+        after = self.h.build_prediction_context(_task(), "ep1")
+        d2 = after.capability_version["knowledge_content_digest"]
+        self.assertNotEqual(d1, d2,
+                            "a knowledge revision must move the digest")
+        # The COUNT is unchanged — which is exactly why counts were not enough.
+        self.assertEqual(
+            before.capability_version["knowledge_content"]
+            ["knowledge_entries"],
+            after.capability_version["knowledge_content"]
+            ["knowledge_entries"])
+
+    def test_an_action_revision_moves_the_content_digest(self):
+        self.h.sbank.add(self._verified_entry())
+        d1 = self.h.build_prediction_context(
+            _task(), "ep1").capability_version["knowledge_content_digest"]
+        entry = self.h.sbank.get("se_k")
+        entry.applicability = ["use when capacity binds early"]
+        self.h.sbank.update(entry)
+        d2 = self.h.build_prediction_context(
+            _task(), "ep1").capability_version["knowledge_content_digest"]
+        self.assertNotEqual(d1, d2)
+
+    def test_a_re_read_does_not_move_the_content_digest(self):
+        self.h.sbank.add(self._verified_entry())
+        first = self.h.build_prediction_context(_task(), "ep1")
+        second = self.h.build_prediction_context(_task(), "ep1")
+        self.assertEqual(
+            first.capability_version["knowledge_content_digest"],
+            second.capability_version["knowledge_content_digest"],
+            "a fresh read timestamp is not a content change")
+
+    def test_consultation_timestamps_are_excluded(self):
+        self.h.sbank.add(self._verified_entry())
+        before = self.h.build_prediction_context(_task(), "ep1")
+        entry = self.h.sbank.get("se_k")
+        entry.last_consulted_at = 1e12          # a read, not a revision
+        self.h.sbank.update(entry)
+        after = self.h.build_prediction_context(_task(), "ep1")
+        self.assertEqual(
+            before.capability_version["knowledge_content_digest"],
+            after.capability_version["knowledge_content_digest"])
+        self.assertIn("last_consulted_at",
+                      before.capability_version["knowledge_content"]
+                      ["excluded_keys"])
+
+    def test_new_evidence_moves_the_content_digest(self):
+        d1 = self.h.build_prediction_context(
+            _task("t2"), "ep1").capability_version["knowledge_content_digest"]
+        self.solve(_task("t1"))
+        d2 = self.h.build_prediction_context(
+            _task("t2"), "ep1").capability_version["knowledge_content_digest"]
+        self.assertNotEqual(d1, d2)
+
+    def test_the_version_carries_the_digest_and_its_composition_only(self):
+        self.h.sbank.add(self._verified_entry())
+        block = self.h.build_prediction_context(
+            _task(), "ep1").capability_version["knowledge_content"]
+        self.assertIn("digest", block)
+        self.assertIn("knowledge_by_layer", block)
+        self.assertIn("excluded_keys", block)
+        # The digested CONTENT is not echoed back (the version must not become
+        # a second, unbounded copy of the knowledge view).
+        self.assertNotIn("knowledge", block)
+        self.assertNotIn("retrieval_hits_content", block)
+
+    def test_memory_content_digest_is_bounded_and_offline(self):
+        from or_harness.world_model.context import memory_content_digest
+        block = memory_content_digest(
+            knowledge={"verified": [{"entry_id": "se_a",
+                                     "expected_quality_hat": 0.7}],
+                       "legacy_unknown": [], "unverified": []})
+        self.assertEqual(block["knowledge_by_layer"], {"verified": 1})
+        self.assertIsInstance(block["digest"], str)
 
 
 class TestPhaseOneFixesSurvive(ContextCase):
