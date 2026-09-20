@@ -201,6 +201,7 @@ def build_capability_evolution_request(
         horizon_tasks: Optional[int] = None,
         learning_material: Optional[Dict[str, Any]] = None,
         maintenance_budget: Optional[Dict[str, float]] = None,
+        baselines_by_metric: Optional[Dict[str, BaselineStatement]] = None,
         ) -> Dict[str, Any]:
     """Assemble the provider request for ONE candidate learning operation.
 
@@ -209,6 +210,11 @@ def build_capability_evolution_request(
     CONTENT (capability evidence with its per-source detail, the execution
     and knowledge material of the scope). The model fills only the
     predicted consequences, and the request says so explicitly.
+
+    ``baselines_by_metric`` carries the FRAMEWORK-FROZEN reference for each
+    metric. The model sees them so it can reason against a real yardstick,
+    but it may only CITE one: the frozen value is what the parsed prediction
+    keeps, so a model cannot move the reference after seeing the evidence.
     """
     request: Dict[str, Any] = {
         PROTOCOL_REQUEST_KEY: CAPABILITY_EVOLUTION_PROTOCOL_VERSION,
@@ -220,6 +226,9 @@ def build_capability_evolution_request(
         "task_targeting": (task_targeting.to_dict()
                            if task_targeting is not None else None),
         "baseline": (baseline.to_dict() if baseline is not None else None),
+        "baselines_by_metric": {
+            k: v.to_dict() for k, v in
+            (baselines_by_metric or {}).items()},
         "horizon": horizon,
         "horizon_tasks": horizon_tasks,
         "output_contract": {
@@ -228,13 +237,15 @@ def build_capability_evolution_request(
                                "verification_conditions", "evidence_basis",
                                "unsupported_fields"],
             "fixed_by_framework": ["candidate_operation", "experience_scope",
-                                   "task_targeting", "baseline", "horizon",
+                                   "task_targeting", "baseline",
+                                   "baselines_by_metric", "horizon",
                                    "verification status"],
             "forbidden_fields": list(FORBIDDEN_PAYLOAD_KEYS),
             "note": ("the model fills prediction content only; it may not "
                      "rewrite the operation, the scope, the target, the "
                      "baseline, the horizon, the evidence sources, or "
-                     "claim that an effect is verified"),
+                     "claim that an effect is verified. A per-metric "
+                     "baseline may be CITED, never set"),
         },
     }
     if learning_material:
@@ -327,6 +338,7 @@ def parse_capability_evolution_payload(
         experience_scope: Optional[ExperienceScope] = None,
         task_targeting: Optional[TaskTargeting] = None,
         baseline: Optional[BaselineStatement] = None,
+        baselines_by_metric: Optional[Dict[str, BaselineStatement]] = None,
         horizon: str = "",
         horizon_tasks: Optional[int] = None,
         provider_result: Optional[Dict[str, Any]] = None,
@@ -340,6 +352,12 @@ def parse_capability_evolution_payload(
     recorded on the trace. Every malformed value becomes an explicit
     problem. A payload with no usable expected change is a recorded
     NON-prediction (``contract_only``), never a content-ful forecast.
+
+    A per-change ``baseline`` is the framework's too: the model may CITE a
+    frozen reference (the parsed change keeps the frozen value), and a
+    reference it invents is recorded as an override and replaced. A model
+    that could choose its own yardstick after seeing the evidence would be
+    grading its own work.
     """
     problems: List[str] = []
     notes: List[str] = []
@@ -450,11 +468,40 @@ def parse_capability_evolution_payload(
                     problems.append(
                         f"expected_changes[{index}].baseline: {exc}")
                     change_baseline = None
-            elif value is not None and baseline is None:
+            elif value is not None and baseline is None \
+                    and not (baselines_by_metric or {}).get(metric):
                 problems.append(
                     f"expected_changes[{index}].value requires a baseline "
                     "(its own or the prediction's): a change with nothing "
                     "to measure it against is not falsifiable")
+            # The reference belongs to the FRAMEWORK. When one is frozen for
+            # this metric, the frozen statement WINS: a model may cite it,
+            # never restate it. An invented (or mismatched) reference is
+            # recorded as an override attempt and replaced, and the change
+            # is flagged so the prediction does not silently keep a
+            # self-chosen yardstick.
+            frozen = (baselines_by_metric or {}).get(metric)
+            if frozen is None and baseline is not None \
+                    and baseline.metric in (None, metric):
+                frozen = baseline
+            if frozen is not None:
+                if change_baseline is not None and (
+                        (change_baseline.value is not None
+                         and frozen.value is not None
+                         and abs(float(change_baseline.value)
+                                 - float(frozen.value)) > 1e-9)
+                        or (change_baseline.kind != frozen.kind
+                            and change_baseline.value is not None)):
+                    overrides[f"expected_changes[{index}].baseline"] = (
+                        change_baseline.to_dict())
+                    notes.append(
+                        f"expected_changes[{index}] declared its own "
+                        f"baseline ({change_baseline.value}) for metric "
+                        f"{metric!r}, but the framework froze "
+                        f"{frozen.value}: the model's value is recorded and "
+                        "IGNORED — a baseline is fixed before the operation "
+                        "runs, so it is never the model's to move")
+                change_baseline = frozen
             try:
                 changes.append(ExpectedChange(
                     metric=metric,
@@ -709,6 +756,7 @@ def parse_capability_evolution_payload(
         degradation_risk=degradation_risk,
         uncertainty=uncertainty,
         verification_conditions=conditions,
+        baselines_by_metric=dict(baselines_by_metric or {}),
         trace=trace,
         service_available=True,
         provider_configured=True,
@@ -738,6 +786,8 @@ class CapabilityEvolutionService:
                 experience_scope: Optional[ExperienceScope] = None,
                 task_targeting: Optional[TaskTargeting] = None,
                 baseline: Optional[BaselineStatement] = None,
+                baselines_by_metric: Optional[Dict[str, BaselineStatement]] =
+                None,
                 horizon: str = "",
                 horizon_tasks: Optional[int] = None,
                 learning_material: Optional[Dict[str, Any]] = None,
@@ -755,6 +805,7 @@ class CapabilityEvolutionService:
         request = build_capability_evolution_request(
             evidence, operation, experience_scope=experience_scope,
             task_targeting=task_targeting, baseline=baseline,
+            baselines_by_metric=baselines_by_metric,
             horizon=horizon, horizon_tasks=horizon_tasks,
             learning_material=learning_material,
             maintenance_budget=maintenance_budget)
@@ -798,6 +849,7 @@ class CapabilityEvolutionService:
                 payload, evidence=evidence, operation=operation,
                 experience_scope=experience_scope,
                 task_targeting=task_targeting, baseline=baseline,
+                baselines_by_metric=baselines_by_metric,
                 horizon=horizon, horizon_tasks=horizon_tasks,
                 provider_result=result)
         except Exception as exc:

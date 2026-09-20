@@ -242,8 +242,9 @@ Only the third makes a contract `valid`. **Merely building a contract makes
 no model call**, so it returns `contract_only` even when a provider is
 configured — a configured provider with zero calls and empty
 benefit/cost/risk is not a forecast. And `capability_evolution` has a
-*contract* and no *service*: this build does not implement it, so a
-configured provider must never make that kind look available.
+*contract* **and** a *service* (M5, `wm-ce/1`): with a provider configured
+it is `service_available`, but a forecast still needs the real call, so
+`prediction_made` stays the only thing that makes it `valid`.
 
 **A scope must be finished and matching before it is comparable.** A
 strategy execution window is `comparable` only when every in-scope attempt

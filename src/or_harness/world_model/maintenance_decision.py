@@ -57,6 +57,13 @@ CAPABILITY_EFFECT_VERSION = "wm-effect/1"
 #: The recommendation vocabulary. ``defer`` covers every honest "not now".
 MAINTENANCE_RECOMMENDATIONS = ("accept", "defer", "insufficient_evidence")
 
+#: The learning-operation types this build can really CARRY OUT through an
+#: existing path. ``induce`` also performs a revision when the target cell
+#: already has an entry, so ``revise`` is covered by the same path.
+#: ``reverify`` has no execution entry yet: it may be predicted, but it must
+#: never be RECOMMENDED or silently executed as something else.
+EXECUTABLE_LEARNING_OPERATIONS = ("induce", "revise", "retire")
+
 #: The metric families this build can observe on LATER real tasks. Only a
 #: metric with a real observation channel may ever become ``effect_verified``.
 OBSERVABLE_CAPABILITY_METRICS = (
@@ -322,6 +329,66 @@ def _learning_cost_total(prediction: CapabilityEvolutionPrediction
     }
 
 
+#: The unit a cost dimension is expressed in. A saving measured in seconds
+#: and a learning cost measured in tokens are DIFFERENT currencies: netting
+#: them off would be adding seconds to tokens.
+COST_DIMENSION_UNITS: Dict[str, str] = {
+    "solver_runtime_s": "s",
+    "latency_s": "s",
+    "llm_tokens": "tokens",
+    "tool_calls": "calls",
+    "retries": "retries",
+}
+
+#: Common spellings of a unit, folded onto one token so "s" and "seconds"
+#: are recognized as the same currency.
+_UNIT_ALIASES: Dict[str, str] = {
+    "s": "s", "sec": "s", "secs": "s", "second": "s", "seconds": "s",
+    "token": "tokens", "tokens": "tokens",
+    "call": "calls", "calls": "calls",
+    "retry": "retries", "retries": "retries",
+}
+
+
+def _normalize_unit(unit: Any) -> Optional[str]:
+    """Fold a unit spelling onto its canonical token, or None when empty."""
+    name = str(unit or "").strip().lower()
+    if not name:
+        return None
+    return _UNIT_ALIASES.get(name, name)
+
+
+def _maintenance_cost_in_unit(prediction: CapabilityEvolutionPrediction,
+                              unit: Optional[str]
+                              ) -> Optional[Dict[str, Any]]:
+    """The predicted learning cost expressed in ONE unit, when it has one.
+
+    The saving and the maintenance cost can only be netted when they are the
+    SAME currency. A candidate whose learning cost is in tokens and whose
+    saving is in seconds has NO comparable net: reporting a total would add
+    two different quantities. Returns None in that case — "not comparable"
+    is the honest answer, not zero.
+    """
+    total = _learning_cost_total(prediction)
+    if total is None:
+        return None
+    if unit is None:
+        return None
+    matches = {dim: value for dim, value in total["per_dim"].items()
+               if COST_DIMENSION_UNITS.get(dim) == unit}
+    if not matches:
+        return None
+    return {
+        "per_dim": matches,
+        "unit": unit,
+        "total_in_unit": round(sum(matches.values()), 6),
+        "all_predicted_dims": total["per_dim"],
+        "note": ("the learning cost restricted to the dimension(s) measured "
+                 "in the SAME unit as the saving: dimensions in another "
+                 "currency are reported but never added in"),
+    }
+
+
 def compare_capability_predictions(
         predictions: Sequence[CapabilityEvolutionPrediction], *,
         horizon_tasks: Optional[int] = None,
@@ -348,17 +415,21 @@ def compare_capability_predictions(
     """
     result = MaintenanceRecommendation()
     result.rule = {
-        "name": "largest_quantified_per_task_saving_under_quality_constraint",
+        "name": "largest_net_saving_under_quality_constraint",
         "description": (
-            "compare the predicted per-task resource saving over the "
-            "declared horizon against the predicted learning cost, among "
-            "candidates that do not predict a quality degradation; the "
-            "largest per-task saving is recommended"),
+            "among candidates that predict a quantified resource saving over "
+            "the declared horizon and do NOT predict a quality degradation, "
+            "compare each candidate's saving against ITS OWN predicted "
+            "learning cost IN THE SAME UNIT, and recommend the largest net "
+            "saving; a candidate whose saving and learning cost are in "
+            "different units, or whose net saving is not positive, is "
+            "reported rather than ranked"),
         "quality_constraint_applied": bool(require_quality_nondegradation),
         "horizon_tasks": horizon_tasks,
         "no_universal_score": True,
         "note": ("one bounded rule, not a weighted H score: metrics with no "
-                 "shared yardstick are reported, never pooled"),
+                 "shared yardstick are reported, never pooled, and a saving "
+                 "is never compared against a cost in another currency"),
     }
     comparable: List[Dict[str, Any]] = []
     incomparable: List[Dict[str, Any]] = []
@@ -373,6 +444,15 @@ def compare_capability_predictions(
             entry["reason"] = (
                 f"status {prediction.status!r}: a prediction that did not "
                 "produce observable consequences cannot be compared")
+            incomparable.append(entry)
+            continue
+        if entry["operation_type"] not in EXECUTABLE_LEARNING_OPERATIONS:
+            entry["reason"] = (
+                f"operation_type {entry['operation_type']!r} has no "
+                "execution path in this build "
+                f"({sorted(EXECUTABLE_LEARNING_OPERATIONS)}): recommending "
+                "an operation that cannot be carried out would invite "
+                "running a DIFFERENT one under its name")
             incomparable.append(entry)
             continue
         quality = _quality_constraint(prediction)
@@ -405,6 +485,8 @@ def compare_capability_predictions(
             incomparable.append(entry)
             continue
         entry["learning_cost"] = _learning_cost_total(prediction)
+        saving_unit = _normalize_unit(saving.get("unit"))
+        net = _maintenance_cost_in_unit(prediction, saving_unit)
         # Decomposition, per dimension, so the agent can see the trade: a
         # saving in seconds and a cost in tokens are DIFFERENT currencies
         # and are never netted off into one number.
@@ -416,6 +498,44 @@ def compare_capability_predictions(
             "note": ("the saving and the learning cost are in different "
                      "currencies and are shown side by side, never summed"),
         }
+        if net is None:
+            entry["reason"] = (
+                "the predicted learning cost is not expressed in the "
+                f"saving's own unit ({saving.get('unit')!r}): the saving "
+                "and the maintenance cost are different currencies, so "
+                "there is no net figure to rank — a bigger number in "
+                "another unit is not a bigger saving")
+            incomparable.append(entry)
+            continue
+        entry["net_saving"] = {
+            "per_task": saving["per_task"],
+            "unit": saving_unit,
+            "maintenance_cost": net["total_in_unit"],
+            "net_per_task": round(saving["per_task"]
+                                  - net["total_in_unit"], 6),
+            "net_over_horizon": (
+                round((saving["per_task"] * int(horizon_tasks))
+                      - net["total_in_unit"], 6)
+                if horizon_tasks is not None else None),
+            "maintenance_cost_dims": net["per_dim"],
+            "other_cost_dims": {
+                dim: value for dim, value
+                in net["all_predicted_dims"].items()
+                if dim not in net["per_dim"]},
+            "note": ("the per-task saving minus the WHOLE predicted "
+                     "maintenance cost, in the saving's own unit; learning "
+                     "costs in another currency are reported but not "
+                     "subtracted"),
+        }
+        if entry["net_saving"]["net_per_task"] <= 0:
+            entry["reason"] = (
+                f"the predicted maintenance cost "
+                f"({net['total_in_unit']} {saving_unit}) is at least the "
+                f"predicted saving ({saving['per_task']} {saving_unit}): "
+                "an operation that costs more than it saves is not a "
+                "recommendation, whatever the gross saving looks like")
+            incomparable.append(entry)
+            continue
         comparable.append(entry)
 
     result.comparisons = comparable
@@ -425,24 +545,59 @@ def compare_capability_predictions(
             "insufficient_evidence" if not predictions else "defer")
         result.basis = (
             "no candidate predicts a quantified, quality-safe resource "
-            "saving: deferring is the honest result — no operation is "
-            "recommended on incomparable or unquantified predictions")
+            "saving that exceeds its own predicted maintenance cost in the "
+            "same unit: deferring is the honest result — no operation is "
+            "recommended on incomparable, unquantified or loss-making "
+            "predictions")
         result.notes.append(
             "defer is a legitimate decision outcome, not a failure: it is "
             "not a Harness action and it changes no knowledge")
         return result
 
-    best = max(comparable, key=lambda e: (e["saving"]["per_task"],
+    # Candidates are only comparable to EACH OTHER when their savings are in
+    # the same unit. Ranking "10 seconds" against "100 tokens" would pick
+    # whichever number happens to be larger, which is a unit conversion the
+    # framework has no basis for. When the comparable set spans more than
+    # one unit, the honest answer is to report both groups and defer.
+    by_unit: Dict[Optional[str], List[Dict[str, Any]]] = {}
+    for entry in comparable:
+        by_unit.setdefault(entry["net_saving"]["unit"], []).append(entry)
+    if len(by_unit) > 1:
+        result.comparisons = []
+        for unit, entries in sorted(by_unit.items(),
+                                    key=lambda kv: str(kv[0])):
+            for entry in entries:
+                entry["reason"] = (
+                    f"the saving is in {unit!r} while other candidates "
+                    "predict savings in a different unit: the numbers are "
+                    "not mutually comparable, so no cross-unit ranking is "
+                    "performed — the agent chooses between the groups")
+                incomparable.append(entry)
+        result.recommendation = "defer"
+        result.basis = (
+            "the comparable candidates predict savings in different units "
+            f"({', '.join(sorted(str(u) for u in by_unit))}): the "
+            "framework has no basis for converting one into another, so no "
+            "candidate is ranked and the choice is left to the agent")
+        result.notes.append(
+            "a cross-unit comparison would pick whichever number is "
+            "larger, which is exactly the kind of unit-blind ranking this "
+            "rule refuses to do")
+        return result
+
+    best = max(comparable, key=lambda e: (e["net_saving"]["net_per_task"],
                                           e["prediction_id"]))
     result.recommendation = "accept"
     result.selected_prediction_id = best["prediction_id"]
     result.selected_operation_type = best["operation_type"]
     result.basis = (
-        f"the largest quantified per-task saving "
-        f"({best['saving']['per_task']} {best['saving'].get('unit') or ''}"
-        f" over {horizon_tasks if horizon_tasks is not None else 'an '
-        'undeclared number of'} tasks) with no predicted quality "
-        "degradation")
+        f"the largest net per-task saving "
+        f"({best['net_saving']['net_per_task']} "
+        f"{best['net_saving']['unit'] or ''} after "
+        f"{best['net_saving']['maintenance_cost']} of predicted maintenance "
+        f"cost, over "
+        f"{horizon_tasks if horizon_tasks is not None else 'an undeclared '
+        'number of'} tasks) with no predicted quality degradation")
     result.notes.append(
         "a recommendation is NOT an execution: the outer agent must "
         "explicitly accept it, and only acceptance runs the real operation")
@@ -812,9 +967,22 @@ def evaluate_capability_effect(
     # part of the prediction's own experience scope is EXCLUDED from the
     # validation sample: reusing the induction tasks checks consistency,
     # never transfer.
+    #
+    # A task only counts as LATER when it really finished AFTER the
+    # operation ran, and it only counts as MATCHING when it falls inside
+    # the prediction's FROZEN targeting. A task that closed before the
+    # maintenance cannot be evidence about it, and a task of another family
+    # or structural cell cannot validate a claim about this population —
+    # admitting either would let the verdict rest on a sample the claim was
+    # never about.
     induction_tasks = set(prediction.experience_scope.task_ids) \
         if prediction.experience_scope is not None else set()
+    maintenance_at = _maintenance_started_at(harness, prediction_id, binding)
+    declared_horizon = prediction.horizon_tasks
     later: List[Any] = []
+    excluded_not_later: List[Dict[str, Any]] = []
+    excluded_off_target: List[Dict[str, Any]] = []
+    unverifiable: List[Dict[str, Any]] = []
     for item in _iter_closed_evaluations(harness):
         if item.state != "evaluated":
             continue
@@ -822,27 +990,101 @@ def evaluate_capability_effect(
             continue
         if item.task_id in induction_tasks:
             continue
+        closed_at = _episode_closed_at(harness, item.task_id,
+                                       item.episode_id)
+        if maintenance_at is None or closed_at is None:
+            unverifiable.append({
+                "task_id": item.task_id,
+                "episode_id": item.episode_id,
+                "reason": ("the maintenance time or the episode's close time "
+                           "is unknown, so whether this task really ran "
+                           "AFTER the operation cannot be established"),
+            })
+            continue
+        if closed_at < maintenance_at:
+            excluded_not_later.append({
+                "task_id": item.task_id,
+                "episode_id": item.episode_id,
+                "closed_at": closed_at,
+                "maintenance_at": maintenance_at,
+                "reason": ("the episode closed BEFORE the offline operation "
+                           "ran: it cannot be evidence about the operation"),
+            })
+            continue
+        profile = None
+        try:
+            records = harness.bank.query(task_id=item.task_id)
+            if records:
+                profile = getattr(records[-1], "profile_snapshot", None)
+        except Exception:
+            profile = None
+        target_check = _targeting_matches(prediction, item.task_id, profile)
+        if not target_check.get("matches"):
+            excluded_off_target.append({
+                "task_id": item.task_id,
+                "episode_id": item.episode_id,
+                "reason": ("the task is outside the prediction's declared "
+                           "target: " + "; ".join(
+                               target_check.get("problems") or [])),
+            })
+            continue
         later.append(item)
+
+    # The horizon bounds the sample: a claim made over "the next N matching
+    # tasks" is validated by at most N of them, and reaching the horizon is
+    # what makes the evidence COMPLETE. Fewer than the declared count leaves
+    # the evaluation pending rather than declared supported.
+    horizon_met = (declared_horizon is None
+                   or len(later) >= int(declared_horizon))
+    if declared_horizon is not None and len(later) > int(declared_horizon):
+        later = later[:int(declared_horizon)]
     evaluation.evidence = {
         "n_later_evaluations": len(later),
         "task_ids": sorted({i.task_id for i in later}),
         "distinct_episodes": len({(i.task_id, i.episode_id or "")
                                   for i in later}),
         "induction_tasks_excluded": sorted(induction_tasks),
-        "note": ("only CLOSED episodes of tasks that are NOT part of the "
-                 "prediction's own experience scope participate: reusing "
-                 "the induction tasks would check consistency, not transfer"),
+        "excluded_not_later": excluded_not_later,
+        "excluded_off_target": excluded_off_target,
+        "unverifiable_timing": unverifiable,
+        "maintenance_started_at": maintenance_at,
+        "horizon_tasks": declared_horizon,
+        "horizon_met": horizon_met,
+        "note": ("only CLOSED episodes of tasks that finished AFTER the "
+                 "operation, fall inside the prediction's frozen targeting "
+                 "and are NOT part of its own experience scope participate: "
+                 "reusing the induction tasks would check consistency, not "
+                 "transfer"),
     }
     if not later:
         evaluation.state = "pending"
         evaluation.exclusion_reasons.append(
-            "no qualified LATER task has produced a closed episode yet: the "
-            "horizon is unmet and the evaluation stays pending — a pending "
-            "horizon is re-evaluable, never frozen")
+            "no qualified LATER matching task has produced a closed episode "
+            "yet: the horizon is unmet and the evaluation stays pending — a "
+            "pending horizon is re-evaluable, never frozen")
+        return evaluation
+    if not horizon_met:
+        evaluation.state = "pending"
+        evaluation.exclusion_reasons.append(
+            f"only {len(later)} of the declared {declared_horizon} matching "
+            "later task(s) have closed: the declared horizon is not "
+            "reached, so the evidence is INCOMPLETE and the evaluation "
+            "stays pending (it is re-evaluable, never frozen)")
+        evaluation.notes.append(
+            "the horizon was declared BEFORE the operation ran: shortening "
+            "it once results are visible would be reading the result "
+            "backwards")
         return evaluation
 
     # Per-change comparison, against the prediction's OWN declared
-    # metric/unit/baseline.
+    # metric/unit/baseline. A paired record, when the caller arranged one,
+    # is READ AND USED: its treated-vs-reference difference IS the
+    # attributable observed change for the channel it covers. Merely
+    # knowing that a record exists proves nothing — a pair that shows a
+    # COLLAPSE must be able to refute the claim it was recorded for.
+    paired = get_paired_evaluation(harness, prediction_id)
+    paired_used_for: List[str] = []
+    paired_problems: List[Dict[str, Any]] = []
     outcomes: List[str] = []
     for change in observable_changes:
         channel = _observable_metric(change.metric)
@@ -858,6 +1100,48 @@ def evaluate_capability_effect(
             "beneficial_direction": change.beneficial_direction,
             "predicted_is_improvement": change.is_improvement,
         }
+        if paired is not None:
+            check = _paired_covers(paired, change, channel)
+            if check.get("covers"):
+                # The comparison must rest on episodes that really closed:
+                # a pair naming tasks with no closed episode is an assertion
+                # with a citation, not a measurement.
+                evidence_check = _paired_task_evidence(harness, paired)
+                if not evidence_check["ok"]:
+                    paired_problems.append({
+                        "metric": change.metric,
+                        "reason": evidence_check["reason"],
+                    })
+                else:
+                    entry["paired_reference"] = {
+                        "reference_value": paired["reference_value"],
+                        "treated_value": paired["treated_value"],
+                        "source": paired.get("source"),
+                        "reference_task_ids":
+                            paired.get("reference_task_ids"),
+                        "note": ("the change is read from the caller's "
+                                 "PAIRED comparison (treated minus "
+                                 "reference), not from an uncontrolled "
+                                 "before/after movement"),
+                    }
+                    observed = {
+                        "observed_n": len(paired.get("reference_task_ids")
+                                          or []) or None,
+                        "observed_mean": paired["treated_value"],
+                        "observed_change": float(paired["change"]),
+                        "change_basis": (
+                            "the paired comparison's treated value minus "
+                            "its reference value: a like-for-like "
+                            "difference the caller really arranged"),
+                        "paired": True,
+                    }
+                    paired_used_for.append(change.metric)
+                    check = {"covers": True}
+            if not check.get("covers"):
+                paired_problems.append({
+                    "metric": change.metric,
+                    "reason": check.get("reason"),
+                })
         if observed is None or observed.get("observed_change") is None:
             entry["eligibility"] = "unobserved"
             entry["reason"] = (
@@ -895,24 +1179,35 @@ def evaluate_capability_effect(
     evaluable = [c for c in evaluation.changes
                  if c.get("eligibility") == "evaluable"
                  and c.get("agreement") != "not_compared"]
+    evaluation.evidence["paired_reference_used_for"] = paired_used_for
+    if paired_problems:
+        evaluation.evidence["paired_reference_unusable"] = paired_problems
     if not evaluable:
         evaluation.state = "insufficient_evidence"
         evaluation.exclusion_reasons.append(
             "no expected change could be compared against a real "
             "observation with a declared beneficial direction")
-    elif require_paired_reference and not _has_paired_reference(
-            harness, prediction_id):
-        # A before/after change with no comparable control describes what
-        # happened, not what caused it.
+    elif require_paired_reference and not paired_used_for:
+        # Attribution needs a comparison the operation's change was
+        # actually READ FROM. A stored pair that covers none of the
+        # predicted channels (a different metric, a different unit, no
+        # execution evidence) is NOT a control for this claim, and a
+        # before/after movement with no control describes what happened,
+        # not what caused it.
         evaluation.state = "inconclusive"
         evaluation.exclusion_reasons.append(
-            "no paired reference or comparable control exists: the observed "
-            "change is DESCRIPTIVE (a before/after movement) and cannot be "
-            "attributed to this operation")
+            "no paired reference or comparable control APPLIES to any "
+            "predicted change: the observed change is DESCRIPTIVE (a "
+            "before/after movement) and cannot be attributed to this "
+            "operation")
+        if paired is not None:
+            evaluation.exclusion_reasons.append(
+                "a paired record exists but covers none of the predicted "
+                "metrics/units — its existence alone is not attribution")
         evaluation.notes.append(
             "record a paired evaluation through record_paired_evaluation "
-            "to make the change attributable, or read this as a "
-            "descriptive observation only")
+            "that matches the predicted metric AND unit to make the change "
+            "attributable, or read this as a descriptive observation only")
     elif all(c["agreement"] == "confirmed" for c in evaluable) \
             and "improvement" in outcomes:
         evaluation.state = "observed_improvement"
@@ -1022,12 +1317,232 @@ def _observed_change(evaluations: Sequence[Any], channel: str, *,
     return entry
 
 
-def _has_paired_reference(harness, prediction_id: str) -> bool:
-    """Whether a pre-arranged paired reference exists for this prediction."""
-    row = harness.store.conn.execute(
-        "SELECT value FROM meta WHERE key=?",
-        (f"capability_paired_reference|{prediction_id}",)).fetchone()
-    return row is not None
+def _paired_covers(paired: Dict[str, Any], change: Any,
+                   channel: Optional[str]) -> Dict[str, Any]:
+    """Whether a paired record is a CONTROL for one predicted change.
+
+    A paired comparison only speaks to the change it was taken on. It
+    covers a change when:
+
+    - its metric maps onto the SAME observation channel (a quality pair
+      says nothing about cost), and
+    - its unit matches the change's unit, folded onto one spelling (seconds
+      are not tokens), and
+    - it carries a finite reference/treated pair with a usable difference
+      and names the tasks it compared, so the comparison has real
+      execution evidence behind it.
+
+    Anything else is reported as UNUSABLE for this change: the record's
+    mere existence is not attribution.
+    """
+    if not isinstance(paired, dict):
+        return {"covers": False, "reason": "the paired record is malformed"}
+    paired_metric = _observable_metric(paired.get("metric"))
+    if paired_metric is None:
+        return {"covers": False,
+                "reason": (f"the paired record's metric "
+                           f"{paired.get('metric')!r} has no observation "
+                           "channel in this build")}
+    if channel is not None and paired_metric != channel:
+        return {"covers": False,
+                "reason": (f"the paired record measures {paired_metric!r} "
+                           f"while the change is about {channel!r}: a pair "
+                           "taken on another channel is not a control")}
+    paired_unit = _normalize_unit(paired.get("unit"))
+    change_unit = _normalize_unit(getattr(change, "unit", None))
+    if paired_unit is not None and change_unit is not None \
+            and paired_unit != change_unit:
+        return {"covers": False,
+                "reason": (f"the paired record is in {paired_unit!r} while "
+                           f"the change is in {change_unit!r}: different "
+                           "units are different quantities")}
+    reference = paired.get("reference_value")
+    treated = paired.get("treated_value")
+    if not _finite(reference) or not _finite(treated):
+        return {"covers": False,
+                "reason": "the paired record has a non-finite value"}
+    change_value = paired.get("change")
+    if not _finite(change_value):
+        return {"covers": False,
+                "reason": "the paired record has no usable difference"}
+    if abs((float(treated) - float(reference)) - float(change_value)) > 1e-6:
+        return {"covers": False,
+                "reason": ("the paired record's difference does not equal "
+                           "treated minus reference: the record is "
+                           "internally inconsistent")}
+    if not paired.get("reference_task_ids"):
+        return {"covers": False,
+                "reason": ("the paired record names no compared task, so "
+                           "there is no execution evidence behind the "
+                           "comparison")}
+    return {"covers": True}
+
+
+def _maintenance_started_at(harness, prediction_id: str,
+                            binding: Optional[MaintenanceFactBinding]
+                            ) -> Optional[float]:
+    """When the offline operation really ran (the cut-off for LATER tasks).
+
+    A "later" task must have finished AFTER the maintenance it is supposed
+    to validate; a task that closed before the operation ran cannot be
+    evidence about it. The adoption action's timestamp is the anchor, with
+    the binding's creation time as a fallback. None means the time is
+    UNKNOWN, and an unknown cut-off is not treated as "everything is
+    later": the sample is reported as unverifiable instead.
+    """
+    action_id = (binding.adoption_action_id if binding is not None else None)
+    if action_id:
+        for act in harness.actions.query():
+            if act.action_id == action_id:
+                if act.started_at is not None:
+                    return float(act.started_at)
+                if act.ended_at is not None:
+                    return float(act.ended_at)
+    if binding is not None and binding.created_at is not None:
+        return float(binding.created_at)
+    return None
+
+
+def _episode_closed_at(harness, task_id: str,
+                       episode_id: Optional[str]) -> Optional[float]:
+    """When one episode's close-out was recorded, or None when unknown."""
+    from or_harness.world_model.episode_closeout import (
+        episode_closeout_record,
+    )
+    record = episode_closeout_record(harness, task_id, episode_id)
+    return float(record.created_at) if record is not None else None
+
+
+def _cell_tokens_match(declared: str, actual: str) -> bool:
+    """Whether two structural-cell tokens describe the SAME cell.
+
+    Cell tokens are interval labels (``rc[0.25,0.50]|tc[...]``). Comparing
+    them as raw strings would treat ``[0.25,0.5]`` and ``[0.25,0.50]`` as
+    different cells purely because of formatting, so the intervals are
+    compared NUMERICALLY per dimension. A token that cannot be parsed falls
+    back to an exact string comparison rather than being assumed to match.
+    """
+    if declared == actual:
+        return True
+    left = _parse_cell_token(declared)
+    right = _parse_cell_token(actual)
+    if left is None or right is None:
+        return False
+    if set(left) != set(right):
+        return False
+    for dim, (lo_a, hi_a) in left.items():
+        lo_b, hi_b = right[dim]
+        if abs(lo_a - lo_b) > 1e-9 or abs(hi_a - hi_b) > 1e-9:
+            return False
+    return True
+
+
+def _parse_cell_token(token: str) -> Optional[Dict[str, Tuple[float, float]]]:
+    """Parse ``rc[0.25,0.50]|tc[0.00,0.25]`` into per-dimension intervals."""
+    out: Dict[str, Tuple[float, float]] = {}
+    for part in str(token or "").split("|"):
+        part = part.strip()
+        if "[" not in part or not part.endswith("]"):
+            return None
+        dim, _, bounds = part.partition("[")
+        bounds = bounds[:-1]
+        pieces = bounds.split(",")
+        if len(pieces) != 2:
+            return None
+        try:
+            out[dim.strip()] = (float(pieces[0]), float(pieces[1]))
+        except ValueError:
+            return None
+    return out or None
+
+
+def _paired_task_evidence(harness, paired: Dict[str, Any]) -> Dict[str, Any]:
+    """Whether the tasks a paired record names really produced evidence.
+
+    A pair is a comparison between REAL measurements, so the tasks it names
+    must have closed episodes behind them (or real executions at the very
+    least). A citation to a task nobody ran is an assertion wearing a
+    reference, and it must not become an effect verdict.
+    """
+    from or_harness.world_model.episode_closeout import (
+        episode_closeout_record,
+    )
+    task_ids = [str(t) for t in (paired.get("reference_task_ids") or [])]
+    if not task_ids:
+        return {"ok": False,
+                "reason": ("the paired record names no compared task, so "
+                           "there is no execution evidence behind the "
+                           "comparison")}
+    missing: List[str] = []
+    for task_id in task_ids:
+        closed = False
+        try:
+            rows = harness.store.conn.execute(
+                "SELECT key FROM meta WHERE key LIKE ?",
+                (f"episode_closeout|{task_id}|%",)).fetchall()
+            closed = bool(rows)
+        except Exception:
+            closed = False
+        if not closed:
+            try:
+                closed = bool(harness.bank.query(task_id=task_id))
+            except Exception:
+                closed = False
+        if not closed:
+            missing.append(task_id)
+    if missing:
+        return {"ok": False,
+                "reason": (f"the paired record cites task(s) {missing} with "
+                           "no closed episode and no recorded execution: a "
+                           "comparison between measurements nobody made is "
+                           "not evidence")}
+    return {"ok": True}
+
+
+def _targeting_matches(prediction: CapabilityEvolutionPrediction,
+                       task_id: str, profile: Any) -> Dict[str, Any]:
+    """Whether one later task falls inside the prediction's declared target.
+
+    The frozen targeting is the filter: a task of another family, or one
+    outside the declared structural cell, is NOT a "matching task" and must
+    not silently validate a claim made about a different population. A
+    targeting that declares nothing about an attribute does not restrict
+    it; an attribute the profile cannot supply is reported as unverifiable
+    rather than assumed to match.
+    """
+    targeting = prediction.task_targeting
+    if targeting is None:
+        return {"matches": True, "basis": "no targeting was declared"}
+    problems: List[str] = []
+    if targeting.family:
+        actual = getattr(profile, "family", None)
+        if actual is None:
+            problems.append(
+                f"family {targeting.family!r} is declared but the task's "
+                "family is unknown")
+        elif str(actual) != str(targeting.family):
+            problems.append(
+                f"family {actual!r} is outside the declared target "
+                f"{targeting.family!r}")
+    if targeting.cell_token:
+        from or_harness.core.schema import group_key
+        actual_cell = None
+        if profile is not None:
+            parts = group_key(profile).split("|", 1)
+            actual_cell = parts[1] if len(parts) > 1 else ""
+        if not actual_cell:
+            problems.append(
+                f"cell {targeting.cell_token!r} is declared but the task's "
+                "structural cell is unknown")
+        elif not _cell_tokens_match(str(targeting.cell_token),
+                                    str(actual_cell)):
+            problems.append(
+                f"cell {actual_cell!r} is outside the declared target "
+                f"{targeting.cell_token!r}")
+    if targeting.task_ids and task_id not in set(targeting.task_ids):
+        problems.append(
+            f"task {task_id!r} is not among the declared target tasks")
+    return {"matches": not problems, "problems": problems}
 
 
 def _source_evidence_from_evaluation(
@@ -1198,7 +1713,9 @@ def get_paired_evaluation(harness, prediction_id: str
 def capability_evidence_from_effects(harness, *,
                                      base_evidence:
                                      Optional[HarnessCapabilityEvidence] =
-                                     None
+                                     None,
+                                     task: Optional[Dict[str, Any]] = None,
+                                     snapshot: Any = None
                                      ) -> HarnessCapabilityEvidence:
     """Build capability evidence that includes VERIFIED effect results.
 
@@ -1209,8 +1726,10 @@ def capability_evidence_from_effects(harness, *,
     how a LATER capability prediction conditions on what was really
     verified, instead of on what was merely asserted.
     """
-    evidence = (copy.deepcopy(base_evidence) if base_evidence is not None
-                else harness.capability_evidence())
+    if base_evidence is not None:
+        evidence = copy.deepcopy(base_evidence)
+    else:
+        evidence = harness.capability_evidence(task, snapshot=snapshot)
     verified: List[str] = []
     for prediction in harness.capability_predictions.query():
         evaluation = get_effect_evaluation(harness,

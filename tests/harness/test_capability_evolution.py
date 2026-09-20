@@ -65,16 +65,24 @@ REQ_TEXT = ("A distribution centre must be loaded before the delivery window "
 
 
 def _task(task_id="t1", **coupling):
-    values = {"resource_coupling": 0.3, "temporal_coupling": 0.1,
-              "route_complexity": 0.2}
+    # The defaults mirror helpers.make_profile, which is what the seeded
+    # evidence records are built with. A later task whose structure landed
+    # in a DIFFERENT cell than the evidence would be outside the claim's
+    # frozen target, and the evaluation would (correctly) refuse to count
+    # it — so the fixture keeps them in one cell on purpose.
+    values = {"resource_coupling": 0.9, "temporal_coupling": 0.1,
+              "route_complexity": 0.85}
     values.update(coupling)
     return {"task_id": task_id, "family": "routing",
             "description": REQ_TEXT,
             "spec": {"n_vars": 100, "n_constraints": 50, "n_int_vars": 100},
-            "annotations": {"coupling": {**values, "semantic_coupling": 0.5}}}
+            "annotations": {"coupling": {**values, "semantic_coupling": 0.8}}}
 
 
 #: A well-formed capability payload: one quantified, quality-safe saving.
+#: The learning cost is expressed in the SAVING's own unit (seconds), since
+#: a comparison only nets quantities in the same currency — and it is kept
+#: below the saving so the fixture is net-positive.
 GOOD_PAYLOAD = {
     "expected_changes": [
         {"metric": "resource_cost", "unit": "s", "direction": "decrease",
@@ -83,7 +91,7 @@ GOOD_PAYLOAD = {
         {"metric": "normalized_solution_quality", "unit": "1-gap",
          "direction": "unchanged", "beneficial_direction": "increase"},
     ],
-    "learning_cost": {"llm_tokens": 500, "tool_calls": 3},
+    "learning_cost": {"solver_runtime_s": 0.2},
     "degradation_risk": {"events": [
         {"event": "overgeneralized_entry", "probability": 0.2},
         {"event": "revised_performance_regression"},
@@ -101,13 +109,19 @@ GOOD_PAYLOAD = {
 
 def _bundle(bundle_id="cb_1", kind="new_claim", strategy_id="S04",
             execution_ids=("ex1", "ex2"), tasks=("t1", "t2")):
+    # The cell the fixture's OWN profiles quantize to (helpers.make_profile
+    # defaults: rc=0.9, tc=0.1, rx=0.85). A cell token that does not
+    # correspond to the executions behind the bundle would declare a target
+    # the evidence never came from — and the evaluation would (correctly)
+    # refuse to count those tasks as matching.
+    cell = "rc[0.75,1.00]|tc[0.00,0.25]|rx[0.75,1.00]"
     return {
         "bundle_id": bundle_id,
         "kind": kind,
         "strategy_id": strategy_id,
         "family": "routing",
-        "cell_token": "rc[0.25,0.5]|tc[0.0,0.1]|rx[0.1,0.2]",
-        "group_key": "family=routing|rc[0.25,0.5]|tc[0.0,0.1]|rx[0.1,0.2]",
+        "cell_token": cell,
+        "group_key": f"family=routing|{cell}",
         "execution_ids": list(execution_ids),
         "tasks": list(tasks),
         "n_supporting": len(execution_ids),
@@ -170,7 +184,6 @@ class M5Case(HarnessTestCase):
             bundle=bundle if bundle is not None else _bundle(),
             horizon=horizon, horizon_tasks=horizon_tasks)
         return h, prediction
-
     def seed_executions(self, strategy="S04", tasks=("t1", "t2")):
         """Real executed records matching the bundle's scope."""
         for index, task_id in enumerate(tasks):
@@ -492,8 +505,13 @@ class TestComparison(M5Case):
         change = {"metric": metric, "unit": unit, "direction": direction,
                   "value": value, "beneficial_direction": beneficial}
         change.update(extra)
+        # The learning cost is in the SAVING's own unit: a comparison only
+        # nets quantities expressed in the same currency, so a fixture
+        # that mixes them would (correctly) be reported as incomparable.
+        # It is kept small so the fixture is net-POSITIVE: an operation
+        # that costs as much as it saves is not a recommendation.
         return {"expected_changes": [change],
-                "learning_cost": {"llm_tokens": 100},
+                "learning_cost": {"solver_runtime_s": 0.1},
                 "verification_conditions": [
                     {"condition": "later matching tasks need less solver "
                                   "time", "evaluable": True}]}
@@ -581,20 +599,45 @@ class TestComparison(M5Case):
         self.assertEqual(entry["saving"]["per_task"], 3.0)
         self.assertIsNone(entry["saving"]["total"])
         self.assertIn("never extrapolated", entry["saving"]["note"])
+        # The net figure follows the same rule: with no declared task count
+        # the TOTAL is absent, and the per-task net is what remains.
+        self.assertIsNone(entry["net_saving"]["net_over_horizon"])
+        self.assertEqual(entry["net_saving"]["net_per_task"], 2.9)
 
-    def test_relative_saving_needs_a_baseline_to_become_a_unit_count(self):
+    def test_relative_saving_converts_through_the_frozen_cost_baseline(self):
+        """A relative saving becomes a unit count ONLY through a baseline the
+        FRAMEWORK froze for that metric. The bundle's frozen mean
+        solver_runtime_s (5.0 s) is that reference: 0.2 x 5.0 = 1.0 s."""
         payload = {"expected_changes": [
             {"metric": "resource_cost", "unit": "s", "direction": "decrease",
              "value": -0.2, "value_kind": "relative",
              "beneficial_direction": "decrease"}],
-            "learning_cost": {"llm_tokens": 100},
+            "learning_cost": {"solver_runtime_s": 0.1},
             "verification_conditions": [{"condition": "cost falls",
                                           "evaluable": True}]}
         prediction = self.predict(payload=payload)[1]
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=10)
-        # No absolute baseline for the cost metric: a ratio cannot be
-        # ranked against a unit count, so the candidate is reported.
+        self.assertEqual(result["recommendation"], "accept")
+        saving = result["comparisons"][0]["saving"]
+        self.assertEqual(saving["kind"], "quantified")
+        self.assertEqual(saving["value_kind"], "relative")
+        self.assertAlmostEqual(saving["per_task"], 1.0, places=5)
+
+    def test_relative_saving_without_a_frozen_baseline_stays_a_ratio(self):
+        """With no frozen reference for its metric, a ratio is reported and
+        never converted: a percentage of an unknown quantity is unknown."""
+        payload = {"expected_changes": [
+            {"metric": "resource_cost", "unit": "s", "direction": "decrease",
+             "value": -0.2, "value_kind": "relative",
+             "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 0.1},
+            "verification_conditions": [{"condition": "cost falls",
+                                          "evaluable": True}]}
+        prediction = self.predict(payload=payload, bundle={
+            **_bundle(), "mean_cost": {}})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
         self.assertEqual(result["recommendation"], "defer")
         self.assertIn("ratio", result["incomparable"][0]["reason"])
         self.assertIn("absolute", result["incomparable"][0]["reason"])
@@ -711,13 +754,13 @@ class TestExplicitAcceptance(M5Case):
         small = self.predict(payload={"expected_changes": [
             {"metric": "resource_cost", "unit": "s", "direction": "decrease",
              "value": -0.5, "beneficial_direction": "decrease"}],
-            "learning_cost": {"llm_tokens": 100},
+            "learning_cost": {"solver_runtime_s": 0.1},
             "verification_conditions": [{"condition": "cost falls",
                                           "evaluable": True}]})[1]
         large = self.predict(payload={"expected_changes": [
             {"metric": "resource_cost", "unit": "s", "direction": "decrease",
              "value": -8.0, "beneficial_direction": "decrease"}],
-            "learning_cost": {"llm_tokens": 100},
+            "learning_cost": {"solver_runtime_s": 0.1},
             "verification_conditions": [{"condition": "cost falls",
                                           "evaluable": True}]})[1]
         first = self.h.compare_capability_evolution(
@@ -740,18 +783,25 @@ class TestExplicitAcceptance(M5Case):
 
 class TestTwoStageFeedback(M5Case):
 
-    def _accepted(self, payload=None, *, prediction_id=None):
+    def _accepted(self, payload=None, *, prediction_id=None,
+                  horizon_tasks=1):
         """Accept a candidate and run the real operation.
 
         When the automatic rule defers (a quality-only candidate has no
         shared yardstick with a cost saving), the outer agent may still
         choose it explicitly — that is exactly what the incomparable list
         is for. The recommendation dict models that explicit choice.
+
+        ``horizon_tasks`` defaults to 1 so a test that closes ONE later
+        episode can actually reach a verdict: a horizon the sample does not
+        meet stays pending, which is the honest answer but not what an
+        effect test is checking.
         """
         self.seed_executions()
-        prediction = self.predict(payload=payload)[1]
+        prediction = self.predict(payload=payload,
+                                  horizon_tasks=horizon_tasks)[1]
         recommendation = self.h.compare_capability_evolution(
-            [prediction.prediction_id], horizon_tasks=10)
+            [prediction.prediction_id], horizon_tasks=horizon_tasks)
         if recommendation["recommendation"] != "accept":
             recommendation = {
                 "recommendation": "accept",
@@ -933,14 +983,23 @@ class TestTwoStageFeedback(M5Case):
         self.assertEqual(evaluation["evaluation"]["state"], "no_change")
 
     def test_repeated_evaluation_does_not_double_the_sample(self):
-        prediction, accepted = self._accepted()
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase",
+                 "baseline": {"kind": "conditional_stats", "value": 0.70}}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
         self.h.bind_capability_maintenance(
             prediction.prediction_id,
             adoption_action_id=accepted["adoption_action_id"])
         self._close_later_episode("later1", observed_quality=0.95)
         self.h.record_capability_paired_evaluation(
             prediction.prediction_id, metric="normalized_solution_quality",
-            reference_value=0.70, treated_value=0.95)
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
         first = self.h.evaluate_capability_effect(prediction.prediction_id)
         second = self.h.evaluate_capability_effect(prediction.prediction_id)
         self.assertTrue(second["already_evaluated"])
@@ -983,17 +1042,18 @@ class TestTwoStageFeedback(M5Case):
         self._close_later_episode("later1", observed_quality=0.95)
         self.h.record_capability_paired_evaluation(
             prediction.prediction_id, metric="normalized_solution_quality",
-            reference_value=0.70, treated_value=0.95)
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
         result = self.h.evaluate_capability_effect(prediction.prediction_id)
         evaluation = result["evaluation"]
         change = evaluation["changes"][0]
-        # The observed change is the LEVEL minus the declared baseline.
-        # The later execution reported `optimal`, so its normalized
-        # quality observation is 1.0 (not the requested gap): 1.0 - 0.70.
-        self.assertAlmostEqual(change["observed_mean"], 1.0, places=5)
-        self.assertAlmostEqual(change["observed_change"], 0.30, places=5)
-        self.assertAlmostEqual(change["baseline_value"], 0.70, places=5)
-        self.assertIn("minus the baseline", change["change_basis"])
+        # The change is read from the caller's PAIRED comparison (treated
+        # minus reference), which is what makes it attributable: 0.95 - 0.70.
+        self.assertAlmostEqual(change["observed_change"], 0.25, places=5)
+        self.assertEqual(change["paired"], True)
+        self.assertEqual(change["paired_reference"]["reference_value"], 0.70)
+        self.assertEqual(change["paired_reference"]["treated_value"], 0.95)
+        self.assertIn("paired comparison", change["change_basis"])
         self.assertEqual(change["agreement"], "confirmed")
         self.assertEqual(evaluation["state"], "observed_improvement")
         self.assertTrue(evaluation["effect_verified"])
@@ -1056,7 +1116,576 @@ class TestTwoStageFeedback(M5Case):
 
 
 # ---------------------------------------------------------------------------
-# 7. CLI coverage of the shortest complete chain
+# 7. the review round: the seven defects found after the first delivery
+# ---------------------------------------------------------------------------
+
+
+class TestReviewRoundFixes(M5Case):
+    """Regressions for the seven reviewed M5 defects.
+
+    Each test reproduces the reported behaviour and asserts the corrected
+    one, so a future refactor that reintroduces it fails loudly instead of
+    quietly returning a flattering verdict.
+    """
+
+    # -- P1-1: a paired record must be READ, not merely present ----------
+
+    def test_paired_reference_that_shows_a_collapse_refutes_the_claim(self):
+        """A pair whose treated value is WORSE than its reference must be
+        able to refute the prediction it was recorded for. Merely having a
+        record is not attribution."""
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        # The paired window shows quality COLLAPSING 0.9 -> 0.1.
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.9, treated_value=0.1, unit="1-gap",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertFalse(evaluation["effect_verified"],
+                         "a pair that moved the WRONG way must not verify "
+                         "an improvement")
+        change = evaluation["changes"][0]
+        self.assertAlmostEqual(change["observed_change"], -0.8, places=5)
+        self.assertEqual(change["agreement"], "refuted")
+
+    def test_paired_reference_on_another_metric_is_not_a_control(self):
+        """A pair taken on a different metric covers none of the predicted
+        changes, so the result stays DESCRIPTIVE."""
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        # A COST pair for a QUALITY claim.
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="resource_cost",
+            reference_value=5.0, treated_value=3.0, unit="s",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertEqual(evaluation["state"], "inconclusive")
+        self.assertFalse(evaluation["effect_verified"])
+        self.assertTrue(evaluation["evidence"]["paired_reference_unusable"])
+
+    def test_paired_reference_in_another_unit_is_not_a_control(self):
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=70.0, treated_value=95.0, unit="percent",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        self.assertEqual(result["evaluation"]["state"], "inconclusive")
+
+    def test_a_paired_record_citing_an_unrun_task_is_not_evidence(self):
+        """A comparison between measurements nobody made is an assertion
+        wearing a reference."""
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        # The cited task never ran at all.
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["never_ran"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertEqual(evaluation["state"], "inconclusive")
+        self.assertFalse(evaluation["effect_verified"])
+        unusable = evaluation["evidence"]["paired_reference_unusable"]
+        self.assertIn("no closed episode", unusable[0]["reason"])
+
+    # -- P1-2: later + matching + horizon must really be enforced --------
+
+    def test_a_task_closed_before_the_operation_is_not_evidence(self):
+        """A pre-maintenance episode cannot validate a post-maintenance
+        claim, however convenient its numbers are."""
+        # Close the episode BEFORE any prediction/operation exists.
+        self._close_later_episode("before1", observed_quality=0.95)
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["before1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertEqual(evaluation["state"], "pending")
+        evidence = evaluation["evidence"]
+        self.assertEqual(evidence["n_later_evaluations"], 0)
+        self.assertEqual([e["task_id"] for e in
+                          evidence["excluded_not_later"]], ["before1"])
+
+    def test_an_off_target_task_is_not_a_matching_task(self):
+        """A task outside the prediction's frozen target cannot validate a
+        claim about this population."""
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        # A task of ANOTHER family: structurally unrelated to the claim.
+        self._close_later_episode("elsewhere", observed_quality=0.95,
+                                  family="scheduling")
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evidence = result["evaluation"]["evidence"]
+        self.assertEqual(evidence["n_later_evaluations"], 0)
+        self.assertEqual([e["task_id"] for e in
+                          evidence["excluded_off_target"]], ["elsewhere"])
+
+    def test_an_unmet_horizon_stays_pending(self):
+        """A claim made over N tasks is not confirmed by fewer than N."""
+        prediction, accepted = self._accepted(
+            payload={
+                "expected_changes": [
+                    {"metric": "normalized_solution_quality",
+                     "unit": "1-gap", "direction": "increase", "value": 0.2,
+                     "beneficial_direction": "increase"}],
+                "learning_cost": {"llm_tokens": 100},
+                "verification_conditions": [{"condition": "quality rises",
+                                             "evaluable": True}]},
+            horizon_tasks=3)
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertEqual(evaluation["state"], "pending")
+        self.assertFalse(evaluation["effect_verified"])
+        self.assertEqual(evaluation["evidence"]["horizon_tasks"], 3)
+        self.assertFalse(evaluation["evidence"]["horizon_met"])
+        self.assertIn("INCOMPLETE", " ".join(evaluation["exclusion_reasons"]))
+
+    # -- P1-3: the framework owns the baseline ---------------------------
+
+    def test_a_model_supplied_baseline_is_recorded_and_replaced(self):
+        """A model may cite a frozen reference, never set one: a baseline
+        chosen after seeing the evidence grades the model's own work."""
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -6.0,
+                 "beneficial_direction": "decrease",
+                 "baseline": {"kind": "conditional_stats", "value": 0.0}}],
+            "learning_cost": {"solver_runtime_s": 0.1},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        self.assertEqual(prediction.status, "valid")
+        change = prediction.expected_changes[0]
+        # The bundle's frozen mean solver_runtime_s (5.0) wins.
+        self.assertIsNotNone(change.baseline)
+        self.assertAlmostEqual(change.baseline.value, 5.0, places=5)
+        overrides = prediction.trace.model_info.get(
+            "attempted_field_overrides") or {}
+        self.assertIn("expected_changes[0].baseline", overrides)
+        self.assertEqual(overrides["expected_changes[0].baseline"]["value"],
+                         0.0)
+
+    def test_the_frozen_baseline_is_published_per_metric(self):
+        prediction = self.predict()[1]
+        frozen = prediction.baselines_by_metric
+        self.assertIn("normalized_solution_quality", frozen)
+        self.assertIn("resource_cost", frozen)
+        self.assertEqual(frozen["normalized_solution_quality"].metric,
+                         "normalized_solution_quality")
+        self.assertEqual(frozen["resource_cost"].unit, "solver_runtime_s")
+        # A reference is only handed to its OWN metric.
+        self.assertIsNone(prediction.frozen_baseline_for("unknown_metric"))
+
+    # -- P1-4: comparable means the same unit AND a positive net ---------
+
+    def test_savings_in_different_units_are_never_ranked_against_each_other(
+            self):
+        seconds = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -10.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 1.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        tokens = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "tokens",
+                 "direction": "decrease", "value": -100.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"llm_tokens": 10.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        result = self.h.compare_capability_evolution(
+            [seconds.prediction_id, tokens.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "defer",
+                         "10 seconds and 100 tokens are different "
+                         "quantities: picking the larger NUMBER would be a "
+                         "unit-blind ranking")
+        self.assertIsNone(result["selected_prediction_id"])
+        self.assertIn("different units", result["basis"])
+
+    def test_a_maintenance_cost_larger_than_the_saving_defers(self):
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -100.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 10000.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "defer")
+        self.assertIn("costs more than it saves",
+                      result["incomparable"][0]["reason"])
+
+    def test_a_learning_cost_in_another_currency_defers(self):
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -10.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"llm_tokens": 100.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "defer")
+        self.assertIn("not expressed in the saving's own unit",
+                      result["incomparable"][0]["reason"])
+
+    def test_the_net_saving_is_reported_per_candidate(self):
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -6.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 1.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        net = result["comparisons"][0]["net_saving"]
+        self.assertEqual(net["per_task"], 6.0)
+        self.assertEqual(net["maintenance_cost"], 1.0)
+        self.assertEqual(net["net_per_task"], 5.0)
+        self.assertEqual(net["net_over_horizon"], 59.0)
+
+    # -- P1-5: the operation TYPE decides what runs ----------------------
+
+    def test_an_operation_without_an_execution_path_is_refused(self):
+        """A 'reverify' candidate has no execution entry: accepting it must
+        REFUSE, never quietly run induce() under its name."""
+        self.seed_executions()
+        prediction = self.predict(
+            payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -6.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+            operation={"operation_type": "reverify",
+                       "strategy_id": "S04"})[1]
+        before = self.h.sbank.count()
+        with self.assertRaises(ValueError) as ctx:
+            self.h.accept_capability_operation({
+                "recommendation": "accept",
+                "selected_prediction_id": prediction.prediction_id})
+        self.assertIn("no execution path", str(ctx.exception))
+        self.assertEqual(self.h.sbank.count(), before,
+                         "a refused operation must change nothing")
+
+    def test_an_unsupported_operation_is_never_recommended(self):
+        self.seed_executions()
+        prediction = self.predict(
+            payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -6.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+            operation={"operation_type": "reverify",
+                       "strategy_id": "S04"})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "defer")
+        self.assertIn("no execution path",
+                      result["incomparable"][0]["reason"])
+
+    def test_a_retire_operation_really_retires(self):
+        """The dispatched operation matches the prediction: a 'retire'
+        candidate removes an entry instead of creating one."""
+        self.seed_executions()
+        self.h.induce(strategy_id="S04")
+        entries = self.h.sbank.list()
+        self.assertTrue(entries, "the fixture needs a real entry to retire")
+        entry_id = entries[0].entry_id
+        prediction = self.predict(
+            payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -6.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+            operation={"operation_type": "retire", "strategy_id": "S04",
+                       "config": {"target_entry_id": entry_id}})[1]
+        result = self.h.accept_capability_operation({
+            "recommendation": "accept",
+            "selected_prediction_id": prediction.prediction_id})
+        self.assertEqual(result["operation_type"], "retire")
+        self.assertIsNone(self.h.sbank.get(entry_id),
+                          "a retire must remove the entry, not create one")
+        bound = self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=result["adoption_action_id"])
+        self.assertEqual(
+            bound["binding"]["knowledge_delta"]["entries_retired"],
+            [entry_id])
+        self.assertEqual(
+            bound["binding"]["knowledge_delta"]["entries_created"], [])
+
+    def test_a_retire_without_a_named_target_is_refused(self):
+        self.seed_executions()
+        prediction = self.predict(
+            payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -6.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+            operation={"operation_type": "retire",
+                       "strategy_id": "S04"})[1]
+        with self.assertRaises(ValueError) as ctx:
+            self.h.accept_capability_operation({
+                "recommendation": "accept",
+                "selected_prediction_id": prediction.prediction_id})
+        self.assertIn("target entry", str(ctx.exception))
+
+    # -- P1-6: capability calls are real spend ---------------------------
+
+    def test_capability_prediction_costs_enter_the_budget_ledger(self):
+        """Three 50-token calls against a 40-token budget must EXCEED it,
+        not report "ok" while the tokens burn."""
+        h = ORHarness(home=self.home, world_model=StubProvider(
+            usage={"prompt_tokens": 10, "completion_tokens": 50}),
+            embedding=self.backend)
+        self.addCleanup(h.close)
+        h.declare_budget("t_only", {"llm_tokens": 40})
+        for _ in range(3):
+            h.predict_capability_evolution(
+                {"operation_type": "induce", "strategy_id": "S04"},
+                bundle=_bundle(), horizon="next 10 tasks",
+                horizon_tasks=10, task_id="t_only")
+        view = h.budget_view("t_only")
+        self.assertEqual(view["status"], "exceeded")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         150.0)
+        self.assertEqual(
+            len(view["consumption"]["prediction_call_costs"]), 3)
+
+    def test_a_failed_capability_call_is_still_charged(self):
+        class FailingProvider(WorldModelProvider):
+            name = "failing-m5"
+
+            def predict(self, request, timeout_s=None):
+                return {"payload": None, "error": "model unavailable",
+                        "usage": {"completion_tokens": 30},
+                        "latency_s": 0.01}
+
+        h = ORHarness(home=self.home, world_model=FailingProvider(),
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        h.declare_budget("t_fail", {"llm_tokens": 10})
+        prediction = h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10,
+            task_id="t_fail")
+        self.assertEqual(prediction.status, "invalid")
+        view = h.budget_view("t_fail")
+        self.assertEqual(view["status"], "exceeded",
+                         "a call that really happened is real spend even "
+                         "when it produced no usable prediction")
+        self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
+                         30.0)
+
+    # -- P2-7: verified effects condition the NEXT prediction ------------
+
+    def test_verified_effects_reach_the_next_prediction(self):
+        """The loop must close: a verified effect advances the evidence the
+        NEXT capability prediction is built on."""
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self._close_later_episode("later1", observed_quality=0.95)
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
+        evaluated = self.h.evaluate_capability_effect(
+            prediction.prediction_id)
+        self.assertTrue(evaluated["evaluation"]["effect_verified"])
+        # A NEW prediction is built on evidence that includes the effect.
+        later = self.predict()[1]
+        self.assertEqual(later.current_evidence.sources["m"].status,
+                         "direct_evidence")
+        self.assertTrue(any("advanced by verified effect evaluation"
+                            in n for n in
+                            later.current_evidence.sources["m"].notes))
+        # W_OR is never advanced by the predictor's own report.
+        self.assertNotEqual(later.current_evidence.sources["w_or"].status,
+                            "direct_evidence")
+
+    def test_an_unverified_effect_does_not_reach_the_next_prediction(self):
+        prediction, accepted = self._accepted(payload={
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": 0.2,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]})
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        # A bound fact alone is not an effect: the evidence stays as it was.
+        later = self.predict()[1]
+        self.assertNotEqual(later.current_evidence.sources["m"].status,
+                            "direct_evidence")
+
+    # -- helpers ----------------------------------------------------------
+
+    def _close_later_episode(self, task_id, *, observed_quality,
+                             family="routing"):
+        """Close a REAL episode whose bound prediction observed a quality."""
+        task = _task(task_id)
+        if family != "routing":
+            task["family"] = family
+        payload = {
+            "benefit": {"kind": "solution_quality",
+                        "metric": "normalized_objective_gap", "unit": "1-gap",
+                        "value": observed_quality,
+                        "baseline": {"kind": "conditional_stats",
+                                     "value": 0.7}},
+            "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+            "risk": {"events": []},
+        }
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S04"},
+            "ep1")
+        from pathlib import Path
+        work = Path(self.home) / f"ws_{task_id}"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
+            " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        record = h.execute(task, "S04", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record)
+        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        h.close_episode(task_id, "ep1")
+
+    def _accepted(self, payload=None, *, prediction_id=None,
+                  horizon_tasks=1, operation=None):
+        """Accept a candidate and run the real operation."""
+        self.seed_executions()
+        prediction = self.predict(payload=payload, operation=operation,
+                                  horizon_tasks=horizon_tasks)[1]
+        recommendation = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=horizon_tasks)
+        if recommendation["recommendation"] != "accept":
+            recommendation = {
+                "recommendation": "accept",
+                "recommendation_id": recommendation["recommendation_id"],
+                "selected_prediction_id": prediction.prediction_id,
+                "basis": ("explicit agent choice among the incomparable "
+                          "candidates"),
+            }
+        accepted = self.h.accept_capability_operation(
+            recommendation, prediction_id=prediction_id)
+        return prediction, accepted
+
+
+# ---------------------------------------------------------------------------
+# 8. CLI coverage of the shortest complete chain
 # ---------------------------------------------------------------------------
 
 

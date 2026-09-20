@@ -178,7 +178,9 @@ from or_harness.world_model.capability_evolution import (
 )
 from or_harness.world_model.maintenance_decision import (
     CAPABILITY_EFFECT_VERSION,
+    EFFECT_FINAL_STATES,
     EFFECT_STATES,
+    EXECUTABLE_LEARNING_OPERATIONS,
     MAINTENANCE_COMPARISON_VERSION,
     MAINTENANCE_RECOMMENDATIONS,
     OBSERVABLE_CAPABILITY_METRICS,
@@ -240,7 +242,9 @@ __all__ = [
     "parse_capability_evolution_payload",
     # offline-improvement decision and two-stage capability feedback (M5)
     "CAPABILITY_EFFECT_VERSION",
+    "EFFECT_FINAL_STATES",
     "EFFECT_STATES",
+    "EXECUTABLE_LEARNING_OPERATIONS",
     "MAINTENANCE_COMPARISON_VERSION",
     "MAINTENANCE_RECOMMENDATIONS",
     "OBSERVABLE_CAPABILITY_METRICS",

@@ -14,8 +14,11 @@ demonstration the milestone asks for:
    were selected, and answers; the parsed prediction is saved and restored;
 3. **prediction changes the advice** — TWO candidates are predicted (one
    large saving, one small) and the bounded comparison rule recommends the
-   larger one. A third candidate that trades quality away is NOT auto-
-   ranked, and a candidate with no comparable yardstick yields ``defer``;
+   larger NET saving, i.e. its saving minus its own predicted maintenance
+   cost IN THE SAME UNIT. A third candidate that trades quality away is NOT
+   auto-ranked; a candidate whose maintenance cost is quoted in another
+   currency, or that costs more than it saves, is reported rather than
+   ranked; and a candidate with no comparable yardstick yields ``defer``;
 4. **explicit choice, then the real operation** — the recommendation is
    accepted EXPLICITLY and the existing induction runs on the prediction's
    OWN frozen scope; a second candidate is REJECTED and changes nothing;
@@ -25,7 +28,11 @@ demonstration the milestone asks for:
 6. **the effect is judged on REAL later results** — a later task's closed
    episode is evaluated, a pre-arranged paired comparison makes the change
    attributable, and the effect becomes VERIFIED — while W_OR stays
-   unadvanced and a repeat evaluation does not double the sample;
+   unadvanced and a repeat evaluation does not double the sample. The
+   evaluation only counts tasks that finished AFTER the operation, fall
+   inside the prediction's FROZEN target, and are not part of its own
+   experience scope; and it only reaches a verdict once the declared
+   horizon is met;
 7. **honest branches** — a candidate whose operation changes nothing is
    recorded as ``no_change``; a prediction the real evidence CONTRADICTS is
    recorded as refuted; a candidate that was never accepted produces no
@@ -74,18 +81,20 @@ TASK_TEXT = ("A distribution centre must be loaded before the delivery "
 #: quality does NOT degrade (quality is expected to improve modestly), a
 #: learning cost, a degradation risk and a verification condition. It
 #: carries NO claim that anything was verified.
+#:
+#: The learning cost is expressed in the SAVING's own unit (seconds): a
+#: comparison only nets quantities in the same currency, so a candidate
+#: whose maintenance cost is quoted in tokens is reported as incomparable
+#: rather than ranked against a saving in seconds.
 PAYLOAD = {
     "expected_changes": [
         {"metric": "resource_cost", "unit": "s", "direction": "decrease",
          "value": -6.0, "value_kind": "absolute",
-         "beneficial_direction": "decrease",
-         "baseline": {"kind": "conditional_stats", "value": 5.0,
-                      "note": "the observed solver runtime before the "
-                              "operation"}},
+         "beneficial_direction": "decrease"},
         {"metric": "normalized_solution_quality", "unit": "1-gap",
          "direction": "increase", "beneficial_direction": "increase"},
     ],
-    "learning_cost": {"llm_tokens": 800, "tool_calls": 4},
+    "learning_cost": {"solver_runtime_s": 1.0},
     "degradation_risk": {"events": [
         {"event": "overgeneralized_entry", "probability": 0.15,
          "basis": "the evidence spans two structural cells"},
@@ -253,8 +262,8 @@ def _local_http_check(home):
                       embedding=LocalHashEmbeddingBackend())
         prediction = h.predict_capability_evolution(
             {"operation_type": "induce", "strategy_id": "S04"},
-            task=_task("http_check"), horizon="the next 10 matching tasks",
-            horizon_tasks=10,
+            task=_task("http_check"), horizon="the next matching task",
+            horizon_tasks=1,
             # A fresh home has no candidate bundle, so the framework's
             # identity (target + baseline) is supplied explicitly here. The
             # framework still OWNS these fields: the model may not restate
@@ -323,7 +332,7 @@ def main() -> int:
     big = h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     print(f"prediction             : {big.prediction_id} "
           f"(status {big.status})")
     for change in big.expected_changes:
@@ -333,8 +342,8 @@ def main() -> int:
         print(f"  expected change      : {change.metric} "
               f"{change.direction} {change.value} {change.unit}{flag}")
     print(f"  learning cost        : "
-          f"{big.learning_cost.expected.to_dict()['llm_tokens']} tokens "
-          f"(PREDICTED, not real spend)")
+          f"{big.learning_cost.expected.to_dict()} (PREDICTED, not real "
+          "spend; kept in the SAVING's own unit so the two are nettable)")
     print(f"  degradation risk     : "
           f"{[e.event for e in big.degradation_risk.events]}")
     print(f"  uncertainty source   : {big.uncertainty.source} "
@@ -352,7 +361,7 @@ def main() -> int:
             {"metric": "resource_cost", "unit": "s",
              "direction": "decrease", "value": -1.5,
              "beneficial_direction": "decrease"}],
-        "learning_cost": {"llm_tokens": 400},
+        "learning_cost": {"solver_runtime_s": 0.5},
         "verification_conditions": [{"condition": "cost falls",
                                      "evaluable": True}]})
     small_h = ORHarness(home=home, world_model=small_provider,
@@ -360,11 +369,11 @@ def main() -> int:
     small = small_h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     small_h.close()
 
     recommendation = h.compare_capability_evolution(
-        [big.prediction_id, small.prediction_id], horizon_tasks=10)
+        [big.prediction_id, small.prediction_id], horizon_tasks=1)
     print(f"recommendation         : {recommendation['recommendation']} -> "
           f"{recommendation['selected_prediction_id']}")
     print(f"rule                   : "
@@ -387,7 +396,7 @@ def main() -> int:
              "beneficial_direction": "decrease"},
             {"metric": "normalized_solution_quality", "unit": "1-gap",
              "direction": "decrease", "beneficial_direction": "increase"}],
-        "learning_cost": {"llm_tokens": 400},
+        "learning_cost": {"solver_runtime_s": 1.0},
         "verification_conditions": [{"condition": "cost falls",
                                      "evaluable": True}]})
     risky_h = ORHarness(home=home, world_model=risky_provider,
@@ -395,10 +404,10 @@ def main() -> int:
     risky = risky_h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     risky_h.close()
     quality_result = h.compare_capability_evolution(
-        [risky.prediction_id, small.prediction_id], horizon_tasks=10)
+        [risky.prediction_id, small.prediction_id], horizon_tasks=1)
     print(f"quality-loss candidate : NOT auto-ranked "
           f"({quality_result['incomparable'][0]['reason'][:60]}...)")
     assert quality_result["selected_prediction_id"] == small.prediction_id
@@ -417,10 +426,10 @@ def main() -> int:
     quality_only = quality_h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     quality_h.close()
     defer_result = h.compare_capability_evolution(
-        [quality_only.prediction_id], horizon_tasks=10)
+        [quality_only.prediction_id], horizon_tasks=1)
     print(f"no comparable yardstick: {defer_result['recommendation']} — "
           "defer is a legitimate outcome, not a failure")
     assert defer_result["recommendation"] == "defer"
@@ -482,6 +491,9 @@ def main() -> int:
     assert pending["evaluation"]["state"] == "pending"
 
     # A later task, OUTSIDE the prediction's own experience scope.
+    # The declared horizon is ONE matching task, which is what this fixture
+    # can really close: a claim over ten tasks that only ever sees one is
+    # INCOMPLETE, and the evaluation says so instead of deciding early.
     _close_later_episode(h, "m5_later", quality_value=0.95)
     descriptive = h.evaluate_capability_effect(big.prediction_id)
     print(f"without a reference    : "
@@ -491,9 +503,9 @@ def main() -> int:
     assert descriptive["evaluation"]["effect_verified"] is False
 
     paired = h.record_capability_paired_evaluation(
-        big.prediction_id, metric="resource_cost",
-        reference_value=5.0, treated_value=3.2, unit="s",
-        reference_task_ids=["m5_a", "m5_b", "m5_c"],
+        big.prediction_id, metric="normalized_solution_quality",
+        reference_value=0.70, treated_value=0.95, unit="1-gap",
+        reference_task_ids=["m5_later"],
         note="a paired window the caller really arranged")
     print(f"paired reference       : change={paired['change']} "
           f"{paired['unit']} (source={paired['source']})")
@@ -536,7 +548,7 @@ def main() -> int:
     empty = empty_h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     empty_h.close()
     h.actions.report_action(
         "induce", "m5_a", "m5_empty_adopt",
@@ -559,18 +571,35 @@ def main() -> int:
     assert empty_effect["evaluation"]["state"] == "no_change"
 
     # A prediction the REAL evidence contradicts: the candidate expects a
-    # COST decrease, but the observed cost movement is the opposite way.
-    contradicted = h.predict_capability_evolution(
+    # COST decrease, but the paired window moved the other way.
+    contradicted_provider = StubProvider(payload={
+        "expected_changes": [
+            {"metric": "resource_cost", "unit": "s", "direction": "decrease",
+             "value": -6.0, "beneficial_direction": "decrease"}],
+        "learning_cost": {"solver_runtime_s": 1.0},
+        "verification_conditions": [{"condition": "cost falls",
+                                     "evaluable": True}]})
+    contradicted_h = ORHarness(home=home, world_model=contradicted_provider,
+                               embedding=backend)
+    contradicted = contradicted_h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
+    contradicted_h.close()
     recommendation2 = h.compare_capability_evolution(
-        [contradicted.prediction_id], horizon_tasks=10)
+        [contradicted.prediction_id], horizon_tasks=1)
+    if recommendation2["recommendation"] != "accept":
+        recommendation2 = {
+            "recommendation": "accept",
+            "recommendation_id": recommendation2["recommendation_id"],
+            "selected_prediction_id": contradicted.prediction_id,
+            "basis": "explicit agent choice"}
     h.accept_capability_operation(recommendation2)
     h.bind_capability_maintenance(contradicted.prediction_id)
     h.record_capability_paired_evaluation(
         contradicted.prediction_id, metric="resource_cost",
         reference_value=5.0, treated_value=9.0, unit="s",
+        reference_task_ids=["m5_later"],
         note="the paired window moved the other way")
     refuted = h.evaluate_capability_effect(contradicted.prediction_id)
     print(f"refuted prediction     : {refuted['evaluation']['state']} — a "
@@ -582,7 +611,7 @@ def main() -> int:
     never = h.predict_capability_evolution(
         {"operation_type": "induce", "strategy_id": "S04"},
         task=_task("m5_a"), bundle=bundle,
-        horizon="the next 10 matching tasks", horizon_tasks=10)
+        horizon="the next matching task", horizon_tasks=1)
     unbound = h.bind_capability_maintenance(never.prediction_id)
     print(f"never-accepted         : {unbound['state']} — nothing is "
           "recorded as if it ran")

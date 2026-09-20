@@ -388,6 +388,34 @@ Read the published strategy-outcome experience-calibration summary (read-only). 
 
 List (or read one) stored post-hoc evaluations of strategy-outcome predictions (read-only). Excluded evaluations are neither hits nor misses; pending ones wait for their scope to end.
 
+## `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
+
+**Capability-evolution prediction (world-model M5, `wm-ce/1`).** Predicts what ONE offline learning operation (`--operation` JSON: `operation_type` of `induce`/`revise`/`reverify`/`retire`, plus `strategy_id`/`config`) would change in FUTURE task performance: `expected_changes` (metric, unit, direction, value, baseline), `learning_cost`, `degradation_risk`, `uncertainty` and `verification_conditions`. The FRAMEWORK fixes the operation identity, the experience scope (from the bundle's own executions), the task targeting, the horizon and the per-metric baselines; the model fills prediction content only and may CITE a frozen baseline, never set one. A failed call is a persisted failure with whatever usage it consumed. `status="contract_only"` with no provider; the service IS implemented, so `prediction_made` is what makes it `valid`.
+
+## `orx compare-capability --predictions ID[,ID...] [--horizon-tasks N] [--allow-quality-loss]`
+
+Compare frozen capability predictions and recommend one, or `defer` (read-only: no operation runs, no knowledge changes). ONE bounded rule: among candidates predicting a quantified resource saving with no quality degradation, recommend the largest **net** per-task saving — the saving minus that candidate's OWN predicted maintenance cost **in the same unit**. A candidate whose learning cost is quoted in another currency, whose cost exceeds its saving, whose operation type has no execution path in this build, or whose savings cannot be compared across units is reported as `incomparable` rather than ranked. `defer` / `insufficient_evidence` are legitimate outcomes.
+
+## `orx accept-capability --recommendation JSON [--prediction ID] [--verify JSON] [--note TEXT] [--force]`
+
+**EXPLICITLY** accept a recommendation and run the real offline operation on the prediction's OWN frozen scope (the only M5 entry that changes knowledge). The operation TYPE decides what runs: `induce`/`revise` go through the existing induction path, `retire` removes the named target entry, and any other type is REFUSED — a candidate is never executed as a different operation under its name. A scope is never widened by re-reading the current bank.
+
+## `orx reject-capability --recommendation JSON [--prediction ID] [--reason TEXT]`
+
+Explicitly decline or defer a recommendation: no operation runs and NO knowledge changes. The decision is recorded with its reason so the history is auditable.
+
+## `orx bind-capability --prediction ID [--adoption-action ACTION_ID]`
+
+**Stage 1 of the capability feedback.** Bind the REAL maintenance FACT: whether the operation happened, what knowledge actually changed (created / revised / retired entries), the admission verdict of what it produced, the REAL cost and whether the scope used matches the scope predicted. Idempotent by prediction. It CANNOT set `effect_verified` — a verified entry is a knowledge change, not evidence that future performance improved.
+
+## `orx evaluate-capability --prediction ID [--tasks ID,...] [--paired JSON] [--allow-descriptive]`
+
+**Stage 2 of the capability feedback.** Judge the prediction against REAL later-task results, or record a pre-arranged paired comparison. Only CLOSED episodes of tasks that finished AFTER the operation, fall inside the prediction's FROZEN targeting and are NOT part of its own experience scope participate; the declared horizon must be reached or the result stays `pending`. A paired record is READ AND USED (its treated-minus-reference difference is the observed change) — merely existing is not attribution, and a pair taken on another metric/unit is reported as unusable. `observed_improvement` is the only state that sets `effect_verified`; a pending horizon, a descriptive movement, insufficient evidence and a refutation are all first-class outcomes, and only a FINAL verdict short-circuits a repeat call.
+
+## `orx capability-feedback [--prediction ID]`
+
+The two-stage feedback state of every capability prediction (read-only): fact bound vs effect verified, plus whether a paired reference exists. No model call, no re-evaluation, no re-billing.
+
 ## `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1|2] [--max-calls N] [--delta W] [--prediction-mode M] [--protocol legacy|strategy-outcome]`
 
 **Bounded next-step planning.** Compare a small set of candidate actions by their PREDICTED consequences and get a suggested first step. The decision:
@@ -504,8 +532,9 @@ validated:
 Only `prediction_made` makes `status="valid"`. Building a contract returns
 `contract_only` **even with a provider configured** — zero model calls with
 empty benefit/cost/risk is not a forecast. The capability-evolution kind has
-a contract and **no service**, so it stays unavailable no matter what is
-configured. `unsupported`/`invalid` mean nothing was predicted. The
+a contract AND a service (M5, `wm-ce/1`), so a configured provider makes it
+`service_available`; `prediction_made` still requires the real call.
+`unsupported`/`invalid` mean nothing was predicted. The
 capability contract carries no composite H score, and a legacy payload is
 read through a view that derives **no** capability increment, risk severity
 or measurement.

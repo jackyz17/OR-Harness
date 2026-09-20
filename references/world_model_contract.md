@@ -46,11 +46,13 @@ returns `contract_only` **even when a provider is configured** — a
 configured provider with zero model calls is not a prediction, and an
 empty benefit/cost/risk is not a forecast.
 
-`capability_evolution` has a **contract and no service**: this build does
-not implement capability-evolution prediction at all, so configuring a
-provider does NOT make that kind available. Check
+`capability_evolution` has **both a contract and a service** (M5,
+`wm-ce/1`). Predicting it takes a REAL model call, so a configured
+provider alone still returns `contract_only`: the service is implemented,
+the call has not been made. Check
 `ORHarness.prediction_service_status(kind)` (or the `service_implemented`
-field) rather than assuming "a provider exists" means "this works".
+field) for implementation and `prediction_made` for an actual forecast —
+"a provider exists" is neither.
 
 ---
 
@@ -327,6 +329,23 @@ action vocabulary (the six action types stay), reviving the retired
 > candidate; `plan-next --protocol strategy-outcome` compares candidates on
 > it; `bind-strategy` links the real execution. The legacy
 > `predict_outcome` path is unchanged.
+>
+> **Phase 4 (M4) note.** Episode close-out and post-hoc evaluation are
+> wired: see [references/episode_closeout.md](episode_closeout.md).
+>
+> **Phase 5 (M5) note.** The capability-evolution prediction SERVICE is now
+> implemented under the `wm-ce/1` protocol: `predict-capability` fills a
+> `CapabilityEvolutionPrediction` from frozen evidence, a candidate
+> operation, the exact experience scope, the task targeting, a
+> framework-frozen per-metric baseline and a horizon. `compare-capability`
+> applies ONE bounded rule (largest net per-task saving in the SAME unit
+> under a quality-non-degradation constraint, where the net is the saving
+> minus the candidate's own predicted maintenance cost);
+> `accept-capability` runs the EXISTING operation on the prediction's OWN
+> frozen scope and REFUSES any operation type this build cannot carry out;
+> `bind-capability` records the maintenance FACT; `evaluate-capability`
+> judges the EFFECT against real later-task results or a paired reference.
+> See [references/commands.md](commands.md).
 
 ## 10. Verification checklist for a consuming agent
 
@@ -334,9 +353,10 @@ action vocabulary (the six action types stay), reviving the retired
       do not read the object as a forecast. Check `prediction_made` and
       `provider_configured` separately: a configured provider is not a
       prediction.
-- [ ] Is `service_available` true for `capability_evolution`? It should not
-      be — this build implements no capability-evolution service, and a
-      configured provider must not make it look available.
+- [ ] Is `service_available` true for `capability_evolution`? That means
+      the service is implemented AND a provider is configured — but NOT
+      that a forecast exists. Check `prediction_made` for that, and never
+      read a knowledge entry as a capability gain.
 - [ ] Is `benefit.value` present? Then a `baseline` must be present too.
 - [ ] Is `scope="strategy_window"`? Then check `trace.comparable` — if it
       is `False`, the prediction may not be scored. Also confirm the window

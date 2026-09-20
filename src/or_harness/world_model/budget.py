@@ -172,6 +172,18 @@ class BudgetLedger:
                 "WHERE task_id=?", (task_id,)).fetchall()
         except Exception:
             contract_rows = []
+        # M5 capability-evolution calls are REAL spend too: the same provider
+        # is invoked and the same tokens are burned, so leaving them out of
+        # the ledger would report a budget "ok" while the calls kept
+        # spending. They live in their OWN table (deliberately, so the two
+        # generations never mis-deserialize), which is exactly why the
+        # ledger must read it explicitly.
+        try:
+            capability_rows = self.store.conn.execute(
+                "SELECT payload FROM capability_predictions "
+                "WHERE task_id=?", (task_id,)).fetchall()
+        except Exception:
+            capability_rows = []
         for row in pred_rows:
             from or_harness.world_model.prediction import \
                 OutcomePrediction
@@ -198,6 +210,26 @@ class BudgetLedger:
             self._add_prediction_cost(
                 pred.prediction_id, pred.trace.call_cost,
                 pred.candidate.episode_id,
+                (pred.trace.model_info or {}).get(
+                    "charged_to_parent_action"),
+                episode_id, total, n_measured, prediction_costs,
+                unattributed_prediction_costs)
+        for row in capability_rows:
+            from or_harness.world_model.contracts import (
+                CapabilityEvolutionPrediction,
+            )
+            try:
+                pred = CapabilityEvolutionPrediction.from_dict(
+                    self.store.loads(row["payload"]))
+            except Exception:
+                continue
+            # A capability prediction has no episode of its own (it is an
+            # OFFLINE maintenance call, not a task attempt), so it is
+            # reported as unattributed when an episode budget is being
+            # judged rather than silently charged to it.
+            self._add_prediction_cost(
+                pred.prediction_id, pred.trace.call_cost,
+                None,
                 (pred.trace.model_info or {}).get(
                     "charged_to_parent_action"),
                 episode_id, total, n_measured, prediction_costs,

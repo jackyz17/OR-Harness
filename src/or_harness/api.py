@@ -144,6 +144,11 @@ from or_harness.world_model.state import (
 #: width (relative slack keeps wide honest intervals meaningful).
 PREDICTION_HIT_SLACK = 0.15
 
+#: The learning-operation types this build can really CARRY OUT through an
+#: existing path. A candidate of another type may be predicted, compared and
+#: deferred, but accepting it must NOT quietly run a different operation:
+#: the binding would then attest to an operation that never happened.
+CAPABILITY_EXECUTABLE_OPERATIONS = ("induce", "revise", "retire")
 #: M6 experiment modes (see ORHarness.__init__).
 PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
 
@@ -1749,6 +1754,8 @@ class ORHarness:
             experience_scope: Optional[ExperienceScope] = None,
             task_targeting: Optional[TaskTargeting] = None,
             baseline: Optional[BaselineStatement] = None,
+            baselines_by_metric: Optional[Dict[str, BaselineStatement]] =
+            None,
             horizon: str = "",
             horizon_tasks: Optional[int] = None,
             maintenance_budget: Optional[Dict[str, float]] = None,
@@ -1789,10 +1796,31 @@ class ORHarness:
             task_targeting = self._targeting_from_bundle(bundle)
         if baseline is None and bundle is not None:
             baseline = self._baseline_from_bundle(bundle)
+        # The per-metric references the framework FREEZES: a change is only
+        # measurable against a yardstick taken on ITS OWN metric, so the
+        # bundle's frozen statistics are published keyed by metric. The
+        # model may cite one of these; it may not set its own.
+        baselines_by_metric = dict(baselines_by_metric or {})
+        if not baselines_by_metric:
+            if bundle is not None:
+                baselines_by_metric = self._baselines_from_bundle(bundle)
+            elif baseline is not None:
+                metric = baseline.metric or "normalized_solution_quality"
+                baselines_by_metric = {metric: baseline}
+        if baseline is None and baselines_by_metric:
+            baseline = next(iter(baselines_by_metric.values()))
         if not horizon:
             horizon = ("the next matching tasks after the operation, over "
                        "the declared evaluation horizon")
-        evidence = self.capability_evidence(task, snapshot=snapshot)
+        # The evidence a capability prediction conditions on INCLUDES the
+        # VERIFIED effects of earlier offline operations. Using the bare
+        # evidence here would leave the loop open: an operation whose effect
+        # was really confirmed on later tasks would never reach the next
+        # prediction, so the framework would keep re-deciding from the same
+        # starting point. Unverified, pending and refuted evaluations change
+        # nothing — only a real later-task observation does.
+        evidence = self.capability_evidence_with_effects(
+            task=task, snapshot=snapshot)
         # The evidence VERSION is what makes two predictions' shared input
         # checkable: it is a digest of the evidence CONTENT (not a
         # timestamp), so two predictions made on the same evidence really
@@ -1805,6 +1833,7 @@ class ORHarness:
         prediction = service.predict(
             evidence, operation, experience_scope=experience_scope,
             task_targeting=task_targeting, baseline=baseline,
+            baselines_by_metric=baselines_by_metric,
             horizon=horizon, horizon_tasks=horizon_tasks,
             learning_material=material,
             maintenance_budget=maintenance_budget, timeout_s=timeout_s,
@@ -1879,10 +1908,55 @@ class ORHarness:
             value=(float(value) if value is not None else None),
             ref=EvidenceRef(ref_type="candidate_bundle",
                             ref_id=str(bundle.get("bundle_id", ""))),
+            metric="normalized_solution_quality",
             note=("the bundle's frozen mean quality over its supporting "
                   "executions: the reference the predicted change is "
                   "measured against, frozen before the operation runs"),
         )
+
+    @classmethod
+    def _baselines_from_bundle(cls, bundle: Dict[str, Any]
+                               ) -> Dict[str, BaselineStatement]:
+        """The per-metric frozen references a candidate bundle supplies.
+
+        A reference is only meaningful for the metric it was taken on: the
+        bundle's mean quality says nothing about solver seconds, and a
+        per-dimension cost means nothing for a quality change. Keying them
+        by metric is what stops one metric's yardstick from being silently
+        applied to another.
+        """
+        out: Dict[str, BaselineStatement] = {}
+        quality = cls._baseline_from_bundle(bundle)
+        if quality.value is not None:
+            out["normalized_solution_quality"] = quality
+        mean_cost = bundle.get("mean_cost") or {}
+        for dim, value in mean_cost.items():
+            if value is None:
+                continue
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                continue
+            out[cls._metric_for_cost_dim(dim)] = BaselineStatement(
+                kind="conditional_stats",
+                value=numeric,
+                ref=EvidenceRef(ref_type="candidate_bundle",
+                                ref_id=str(bundle.get("bundle_id", ""))),
+                metric=cls._metric_for_cost_dim(dim),
+                unit=(str(dim) if str(dim).endswith("_s") else str(dim)),
+                note=(f"the bundle's frozen mean {dim} over its supporting "
+                      "executions: frozen before the operation runs"))
+        return out
+
+    @staticmethod
+    def _metric_for_cost_dim(dim: str) -> str:
+        """The observable metric a cost dimension's reference belongs to.
+
+        A cost reference is a reference for the RESOURCE-COST metric; the
+        dimension and its unit are carried alongside so a comparison never
+        adds seconds to tokens.
+        """
+        return "resource_cost"
 
     def get_capability_evolution_prediction(
             self, prediction_id: str
@@ -2030,6 +2104,22 @@ class ORHarness:
         if prediction is None:
             raise StorageError(
                 f"unknown capability prediction {target_id!r}")
+        operation_type = prediction.candidate_operation.operation_type
+        # The operation TYPE decides what really runs. Only the types this
+        # build can carry out through an existing path are dispatched;
+        # anything else is REFUSED outright, because silently running
+        # ``induce`` for a ``retire`` candidate would execute an operation
+        # the prediction was never about — the worst kind of substitution,
+        # since it looks like the recommendation was honoured.
+        if operation_type not in CAPABILITY_EXECUTABLE_OPERATIONS:
+            raise ValueError(
+                f"operation_type {operation_type!r} has no execution path in "
+                f"this build (supported: "
+                f"{sorted(CAPABILITY_EXECUTABLE_OPERATIONS)}). The "
+                "recommendation is NOT executed as a different operation: "
+                "predicting an operation the framework cannot carry out and "
+                "then doing something else would make the binding "
+                "meaningless")
         scope = prediction.experience_scope
         execution_ids = list(scope.execution_ids) if scope is not None else []
         if not execution_ids:
@@ -2039,49 +2129,85 @@ class ORHarness:
                 "widening it silently would make the prediction answer a "
                 "different question")
         strategy_id = prediction.candidate_operation.strategy_id
+        if operation_type == "retire":
+            entry_id = self._retire_target_entry(prediction)
+            if entry_id is None:
+                raise ValueError(
+                    "a 'retire' operation needs a target entry: the "
+                    "prediction names none, so there is nothing to retire "
+                    "and the operation is refused rather than reinterpreted")
+        else:
+            entry_id = None
         adoption = self.actions.report_action(
             "induce", MAINTENANCE_TASK_ID,
             f"maint_capability_{int(time.time())}",
             params={
                 "capability_prediction_id": target_id,
                 "recommendation_id": recommendation.get("recommendation_id"),
-                "operation_type":
-                    prediction.candidate_operation.operation_type,
+                "operation_type": operation_type,
                 "strategy_id": strategy_id,
                 "execution_ids": execution_ids,
+                "target_entry_id": entry_id,
                 "action": "accepted",
             },
             outcome={"accepted": True, "capability_prediction_id": target_id},
             status="completed")
         try:
-            result = self.induce(strategy_id=strategy_id, verify=verify,
-                                 notes=notes, force=force,
-                                 execution_ids=execution_ids)
+            if operation_type == "retire":
+                result = self.retire(entry_id, reason=(
+                    prediction.candidate_operation.description
+                    or "an accepted offline maintenance recommendation"))
+                result = {"business_result": "retired",
+                          "entry_id": entry_id,
+                          "knowledge_delta": {
+                              "entry_changes": [],
+                              "entries_created": [],
+                              "entries_retired": [entry_id],
+                          },
+                          "execution_ids": execution_ids}
+            else:
+                result = self.induce(strategy_id=strategy_id, verify=verify,
+                                     notes=notes, force=force,
+                                     execution_ids=execution_ids)
         except Exception:
             self.actions.end_action(
                 adoption.action_id, status="failed",
                 outcome={"accepted": True,
                          "capability_prediction_id": target_id,
-                         "error": "the induction raised"})
+                         "operation_type": operation_type,
+                         "error": "the operation raised"})
             raise
         # The knowledge transition travels in several shapes (the induce
         # result's flat keys, the action summary nested under ``action``, or
         # that action's outcome). ``_induction_transition`` is the ONE
         # locator for it, so the binding reads the same delta the rest of
-        # the harness does rather than a key that may not be there.
-        transition = self._induction_transition(result)
+        # the harness does rather than a key that may not be there. A
+        # retirement has its own shape: it removes an entry rather than
+        # creating or revising one, and it is recorded as such.
+        if operation_type == "retire":
+            knowledge_delta = {
+                "entry_changes": [],
+                "entries_created": [],
+                "entries_retired": [entry_id],
+            }
+            knowledge_after: List[Any] = []
+        else:
+            transition = self._induction_transition(result)
+            knowledge_delta = {
+                "entry_changes": transition["entry_changes"],
+                "entries_created": transition["created"],
+            }
+            knowledge_after = transition["knowledge_after"]
         adoption.outcome = {
             "accepted": True,
             "capability_prediction_id": target_id,
+            "operation_type": operation_type,
             "operation_action_id": (result.get("action") or {}).get(
                 "action_id"),
             "operation_result": {
                 "business_result": result.get("business_result"),
-                "knowledge_delta": {
-                    "entry_changes": transition["entry_changes"],
-                    "entries_created": transition["created"],
-                },
-                "knowledge_after": transition["knowledge_after"],
+                "knowledge_delta": knowledge_delta,
+                "knowledge_after": knowledge_after,
                 "execution_ids": execution_ids,
                 "verification": result.get("verification"),
             },
@@ -2091,6 +2217,7 @@ class ORHarness:
             "adoption_action_id": adoption.action_id,
             "capability_prediction_id": target_id,
             "accepted": True,
+            "operation_type": operation_type,
             "execution_ids": execution_ids,
             "operation_result": result,
             "note": ("the operation ran on the prediction's OWN scope; bind "
@@ -2098,6 +2225,27 @@ class ORHarness:
                      "remember the capability effect is still unverified "
                      "until qualified later tasks produce real results"),
         }
+
+    def _retire_target_entry(self, prediction: Any) -> Optional[str]:
+        """The entry a ``retire`` prediction is about, when it names one.
+
+        The target comes from the operation's own declaration (its
+        ``config``/``scope``) — never from re-reading the current bank for
+        a plausible victim. An unnamed target means the operation cannot be
+        carried out, which is reported rather than guessed.
+        """
+        operation = prediction.candidate_operation
+        config = operation.config or {}
+        for key in ("target_entry_id", "entry_id"):
+            value = config.get(key)
+            if value:
+                return str(value)
+        scope = operation.scope or prediction.experience_scope
+        if scope is not None and scope.note:
+            marker = "entry:"
+            if marker in scope.note:
+                return scope.note.split(marker, 1)[1].strip() or None
+        return None
 
     def reject_capability_operation(
             self, recommendation: Dict[str, Any], *,

@@ -777,12 +777,25 @@ class BaselineStatement:
     A predicted improvement with no baseline is not a prediction — it is an
     advertisement. ``kind`` names how the baseline was established and
     ``ref`` points at it when one exists.
+
+    ``metric`` names WHICH metric the reference describes. It matters
+    because a reference is only meaningful for the metric it was taken on:
+    a mean quality of 0.72 says nothing about solver seconds, and silently
+    reusing it for a cost change would compare two different quantities.
+    The FRAMEWORK freezes a baseline per metric; a model may cite one, never
+    set one.
     """
 
     kind: str = "unknown"
     value: Optional[float] = None
     ref: Optional[EvidenceRef] = None
     note: Optional[str] = None
+    #: The metric this reference was taken on (e.g.
+    #: ``normalized_solution_quality``, ``resource_cost``). ``None`` means
+    #: the statement did not say, which is a weaker claim than naming one.
+    metric: Optional[str] = None
+    #: The unit the reference value is expressed in, when it has one.
+    unit: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.kind not in BASELINE_KINDS:
@@ -794,6 +807,8 @@ class BaselineStatement:
             "value": self.value,
             "ref": (self.ref.to_dict() if self.ref is not None else None),
             "note": self.note,
+            "metric": self.metric,
+            "unit": self.unit,
         }
 
     @classmethod
@@ -807,6 +822,8 @@ class BaselineStatement:
             ref=(EvidenceRef.from_dict(raw_ref)
                  if isinstance(raw_ref, dict) else None),
             note=(str(data["note"]) if data.get("note") else None),
+            metric=(str(data["metric"]) if data.get("metric") else None),
+            unit=(str(data["unit"]) if data.get("unit") else None),
         )
 
 
@@ -1536,6 +1553,14 @@ class CapabilityEvolutionPrediction:
     uncertainty: Optional[UncertaintyStatement] = None
     verification_conditions: List[VerificationCondition] = field(
         default_factory=list)
+    #: The FRAMEWORK-FROZEN baselines, keyed by the metric they were taken
+    #: on. A model may CITE one of these for a change; it may not invent a
+    #: reference of its own, because a baseline the model chose after seeing
+    #: the evidence is not a baseline. ``baseline`` is the prediction-level
+    #: reference (the primary metric); this map carries the per-metric
+    #: references a comparison or an evaluation must use.
+    baselines_by_metric: Dict[str, BaselineStatement] = field(
+        default_factory=dict)
     trace: Optional[PredictionTrace] = None
     service_available: bool = False
     #: A provider object is attached (weaker than ``service_available``).
@@ -1567,6 +1592,25 @@ class CapabilityEvolutionPrediction:
         """
         return self.status == "valid" and bool(self.expected_changes)
 
+    def frozen_baseline_for(self, metric: str) -> Optional[BaselineStatement]:
+        """The FRAMEWORK-frozen baseline for one metric, or None.
+
+        Resolution order: the per-metric map first (it is the precise
+        statement), then the prediction-level baseline when it declares the
+        SAME metric. A baseline that does not name the metric is never
+        handed to a different metric: a quality reference says nothing
+        about seconds.
+        """
+        name = str(metric or "")
+        direct = self.baselines_by_metric.get(name)
+        if direct is not None:
+            return direct
+        if self.baseline is not None:
+            declared = self.baseline.metric
+            if declared is None or declared == name:
+                return self.baseline
+        return None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "contract_version": self.contract_version,
@@ -1586,6 +1630,8 @@ class CapabilityEvolutionPrediction:
                                if self.task_targeting is not None else None),
             "baseline": (self.baseline.to_dict()
                          if self.baseline is not None else None),
+            "baselines_by_metric": {
+                k: v.to_dict() for k, v in self.baselines_by_metric.items()},
             "horizon": self.horizon,
             "horizon_tasks": self.horizon_tasks,
             "expected_changes": [c.to_dict() for c in self.expected_changes],
@@ -1654,6 +1700,10 @@ class CapabilityEvolutionPrediction:
                                      for v in
                                      (data.get("verification_conditions")
                                       or [])],
+            baselines_by_metric={
+                str(k): BaselineStatement.from_dict(v)
+                for k, v in (data.get("baselines_by_metric") or {}).items()
+                if isinstance(v, dict)},
             trace=PredictionTrace.from_dict(data.get("trace") or {}),
             service_available=bool(data.get("service_available", False)),
             provider_configured=bool(data.get("provider_configured", False)),
@@ -1876,6 +1926,29 @@ def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
                 f"expected_changes[{index}]: a value requires a baseline "
                 "(its own or the prediction's): a change with nothing to "
                 "measure it against is not falsifiable")
+        # The baseline belongs to the FRAMEWORK. A change that carries its
+        # own reference must be citing one the framework froze for THAT
+        # metric: a model-chosen reference (or one frozen for a different
+        # metric) is a value the prediction can move after seeing the
+        # evidence, which makes the claim unfalsifiable.
+        if change.baseline is not None:
+            frozen = prediction.frozen_baseline_for(change.metric)
+            if frozen is None:
+                problems.append(
+                    f"expected_changes[{index}]: the change declares its own "
+                    f"baseline for metric {change.metric!r}, but the "
+                    "framework froze none for that metric — a model may "
+                    "CITE a frozen baseline, never set one")
+            elif (change.baseline.value is not None
+                  and frozen.value is not None
+                  and abs(float(change.baseline.value)
+                          - float(frozen.value)) > 1e-9):
+                problems.append(
+                    f"expected_changes[{index}]: the change's baseline "
+                    f"({change.baseline.value}) does not match the "
+                    f"framework-frozen reference for {change.metric!r} "
+                    f"({frozen.value}): a baseline is fixed before the "
+                    "operation runs and is not the model's to restate")
         if change.value_kind == "relative" and change.value is not None \
                 and not -1.0 <= float(change.value) <= 1.0:
             problems.append(

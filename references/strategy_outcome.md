@@ -210,7 +210,11 @@ or knowledge induction.
 - Old `OutcomePrediction` records remain readable; the new predictions live
   in their own `contract_predictions` log table (created idempotently, no
   schema-version move).
-- The `capability_evolution` kind still has a contract and NO service.
+- The `capability_evolution` kind has its own contract AND service (M5,
+  `wm-ce/1`): `predict-capability` / `compare-capability` /
+  `accept-capability` / `bind-capability` / `evaluate-capability`. Its
+  records live in a SEPARATE table, so neither generation is ever read as
+  the other.
 - `HttpChatProvider` selects the system prompt by the REQUEST's protocol:
   a `wm-so/1` request gets the strategy-outcome prompt; everything else
   keeps the legacy prompts. The wire format stays the OpenAI chat shape.
