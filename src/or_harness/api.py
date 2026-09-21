@@ -1924,6 +1924,14 @@ class ORHarness:
         per-dimension cost means nothing for a quality change. Keying them
         by metric is what stops one metric's yardstick from being silently
         applied to another.
+
+        Cost references are keyed by the SPECIFIC DIMENSION
+        (``cost:solver_runtime_s``, ``cost:llm_tokens``), not by the generic
+        ``resource_cost`` metric: several cost dimensions share that metric
+        name, and collapsing them onto one key would let whichever
+        dimension happened to be written last become the reference for all
+        of them — a 20% runtime saving would then be computed against a
+        token count.
         """
         out: Dict[str, BaselineStatement] = {}
         quality = cls._baseline_from_bundle(bundle)
@@ -1937,26 +1945,34 @@ class ORHarness:
                 numeric = float(value)
             except (TypeError, ValueError):
                 continue
-            out[cls._metric_for_cost_dim(dim)] = BaselineStatement(
+            unit = cls._unit_for_cost_dim(dim)
+            out[cls.baseline_key_for_cost_dim(dim)] = BaselineStatement(
                 kind="conditional_stats",
                 value=numeric,
                 ref=EvidenceRef(ref_type="candidate_bundle",
                                 ref_id=str(bundle.get("bundle_id", ""))),
-                metric=cls._metric_for_cost_dim(dim),
-                unit=(str(dim) if str(dim).endswith("_s") else str(dim)),
+                metric="resource_cost",
+                unit=unit,
                 note=(f"the bundle's frozen mean {dim} over its supporting "
                       "executions: frozen before the operation runs"))
         return out
 
     @staticmethod
-    def _metric_for_cost_dim(dim: str) -> str:
-        """The observable metric a cost dimension's reference belongs to.
+    def baseline_key_for_cost_dim(dim: str) -> str:
+        """The key a cost dimension's frozen reference is stored under.
 
-        A cost reference is a reference for the RESOURCE-COST metric; the
-        dimension and its unit are carried alongside so a comparison never
-        adds seconds to tokens.
+        A dimension-qualified key, because the generic ``resource_cost``
+        metric covers several dimensions whose units do not convert.
         """
-        return "resource_cost"
+        return f"cost:{dim}"
+
+    @staticmethod
+    def _unit_for_cost_dim(dim: str) -> str:
+        """The unit a cost dimension's reference is expressed in."""
+        from or_harness.world_model.maintenance_decision import (
+            COST_DIMENSION_UNITS,
+        )
+        return COST_DIMENSION_UNITS.get(str(dim), str(dim))
 
     def get_capability_evolution_prediction(
             self, prediction_id: str

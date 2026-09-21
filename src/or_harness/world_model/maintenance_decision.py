@@ -265,16 +265,29 @@ def _cost_saving(prediction: CapabilityEvolutionPrediction,
             }
         magnitude = abs(float(change.value))
         per_task = magnitude
+        base_source = None
         if change.value_kind == "relative":
             # A relative saving needs an ABSOLUTE value in the SAME metric
-            # to become a per-task number. The prediction-level baseline
-            # usually describes the QUALITY metric, so it must not be used
-            # to convert a COST ratio — only the change's OWN baseline
-            # counts.
+            # AND the SAME dimension to become a per-task number. The
+            # prediction-level baseline usually describes the QUALITY
+            # metric, and a token count is not a runtime — only a reference
+            # taken on this change's own unit may convert the ratio.
             base_value = None
+            base_source = None
             if change.baseline is not None \
                     and change.baseline.value is not None:
                 base_value = float(change.baseline.value)
+                base_source = "the change's own frozen reference"
+            else:
+                unit = _normalize_unit(change.unit)
+                frozen = prediction.frozen_baseline_for(
+                    change.metric, unit=unit)
+                if frozen is not None and frozen.value is not None \
+                        and (unit is None
+                             or _normalize_unit(frozen.unit) == unit):
+                    base_value = float(frozen.value)
+                    base_source = (f"the framework-frozen reference for "
+                                   f"unit {unit!r}")
             if base_value is None:
                 return {
                     "kind": "relative",
@@ -282,8 +295,9 @@ def _cost_saving(prediction: CapabilityEvolutionPrediction,
                     "unit": change.unit,
                     "per_task_ratio": round(per_task, 6),
                     "note": ("a relative saving with no absolute baseline "
-                             "value for ITS OWN metric: reported as a "
-                             "ratio, never converted into a unit count"),
+                             "value for ITS OWN metric and unit: reported "
+                             "as a ratio, never converted into a unit "
+                             "count"),
                 }
             per_task = magnitude * base_value
         entry: Dict[str, Any] = {
@@ -293,6 +307,8 @@ def _cost_saving(prediction: CapabilityEvolutionPrediction,
             "per_task": round(per_task, 6),
             "value_kind": change.value_kind,
         }
+        if base_source is not None:
+            entry["converted_from"] = base_source
         if horizon_tasks is not None:
             entry["horizon_tasks"] = int(horizon_tasks)
             entry["total"] = round(per_task * int(horizon_tasks), 6)
@@ -415,15 +431,16 @@ def compare_capability_predictions(
     """
     result = MaintenanceRecommendation()
     result.rule = {
-        "name": "largest_net_saving_under_quality_constraint",
+        "name": "largest_net_saving_over_the_declared_window",
         "description": (
             "among candidates that predict a quantified resource saving over "
             "the declared horizon and do NOT predict a quality degradation, "
-            "compare each candidate's saving against ITS OWN predicted "
-            "learning cost IN THE SAME UNIT, and recommend the largest net "
-            "saving; a candidate whose saving and learning cost are in "
-            "different units, or whose net saving is not positive, is "
-            "reported rather than ranked"),
+            "compare each candidate's CUMULATIVE saving over that window "
+            "against its own one-time predicted maintenance cost IN THE SAME "
+            "UNIT, and recommend the largest net saving; a candidate whose "
+            "saving and learning cost are in different units, whose window "
+            "is undeclared, or whose net saving is not positive is reported "
+            "rather than ranked"),
         "quality_constraint_applied": bool(require_quality_nondegradation),
         "horizon_tasks": horizon_tasks,
         "no_universal_score": True,
@@ -507,33 +524,64 @@ def compare_capability_predictions(
                 "another unit is not a bigger saving")
             incomparable.append(entry)
             continue
+        # The maintenance cost is paid ONCE; the saving accrues per task.
+        # The decision therefore compares the CUMULATIVE saving over the
+        # declared observation window against that single up-front cost.
+        # Netting the one-time cost against a single task's saving would
+        # reject an operation that pays for itself several times over.
+        effective_horizon = (horizon_tasks
+                             if horizon_tasks is not None
+                             else prediction.horizon_tasks)
+        if effective_horizon is None or int(effective_horizon) <= 0:
+            entry["reason"] = (
+                "no observation window was declared, so the one-time "
+                "maintenance cost cannot be amortized: a per-task saving "
+                "cannot be compared against a cost paid once, and "
+                "extrapolating an undeclared horizon would invent the "
+                "future")
+            entry["net_saving"] = {
+                "per_task": saving["per_task"],
+                "unit": saving_unit,
+                "maintenance_cost": net["total_in_unit"],
+                "net_per_task": round(saving["per_task"]
+                                      - net["total_in_unit"], 6),
+                "net_over_horizon": None,
+                "maintenance_cost_dims": net["per_dim"],
+                "note": ("no horizon was declared: the per-task figure is "
+                         "reported, but the one-time cost is never netted "
+                         "against a single task"),
+            }
+            incomparable.append(entry)
+            continue
+        cumulative = saving["per_task"] * int(effective_horizon)
+        net_over_horizon = cumulative - net["total_in_unit"]
         entry["net_saving"] = {
             "per_task": saving["per_task"],
             "unit": saving_unit,
+            "horizon_tasks": int(effective_horizon),
+            "cumulative_saving": round(cumulative, 6),
             "maintenance_cost": net["total_in_unit"],
             "net_per_task": round(saving["per_task"]
                                   - net["total_in_unit"], 6),
-            "net_over_horizon": (
-                round((saving["per_task"] * int(horizon_tasks))
-                      - net["total_in_unit"], 6)
-                if horizon_tasks is not None else None),
+            "net_over_horizon": round(net_over_horizon, 6),
             "maintenance_cost_dims": net["per_dim"],
             "other_cost_dims": {
                 dim: value for dim, value
                 in net["all_predicted_dims"].items()
                 if dim not in net["per_dim"]},
-            "note": ("the per-task saving minus the WHOLE predicted "
-                     "maintenance cost, in the saving's own unit; learning "
-                     "costs in another currency are reported but not "
-                     "subtracted"),
+            "note": ("the CUMULATIVE saving over the declared window minus "
+                     "the one-time predicted maintenance cost, in the "
+                     "saving's own unit; learning costs in another currency "
+                     "are reported but not subtracted"),
         }
-        if entry["net_saving"]["net_per_task"] <= 0:
+        if net_over_horizon <= 0:
             entry["reason"] = (
-                f"the predicted maintenance cost "
-                f"({net['total_in_unit']} {saving_unit}) is at least the "
-                f"predicted saving ({saving['per_task']} {saving_unit}): "
-                "an operation that costs more than it saves is not a "
-                "recommendation, whatever the gross saving looks like")
+                f"the cumulative saving over {int(effective_horizon)} "
+                f"task(s) ({round(cumulative, 6)} {saving_unit}) does not "
+                f"exceed the one-time predicted maintenance cost "
+                f"({net['total_in_unit']} {saving_unit}): an operation that "
+                "does not pay for itself within the declared window is not "
+                "a recommendation")
             incomparable.append(entry)
             continue
         comparable.append(entry)
@@ -544,11 +592,12 @@ def compare_capability_predictions(
         result.recommendation = (
             "insufficient_evidence" if not predictions else "defer")
         result.basis = (
-            "no candidate predicts a quantified, quality-safe resource "
-            "saving that exceeds its own predicted maintenance cost in the "
-            "same unit: deferring is the honest result — no operation is "
-            "recommended on incomparable, unquantified or loss-making "
-            "predictions")
+            "no candidate predicts a cumulative, quality-safe resource "
+            "saving that exceeds its own one-time predicted maintenance "
+            "cost in the same unit over the declared window: deferring is "
+            "the honest result — no operation is recommended on "
+            "incomparable, unquantified, undeclared-horizon or "
+            "loss-making predictions")
         result.notes.append(
             "defer is a legitimate decision outcome, not a failure: it is "
             "not a Harness action and it changes no knowledge")
@@ -585,19 +634,19 @@ def compare_capability_predictions(
             "rule refuses to do")
         return result
 
-    best = max(comparable, key=lambda e: (e["net_saving"]["net_per_task"],
+    best = max(comparable, key=lambda e: (e["net_saving"]["net_over_horizon"],
                                           e["prediction_id"]))
     result.recommendation = "accept"
     result.selected_prediction_id = best["prediction_id"]
     result.selected_operation_type = best["operation_type"]
     result.basis = (
-        f"the largest net per-task saving "
-        f"({best['net_saving']['net_per_task']} "
-        f"{best['net_saving']['unit'] or ''} after "
-        f"{best['net_saving']['maintenance_cost']} of predicted maintenance "
-        f"cost, over "
-        f"{horizon_tasks if horizon_tasks is not None else 'an undeclared '
-        'number of'} tasks) with no predicted quality degradation")
+        f"the largest NET saving over the declared window "
+        f"({best['net_saving']['net_over_horizon']} "
+        f"{best['net_saving']['unit'] or ''}: "
+        f"{best['net_saving']['cumulative_saving']} saved over "
+        f"{best['net_saving']['horizon_tasks']} task(s) minus "
+        f"{best['net_saving']['maintenance_cost']} of one-time predicted "
+        "maintenance cost) with no predicted quality degradation")
     result.notes.append(
         "a recommendation is NOT an execution: the outer agent must "
         "explicitly accept it, and only acceptance runs the real operation")
@@ -645,6 +694,16 @@ class MaintenanceFactBinding:
     verification: Dict[str, Any] = field(default_factory=dict)
     #: Whether the operation changed anything at all.
     changed: bool = False
+    #: The knowledge entries the operation CREATED / UPDATED / RETIRED, as
+    #: recorded by the operation itself. A later task only validates the
+    #: operation if the knowledge it was conditioned on reflects this
+    #: change: a solve that ran before the operation cannot have used an
+    #: entry the operation created, however late its episode was closed.
+    created_entry_ids: List[str] = field(default_factory=list)
+    updated_entry_ids: List[str] = field(default_factory=list)
+    retired_entry_ids: List[str] = field(default_factory=list)
+    #: The operation's own end time, when the action log knows it.
+    operation_ended_at: Optional[float] = None
     #: Stage marker: this is a FACT binding, never an effect verdict.
     stage: str = "maintenance_fact"
     notes: List[str] = field(default_factory=list)
@@ -666,6 +725,10 @@ class MaintenanceFactBinding:
             "real_cost": copy.deepcopy(self.real_cost),
             "verification": copy.deepcopy(self.verification),
             "changed": bool(self.changed),
+            "created_entry_ids": list(self.created_entry_ids),
+            "updated_entry_ids": list(self.updated_entry_ids),
+            "retired_entry_ids": list(self.retired_entry_ids),
+            "operation_ended_at": self.operation_ended_at,
             "stage": self.stage,
             "notes": list(self.notes),
         }
@@ -691,6 +754,15 @@ class MaintenanceFactBinding:
             real_cost=copy.deepcopy(data.get("real_cost")),
             verification=copy.deepcopy(dict(data.get("verification") or {})),
             changed=bool(data.get("changed", False)),
+            created_entry_ids=[str(e) for e in
+                               (data.get("created_entry_ids") or [])],
+            updated_entry_ids=[str(e) for e in
+                               (data.get("updated_entry_ids") or [])],
+            retired_entry_ids=[str(e) for e in
+                               (data.get("retired_entry_ids") or [])],
+            operation_ended_at=(float(data["operation_ended_at"])
+                                if data.get("operation_ended_at")
+                                is not None else None),
             stage=str(data.get("stage", "maintenance_fact")),
             notes=[str(n) for n in (data.get("notes") or [])],
         )
@@ -755,7 +827,8 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
                                      or [])]
     binding.changed = bool(delta.get("entries_created")
                            or delta.get("entries_updated")
-                           or delta.get("entry_changes"))
+                           or delta.get("entry_changes")
+                           or delta.get("entries_retired"))
 
     # Scope consistency: the operation must have used exactly the scope the
     # prediction was made about. A widened scope means the prediction was
@@ -809,16 +882,54 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
                  "verdict: a VERIFIED ENTRY is a knowledge change, not a "
                  "capability improvement"),
     }
+    # The knowledge the operation LEFT BEHIND, named by ENTRY identity, and
+    # when it ended. Both are needed to tell whether a later task really ran
+    # under the change: a task solved earlier used the earlier knowledge,
+    # however late its episode was closed. Entry identity is used rather
+    # than a bank-wide digest because a solve is conditioned on the
+    # entries of ITS OWN cell, so a whole-bank digest would differ for
+    # reasons that have nothing to do with this operation.
+    binding.created_entry_ids = _entry_ids(delta.get("entries_created"))
+    binding.updated_entry_ids = _entry_ids(delta.get("entry_changes"))
+    binding.retired_entry_ids = _entry_ids(delta.get("entries_retired"))
+    if binding.operation_action_id:
+        action = harness.actions.get(binding.operation_action_id)
+        if action is not None and action.ended_at is not None:
+            binding.operation_ended_at = float(action.ended_at)
     binding.notes.append(
         "stage 1 of 2: this binding answers whether the operation happened "
         "and what it changed. It never sets effect_verified — that requires "
         "real later-task performance, which has not been observed yet")
     if not binding.changed:
         binding.notes.append(
-            "the operation produced NO knowledge change (no entry created "
-            "or updated): an operation with no change is a recorded outcome, "
-            "not a capability gain")
+            "the operation produced NO knowledge change (no entry created, "
+            "updated or retired): an operation with no change is a recorded "
+            "outcome, not a capability gain")
     return binding
+
+
+def _entry_ids(records: Any) -> List[str]:
+    """The entry ids a knowledge-delta block names, in either shape.
+
+    The delta carries ids as bare strings, as ``{entry_id: ...}`` mappings or
+    as ``{"after": {...}}`` change records depending on the operation; this
+    normalizes all three so the binding always names the entries it touched.
+    """
+    out: List[str] = []
+    for item in records or []:
+        if isinstance(item, str):
+            out.append(item)
+            continue
+        if not isinstance(item, dict):
+            continue
+        entry_id = item.get("entry_id")
+        if not entry_id and isinstance(item.get("after"), dict):
+            entry_id = item["after"].get("entry_id")
+        if not entry_id and isinstance(item.get("before"), dict):
+            entry_id = item["before"].get("entry_id")
+        if entry_id:
+            out.append(str(entry_id))
+    return sorted(set(out))
 
 
 # ---------------------------------------------------------------------------
@@ -968,16 +1079,22 @@ def evaluate_capability_effect(
     # validation sample: reusing the induction tasks checks consistency,
     # never transfer.
     #
-    # A task only counts as LATER when it really finished AFTER the
-    # operation ran, and it only counts as MATCHING when it falls inside
-    # the prediction's FROZEN targeting. A task that closed before the
-    # maintenance cannot be evidence about it, and a task of another family
-    # or structural cell cannot validate a claim about this population —
-    # admitting either would let the verdict rest on a sample the claim was
-    # never about.
+    # A task only counts as LATER when the WORK really ran AFTER the
+    # operation, and it only counts as MATCHING when it falls inside the
+    # prediction's FROZEN targeting. The test is the real SOLVE time and the
+    # knowledge the solve was conditioned on — NOT the close-out timestamp:
+    # a task solved before the maintenance and merely closed afterwards
+    # cannot have used what the maintenance produced, and using the close
+    # time would let bookkeeping alone manufacture a validation sample.
     induction_tasks = set(prediction.experience_scope.task_ids) \
         if prediction.experience_scope is not None else set()
     maintenance_at = _maintenance_started_at(harness, prediction_id, binding)
+    operation_ended_at = (binding.operation_ended_at
+                          if binding is not None else None)
+    produced_entry_ids = set()
+    if binding is not None:
+        produced_entry_ids = set(binding.created_entry_ids) \
+            | set(binding.updated_entry_ids)
     declared_horizon = prediction.horizon_tasks
     later: List[Any] = []
     excluded_not_later: List[Dict[str, Any]] = []
@@ -992,23 +1109,64 @@ def evaluate_capability_effect(
             continue
         closed_at = _episode_closed_at(harness, item.task_id,
                                        item.episode_id)
-        if maintenance_at is None or closed_at is None:
+        span = _episode_execution_span(harness, item.task_id,
+                                       item.episode_id)
+        ran_at = span.get("finished_at") or span.get("started_at")
+        if maintenance_at is None or ran_at is None:
             unverifiable.append({
                 "task_id": item.task_id,
                 "episode_id": item.episode_id,
-                "reason": ("the maintenance time or the episode's close time "
-                           "is unknown, so whether this task really ran "
-                           "AFTER the operation cannot be established"),
+                "reason": ("the maintenance time or the task's real "
+                           "execution time is unknown, so whether the work "
+                           "really ran AFTER the operation cannot be "
+                           "established (a close-out timestamp is "
+                           "bookkeeping, not evidence)"),
             })
             continue
-        if closed_at < maintenance_at:
+        if ran_at < maintenance_at:
             excluded_not_later.append({
                 "task_id": item.task_id,
                 "episode_id": item.episode_id,
+                "execution_finished_at": ran_at,
                 "closed_at": closed_at,
                 "maintenance_at": maintenance_at,
-                "reason": ("the episode closed BEFORE the offline operation "
-                           "ran: it cannot be evidence about the operation"),
+                "reason": ("the task was SOLVED before the offline operation "
+                           "ran (its close-out may be later, but the work "
+                           "cannot have used what the operation produced)"),
+            })
+            continue
+        # The knowledge the solve was conditioned on must REFLECT what the
+        # operation produced. A solve whose frozen view carries none of the
+        # entries the operation created or revised did not use the
+        # operation's output, whatever its timing — this catches a solve
+        # that was really run against the earlier knowledge and merely
+        # closed (or re-closed) later.
+        used_entries = set(span.get("knowledge_entry_ids") or [])
+        if produced_entry_ids and span.get("n_snapshots"):
+            missing = produced_entry_ids - used_entries
+            if missing:
+                excluded_not_later.append({
+                    "task_id": item.task_id,
+                    "episode_id": item.episode_id,
+                    "execution_finished_at": ran_at,
+                    "entries_used": sorted(used_entries),
+                    "entries_produced_by_operation":
+                        sorted(produced_entry_ids),
+                    "reason": ("the solve's frozen knowledge view does not "
+                               "carry the entry/entries the operation "
+                               f"produced ({sorted(missing)}): it was "
+                               "conditioned on the earlier knowledge and "
+                               "cannot be evidence about the change"),
+                })
+                continue
+        if operation_ended_at is not None and ran_at < operation_ended_at:
+            excluded_not_later.append({
+                "task_id": item.task_id,
+                "episode_id": item.episode_id,
+                "execution_finished_at": ran_at,
+                "operation_ended_at": operation_ended_at,
+                "reason": ("the solve finished before the operation's own "
+                           "action ended"),
             })
             continue
         profile = None
@@ -1034,27 +1192,56 @@ def evaluate_capability_effect(
     # tasks" is validated by at most N of them, and reaching the horizon is
     # what makes the evidence COMPLETE. Fewer than the declared count leaves
     # the evaluation pending rather than declared supported.
+    #
+    # The unit is the TASK-EPISODE, not the prediction record. One task that
+    # re-planned ten times produces ten bound predictions but ONE independent
+    # truth, so counting records would let a single execution satisfy a
+    # ten-task horizon — the same defect the calibration grouping already
+    # guards against. The deduplicated episodes are what the horizon counts
+    # and what the observed change is averaged over.
+    episodes: Dict[Tuple[str, str], List[Any]] = {}
+    for item in later:
+        key = (str(item.task_id or ""), str(item.episode_id or ""))
+        episodes.setdefault(key, []).append(item)
+    later = [records[0] for records in episodes.values()]
+    distinct_episodes = len(episodes)
     horizon_met = (declared_horizon is None
-                   or len(later) >= int(declared_horizon))
-    if declared_horizon is not None and len(later) > int(declared_horizon):
-        later = later[:int(declared_horizon)]
+                   or distinct_episodes >= int(declared_horizon))
+    if declared_horizon is not None \
+            and distinct_episodes > int(declared_horizon):
+        # Keep the earliest closed episodes: the horizon names the FIRST N
+        # matching tasks, so a later arrival cannot displace one that was
+        # already inside the window.
+        ordered = sorted(
+            episodes.items(),
+            key=lambda kv: (_episode_closed_at(harness, kv[0][0], kv[0][1])
+                            or float("inf"), kv[0][0], kv[0][1]))
+        later = [records[0] for _, records in
+                 ordered[:int(declared_horizon)]]
     evaluation.evidence = {
         "n_later_evaluations": len(later),
+        "n_later_records": sum(len(v) for v in episodes.values()),
         "task_ids": sorted({i.task_id for i in later}),
-        "distinct_episodes": len({(i.task_id, i.episode_id or "")
-                                  for i in later}),
+        "distinct_episodes": distinct_episodes,
+        "deduplicated_by": "(task_id, episode_id)",
         "induction_tasks_excluded": sorted(induction_tasks),
         "excluded_not_later": excluded_not_later,
         "excluded_off_target": excluded_off_target,
         "unverifiable_timing": unverifiable,
         "maintenance_started_at": maintenance_at,
+        "operation_ended_at": operation_ended_at,
+        "entries_produced_by_operation": sorted(produced_entry_ids),
         "horizon_tasks": declared_horizon,
         "horizon_met": horizon_met,
-        "note": ("only CLOSED episodes of tasks that finished AFTER the "
-                 "operation, fall inside the prediction's frozen targeting "
+        "note": ("only CLOSED episodes of tasks whose WORK really ran AFTER "
+                 "the operation, under the knowledge content the operation "
+                 "left behind, fall inside the prediction's frozen targeting "
                  "and are NOT part of its own experience scope participate: "
                  "reusing the induction tasks would check consistency, not "
-                 "transfer"),
+                 "transfer. The sample is counted in TASK-EPISODES, not "
+                 "prediction records, so re-planning one task many times "
+                 "cannot satisfy a multi-task horizon. A close-out "
+                 "timestamp alone is bookkeeping, never evidence"),
     }
     if not later:
         evaluation.state = "pending"
@@ -1066,10 +1253,10 @@ def evaluate_capability_effect(
     if not horizon_met:
         evaluation.state = "pending"
         evaluation.exclusion_reasons.append(
-            f"only {len(later)} of the declared {declared_horizon} matching "
-            "later task(s) have closed: the declared horizon is not "
-            "reached, so the evidence is INCOMPLETE and the evaluation "
-            "stays pending (it is re-evaluable, never frozen)")
+            f"only {distinct_episodes} of the declared {declared_horizon} "
+            "matching later task-episode(s) have closed: the declared "
+            "horizon is not reached, so the evidence is INCOMPLETE and the "
+            "evaluation stays pending (it is re-evaluable, never frozen)")
         evaluation.notes.append(
             "the horizon was declared BEFORE the operation ran: shortening "
             "it once results are visible would be reading the result "
@@ -1411,6 +1598,83 @@ def _episode_closed_at(harness, task_id: str,
     )
     record = episode_closeout_record(harness, task_id, episode_id)
     return float(record.created_at) if record is not None else None
+
+
+def _episode_execution_span(harness, task_id: str,
+                            episode_id: Optional[str]
+                            ) -> Dict[str, Any]:
+    """When the real SOLVE of one episode ran, and on what knowledge.
+
+    Closing an episode is bookkeeping; what matters for attribution is when
+    the work was actually DONE. A task whose solve finished before the
+    maintenance cannot have used knowledge the maintenance produced, however
+    late someone closed its episode. The span is read from the recorded
+    executions (their ``created_at``) and the pre-execution snapshot each
+    ``execute_strategy`` action froze — the snapshot is what the solve was
+    actually conditioned on, so the ENTRY IDS it carried are the knowledge
+    that solve used.
+    """
+    executions: List[Any] = []
+    try:
+        executions = list(harness.bank.query(task_id=task_id))
+    except Exception:
+        executions = []
+    if episode_id is not None:
+        scoped = [r for r in executions
+                  if _execution_episode(harness, r.execution_id)
+                  == episode_id]
+        if scoped:
+            executions = scoped
+    if not executions:
+        return {"started_at": None, "finished_at": None,
+                "knowledge_entry_ids": [], "n_executions": 0}
+    times = [float(r.created_at) for r in executions
+             if getattr(r, "created_at", None) is not None]
+    entry_ids: List[str] = []
+    snapshots_found = 0
+    for action in harness.actions.query(task_id=task_id,
+                                        episode_id=episode_id):
+        if action.action_type != "execute_strategy" \
+                or not action.pre_snapshot_id:
+            continue
+        snapshot = harness.get_snapshot(action.pre_snapshot_id)
+        if snapshot is None:
+            continue
+        snapshots_found += 1
+        entry_ids.extend(_snapshot_knowledge_entry_ids(snapshot))
+    return {
+        "started_at": (min(times) if times else None),
+        "finished_at": (max(times) if times else None),
+        "knowledge_entry_ids": sorted(set(entry_ids)),
+        "n_snapshots": snapshots_found,
+        "n_executions": len(executions),
+    }
+
+
+def _execution_episode(harness, execution_id: str) -> Optional[str]:
+    """The episode a recorded execution belongs to (via its action)."""
+    for action in harness.actions.query():
+        if action.action_type == "execute_strategy" \
+                and action.linked_execution_id == execution_id:
+            return action.episode_id
+    return None
+
+
+def _snapshot_knowledge_entry_ids(snapshot: Any) -> List[str]:
+    """The entry ids the frozen knowledge view of a snapshot carried.
+
+    The snapshot's ``harness_state.knowledge`` is the layered view the solve
+    was conditioned on (verified / legacy_unknown / unverified), so the ids
+    in it are exactly the knowledge available to that solve.
+    """
+    state = getattr(snapshot, "harness_state", None) or {}
+    knowledge = state.get("knowledge") or {}
+    out: List[str] = []
+    for layer in ("verified", "legacy_unknown", "unverified"):
+        for ref in knowledge.get(layer) or []:
+            if isinstance(ref, dict) and ref.get("entry_id"):
+                out.append(str(ref["entry_id"]))
+    return out
 
 
 def _cell_tokens_match(declared: str, actual: str) -> bool:

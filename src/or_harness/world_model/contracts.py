@@ -1592,16 +1592,33 @@ class CapabilityEvolutionPrediction:
         """
         return self.status == "valid" and bool(self.expected_changes)
 
-    def frozen_baseline_for(self, metric: str) -> Optional[BaselineStatement]:
+    def frozen_baseline_for(self, metric: str, *,
+                            unit: Optional[str] = None
+                            ) -> Optional[BaselineStatement]:
         """The FRAMEWORK-frozen baseline for one metric, or None.
 
-        Resolution order: the per-metric map first (it is the precise
-        statement), then the prediction-level baseline when it declares the
-        SAME metric. A baseline that does not name the metric is never
-        handed to a different metric: a quality reference says nothing
-        about seconds.
+        Resolution order, most specific first:
+
+        1. a DIMENSION-QUALIFIED key (``cost:solver_runtime_s``) when a
+           ``unit`` is supplied — several cost dimensions share the
+           ``resource_cost`` metric but their units do not convert, so the
+           reference must be the one taken on THAT dimension;
+        2. the metric's own key (``normalized_solution_quality``);
+        3. the prediction-level baseline when it declares the SAME metric.
+
+        A baseline that does not name the metric is never handed to a
+        different metric: a quality reference says nothing about seconds,
+        and a token count says nothing about runtime.
         """
         name = str(metric or "")
+        if unit:
+            normalized = str(unit).strip().lower()
+            for key, statement in self.baselines_by_metric.items():
+                if not key.startswith("cost:"):
+                    continue
+                dim_unit = str(statement.unit or "").strip().lower()
+                if dim_unit == normalized:
+                    return statement
         direct = self.baselines_by_metric.get(name)
         if direct is not None:
             return direct
@@ -1610,6 +1627,11 @@ class CapabilityEvolutionPrediction:
             if declared is None or declared == name:
                 return self.baseline
         return None
+
+    def frozen_baseline_for_cost_dim(
+            self, dim: str) -> Optional[BaselineStatement]:
+        """The frozen reference for ONE cost dimension (its own key)."""
+        return self.baselines_by_metric.get(f"cost:{dim}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1928,17 +1950,21 @@ def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
                 "measure it against is not falsifiable")
         # The baseline belongs to the FRAMEWORK. A change that carries its
         # own reference must be citing one the framework froze for THAT
-        # metric: a model-chosen reference (or one frozen for a different
-        # metric) is a value the prediction can move after seeing the
-        # evidence, which makes the claim unfalsifiable.
+        # metric (and, for a cost change, that UNIT): a model-chosen
+        # reference (or one frozen for a different metric or dimension) is
+        # a value the prediction can move after seeing the evidence, which
+        # makes the claim unfalsifiable.
         if change.baseline is not None:
-            frozen = prediction.frozen_baseline_for(change.metric)
+            frozen = prediction.frozen_baseline_for(
+                change.metric, unit=(change.unit or None))
             if frozen is None:
                 problems.append(
                     f"expected_changes[{index}]: the change declares its own "
-                    f"baseline for metric {change.metric!r}, but the "
-                    "framework froze none for that metric — a model may "
-                    "CITE a frozen baseline, never set one")
+                    f"baseline for metric {change.metric!r}"
+                    + (f" in unit {change.unit!r}" if change.unit else "")
+                    + ", but the framework froze none for that metric"
+                    + (" and unit" if change.unit else "")
+                    + " — a model may CITE a frozen baseline, never set one")
             elif (change.baseline.value is not None
                   and frozen.value is not None
                   and abs(float(change.baseline.value)
@@ -1946,8 +1972,9 @@ def validate_capability_evolution(prediction: CapabilityEvolutionPrediction
                 problems.append(
                     f"expected_changes[{index}]: the change's baseline "
                     f"({change.baseline.value}) does not match the "
-                    f"framework-frozen reference for {change.metric!r} "
-                    f"({frozen.value}): a baseline is fixed before the "
+                    f"framework-frozen reference for {change.metric!r}"
+                    + (f" in unit {change.unit!r}" if change.unit else "")
+                    + f" ({frozen.value}): a baseline is fixed before the "
                     "operation runs and is not the model's to restate")
         if change.value_kind == "relative" and change.value is not None \
                 and not -1.0 <= float(change.value) <= 1.0:

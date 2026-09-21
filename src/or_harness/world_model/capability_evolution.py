@@ -331,6 +331,31 @@ def learning_material_for_bundle(harness, bundle: Any
     return material
 
 
+def _frozen_baseline_for(
+        baselines_by_metric: Optional[Dict[str, BaselineStatement]],
+        metric: str, unit: str) -> Optional[BaselineStatement]:
+    """The frozen reference for one metric and unit, or None.
+
+    Several cost dimensions share the ``resource_cost`` metric but their
+    units do not convert, so a cost reference is looked up by the change's
+    UNIT. A cost change that names no unit therefore gets NO reference: it
+    is genuinely ambiguous which dimension it is about, and silently
+    handing it one dimension's yardstick is exactly the unit-mixing this
+    lookup exists to prevent. The metric's own (non-cost) key is used as
+    the fallback.
+    """
+    mapping = baselines_by_metric or {}
+    wanted = str(unit or "").strip().lower()
+    if wanted:
+        for key, statement in mapping.items():
+            if not str(key).startswith("cost:"):
+                continue
+            if str(statement.unit or "").strip().lower() == wanted:
+                return statement
+        return None
+    return mapping.get(metric)
+
+
 def parse_capability_evolution_payload(
         payload: Any, *,
         evidence: HarnessCapabilityEvidence,
@@ -474,15 +499,22 @@ def parse_capability_evolution_payload(
                     f"expected_changes[{index}].value requires a baseline "
                     "(its own or the prediction's): a change with nothing "
                     "to measure it against is not falsifiable")
+            change_unit = str(raw.get("unit") or "")
             # The reference belongs to the FRAMEWORK. When one is frozen for
-            # this metric, the frozen statement WINS: a model may cite it,
-            # never restate it. An invented (or mismatched) reference is
-            # recorded as an override attempt and replaced, and the change
-            # is flagged so the prediction does not silently keep a
-            # self-chosen yardstick.
-            frozen = (baselines_by_metric or {}).get(metric)
+            # this metric — and, for a cost change, for this UNIT — the
+            # frozen statement WINS: a model may cite it, never restate it.
+            # An invented (or mismatched) reference is recorded as an
+            # override attempt and replaced, so the prediction never keeps a
+            # self-chosen yardstick. Matching on the unit matters because
+            # several cost dimensions share the ``resource_cost`` metric
+            # while their units do not convert.
+            frozen = _frozen_baseline_for(baselines_by_metric, metric,
+                                          change_unit)
             if frozen is None and baseline is not None \
-                    and baseline.metric in (None, metric):
+                    and baseline.metric in (None, metric) \
+                    and (not change_unit or not baseline.unit
+                         or str(baseline.unit).strip().lower()
+                         == change_unit.strip().lower()):
                 frozen = baseline
             if frozen is not None:
                 if change_baseline is not None and (
@@ -497,10 +529,12 @@ def parse_capability_evolution_payload(
                     notes.append(
                         f"expected_changes[{index}] declared its own "
                         f"baseline ({change_baseline.value}) for metric "
-                        f"{metric!r}, but the framework froze "
-                        f"{frozen.value}: the model's value is recorded and "
-                        "IGNORED — a baseline is fixed before the operation "
-                        "runs, so it is never the model's to move")
+                        f"{metric!r}"
+                        + (f" in unit {change_unit!r}" if change_unit else "")
+                        + f", but the framework froze {frozen.value}: the "
+                        "model's value is recorded and IGNORED — a baseline "
+                        "is fixed before the operation runs, so it is never "
+                        "the model's to move")
                 change_baseline = frozen
             try:
                 changes.append(ExpectedChange(
@@ -508,7 +542,7 @@ def parse_capability_evolution_payload(
                     direction=direction,
                     value=(float(value) if value is not None else None),
                     interval=interval,
-                    unit=str(raw.get("unit") or ""),
+                    unit=change_unit,
                     baseline=change_baseline,
                     beneficial_direction=beneficial,
                     value_kind=value_kind,

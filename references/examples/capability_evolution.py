@@ -14,11 +14,13 @@ demonstration the milestone asks for:
    were selected, and answers; the parsed prediction is saved and restored;
 3. **prediction changes the advice** — TWO candidates are predicted (one
    large saving, one small) and the bounded comparison rule recommends the
-   larger NET saving, i.e. its saving minus its own predicted maintenance
-   cost IN THE SAME UNIT. A third candidate that trades quality away is NOT
-   auto-ranked; a candidate whose maintenance cost is quoted in another
-   currency, or that costs more than it saves, is reported rather than
-   ranked; and a candidate with no comparable yardstick yields ``defer``;
+   larger NET saving over the declared window: the CUMULATIVE saving minus
+   that candidate's own ONE-TIME predicted maintenance cost IN THE SAME
+   UNIT. A third candidate that trades quality away is NOT auto-ranked; a
+   candidate whose maintenance cost is quoted in another currency, whose
+   saving never pays back within the window, or whose window was never
+   declared is reported rather than ranked; and a candidate with no
+   comparable yardstick yields ``defer``;
 4. **explicit choice, then the real operation** — the recommendation is
    accepted EXPLICITLY and the existing induction runs on the prediction's
    OWN frozen scope; a second candidate is REJECTED and changes nothing;
@@ -29,10 +31,12 @@ demonstration the milestone asks for:
    episode is evaluated, a pre-arranged paired comparison makes the change
    attributable, and the effect becomes VERIFIED — while W_OR stays
    unadvanced and a repeat evaluation does not double the sample. The
-   evaluation only counts tasks that finished AFTER the operation, fall
-   inside the prediction's FROZEN target, and are not part of its own
-   experience scope; and it only reaches a verdict once the declared
-   horizon is met;
+   evaluation counts the sample in TASK-EPISODES, only admits tasks whose
+   WORK really ran after the operation (the real execution time and the
+   knowledge entries the solve was conditioned on, never the close-out
+   timestamp), keeps those inside the prediction's FROZEN target and
+   outside its own experience scope, and only reaches a verdict once the
+   declared horizon is met;
 7. **honest branches** — a candidate whose operation changes nothing is
    recorded as ``no_change``; a prediction the real evidence CONTRADICTS is
    recorded as refuted; a candidate that was never accepted produces no

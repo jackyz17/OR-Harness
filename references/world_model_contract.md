@@ -338,13 +338,15 @@ action vocabulary (the six action types stay), reviving the retired
 > `CapabilityEvolutionPrediction` from frozen evidence, a candidate
 > operation, the exact experience scope, the task targeting, a
 > framework-frozen per-metric baseline and a horizon. `compare-capability`
-> applies ONE bounded rule (largest net per-task saving in the SAME unit
-> under a quality-non-degradation constraint, where the net is the saving
-> minus the candidate's own predicted maintenance cost);
+> applies ONE bounded rule (largest net saving over the declared window, in
+> the SAME unit: the cumulative saving minus the one-time predicted
+> maintenance cost, under a quality-non-degradation constraint);
 > `accept-capability` runs the EXISTING operation on the prediction's OWN
 > frozen scope and REFUSES any operation type this build cannot carry out;
 > `bind-capability` records the maintenance FACT; `evaluate-capability`
-> judges the EFFECT against real later-task results or a paired reference.
+> judges the EFFECT against real later-task results or a paired reference,
+> counting the sample in TASK-EPISODES and admitting only tasks whose WORK
+> really ran after the operation, under the knowledge it produced.
 > See [references/commands.md](commands.md).
 
 ## 10. Verification checklist for a consuming agent

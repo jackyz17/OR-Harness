@@ -577,7 +577,7 @@ class TestComparison(M5Case):
         result = self.h.compare_capability_evolution(
             [quality_only.prediction_id], horizon_tasks=10)
         self.assertEqual(result["recommendation"], "defer")
-        self.assertIn("no candidate predicts a quantified",
+        self.assertIn("no candidate predicts a cumulative",
                       result["basis"])
         self.assertTrue(any("legitimate decision outcome" in n
                             for n in result["notes"]))
@@ -595,14 +595,30 @@ class TestComparison(M5Case):
                                   horizon_tasks=None)[1]
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=None)
-        entry = result["comparisons"][0]
+        # An undeclared window cannot amortize a ONE-TIME maintenance cost,
+        # so the candidate is reported rather than ranked. The per-task
+        # figure is still never extrapolated into a total.
+        entry = result["incomparable"][0]
         self.assertEqual(entry["saving"]["per_task"], 3.0)
         self.assertIsNone(entry["saving"]["total"])
         self.assertIn("never extrapolated", entry["saving"]["note"])
-        # The net figure follows the same rule: with no declared task count
-        # the TOTAL is absent, and the per-task net is what remains.
+        self.assertIn("no observation window was declared",
+                      entry["reason"])
         self.assertIsNone(entry["net_saving"]["net_over_horizon"])
-        self.assertEqual(entry["net_saving"]["net_per_task"], 2.9)
+
+    def test_a_declared_window_amortizes_the_one_time_cost(self):
+        """The maintenance cost is paid ONCE while the saving accrues per
+        task, so the decision uses the CUMULATIVE saving over the window."""
+        prediction = self.predict(payload=self._saving(-2.0),
+                                  horizon_tasks=10)[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        entry = result["comparisons"][0]
+        net = entry["net_saving"]
+        self.assertEqual(net["cumulative_saving"], 20.0)
+        self.assertEqual(net["maintenance_cost"], 0.1)
+        self.assertAlmostEqual(net["net_over_horizon"], 19.9, places=5)
+        self.assertEqual(result["recommendation"], "accept")
 
     def test_relative_saving_converts_through_the_frozen_cost_baseline(self):
         """A relative saving becomes a unit count ONLY through a baseline the
@@ -1283,8 +1299,13 @@ class TestReviewRoundFixes(M5Case):
         result = self.h.evaluate_capability_effect(prediction.prediction_id)
         evidence = result["evaluation"]["evidence"]
         self.assertEqual(evidence["n_later_evaluations"], 0)
-        self.assertEqual([e["task_id"] for e in
-                          evidence["excluded_off_target"]], ["elsewhere"])
+        # The task is rejected: it is outside the frozen target (and, having
+        # run under the pre-operation knowledge, it is also not a later
+        # task). Whichever filter catches it, it never becomes a sample.
+        rejected = ([e["task_id"] for e in evidence["excluded_off_target"]]
+                    + [e["task_id"] for e in
+                       evidence["excluded_not_later"]])
+        self.assertEqual(rejected, ["elsewhere"])
 
     def test_an_unmet_horizon_stays_pending(self):
         """A claim made over N tasks is not confirmed by fewer than N."""
@@ -1343,12 +1364,20 @@ class TestReviewRoundFixes(M5Case):
         prediction = self.predict()[1]
         frozen = prediction.baselines_by_metric
         self.assertIn("normalized_solution_quality", frozen)
-        self.assertIn("resource_cost", frozen)
+        # Cost references are keyed by DIMENSION: several dimensions share
+        # the resource_cost metric but their units do not convert.
+        self.assertIn("cost:solver_runtime_s", frozen)
         self.assertEqual(frozen["normalized_solution_quality"].metric,
                          "normalized_solution_quality")
-        self.assertEqual(frozen["resource_cost"].unit, "solver_runtime_s")
-        # A reference is only handed to its OWN metric.
+        self.assertEqual(frozen["cost:solver_runtime_s"].unit, "s")
+        # A reference is only handed to its OWN metric and unit.
         self.assertIsNone(prediction.frozen_baseline_for("unknown_metric"))
+        self.assertEqual(
+            prediction.frozen_baseline_for("resource_cost", unit="s").unit,
+            "s")
+        self.assertIsNone(
+            prediction.frozen_baseline_for("resource_cost",
+                                           unit="tokens"))
 
     # -- P1-4: comparable means the same unit AND a positive net ---------
 
@@ -1391,8 +1420,33 @@ class TestReviewRoundFixes(M5Case):
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=10)
         self.assertEqual(result["recommendation"], "defer")
-        self.assertIn("costs more than it saves",
+        self.assertIn("does not pay for itself",
                       result["incomparable"][0]["reason"])
+        net = result["incomparable"][0]["net_saving"]
+        self.assertEqual(net["cumulative_saving"], 1000.0)
+        self.assertEqual(net["maintenance_cost"], 10000.0)
+        self.assertEqual(net["net_over_horizon"], -9000.0)
+
+    def test_a_cost_that_only_pays_off_beyond_one_task_is_recommended(self):
+        """A one-time cost larger than a SINGLE task's saving is still
+        worth it when the declared window pays it back: netting the cost
+        against one task would reject a profitable operation."""
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -2.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 5.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]})[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "accept")
+        net = result["comparisons"][0]["net_saving"]
+        self.assertEqual(net["cumulative_saving"], 20.0)
+        self.assertEqual(net["net_over_horizon"], 15.0)
+        self.assertLess(net["net_per_task"], 0,
+                        "the per-task figure alone would have deferred it")
 
     def test_a_learning_cost_in_another_currency_defers(self):
         prediction = self.predict(payload={
@@ -1685,7 +1739,378 @@ class TestReviewRoundFixes(M5Case):
 
 
 # ---------------------------------------------------------------------------
-# 8. CLI coverage of the shortest complete chain
+# 8. the second review round: six more defects
+# ---------------------------------------------------------------------------
+
+
+class TestReviewRoundTwo(M5Case):
+    """Regressions for the second batch of reviewed M5 defects.
+
+    Each made the framework accept evidence it should have refused: a
+    sample that was not independent, a task that ran before the change, a
+    yardstick taken on another dimension, a decision that netted a one-time
+    cost against one task, spend that was never charged, and a real
+    retirement reported as no change.
+    """
+
+    def _quality_payload(self, value=0.2):
+        return {
+            "expected_changes": [
+                {"metric": "normalized_solution_quality", "unit": "1-gap",
+                 "direction": "increase", "value": value,
+                 "beneficial_direction": "increase"}],
+            "learning_cost": {"llm_tokens": 100},
+            "verification_conditions": [{"condition": "quality rises",
+                                         "evaluable": True}]}
+
+    def _accept(self, payload, *, horizon_tasks=1, operation=None):
+        self.seed_executions()
+        prediction = self.predict(payload=payload, operation=operation,
+                                  horizon_tasks=horizon_tasks)[1]
+        recommendation = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=horizon_tasks)
+        if recommendation["recommendation"] != "accept":
+            recommendation = {
+                "recommendation": "accept",
+                "recommendation_id": recommendation["recommendation_id"],
+                "selected_prediction_id": prediction.prediction_id,
+                "basis": "explicit agent choice",
+            }
+        accepted = self.h.accept_capability_operation(recommendation)
+        self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        return prediction, accepted
+
+    def _run_task(self, task_id, *, episode="ep1", observed_quality=0.95,
+                  predictions_per_episode=1, at=None, close=True):
+        """Run a real task (optionally with several bound predictions)."""
+        payload = {
+            "benefit": {"kind": "solution_quality",
+                        "metric": "normalized_objective_gap",
+                        "unit": "1-gap", "value": observed_quality,
+                        "baseline": {"kind": "conditional_stats",
+                                     "value": 0.7}},
+            "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
+            "risk": {"events": []},
+        }
+        orx = ORHarness(home=self.home, world_model=StubProvider(
+            payload=payload), embedding=self.backend)
+        self.addCleanup(orx.close)
+        task = _task(task_id)
+        predictions = [
+            orx.predict_strategy_outcome(
+                task, {"action_type": "execute_strategy",
+                       "strategy_id": "S04"}, episode)
+            for _ in range(predictions_per_episode)]
+        from pathlib import Path
+        work = Path(self.home) / f"ws_{task_id}_{episode}"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
+            " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        record = orx.execute(task, "S04", str(script), str(work),
+                             solver="highs", episode_id=episode)
+        orx.record(record)
+        for prediction in predictions:
+            orx.bind_strategy_outcome(prediction.prediction_id,
+                                      record.action_id)
+        if at is not None:
+            with orx.store.transaction() as conn:
+                row = conn.execute(
+                    "SELECT payload FROM executions WHERE execution_id=?",
+                    (record.execution_id,)).fetchone()
+                data = orx.store.loads(row["payload"])
+                data["created_at"] = at
+                conn.execute(
+                    "UPDATE executions SET payload=? WHERE execution_id=?",
+                    (orx.store.dumps(data), record.execution_id))
+        if close:
+            orx.close_episode(task_id, episode)
+        return record.execution_id
+
+    # -- P1-A: the sample unit is the TASK-EPISODE -----------------------
+
+    def test_one_episode_with_many_predictions_is_one_sample(self):
+        """Ten predictions bound to ONE execution are ONE independent
+        truth: re-planning a task many times cannot satisfy a ten-task
+        horizon."""
+        prediction, _ = self._accept(self._quality_payload(),
+                                     horizon_tasks=10)
+        self._run_task("later1", predictions_per_episode=10)
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        evidence = evaluation["evidence"]
+        self.assertEqual(evidence["n_later_records"], 10)
+        self.assertEqual(evidence["n_later_evaluations"], 1)
+        self.assertEqual(evidence["distinct_episodes"], 1)
+        self.assertFalse(evidence["horizon_met"])
+        self.assertEqual(evaluation["state"], "pending")
+        self.assertFalse(evaluation["effect_verified"])
+        self.assertIn("TASK-EPISODES", evidence["note"])
+
+    def test_two_episodes_of_one_task_are_two_samples(self):
+        """Independence is the (task_id, episode_id) pair, so the same task
+        re-run in a SECOND episode is genuinely new evidence."""
+        prediction, _ = self._accept(self._quality_payload(),
+                                     horizon_tasks=2)
+        self._run_task("later1", episode="ep1")
+        self._run_task("later1", episode="ep2")
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["later1"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evidence = result["evaluation"]["evidence"]
+        self.assertEqual(evidence["distinct_episodes"], 2)
+        self.assertTrue(evidence["horizon_met"])
+
+    # -- P1-B: the SOLVE time and knowledge decide, not the close time ---
+
+    def test_a_task_solved_before_the_operation_is_not_evidence(self):
+        """Closing an episode after the maintenance does not make the work
+        later: the solve really ran against the earlier knowledge."""
+        import time
+        early = time.time() - 86400
+        # The task is executed (and its episode left open) BEFORE the
+        # prediction and the operation.
+        self._run_task("solved_early", at=early, close=False)
+        prediction, _ = self._accept(self._quality_payload())
+        # Only the CLOSE happens after the maintenance.
+        closer = ORHarness(home=self.home, world_model=StubProvider(),
+                           embedding=self.backend)
+        self.addCleanup(closer.close)
+        closer.close_episode("solved_early", "ep1")
+        self.h.record_capability_paired_evaluation(
+            prediction.prediction_id, metric="normalized_solution_quality",
+            reference_value=0.70, treated_value=0.95, unit="1-gap",
+            reference_task_ids=["solved_early"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        self.assertEqual(evaluation["evidence"]["n_later_evaluations"], 0)
+        self.assertEqual(evaluation["state"], "pending")
+        excluded = evaluation["evidence"]["excluded_not_later"]
+        self.assertEqual([e["task_id"] for e in excluded],
+                         ["solved_early"])
+        self.assertIn("SOLVED before", excluded[0]["reason"])
+
+    # -- P1-C: cost references are per DIMENSION -------------------------
+
+    def test_cost_baselines_are_kept_per_dimension(self):
+        """Several cost dimensions share the resource_cost metric but their
+        units do not convert, so each keeps its OWN reference."""
+        self.seed_executions()
+        bundle = {**_bundle(), "mean_cost": {"solver_runtime_s": 5.0,
+                                             "llm_tokens": 1000.0}}
+        prediction = self.h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=bundle, horizon="next 10 tasks", horizon_tasks=10)
+        frozen = prediction.baselines_by_metric
+        self.assertEqual(frozen["cost:solver_runtime_s"].value, 5.0)
+        self.assertEqual(frozen["cost:llm_tokens"].value, 1000.0)
+        self.assertEqual(frozen["cost:solver_runtime_s"].unit, "s")
+        self.assertEqual(frozen["cost:llm_tokens"].unit, "tokens")
+        # A unit-qualified lookup returns THAT dimension's reference.
+        self.assertEqual(
+            prediction.frozen_baseline_for("resource_cost",
+                                           unit="s").value, 5.0)
+        self.assertEqual(
+            prediction.frozen_baseline_for("resource_cost",
+                                           unit="tokens").value, 1000.0)
+
+    def test_a_relative_cost_saving_converts_through_its_own_dimension(self):
+        """A 20% runtime saving is 20% of the RUNTIME reference, never of a
+        token count that happened to be written into the same bundle."""
+        self.seed_executions()
+        bundle = {**_bundle(), "mean_cost": {"solver_runtime_s": 5.0,
+                                             "llm_tokens": 1000.0}}
+        prediction = self.h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=bundle, horizon="next 10 tasks", horizon_tasks=10)[1] \
+            if False else self.predict(payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -0.2,
+                     "value_kind": "relative",
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+                bundle=bundle, horizon_tasks=10)[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        entry = result["comparisons"][0]
+        # 0.2 x 5.0 s = 1.0 s, NOT 0.2 x 1000 tokens.
+        self.assertAlmostEqual(entry["saving"]["per_task"], 1.0, places=5)
+        self.assertIn("frozen reference", entry["saving"]["converted_from"])
+
+    def test_a_cost_change_without_a_unit_gets_no_reference(self):
+        """An ambiguous cost change is not silently handed one dimension's
+        yardstick."""
+        self.seed_executions()
+        prediction = self.h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10)
+        self.assertIsNone(
+            prediction.frozen_baseline_for("resource_cost"))
+
+    # -- P1-D: the decision amortizes the one-time cost ------------------
+
+    def test_a_one_time_cost_is_amortized_over_the_declared_window(self):
+        """A cost larger than ONE task's saving is still profitable when the
+        window pays it back."""
+        self.seed_executions()
+        prediction = self.h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10,
+            baselines_by_metric=None) if False else self.predict(payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -2.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 5.0},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+                horizon_tasks=10)[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["recommendation"], "accept")
+        net = result["comparisons"][0]["net_saving"]
+        self.assertEqual(net["cumulative_saving"], 20.0)
+        self.assertEqual(net["maintenance_cost"], 5.0)
+        self.assertEqual(net["net_over_horizon"], 15.0)
+        self.assertLess(net["net_per_task"], 0)
+
+    def test_candidates_are_ranked_by_net_saving_over_the_window(self):
+        """Ranking uses the CUMULATIVE net, so a large saving with a large
+        one-time cost can lose to a smaller saving that pays back sooner."""
+        self.seed_executions()
+        heavy = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -20.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 10.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]},
+            horizon_tasks=10)[1]
+        light = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -20.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 0.1},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]},
+            horizon_tasks=10)[1]
+        result = self.h.compare_capability_evolution(
+            [heavy.prediction_id, light.prediction_id], horizon_tasks=10)
+        self.assertEqual(result["selected_prediction_id"],
+                         light.prediction_id)
+        nets = {e["prediction_id"]: e["net_saving"]["net_over_horizon"]
+                for e in result["comparisons"]}
+        self.assertEqual(nets[light.prediction_id], 199.9)
+        self.assertEqual(nets[heavy.prediction_id], 190.0)
+
+    def test_an_undeclared_window_cannot_amortize_a_one_time_cost(self):
+        self.seed_executions()
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -2.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 5.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]},
+            horizon_tasks=None)[1]
+        result = self.h.compare_capability_evolution(
+            [prediction.prediction_id], horizon_tasks=None)
+        self.assertEqual(result["recommendation"], "defer")
+        self.assertIn("no observation window was declared",
+                      result["incomparable"][0]["reason"])
+
+    # -- P1-E: a prediction's own episode is charged to that episode -----
+
+    def test_a_capability_prediction_is_charged_to_its_own_episode(self):
+        h = ORHarness(home=self.home, world_model=StubProvider(
+            usage={"prompt_tokens": 10, "completion_tokens": 50}),
+            embedding=self.backend)
+        self.addCleanup(h.close)
+        h.declare_budget("t_ep", {"llm_tokens": 40}, episode_id="ep1")
+        for _ in range(3):
+            h.predict_capability_evolution(
+                {"operation_type": "induce", "strategy_id": "S04"},
+                bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10,
+                task_id="t_ep", episode_id="ep1")
+        view = h.budget_view("t_ep", episode_id="ep1")
+        consumption = view["consumption"]
+        self.assertEqual(view["status"], "exceeded")
+        self.assertEqual(len(consumption["prediction_call_costs"]), 3)
+        self.assertIsNone(consumption["unattributed_prediction_costs"],
+                          "an episode-attributed call is not unattributed")
+        self.assertEqual(consumption["total_cost"]["llm_tokens"], 150.0)
+
+    def test_a_call_with_no_episode_stays_unattributed(self):
+        h = ORHarness(home=self.home, world_model=StubProvider(
+            usage={"prompt_tokens": 10, "completion_tokens": 50}),
+            embedding=self.backend)
+        self.addCleanup(h.close)
+        h.declare_budget("t_noep", {"llm_tokens": 40}, episode_id="ep1")
+        h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S04"},
+            bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10,
+            task_id="t_noep")
+        view = h.budget_view("t_noep", episode_id="ep1")
+        consumption = view["consumption"]
+        self.assertEqual(len(consumption["prediction_call_costs"]), 0)
+        self.assertEqual(len(consumption["unattributed_prediction_costs"]),
+                         1)
+
+    # -- P2-F: a retirement IS a knowledge change ------------------------
+
+    def test_a_successful_retirement_counts_as_a_knowledge_change(self):
+        self.seed_executions()
+        self.h.induce(strategy_id="S04")
+        entries = self.h.sbank.list()
+        self.assertTrue(entries)
+        entry_id = entries[0].entry_id
+        prediction = self.predict(
+            payload={
+                "expected_changes": [
+                    {"metric": "resource_cost", "unit": "s",
+                     "direction": "decrease", "value": -6.0,
+                     "beneficial_direction": "decrease"}],
+                "learning_cost": {"solver_runtime_s": 0.1},
+                "verification_conditions": [{"condition": "cost falls",
+                                             "evaluable": True}]},
+            operation={"operation_type": "retire", "strategy_id": "S04",
+                       "config": {"target_entry_id": entry_id}})[1]
+        accepted = self.h.accept_capability_operation({
+            "recommendation": "accept",
+            "selected_prediction_id": prediction.prediction_id})
+        bound = self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        binding = bound["binding"]
+        self.assertTrue(binding["changed"],
+                        "removing an entry IS a knowledge change")
+        self.assertEqual(binding["retired_entry_ids"], [entry_id])
+        self.assertEqual(binding["created_entry_ids"], [])
+        # The effect path stays open rather than short-circuiting.
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        self.assertNotEqual(result["evaluation"]["state"], "no_change")
+
+
+# ---------------------------------------------------------------------------
+# 9. CLI coverage of the shortest complete chain
 # ---------------------------------------------------------------------------
 
 

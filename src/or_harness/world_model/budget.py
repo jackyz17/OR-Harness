@@ -180,7 +180,7 @@ class BudgetLedger:
         # ledger must read it explicitly.
         try:
             capability_rows = self.store.conn.execute(
-                "SELECT payload FROM capability_predictions "
+                "SELECT episode_id, payload FROM capability_predictions "
                 "WHERE task_id=?", (task_id,)).fetchall()
         except Exception:
             capability_rows = []
@@ -223,13 +223,17 @@ class BudgetLedger:
                     self.store.loads(row["payload"]))
             except Exception:
                 continue
-            # A capability prediction has no episode of its own (it is an
-            # OFFLINE maintenance call, not a task attempt), so it is
-            # reported as unattributed when an episode budget is being
-            # judged rather than silently charged to it.
+            # The prediction's OWN episode attribution comes from the stored
+            # row: a capability prediction the caller made FOR an episode is
+            # that episode's spend. Only a call recorded with no episode at
+            # all is unattributed — assuming None everywhere would bury real
+            # episode spend in the unattributed bucket and let the episode
+            # budget report "ok" while the tokens were being spent.
+            stored_episode = (row["episode_id"]
+                              if "episode_id" in row.keys() else None)
             self._add_prediction_cost(
                 pred.prediction_id, pred.trace.call_cost,
-                None,
+                stored_episode,
                 (pred.trace.model_info or {}).get(
                     "charged_to_parent_action"),
                 episode_id, total, n_measured, prediction_costs,
