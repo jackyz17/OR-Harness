@@ -62,6 +62,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import is_finite_number as _finite
 
 #: Version of the close-out record schema.
 EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
@@ -119,14 +120,6 @@ def _observable_benefit_metric(metric: Any) -> Optional[str]:
 
 def _normalize_event_name(name: Any) -> str:
     return str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
-
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
 
 
 def _new_id(prefix: str) -> str:

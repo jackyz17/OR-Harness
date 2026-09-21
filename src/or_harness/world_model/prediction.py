@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import is_finite_number as _finite
 from or_harness.world_model.actions import ACTION_TYPES
 
 #: Execution statuses a prediction may name (mirrors the executor's
@@ -213,14 +214,6 @@ class OutcomePrediction:
             feedback=copy.deepcopy(dict(data.get("feedback"))
                                    if data.get("feedback") else None),
         )
-
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
 
 
 def validate_prediction_payload(payload: Dict[str, Any],

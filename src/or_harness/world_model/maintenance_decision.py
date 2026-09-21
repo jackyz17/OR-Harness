@@ -106,13 +106,7 @@ EFFECT_STATES = ("pending", "observed_improvement", "observed_degradation",
 EFFECT_FINAL_STATES = ("observed_improvement", "observed_degradation",
                        "no_change")
 
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
+from or_harness.core.schema import is_finite_number as _finite  # noqa: E402
 
 
 def _observable_metric(metric: Any) -> Optional[str]:

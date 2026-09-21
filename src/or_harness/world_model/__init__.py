@@ -89,7 +89,6 @@ from or_harness.world_model.contracts import (
     prediction_kinds_for_mode,
     validate_capability_evolution,
     validate_capability_evidence,
-    validate_contract,
     validate_strategy_outcome,
 )
 from or_harness.world_model.execution_window import (
@@ -103,7 +102,6 @@ from or_harness.world_model.execution_window import (
     parse_window_id,
     window_id_for,
     window_identity_problems,
-    window_ref,
 )
 from or_harness.world_model.context import (
     EVIDENCE_CLASSES,
@@ -273,7 +271,6 @@ __all__ = [
     "window_id_for",
     "parse_window_id",
     "window_identity_problems",
-    "window_ref",
     # prediction input context (phase 2)
     "PREDICTION_CONTEXT_VERSION",
     "JOINT_REPRESENTATION_VERSION",
@@ -344,10 +341,9 @@ __all__ = [
     "ExpectedChange",
     "VerificationCondition",
     "UnsupportedContractVersion",
-    "validate_contract",
-    "validate_strategy_outcome",
     "validate_capability_evolution",
     "validate_capability_evidence",
+    "validate_strategy_outcome",
     "detect_payload_version",
     "load_contract_payload",
     "legacy_prediction_view",

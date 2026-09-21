@@ -39,6 +39,10 @@ import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import (
+    is_finite_number as _finite,
+    is_probability as _prob,
+)
 from or_harness.world_model.contracts import (
     BaselineStatement,
     BenefitEstimate,
@@ -127,22 +131,6 @@ MAX_RISK_EVENTS = 20
 
 #: The maximum number of evidence-basis entries accepted.
 MAX_EVIDENCE_BASIS = 40
-
-
-class StrategyOutcomeServiceError(Exception):
-    """A strategy-outcome prediction failed (with its honest reason)."""
-
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
-
-
-def _prob(value: Any) -> bool:
-    return _finite(value) and 0.0 <= float(value) <= 1.0
 
 
 def build_strategy_outcome_request(
@@ -594,44 +582,28 @@ class StrategyOutcomeService:
     # -- persistence ---------------------------------------------------------
 
     def _save(self, prediction: StrategyOutcomePrediction) -> None:
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO contract_predictions "
-                "(prediction_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (prediction.prediction_id,
-                 prediction.candidate.task_id,
-                 prediction.candidate.episode_id,
-                 prediction.trace.created_at,
-                 self.store.dumps(prediction.to_dict())))
+        self.store.put_contract_prediction(
+            prediction.prediction_id,
+            prediction.candidate.task_id,
+            prediction.candidate.episode_id,
+            self.store.dumps(prediction.to_dict()),
+            created_at=prediction.trace.created_at)
 
     def get(self, prediction_id: str) -> Optional[StrategyOutcomePrediction]:
-        row = self.store.conn.execute(
-            "SELECT payload FROM contract_predictions "
-            "WHERE prediction_id=?", (prediction_id,)).fetchone()
-        if row is None:
+        raw = self.store.get_contract_prediction(prediction_id)
+        if raw is None:
             return None
         from or_harness.world_model.contracts import (
             StrategyOutcomePrediction as SOP,
         )
-        return SOP.from_dict(self.store.loads(row["payload"]))
+        return SOP.from_dict(self.store.loads(raw))
 
     def query(self, *, task_id: Optional[str] = None,
               episode_id: Optional[str] = None
               ) -> List[StrategyOutcomePrediction]:
-        sql = "SELECT payload FROM contract_predictions"
-        clauses, params = [], []
-        if task_id is not None:
-            clauses.append("task_id=?")
-            params.append(task_id)
-        if episode_id is not None:
-            clauses.append("episode_id=?")
-            params.append(episode_id)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at ASC, prediction_id ASC"
         from or_harness.world_model.contracts import (
             StrategyOutcomePrediction as SOP,
         )
-        return [SOP.from_dict(self.store.loads(r["payload"]))
-                for r in self.store.conn.execute(sql, params).fetchall()]
+        return [SOP.from_dict(self.store.loads(raw))
+                for raw in self.store.contract_predictions_for(
+                    task_id=task_id, episode_id=episode_id)]

@@ -1,9 +1,10 @@
 """Built-in strategy catalog: data-driven, loaded from catalog.json.
 
-Priors in the catalog are the selector's only evidence at cold start. They are
-deliberately approximate; the record/induction loop corrects them from real
-executions (C2 criterion: systematic prior divergence is itself an induction
-trigger).
+The catalog carries structural vocabulary ONLY (applicability, actions,
+fallbacks, solver family) — deliberately NO quality/cost priors, so a cold
+start honestly reports ``no_memory``. Quality/cost expectations come from
+evidence (entries and conditional statistics), never from the catalog; the
+record/induction loop builds them from real executions.
 """
 
 from __future__ import annotations
@@ -32,6 +33,3 @@ def load_catalog(path: Optional[str] = None) -> Dict[str, Strategy]:
         strategies[strategy.strategy_id] = strategy
     return strategies
 
-
-def strategy_list(catalog: Dict[str, Strategy]) -> List[Strategy]:
-    return [catalog[k] for k in sorted(catalog)]

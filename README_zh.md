@@ -38,6 +38,8 @@ orx inspect   --bank strategic
 
 记忆存放在显式目录（`--home` 或 `$OR_HARNESS_HOME`），底层为单个 SQLite 文件。
 
+配置刻意保持显式——没有配置文件；全部配置面 = CLI 参数加环境变量：`$OR_HARNESS_HOME`（记忆位置）、`$OR_WM_API_KEY`（世界模型端点密钥；URL 与模型经 `--world-model URL::MODEL` 传入）、`$OR_EMBEDDING_BACKEND` / `$OR_EMBEDDING_BASE_URL` / `$OR_EMBEDDING_MODEL` / `$OR_EMBEDDING_API_KEY`（向量召回的嵌入后端）。其余都是单次调用参数——见 [references/commands.md](references/commands.md)（英文）。
+
 ## 文档
 
 - **[SKILL.md](SKILL.md)** —— harness agent 的薄契约（从这里开始，英文）

@@ -931,13 +931,10 @@ class ORHarness:
             "this context is the FROZEN input of a prediction; building it "
             "performed no model call, no solver execution and no induction")
         if persist:
-            with self.store.transaction() as conn:
-                conn.execute(
-                    "INSERT OR REPLACE INTO prediction_contexts "
-                    "(context_id, task_id, episode_id, created_at, payload) "
-                    "VALUES (?,?,?,?,?)",
-                    (context.context_id, context.task_id, context.episode_id,
-                     context.created_at, self.store.dumps(context.to_dict())))
+            self.store.put_prediction_context(
+                context.context_id, context.task_id, context.episode_id,
+                self.store.dumps(context.to_dict()),
+                created_at=context.created_at)
         return context
 
     def get_prediction_context(self,
@@ -1312,8 +1309,8 @@ class ORHarness:
            instance;
         2. ``service_available`` — this build IMPLEMENTS a service for this
            kind *and* a provider is configured. Configuring a provider does
-           not implement a service: ``capability_evolution`` has a contract
-           and no service, so it stays unavailable no matter what is
+           not implement a service: a kind in ``PREDICTION_KINDS`` but not in
+           ``SERVICE_IMPLEMENTED_KINDS`` stays unavailable no matter what is
            configured.
         3. ``prediction_completed`` — a prediction really was produced and
            passed validation. Only this makes a contract ``valid``.

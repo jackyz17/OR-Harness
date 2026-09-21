@@ -242,6 +242,25 @@ class PredictionSnapshot:
         )
 
 
+def is_finite_number(value: Any) -> bool:
+    """Whether ``value`` converts to a finite float (shared payload rule).
+
+    Single source for the numeric-finiteness check the prediction-payload
+    validators used to copy into five modules. Booleans and non-numeric
+    values are not finite numbers here.
+    """
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return False
+    return f == f and abs(f) != float("inf")
+
+
+def is_probability(value: Any) -> bool:
+    """Whether ``value`` is a finite number in [0, 1] (shared rule)."""
+    return is_finite_number(value) and 0.0 <= float(value) <= 1.0
+
+
 def accumulate_measured_costs(costs, total: Dict[str, float],
                               n_measured: Dict[str, int]) -> None:
     """Shared measured-only accumulation kernel (mutates ``total`` /

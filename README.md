@@ -39,6 +39,8 @@ orx inspect   --bank strategic
 
 Memory lives in an explicit directory (`--home` or `$OR_HARNESS_HOME`), stored as a single SQLite file.
 
+Configuration is deliberately explicit — there is no config file; the whole surface is CLI flags plus environment variables: `$OR_HARNESS_HOME` (memory location), `$OR_WM_API_KEY` (world-model endpoint key; URL and model are passed via `--world-model URL::MODEL`), and `$OR_EMBEDDING_BACKEND` / `$OR_EMBEDDING_BASE_URL` / `$OR_EMBEDDING_MODEL` / `$OR_EMBEDDING_API_KEY` (embedding backend for vector recall). Everything else is per-invocation flags — see [references/commands.md](references/commands.md).
+
 ## Documentation
 
 - **[SKILL.md](SKILL.md)** — the thin contract for harness agents (start here)

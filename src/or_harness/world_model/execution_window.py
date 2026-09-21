@@ -39,12 +39,12 @@ intention. Its rules:
 
 from __future__ import annotations
 
-import copy
 from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import accumulate_measured_costs
 
 #: Prefix of a deterministic window id (see :func:`window_id_for`).
 WINDOW_ID_PREFIX = "win::"
@@ -322,20 +322,18 @@ def _aggregate(costs: Sequence[Optional[CostVector]]) -> Dict[str, Any]:
     no item measured stays ``None``: unknown, not a zero.
     """
     dims: Dict[str, Any] = {}
+    total: Dict[str, float] = {dim: 0.0 for dim in COST_DIMENSIONS}
+    n_measured: Dict[str, int] = {dim: 0 for dim in COST_DIMENSIONS}
+    accumulate_measured_costs([c for c in costs if c is not None],
+                              total, n_measured)
     for dim in COST_DIMENSIONS:
-        values: List[float] = []
-        for cost in costs:
-            if cost is None:
-                continue
-            if dim not in cost.measured_dims():
-                continue
-            values.append(float(getattr(cost, dim)))
         dims[dim] = {
-            "total": round(sum(values), 6) if values else None,
-            "n_measured": len(values),
+            "total": (round(total[dim], 6) if n_measured[dim] else None),
+            "n_measured": n_measured[dim],
             "n_items": len(costs),
-            "complete": bool(costs) and len(values) == len(costs),
-            "partial": bool(values) and len(values) != len(costs),
+            "complete": bool(costs) and n_measured[dim] == len(costs),
+            "partial": bool(n_measured[dim])
+                       and n_measured[dim] != len(costs),
         }
     return dims
 
@@ -586,8 +584,3 @@ def window_ref(window: StrategyExecutionWindow) -> Dict[str, Any]:
         "not_comparable_reasons": list(window.not_comparable_reasons),
     }
 
-
-def copy_window(window: StrategyExecutionWindow
-                ) -> StrategyExecutionWindow:
-    """A value copy (windows are handed to callers, never shared mutable)."""
-    return copy.deepcopy(window)

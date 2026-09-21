@@ -76,6 +76,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import (
+    is_finite_number as _finite,
+    is_probability as _prob,
+)
 
 #: The current contract version. Bumped when the shape changes; a stored
 #: payload is always interpretable through the version it names.
@@ -238,18 +242,6 @@ LEGACY_UNMAPPABLE: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 # small helpers
 # ---------------------------------------------------------------------------
-
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
-
-
-def _prob(value: Any) -> bool:
-    return _finite(value) and 0.0 <= float(value) <= 1.0
 
 
 def _digest(payload: Any) -> str:
@@ -1627,11 +1619,6 @@ class CapabilityEvolutionPrediction:
             if declared is None or declared == name:
                 return self.baseline
         return None
-
-    def frozen_baseline_for_cost_dim(
-            self, dim: str) -> Optional[BaselineStatement]:
-        """The frozen reference for ONE cost dimension (its own key)."""
-        return self.baselines_by_metric.get(f"cost:{dim}")
 
     def to_dict(self) -> Dict[str, Any]:
         return {

@@ -645,32 +645,19 @@ class PredictionService:
 
     def _save(self, prediction: OutcomePrediction) -> None:
         payload = OutcomePrediction.from_dict(prediction.to_dict())
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO world_model_predictions "
-                "(prediction_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (payload.prediction_id, payload.action_spec.task_id,
-                 payload.action_spec.episode_id, payload.created_at,
-                 self.store.dumps(payload.to_dict())))
+        self.store.put_world_model_prediction(
+            payload.prediction_id, payload.action_spec.task_id,
+            payload.action_spec.episode_id,
+            self.store.dumps(payload.to_dict()),
+            created_at=payload.created_at)
 
     def get(self, prediction_id: str) -> Optional[OutcomePrediction]:
-        row = self.store.conn.execute(
-            "SELECT payload FROM world_model_predictions "
-            "WHERE prediction_id=?", (prediction_id,)).fetchone()
-        return (OutcomePrediction.from_dict(self.store.loads(row["payload"]))
-                if row else None)
+        raw = self.store.get_world_model_prediction(prediction_id)
+        return (OutcomePrediction.from_dict(self.store.loads(raw))
+                if raw is not None else None)
 
     def query(self, *, task_id: Optional[str] = None,
               episode_id: Optional[str] = None) -> List[OutcomePrediction]:
-        sql = "SELECT payload FROM world_model_predictions"
-        clauses, params = [], []
-        if task_id is not None:
-            clauses.append("task_id=?"); params.append(task_id)
-        if episode_id is not None:
-            clauses.append("episode_id=?"); params.append(episode_id)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at ASC, prediction_id ASC"
-        return [OutcomePrediction.from_dict(self.store.loads(r["payload"]))
-                for r in self.store.conn.execute(sql, params).fetchall()]
+        return [OutcomePrediction.from_dict(self.store.loads(raw))
+                for raw in self.store.world_model_predictions_for(
+                    task_id=task_id, episode_id=episode_id)]

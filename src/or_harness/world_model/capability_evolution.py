@@ -45,6 +45,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import (
+    is_finite_number as _finite,
+    is_probability as _prob,
+)
 from or_harness.world_model.contracts import (
     BaselineStatement,
     CapabilityEvolutionPrediction,
@@ -173,22 +177,6 @@ MAX_EVIDENCE_BASIS = 40
 
 #: The maximum number of verification conditions accepted.
 MAX_VERIFICATION_CONDITIONS = 12
-
-
-class CapabilityEvolutionServiceError(Exception):
-    """A capability-evolution prediction failed (with its honest reason)."""
-
-
-def _finite(value: Any) -> bool:
-    try:
-        f = float(value)
-    except (TypeError, ValueError):
-        return False
-    return f == f and abs(f) != float("inf")
-
-
-def _prob(value: Any) -> bool:
-    return _finite(value) and 0.0 <= float(value) <= 1.0
 
 
 def build_capability_evolution_request(
@@ -967,39 +955,24 @@ class CapabilityEvolutionService:
         mis-deserialize as an OR prediction (or silently vanish from the
         budget). A separate table keeps both readers honest.
         """
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO capability_predictions "
-                "(prediction_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (prediction.prediction_id, str(task_id or ""),
-                 episode_id, prediction.trace.created_at,
-                 self.store.dumps(prediction.to_dict())))
+        self.store.put_capability_prediction(
+            prediction.prediction_id, str(task_id or ""),
+            episode_id, self.store.dumps(prediction.to_dict()),
+            created_at=prediction.trace.created_at)
 
     def get(self, prediction_id: str
             ) -> Optional[CapabilityEvolutionPrediction]:
-        row = self.store.conn.execute(
-            "SELECT payload FROM capability_predictions "
-            "WHERE prediction_id=?", (prediction_id,)).fetchone()
-        if row is None:
+        raw = self.store.get_capability_prediction(prediction_id)
+        if raw is None:
             return None
         return CapabilityEvolutionPrediction.from_dict(
-            self.store.loads(row["payload"]))
+            self.store.loads(raw))
 
     def query(self, *, task_id: Optional[str] = None,
               episode_id: Optional[str] = None
               ) -> List[CapabilityEvolutionPrediction]:
-        sql = "SELECT payload FROM capability_predictions"
-        clauses, params = [], []
-        if task_id is not None:
-            clauses.append("task_id=?")
-            params.append(str(task_id))
-        if episode_id is not None:
-            clauses.append("episode_id=?")
-            params.append(episode_id)
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY created_at ASC, prediction_id ASC"
         return [CapabilityEvolutionPrediction.from_dict(
-            self.store.loads(r["payload"]))
-            for r in self.store.conn.execute(sql, params).fetchall()]
+            self.store.loads(raw))
+            for raw in self.store.capability_predictions_for(
+                task_id=(str(task_id) if task_id is not None else None),
+                episode_id=episode_id)]

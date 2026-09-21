@@ -327,6 +327,48 @@ class Store:
             "SELECT COUNT(*) AS n FROM task_texts").fetchone()
         return int(row["n"])
 
+    # -- outcome predictions (M2, legacy protocol) -----------------------------
+
+    def put_world_model_prediction(self, prediction_id: str, task_id: str,
+                                   episode_id: Optional[str], payload: str,
+                                   created_at: Optional[float] = None) -> None:
+        """Persist one outcome prediction (a frozen hypothesis)."""
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO world_model_predictions "
+                "(prediction_id, task_id, episode_id, created_at, payload) "
+                "VALUES (?,?,?,?,?)",
+                (str(prediction_id), str(task_id), episode_id,
+                 float(created_at if created_at is not None else time.time()),
+                 str(payload)))
+
+    def get_world_model_prediction(self, prediction_id: str
+                                   ) -> Optional[str]:
+        """The stored payload of one outcome prediction, or None."""
+        row = self.conn.execute(
+            "SELECT payload FROM world_model_predictions "
+            "WHERE prediction_id=?", (str(prediction_id),)).fetchone()
+        return str(row["payload"]) if row else None
+
+    def world_model_predictions_for(self, task_id: Optional[str] = None,
+                                    episode_id: Optional[str] = None
+                                    ) -> List[str]:
+        """Stored outcome-prediction payloads (oldest first), filtered."""
+        sql = "SELECT payload FROM world_model_predictions"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if task_id is not None:
+            clauses.append("task_id=?")
+            params.append(str(task_id))
+        if episode_id is not None:
+            clauses.append("episode_id=?")
+            params.append(episode_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at ASC, prediction_id ASC"
+        rows = self.conn.execute(sql, params).fetchall()
+        return [str(r["payload"]) for r in rows]
+
     # -- prediction input contexts (frozen phase-2 inputs) ---------------------
 
     def put_prediction_context(self, context_id: str, task_id: str,
@@ -385,11 +427,6 @@ class Store:
         sql += " ORDER BY created_at DESC, context_id DESC"
         rows = self.conn.execute(sql, params).fetchall()
         return [str(r["payload"]) for r in rows]
-
-    def count_prediction_contexts(self) -> int:
-        row = self.conn.execute(
-            "SELECT COUNT(*) AS n FROM prediction_contexts").fetchone()
-        return int(row["n"])
 
     # -- strategy-outcome contract predictions (M3, wm-so/1) ------------------
 
