@@ -138,14 +138,9 @@ After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first
 
 ## Example 3: a claim meeting its counterexample (miss → demote at the next induce)
 
-`se_020` was induced from routing executions whose rc fell in the
-`[0.75,1.00]` cell, predicting S04 quality in [0.8, 0.95]. Its applicability
-is exactly that: the family plus that structural cell — no ladder, no
-`widen` command.
+`se_020` was induced from routing executions whose rc fell in the `[0.75,1.00]` cell, predicting S04 quality in [0.8, 0.95]. Its applicability is exactly that: the family plus that structural cell — no ladder, no `widen` command.
 
-A routing task with rc=0.80 arrives, inside the cell. `recall` matches
-`se_020` and you execute; quality comes in at 0.55 — outside the interval.
-`record` writes the frozen check onto the fact and changes nothing:
+A routing task with rc=0.80 arrives, inside the cell. `recall` matches `se_020` and you execute; quality comes in at 0.55 — outside the interval. `record` writes the frozen check onto the fact and changes nothing:
 
 ```json
 {"prediction_checks": [{"entry_id": "se_020", "hit": false, "predicted": 0.95,
@@ -153,8 +148,7 @@ A routing task with rc=0.80 arrives, inside the cell. `recall` matches
  "cost_feedback": {...}}
 ```
 
-The claim covered that task when the execution ran, so the miss is evidence
-against the claim. Two more like it and the next `orx induce` reports:
+The claim covered that task when the execution ran, so the miss is evidence against the claim. Two more like it and the next `orx induce` reports:
 
 ```json
 {"revisions": [{"entry_id": "se_020", "strategy_id": "S04",
@@ -164,21 +158,13 @@ against the claim. Two more like it and the next `orx induce` reports:
   "transitions": ["demoted:->suspect"]}]}
 ```
 
-`suspect` is downweighted ×0.5 and labelled in `recall`; retirement to the
-cold archive remains your explicit, irreversible call via `orx retire`.
+`suspect` is downweighted ×0.5 and labelled in `recall`; retirement to the cold archive remains your explicit, irreversible call via `orx retire`.
 
-Note what a *record in another cell* does instead: a task at rc=0.40 is in
-`rc[0.25,0.50]`, so it does not match this claim and is neither a check nor a
-counterexample. If the strategy holds there too, that is evidence for a
-*different* claim in that cell — induce it separately. Nothing stretches the
-first claim's applicability to reach it, which is the point: a range in which
-samples happened to be observed is not a demonstrated region, and pooling
-opposite regions is how a claim ends up predicting "0.55 everywhere".
+Note what a *record in another cell* does instead: a task at rc=0.40 is in `rc[0.25,0.50]`, so it does not match this claim and is neither a check nor a counterexample. If the strategy holds there too, that is evidence for a *different* claim in that cell — induce it separately. Nothing stretches the first claim's applicability to reach it, which is the point: a range in which samples happened to be observed is not a demonstrated region, and pooling opposite regions is how a claim ends up predicting "0.55 everywhere".
 
 ## Example 4: a candidate that is formed but not published
 
-You record four routing executions, all at rc≈0.9, across three tasks, all
-optimum. `record` fires C2/C6. You induce:
+You record four routing executions, all at rc≈0.9, across three tasks, all optimum. `record` fires C2/C6. You induce:
 
 ```bash
 $ orx induce --strategy S04
@@ -187,10 +173,7 @@ $ orx induce --strategy S04
   "skipped": "recorded as an unverified candidate: not published as strategic knowledge — recall falls back to conditional statistics until an admission check passes"}]}}
 ```
 
-The entry exists and will collect frozen checks, but `recall` still answers
-`evidence="conditional_stats"` for S04 — a candidate is not knowledge yet. You
-then verify the actual claim on an execution that was not part of the
-inducing set:
+The entry exists and will collect frozen checks, but `recall` still answers `evidence="conditional_stats"` for S04 — a candidate is not knowledge yet. You then verify the actual claim on an execution that was not part of the inducing set:
 
 ```bash
 $ orx induce --strategy S04 --verify '{"purpose":"rule",
@@ -205,9 +188,4 @@ $ orx induce --strategy S04 --verify '{"purpose":"rule",
     "conclusion":"the declared check passed on real execution evidence"}}]}}
 ```
 
-Now `recall` returns `evidence="strategic_entry"`. If the same check had
-instead been run against an execution that crashed, the state would have been
-`insufficient_evidence` — the claim was not checked, which is not the same as
-being wrong. And if the execution had completed with the wrong objective, the
-state would be `refuted`, which keeps the entry out of recall permanently
-until something changes.
+Now `recall` returns `evidence="strategic_entry"`. If the same check had instead been run against an execution that crashed, the state would have been `insufficient_evidence` — the claim was not checked, which is not the same as being wrong. And if the execution had completed with the wrong objective, the state would be `refuted`, which keeps the entry out of recall permanently until something changes.

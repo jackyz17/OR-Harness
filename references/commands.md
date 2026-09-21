@@ -170,23 +170,15 @@ The budget view for a task/episode: consumption over ALL real action costs — r
 ## `orx context --task t.json [--episode ep1] [--top 3] [--code solve.py] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
 ## `orx context --context-id CTX_ID`
 
-**The frozen prediction input context (world-model phase 2).** One call gathers
-everything a prediction may condition on, freezes it, and persists it. Full
-spec: [references/prediction_context.md](prediction_context.md).
+**The frozen prediction input context (world-model phase 2).** One call gathers everything a prediction may condition on, freezes it, and persists it. Full spec: [references/prediction_context.md](prediction_context.md).
 
-Build mode (`--task`) freezes ONE belief snapshot, runs the EXISTING recall
-path once (both channels), and assembles:
+Build mode (`--task`) freezes ONE belief snapshot, runs the EXISTING recall path once (both channels), and assembles:
 
-- the **joint problem representation**: the task's own text and payload, the
-  CIR's relations (kept as relations, not three coupling numbers), the math
-  attributes each with an **origin**, the structural profile and its
-  derivation report;
+- the **joint problem representation**: the task's own text and payload, the CIR's relations (kept as relations, not three coupling numbers), the math attributes each with an **origin**, the structural profile and its derivation report;
 - **X/B** from that same snapshot (accumulated progress + budget state);
 - the **retrieval evidence** of both channels, deduplicated by identity;
-- the **harness capability evidence** (`H = F(M, W_OR, Pi, R, T)`, evidence
-  statuses only, no composite score) plus a capability VERSION identity;
-- the **external execution constraints** (declared budget + consumption
-  status, available solver families, executor limits).
+- the **harness capability evidence** (`H = F(M, W_OR, Pi, R, T)`, evidence statuses only, no composite score) plus a capability VERSION identity;
+- the **external execution constraints** (declared budget + consumption status, available solver families, executor limits).
 
 ```bash
 # a task with scene text and an optional CIR, and NO model field
@@ -199,18 +191,11 @@ orx context --task t.json --math '{"linearity": "linear", "objective_kind": "min
 orx context --context-id ctx_ab12cd34ef56
 ```
 
-**What it does NOT do**: no prediction-model call, no solver execution, no
-induction, no capability re-measurement. The only external call is the
-configured embedding backend on the existing retrieval path — a read.
+**What it does NOT do**: no prediction-model call, no solver execution, no induction, no capability re-measurement. The only external call is the configured embedding backend on the existing retrieval path — a read.
 
-**A task with no `model` field is a normal input.** So is a task with no CIR,
-and one with no textual field. Each absent part is listed in
-`result.missing` with what it means; nothing is guessed from `family`. Read
-`result.joint.math` — every attribute carries its `origins`, and
-`result.joint.unknowns` names what nothing established.
+**A task with no `model` field is a normal input.** So is a task with no CIR, and one with no textual field. Each absent part is listed in `result.missing` with what it means; nothing is guessed from `family`. Read `result.joint.math` — every attribute carries its `origins`, and `result.joint.unknowns` names what nothing established.
 
-**Degradation is per part.** `result.degraded[]` names the part and the
-reason:
+**Degradation is per part.** `result.degraded[]` names the part and the reason:
 
 | Situation | `degraded[].reason` |
 |---|---|
@@ -221,74 +206,27 @@ reason:
 | Embedding call failed | `embedding backend error: ...` |
 | The channel ran and found nothing | **no `degraded` entry** — `semantic.status` is `ok` |
 
-An empty evidence set with a degraded channel is **not** "nothing comparable
-exists", and `result.retrieval.notes` says so.
+An empty evidence set with a degraded channel is **not** "nothing comparable exists", and `result.retrieval.notes` says so.
 
-**Evidence classes** (`result.evidence_classes`) keep kinds apart:
-`execution_fact`, `verified_knowledge`, `unverified_knowledge`,
-`legacy_knowledge`, `structural_recommendation`. Retrieval never upgrades one
-into another, unverified candidates are hidden unless `--include-unverified`
-is passed, and one memory hit by both channels is ONE piece of evidence
-(`identity = layer:id`) carrying both channel names.
+**Evidence classes** (`result.evidence_classes`) keep kinds apart: `execution_fact`, `verified_knowledge`, `unverified_knowledge`, `legacy_knowledge`, `structural_recommendation`. Retrieval never upgrades one into another, unverified candidates are hidden unless `--include-unverified` is passed, and one memory hit by both channels is ONE piece of evidence (`identity = layer:id`) carrying both channel names.
 
-**Reuse is version-verified.** `result.task_digest` is the task VERSION the
-context was built for. Passing a recall result or context whose version
-disagrees is refused with a named reason — never silently aligned.
+**Reuse is version-verified.** `result.task_digest` is the task VERSION the context was built for. Passing a recall result or context whose version disagrees is refused with a named reason — never silently aligned.
 
-**One CIR for the whole request.** `--cir` is resolved once and drives the
-joint representation, the snapshot's structural cell and the retrieval; a
-supplied CIR REPLACES the task's own `coupling` (check
-`result.joint.sources.cir`: `caller_supplied` / `task_coupling` / `none`).
-Without this one request could carry two structural judgments and retrieve
-knowledge from the wrong cell.
+**One CIR for the whole request.** `--cir` is resolved once and drives the joint representation, the snapshot's structural cell and the retrieval; a supplied CIR REPLACES the task's own `coupling` (check `result.joint.sources.cir`: `caller_supplied` / `task_coupling` / `none`). Without this one request could carry two structural judgments and retrieve knowledge from the wrong cell.
 
-**Bounded to the frozen moment.** With a historical `--snapshot`, memories
-created AFTER it are excluded from the retrieval and reported under
-`execution_constraints.retrieval_bounding` (`dropped` / `unbounded_kept`).
+**Bounded to the frozen moment.** With a historical `--snapshot`, memories created AFTER it are excluded from the retrieval and reported under `execution_constraints.retrieval_bounding` (`dropped` / `unbounded_kept`).
 
-**Historical reconstruction is not creation-time filtering.** With a
-`--snapshot`, the knowledge view comes from the snapshot's **frozen**
-`coverage.knowledge_layers` (so an entry revised afterwards is read at the
-value it had), the retrieval is only what was saved with the snapshot, and
-the reliability and cell-evidence blocks — which a snapshot does not save —
-are reported MISSING rather than read from today's banks. Every historical
-build says so in `result.missing`.
+**Historical reconstruction is not creation-time filtering.** With a `--snapshot`, the knowledge view comes from the snapshot's **frozen** `coverage.knowledge_layers` (so an entry revised afterwards is read at the value it had), the retrieval is only what was saved with the snapshot, and the reliability and cell-evidence blocks — which a snapshot does not save — are reported MISSING rather than read from today's banks. Every historical build says so in `result.missing`.
 
-**Structure consistency is checked after the effective CIR is resolved.**
-A snapshot taken under a different structure than the effective input
-(explicit CIR included) is REFUSED with the conflicting dimension named;
-the same check guards context reuse at `predict-outcome`. An unmeasured
-dimension is not a mismatch.
+**Structure consistency is checked after the effective CIR is resolved.** A snapshot taken under a different structure than the effective input (explicit CIR included) is REFUSED with the conflicting dimension named; the same check guards context reuse at `predict-outcome`. An unmeasured dimension is not a mismatch.
 
-**The memory version digests content.**
-`result.capability_version.knowledge_content_digest` covers the
-decision-relevant content of the memory actually consulted (entry fields —
-including `applicability` and `actions` — plus the carried hits). Revising an
-entry moves it; a re-read does not (read timestamps are listed under
-`excluded_keys`). Only the digest and its composition are carried, never the
-digested content.
+**The memory version digests content.** `result.capability_version.knowledge_content_digest` covers the decision-relevant content of the memory actually consulted (entry fields — including `applicability` and `actions` — plus the carried hits). Revising an entry moves it; a re-read does not (read timestamps are listed under `excluded_keys`). Only the digest and its composition are carried, never the digested content.
 
 ## `orx [--world-model URL::MODEL] predict-outcome --task t.json --action-spec spec.json [--episode ep1] [--parent-action ACTION_ID] [--context CTX_ID | --no-context]`
 
 **World-model outcome prediction (shadow mode).** Ask a configured world model for a structured prediction of ONE candidate action's consequences, from the frozen pre-action state. The candidate is an `ActionSpec` JSON (`{"action_type": "execute_strategy", "task_id": ..., "strategy_id": "S01", "solver": "highs", ...}`) — a hypothesis, NOT a recorded action. The prediction carries: expected execution status / feasibility / quality / failure risk / per-dimension cost, predicted successor state changes (hypothetical — never written to real state), the model's self-reported confidence (**uncalibrated**), its claimed evidence basis, and fields it explicitly declined to predict.
 
-- **Input context** (phase 2): by default one context is built for this call
-  and sent to the provider under the request's `prediction_context` key; the
-  stored prediction records `model_info.prediction_context_id` so the exact
-  frozen input can be resolved later. `--context CTX_ID` reuses a FROZEN
-  context (its identity is verified against this task/version/episode — the
-  way several candidates of one decision share one input, and the way a
-  stored context replays without reading today's banks). Reusing a context
-  replays its FROZEN conditions: the request's `state` (X/B), the
-  `candidate_knowledge_targets` and the `prediction_reliability` all come
-  from the context, and `model_info.conditions_source` says
-  `frozen_context`. The one exception is the BUDGET: it is an external limit,
-  not a prediction condition, so the pre-call check uses the current ledger
-  and a difference is REPORTED
-  (`model_info.budget_checked_at_call_time`) without rewriting the frozen
-  constraint. `--no-context` sends no context at all, so the request keeps
-  its pre-phase-2 shape exactly. The context changes what the model is
-  GIVEN, not the output protocol — that switch belongs to the next phase.
+- **Input context** (phase 2): by default one context is built for this call and sent to the provider under the request's `prediction_context` key; the stored prediction records `model_info.prediction_context_id` so the exact frozen input can be resolved later. `--context CTX_ID` reuses a FROZEN context (its identity is verified against this task/version/episode — the way several candidates of one decision share one input, and the way a stored context replays without reading today's banks). Reusing a context replays its FROZEN conditions: the request's `state` (X/B), the `candidate_knowledge_targets` and the `prediction_reliability` all come from the context, and `model_info.conditions_source` says `frozen_context`. The one exception is the BUDGET: it is an external limit, not a prediction condition, so the pre-call check uses the current ledger and a difference is REPORTED (`model_info.budget_checked_at_call_time`) without rewriting the frozen constraint. `--no-context` sends no context at all, so the request keeps its pre-phase-2 shape exactly. The context changes what the model is GIVEN, not the output protocol — that switch belongs to the next phase.
 - **Configuration boundary**: `--world-model BASE_URL::MODEL` (OpenAI-compatible endpoint; API key from `$OR_WM_API_KEY`). Credentials never persist. Without the flag, the command returns an explicit `not_configured` error — and NO other command ever invokes a model.
 - **Shadow discipline**: the prediction changes NOTHING. `recall`, `predict`, `execute`, `record` behave identically whether or not you predict. You remain the decision-maker.
 - **Calibration duty**: with a world model configured, one predict–bind pair per executed action is the required loop — executed prediction–comparison pairs are the only source of calibration evidence, and skipping them is legitimate only when no provider is configured (`not_configured`). After a `plan-next` selection, bind the selected path's prediction instead of predicting again.
@@ -297,9 +235,7 @@ digested content.
 
 ### What the model is asked to predict (H included)
 
-The prediction covers X and B **and H** — what the action does to accumulated
-experience and strategic knowledge. Which of these are requested depends on
-`--prediction-mode` (global flag, or per-`plan-next`):
+The prediction covers X and B **and H** — what the action does to accumulated experience and strategic knowledge. Which of these are requested depends on `--prediction-mode` (global flag, or per-`plan-next`):
 
 | Mode | Requested | Knowledge term in scoring |
 |---|---|---|
@@ -307,56 +243,30 @@ experience and strategic knowledge. Which of these are requested depends on
 | `h-x-b` | X/B and H | forced off |
 | `h-x-b-value` (default) | X/B and H | live at `--delta` (default **0.0**) |
 
-A `knowledge_changes` item names a **target** — an existing entry (it must
-truly exist in the frozen knowledge view; a model cannot invent knowledge) or
-a hypothesis (allowed, but it must declare `expected_observation` and
-`check_condition`) — plus a **change** (`adds_evidence` / `supports` /
-`revises` / `refutes` / `candidate_forms` / `narrows`), a **horizon**
-(`after_execution` or `after_consolidation`), optional **preconditions**, and
-a **prediction basis**. The framework supplies the candidate targets and all
-magnitudes; the model contributes a direction, so it cannot raise its own
-value by asserting confidence.
+A `knowledge_changes` item names a **target** — an existing entry (it must truly exist in the frozen knowledge view; a model cannot invent knowledge) or a hypothesis (allowed, but it must declare `expected_observation` and `check_condition`) — plus a **change** (`adds_evidence` / `supports` / `revises` / `refutes` / `candidate_forms` / `narrows`), a **horizon** (`after_execution` or `after_consolidation`), optional **preconditions**, and a **prediction basis**. The framework supplies the candidate targets and all magnitudes; the model contributes a direction, so it cannot raise its own value by asserting confidence.
 
 ### How knowledge predictions are judged
 
-Verdicts are **stage-partitioned** so the stages never block each other: the
-immediate X/B comparison and the knowledge verdicts coexist on one prediction,
-and a later stage can still be written after an earlier one.
+Verdicts are **stage-partitioned** so the stages never block each other: the immediate X/B comparison and the knowledge verdicts coexist on one prediction, and a later stage can still be written after an earlier one.
 
 | Stage | Triggered by | Judged against |
 |---|---|---|
 | `after_execution` | `record` | the evidence that execution produced (did it land in the predicted cell; is the observed quality inside the claim's own interval) |
 | `after_consolidation` | the next `induce` | the induction's recorded transition (`entries_created` / `entry_changes`) |
 
-States: `pending` (opportunity not yet arrived, or a precondition unmet —
-**never counted as a failure**), `fulfilled`, `contradicted`, `missed`,
-`inconclusive`. A stage verdict is written once; re-running is a no-op.
+States: `pending` (opportunity not yet arrived, or a precondition unmet — **never counted as a failure**), `fulfilled`, `contradicted`, `missed`, `inconclusive`. A stage verdict is written once; re-running is a no-op.
 
-Honesty boundaries: an entry **forming** is not publishable strategic
-knowledge (admission verification still decides that), and a cell's mean
-quality moving does not **prove** a rule — the verdict text says so.
+Honesty boundaries: an entry **forming** is not publishable strategic knowledge (admission verification still decides that), and a cell's mean quality moving does not **prove** a rule — the verdict text says so.
 
-Resolved verdicts aggregate into `prediction_class_reliability` (per change ×
-horizon). That measured reliability — never the model's self-reported
-confidence — is what later predictions may draw on; a class below the minimum
-sample count reports `reliability: null` (`insufficient_history`) and grants
-no value.
+Resolved verdicts aggregate into `prediction_class_reliability` (per change × horizon). That measured reliability — never the model's self-reported confidence — is what later predictions may draw on; a class below the minimum sample count reports `reliability: null` (`insufficient_history`) and grants no value.
 
 ## `orx bind-induction-outcome --assessment ASSESSMENT_ID`
 
-Bind an `assess-induction` assessment's predictions to the induction that
-actually ran, and record the verdict. This is the **maintenance decision's**
-own slow feedback: "was it right to expect this induction to form a claim?"
+Bind an `assess-induction` assessment's predictions to the induction that actually ran, and record the verdict. This is the **maintenance decision's** own slow feedback: "was it right to expect this induction to form a claim?"
 
-It is deliberately **not** the same as the ordinary-action knowledge
-evaluation above: that one judges what a *solving* action predicted about the
-knowledge it fed; this one judges the *induction decision's* expectation. Both
-are needed and neither substitutes for the other.
+It is deliberately **not** the same as the ordinary-action knowledge evaluation above: that one judges what a *solving* action predicted about the knowledge it fed; this one judges the *induction decision's* expectation. Both are needed and neither substitutes for the other.
 
-The verdict is computed from the induction that actually followed — never from
-the assessment's own opinion of itself. A rejected or deferred recommendation
-is `inconclusive`, not a miss: the predicted consequence was never given a
-chance to occur. Idempotent: a second call returns the stored verdict.
+The verdict is computed from the induction that actually followed — never from the assessment's own opinion of itself. A rejected or deferred recommendation is `inconclusive`, not a miss: the predicted consequence was never given a chance to occur. Idempotent: a second call returns the stored verdict.
 
 ## `orx bind-outcome --prediction ID --action ACTION_ID`
 
@@ -366,7 +276,7 @@ Query predictions with `orx inspect --bank predictions [--task ID]`.
 
 ## `orx [--world-model URL::MODEL] predict-strategy --task t.json --candidate c.json [--episode ep1] [--context CTX_ID] [--cir cir.json]`
 
-**Strategy-outcome prediction under the wm-so/1 protocol (world-model M3).** Predict ONE candidate strategy's benefit / cost / risk / uncertainty from a frozen prediction input context. The candidate is a `CandidateRef` JSON (`{"action_type": "execute_strategy", "strategy_id": "S01", "solver": "highs", "config": {"time_limit": 60}, "scope": "attempt"}`) or a legacy `ActionSpec` (execution params and budget hint preserved verbatim; an unmappable scope such as `"task"` is refused). Same strategy_id with a different solver/config is a DIFFERENT candidate — the config travels with the prediction into the choice and the execution binding.
+**Strategy-outcome prediction under the wm-so/1 protocol.** Predict ONE candidate strategy's benefit / cost / risk / uncertainty from a frozen prediction input context. The candidate is a `CandidateRef` JSON (`{"action_type": "execute_strategy", "strategy_id": "S01", "solver": "highs", "config": {"time_limit": 60}, "scope": "attempt"}`) or a legacy `ActionSpec` (execution params and budget hint preserved verbatim; an unmappable scope such as `"task"` is refused). Same strategy_id with a different solver/config is a DIFFERENT candidate — the config travels with the prediction into the choice and the execution binding.
 
 - **Input**: `--context CTX_ID` reuses a frozen context (identity verified against the task/version/episode AND the effective input version — pass the SAME `--cir` you built the context with); the default builds one fresh context for this call. The provider receives the full context CONTENT (joint problem representation, retrieval evidence, capability evidence, constraints), not ids.
 - **Output**: a `StrategyOutcomePrediction` — benefit with metric/unit/baseline (`solution_quality` must be NORMALIZED in [0,1]; a raw objective value is refused, never clamped), cost as a CostVector with a predicted-dimension mask, risk as named events separate from cost, uncertainty with the model's self-report recorded as explicitly UNCALIBRATED. Every failure state (not configured, provider error, empty payload, invalid JSON, NaN, out-of-range probability) is distinguishable and persisted with whatever usage the call consumed. One call, no retries, no defaults.
@@ -378,7 +288,7 @@ Bind a strategy-outcome prediction to the real action that ran. The binding chec
 
 ## `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
 
-**Episode close-out (world-model M4).** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice. Full spec: [episode_closeout.md](episode_closeout.md).
+**Episode close-out.** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice. Full spec: [episode_closeout.md](episode_closeout.md).
 
 ## `orx calibration [--min-samples N]`
 
@@ -390,7 +300,7 @@ List (or read one) stored post-hoc evaluations of strategy-outcome predictions (
 
 ## `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
 
-**Capability-evolution prediction (world-model M5, `wm-ce/1`).** Predicts what ONE offline learning operation (`--operation` JSON: `operation_type` of `induce`/`revise`/`reverify`/`retire`, plus `strategy_id`/`config`) would change in FUTURE task performance: `expected_changes` (metric, unit, direction, value, baseline), `learning_cost`, `degradation_risk`, `uncertainty` and `verification_conditions`. The FRAMEWORK fixes the operation identity, the experience scope (from the bundle's own executions), the task targeting, the horizon and the per-metric baselines; the model fills prediction content only and may CITE a frozen baseline, never set one. Cost references are frozen **per dimension** (`cost:solver_runtime_s`, `cost:llm_tokens`) because several dimensions share the `resource_cost` metric while their units do not convert — a relative cost change is converted through the reference for ITS OWN unit, and a cost change that names no unit gets none. A failed call is a persisted failure with whatever usage it consumed. `status="contract_only"` with no provider; the service IS implemented, so `prediction_made` is what makes it `valid`.
+**Capability-evolution prediction (`wm-ce/1`).** Predicts what ONE offline learning operation (`--operation` JSON: `operation_type` of `induce`/`revise`/`reverify`/`retire`, plus `strategy_id`/`config`) would change in FUTURE task performance: `expected_changes` (metric, unit, direction, value, baseline), `learning_cost`, `degradation_risk`, `uncertainty` and `verification_conditions`. The FRAMEWORK fixes the operation identity, the experience scope (from the bundle's own executions), the task targeting, the horizon and the per-metric baselines; the model fills prediction content only and may CITE a frozen baseline, never set one. Cost references are frozen **per dimension** (`cost:solver_runtime_s`, `cost:llm_tokens`) because several dimensions share the `resource_cost` metric while their units do not convert — a relative cost change is converted through the reference for ITS OWN unit, and a cost change that names no unit gets none. A failed call is a persisted failure with whatever usage it consumed. `status="contract_only"` with no provider; the service IS implemented, so `prediction_made` is what makes it `valid`.
 
 ## `orx compare-capability --predictions ID[,ID...] [--horizon-tasks N] [--allow-quality-loss]`
 
@@ -398,7 +308,7 @@ Compare frozen capability predictions and recommend one, or `defer` (read-only: 
 
 ## `orx accept-capability --recommendation JSON [--prediction ID] [--verify JSON] [--note TEXT] [--force]`
 
-**EXPLICITLY** accept a recommendation and run the real offline operation on the prediction's OWN frozen scope (the only M5 entry that changes knowledge). The operation TYPE decides what runs: `induce`/`revise` go through the existing induction path, `retire` removes the named target entry, and any other type is REFUSED — a candidate is never executed as a different operation under its name. A scope is never widened by re-reading the current bank.
+**EXPLICITLY** accept a recommendation and run the real offline operation on the prediction's OWN frozen scope (the only offline entry that changes knowledge). The operation TYPE decides what runs: `induce`/`revise` go through the existing induction path, `retire` removes the named target entry, and any other type is REFUSED — a candidate is never executed as a different operation under its name. A scope is never widened by re-reading the current bank.
 
 ## `orx reject-capability --recommendation JSON [--prediction ID] [--reason TEXT]`
 
@@ -426,27 +336,16 @@ The two-stage feedback state of every capability prediction (read-only): fact bo
 4. scores each path as `U = alpha*Q_terminal − beta*C_path − gamma*R_terminal + delta*K` (terminal quality / incremental predicted cost on the common measured dimensions / terminal failure risk / knowledge value — longer paths never win by accumulating quality terms; step risks are never summed or multiplied);
 5. suggests the FIRST step of the best path.
 
-**The knowledge term `delta*K`.** `K` combines a framework-side structural need
-(how thin the support is, how much room the claim's interval still has above
-its honest floor, how much *independent* cross-task reuse the cell has) with
-the model's predicted direction. `--delta` defaults to **0.0**, so an
-unmodified call scores exactly as it did before the term existed.
+**The knowledge term `delta*K`.** `K` combines a framework-side structural need (how thin the support is, how much room the claim's interval still has above its honest floor, how much *independent* cross-task reuse the cell has) with the model's predicted direction. `--delta` defaults to **0.0**, so an unmodified call scores exactly as it did before the term existed.
 
-**A missing `K` adds NOTHING** (`path.incomparable["knowledge"]` says so).
-This is the deliberate mirror of unknown risk: an unknown *downside* is charged
-in full, but an unknown *upside* is paid nothing — paying it would make the
-system prefer whichever action it understands least. `K = None` means "no
-justified value", never "worth nothing". `delta_knowledge` and
-`knowledge_detail` on each path show the term and why it came out that way,
-labelled `heuristic_uncalibrated` (it is a transparent heuristic, not a
-calibrated expected value).
+**A missing `K` adds NOTHING** (`path.incomparable["knowledge"]` says so). This is the deliberate mirror of unknown risk: an unknown *downside* is charged in full, but an unknown *upside* is paid nothing — paying it would make the system prefer whichever action it understands least. `K = None` means "no justified value", never "worth nothing". `delta_knowledge` and `knowledge_detail` on each path show the term and why it came out that way, labelled `heuristic_uncalibrated` (it is a transparent heuristic, not a calibrated expected value).
 
 - **Candidates**: `--candidates` (your own ActionSpec list, recommended when you have domain hypotheses), or the catalog vocabulary filtered by applicability and available solvers. Without memory, candidates carry no fabricated performance claims — consequences come from the world model.
 - **Bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.
 - **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
 - **Unknowns**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
 - **Requirements**: a configured `--world-model` provider. Without one every path is `not_configured` and no suggestion is made. Planning supports `execute_strategy` candidates; other action types are reported as not plannable.
-- **`--protocol strategy-outcome`** (world-model M3): the same decision loop under the wm-so/1 protocol — ONE frozen context for the whole comparison, one strategy-outcome prediction per candidate (benefit/cost/risk/uncertainty), a conservative comparison (`U = alpha*G - beta*C - gamma*R`; unknown cost charged the peak share, unknown risk the full weight, unknown benefit nothing; the knowledge term is OFF), and a suggestion you accept through the SAME `choose-next`. Horizon is FIXED at 1 for this protocol (one macro comparison, then re-planning from the real observation); `--horizon 2` with it is refused. When no candidate carries a usable prediction the plan reports `no_valid_predictions` and suggests nothing — fall back to `recall`/Selector or choose yourself. Full spec: [strategy_outcome.md](strategy_outcome.md).
+- **`--protocol strategy-outcome`**: the same decision loop under the wm-so/1 protocol — ONE frozen context for the whole comparison, one strategy-outcome prediction per candidate (benefit/cost/risk/uncertainty), a conservative comparison (`U = alpha*G - beta*C - gamma*R`; unknown cost charged the peak share, unknown risk the full weight, unknown benefit nothing; the knowledge term is OFF), and a suggestion you accept through the SAME `choose-next`. Horizon is FIXED at 1 for this protocol (one macro comparison, then re-planning from the real observation); `--horizon 2` with it is refused. When no candidate carries a usable prediction the plan reports `no_valid_predictions` and suggests nothing — fall back to `recall`/Selector or choose yourself. Full spec: [strategy_outcome.md](strategy_outcome.md).
 
 ## `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
 
@@ -519,9 +418,7 @@ orx contract --payload prediction.json
 # -> exit 2 on an unsupported version: the payload is NEVER guessed at
 ```
 
-**Read `status` together with three SEPARATE facts.** A built contract is
-`status="contract_only"` unless a prediction was really produced and
-validated:
+**Read `status` together with three SEPARATE facts.** A built contract is `status="contract_only"` unless a prediction was really produced and validated:
 
 | Field | Meaning |
 |---|---|
@@ -529,19 +426,9 @@ validated:
 | `service_available` | this build implements the service for this kind **and** a provider is configured |
 | `prediction_made` | a prediction was really produced and validated |
 
-Only `prediction_made` makes `status="valid"`. Building a contract returns
-`contract_only` **even with a provider configured** — zero model calls with
-empty benefit/cost/risk is not a forecast. The capability-evolution kind has
-a contract AND a service (M5, `wm-ce/1`), so a configured provider makes it
-`service_available`; `prediction_made` still requires the real call.
-`unsupported`/`invalid` mean nothing was predicted. The
-capability contract carries no composite H score, and a legacy payload is
-read through a view that derives **no** capability increment, risk severity
-or measurement.
+Only `prediction_made` makes `status="valid"`. Building a contract returns `contract_only` **even with a provider configured** — zero model calls with empty benefit/cost/risk is not a forecast. The capability-evolution kind has a contract AND a service (`wm-ce/1`), so a configured provider makes it `service_available`; `prediction_made` still requires the real call. `unsupported`/`invalid` mean nothing was predicted. The capability contract carries no composite H score, and a legacy payload is read through a view that derives **no** capability increment, risk severity or measurement.
 
-Full contract definition, the attempt-vs-strategy-window scope rule, the
-`H = F(M, W_OR, Pi, R, T)` sources, and the migration table:
-[world_model_contract.md](world_model_contract.md).
+Full contract definition, the attempt-vs-strategy-window scope rule, the `H = F(M, W_OR, Pi, R, T)` sources, and the migration table: [world_model_contract.md](world_model_contract.md).
 
 ## `orx doctor`
 

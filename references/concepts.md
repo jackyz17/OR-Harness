@@ -19,21 +19,7 @@ E_t is factual execution evidence (what actually happened); M_strategic is deriv
 
 ## Structural grouping and coupling derivation
 
-Structural groups — the similarity keys for all memory — are one (family,
-structural cell, strategy) triple each: the observations that may be
-aggregated together. A cell is the measurable coupling dims quantized to the
-four intervals `[0.00,0.25] [0.25,0.50] [0.50,0.75] [0.75,1.00]`, with an
-unmeasured dimension in its own `[unknown]` cell. Structure conditions the
-statistics but not the ladder: there are no generalization levels, no
-`widen`/`tighten`, and no automatic re-scoping. Coupling values are derived by
-priority: the task's CIR (the `coupling` field — relations/indexes measured
-from the pre-model coupling understanding; the cleanest source) > the `model`
-representation (measured from declared constraints) > structured spec fields >
-harness-supplied values. `semantic_coupling` is never derived as a scalar.
-When a supplied value contradicts the winning structural derivation across a
-bin boundary, the profile carries a warning — and the derived value wins for
-grouping, because an append-only fact filed in the wrong group would pollute
-conditional statistics permanently.
+Structural groups — the similarity keys for all memory — are one (family, structural cell, strategy) triple each: the observations that may be aggregated together. A cell is the measurable coupling dims quantized to the four intervals `[0.00,0.25] [0.25,0.50] [0.50,0.75] [0.75,1.00]`, with an unmeasured dimension in its own `[unknown]` cell. Structure conditions the statistics but not the ladder: there are no generalization levels, no `widen`/`tighten`, and no automatic re-scoping. Coupling values are derived by priority: the task's CIR (the `coupling` field — relations/indexes measured from the pre-model coupling understanding; the cleanest source) > the `model` representation (measured from declared constraints) > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
 
 **The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only. The solve-script AST path (`profile --code solve.py`) remains available as a diagnostic, but `execute` does not use it.
 
@@ -131,78 +117,31 @@ Lossy compaction and the summary consumption contract are left to the Cost/Induc
 
 ## Verification philosophy: forward, not backward
 
-An induced entry is a prediction hypothesis. Two separate things must hold
-before it counts as published knowledge: its CLAIM must pass an admission
-check at induction time (`induce --verify` — a rule holding, a repair working,
-or a quality-preserving cost saving, judged by the framework from real
-executions), and its PREDICTIONS are then validated by *future* executions
-checking its interval — never by self-testing on the training data. This is
-why entries are born `candidate`, why intervals are floored by sample size
-(n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions
-with ≥70% hit rate ON TOP of the passed admission check.
+An induced entry is a prediction hypothesis. Two separate things must hold before it counts as published knowledge: its CLAIM must pass an admission check at induction time (`induce --verify` — a rule holding, a repair working, or a quality-preserving cost saving, judged by the framework from real executions), and its PREDICTIONS are then validated by *future* executions checking its interval — never by self-testing on the training data. This is why entries are born `candidate`, why intervals are floored by sample size (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions with ≥70% hit rate ON TOP of the passed admission check.
 
-The only text a model writes into the knowledge layer is *phrasing*: you may
-attach applicability notes at induce time (`--note`). They are stored for the
-reader and sit outside scoring — a sentence cannot be verified, so it is not
-scored. (A configured world model may separately produce *predictions*, but
-those live in their own log and never enter an entry, a statistic, or a
-verdict; see [world_model_contract.md](world_model_contract.md).)
+The only text a model writes into the knowledge layer is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and sit outside scoring — a sentence cannot be verified, so it is not scored. (A configured world model may separately produce *predictions*, but those live in their own log and never enter an entry, a statistic, or a verdict; see [world_model_contract.md](world_model_contract.md).)
 
 ## World-model outcome predictions: shadow hypotheses, never decisions
 
-A *world-model prediction* is a structured hypothesis about what ONE
-candidate action would do from the current frozen state: expected status,
-feasibility, quality, failure risk, per-dimension cost, and successor state
-changes. It is produced by an explicitly configured provider
-(`--world-model URL::MODEL`, OpenAI-compatible; credentials from the
-environment, never persisted) and lives in its own log table — it is not a
-third knowledge bank, not an ExecutionRecord, and not a StrategicEntry.
+A *world-model prediction* is a structured hypothesis about what ONE candidate action would do from the current frozen state: expected status, feasibility, quality, failure risk, per-dimension cost, and successor state changes. It is produced by an explicitly configured provider (`--world-model URL::MODEL`, OpenAI-compatible; credentials from the environment, never persisted) and lives in its own log table — it is not a third knowledge bank, not an ExecutionRecord, and not a StrategicEntry.
 
 The discipline that makes these predictions useful rather than corrosive:
 
-- **Shadow mode.** A prediction never changes a recommendation, a score, or
-  a route. You decide; the prediction is compared afterwards.
-- **Frozen before the act.** The input snapshot is frozen at prediction
-  time. Predicting after executing and calling it a forecast is not
-  evidence — it is hindsight wearing a costume.
-- **Both sides defined, or not compared.** Comparison covers only fields
-  the prediction defined AND the execution measured (the same
-  both-sides-measured rule as cost feedback). A predicted-but-unmeasured
-  cost dimension is listed as not-compared, never scored as zero error.
-- **No counterfactuals.** A candidate that never ran has no result. A
-  prediction for strategy A is never scored against strategy B's
-  execution — the mismatch is recorded and the comparison is skipped.
-- **Two costs, never confused.** The PREDICTED cost of the action is a
-  hypothesis inside the prediction record; the model call's OWN cost
-  (tokens, latency) is real spend, recorded on the prediction and charged
-  to the calling action when one is named.
-- **Uncalibrated confidence.** The model's self-reported confidence is
-  data about the model, not a probability you may bank on. Calibration is
-  what the accumulated prediction-vs-outcome record is FOR — that is the
-  entire point of the shadow loop.
-- **Knowledge stays gated.** Prediction feedback records facts and errors
-  online; it never promotes, revises, or publishes anything. Knowledge
-  changes only through explicit offline induction with admission
-  verification, exactly as before.
+- **Shadow mode.** A prediction never changes a recommendation, a score, or a route. You decide; the prediction is compared afterwards.
+- **Frozen before the act.** The input snapshot is frozen at prediction time. Predicting after executing and calling it a forecast is not evidence — it is hindsight wearing a costume.
+- **Both sides defined, or not compared.** Comparison covers only fields the prediction defined AND the execution measured (the same both-sides-measured rule as cost feedback). A predicted-but-unmeasured cost dimension is listed as not-compared, never scored as zero error.
+- **No counterfactuals.** A candidate that never ran has no result. A prediction for strategy A is never scored against strategy B's execution — the mismatch is recorded and the comparison is skipped.
+- **Two costs, never confused.** The PREDICTED cost of the action is a hypothesis inside the prediction record; the model call's OWN cost (tokens, latency) is real spend, recorded on the prediction and charged to the calling action when one is named.
+- **Uncalibrated confidence.** The model's self-reported confidence is data about the model, not a probability you may bank on. Calibration is what the accumulated prediction-vs-outcome record is FOR — that is the entire point of the shadow loop.
+- **Knowledge stays gated.** Prediction feedback records facts and errors online; it never promotes, revises, or publishes anything. Knowledge changes only through explicit offline induction with admission verification, exactly as before.
 
 ### H is a prediction subject, not only a condition
 
-The state the model conditions on is H/P/X/B, and what it predicts covers
-X, B **and** the capability side — how the action changes accumulated
-experience and strategic knowledge. Predicting only X/B and then updating H
-after the fact would make the harness unable to reason about *which action
-is worth taking for what it teaches*, which is the capability this layer
-exists to provide.
+The state the model conditions on is H/P/X/B, and what it predicts covers X, B **and** the capability side — how the action changes accumulated experience and strategic knowledge. Predicting only X/B and then updating H after the fact would make the harness unable to reason about *which action is worth taking for what it teaches*, which is the capability this layer exists to provide.
 
-**The unified contract for this is defined in
-[world_model_contract.md](world_model_contract.md)** — that page is the
-single authority for the two prediction modules
-(`StrategyOutcomePrediction` and `CapabilityEvolutionPrediction`), the
-status vocabulary, the attempt-vs-strategy-window scope rule, and the
-migration table. What follows here is the *why* behind the design.
+**The unified contract for this is defined in [world_model_contract.md](world_model_contract.md)** — that page is the single authority for the two prediction modules (`StrategyOutcomePrediction` and `CapabilityEvolutionPrediction`), the status vocabulary, the attempt-vs-strategy-window scope rule, and the migration table. What follows here is the *why* behind the design.
 
-`H = F(M, W_OR, Pi, R, T)` — five INTERACTING capability sources, not five
-score dimensions and not a sum:
+`H = F(M, W_OR, Pi, R, T)` — five INTERACTING capability sources, not five score dimensions and not a sum:
 
 | Source | What it covers |
 |---|---|
@@ -214,23 +153,11 @@ score dimensions and not a sum:
 
 Three consequences that are easy to get wrong:
 
-- **H is not its evidence.** `harness_state` knowledge refs, experience
-  counts and tool configuration are *evidence about* H. They map to M and T
-  as `indirect_evidence` only; nothing in the old state observed W_OR, Pi or
-  R, so those stay `no_evidence` rather than being filled from an unrelated
-  count. There is no composite H score in this build, and the validator
-  rejects a payload that tries to add one.
-- **There is no `E_hist` capability term.** Historical experience is not a
-  sixth component — it is the substrate the sources are evidenced from. The
-  H-evolution predictor's own quality is assessed separately; it is not part
-  of its own claim to have got stronger.
-- **B is not a predicted world-state object.** Budget declarations,
-  execution limits and the real ledger stay in `BudgetLedger`. Cost appears
-  twice in the contracts and the two are never summed: the *predicted* cost
-  of the candidate, and the *measured* spend of the prediction call itself.
+- **H is not its evidence.** `harness_state` knowledge refs, experience counts and tool configuration are *evidence about* H. They map to M and T as `indirect_evidence` only; nothing in the old state observed W_OR, Pi or R, so those stay `no_evidence` rather than being filled from an unrelated count. There is no composite H score in this build, and the validator rejects a payload that tries to add one.
+- **There is no `E_hist` capability term.** Historical experience is not a sixth component — it is the substrate the sources are evidenced from. The H-evolution predictor's own quality is assessed separately; it is not part of its own claim to have got stronger.
+- **B is not a predicted world-state object.** Budget declarations, execution limits and the real ledger stay in `BudgetLedger`. Cost appears twice in the contracts and the two are never summed: the *predicted* cost of the candidate, and the *measured* spend of the prediction call itself.
 
-Three facts about a prediction service that are routinely collapsed into
-one, and must not be:
+Three facts about a prediction service that are routinely collapsed into one, and must not be:
 
 | Fact | What it means |
 |---|---|
@@ -238,207 +165,62 @@ one, and must not be:
 | `service_available` | this build **implements** that kind **and** a provider is configured |
 | `prediction_made` | a prediction really was produced and passed validation |
 
-Only the third makes a contract `valid`. **Merely building a contract makes
-no model call**, so it returns `contract_only` even when a provider is
-configured — a configured provider with zero calls and empty
-benefit/cost/risk is not a forecast. And `capability_evolution` has a
-*contract* **and** a *service* (M5, `wm-ce/1`): with a provider configured
-it is `service_available`, but a forecast still needs the real call, so
-`prediction_made` stays the only thing that makes it `valid`.
+Only the third makes a contract `valid`. **Merely building a contract makes no model call**, so it returns `contract_only` even when a provider is configured — a configured provider with zero calls and empty benefit/cost/risk is not a forecast. And `capability_evolution` has a *contract* **and** a *service* (`wm-ce/1`): with a provider configured it is `service_available`, but a forecast still needs the real call, so `prediction_made` stays the only thing that makes it `valid`.
 
-**A scope must be finished and matching before it is comparable.** A
-strategy execution window is `comparable` only when every in-scope attempt
-has ended, has a linked execution, and the window's task / episode /
-strategy really matches the candidate. A window still running has no final
-numbers; another task's window is a different scope. Only a comparable
-window may be scored, and a `valid` window-scope prediction must be
-comparable.
+**A scope must be finished and matching before it is comparable.** A strategy execution window is `comparable` only when every in-scope attempt has ended, has a linked execution, and the window's task / episode / strategy really matches the candidate. A window still running has no final numbers; another task's window is a different scope. Only a comparable window may be scored, and a `valid` window-scope prediction must be comparable.
 
-**Adapting a legacy candidate must not change it.** Mapping a legacy
-`ActionSpec` carries its execution configuration (a time limit, a MIP gap
-target, a seed) and its budget hint through verbatim, and **refuses** an
-unmappable legacy `measurement_scope` such as `"task"` instead of silently
-shrinking a whole-task measurement into one solve attempt. A contract that
-describes a different candidate than the one proposed is worse than no
-contract.
+**Adapting a legacy candidate must not change it.** Mapping a legacy `ActionSpec` carries its execution configuration (a time limit, a MIP gap target, a seed) and its budget hint through verbatim, and **refuses** an unmappable legacy `measurement_scope` such as `"task"` instead of silently shrinking a whole-task measurement into one solve attempt. A contract that describes a different candidate than the one proposed is worse than no contract.
 
-A knowledge change is predicted against a target that is either an existing
-entry (it must really exist — a model cannot invent knowledge) or a
-hypothesis (allowed, but it must state what would be observed and how that
-observation would be judged). Each item names a change, a horizon, and any
-standing preconditions, because the timescales genuinely differ: evidence
-lands when the execution is recorded, while a claim only forms, moves or
-narrows after an offline induction.
+A knowledge change is predicted against a target that is either an existing entry (it must really exist — a model cannot invent knowledge) or a hypothesis (allowed, but it must state what would be observed and how that observation would be judged). Each item names a change, a horizon, and any standing preconditions, because the timescales genuinely differ: evidence lands when the execution is recorded, while a claim only forms, moves or narrows after an offline induction.
 
-**Prediction, fact binding and verified effect are three different things.**
-Adding knowledge entries, accumulating evidence, or a model asserting an
-improvement confirms none of them; only an observed improvement in future
-task performance does. The contract records all three flags separately, and
-a capability prediction is judged through those observable consequences —
-never through a latent vector.
+**Prediction, fact binding and verified effect are three different things.** Adding knowledge entries, accumulating evidence, or a model asserting an improvement confirms none of them; only an observed improvement in future task performance does. The contract records all three flags separately, and a capability prediction is judged through those observable consequences — never through a latent vector.
 
-**Unknown upside is not rewarded.** The knowledge term is `δ·K` with `δ`
-defaulting to 0, and a K that cannot be justified contributes exactly zero.
-This is the deliberate mirror image of how unknown *risk* is treated: an
-unknown downside is charged in full, but an unknown upside is paid nothing —
-otherwise the system would prefer whichever action it understands least.
-`K = None` means "no justified value", never "worth nothing".
+**Unknown upside is not rewarded.** The knowledge term is `δ·K` with `δ` defaulting to 0, and a K that cannot be justified contributes exactly zero. This is the deliberate mirror image of how unknown *risk* is treated: an unknown downside is charged in full, but an unknown upside is paid nothing — otherwise the system would prefer whichever action it understands least. `K = None` means "no justified value", never "worth nothing".
 
-**The model cannot raise its own value.** K's magnitude comes from
-framework-side quantities (how thin the support is, how much room the
-claim's interval still has above its honest floor, how much *independent*
-cross-task reuse the cell has). The model contributes a direction and any
-preconditions. Its `uncertainty` and its self-scored
-`expected_knowledge_value` are recorded for later calibration but never
-consumed as value.
+**The model cannot raise its own value.** K's magnitude comes from framework-side quantities (how thin the support is, how much room the claim's interval still has above its honest floor, how much *independent* cross-task reuse the cell has). The model contributes a direction and any preconditions. Its `uncertainty` and its self-scored `expected_knowledge_value` are recorded for later calibration but never consumed as value.
 
-**Feedback is judged in stages, and pending is not failure.** A prediction's
-verdicts are partitioned by stage, so an already-compared X/B prediction can
-still receive its knowledge verdict later. A precondition that never
-arrived leaves the item `pending` — it is not counted as a miss. Only a
-class with enough resolved samples earns a measured reliability, and that
-measured reliability (never the model's own confidence) is what later
-predictions may draw on.
+**Feedback is judged in stages, and pending is not failure.** A prediction's verdicts are partitioned by stage, so an already-compared X/B prediction can still receive its knowledge verdict later. A precondition that never arrived leaves the item `pending` — it is not counted as a miss. Only a class with enough resolved samples earns a measured reliability, and that measured reliability (never the model's own confidence) is what later predictions may draw on.
 
 ### The prediction input context: what a prediction is conditioned on
 
-Phase 1 settled *how* state, candidates and predictions are expressed. Phase
-2 settles *what a prediction actually uses* and how it gets there. The
-mechanism is one frozen bundle, `PredictionContext` (see
-[references/prediction_context.md](prediction_context.md)), built once per
-decision by `orx context` / `build_prediction_context`.
+The state, candidates and predictions are expressed in one place; what a prediction actually uses, and how it gets there, is the FROZEN INPUT side. The mechanism is one frozen bundle, `PredictionContext` (see [references/prediction_context.md](prediction_context.md)), built once per decision by `orx context` / `build_prediction_context`.
 
-**The problem's name is not evidence about its mathematics.** The joint
-representation carries math attributes (`integrality`, `linearity`,
-`objective_kind`, `constraint_kinds`) with an explicit ORIGIN each, taken
-from a declaration, the declared model, the structured spec, or the CIR. A
-task whose only content is the word "routing" gets `unknown` — not "MILP".
-The same discipline governs the CIR: its relations stay relations, because
-compressing them into three coupling numbers and discarding the structure
-loses exactly the information a prediction needs.
+**The problem's name is not evidence about its mathematics.** The joint representation carries math attributes (`integrality`, `linearity`, `objective_kind`, `constraint_kinds`) with an explicit ORIGIN each, taken from a declaration, the declared model, the structured spec, or the CIR. A task whose only content is the word "routing" gets `unknown` — not "MILP". The same discipline governs the CIR: its relations stay relations, because compressing them into three coupling numbers and discarding the structure loses exactly the information a prediction needs.
 
-**A model is not a precondition for a prediction input.** A task with no
-`model` field, no CIR and no solve.py still builds a context; the absent
-parts are listed with what they mean. This is the same principle as the
-snapshot's "unknown ≠ zero", applied to input assembly.
+**A model is not a precondition for a prediction input.** A task with no `model` field, no CIR and no solve.py still builds a context; the absent parts are listed with what they mean. This is the same principle as the snapshot's "unknown ≠ zero", applied to input assembly.
 
-**"Retrieved" is not "verified".** Every retrieved item carries an evidence
-CLASS — an execution fact was observed, verified knowledge was admitted, an
-unverified candidate was neither, a structural recommendation may be backed
-by nothing at all. Retrieval never upgrades one class into another, and a
-candidate does not become knowledge by being surfaced. Unverified items are
-hidden unless the inspection view is explicitly requested.
+**"Retrieved" is not "verified".** Every retrieved item carries an evidence CLASS — an execution fact was observed, verified knowledge was admitted, an unverified candidate was neither, a structural recommendation may be backed by nothing at all. Retrieval never upgrades one class into another, and a candidate does not become knowledge by being surfaced. Unverified items are hidden unless the inspection view is explicitly requested.
 
-**Two channels, never one number.** The structural channel answers "what may
-I reuse?" (applicability) and the text channel answers "what should I look
-at?" (discovery). They are reported side by side with their own statuses;
-blending them into a single score would hide which question was answered. A
-near-identical problem in a different structural cell stays VISIBLE and
-labelled `different_cell`, and its numbers never join the target cell's
-statistics.
+**Two channels, never one number.** The structural channel answers "what may I reuse?" (applicability) and the text channel answers "what should I look at?" (discovery). They are reported side by side with their own statuses; blending them into a single score would hide which question was answered. A near-identical problem in a different structural cell stays VISIBLE and labelled `different_cell`, and its numbers never join the target cell's statistics.
 
-**One memory hit by two channels is one piece of evidence.** Evidence is
-identified as `layer:id`, so the two channels collapse onto one item that
-carries both channel names. Counting channels would inflate apparent
-support, exactly as counting repeat runs of one `task_id` would inflate the
-task count. When the two channels report *different versions* of one id,
-that disagreement is recorded rather than silently resolved.
+**One memory hit by two channels is one piece of evidence.** Evidence is identified as `layer:id`, so the two channels collapse onto one item that carries both channel names. Counting channels would inflate apparent support, exactly as counting repeat runs of one `task_id` would inflate the task count. When the two channels report *different versions* of one id, that disagreement is recorded rather than silently resolved.
 
-**Reuse must be provable.** A supplied recall result or context carries the
-task VERSION it was produced for; a mismatch is refused with a named reason,
-and a result with no recorded version cannot be confirmed either way and is
-also refused. An external result of unknown provenance must not masquerade
-as aligned frozen evidence — the same rule as "an unmeasured condition is
-not a satisfied one".
+**Reuse must be provable.** A supplied recall result or context carries the task VERSION it was produced for; a mismatch is refused with a named reason, and a result with no recorded version cannot be confirmed either way and is also refused. An external result of unknown provenance must not masquerade as aligned frozen evidence — the same rule as "an unmeasured condition is not a satisfied one".
 
-**Freezing is content, not a pointer.** A built context is stored WITH the
-content it was built from, so replaying it reads nothing from today's banks.
-A stored id alone would not reproduce the input, because the bank it points
-at may have moved. A genuinely different input gets a new context, never a
-silent patch of an old one.
+**Freezing is content, not a pointer.** A built context is stored WITH the content it was built from, so replaying it reads nothing from today's banks. A stored id alone would not reproduce the input, because the bank it points at may have moved. A genuinely different input gets a new context, never a silent patch of an old one.
 
-**Degradation is per part, and "did not run" ≠ "found nothing".** No
-backend, no task text, a missing index and a failed backend call are four
-different facts with four different reasons, and all four differ from a
-healthy channel that ran and matched nothing. Collapsing them would make an
-unavailable channel look like an empty memory.
+**Degradation is per part, and "did not run" ≠ "found nothing".** No backend, no task text, a missing index and a failed backend call are four different facts with four different reasons, and all four differ from a healthy channel that ran and matched nothing. Collapsing them would make an unavailable channel look like an empty memory.
 
-**Capability evidence is evidence, not a level.** Which retrieval channels
-ran, which strategies were recorded, what a prediction track record
-measured — all of these are `indirect_evidence`, and a source nothing
-observed stays `no_evidence` rather than being filled in to complete a set
-of five. The capability VERSION block (config / model / prompt / tools /
-memory content) is an identity: a content digest says which memories were
-read, never how capable the harness is.
+**Capability evidence is evidence, not a level.** Which retrieval channels ran, which strategies were recorded, what a prediction track record measured — all of these are `indirect_evidence`, and a source nothing observed stays `no_evidence` rather than being filled in to complete a set of five. The capability VERSION block (config / model / prompt / tools / memory content) is an identity: a content digest says which memories were read, never how capable the harness is.
 
-**Building an input is not predicting.** Context assembly may read the
-embedding index, and it does nothing else: no prediction-model call, no
-solver execution, no induction. Only an explicit prediction call reaches the
-provider, and that call records which frozen input it used.
+**Building an input is not predicting.** Context assembly may read the embedding index, and it does nothing else: no prediction-model call, no solver execution, no induction. Only an explicit prediction call reaches the provider, and that call records which frozen input it used.
 
-**Freezing must cover the whole request, not just one field.** It is not
-enough for a context to carry a frozen problem representation while the
-request still takes a live snapshot, re-derives the knowledge targets and
-re-reads the reliability table: that mixes a frozen input with current
-conditions. Reusing a context therefore replays its frozen X/B (from its own
-snapshot id), its frozen target proposal set and its frozen reliability. The
-BUDGET is deliberately the exception — it is an external limit on whether a
-call may be made, not a prediction condition — and when it has moved the
-difference is REPORTED rather than silently substituted.
+**Freezing must cover the whole request, not just one field.** It is not enough for a context to carry a frozen problem representation while the request still takes a live snapshot, re-derives the knowledge targets and re-reads the reliability table: that mixes a frozen input with current conditions. Reusing a context therefore replays its frozen X/B (from its own snapshot id), its frozen target proposal set and its frozen reliability. The BUDGET is deliberately the exception — it is an external limit on whether a call may be made, not a prediction condition — and when it has moved the difference is REPORTED rather than silently substituted.
 
-**One CIR per request.** An explicit CIR must drive the joint
-representation, the profile (hence the snapshot's cell) and the retrieval
-alike; otherwise a single request carries two structural judgments and may
-retrieve knowledge from the wrong cell. A supplied CIR replaces the task's
-own rather than being quietly overridden by it.
+**One CIR per request.** An explicit CIR must drive the joint representation, the profile (hence the snapshot's cell) and the retrieval alike; otherwise a single request carries two structural judgments and may retrieve knowledge from the wrong cell. A supplied CIR replaces the task's own rather than being quietly overridden by it.
 
-**A historical input must not read today's memory.** Building from a frozen
-snapshot means the retrieval is bounded to that moment: evidence created
-afterwards is excluded and reported, not absorbed into a description of an
-earlier state. An item whose creation time cannot be established is kept but
-counted as unbounded — neither silently dropped nor silently trusted.
+**A historical input must not read today's memory.** Building from a frozen snapshot means the retrieval is bounded to that moment: evidence created afterwards is excluded and reported, not absorbed into a description of an earlier state. An item whose creation time cannot be established is kept but counted as unbounded — neither silently dropped nor silently trusted.
 
-**Creation-time filtering is not historical reconstruction.** It cannot tell
-that an entry which already existed was later REVISED, so the old entry would
-still be read at its new value. Reconstruction therefore reads what the
-snapshot SAVED — its frozen knowledge view — and reports everything it did
-not save (reliability, cell evidence, the retrieval) as missing. Filling a
-historical gap from today's bank is the same error as reading today's bank
-directly: it puts after-the-fact information into an earlier prediction
-input. The snapshot itself is the saved history; no separate historical
-database is needed.
+**Creation-time filtering is not historical reconstruction.** It cannot tell that an entry which already existed was later REVISED, so the old entry would still be read at its new value. Reconstruction therefore reads what the snapshot SAVED — its frozen knowledge view — and reports everything it did not save (reliability, cell evidence, the retrieval) as missing. Filling a historical gap from today's bank is the same error as reading today's bank directly: it puts after-the-fact information into an earlier prediction input. The snapshot itself is the saved history; no separate historical database is needed.
 
-**Structural consistency is checked against the EFFECTIVE input.** A
-snapshot or a reused context taken under one structure may not be combined
-with a different one — the joint representation would describe one problem
-while the state and the retrieval described another, and knowledge could be
-pulled from the wrong cell. So the effective input (explicit CIR included) is
-resolved FIRST and the artifacts are checked against it, with a conflict
-refused rather than carried. An unmeasured dimension is not a conflict.
+**Structural consistency is checked against the EFFECTIVE input.** A snapshot or a reused context taken under one structure may not be combined with a different one — the joint representation would describe one problem while the state and the retrieval described another, and knowledge could be pulled from the wrong cell. So the effective input (explicit CIR included) is resolved FIRST and the artifacts are checked against it, with a conflict refused rather than carried. An unmeasured dimension is not a conflict.
 
-**A memory version must digest content, not counts.** A digest built from
-`len(...)` cannot tell a knowledge revision from an unchanged entry, so
-editing a claim's expected quality, interval, predicates, applicability
-notes or actions would leave the version identical. The digest covers the
-decision-relevant content of what was actually consulted, with read
-timestamps excluded — a revision moves it, a re-read does not.
+**A memory version must digest content, not counts.** A digest built from `len(...)` cannot tell a knowledge revision from an unchanged entry, so editing a claim's expected quality, interval, predicates, applicability notes or actions would leave the version identical. The digest covers the decision-relevant content of what was actually consulted, with read timestamps excluded — a revision moves it, a re-read does not.
 
 ## Applicability: the structural cell, not a declared ladder
 
-There is no ladder of generalization levels and no `widen`/`tighten` command.
-Each (family, structural cell, strategy) triple is one evidence set, and the
-claim induced from it states its own applicability: that family and that cell
-(e.g. `rc[0.75,1.00]`). Structurally different regions of one family are
-separate evidence sets — one strategy scoring 1.0 at low coupling and 0.1 at
-high coupling yields two claims, not one averaged "0.55 everywhere".
+There is no ladder of generalization levels and no `widen`/`tighten` command. Each (family, structural cell, strategy) triple is one evidence set, and the claim induced from it states its own applicability: that family and that cell (e.g. `rc[0.75,1.00]`). Structurally different regions of one family are separate evidence sets — one strategy scoring 1.0 at low coupling and 0.1 at high coupling yields two claims, not one averaged "0.55 everywhere".
 
-Unmeasured structure is never similarity: an `[unknown]` claim matches only a
-task whose value is also unmeasured. The cost of the cell rule is honest:
-evidence scattered across cells may be too thin to form a claim, in which case
-only the statistics remain and no knowledge is invented.
+Unmeasured structure is never similarity: an `[unknown]` claim matches only a task whose value is also unmeasured. The cost of the cell rule is honest: evidence scattered across cells may be too thin to form a claim, in which case only the statistics remain and no knowledge is invented.
 
-Cross-family transfer is therefore a judgment, not a mechanism: a claim
-speaks for the family it was induced from, and applying a routing lesson to
-packing is your call. Record those executions and packing earns its own
-claim. The frozen per-fact checks (same strategy, attempt scope) are what
-make the lifecycle revision evidence-based rather than self-referential.
+Cross-family transfer is therefore a judgment, not a mechanism: a claim speaks for the family it was induced from, and applying a routing lesson to packing is your call. Record those executions and packing earns its own claim. The frozen per-fact checks (same strategy, attempt scope) are what make the lifecycle revision evidence-based rather than self-referential.
