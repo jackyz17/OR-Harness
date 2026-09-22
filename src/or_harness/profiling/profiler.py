@@ -1,35 +1,37 @@
 """Deterministic problem profiling.
 
 Same input, same output — no randomness, no time dependence. Coupling
-dimensions come from five channels, in priority order:
+dimensions come from three channels, in priority order:
 
 1. CIR (best): the task JSON's optional top-level ``coupling`` field — the
    pre-model Coupling-Aware Intermediate Representation.  Scalar dims are
    derived from its structure: resource relations, temporal indexes,
    network indexes.  The CIR's relational structure is the primary
    representation; these scalars are its derived ProblemSignature.
-2. model representation: the optional top-level ``model`` field — a
-   GAMS-style five-block DSL the harness writes BEFORE solve.py
-   (SKILL.md convention). resource_coupling = fraction of variables
-   appearing in more than one constraint; verified (L1/L2) for free.
-3. solve-script AST (fallback at execute time): variable co-occurrence,
-   shared-resource ratios, temporal index structure.
-4. structured spec: explicit fields (time_periods, resources, entities...).
-5. harness-supplied: ``annotations.coupling`` — the harness's own estimate.
+2. structured spec: explicit fields (time_periods, resources, entities...).
+3. harness-supplied: ``annotations.coupling`` — the harness's own estimate.
 
 semantic_coupling is NEVER derived as a scalar: the CIR's relations are the
 semantic understanding; the scalar always stays the harness's call.
 
+**The profile is IDENTITY, and identity is frozen before the strategy.**
+Only pre-strategy inputs may define it. The ``model`` field and a solve
+script are POST-strategy artifacts: the strategy may legitimately change
+the formulation (decomposition, rolling horizon, relaxation), so letting
+them move the structural key would make the same problem land in a
+different cell depending on how it was later solved — and the key that
+retrieved the evidence would no longer be the key the execution is filed
+under. Both are therefore DIAGNOSTIC only: the model is verified (L1/L2)
+and its coupling is reported as an observation, never used as the key.
+
 When a supplied value conflicts with the winning derivation across a bin
 boundary, the profile carries ``coupling_warnings`` so the harness can
-reconsider BEFORE writing solver code. When both CIR and model are present,
-inconsistencies surface as ``cir_warnings``. No NLP subsystem, no graph
+reconsider BEFORE writing solver code. No NLP subsystem, no graph
 database.
 """
 
 from __future__ import annotations
 
-import ast
 from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import (
@@ -52,9 +54,14 @@ STRUCTURAL_DIMENSIONS = ("resource_coupling", "temporal_coupling", "route_comple
 CROSS_CHECK_MIN_DISAGREEMENT = 0.2
 
 
-def profile_task(task: Dict[str, Any], code: Optional[str] = None,
+def profile_task(task: Dict[str, Any],
                  cir: Optional[Any] = None) -> ProblemProfile:
     """Build a ProblemProfile from a task JSON document.
+
+    There is no solve-script parameter: a script is a POST-strategy
+    artifact and may never move the identity key. To inspect a
+    formulation's structure, write it as the ``model`` field instead — it
+    is verified and reported as ``model_coupling``.
 
     Task schema::
 
@@ -67,7 +74,8 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
                                          signature dimensions
           "model": "SETS: ...",        # optional GAMS-style representation
                                          (see references/modeling.md); verified
-                                         and used as a coupling source
+                                         and reported as a DIAGNOSTIC
+                                         (never a coupling source)
           "spec": {                    # optional structured description
             "n_vars": 1000, "n_constraints": 500, "n_int_vars": 1000,
             "density": 0.01,
@@ -81,10 +89,9 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
         }
 
     Derivation priority for the structural dimensions:
-    CIR (task ``coupling`` field or explicit ``cir`` argument) > model >
-    code/spec > supplied.  ``semantic_coupling`` is never derived — the
-    CIR's relations are the semantic understanding; the scalar stays the
-    harness's call.
+    CIR (task ``coupling`` field or explicit ``cir`` argument) > spec >
+    supplied.  ``semantic_coupling`` is never derived — the CIR's relations
+    are the semantic understanding; the scalar stays the harness's call.
     """
     if not isinstance(task, dict):
         raise ValueError("task must be a JSON object")
@@ -118,9 +125,11 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
         cir_coupling = coupling_from_cir(cir)
 
     supplied = _supplied_coupling(task, annotations)
-    derived = _derive_coupling(spec, code)
-    # Merge per dimension by priority: CIR > model > code/spec > supplied.
-    # semantic_coupling is never derived — supplied only.
+    derived = _derive_coupling(spec)
+    # Merge per dimension by priority: CIR > spec > supplied. This is the
+    # IDENTITY key, so only PRE-strategy inputs participate — the model and
+    # the solve script are post-strategy artifacts and are never a source
+    # here (see the module docstring). semantic_coupling is never derived.
     coupling: Dict[str, Optional[float]] = {}
     origin: Dict[str, str] = {}
     for f in COUPLING_FEATURES:
@@ -131,12 +140,9 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
         if cir_coupling.get(f) is not None:
             coupling[f] = cir_coupling[f]
             origin[f] = "cir"
-        elif model_coupling.get(f) is not None:
-            coupling[f] = model_coupling[f]
-            origin[f] = "model"
         elif derived.get(f) is not None:
             coupling[f] = derived[f]
-            origin[f] = "code" if code else "spec"
+            origin[f] = "spec"
         elif f in supplied:
             coupling[f] = _clamp01(supplied[f])
             origin[f] = "supplied"
@@ -162,16 +168,13 @@ def profile_task(task: Dict[str, Any], code: Optional[str] = None,
     report: Dict[str, Any] = {"origin": origin}
     if model_report is not None:
         report["model_verification"] = model_report.to_dict()
+    if model_coupling:
+        # DIAGNOSTIC only: what the model's structure says about coupling.
+        # Reported so a divergence from the identity key is VISIBLE, but
+        # deliberately not used to compute it (the model is post-strategy).
+        report["model_coupling"] = dict(model_coupling)
     if warnings:
         report["coupling_warnings"] = warnings
-    # CIR ↔ model cross-check (optional): the CIR is a pre-model artifact;
-    # the model may later be used to verify it, but is never required to
-    # create one.  When both are present, inconsistencies are flagged here.
-    if cir is not None:
-        from or_harness.core.coupling import cross_check_cir_model
-        cir_warnings = cross_check_cir_model(cir, model_report.parsed if model_report else None)
-        if cir_warnings:
-            report["cir_warnings"] = cir_warnings
     profile.annotations["profiling"] = report
     return profile
 
@@ -194,8 +197,8 @@ def derivation_report(profile: ProblemProfile) -> Dict[str, Any]:
         report["model_verification"] = profiling["model_verification"]
     if "coupling_warnings" in profiling:
         report["coupling_warnings"] = profiling["coupling_warnings"]
-    if "cir_warnings" in profiling:
-        report["cir_warnings"] = profiling["cir_warnings"]
+    if "model_coupling" in profiling:
+        report["model_coupling"] = profiling["model_coupling"]
     return report
 
 
@@ -208,10 +211,10 @@ def _cross_check(supplied: Dict[str, float],
                  coupling: Dict[str, Optional[float]],
                  origin: Dict[str, str]) -> List[Dict[str, Any]]:
     """Warn when a supplied value and the winning structural derivation
-    (CIR > model > code/spec) disagree materially — the harness should
-    reconsider before writing solve.py.  The winning value is used for
-    grouping either way (applicability is read off evidence, so this is a
-    diagnostic, not a grouping rule)."""
+    (CIR > spec) disagree materially — the harness should reconsider
+    before writing solve.py.  The winning value is used for grouping either
+    way (applicability is read off evidence, so this is a diagnostic, not a
+    grouping rule)."""
     warnings: List[Dict[str, Any]] = []
     for f in STRUCTURAL_DIMENSIONS:
         if f not in supplied:
@@ -271,10 +274,8 @@ def _supplied_coupling(task: Dict[str, Any],
 # ---------------------------------------------------------------------------
 
 
-def _derive_coupling(spec: Dict[str, Any], code: Optional[str]) -> Dict[str, Optional[float]]:
+def _derive_coupling(spec: Dict[str, Any]) -> Dict[str, Optional[float]]:
     signals: Dict[str, float] = {}
-    if code:
-        signals.update(_code_signals(code))
     signals.update(_spec_signals(spec))
 
     resource = _combine([
@@ -305,69 +306,6 @@ def _spec_signals(spec: Dict[str, Any]) -> Dict[str, float]:
                       if isinstance(e, dict) and len(e.get("indexes") or []) >= 2)
         out["cooccurrence_rate"] = indexed / len(entities)
     return out
-
-
-def _code_signals(code: str) -> Dict[str, float]:
-    """Deterministic AST signals from a solve script.
-
-    - shared_resource_ratio: fraction of subscripted variables whose index set
-      mentions a resource-like name (capacity/resource/crew/vehicle/...).
-    - temporal_index_ratio: fraction of subscripted variables indexed by a
-      time-like name (t/time/period/day/...).
-    - cooccurrence_rate: share of constraint-ish statements referencing >= 2
-      distinct subscripted variables (variables co-occur in constraints).
-    """
-    try:
-        tree = ast.parse(code)
-    except SyntaxError:
-        return {}
-    resource_names = {"capacity", "resource", "crew", "vehicle", "machine",
-                      "worker", "budget", "stock", "inventory"}
-    temporal_names = {"t", "time", "period", "day", "week", "month", "hour",
-                      "stage", "slot", "shift"}
-    subscripted = 0
-    with_resource = 0
-    with_time = 0
-    constraint_statements = 0
-    multi_var_statements = 0
-
-    def index_names(node: ast.AST) -> set:
-        names = set()
-        for sub in ast.walk(node):
-            if isinstance(sub, ast.Name):
-                names.add(sub.id.lower())
-        return names
-
-    statements = list(ast.walk(tree))
-    for node in statements:
-        if isinstance(node, ast.Subscript):
-            subscripted += 1
-            names = index_names(node.slice)
-            if names & resource_names:
-                with_resource += 1
-            if names & temporal_names:
-                with_time += 1
-        elif isinstance(node, (ast.Assign, ast.Expr)):
-            vars_in_stmt = set()
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Subscript) and isinstance(sub.value, ast.Name):
-                    vars_in_stmt.add(sub.value.id)
-            if vars_in_stmt:
-                constraint_statements += 1
-                if len(vars_in_stmt) >= 2:
-                    multi_var_statements += 1
-    out: Dict[str, float] = {}
-    if subscripted:
-        out["shared_resource_ratio"] = with_resource / subscripted
-        out["temporal_index_ratio"] = with_time / subscripted
-    if constraint_statements:
-        out["cooccurrence_rate"] = multi_var_statements / constraint_statements
-    return out
-
-
-# ---------------------------------------------------------------------------
-# small deterministic helpers
-# ---------------------------------------------------------------------------
 
 
 def _clamp01(value: Optional[float]) -> Optional[float]:

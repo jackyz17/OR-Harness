@@ -1,6 +1,6 @@
 # The model representation
 
-The model representation is the intermediate artifact between **choosing a strategy** and **writing solver code**: once the strategy is decided, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field, then translate it into solve.py. The framework verifies it deterministically (no LLM) and measures structural coupling directly from the declared constraints — the single best coupling source the profiler has. It is NOT a prerequisite for strategy selection: choosing a strategy relies on the task text, the CIR, the profile, and the evidence's expected quality/cost/risk. Without a `model` field everything still works — the profile derivation falls back to CIR > spec > supplied — but once written it sharpens the derivation and enables the CIR ↔ model cross-check.
+The model representation is the intermediate artifact between **choosing a strategy** and **writing solver code**: once the strategy is decided, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field, then translate it into solve.py. The framework verifies it deterministically (no LLM) and reports what its declared constraints say about structural coupling as a DIAGNOSTIC (`derivation.model_coupling`). It is NOT a prerequisite for strategy selection: choosing a strategy relies on the task text, the CIR, the profile, and the evidence's expected quality/cost/risk. Because the model is a POST-strategy artifact, it never moves the structural key — the profile you retrieved with stays the profile the execution is filed under.
 
 ## Why before code
 
@@ -66,7 +66,7 @@ The CIR is an explicit, inspectable structured representation of *how* the compo
 
 ### When to use it
 
-Submit the CIR via `orx profile --task t.json` (the single analysis entry) **before choosing a strategy** — it is the understanding artifact that improves both the profile derivation and the model you write later. The CIR lives in the task JSON's optional `coupling` field and never requires a `model` field. After the strategy is chosen and the `model` is written, re-run `orx profile` to cross-check the two (`cir_warnings`).
+Submit the CIR via `orx profile --task t.json` (the single analysis entry) **before choosing a strategy** — it is the understanding artifact that improves both the profile derivation and the model you write later. The CIR lives in the task JSON's optional `coupling` field and never requires a `model` field. After the model is written, `orx profile` reports its structure as a diagnostic (`derivation.model_coupling`) — useful to sanity-check your formulation, but it does not change the key.
 
 ### Schema (domain-general — all `kind`/`type` fields are free-form strings)
 
@@ -84,7 +84,7 @@ Submit the CIR via `orx profile --task t.json` (the single analysis entry) **bef
 |---|---|
 | `structural` | Derived from constraint-variable co-occurrence only. **Never** a semantic claim. Produces generic `depends_on` edges. |
 | `semantic` | Supported by entity/constraint semantics (e.g. resource-kind entity + capacity constraint → `uses_resource`). The only semantic upgrade performed deterministically. |
-| `declared` | Directly asserted by the agent. Subject to L2 referential validation and CIR ↔ model cross-check. |
+| `declared` | Directly asserted by the agent. Subject to L2 referential validation. |
 
 Co-occurrence is structural evidence only. A semantic relation (`shares_resource`, `competes_for`, …) requires additional entity/constraint semantics; otherwise the edge stays as `depends_on`.
 
@@ -95,7 +95,7 @@ Co-occurrence is structural evidence only. A semantic relation (`shares_resource
 
 ### What the framework derives
 
-- **ProblemSignature scalars**: when a CIR is present, `resource_coupling` = fraction of decisions that are the source of ≥1 resource relation (`uses_resource`/`shares_resource`/`competes_for`); `temporal_coupling`/`route_complexity` = fraction of decisions with time-like/network-like indexes. Derivation priority: CIR > model > spec > supplied.
+- **ProblemSignature scalars**: when a CIR is present, `resource_coupling` = fraction of decisions that are the source of ≥1 resource relation (`uses_resource`/`shares_resource`/`competes_for`); `temporal_coupling` / `route_complexity` = fraction of decisions with time-like/network-like indexes. Derivation priority: CIR > spec > supplied.
 - **Structural relations**: from the `model` field's constraint-variable co-occurrence → `depends_on` edges (evidence=`structural`).
 - **Semantic upgrade**: a structural edge upgrades to `uses_resource` ONLY when the target entity is resource-like AND a capacity-ish constraint mentions BOTH the source decision AND the target resource. Co-occurrence alone never produces semantic relations; capacity-ish words are deliberately narrow (`capacity`, `limit`, `cap`, `budget`, `resource`, `available` — not `demand`/`max`).
 - **Coupling groups**: `shared_bottleneck` (≥2 decisions using the same resource) is the only pattern derived deterministically. Other group types are the agent's responsibility — declared by the agent, validated and rendered by the framework.

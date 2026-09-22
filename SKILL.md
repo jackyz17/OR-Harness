@@ -55,7 +55,7 @@ Problem P
 1. **Profile** — put your coupling understanding in the task JSON's `coupling` field (a CIR) and run `orx profile --task t.json`. One call returns the validated CIR with `modeling_guidance`, the problem profile, and a derivation report naming each coupling dimension's value and origin. The profile does two jobs: it improves YOUR formulation, and it is the structural key that retrieves comparable evidence. A task with no `model` field is normal — strategy selection needs the task text, the CIR and the profile, never a finished formulation.
 2. **Recall and compare** — `orx recall --task t.json --top 3`. Two independent channels: `recommendations` (structural — the profile decides which evidence is comparable) and `vector_recall` (text similarity, unfiltered by structural cell, so a near-identical problem in another cell is still visible). Read the structural verdict for reuse and the text hits for context; neither substitutes for the other. `--exclude` a candidate you distrust and re-recall.
 3. **Choose** — weigh quality vs. cost vs. risk yourself. When quality is tied, prefer the cheaper candidate. Pick the solver from `available_solver_families`. Freeze the pre-execution expectation with `orx predict --task t.json --strategy S` and pass that snapshot to `record --prediction`: feedback compares against the prediction actually used, never a post-hoc estimate. If you planned with `plan-next`, record your explicit choice with `orx choose-next`.
-4. **Model the problem** (AFTER the strategy is chosen) — write the GAMS-style representation (SETS / PARAMETERS / VARIABLES / OBJECTIVE / CONSTRAINTS; [references/modeling.md](references/modeling.md)) as the task JSON's `model` field. The strategy may change the formulation (decomposition, rolling horizon, relaxation). The framework verifies it (L1 format + L2 symbol cross-reference) and derives structural coupling from the declared constraints. Re-run `orx profile` for the CIR ↔ model cross-check (`cir_warnings`) — this catches "the model missed a coupling the CIR declared" before coding.
+4. **Model the problem** (AFTER the strategy is chosen) — write the GAMS-style representation (SETS / PARAMETERS / VARIABLES / OBJECTIVE / CONSTRAINTS; [references/modeling.md](references/modeling.md)) as the task JSON's `model` field. The strategy may change the formulation (decomposition, rolling horizon, relaxation). The framework verifies it (L1 format + L2 symbol cross-reference) and reports what its structure says about coupling as a DIAGNOSTIC (`derivation.model_coupling`). The model is a POST-strategy artifact, so it never moves the structural key: the profile you retrieved with is the profile the execution is filed under. Do NOT re-run `profile` expecting the key to change — it will not.
 5. **Write solve.py** — follow the chosen strategy's `actions`; the framework never generates code. The `model` is the blueprint, the code is a translation. The script must write `result.json` with `status`, `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`.
 6. **Execute** — `orx execute ...`. Every attempt, success or failure, is staged automatically. Inspect `result.execution.quality.problems` before recording.
 7. **Verify, then record** — see Verification below; the check comes first. `orx record --execution <json> --override llm_tokens=<actual>`. The response lists `unrecorded_staged_executions` — backfill a failed attempt with `orx record --from-staged <id>` (verbatim, never re-typed).
@@ -98,7 +98,7 @@ Induction never runs automatically after an online action. A knowledge change is
 | Situation | Action |
 |---|---|
 | Shared resources, cross-stage dependencies, or temporal propagation | Extract a CIR and submit it as `coupling` before choosing a strategy |
-| `profile` returns non-empty `coupling.cir.issues` or `cir_warnings` | Fix the CIR (or reconcile it with the `model`) and re-run `profile` before writing solve.py |
+| `profile` returns non-empty `coupling.cir.issues` | Fix the CIR and re-run `profile` before writing solve.py |
 | `recall` or `orx context` reports `degraded` | Only the structural channel ran. No backend, no task text, a missing index and a backend failure are four DIFFERENT facts, and all four differ from "ran and matched nothing" — an empty `vector_recall` is never evidence that no similar memory exists |
 | A `vector_recall` hit is `different_cell` | Read its text and outcome for context; `profile_cell` shows which structure its numbers describe |
 | A knowledge hit has `reusable: false` | `reason` names the conflict, or `unknown` — a needed value is missing; measure it before applying |
@@ -129,8 +129,12 @@ Induction never runs automatically after an online action. A knowledge change is
 - every resource, product, site, period or route in the task description appears as an entity or is reachable via a decision's indexes;
 - every `uses_resource` / `shares_resource` / `competes_for` relation connects a decision to a resource-like entity, not two decisions with no shared resource;
 - each detected coupling group matches a coupling pattern the task actually implies (e.g. "all modes use the same downstream capacity" → `shared_bottleneck` on that capacity);
-- `coupling.cir.issues` is empty;
-- after writing the `model`, `cir_warnings` is empty (each warning flags a CIR ↔ model inconsistency).
+- `coupling.cir.issues` is empty.
+
+**Model** (after writing the `model`, before writing solve.py) — check `result.derivation`:
+
+- `model_verification.issues` is empty (L1 format + L2 symbol cross-reference);
+- `model_coupling` is present and plausible — it is a DIAGNOSTIC reading of the model's own structure, so a divergence from the profile's `origin` dimensions is worth understanding, but it never changes the structural key.
 
 **Execution** (after `execute`, before `record`) — check `result.execution`:
 

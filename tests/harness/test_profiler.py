@@ -57,17 +57,22 @@ with open("result.json", "w") as fh:
     json.dump({"status": "optimal"}, fh)
 """
         task = {"task_id": "t3", "family": "assignment", "spec": {}}
-        p = profile_task(task, code=code)
-        self.assertEqual(p.source, "derived")
-        self.assertIsNotNone(p.temporal_coupling)
-        self.assertIsNotNone(p.resource_coupling)
+        # There is no solve-script input any more: a script is a
+        # POST-strategy artifact, so the identity key cannot depend on it.
+        # The pre-strategy spec owns the key.
+        p = profile_task(task)
+        self.assertIsNone(p.temporal_coupling)
+        self.assertIsNone(p.resource_coupling)
 
-    def test_same_input_same_output_with_code(self):
+    def test_spec_owns_the_key(self):
         task = {"task_id": "t4", "family": "assignment",
                 "spec": {"time_periods": 10}}
-        code = "x = y[1]\n"
-        self.assertEqual(profile_task(task, code).to_dict(),
-                         profile_task(task, code).to_dict())
+        p = profile_task(task)
+        self.assertEqual(p.to_dict(), profile_task(task).to_dict())
+        self.assertIsNotNone(p.temporal_coupling)
+        self.assertEqual(
+            p.annotations["profiling"]["origin"]["temporal_coupling"],
+            "spec")
 
     def test_clamps_out_of_range(self):
         profile = profile_task({"task_id": "t5", "family": "f",

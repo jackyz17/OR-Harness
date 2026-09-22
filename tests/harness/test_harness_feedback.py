@@ -109,18 +109,26 @@ class TestModelSyntax(HarnessTestCase):
 
 
 class TestProfilerChain(HarnessTestCase):
-    def test_model_field_beats_supplied(self):
+    def test_model_is_diagnostic_not_the_key(self):
+        """The model is a POST-strategy artifact: its coupling is reported
+        as a diagnostic, but the structural KEY comes from pre-strategy
+        inputs only (here: the supplied annotations)."""
         task = {
             "task_id": "SIRL_026", "family": "allocation",
             "model": SIRL_MODEL,
-            "annotations": {"coupling": {"resource_coupling": 0.8}},  # wrong
+            "annotations": {"coupling": {"resource_coupling": 0.8}},
         }
         profile = profile_task(task)
-        # Model derivation wins for structural dimensions.
-        self.assertEqual(profile.resource_coupling, 0.0)
-        # Cross-check warning fires (0.8 vs 0.0 cross bin boundaries).
-        warnings = profile.annotations["profiling"]["coupling_warnings"]
-        self.assertTrue(any(w["dimension"] == "resource_coupling" for w in warnings))
+        # The supplied value IS the key; the model does not move it.
+        self.assertEqual(profile.resource_coupling, 0.8)
+        report = profile.annotations["profiling"]
+        self.assertEqual(report["origin"]["resource_coupling"], "supplied")
+        # The model's own reading is still visible as a diagnostic.
+        self.assertIn("model_coupling", report)
+        self.assertEqual(report["model_coupling"]["resource_coupling"], 0.0)
+        # The diagnostic differs from the key — visibly, not silently.
+        self.assertNotEqual(profile.resource_coupling,
+                            report["model_coupling"]["resource_coupling"])
 
     def test_semantic_supplied_not_overridden(self):
         task = {"task_id": "t", "family": "allocation", "model": SIRL_MODEL,
@@ -133,7 +141,9 @@ class TestProfilerChain(HarnessTestCase):
                 "annotations": {"coupling": {"semantic_coupling": 0.3}}}
         profile = profile_task(task)
         report = profile.annotations["profiling"]
-        self.assertEqual(report["origin"]["resource_coupling"], "model")
+        # No CIR and no spec: the structural dims stay unknown — a model
+        # never becomes the identity source.
+        self.assertEqual(report["origin"]["resource_coupling"], "null")
         self.assertEqual(report["origin"]["semantic_coupling"], "supplied")
         self.assertIn("model_verification", report)
 
@@ -147,6 +157,15 @@ class TestProfilerChain(HarnessTestCase):
         task = {"task_id": "t", "family": "allocation", "model": SIRL_MODEL}
         self.assertEqual(profile_task(task).to_dict(),
                          profile_task(task).to_dict())
+
+    def test_spec_still_defines_the_key(self):
+        """A PRE-strategy structured spec IS an identity source."""
+        task = {"task_id": "t", "family": "routing",
+                "spec": {"time_periods": 24}}
+        profile = profile_task(task)
+        report = profile.annotations["profiling"]
+        self.assertEqual(report["origin"]["temporal_coupling"], "spec")
+        self.assertIsNotNone(profile.temporal_coupling)
 
 
 class TestPendingStaging(HarnessTestCase):

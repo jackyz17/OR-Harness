@@ -584,7 +584,6 @@ class ORHarness:
             top: int = 3,
             vector_top_k: Optional[int] = None,
             include_unverified: bool = False,
-            code: Optional[str] = None,
             cir: Optional[Any] = None,
             math: Optional[Dict[str, Any]] = None,
             recall_result: Optional[Dict[str, Any]] = None,
@@ -673,7 +672,7 @@ class ORHarness:
         # identity check and then being kept alongside the new CIR.
         effective_task = task_with_effective_cir(task, cir)
         resolved_cir = effective_task.get("coupling")
-        profile = self.profile(effective_task, code)
+        profile = self.profile(effective_task)
         derivation = derivation_report(profile)
         # The version identity of the EFFECTIVE input (task + resolved CIR).
         # Identity checks below compare against THIS, not the plain task
@@ -778,7 +777,7 @@ class ORHarness:
                                  "not because nothing existed")}
         else:
             recall_result = self.recall(
-                effective_task, top=top, code=code,
+                effective_task, top=top,
                 include_unverified=include_unverified,
                 vector_top_k=vector_top_k)
             if snapshot is not None:
@@ -4657,23 +4656,23 @@ class ORHarness:
         }
 
     # -- world-model M3: bounded planning ------------------------------------
-    def profile(self, task: Dict[str, Any], code: Optional[str] = None,
+    def profile(self, task: Dict[str, Any],
                 cir: Optional[Any] = None) -> ProblemProfile:
-        return profile_task(task, code, cir=cir)
+        return profile_task(task, cir=cir)
 
     def derivation_report(self, task: Dict[str, Any],
-                          code: Optional[str] = None,
                           cir: Optional[Any] = None) -> Dict[str, Any]:
         """Per-dimension coupling derivation report: value, origin
-        (model/code/spec/supplied/null), notes, model verification issues,
-        and cross-check warnings (including CIR ↔ model when a CIR is
-        provided)."""
-        return derivation_report(self.profile(task, code, cir=cir))
+        (cir/spec/supplied/null), notes, model verification issues, and
+        cross-check warnings.
+
+        No solve-script parameter: the profile is IDENTITY, frozen before
+        the strategy, and a solve script is a post-strategy artifact."""
+        return derivation_report(self.profile(task, cir=cir))
 
     def recall(self, task: Dict[str, Any], *, top: int = 3,
                exclude: Optional[Sequence[str]] = None,
                memory_mode: str = "cost-aware",
-               code: Optional[str] = None,
                include_unverified: bool = False,
                vector_top_k: Optional[int] = None) -> Dict[str, Any]:
         """Recall accumulated experience for this task.
@@ -4697,7 +4696,7 @@ class ORHarness:
         READ-ONLY: the query text is embedded in memory and never written;
         no index item is created and no migration is triggered.
         """
-        profile = self.profile(task, code)
+        profile = self.profile(task)
         recs = self.selector.recall(profile, top=top, exclude=exclude,
                                     memory_mode=memory_mode,
                                     include_unverified=include_unverified)
@@ -4730,8 +4729,8 @@ class ORHarness:
                                   "reason": str(exc)}
         return result
 
-    def predict_cost(self, task: Dict[str, Any], strategy_id: str,
-                     code: Optional[str] = None) -> PredictionSnapshot:
+    def predict_cost(self, task: Dict[str, Any], strategy_id: str
+                     ) -> PredictionSnapshot:
         """Pre-execution cost expectation for (problem conditions, strategy).
 
         Estimation scope: one execution ATTEMPT under the conditions visible
@@ -4747,7 +4746,7 @@ class ORHarness:
         """
         if strategy_id not in self.catalog:
             raise ValueError(f"unknown strategy_id {strategy_id!r}")
-        profile = self.profile(task, code)
+        profile = self.profile(task)
         # Published knowledge only: a candidate whose admission verification
         # is missing a verdict must not act as a verified entry prediction
         # either. Gating recall alone would leave this second door open —

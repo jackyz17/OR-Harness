@@ -37,7 +37,7 @@ DOCUMENTED_FLAGS = [
                   "--operation-desc", "--scope", "--targeting", "--baseline",
                   "--horizon", "--horizon-tasks", "--expected-change",
                   "--verification"]),
-    ("profile", ["--task", "--code", "--cir"]),
+    ("profile", ["--task", "--cir"]),
     ("recall", ["--task", "--top", "--exclude", "--memory-mode",
                 "--include-unverified"]),
     ("predict", ["--task", "--strategy"]),
@@ -77,7 +77,7 @@ DOCUMENTED_FLAGS = [
     ("exclude-execution", ["--execution", "--reason", "--superseded-by"]),
     ("restore-execution", ["--execution", "--reason"]),
     ("rebuild-index", ["--layer", "--dry-run"]),
-    ("context", ["--task", "--episode", "--top", "--code", "--cir",
+    ("context", ["--task", "--episode", "--top", "--cir",
                  "--math", "--include-unverified", "--context-id",
                  "--no-persist"]),
 ]

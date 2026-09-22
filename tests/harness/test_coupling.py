@@ -27,7 +27,6 @@ from or_harness.core.coupling import (
     infer_structural_relations,
     derive_coupling_groups,
     render_modeling_guidance,
-    cross_check_cir_model,
     coupling_from_cir,
 )
 from or_harness.profiling.model_syntax import parse_model
@@ -343,156 +342,6 @@ class TestCouplingGroupDerivation(HarnessTestCase):
         self.assertIn("R1", guidance[0]["resource"])
 
 
-class TestCrossCheck(HarnessTestCase):
-    """CIR ↔ model consistency checks."""
-
-    def test_missing_decision_in_model(self):
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- limit[i]
-VARIABLES:
- x[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-CONSTRAINTS:
- C1: sum(i, x[i]) <= limit[i]
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            decisions=[Decision(name="x"), Decision(name="ghost_var")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        codes = [w["code"] for w in warnings]
-        self.assertIn("cir_decision_not_in_model", codes)
-
-    def test_missing_decision_in_cir(self):
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- limit[i]
-VARIABLES:
- x[i] continuous
- y[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-CONSTRAINTS:
- C1: sum(i, x[i] + y[i]) <= limit[i]
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            decisions=[Decision(name="x")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        codes = [w["code"] for w in warnings]
-        self.assertIn("model_var_not_in_cir", codes)
-
-    def test_relation_not_in_model(self):
-        """CIR declares a uses_resource edge between TWO DECISIONS that never
-        co-occur in the model → flagged (both endpoints are variables)."""
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- limit[i]
-VARIABLES:
- x[i] continuous
- y[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-CONSTRAINTS:
- C1: sum(i, x[i]) <= limit[i]
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            entities=[Entity(name="R1", kind="resource")],
-            decisions=[Decision(name="x"), Decision(name="y")],
-            relations=[Relation(source="x", target="y", type="uses_resource",
-                                evidence="semantic")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        codes = [w["code"] for w in warnings]
-        self.assertIn("relation_not_in_model", codes)
-
-    def test_decision_to_resource_relation_not_flagged(self):
-        """The NORMAL uses_resource shape is decision→resource entity; the
-        resource is not a model variable, so no variable-variable
-        co-occurrence pair exists — and none should be demanded."""
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- limit[i]
-VARIABLES:
- x[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-CONSTRAINTS:
- C1: sum(i, x[i]) <= limit[i]
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            entities=[Entity(name="R1", kind="resource")],
-            decisions=[Decision(name="x")],
-            relations=[Relation(source="x", target="R1", type="uses_resource",
-                                evidence="semantic")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        self.assertEqual(warnings, [])
-
-    def test_relation_source_unconstrained(self):
-        """Decision→resource edge whose source appears in NO model constraint
-        → weak check flags that the model may be missing the coupling."""
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- p
-VARIABLES:
- x[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            entities=[Entity(name="R1", kind="resource")],
-            decisions=[Decision(name="x")],
-            relations=[Relation(source="x", target="R1", type="uses_resource",
-                                evidence="semantic")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        codes = [w["code"] for w in warnings]
-        self.assertIn("relation_source_unconstrained", codes)
-
-    def test_no_warnings_when_consistent(self):
-        model_text = """
-SETS:
- i in Items = {a}
-PARAMETERS:
- limit[i]
-VARIABLES:
- x[i] continuous
- y[i] continuous
-OBJECTIVE:
- maximize sum(i, x[i])
-CONSTRAINTS:
- C1: sum(i, x[i] + y[i]) <= limit[i]
-"""
-        model = parse_model(model_text)
-        cir = CouplingAwareIR(
-            decisions=[Decision(name="x"), Decision(name="y")],
-        )
-        warnings = cross_check_cir_model(cir, model)
-        self.assertEqual(warnings, [])
-
-    def test_no_warnings_without_model(self):
-        cir = CouplingAwareIR(decisions=[Decision(name="x")])
-        warnings = cross_check_cir_model(cir, None)
-        self.assertEqual(warnings, [])
-
-
 class TestCouplingFromCIR(HarnessTestCase):
     """Scalar ProblemSignature derivation from CIR structure."""
 
@@ -657,6 +506,8 @@ class TestProfileAnalysisEntry(HarnessTestCase):
         self.assertIsNotNone(out["result"]["profile"]["resource_coupling"])
 
     def test_with_model_cross_check(self):
+        """The model is a POST-strategy artifact: it is verified and its
+        coupling is reported as a DIAGNOSTIC, never used as the key."""
         task = {
             "task_id": "t1", "family": "routing",
             "coupling": {
@@ -678,8 +529,14 @@ CONSTRAINTS:
         }
         code, out = self._run_profile_cli(task)
         self.assertEqual(code, 0)
-        codes = [w["code"] for w in out["result"]["coupling"]["cir_warnings"]]
-        self.assertIn("cir_decision_not_in_model", codes)
+        derivation = out["result"]["derivation"]
+        # The model was verified and its own reading is reported...
+        self.assertIn("model_verification", derivation)
+        self.assertIn("model_coupling", derivation)
+        # ...but the KEY comes from the CIR, and no cross-check warning
+        # channel exists any more.
+        self.assertEqual(derivation["resource_coupling"]["origin"], "cir")
+        self.assertNotIn("cir_warnings", out["result"]["coupling"])
 
     def test_bad_coupling_data(self):
         code, out = self._run_profile_cli(

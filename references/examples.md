@@ -28,8 +28,7 @@ $ orx profile --task t.json
       "issues": []
     },
     "modeling_guidance": [{"type": "shared_bottleneck", "members": ["x_M1", "x_M2", "x_M3"],
-      "resource": "LDA", "implication": "...aggregate capacity constraint..."}],
-    "cir_warnings": []
+      "resource": "LDA", "implication": "...aggregate capacity constraint..."}]
   }
 },
  "summary": "CIR validated: 1 entities, 3 decisions, 1 constraints, 3 relations. Modeling guidance (1):

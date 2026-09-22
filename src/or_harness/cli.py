@@ -138,13 +138,13 @@ def cmd_profile(args) -> int:
 
     A task WITHOUT a ``model`` field is a normal state: strategy selection
     relies on the task text, the CIR, and the profile — the model is an
-    intermediate representation written AFTER the strategy is chosen, and
-    re-running profile then adds the CIR ↔ model cross-check."""
+    intermediate representation written AFTER the strategy is chosen, so it
+    is VERIFIED here (L1/L2) and its coupling is reported as a diagnostic,
+    never used to move the structural key."""
     h = _harness(args)
     try:
         from or_harness.core.coupling import (
             CouplingAwareIR,
-            cross_check_cir_model,
             derive_coupling_groups,
             infer_structural_relations,
             render_modeling_guidance,
@@ -152,10 +152,8 @@ def cmd_profile(args) -> int:
         )
         from or_harness.profiling.model_syntax import verify_model
         task = _load_json_arg(args.task)
-        code = Path(args.code).read_text(encoding="utf-8") if args.code else None
         # -- CIR side (validation, structural inference, groups, guidance) --
-        coupling: Dict[str, Any] = {"cir": None, "modeling_guidance": [],
-                                    "cir_warnings": []}
+        coupling: Dict[str, Any] = {"cir": None, "modeling_guidance": []}
         cir_obj = None
         if args.cir:
             cir_obj = CouplingAwareIR.from_dict(_load_json_arg(args.cir))
@@ -175,7 +173,6 @@ def cmd_profile(args) -> int:
             coupling = {
                 "cir": cir_obj.to_dict(),
                 "modeling_guidance": render_modeling_guidance(cir_obj),
-                "cir_warnings": cross_check_cir_model(cir_obj, parsed),
             }
         else:
             coupling["message"] = (
@@ -184,8 +181,8 @@ def cmd_profile(args) -> int:
                 "improves both the profile derivation and the model you "
                 "write after choosing a strategy.")
         # -- Profile side --
-        profile = h.profile(task, code, cir=cir_obj)
-        report = h.derivation_report(task, code, cir=cir_obj)
+        profile = h.profile(task, cir=cir_obj)
+        report = h.derivation_report(task, cir=cir_obj)
         result = {"profile": profile.to_dict(), "derivation": report,
                   "coupling": coupling}
         return _emit(result, _summarize_profile(profile, report, coupling))
@@ -230,11 +227,14 @@ def _summarize_profile(profile, report, coupling=None) -> str:
                          + "; ".join(f"[{i['layer']}] {i['code']}: {i['detail']}"
                                     for i in issues[:3])
                          + (" ..." if len(issues) > 3 else ""))
+    model_coupling = report.get("model_coupling") or {}
+    if model_coupling:
+        parts.append("Model-structure coupling (diagnostic, not the key): "
+                     + ", ".join(f"{k}={v}" for k, v in
+                                 sorted(model_coupling.items())) + ".")
     warnings = report.get("coupling_warnings") or []
     for w in warnings:
         parts.append("WARNING: " + w["message"])
-    for w in coupling.get("cir_warnings") or []:
-        parts.append(f"WARNING: {w['code']}: {w['detail']}")
     return " ".join(parts)
 
 
@@ -242,10 +242,9 @@ def cmd_recall(args) -> int:
     h = _harness(args)
     try:
         task = _load_json_arg(args.task)
-        code = Path(args.code).read_text(encoding="utf-8") if args.code else None
         result = h.recall(task, top=args.top,
                           exclude=args.exclude or [],
-                          memory_mode=args.memory_mode, code=code,
+                          memory_mode=args.memory_mode,
                           include_unverified=args.include_unverified)
         return _emit(result, _summarize_recall(result))
     finally:
@@ -257,8 +256,7 @@ def cmd_predict(args) -> int:
     h = _harness(args)
     try:
         task = _load_json_arg(args.task)
-        code = Path(args.code).read_text(encoding="utf-8") if args.code else None
-        snapshot = h.predict_cost(task, args.strategy, code=code)
+        snapshot = h.predict_cost(task, args.strategy)
         result = {"prediction": snapshot.to_dict()}
         if snapshot.expected_cost is None:
             summary = (f"No usable cost evidence for {args.strategy} "
@@ -1539,7 +1537,7 @@ def cmd_context(args) -> int:
         if math is not None and not isinstance(math, dict):
             return _fail("--math must be a JSON object")
         ctx = h.build_prediction_context(
-            task, args.episode, top=args.top, code=args.code, cir=cir,
+            task, args.episode, top=args.top, cir=cir,
             math=math, include_unverified=args.include_unverified,
             persist=not args.no_persist)
         return _emit(ctx.to_dict(), _summarize_context(ctx))
@@ -1646,7 +1644,6 @@ def build_parser() -> argparse.ArgumentParser:
                             "derivation report (a task without a 'model' "
                             "field is a normal state)")
     p.add_argument("--task", required=True, help="task JSON literal or file")
-    p.add_argument("--code", default=None, help="optional solve script for AST derivation")
     p.add_argument("--cir", default=None,
                    help="optional CIR JSON literal/file (overrides the "
                         "task's 'coupling' field)")
@@ -1654,7 +1651,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("recall", help="recall accumulated experience for a task")
     p.add_argument("--task", required=True)
-    p.add_argument("--code", default=None)
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--exclude", nargs="*", default=[])
     p.add_argument("--memory-mode", default="cost-aware",
@@ -1672,7 +1668,6 @@ def build_parser() -> argparse.ArgumentParser:
                             "via --prediction")
     p.add_argument("--task", required=True)
     p.add_argument("--strategy", required=True)
-    p.add_argument("--code", default=None)
     p.set_defaults(func=cmd_predict)
 
     p = sub.add_parser("execute", help="sandbox-execute a solve script")
@@ -2244,8 +2239,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--episode", default=None)
     p.add_argument("--top", type=int, default=3,
                    help="bounded top-k for BOTH retrieval channels (default 3)")
-    p.add_argument("--code", default=None,
-                   help="solve.py used as a coupling source when profiling")
     p.add_argument("--cir", default=None,
                    help="CIR JSON (literal or @file); defaults to the task's "
                         "own 'coupling' field")

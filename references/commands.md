@@ -2,11 +2,11 @@
 
 Every command prints exactly one JSON line to stdout: `{"result": {...}, "summary": "agent-readable 2-4 sentences"}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. All commands accept `--home DIR` (default `$OR_HARNESS_HOME`, else `./or_harness_home`).
 
-## `orx profile --task t.json [--code solve.py] [--cir cir.json]`
+## `orx profile --task t.json [--cir cir.json]`
 
-The single analysis entry: CIR validation + modeling guidance + problem profile + derivation report, in one call. It serves two purposes: it helps you understand the problem structure, and it produces the structural key that retrieves comparable evidence at `recall` time. A task **without** a `model` field is a normal state — strategy selection needs the task text, the CIR, and the profile; the `model` (an intermediate representation) is written only AFTER the strategy is chosen, and re-running `profile` then adds the CIR ↔ model cross-check.
+The single analysis entry: CIR validation + modeling guidance + problem profile + derivation report, in one call. It serves two purposes: it helps you understand the problem structure, and it produces the structural key that retrieves comparable evidence at `recall` time. A task **without** a `model` field is a normal state — strategy selection needs the task text, the CIR, and the profile. The `model` is written only AFTER the strategy is chosen, so it is verified and reported as a DIAGNOSTIC (`derivation.model_coupling`); it never moves the structural key. There is deliberately NO solve-script parameter: a script is a post-strategy artifact, and no identity-bearing path accepts one.
 
-**CIR side** (`result.coupling`): when the task carries a `coupling` field (or `--cir` is given), the CIR (Coupling-Aware Intermediate Representation — an explicit, inspectable set of entities, decisions, constraints, and relations) is validated and returns `modeling_guidance` with concrete coupling implications for the model you will write. When both CIR and `model` are present, the framework cross-checks them and surfaces `cir_warnings`. Without a `coupling` field, `coupling.cir=null` with a prompt message (not an error).
+**CIR side** (`result.coupling`): when the task carries a `coupling` field (or `--cir` is given), the CIR (Coupling-Aware Intermediate Representation — an explicit, inspectable set of entities, decisions, constraints, and relations) is validated and returns `modeling_guidance` with concrete coupling implications for the model you will write. Without a `coupling` field, `coupling.cir=null` with a prompt message (not an error).
 
 CIR schema (all `kind`/`type` fields are free-form strings — domain-general, no hard-coded vocabulary):
 
@@ -27,9 +27,9 @@ Relation `evidence` levels: `structural` (from constraint-variable co-occurrence
 
 The `modeling_guidance` entries each carry `{type, members, resource, implication}` — e.g. `shared_bottleneck`: "Multiple decisions (x, y) consume the same resource (R1); ensure one aggregate capacity constraint covers all relevant decisions."
 
-**Profile side** (`result.profile` + `result.derivation`): coupling derivation priority — CIR (task JSON `coupling` field, best — derived from its relations/indexes) > task JSON `model` field (measured from declared constraints) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. The `derivation` report carries per-dimension value/origin/notes, `model_verification` (L1+L2 issues) when a model is given, `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary, and `cir_warnings` when both CIR and model are present. The retrieval signature and the modeling guidance come from the SAME structure, not two parallel lines.
+**Profile side** (`result.profile` + `result.derivation`): coupling derivation priority — CIR (task JSON `coupling` field, best — derived from its relations/indexes) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. **The key is IDENTITY, frozen before the strategy**: the `model` field and a solve script are POST-strategy artifacts, so neither is ever a key source — the model is verified (L1+L2) and its own reading is reported as `derivation.model_coupling` (a diagnostic), so a divergence from the key is VISIBLE without being silently absorbed into it. The `derivation` report carries per-dimension value/origin/notes and `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary. The retrieval signature and the modeling guidance come from the SAME structure, not two parallel lines.
 
-## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--include-unverified] [--code solve.py]`
+## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--include-unverified]`
 
 Recalls accumulated experience through **two independent channels**. They answer different questions and are never blended into one number.
 
@@ -119,7 +119,7 @@ Every execution is automatically staged in a pending area (successes and failure
 
 `execute` also persists the task text (`task_texts`, keyed by `(task_id, text_digest)`) — that is where the retrieval document comes from. Solving the SAME `task_id` with different content creates separate versions, so each execution stays linked to the text actually in force, and the two can never be confused later.
 
-## `orx predict --task t.json --strategy S [--code solve.py]`
+## `orx predict --task t.json --strategy S`
 
 Pre-execution cost expectation for one (task, strategy), with explicit provenance: `source=entry` (a matching Strategic Knowledge entry), `stats` (conditional statistics over attempt-scope evidence — a recount, with `support_n` and per-dimension `support_per_dim`), or `unknown` (no usable evidence: no data, task-scope data only, or clearly different scale — expected cost is `null`, NEVER a default zero presented as cheap). Pass the printed snapshot to `orx record --prediction` so feedback compares against the prediction actually used.
 
@@ -171,7 +171,7 @@ The budget view for a task/episode: consumption over ALL real action costs — r
 
 `orx execute --episode ep1` and `orx induce` automatically record their actions in the unified log: execute as a macro (`pre` snapshot before execution, `post` after, `rollup=reference`, linked to the execution id); induce in the **maintenance scope** (`__maintenance__` / `maint_<ts>`) with a real pre/post knowledge state, verification results, a knowledge delta, and a business result that separates `created` (verified) from `created_unverified` (a candidate is NOT knowledge growth), `updated` / `revised` / `refused` / `unchanged`. A crashed induction still leaves a `failed` action with its pre state. Dry-run persists nothing.
 
-## `orx context --task t.json [--episode ep1] [--top 3] [--code solve.py] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
+## `orx context --task t.json [--episode ep1] [--top 3] [--cir cir.json] [--math JSON] [--include-unverified] [--no-persist]`
 ## `orx context --context-id CTX_ID`
 
 **The frozen prediction input context (world-model phase 2).** One call gathers everything a prediction may condition on, freezes it, and persists it. Full spec: [references/prediction_context.md](prediction_context.md).
