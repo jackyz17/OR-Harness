@@ -186,7 +186,7 @@ class TestDormantDedup(_Case):
 
 
 class TestTriggers(_Case):
-    def test_c1_cost_contrast_not_swallowed_by_quality_dedup(self):
+    def test_cost_contrast_not_swallowed_by_quality_dedup(self):
         """The reproduced defect: when both sides' QUALITY was already encoded
         by entries, the pair was skipped wholesale and a 5x token difference
         was never reported."""
@@ -207,45 +207,40 @@ class TestTriggers(_Case):
                     for e in self.h.sbank.matching(last.profile_snapshot)}
         hints = [h for h in check_triggers(last, self.h.stats, self.h.catalog,
                                            expected)
-                 if h.criterion == "C1"]
+                 if h.pattern == "strategy_contrast"]
         self.assertTrue(hints, "a 5x cost gap must still be reported")
         self.assertEqual(hints[0].evidence["kind"], "cost")
 
-    def test_c6_requires_every_record_feasible(self):
-        """The reproduced defect: an infeasible execution carries no failure
-        record, so an empty ``failures`` list passed for success."""
-        for i in range(2):
-            self.add(f"ex_ok{i}", f"ok{i}", gap=0.0)
-        for i in range(2):
-            self.add(f"ex_inf{i}", f"inf{i}", gap=0.0, feasible=False,
-                     status="infeasible")
-        last = self.h.bank.get("ex_inf1")
-        hints = [h for h in check_triggers(last, self.h.stats, self.h.catalog)
-                 if h.criterion == "C6"]
-        self.assertFalse(hints)
-
-    def test_c6_still_fires_on_all_feasible(self):
-        last = None
-        for i in range(4):
-            last = self.add(f"ex_ok{i}", f"ok{i}", gap=0.0)
-        hints = [h for h in check_triggers(last, self.h.stats, self.h.catalog)
-                 if h.criterion == "C6"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["n_feasible"], 4)
-
-    def test_triggers_read_the_cell_not_the_family(self):
-        """C1/C2/C3/C6 must not mix evidence from another structural cell of
-        the same family."""
+    def test_patterns_read_the_cell_not_the_family(self):
+        """The contrast pattern must not mix evidence from another structural
+        cell of the same family: a relation is only meaningful between
+        structurally comparable evidence."""
         for i in range(2):
             self.add(f"ex_far{i}", f"far{i}", strategy_id="S07", rc=0.10,
                      gap=0.95)
         record = self.add("ex_near", "near", strategy_id="S01", rc=0.90,
                           gap=0.05)
         hints = check_triggers(record, self.h.stats, self.h.catalog)
-        # C1 needs two eligible strategies IN THE CELL; S07's evidence is in
-        # another cell, so no contrast may be claimed.
-        self.assertNotIn("C1", {h.criterion for h in hints})
+        # strategy_contrast needs two eligible strategies IN THE CELL; S07's
+        # evidence is in another cell, so no contrast may be claimed.
+        self.assertNotIn("strategy_contrast", {h.pattern for h in hints})
         self.assertNotIn("S07", [s for h in hints for s in h.strategy_ids])
+
+    def test_retired_criteria_have_no_path(self):
+        """The retired per-strategy criteria (a lone strategy's extreme mean,
+        a within-cell quality trend, an accumulated success count) must never
+        be emitted: none of them is a relation between evidence."""
+        last = None
+        for i in range(4):
+            last = self.add(f"ex_ok{i}", f"ok{i}", gap=0.0)
+        patterns = {h.pattern for h in
+                    check_triggers(last, self.h.stats, self.h.catalog)}
+        self.assertNotIn("stable_success", patterns)
+        self.assertNotIn("extreme_performance", patterns)
+        self.assertNotIn("drift", patterns)
+        self.assertNotIn("C6", patterns)
+        self.assertNotIn("C2", patterns)
+        self.assertNotIn("C3", patterns)
 
 
 class TestPrecision(_Case):

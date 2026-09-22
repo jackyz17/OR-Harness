@@ -4,24 +4,39 @@ Migrated from the legacy SafePythonExecutor (AST sandbox + POSIX rlimits +
 wall-clock timeout + result.json contract), now synchronous — the harness owns
 all orchestration and concurrency. The executor also performs basic
 verification (status legality, finite objective, gap recording) and produces
-the execution half of the CostVector (solver_runtime_s, retries, latency_s,
-tool_calls). ``llm_tokens`` is owned by the harness and backfilled via
-``orx record --override``.
+the part of the CostVector it can actually observe.
 
-Cost semantics:
-- One execution = one ATTEMPT (``measurement_scope="attempt"``).
-- ``retries`` counts only *extra* attempts beyond the first. A first failed
-  attempt is retries=0 (measured zero). When this attempt itself is a retry
-  inside an inner loop, the harness declares the fact via
-  ``orx record --override retries=...`` (replace semantics, absolute value).
-- ``solver_runtime_s`` prefers the script-reported ``runtime_seconds``
-  (``solver_runtime_provenance="reported"``); when the script does not
-  report it (or on error/timeout), wall-clock time is recorded as an
-  explicit proxy (``"wall_proxy"``) — never silently zero, never pretending
-  to be a precise solver runtime.
-- Measured-dimension mask on the record: tool_calls, solver_runtime_s,
-  retries and latency_s are measured by the executor; llm_tokens stays
-  UNKNOWN until the harness backfills it.
+Cost semantics — only TWO dimensions are genuinely measured here:
+
+- ``latency_s``: the attempt's whole wall-clock span, from
+  ``time.monotonic()``. It covers sandbox policy checking, environment
+  construction, process spawn, interpreter start-up, imports, the solve
+  itself and verification. It is an ATTEMPT overhead, not a solve latency;
+  use ``solver_runtime_s`` for the solve.
+- ``solver_runtime_s``: the script-reported ``runtime_seconds`` when it is
+  a usable number (``solver_runtime_provenance="reported"``); otherwise the
+  whole-subprocess wall clock as an EXPLICIT proxy (``"wall_proxy"``).
+  A rejected or absent report is always downgraded to the proxy and noted —
+  never silently zero, never pretending to be a precise solver runtime. A
+  script that never ran (rejected by the sandbox policy) measures NOTHING.
+
+Three dimensions are NOT measurable by the executor and stay UNKNOWN until
+the harness declares them via ``orx record --override``:
+
+- ``llm_tokens`` — the LLM is the outer harness's, invisible to the sandbox.
+- ``tool_calls`` — ALL tool invocations within the record's declared scope
+  (shell commands, file reads/writes, sandbox runs, solver calls). The
+  executor sees exactly one of them (its own spawn) and records that as a
+  provable LOWER BOUND (``execution_features.tool_calls_lower_bound``);
+  it never claims to have measured the total.
+- ``retries`` — whether THIS attempt is itself a retry is a harness
+  declaration. The executor records only what it can prove: that no earlier
+  attempt of the same (task, episode, strategy) exists, making retries=0 a
+  fact rather than an assumption (see :meth:`api.ORHarness.execute`).
+
+Consequently the measured-dimension mask produced here is exactly
+``{latency_s, solver_runtime_s}``. A constant is never put in the mask: the
+mask means "this value is a real observation", and a placeholder is not.
 """
 
 from __future__ import annotations
@@ -78,6 +93,13 @@ class ExecutionOutcome:
     #: Provenance of runtime_seconds: "reported" (result.json) or
     #: "wall_proxy" (wall-clock of the whole script, explicit proxy).
     runtime_provenance: Optional[str] = None
+    #: Why a script-reported runtime was not accepted (e.g. it was not a
+    #: number, or was negative). None when nothing was rejected. Kept so a
+    #: downgrade is always explainable, never a silent substitution.
+    runtime_note: Optional[str] = None
+    #: True when the script actually ran. A policy-rejected script never
+    #: executed, so it measures NOTHING — not even a zero runtime.
+    executed: bool = True
     wall_seconds: float = 0.0
     message: str = ""
     normalized_error: str = ""
@@ -109,6 +131,7 @@ class SafePythonExecutor:
             return ExecutionOutcome(
                 status="error", solver=solver,
                 normalized_error="security policy: " + security_error,
+                executed=False,
                 message="Solve script was rejected before execution")
         env = {
             "PATH": os.environ.get("PATH", ""),
@@ -121,8 +144,16 @@ class SafePythonExecutor:
         start = time.monotonic()
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
+            # RLIMIT_CPU is set ABOVE the wall-clock timeout on purpose. When
+            # the two are equal, a CPU-bound script is killed by SIGXCPU at
+            # the same instant the wall deadline lands, and the race decides
+            # the classification: the same "did not finish in time" condition
+            # was reported as `error` (signal kill, no result.json) instead of
+            # `timeout`. Giving the wall clock the first move makes both a
+            # CPU-bound burn and a sleep-bound stall classify as `timeout`.
             kwargs["preexec_fn"] = _resource_limits(
-                max(2, self.timeout_seconds), 2 * 1024 * 1024 * 1024, 64 * 1024 * 1024)
+                max(2, self.timeout_seconds + 5), 2 * 1024 * 1024 * 1024,
+                64 * 1024 * 1024)
         try:
             proc = subprocess.run(
                 [sys.executable, str(code_path)],
@@ -142,7 +173,8 @@ class SafePythonExecutor:
             return ExecutionOutcome(
                 status="error", solver=solver, exit_code=proc.returncode,
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
-                normalized_error=_normalize_error(stderr or stdout or "missing result.json"),
+                normalized_error=_normalize_error(
+                    stderr or stdout or _exit_note(proc.returncode)),
                 message="Process failed or did not write result.json")
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
@@ -154,12 +186,27 @@ class SafePythonExecutor:
                 message="result.json is invalid")
         # Solver runtime: prefer the script-reported value; otherwise fall
         # back to wall-clock as an EXPLICIT proxy (never silently zero,
-        # never masquerading as a precise solver runtime).
+        # never masquerading as a precise solver runtime). A reported value
+        # that is not a usable number (non-numeric, negative, NaN/inf) is
+        # REJECTED and downgraded to the proxy with a note — the executor
+        # must not crash on a malformed script and must not record a
+        # nonsense measurement.
         reported = payload.get("runtime_seconds")
+        runtime_note: Optional[str] = None
+        runtime_seconds: Optional[float] = None
+        runtime_provenance: Optional[str] = None
         if reported is not None:
-            runtime_seconds = float(reported)
-            runtime_provenance = "reported"
-        else:
+            try:
+                candidate = float(reported)
+            except (TypeError, ValueError):
+                candidate = None
+            if candidate is not None and _is_finite(candidate) and candidate >= 0.0:
+                runtime_seconds = candidate
+                runtime_provenance = "reported"
+            else:
+                runtime_note = (f"rejected script-reported runtime_seconds="
+                                f"{reported!r}; using the wall-clock proxy")
+        if runtime_seconds is None:
             runtime_seconds = wall
             runtime_provenance = "wall_proxy"
         return ExecutionOutcome(
@@ -172,6 +219,7 @@ class SafePythonExecutor:
             mip_gap=payload.get("mip_gap"),
             runtime_seconds=runtime_seconds,
             runtime_provenance=runtime_provenance,
+            runtime_note=runtime_note,
             wall_seconds=wall,
             message=str(payload.get("message", "")),
             diagnostics=dict(payload.get("diagnostics") or {}),
@@ -183,7 +231,14 @@ class SafePythonExecutor:
     def verify(outcome: ExecutionOutcome) -> Dict[str, Any]:
         """Basic, cheap verification: legal status, finite objective when
         claimed, gap recorded when a bound exists. ``verification=strong`` is
-        an optional outer-layer upgrade; this layer stays cheap by default."""
+        an optional outer-layer upgrade; this layer stays cheap by default.
+
+        ``runtime_checks`` is reported SEPARATELY from ``problems`` on
+        purpose: ``problems`` feeds ``quality.feasible``, and a suspicious
+        runtime is a measurement-quality observation, not evidence that the
+        solve itself was wrong. Folding it into ``problems`` would flip
+        perfectly valid records to infeasible and poison every downstream
+        consumer of ``quality``."""
         problems: List[str] = []
         status = outcome.status
         if status not in ALLOWED_STATUSES:
@@ -200,6 +255,23 @@ class SafePythonExecutor:
             bound, obj = float(outcome.objective_bound), float(objective)
             denom = max(abs(obj), 1e-9)
             gap = abs(bound - obj) / denom
+        runtime_checks: List[str] = []
+        if not outcome.executed:
+            runtime_checks.append("the script never ran: no runtime was observed")
+        else:
+            runtime = outcome.runtime_seconds
+            if not _is_finite(runtime):
+                runtime_checks.append("solver_runtime_s is not finite")
+            elif runtime < 0.0:
+                runtime_checks.append("solver_runtime_s is negative")
+            elif (outcome.runtime_provenance == "reported"
+                  and runtime > outcome.wall_seconds):
+                # A script cannot report more solve time than the whole
+                # process it ran in. Only "reported" is checked: a
+                # wall_proxy value IS the wall clock by construction.
+                runtime_checks.append(
+                    "script-reported runtime exceeds the whole process "
+                    "wall clock")
         return {
             "feasible": feasible and not problems,
             "objective": objective,
@@ -207,6 +279,7 @@ class SafePythonExecutor:
             "gap": gap,
             "status": status if status in ALLOWED_STATUSES else "error",
             "problems": problems,
+            "runtime_checks": runtime_checks,
         }
 
     # -- record assembly ----------------------------------------------------------
@@ -220,33 +293,48 @@ class SafePythonExecutor:
         The record is returned, not persisted — recording is the harness's
         explicit decision (``orx record``), keeping execute/record separable.
 
-        Cost semantics: this record covers ONE attempt. A first failure is
-        retries=0 (a measured zero) — the executor never infers retries from
-        failure status; only the harness may declare a retry relationship via
-        ``record --override retries=...``. Solver runtime provenance is
-        explicit (``reported`` vs ``wall_proxy``).
+        Cost semantics: this record covers ONE attempt. Only what the
+        executor can OBSERVE enters the measured mask (``latency_s`` and, when
+        the script really ran, ``solver_runtime_s``). ``tool_calls``,
+        ``retries`` and ``llm_tokens`` are harness declarations — the
+        executor records what it can prove about them instead of fabricating
+        a measured constant:
+
+        - ``tool_calls`` stays unmeasured and its provable lower bound (one
+          sandbox invocation) goes to ``tool_calls_lower_bound``;
+        - ``retries`` stays unmeasured (whether this attempt is itself a
+          retry is not observable here — see ``api.ORHarness.execute`` for
+          the provable-zero case);
+        - ``llm_tokens`` stays unmeasured until ``record --override``.
         """
-        started = time.time()
+        started = time.monotonic()
         outcome = self.run(code_path, workspace, solver)
         check = self.verify(outcome)
-        latency = time.time() - started
-        # One sandboxed invocation = one attempt, zero retries. The executor
-        # cannot know whether THIS attempt is itself a retry of an earlier
-        # one — that relationship is the harness's declaration.
-        retries = 0.0
-        if outcome.status in ("error", "timeout"):
-            runtime = outcome.wall_seconds
-            runtime_provenance = "wall_proxy"
+        # monotonic, not time.time(): a wall clock can jump backwards (NTP),
+        # which would record a negative latency for a perfectly normal run.
+        latency = time.monotonic() - started
+        if not outcome.executed:
+            # A policy-rejected script never ran: there is no runtime to
+            # measure and no call to count. Reporting 0.0 as a MEASURED
+            # runtime would be a fabricated fact.
+            runtime = 0.0
+            runtime_provenance = None
+            measured: set = set()
         else:
-            runtime = outcome.runtime_seconds
-            runtime_provenance = outcome.runtime_provenance or "wall_proxy"
+            if outcome.status in ("error", "timeout"):
+                runtime = outcome.wall_seconds
+                runtime_provenance = "wall_proxy"
+            else:
+                runtime = outcome.runtime_seconds
+                runtime_provenance = outcome.runtime_provenance or "wall_proxy"
+            measured = {"latency_s", "solver_runtime_s"}
         cost = CostVector(
-            llm_tokens=0.0,  # harness backfills via record --override
-            tool_calls=1.0,
+            llm_tokens=0.0,   # harness declares via record --override
+            tool_calls=0.0,   # harness declares; executor only proves a floor
             solver_runtime_s=runtime,
-            retries=retries,
+            retries=0.0,      # harness declares (see api.execute for the proof)
             latency_s=latency,
-            measured={"tool_calls", "solver_runtime_s", "retries", "latency_s"},
+            measured=measured,
         )
         failures: List[FailureRecord] = []
         if outcome.status in ("error", "timeout"):
@@ -263,6 +351,23 @@ class SafePythonExecutor:
         execution_features: Dict[str, Any] = {}
         if outcome.diagnostics:
             execution_features["solver_diagnostics"] = dict(outcome.diagnostics)
+        if outcome.executed:
+            # The one call this executor can PROVE happened. The total
+            # ``tool_calls`` (all tool invocations in the declared scope) is
+            # the harness's to declare, and must never be below this floor.
+            execution_features["tool_calls_lower_bound"] = 1
+        cost_notes: List[str] = []
+        if outcome.runtime_note:
+            cost_notes.append(outcome.runtime_note)
+        if check["runtime_checks"]:
+            execution_features["runtime_checks"] = list(check["runtime_checks"])
+            cost_notes.extend(check["runtime_checks"])
+        if not outcome.executed:
+            cost_notes.append(
+                "the solve script was rejected before execution: no cost "
+                "dimension was measured for this record")
+        if cost_notes:
+            execution_features["cost_notes"] = cost_notes
         return ExecutionRecord(
             execution_id=ExecutionRecord.new_id(),
             task_id=task_id, strategy_id=strategy_id,
@@ -353,6 +458,22 @@ def _normalize_error(text: str) -> str:
     exception_lines = [l for l in lines
                        if re.search(r"(?:Error|Exception|Traceback|infeasible|unbounded)", l, re.I)]
     return " | ".join(exception_lines[-3:] or lines[-2:])[:1000]
+
+
+#: Signals worth naming explicitly: a bare "missing result.json" tells the
+#: harness nothing about WHY the script produced no result.
+_SIGNAL_NAMES = {9: "SIGKILL", 15: "SIGTERM", 24: "SIGXCPU", 25: "SIGXFSZ"}
+
+
+def _exit_note(returncode: Optional[int]) -> str:
+    """Explain a non-zero exit when the process wrote nothing at all."""
+    if returncode is None:
+        return "missing result.json"
+    if returncode < 0:
+        name = _SIGNAL_NAMES.get(-returncode)
+        return (f"missing result.json: process killed by signal {-returncode}"
+                + (f" ({name})" if name else ""))
+    return f"missing result.json (exit code {returncode})"
 
 
 def _is_finite(value: Any) -> bool:

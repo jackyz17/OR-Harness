@@ -16,8 +16,8 @@ from or_harness.core.schema import (  # noqa: E402
 from or_harness.core.storage import Store  # noqa: E402
 
 #: A fully-metered default cost — every dimension explicitly measured, so
-#: tests that rely on "retries=0 was actually observed" (e.g. C6 stable
-#: success) do not trip over unknown-vs-zero inference.
+#: tests that rely on "retries=0 was actually observed" do not trip over
+#: unknown-vs-zero inference.
 MEASURED_ALL = set(COST_DIMENSIONS)
 
 

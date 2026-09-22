@@ -1,27 +1,27 @@
-# Induction: criteria, scope, and validation
+# Induction: patterns, scope, and validation
 
 Induction is the part of OR-Harness most worth understanding correctly. It answers: "given the facts accumulated so far, which generalizations am I entitled to commit to?"
 
-## Trigger criteria C1–C6
+## Induction-worthy patterns
 
-After every `record`, cheap checks run automatically. Any hit produces an `induction_hint` carrying a concrete evidence structure (never a bare counter). The criteria are OR-ed — there is no "all satisfied" state machine, and **hints never induce by themselves**: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all.
+After every `record`, cheap detectors run automatically. Any hit produces an `induction_hint` carrying a concrete evidence structure (never a bare counter). The detectors are OR-ed — there is no "all satisfied" state machine, and **hints never induce by themselves**: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all.
 
-Divergence judgments require **n ≥ 2** supporting executions. A single observation never counts as divergence — that restraint is deliberate (see worked example 1 in examples.md).
+Four patterns are worth generalizing. They are named for what they are — no historical criterion numbers are used anywhere.
 
-| Criterion | Fires when | Key refusal condition |
+| Pattern | Fires when | Key refusal condition |
 |---|---|---|
-| C1 strategy contrast | ≥2 strategies in the same structural cell differ significantly in quality **or** in cost, and the contrast is not already encoded | a difference existing entries already capture is not news (quality and cost are judged separately: an entry explaining the quality gap does not explain the cost gap) |
-| C2 extreme performance | one strategy's observed mean quality in the cell is extreme (high ≥0.75 or low ≤0.35) with n ≥ 2, and no existing entry captures it | n < 2, moderate quality, or already encoded |
-| C3 in-group drift | same strategy, same cell, n ≥ 3, trending quality | flat series |
-| C4 failure-recovery | a fallback was exercised — within one execution (`failures[].recovery_action`) or across executions (a same-task attempt failed under one solver, then succeeded under another) | failures without recovery; retrying the same solver is not a chain |
-| C5 cross-family reproduction | same strategy, same-direction extreme performance in ≥2 families **at the same structure** (the reference dimensions must all be measured) | single-family evidence, mixed directions, or an unmeasured structure |
-| C6 stable success | same cell, n ≥ 4, **every record feasible**, zero failures, zero retries (retries measured on all) | any retry, or any infeasible record — an empty `failures` list is not proof of success |
+| `strategy_contrast` | ≥2 strategies in the same structural cell differ significantly in quality **or** in cost, and the contrast is not already encoded | a difference existing entries already capture is not news (quality and cost are judged separately: an entry explaining the quality gap does not explain the cost gap) |
+| `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`) or across executions (a same-task attempt failed under one solver, then succeeded under another) | failures without an intervention; retrying the same solver is not an intervention |
+| `structural_reproduction` | the same strategy shows the same-direction behaviour in ≥2 families **at the same structure** (the reference dimensions must all be measured) | single-family evidence, mixed directions, or an unmeasured structure |
+| `advantage_reversal` | the same strategy performs high (≥0.75) in one structural cell and low (≤0.35) in another cell **of the same family**, each with n ≥ 2 | consistent advantage across cells, a single cell, a thin cell, or a cross-family difference |
 
-All criteria are scoped to the target's **structural cell**, not the whole family: evidence from a structurally different region cannot create, dilute, or veto a contrast. C5 is the only cross-family criterion, and it compares each family's evidence in the same cell.
+All detectors are scoped to the target's **structural cell**, not the whole family: evidence from a structurally different region cannot create, dilute, or veto a relation. `structural_reproduction` is the only cross-family pattern and it compares each family's evidence in the same cell; `advantage_reversal` is the only cross-cell pattern and it stays inside one family.
 
-Note: trigger criteria no longer reference catalog priors (which have been removed). All criteria are purely statistical — they detect patterns in observed data (strategy contrasts, extreme performance, cross-family reproduction), not divergence from fabricated baselines. For C4, the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
+**The lesson is the relation, not the win.** `strategy_contrast` reports a comparison between two strategies under one structural condition; `advantage_reversal` reports where an advantage weakens or flips — an applicability boundary or a counterexample. Neither is a success count. `intervention_recovery` names the change in real outcome; a success after an intervention is **evidence, not proof of causation by itself**, so the hint carries both sides and you draw the conclusion.
 
-Hints count **executions**, not tasks: three runs of one instance can legitimately fire C2 or C6. That is not a bug and not a contradiction — a hint says the numbers look patterned, while the admission gate below decides whether the evidence may become a claim.
+All detectors are purely statistical — they detect patterns in observed data, not divergence from fabricated baselines. For `intervention_recovery`, the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
+
+Every detector requires **n ≥ 2** supporting executions: a single observation never counts as a pattern — that restraint is deliberate (see worked example 1 in examples.md). Hints count **executions**, not tasks: three runs of one instance can legitimately fire a hint. That is not a bug and not a contradiction — a hint says the numbers look patterned, while the admission gate below decides whether the evidence may become a claim.
 
 ## Applicability: family + structural cell
 
@@ -110,16 +110,32 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 
 ## Ability boundaries
 
-- **C1/C2/C3/C6** read the target's structural cell only — never the whole family, so a different region's behaviour cannot drive or dilute a contrast.
-- **C1** treats quality and cost contrasts independently: entries explaining the quality gap do not explain the cost gap.
-- **C3** detects quality drift; it does not yet cover cost drift.
-- **C4** detects a recorded recovery within one execution, or a cross-execution chain when the solver changed. Retrying the same solver is not a chain, and other automatic detection is not attempted this round — if you fixed something, say so in the record.
-- **C5** is a hint that reproduction happened at one structure across families. It never verifies knowledge and never widens applicability.
-- All of C1–C6 are hints: they never satisfy the admission gate.
+- **strategy_contrast / intervention_recovery / structural_reproduction** read the target's structural cell only — never the whole family, so a different region's behaviour cannot drive or dilute a relation. `structural_reproduction` is the one cross-family pattern, and it compares each family in the SAME cell. `advantage_reversal` is the one cross-cell pattern, and it stays inside one family.
+- **strategy_contrast** treats quality and cost contrasts independently: entries explaining the quality gap do not explain the cost gap.
+- **intervention_recovery** detects a recorded intervention within one execution, or a cross-execution chain when the solver changed. Retrying the same solver is not an intervention, and other automatic detection is not attempted this round — if you fixed something, say so in the record.
+- **structural_reproduction** is a hint that reproduction happened at one structure across families. It never verifies knowledge and never widens applicability. One task's observation is not transferable knowledge.
+- **advantage_reversal** detects a boundary between two cells of one family. It does not claim WHY the advantage flips, and it never merges the cells into one applicability range.
+- All four patterns are hints: they never satisfy the admission gate.
+
+## Recording the relation on the claim (peer evidence)
+
+A hint tells you a relation exists. When you induce, you can carry that relation onto the entry itself, so a later reader sees what the claim was induced against:
+
+```bash
+# the other strategy's executions in THIS target's own cell
+orx induce --strategy S01 --peer-strategy S04
+
+# this strategy's executions in ANOTHER structural cell
+orx induce --strategy S01 --peer-cell 'family=routing|rc[0.75,1.00]|..'
+```
+
+Each relation becomes one line under the entry's `risk_conditions` naming the observed difference (the peer label, its n, its mean quality, and only the cost dimensions measured on **every** record on both sides), and is reported back under `result.results[].peer_relations`. The CLI summary prints the first one.
+
+The contract is deliberately narrow: peer evidence is read **only to phrase the claim**. It never enters the target's statistics, never satisfies the admission gate, and never creates an entry on its own — a contrast is a reason to look, not a claim by itself. An induction with no peer flags is byte-for-byte what it was before.
 
 ## Applicability notes
 
-`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact.
+`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact. Peer relations use the same free-text discipline (`risk_conditions` rather than `applicability`, because a relation is a boundary the reader must respect).
 
 ## Cold archive (anti-resurrection)
 

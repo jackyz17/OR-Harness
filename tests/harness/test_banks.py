@@ -87,6 +87,97 @@ class TestConditionalStats(HarnessTestCase):
         self.assertNotIn("ex_comp", cell.execution_ids)
 
 
+class TestRuntimeProvenanceSeparation(HarnessTestCase):
+    """A script-reported runtime (the inner solve) and a wall-clock proxy
+    (the whole process, imports included) are DIFFERENT quantities under one
+    dimension name. Averaging them is a number about nothing."""
+
+    def setUp(self):
+        super().setUp()
+        self.bank = ExperienceBank(self.store)
+        self.stats = ConditionalStats(self.bank)
+
+    def _add(self, name, runtime, provenance):
+        rec = self.make_record(
+            execution_id=name, task_id=f"t_{name}",
+            cost=CostVector(llm_tokens=100.0, solver_runtime_s=runtime,
+                            tool_calls=2.0, retries=0.0, latency_s=0.5,
+                            measured={"llm_tokens", "tool_calls",
+                                      "solver_runtime_s", "retries",
+                                      "latency_s"}))
+        rec.solver_runtime_provenance = provenance
+        self.bank.append(rec)
+
+    def _cell(self):
+        return self.stats.cell(self.bank.get("a").group_l1, "S01")
+
+    def test_single_provenance_is_comparable(self):
+        self._add("a", 1.0, "reported")
+        self._add("b", 3.0, "reported")
+        cell = self._cell()
+        self.assertEqual(cell.solver_runtime_by_provenance,
+                         {"reported": {"n": 2.0, "mean": 2.0}})
+        self.assertEqual(cell.measured_cost("solver_runtime_s"), 2.0)
+
+    def test_mixed_provenance_is_not_comparable(self):
+        self._add("a", 1.0, "reported")
+        self._add("b", 9.0, "wall_proxy")
+        cell = self._cell()
+        self.assertEqual(set(cell.solver_runtime_by_provenance),
+                         {"reported", "wall_proxy"})
+        # Per-provenance means are available...
+        self.assertEqual(cell.solver_runtime_by_provenance["reported"]["mean"], 1.0)
+        self.assertEqual(cell.solver_runtime_by_provenance["wall_proxy"]["mean"], 9.0)
+        # ...but the pooled mean is refused.
+        self.assertIsNone(cell.measured_cost("solver_runtime_s"))
+        self.assertIsNone(cell.comparable_cost("solver_runtime_s"))
+
+    def test_legacy_record_without_provenance_counts_as_wall_proxy(self):
+        rec = self.make_record(
+            execution_id="a", task_id="ta",
+            cost=CostVector(solver_runtime_s=2.0,
+                            measured={"solver_runtime_s"}))
+        self.assertIsNone(rec.solver_runtime_provenance)
+        self.bank.append(rec)
+        cell = self._cell()
+        self.assertEqual(set(cell.solver_runtime_by_provenance), {"wall_proxy"})
+
+    def test_other_dimensions_are_unaffected_by_provenance_mixing(self):
+        self._add("a", 1.0, "reported")
+        self._add("b", 9.0, "wall_proxy")
+        cell = self._cell()
+        self.assertEqual(cell.measured_cost("llm_tokens"), 100.0)
+
+
+class TestCompleteDims(HarnessTestCase):
+    """complete_dims is the bar for publishing a cost claim: measured on
+    EVERY supporting record, not just one."""
+
+    def setUp(self):
+        super().setUp()
+        self.bank = ExperienceBank(self.store)
+        self.stats = ConditionalStats(self.bank)
+
+    def test_partial_dimension_is_not_complete(self):
+        self.bank.append(self.make_record(
+            execution_id="a", task_id="ta",
+            cost=CostVector(llm_tokens=100.0, solver_runtime_s=1.0,
+                            measured={"llm_tokens", "solver_runtime_s"})))
+        self.bank.append(self.make_record(
+            execution_id="b", task_id="tb",
+            cost=CostVector(solver_runtime_s=2.0,
+                            measured={"solver_runtime_s"})))
+        cell = self.stats.cell(self.bank.get("a").group_l1, "S01")
+        self.assertEqual(cell.complete_dims(), {"solver_runtime_s"})
+        self.assertIsNone(cell.comparable_cost("llm_tokens"))
+        self.assertEqual(cell.comparable_cost("solver_runtime_s"), 1.5)
+        # measured_cost is the weaker read: it answers "was it ever measured".
+        self.assertEqual(cell.measured_cost("llm_tokens"), 100.0)
+
+    def test_no_records_means_nothing_is_complete(self):
+        self.assertEqual(self.stats.cell("nowhere", "S01").complete_dims(), set())
+
+
 class TestStrategicBank(HarnessTestCase):
     def setUp(self):
         super().setUp()

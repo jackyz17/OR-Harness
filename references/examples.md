@@ -80,28 +80,22 @@ You pick S04 based on structural fit (it's a general-purpose strategy with no ap
 $ orx execute --task t.json --strategy S04 --code solve.py --workspace ws --solver highs
 {"result": {"execution": {"execution_id": "ex_6096390d0949", "task_id": "t1",
   "strategy_id": "S04", "quality": {"feasible": true, "objective": 100.0, "gap": 0.0, ...},
-  "cost": {"llm_tokens": 0.0, "tool_calls": 1.0, "solver_runtime_s": 0.5, ...}, ...}},
+  "cost": {"llm_tokens": 0.0, "tool_calls": 0.0, "solver_runtime_s": 0.5, ...},
+  "cost_measured": ["latency_s", "solver_runtime_s", "retries"],
+  "execution_features": {"tool_calls_lower_bound": 1}, ...}},
  "summary": "Execution ex_6096390d0949 finished with status optimal ... Nothing is recorded yet ..."}
 
-$ orx record --execution ex_6096390d0949.json --override llm_tokens=1840
+$ orx record --execution ex_6096390d0949.json --override llm_tokens=1840,tool_calls=4
 {"result": {"execution_id": "ex_6096390d0949", "recorded": true,
   "prediction_checks": [], "induction_hints": []},
  "summary": "Recorded ex_6096390d0949. No induction hints."}
 ```
 
-**T2.** S02 runs and scores Q=0.98. **No C2 hint fires** — S02 has n=1, and single observations never count. This restraint is the design working: one lucky run is not a pattern.
+The executor measures only `latency_s` and `solver_runtime_s`; `llm_tokens`, `tool_calls` and `retries` are declarations. Leave one out and `record` says so (`cost_completeness.missing`) — and `induce` will withhold that dimension's cost claim until every supporting record measures it, which is what keeps strategy selection and world-model prediction honest.
 
-**T3–T4.** After S02 repeats ~0.95 on **two further tasks** (t3, t4 — the claim needs distinct tasks, not one task run three times), meanQ ≥ 0.75 over n=3 and `record` returns:
+**T2.** S02 runs and scores Q=0.98. **No hint fires** — S02 has n=1, and single observations never count. This restraint is the design working: one lucky run is not a pattern.
 
-```json
-{"induction_hints": [{"criterion": "C2", "strategy_ids": ["S02"],
-  "group_key": "family=routing",
-  "reason": "S02 performs high: meanQ=0.95 over n=3",
-  "evidence": {"observed_mean_quality": 0.95, "direction": "high", "n": 3,
-                "execution_ids": ["ex_...", "ex_...", "ex_..."]}}]}
-```
-
-You judge it worth committing:
+**T3–T4.** After S02 repeats ~0.95 on **two further tasks** (t3, t4 — the claim needs distinct tasks, not one task run three times), meanQ ≥ 0.75 over n=3 and you judge it worth committing:
 
 ```bash
 $ orx induce --strategy S02
@@ -123,15 +117,27 @@ Note the second `skipped`: the candidate is formed but NOT published — recall 
 
 ## Example 2: quality tied, cost diverges (what only memory can learn)
 
-Routing group, n=2 each on distinct tasks: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. `record` fires **C1 on the cost dimension**:
+Routing group, n=2 each on distinct tasks: S01 and S04 both deliver ~0.70 quality, but S01 costs 3× the tokens. `record` fires a **`strategy_contrast` hint on the cost dimension**:
 
 ```json
-{"induction_hints": [{"criterion": "C1", "strategy_ids": ["S01", "S04"],
+{"induction_hints": [{"pattern": "strategy_contrast",
+  "strategy_ids": ["S01", "S04"],
   "reason": "cost contrast between strategies: S01 meanQ=0.70 vs S04 meanQ=0.70",
   "evidence": {"kind": "cost", "dimension": "llm_tokens",
     "observed": {"S01": 4500.0, "S04": 1500.0},
     "n": {"S01": 2, "S04": 2}, "execution_ids": {...}}}]}
 ```
+
+That hint is a RELATION between two strategies under one structural condition, not a verdict on either. You can carry it onto the entry you induce, so a later reader sees what the claim was measured against:
+
+```bash
+$ orx induce --strategy S01 --peer-strategy S04
+{"result": {"results": [{"created": "se_...",
+  "peer_relations": ["contrast vs S04: meanQ=0.70 (n=2) vs this cell meanQ=0.70; llm_tokens: 1500 vs 4500 — quality is equal by 0.00"],
+  "entry": {"risk_conditions": ["contrast vs S04: ..."], ...}}]}}
+```
+
+The relation lands on the entry's `risk_conditions` and changes nothing else: the claim's own quality and cost estimates come only from S01's executions. A contrast is a reason to look, not a claim by itself.
 
 After you induce both entries, `recall --memory-mode cost-aware` ranks S04 first; `--memory-mode strategic` (no cost weighting) still prefers whichever has the higher point quality estimate. That gap between the two modes is the experimental support for the thesis that cost awareness is a necessary component of memory — not an optional extra. Both entries are unverified candidates at this point, so recall answers from the statistics until you verify them; the ordering above is what the statistics already show.
 
@@ -163,7 +169,7 @@ Note what a *record in another cell* does instead: a task at rc=0.40 is in `rc[0
 
 ## Example 4: a candidate that is formed but not published
 
-You record four routing executions, all at rc≈0.9, across three tasks, all optimum. `record` fires C2/C6. You induce:
+You record four routing executions, all at rc≈0.9, across three tasks, all optimum. You induce:
 
 ```bash
 $ orx induce --strategy S04

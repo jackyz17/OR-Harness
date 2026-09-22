@@ -287,6 +287,109 @@ class TestApplicabilityNotes(InductionCase):
                          ["one", "two"])
 
 
+class TestPeerRelations(InductionCase):
+    """Induction reads RELATIONS, not only one cell's means.
+
+    Peer evidence is the reason a claim is worth committing — another
+    strategy performing differently in the same cell, or the same strategy
+    performing differently in a neighbouring cell. It is read ONLY to phrase
+    the claim: it never enters the target's statistics, never satisfies the
+    admission gate, and never creates an entry on its own.
+    """
+
+    def test_contrast_is_written_to_risk_conditions(self):
+        self.seed("S01", [0.05, 0.05], task_prefix="a")   # meanQ 0.95
+        self.seed("S04", [0.60, 0.60], task_prefix="b")   # meanQ 0.40
+        peer = {"S04": self.stats.evidence(self.make_profile("q"), "S04")}
+        result = self.engine.induce(self.make_profile("q"), "S01",
+                                    peer_evidence=peer)
+        entry = self.sbank.get(result["created"])
+        self.assertEqual(len(entry.risk_conditions), 1)
+        self.assertIn("S04", entry.risk_conditions[0])
+        self.assertIn("contrast vs", entry.risk_conditions[0])
+        self.assertEqual(result["peer_relations"], entry.risk_conditions)
+
+    def test_peer_evidence_never_enters_the_statistics(self):
+        """The claim's own numbers are unchanged by a peer: a relation is
+        applicability text, not a second statistic."""
+        self.seed("S01", [0.05, 0.05], task_prefix="a")
+        self.seed("S04", [0.60, 0.60], task_prefix="b")
+        profile = self.make_profile("q")
+        peer = {"S04": self.stats.evidence(profile, "S04")}
+        result = self.engine.induce(profile, "S01", peer_evidence=peer)
+        entry = self.sbank.get(result["created"])
+        self.assertAlmostEqual(entry.expected_quality_hat, 0.95, places=6)
+        self.assertEqual(entry.support_n, 2)
+        self.assertEqual(entry.provenance,
+                         [r.execution_id for r in self.stats.evidence(profile,
+                                                                      "S01")])
+
+    def test_peer_evidence_never_creates_an_entry(self):
+        """A contrast with NO target evidence is not a claim: the engine
+        refuses on its own gate, peer or not."""
+        self.seed("S04", [0.60, 0.60], task_prefix="b")
+        peer = {"S04": self.stats.evidence(self.make_profile("q"), "S04")}
+        result = self.engine.induce(self.make_profile("q"), "S01",
+                                    peer_evidence=peer)
+        self.assertIsNone(result.get("created"))
+        self.assertEqual(self.sbank.count(), 0)
+
+    def test_incomplete_peer_cost_is_withheld_from_the_relation(self):
+        """The peer's cost is quoted only where BOTH sides measured it on
+        every record — a partial mean would make the ratio meaningless."""
+        from or_harness.core.schema import CostVector
+        self.seed("S01", [0.05, 0.05], task_prefix="a")
+        for i in range(2):
+            self.bank.append(self.make_record(
+                execution_id=f"b_S04_{i}", task_id=f"b{i}", strategy_id="S04",
+                profile=self.make_profile(problem_id=f"b{i}", family="routing"),
+                gap=0.60,
+                cost=CostVector(llm_tokens=500, solver_runtime_s=1.0),
+                cost_measured=("llm_tokens",)))  # latency/runtime unmeasured
+        peer = {"S04": self.stats.evidence(self.make_profile("q"), "S04")}
+        result = self.engine.induce(self.make_profile("q"), "S01",
+                                    peer_evidence=peer)
+        entry = self.sbank.get(result["created"])
+        self.assertIn("contrast vs", entry.risk_conditions[0])
+        self.assertNotIn("solver_runtime_s", entry.risk_conditions[0])
+
+    def test_no_peer_evidence_leaves_the_entry_unchanged(self):
+        """A plain induction is byte-for-byte what it was: no relation lines,
+        no new result key."""
+        self.seed("S01", [0.05, 0.10])
+        result = self.engine.induce(self.make_profile("q"), "S01")
+        entry = self.sbank.get(result["created"])
+        self.assertEqual(entry.risk_conditions, [])
+        self.assertNotIn("peer_relations", result)
+
+    def test_reversal_peer_is_phrased_as_a_boundary(self):
+        """A neighbouring cell with opposite behaviour is written as the
+        boundary it is — the reader must see WHERE the advantage stops."""
+        for i in range(2):
+            self.bank.append(self.make_record(
+                execution_id=f"low_{i}", task_id=f"lowt{i}", strategy_id="S01",
+                profile=self.make_profile(problem_id=f"lowt{i}",
+                                          resource_coupling=0.10), gap=0.05))
+        self.seed("S01", [0.95, 0.95], task_prefix="high", resource_coupling=0.90)
+        profile = self.make_profile("q", resource_coupling=0.90)
+        peer_key = [k for k in
+                    self.stats.cells_in_family("S01", "routing")
+                    if "0.00,0.25" in k][0]
+        peer = {peer_key: [r for r in self.bank.all()
+                           if r.source == "executed"
+                           and r.strategy_id == "S01"
+                           and "0.00,0.25" in self._cell_of(r)]}
+        result = self.engine.induce(profile, "S01", peer_evidence=peer)
+        entry = self.sbank.get(result["created"])
+        self.assertTrue(entry.risk_conditions)
+        self.assertIn("contrast vs", entry.risk_conditions[0])
+
+    @staticmethod
+    def _cell_of(record):
+        from or_harness.core.schema import group_key
+        return group_key(record.profile_snapshot)
+
+
 class TestRebuild(InductionCase):
     """Re-induction from currently retained evidence. NOT exact
     reconstruction: the re-induced bank may legitimately differ from the
@@ -462,6 +565,97 @@ class TestOfflineRevision(HarnessTestCase):
         entry = self.h.sbank.get(entry_id)
         self.assertEqual(entry.status, "candidate")
         self.assertEqual(entry.prediction_track.consecutive_misses, 0)
+
+
+class TestCostClaimCompleteness(InductionCase):
+    """A cost claim is COMPLETE-OR-SILENT.
+
+    A dimension measured on only some supporting records must not be
+    published: a mean over a subset is a partial observation, and downstream
+    it feeds strategy selection and world-model prediction as if it were the
+    whole truth."""
+
+    def _seed_with_missing(self, missing_dims, n=3):
+        """Seed n records of one strategy; the last one leaves
+        ``missing_dims`` unmeasured."""
+        from or_harness.core.schema import COST_DIMENSIONS, CostVector
+        ids = []
+        for i in range(n):
+            profile = self.make_profile(problem_id=f"c{i}", family="routing")
+            measured = set(COST_DIMENSIONS)
+            if i == n - 1:
+                measured -= set(missing_dims)
+            cost = CostVector(
+                llm_tokens=1000.0, tool_calls=2.0, solver_runtime_s=1.0,
+                retries=0.0, latency_s=0.5, measured=measured)
+            rec = self.make_record(
+                execution_id=f"c_{i}", task_id=f"c{i}", strategy_id="S01",
+                profile=profile, cost=cost)
+            self.bank.append(rec)
+            ids.append(rec.execution_id)
+        return ids
+
+    def test_partial_dimension_is_withheld(self):
+        self._seed_with_missing({"llm_tokens"})
+        out = self.engine.induce(self.make_profile(family="routing"), "S01")
+        self.assertIsNotNone(out["created"])
+        entry = self.sbank.get(out["created"])
+        # llm_tokens was measured on 2 of 3 records: no claim.
+        self.assertNotIn("llm_tokens", entry.expected_cost_hat.measured_dims())
+        self.assertNotIn("llm_tokens", entry.cost_interval)
+        # The complete dimensions ARE published — the gate is per-dimension,
+        # not all-or-nothing.
+        self.assertIn("solver_runtime_s", entry.expected_cost_hat.measured_dims())
+        self.assertIn("tool_calls", entry.expected_cost_hat.measured_dims())
+        self.assertEqual(entry.cost_support_n["llm_tokens"], 2)
+
+    def test_withheld_report_names_the_dimension_and_the_fix(self):
+        self._seed_with_missing({"llm_tokens", "tool_calls"})
+        out = self.engine.induce(self.make_profile(family="routing"), "S01")
+        withheld = out["cost_claim_withheld"]
+        self.assertEqual(set(withheld["dimensions"]),
+                         {"llm_tokens", "tool_calls"})
+        self.assertEqual(withheld["dimensions"]["llm_tokens"],
+                         {"n_measured": 2, "n": 3})
+        self.assertEqual(len(withheld["supporting_executions"]), 3)
+        self.assertIn("--override", withheld["note"])
+
+    def test_no_withheld_report_when_everything_is_complete(self):
+        self._seed_with_missing(set())
+        out = self.engine.induce(self.make_profile(family="routing"), "S01")
+        self.assertNotIn("cost_claim_withheld", out)
+
+    def test_backfilling_restores_the_claim(self):
+        from or_harness.core.schema import COST_DIMENSIONS
+        ids = self._seed_with_missing({"llm_tokens"})
+        out = self.engine.induce(self.make_profile(family="routing"), "S01")
+        entry_id = out["created"]
+        self.assertNotIn("llm_tokens",
+                         self.sbank.get(entry_id).expected_cost_hat.measured_dims())
+        # The fix is a backfill of the ONE incomplete record, not a re-run.
+        self.bank.update_cost(ids[-1], llm_tokens=1234.0)
+        self.engine.induce(self.make_profile(family="routing"), "S01")
+        entry = self.sbank.get(entry_id)
+        self.assertIn("llm_tokens", entry.expected_cost_hat.measured_dims())
+        self.assertIn("llm_tokens", entry.cost_interval)
+        # 1000, 1000, 1234 -> the mean now includes the backfilled value.
+        self.assertAlmostEqual(entry.expected_cost_hat.llm_tokens,
+                               3234.0 / 3.0, places=4)
+        self.assertEqual(len(entry.expected_cost_hat.measured_dims()),
+                         len(COST_DIMENSIONS))
+
+    def test_incomplete_dimension_reads_unknown_not_partial_mean(self):
+        """The withheld dimension must be UNKNOWN downstream, never the
+        subset mean presented as a measurement."""
+        from or_harness.core.schema import CostVector
+        self._seed_with_missing({"llm_tokens"})
+        out = self.engine.induce(self.make_profile(family="routing"), "S01")
+        entry = self.sbank.get(out["created"])
+        # 2 of 3 records had 1000 tokens: the subset mean would be 1000.0.
+        self.assertEqual(entry.expected_cost_hat.llm_tokens, 0.0)
+        self.assertNotIn("llm_tokens", entry.expected_cost_hat.measured_dims())
+        self.assertEqual(entry.expected_cost_hat.measured_dims(),
+                         set(entry.cost_interval))
 
 
 if __name__ == "__main__":

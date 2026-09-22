@@ -177,6 +177,73 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIn("result", parsed)
         self.assertIn("summary", parsed)
 
+    def test_record_reports_the_cost_gap_and_induce_withholds_the_claim(self):
+        """The end-to-end integrity loop, through the agent's real interface.
+
+        A record whose llm_tokens/tool_calls are not declared must (a) say so
+        at record time, and (b) not produce a cost claim for those dimensions
+        when induced — the entry is still created, its measured dimensions
+        are still published."""
+        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+                       "--strategy", "S01", "--code", str(self.solve_path),
+                       "--workspace", str(self.work), "--solver", "highs")
+        execution = json.loads(proc.stdout)["result"]["execution"]
+        exec_path = self.work / "gap1.json"
+        exec_path.write_text(json.dumps(execution), encoding="utf-8")
+        proc = run_orx(self.home, "record", "--execution", str(exec_path))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        block = json.loads(proc.stdout)["result"]["cost_completeness"]
+        self.assertIn("llm_tokens", block["missing"])
+        self.assertIn("tool_calls", block["missing"])
+
+        # A second, independent task in the same group.
+        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
+                       "--strategy", "S01", "--code", str(self.solve_path),
+                       "--workspace", str(self.work), "--solver", "highs")
+        execution2 = json.loads(proc.stdout)["result"]["execution"]
+        exec2_path = self.work / "gap2.json"
+        exec2_path.write_text(json.dumps(execution2), encoding="utf-8")
+        run_orx(self.home, "record", "--execution", str(exec2_path))
+
+        proc = run_orx(self.home, "induce", "--strategy", "S01")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        result = json.loads(proc.stdout)["result"]["results"][0]
+        withheld = result["cost_claim_withheld"]
+        self.assertIn("llm_tokens", withheld["dimensions"])
+        self.assertIn("--override", withheld["note"])
+        entry = result["entry"]
+        mask = entry["expected"]["cost_measured"]
+        self.assertIn("solver_runtime_s", mask)
+        self.assertNotIn("llm_tokens", mask)
+        self.assertNotIn("tool_calls", mask)
+
+        # Backfill BOTH records -> the claim is restored on the next induce.
+        run_orx(self.home, "amend-cost", execution["execution_id"],
+                "--override", "llm_tokens=1840,tool_calls=4")
+        run_orx(self.home, "amend-cost", execution2["execution_id"],
+                "--override", "llm_tokens=1820,tool_calls=4")
+        proc = run_orx(self.home, "induce", "--strategy", "S01")
+        result = json.loads(proc.stdout)["result"]["results"][0]
+        self.assertNotIn("cost_claim_withheld", result)
+        entry = json.loads(run_orx(self.home, "inspect", "--bank", "strategic")
+                           .stdout)["result"]["entries"][0]
+        mask = entry["expected"]["cost_measured"]
+        self.assertIn("llm_tokens", mask)
+        self.assertIn("tool_calls", mask)
+
+    def test_tool_calls_below_the_sandbox_floor_is_refused(self):
+        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+                       "--strategy", "S01", "--code", str(self.solve_path),
+                       "--workspace", str(self.work), "--solver", "highs")
+        execution = json.loads(proc.stdout)["result"]["execution"]
+        exec_path = self.work / "floor.json"
+        exec_path.write_text(json.dumps(execution), encoding="utf-8")
+        run_orx(self.home, "record", "--execution", str(exec_path))
+        proc = run_orx(self.home, "amend-cost", execution["execution_id"],
+                       "--override", "tool_calls=0")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("lower bound", proc.stdout + proc.stderr)
+
     def test_error_exit_code_and_json(self):
         proc = run_orx(self.home, "recall", "--task", "{bad json")
         self.assertEqual(proc.returncode, 2)

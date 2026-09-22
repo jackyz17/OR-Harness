@@ -4778,7 +4778,7 @@ class ORHarness:
                           "comparable at this scale — " + mismatch))
             return PredictionSnapshot(
                 strategy_id=strategy_id,
-                expected_cost=cell.mean_cost,
+                expected_cost=self._complete_cost(cell),
                 source="stats", measurement_scope="attempt",
                 support_n=cell.n,
                 support_per_dim=dict(cell.n_measured),
@@ -4790,6 +4790,21 @@ class ORHarness:
                                   measurement_scope="attempt",
                                   note="no attempt-scope cost evidence for "
                                        "this strategy×profile pair")
+
+    @staticmethod
+    def _complete_cost(cell) -> CostVector:
+        """A stats-derived expected cost carrying only COMPLETE dimensions.
+
+        The same completeness bar induction uses: a dimension measured on
+        only some of the cell's records must not be published as an
+        expectation. An incomplete dimension keeps a placeholder zero and
+        stays OUT of the mask, so consumers see unknown rather than a
+        partial-subset mean presented as a measurement."""
+        complete = cell.complete_dims()
+        return CostVector(
+            **{d: (float(getattr(cell.mean_cost, d)) if d in complete else 0.0)
+               for d in COST_DIMENSIONS},
+            measured=set(complete))
 
     # -- task texts (the retrieval document's source) ----------------------------
 
@@ -4932,6 +4947,26 @@ class ORHarness:
                 record.cir_snapshot = cir.to_dict()
         if record.task_text_digest is None:
             record.task_text_digest = task_text_ver
+        # Provable retries=0. The executor cannot know whether an attempt is
+        # itself a retry, but THIS call can: if no earlier execute_strategy
+        # action of the same (task, episode, strategy) ever produced an
+        # execution, there was nothing to retry — retries=0 is a fact, not a
+        # placeholder. With an earlier attempt on record, the count stays
+        # unknown (the harness declares it via `record --override retries=`):
+        # the framework must not guess a retry relationship it cannot see.
+        prior_attempts = [
+            act for act in self.actions.query(
+                task_id=str(task["task_id"]), episode_id=episode_id,
+                action_type="execute_strategy")
+            if act.action_id != action.action_id
+            and act.linked_execution_id is not None
+            and (act.params or {}).get("strategy_id") == strategy_id]
+        if not prior_attempts:
+            record.cost.retries = 0.0
+            record.cost.mark_measured("retries")
+            record.execution_features["retries_proof"] = (
+                "no earlier execute_strategy attempt of this "
+                "(task, episode, strategy) exists: retries=0 is observed")
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -4981,8 +5016,8 @@ class ORHarness:
                override_mode: str = "replace",
                prediction: Optional[PredictionSnapshot] = None) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
-        frozen quality checks -> cost backfill -> cost feedback -> C1-C6
-        hints.
+        frozen quality checks -> cost backfill -> cost feedback ->
+        induction-pattern hints.
 
         The chain is EVIDENCE-ONLY: it never promotes, demotes, or awakens a
         Strategic Knowledge entry. Quality checks are written onto the fact
@@ -5075,6 +5110,9 @@ class ORHarness:
             "prediction_checks": prediction_checks,
             "induction_hints": [h.to_dict() for h in hints],
         }
+        completeness = self._cost_completeness(record)
+        if completeness is not None:
+            result["cost_completeness"] = completeness
         if cost_feedback is not None:
             result["cost_feedback"] = cost_feedback
         # M6: a NORMAL solving action's knowledge prediction is evaluated
@@ -5100,7 +5138,9 @@ class ORHarness:
                verify: Optional[Dict[str, Any]] = None,
                execution_ids: Optional[Sequence[str]] = None,
                family: Optional[str] = None,
-               cell: Optional[str] = None) -> Dict[str, Any]:
+               cell: Optional[str] = None,
+               peer_strategy_ids: Optional[Sequence[str]] = None,
+               peer_cells: Optional[Sequence[str]] = None) -> Dict[str, Any]:
         """Consolidate Execution Evidence into Strategic Knowledge.
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
@@ -5116,6 +5156,17 @@ class ORHarness:
         the supporting evidence rows. New entries inherit the catalog
         vocabulary's strategy_type/actions — extension points for future
         induction — without ever overwriting harness-supplied values.
+
+        Induction reads relations, not only one cell's means.
+        ``peer_strategy_ids`` names OTHER strategies to compare against inside
+        each target's own structural cell (the ``strategy_contrast``
+        pattern); ``peer_cells`` names OTHER structural cells to compare the
+        SAME strategy against (the ``advantage_reversal`` pattern). Both are
+        read only to phrase the claim: each relation becomes a line under the
+        entry's ``risk_conditions`` naming the observed difference, and is
+        reported back under ``result.results[].peer_relations``. Peer
+        evidence never enters the target's statistics and never creates an
+        entry — a contrast is a reason to look, not a claim by itself.
 
         ``verify`` carries the harness's admission check for the candidate
         this call forms (see ``InductionEngine.induce``); the verdict is
@@ -5154,7 +5205,9 @@ class ORHarness:
                     results.append(self.induction.induce(
                         profile, sid, dry_run=dry_run, force=force,
                         notes=notes, verify=verify,
-                        execution_ids=execution_ids))
+                        execution_ids=execution_ids,
+                        peer_evidence=self._peer_evidence(
+                            profile, sid, peer_strategy_ids, peer_cells)))
                 if not dry_run:
                     for r in results:
                         entry_id = r.get("created") or r.get("updated")
@@ -5630,6 +5683,50 @@ class ORHarness:
                 "complete totals"),
         }
 
+    def _cost_completeness(self, record: ExecutionRecord
+                           ) -> Optional[Dict[str, Any]]:
+        """What this record's cost data can and cannot support.
+
+        Reported at record time because that is the moment the harness still
+        has the numbers at hand: ``llm_tokens`` and ``tool_calls`` are
+        invisible to the sandbox and can only be declared by the caller, and
+        a dimension left unmeasured here will not support a strategic-entry
+        cost claim (``induce`` withholds an incomplete dimension) or a cost
+        prediction. Returns None when every dimension is measured — there is
+        nothing to warn about.
+
+        This never blocks recording: the fact is honest as it stands, and an
+        unmeasured dimension is recorded as UNKNOWN rather than fabricated.
+        """
+        measured = record.cost.measured_dims()
+        missing = [d for d in COST_DIMENSIONS if d not in measured]
+        if not missing:
+            return None
+        fixes = []
+        if "llm_tokens" in missing:
+            fixes.append("llm_tokens=<actual tokens the LLM call used>")
+        if "tool_calls" in missing:
+            fixes.append("tool_calls=<count of ALL tool invocations: shell "
+                         "commands, file reads/writes, sandbox runs, solver "
+                         "calls>")
+        if "retries" in missing:
+            fixes.append("retries=<extra attempts beyond the first>")
+        note = ("unmeasured dimensions are recorded as UNKNOWN, never as zero. "
+                "They will not support a strategic-entry cost claim or a cost "
+                "prediction until every supporting record measures them.")
+        if fixes:
+            note += (" Backfill with `orx amend-cost <execution_id> --override "
+                     + ",".join(fixes) + "` (amends an already-recorded fact "
+                     "in place; re-applying is idempotent).")
+        return {
+            "measured": sorted(measured),
+            "missing": missing,
+            "note": note,
+            "lower_bounds": {
+                k: v for k, v in record.execution_features.items()
+                if k == "tool_calls_lower_bound"},
+        }
+
     def _prior_failures(self, record: ExecutionRecord) -> List[ExecutionRecord]:
         """Failed executions (bank + staged) for the same task, excluding
         this record itself."""
@@ -5640,6 +5737,40 @@ class ORHarness:
                   if p.execution_id != record.execution_id
                   and not p.quality.get("feasible", False)]
         return prior
+
+    def _peer_evidence(self, profile, strategy_id: str,
+                       peer_strategy_ids: Optional[Sequence[str]],
+                       peer_cells: Optional[Sequence[str]]
+                       ) -> Optional[Dict[str, List[ExecutionRecord]]]:
+        """The comparison evidence one induction target is read against.
+
+        ``peer_strategy_ids`` are read in the TARGET's own cell (the same
+        structural condition, a different strategy); ``peer_cells`` are read
+        for the TARGET's own strategy (the same strategy, a different
+        structural condition). Labels are the strategy id / the cell key, so
+        the phrasing on the entry names exactly what was compared. Returns
+        ``None`` when nothing was asked for, keeping a plain induction
+        unchanged."""
+        if not peer_strategy_ids and not peer_cells:
+            return None
+        peers: Dict[str, List[ExecutionRecord]] = {}
+        for peer in (peer_strategy_ids or []):
+            if peer == strategy_id:
+                continue
+            records = self.stats.evidence(profile, peer)
+            if records:
+                peers[str(peer)] = records
+        for cell_key in (peer_cells or []):
+            if cell_key == group_key(profile):
+                continue
+            records = [r for r in self.bank.all()
+                       if r.source == "executed"
+                       and r.measurement_scope == "attempt"
+                       and r.strategy_id == strategy_id
+                       and group_key(r.profile_snapshot) == cell_key]
+            if records:
+                peers[str(cell_key)] = records
+        return peers or None
 
     def _induction_targets(self, strategy_id: Optional[str], all_: bool,
                            family: Optional[str] = None,

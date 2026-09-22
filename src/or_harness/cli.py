@@ -419,8 +419,16 @@ def cmd_record(args) -> int:
             record = staged  # original payload, verbatim — no re-typing, no drift
         elif args.execution:
             data = _load_json_arg(args.execution)
-            if "execution" in data:
+            # Accept the bare record, the `orx execute` envelope
+            # ({"result": {"execution": {...}}}) and the legacy one-level
+            # form ({"execution": {...}}). `predict` already accepted all
+            # three; requiring the caller to hand-strip the envelope made
+            # the documented `execute > file` then `record --execution file`
+            # flow fail with a confusing "execution_id is required".
+            if isinstance(data.get("execution"), dict):
                 data = data["execution"]
+            elif isinstance(data.get("result", {}).get("execution"), dict):
+                data = data["result"]["execution"]
             record = ExecutionRecord.from_dict(data)
         elif args.record_file:
             record = ExecutionRecord.from_dict(_load_json_arg(args.record_file))
@@ -454,7 +462,8 @@ def cmd_record(args) -> int:
                            f"across matching entries.")
         if hints:
             summary.append("Induction hints: " + "; ".join(
-                f"{h['criterion']}({','.join(h['strategy_ids'])})" for h in hints)
+                f"{h['pattern']}({','.join(h['strategy_ids'])})"
+                for h in hints)
                 + ". Hints are evidence, not orders — induce only when you judge "
                   "the pattern worth generalizing.")
         else:
@@ -467,6 +476,53 @@ def cmd_record(args) -> int:
                 "attempt you abandoned, record it with `orx record --from-staged "
                 "<id>` — failures are the most valuable induction raw material.")
         return _emit(result, " ".join(summary))
+    finally:
+        h.close()
+
+
+def cmd_amend_cost(args) -> int:
+    """Backfill cost dimensions of an already-recorded execution.
+
+    The documented repair path for an incomplete cost claim: ``update_cost``
+    has always supported amending a stored fact in place, but it had no CLI
+    surface, so the advice printed by ``record``/``induce`` pointed at
+    nothing an agent could actually run."""
+    h = _harness(args)
+    try:
+        try:
+            dimensions = _parse_dimension_pairs(args.override)
+        except ValueError as exc:
+            return _fail(str(exc))
+        if not dimensions:
+            return _fail("--override requires at least one dimension=value pair")
+        from or_harness.core.schema import COST_DIMENSIONS
+        unknown = sorted(set(dimensions) - set(COST_DIMENSIONS))
+        if unknown:
+            return _fail(f"unknown cost dimensions {unknown}; "
+                         f"expected any of {list(COST_DIMENSIONS)}")
+        try:
+            record = h.bank.update_cost(args.execution_id,
+                                        mode=args.mode, **dimensions)
+        except StorageError as exc:
+            return _fail(str(exc))
+        measured = sorted(record.cost.measured_dims())
+        missing = [d for d in COST_DIMENSIONS if d not in measured]
+        result = {
+            "execution_id": record.execution_id,
+            "mode": args.mode,
+            "cost": {d: round(v, 6) for d, v in record.cost.to_dict().items()},
+            "cost_measured": measured,
+            "still_missing": missing,
+        }
+        summary = (f"Amended {record.execution_id} ({args.mode}): "
+                   + ", ".join(f"{d}={dimensions[d]:g}" for d in dimensions)
+                   + ".")
+        if missing:
+            summary += (f" Still unmeasured: {', '.join(missing)} — these "
+                        "dimensions support no cost claim until backfilled.")
+        else:
+            summary += " Every cost dimension is now measured."
+        return _emit(result, summary)
     finally:
         h.close()
 
@@ -487,7 +543,9 @@ def cmd_induce(args) -> int:
                           rebuild=args.rebuild, dry_run=args.dry_run,
                           force=args.force, notes=notes, verify=verify,
                           family=getattr(args, "family", None),
-                          cell=getattr(args, "cell", None))
+                          cell=getattr(args, "cell", None),
+                          peer_strategy_ids=getattr(args, "peer_strategy", None),
+                          peer_cells=getattr(args, "peer_cell", None))
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
@@ -521,6 +579,11 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
         scope.append(f"cell={args.cell}")
     if scope:
         parts.append("Scoped to " + ", ".join(scope) + ".")
+    relations = [rel for r in result.get("results", [])
+                 for rel in (r.get("peer_relations") or [])]
+    if relations:
+        parts.append(f"Recorded {len(relations)} peer relation(s) on the "
+                     "entry's risk_conditions: " + relations[0])
     transitions = [rev for rev in (result.get("revisions") or [])
                    if rev.get("transitions")]
     for rev in transitions:
@@ -1822,6 +1885,25 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser(
+        "amend-cost",
+        help="backfill cost dimensions of an ALREADY-RECORDED execution",
+        epilog=("Amends the fact in place; nothing is re-run and nothing is "
+                "appended. Use this to close a cost gap reported by "
+                "`record`/`induce` (cost_completeness.missing / "
+                "cost_claim_withheld): an unmeasured dimension supports no "
+                "cost claim until every supporting record measures it."))
+    p.add_argument("execution_id", metavar="EXECUTION_ID")
+    p.add_argument("--override", required=True,
+                   help="dimension=value pairs, e.g. 'llm_tokens=1840,"
+                        "tool_calls=9'")
+    p.add_argument("--mode", default="replace",
+                   choices=["replace", "increment"],
+                   help="'replace' (default, idempotent — the value IS the "
+                        "measurement) or 'increment' (an additional measured "
+                        "amount)")
+    p.set_defaults(func=cmd_amend_cost)
+
+    p = sub.add_parser(
         "induce", help="consolidate facts into strategic entries",
         epilog=("Creating an entry requires >=2 supporting executions from "
                 ">=2 distinct task_ids: repeating one task is repetition, not "
@@ -1862,6 +1944,20 @@ def build_parser() -> argparse.ArgumentParser:
                    help="restrict induction to ONE structural cell (the full "
                         "group_key token, e.g. 'family=routing|rc[..]|..'); "
                         "implies its family and --all scope")
+    p.add_argument("--peer-strategy", action="append", default=None,
+                   metavar="STRATEGY_ID",
+                   help="a strategy to COMPARE against inside each target's "
+                        "own structural cell (strategy_contrast). Read only "
+                        "to phrase the claim: each relation is written to "
+                        "the entry's risk_conditions and reported under "
+                        "peer_relations — it never enters the target's "
+                        "statistics and never creates an entry. Repeatable")
+    p.add_argument("--peer-cell", action="append", default=None,
+                   metavar="GROUP_KEY",
+                   help="a structural cell to compare the SAME strategy "
+                        "against (advantage_reversal: where does its "
+                        "advantage weaken or flip). Same read-only contract "
+                        "as --peer-strategy. Repeatable")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

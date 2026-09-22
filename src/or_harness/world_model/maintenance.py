@@ -3,9 +3,11 @@ consequence and value assessment.
 
 M4 connects experience accumulation to offline strategic induction via
 world-model prediction:
-1. Candidate bundling (:func:`build_induction_candidates`): scans C1–C6
-   hints and cell statistics over real executed evidence, producing
-   frozen, traceable :class:`InductionCandidateBundle` objects.
+1. Candidate bundling (:func:`build_induction_candidates`): scans the
+   induction-worthy patterns (strategy contrast, intervention recovery,
+   structural reproduction, advantage reversal) and cell statistics over
+   real executed evidence, producing frozen, traceable
+   :class:`InductionCandidateBundle` objects.
 2. Value assessment (:meth:`ORHarness.assess_induction`): asks the world
    model to predict the consequence of inducting a bundle (candidate
    formation, verification cost, expected reuse benefit, generalization
@@ -232,7 +234,7 @@ def build_induction_candidates(harness) -> List[InductionCandidateBundle]:
     - NEW claims: cells with >=2 executions where no published entry covers
       the predicates.
     - REVISIONS: cells where existing entries have accumulated forward-check
-      misses, performance drift (C3), or substantively changed evidence.
+      misses or substantively changed evidence.
 
     Returns a list of frozen :class:`InductionCandidateBundle` objects.
     Empty when no candidate has sufficient supporting evidence."""

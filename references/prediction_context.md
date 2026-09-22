@@ -248,7 +248,7 @@ This is the phase's most important engineering boundary.
 - **No capability evaluation system, no H score, no latent vectors.**
 - **No training** of a model, a prediction head or a retriever.
 - **No new semantic extractor, no retrieval rework**: the two existing channels are wired in, not replaced, and no composite retrieval score is introduced.
-- **No change** to the structural bins, the unknown-matching rule, the selector's scoring, the C1–C6 criteria or the induction publication gate.
+- **No change** to the structural bins, the unknown-matching rule, the selector's scoring, the induction-pattern detectors or the induction publication gate.
 - **No new autonomous agent and no background loop.**
 
 ---

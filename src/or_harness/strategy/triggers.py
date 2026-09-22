@@ -1,14 +1,30 @@
-"""Induction trigger criteria C1-C6.
+"""Induction-worthy evidence patterns.
 
 Checked cheaply and automatically after every ``record``; any hit produces an
 induction_hint with a concrete evidence structure (never a bare counter). The
-criteria are OR-ed — there is no "all satisfied" state machine. Hints never
+patterns are OR-ed — there is no "all satisfied" state machine. Hints never
 induce by themselves: ``induce`` is the harness's explicit call, and the
-harness may also induct from its own business knowledge (criteria do not
+harness may also induct from its own business knowledge (the detectors do not
 monopolize induction).
 
-Divergence from priors/entries requires n >= 2 (single observations never
-count as divergence — that restraint is by design).
+Four patterns are worth generalizing, and they are named for what they are —
+no historical criterion numbers are used anywhere:
+
+- **strategy_contrast** — structurally comparable evidence shows different
+  strategies differing in quality or cost. The lesson is the
+  "structural condition -> strategy effect" relation, not one win.
+- **intervention_recovery** — a real result changed after an intervention
+  (a fallback, a repair, a modeling change, a solver switch). The change is
+  evidence, never proof of causation by itself.
+- **structural_reproduction** — the same strategy relation recurs in a
+  structurally comparable but INDEPENDENT task/family. One task's
+  observation is not transferable knowledge.
+- **advantage_reversal** — a strategy's advantage weakens, disappears or
+  flips as the structural condition changes. The lesson is an applicability
+  boundary or a counterexample, not a success count.
+
+Every detector requires n >= 2 supporting executions: a single observation
+never counts as a pattern — that restraint is by design.
 """
 
 from __future__ import annotations
@@ -27,11 +43,11 @@ from or_harness.core.schema import (
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
 
+#: Evidence below this count never forms a pattern: single observations are
+#: not patterns.
 MIN_DIVERGENCE_N = 2
 SIGNIFICANT_QUALITY_DELTA = 0.10
 SIGNIFICANT_COST_RATIO = 0.25  # one side >= 25% cheaper counts as a cost gap
-TREND_MIN_N = 3
-STABLE_SUCCESS_MIN_N = 4
 
 #: Quality level above which a strategy's performance counts as "high" and
 #: below which it counts as "low" (in the [0, 1] quality-score space).
@@ -41,7 +57,8 @@ QUALITY_LOW_THRESHOLD = 0.35
 
 @dataclass
 class InductionHint:
-    criterion: str  # "C1".."C6"
+    pattern: str  # "strategy_contrast" | "intervention_recovery" |
+    #               "structural_reproduction" | "advantage_reversal"
     strategy_ids: List[str]
     group_key: str
     reason: str = ""
@@ -49,7 +66,7 @@ class InductionHint:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "criterion": self.criterion,
+            "pattern": self.pattern,
             "strategy_ids": list(self.strategy_ids),
             "group_key": self.group_key,
             "reason": self.reason,
@@ -62,66 +79,64 @@ def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
                    entries_expected: Optional[Dict[str, Dict[str, float]]] = None,
                    prior_failures: Optional[List[ExecutionRecord]] = None
                    ) -> List[InductionHint]:
-    """Evaluate C1-C6 for the structural group of ``record`` after it was
-    appended.
+    """Evaluate the four induction-worthy patterns for the structural group
+    of ``record`` after it was appended.
 
     ``entries_expected``: optional {strategy_id: {"quality": q}} of matching
-    strategic entries, so C1/C2 treat "memory already encodes this" as
-    non-divergent.
+    strategic entries, so strategy_contrast treats "memory already encodes
+    this" as non-divergent.
 
     ``prior_failures``: same-task failed executions (from the Experience
     Bank and/or the pending staging area) for cross-execution recovery
-    detection in C4.
+    detection in intervention_recovery.
 
-    Scope: every criterion reads the cell the record's profile belongs to
+    Scope: every detector reads the cell the record's profile belongs to
     (:meth:`ConditionalStats.for_profile`), never the whole family — evidence
     from a structurally different region must not drive, dilute, or veto a
-    contrast. C5 is the only cross-family criterion and it is scoped to the
-    same cell in each family.
+    contrast. ``structural_reproduction`` is the only cross-family pattern
+    and it is scoped to the same cell in each family;
+    ``advantage_reversal`` is the only cross-cell pattern and it stays inside
+    one family.
 
-    Note: triggers no longer reference catalog priors (which have been
-    removed). All criteria are now purely statistical — they detect
-    patterns in observed data, not divergence from fabricated baselines.
+    All detectors are purely statistical — they detect patterns in observed
+    data, not divergence from fabricated baselines.
     """
     cells = stats.for_profile(record.profile_snapshot)
     group = group_key(record.profile_snapshot)
     hints: List[InductionHint] = []
     expected_map = dict(entries_expected or {})
 
-    hint = _c1_strategy_contrast(cells, expected_map, group)
+    hint = _strategy_contrast(cells, expected_map, group)
     if hint:
         hints.append(hint)
-    hint = _c2_extreme_performance(record, cells, group, expected_map)
+    hint = _intervention_recovery(record, group, prior_failures or [])
     if hint:
         hints.append(hint)
-    hint = _c3_drift(record, cells, group)
-    if hint:
-        hints.append(hint)
-    hint = _c4_failure_recovery(record, group, prior_failures or [])
-    if hint:
-        hints.append(hint)
-    hints.extend(_c5_cross_family(record, stats, expected_map))
-    hint = _c6_stable_success(cells, group)
+    hints.extend(_structural_reproduction(record, stats))
+    hint = _advantage_reversal(record, stats, group)
     if hint:
         hints.append(hint)
     return hints
 
 
 # ---------------------------------------------------------------------------
-# criteria
+# patterns
 # ---------------------------------------------------------------------------
 
 
-def _c1_strategy_contrast(cells: Dict[str, GroupStats],
-                          expected_map: Dict[str, float],
-                          group: str
-                          ) -> Optional[InductionHint]:
-    """C1: >= 2 strategies in one group differ significantly (quality or cost).
+def _strategy_contrast(cells: Dict[str, GroupStats],
+                       expected_map: Dict[str, float],
+                       group: str
+                       ) -> Optional[InductionHint]:
+    """strategy_contrast: >= 2 strategies in one structural cell differ
+    significantly in quality OR in cost.
+
+    The lesson is the relation between a structural condition and a strategy's
+    effect, not a single win: two strategies observed in the SAME cell with a
+    material difference is what makes the comparison meaningful.
 
     A difference that existing strategic entries already encode (via
     ``expected_map``) does NOT trigger — the memory already captured it.
-    Without priors, the trigger fires on the first significant contrast
-    that is not already in the strategic layer.
     """
     eligible = [c for c in cells.values() if c.n >= MIN_DIVERGENCE_N]
     for i in range(len(eligible)):
@@ -178,7 +193,7 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
             if kind == "quality" and quality_encoded:
                 continue
             return InductionHint(
-                criterion="C1",
+                pattern="strategy_contrast",
                 strategy_ids=[a.strategy_id, b.strategy_id],
                 group_key=group,
                 reason=(f"{kind} contrast between strategies: "
@@ -196,62 +211,16 @@ def _c1_strategy_contrast(cells: Dict[str, GroupStats],
     return None
 
 
-def _c2_extreme_performance(record: ExecutionRecord, cells: Dict[str, GroupStats],
-                         group: str,
-                         expected_map: Dict[str, Dict[str, float]]
-                         ) -> Optional[InductionHint]:
-    """C2: a strategy's observed performance is extreme (very high or very low)
-    with n >= 2, and existing entries don't already capture it.
+def _intervention_recovery(record: ExecutionRecord, group: str,
+                           prior_failures: Optional[List[ExecutionRecord]] = None
+                           ) -> Optional[InductionHint]:
+    """intervention_recovery: a real result changed after an intervention.
 
-    Without fabricated priors, the trigger fires on observed extremes — the
-    first evidence that a strategy is notably good or bad in this structural
-    group, worth consolidating into a strategic entry.
-    """
-    cell = cells.get(record.strategy_id)
-    if cell is None or cell.n < MIN_DIVERGENCE_N:
-        return None
-    # Already encoded by an existing entry?
-    entry_q = expected_map.get(record.strategy_id, {}).get("quality")
-    if entry_q is not None and abs(entry_q - cell.mean_quality) < SIGNIFICANT_QUALITY_DELTA:
-        return None
-    mean_q = cell.mean_quality
-    if mean_q >= QUALITY_HIGH_THRESHOLD:
-        direction = "high"
-    elif mean_q <= QUALITY_LOW_THRESHOLD:
-        direction = "low"
-    else:
-        return None
-    return InductionHint(
-        criterion="C2", strategy_ids=[record.strategy_id], group_key=group,
-        reason=(f"{record.strategy_id} performs {direction}: "
-                f"meanQ={mean_q:.2f} over n={cell.n}"),
-        evidence={"observed_mean_quality": round(mean_q, 4),
-                  "direction": direction, "n": cell.n,
-                  "execution_ids": list(cell.execution_ids)})
-
-
-def _c3_drift(record: ExecutionRecord, cells: Dict[str, GroupStats],
-              group: str) -> Optional[InductionHint]:
-    """C3: same strategy, same group, n >= 3 with a quality trend."""
-    cell = cells.get(record.strategy_id)
-    if cell is None or cell.n < TREND_MIN_N:
-        return None
-    trend = cell.quality_trend()
-    if abs(trend) < SIGNIFICANT_QUALITY_DELTA / 2:
-        return None
-    return InductionHint(
-        criterion="C3", strategy_ids=[record.strategy_id], group_key=group,
-        reason=(f"quality trend within group: {trend:+.3f} over n={cell.n}"),
-        evidence={"trend": round(trend, 4), "n": cell.n,
-                  "quality_series": [round(q, 4) for q in cell.quality_values],
-                  "execution_ids": list(cell.execution_ids)})
-
-
-def _c4_failure_recovery(record: ExecutionRecord, group: str,
-                         prior_failures: Optional[List[ExecutionRecord]] = None
-                         ) -> Optional[InductionHint]:
-    """C4: a fallback was actually triggered. Failure evidence is the most
-    valuable induction raw material.
+    Failure evidence is the most valuable induction raw material. The
+    intervention may be a fallback, a repair, a modeling change or a solver
+    switch; what the detector reads is the CHANGE in real outcome, never a
+    narrative. A success after an intervention is evidence, not proof of
+    causation by itself.
 
     Two detection paths:
     1. within-execution: ``failures[].recovery_action`` set on this record.
@@ -264,7 +233,8 @@ def _c4_failure_recovery(record: ExecutionRecord, group: str,
     triggered = [f for f in record.failures if f.recovery_action]
     if triggered:
         return InductionHint(
-            criterion="C4", strategy_ids=[record.strategy_id], group_key=group,
+            pattern="intervention_recovery",
+            strategy_ids=[record.strategy_id], group_key=group,
             reason="fallback recovery was exercised in this execution",
             evidence={"execution_id": record.execution_id,
                       "failures": [f.to_dict() for f in triggered],
@@ -276,7 +246,8 @@ def _c4_failure_recovery(record: ExecutionRecord, group: str,
             failed_solver = str((failed.solver or {}).get("name", ""))
             if failed_solver and failed_solver != this_solver:
                 return InductionHint(
-                    criterion="C4", strategy_ids=[record.strategy_id],
+                    pattern="intervention_recovery",
+                    strategy_ids=[record.strategy_id],
                     group_key=group,
                     reason=(f"cross-execution recovery: {failed_solver} failed, "
                             f"switched to {this_solver} and succeeded"),
@@ -345,13 +316,17 @@ def solver_advisories(bank) -> List[Dict[str, Any]]:
     return sorted(per_solver.values(), key=lambda e: e["solver"])
 
 
-def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
-                     expected_map: Dict[str, Dict[str, float]]
-                     ) -> List[InductionHint]:
-    """C5: the same strategy shows the same-direction advantage in >= 2
-    families AT THE SAME STRUCTURE — the 'learn once, apply elsewhere'
-    detector. Informational: it reports reproduction across independently
-    observed families from the data alone.
+def _structural_reproduction(record: ExecutionRecord,
+                             stats: ConditionalStats
+                             ) -> List[InductionHint]:
+    """structural_reproduction: the same strategy relation recurs in a
+    structurally comparable but INDEPENDENT task/family — the 'learn once,
+    apply elsewhere' detector. Informational: it reports reproduction across
+    independently observed families from the data alone.
+
+    One task's observation is never transferable knowledge on its own, and
+    neither is one family's: reproduction needs >= 2 families, each with its
+    own >= 2 supporting executions.
 
     Structural comparability is required BEFORE the reproduction claim is
     made: each family's evidence is scoped to the record's own cell (same
@@ -388,7 +363,7 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
 
     structure = {f: bin_label(getattr(profile, f)) for f in GROUPING_FEATURES}
     return [InductionHint(
-        criterion="C5", strategy_ids=[sid],
+        pattern="structural_reproduction", strategy_ids=[sid],
         group_key=group_key(profile),
         reason=(f"{direction} performance reproduces independently in "
                 f"{len(per_family)} families at the same structure "
@@ -402,28 +377,56 @@ def _c5_cross_family(record: ExecutionRecord, stats: ConditionalStats,
                                     for c in per_family}})]
 
 
-def _c6_stable_success(cells: Dict[str, GroupStats],
-                       group: str) -> Optional[InductionHint]:
-    """C6: same strategy, same group, n >= 4 with EVERY supporting execution
-    feasible, zero failures and zero retries — the consolidation channel for
-    pure success patterns.
+def _advantage_reversal(record: ExecutionRecord, stats: ConditionalStats,
+                        group: str) -> Optional[InductionHint]:
+    """advantage_reversal: the same strategy's observed quality weakens,
+    disappears or FLIPS as the structural condition changes.
 
-    An empty ``failures`` list is not proof of success: an infeasible or
-    errored execution can carry no failure record at all, so feasibility is
-    required on every supporting record. Retries must also be MEASURED on
-    every record: unknown retries never count as proof of stability."""
-    for cell in cells.values():
-        if (cell.n >= STABLE_SUCCESS_MIN_N and cell.n_feasible == cell.n
-                and cell.n_failures == 0
-                and cell.n_measured.get("retries", 0) == cell.n
-                and cell.total_retries == 0 and cell.mean_quality > 0.0):
-            return InductionHint(
-                criterion="C6", strategy_ids=[cell.strategy_id], group_key=group,
-                reason=(f"stable success: n={cell.n}, all feasible, zero failures, "
-                        f"zero retries, meanQ={cell.mean_quality:.2f}"),
-                evidence={"n": cell.n, "n_feasible": cell.n_feasible,
-                          "mean_quality": round(cell.mean_quality, 4),
-                          "mean_cost": {d: round(v, 4) for d, v in
-                                        cell.mean_cost.to_dict().items()},
-                          "execution_ids": list(cell.execution_ids)})
-    return None
+    The lesson is an applicability BOUNDARY or a counterexample — never a
+    success count. The detector compares the strategy's own cells inside one
+    family: one cell where it performs high (>= QUALITY_HIGH_THRESHOLD) and
+    another where it performs low (<= QUALITY_LOW_THRESHOLD), each with
+    >= 2 supporting executions.
+
+    Scope: cells of the SAME family only. A cross-family difference is a
+    different question (that is ``structural_reproduction``), and pooling
+    families here would let a family's own structure masquerade as a
+    boundary. Unknown structure never contributes: a cell whose dimensions
+    are unmeasured is not a structural condition."""
+    sid = record.strategy_id
+    family = record.profile_snapshot.family
+    cells = stats.cells_in_family(sid, family)
+    eligible = [c for c in cells.values() if c.n >= MIN_DIVERGENCE_N]
+    high = [c for c in eligible
+            if c.mean_quality >= QUALITY_HIGH_THRESHOLD]
+    low = [c for c in eligible
+           if c.mean_quality <= QUALITY_LOW_THRESHOLD]
+    if not high or not low:
+        return None
+    best = max(high, key=lambda c: c.mean_quality)
+    worst = min(low, key=lambda c: c.mean_quality)
+    return InductionHint(
+        pattern="advantage_reversal",
+        strategy_ids=[sid],
+        group_key=group,
+        reason=(f"{sid} advantage reverses across structural cells of "
+                f"{family}: meanQ={best.mean_quality:.2f} at "
+                f"{best.group_key.split('|', 1)[-1]} vs "
+                f"{worst.mean_quality:.2f} at "
+                f"{worst.group_key.split('|', 1)[-1]}"),
+        evidence={
+            "kind": "advantage_reversal",
+            "family": family,
+            "advantageous_cell": {
+                "group_key": best.group_key,
+                "mean_quality": round(best.mean_quality, 4),
+                "n": best.n,
+                "execution_ids": list(best.execution_ids),
+            },
+            "adverse_cell": {
+                "group_key": worst.group_key,
+                "mean_quality": round(worst.mean_quality, 4),
+                "n": worst.n,
+                "execution_ids": list(worst.execution_ids),
+            },
+        })

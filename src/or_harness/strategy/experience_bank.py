@@ -116,6 +116,20 @@ class ExperienceBank:
         rec = self.get(execution_id)
         if rec is None:
             raise StorageError(f"unknown execution_id {execution_id!r}")
+        # A declared tool_calls below the sandbox's provable floor is not a
+        # measurement, it is a contradiction: the executor demonstrably made
+        # at least that many calls. Refuse it rather than store a number the
+        # record itself refutes.
+        floor = rec.execution_features.get("tool_calls_lower_bound")
+        if "tool_calls" in dimensions and floor is not None:
+            declared = float(dimensions["tool_calls"])
+            if declared < float(floor):
+                raise StorageError(
+                    f"tool_calls={declared} is below the provable lower bound "
+                    f"({floor}): the executor itself ran the solve script at "
+                    "least that many times. tool_calls counts ALL tool "
+                    "invocations in the attempt's scope (shell commands, file "
+                    "reads/writes, sandbox runs, solver calls)")
         for d, v in dimensions.items():
             if mode == "increment":
                 setattr(rec.cost, d, float(getattr(rec.cost, d)) + float(v))

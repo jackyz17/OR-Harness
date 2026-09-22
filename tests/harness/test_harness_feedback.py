@@ -1,12 +1,13 @@
 """Tests for the harness-feedback fixes: model representation, coupling
-derivation chain, cross-check warnings, pending staging, cross-execution C4,
+derivation chain, cross-check warnings, pending staging, cross-execution
+intervention recovery,
 and solver advisories. The SIRL_026 scenario (independent resource
 constraints mis-supplied as rc=0.8) is reproduced end to end."""
 import json
 import textwrap
 import unittest
 
-from helpers import HarnessTestCase
+from helpers import HarnessTestCase, MEASURED_ALL
 
 from or_harness.api import ORHarness
 from or_harness.core.schema import CostVector, FailureRecord, StrategicEntry, Strategy
@@ -205,7 +206,7 @@ class TestPendingStaging(HarnessTestCase):
             store2.close()
 
 
-class TestCrossExecutionC4(HarnessTestCase):
+class TestCrossExecutionRecovery(HarnessTestCase):
     def setUp(self):
         super().setUp()
         self.bank = ExperienceBank(self.store)
@@ -225,7 +226,7 @@ class TestCrossExecutionC4(HarnessTestCase):
                                    solver={"name": "ortools", "code_hash": "y"})
         hints = check_triggers(success, self.stats, self.catalog,
                                prior_failures=[failed])
-        c4 = [h for h in hints if h.criterion == "C4"]
+        c4 = [h for h in hints if h.pattern == "intervention_recovery"]
         self.assertTrue(c4)
         self.assertEqual(c4[0].evidence["kind"], "cross_execution_recovery")
         self.assertEqual(c4[0].evidence["failed"]["solver"], "pulp")
@@ -237,7 +238,8 @@ class TestCrossExecutionC4(HarnessTestCase):
                                    solver={"name": "pulp", "code_hash": "y"})
         hints = check_triggers(success, self.stats, self.catalog,
                                prior_failures=[failed])
-        self.assertFalse(any(h.criterion == "C4" for h in hints))
+        self.assertFalse(any(h.pattern == "intervention_recovery"
+                             for h in hints))
 
     def test_failure_classification(self):
         env = self.failed_record("ex_c1", "pulp")
@@ -405,6 +407,157 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             kept = h.sbank.get("se_keep")
             self.assertEqual(kept.strategy_type, "execution")
             self.assertEqual(kept.actions, ["harness-custom"])
+        finally:
+            h.close()
+
+
+class TestCostCompletenessSignal(HarnessTestCase):
+    """Recording never blocks, but it must SAY what the cost data cannot
+    support: a dimension left unmeasured cannot back a strategic-entry cost
+    claim or a cost prediction."""
+
+    def test_missing_dimensions_are_reported(self):
+        h = ORHarness(home=self.home)
+        try:
+            rec = self.make_record(
+                execution_id="ex_cc1", task_id="tcc1",
+                cost=CostVector(solver_runtime_s=1.0, latency_s=0.5,
+                                measured={"solver_runtime_s", "latency_s"}))
+            out = h.record(rec)
+            block = out["cost_completeness"]
+            self.assertEqual(set(block["missing"]),
+                             {"llm_tokens", "tool_calls", "retries"})
+            self.assertIn("UNKNOWN", block["note"])
+            self.assertIn("--override", block["note"])
+            # The fact is still recorded — a warning, not a refusal.
+            self.assertTrue(out["recorded"])
+            self.assertIsNotNone(h.bank.get("ex_cc1"))
+        finally:
+            h.close()
+
+    def test_no_signal_when_everything_is_measured(self):
+        h = ORHarness(home=self.home)
+        try:
+            rec = self.make_record(
+                execution_id="ex_cc2", task_id="tcc2",
+                cost=CostVector(llm_tokens=100.0, tool_calls=2.0,
+                                solver_runtime_s=1.0, retries=0.0,
+                                latency_s=0.5),
+                cost_measured=MEASURED_ALL)
+            out = h.record(rec)
+            self.assertNotIn("cost_completeness", out)
+        finally:
+            h.close()
+
+    def test_lower_bound_is_reported_alongside_the_gap(self):
+        h = ORHarness(home=self.home)
+        try:
+            rec = self.make_record(
+                execution_id="ex_cc3", task_id="tcc3",
+                cost=CostVector(solver_runtime_s=1.0,
+                                measured={"solver_runtime_s"}))
+            rec.execution_features["tool_calls_lower_bound"] = 1
+            out = h.record(rec)
+            self.assertEqual(out["cost_completeness"]["lower_bounds"],
+                             {"tool_calls_lower_bound": 1})
+        finally:
+            h.close()
+
+    def test_declared_tool_calls_below_the_floor_is_refused(self):
+        """The record itself refutes the number: the executor demonstrably
+        ran the script, so tool_calls cannot be 0."""
+        from or_harness.core.storage import StorageError
+        h = ORHarness(home=self.home)
+        try:
+            rec = self.make_record(
+                execution_id="ex_cc4", task_id="tcc4",
+                cost=CostVector(solver_runtime_s=1.0,
+                                measured={"solver_runtime_s"}))
+            rec.execution_features["tool_calls_lower_bound"] = 1
+            h.bank.append(rec)
+            with self.assertRaises(StorageError) as caught:
+                h.bank.update_cost("ex_cc4", tool_calls=0.0)
+            self.assertIn("lower bound", str(caught.exception))
+            # A declaration AT the floor is fine.
+            h.bank.update_cost("ex_cc4", tool_calls=1.0)
+            self.assertEqual(h.bank.get("ex_cc4").cost.tool_calls, 1.0)
+        finally:
+            h.close()
+
+
+class TestProvableRetries(HarnessTestCase):
+    """retries=0 is claimed only when the framework can PROVE there was
+    nothing to retry — otherwise the count stays unknown."""
+
+    def _script(self, name="solve_ret.py"):
+        from pathlib import Path
+        path = Path(self.home) / name
+        path.write_text(
+            "import json\n"
+            "json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "           'objective_bound': 1.0, 'mip_gap': 0.0},\n"
+            "          open('result.json', 'w'))\n", encoding="utf-8")
+        return str(path)
+
+    def _task(self, tid):
+        return {"task_id": tid, "family": "routing", "spec": {}}
+
+    def test_first_attempt_has_a_proven_zero(self):
+        h = ORHarness(home=self.home)
+        try:
+            rec = h.execute(self._task("tr1"), "S01", self._script(), self.home,
+                            solver="highs", episode_id="ep1")
+            self.assertEqual(rec.cost.retries, 0.0)
+            self.assertIn("retries", rec.cost.measured_dims())
+            self.assertIn("no earlier execute_strategy attempt",
+                          rec.execution_features["retries_proof"])
+        finally:
+            h.close()
+
+    def test_second_attempt_of_the_same_strategy_is_unknown(self):
+        """A second attempt of the same (task, episode, strategy) may or may
+        not be a retry — the framework must not guess, so the count stays
+        unmeasured until the harness declares it."""
+        h = ORHarness(home=self.home)
+        try:
+            first = h.execute(self._task("tr2"), "S01", self._script("a.py"),
+                              self.home, solver="highs", episode_id="ep2")
+            h.record(first)
+            second = h.execute(self._task("tr2"), "S01", self._script("b.py"),
+                               self.home, solver="highs", episode_id="ep2")
+            self.assertNotIn("retries", second.cost.measured_dims())
+            self.assertNotIn("retries_proof", second.execution_features)
+            # The harness declares the relationship explicitly.
+            h.record(second, override={"retries": 1.0})
+            self.assertEqual(h.bank.get(second.execution_id).cost.retries, 1.0)
+            self.assertIn("retries",
+                          h.bank.get(second.execution_id).cost.measured_dims())
+        finally:
+            h.close()
+
+    def test_a_different_strategy_is_not_a_prior_attempt(self):
+        h = ORHarness(home=self.home)
+        try:
+            first = h.execute(self._task("tr3"), "S01", self._script("c.py"),
+                              self.home, solver="highs", episode_id="ep3")
+            h.record(first)
+            other = h.execute(self._task("tr3"), "S02", self._script("d.py"),
+                              self.home, solver="highs", episode_id="ep3")
+            self.assertEqual(other.cost.retries, 0.0)
+            self.assertIn("retries", other.cost.measured_dims())
+        finally:
+            h.close()
+
+    def test_a_different_episode_is_not_a_prior_attempt(self):
+        h = ORHarness(home=self.home)
+        try:
+            first = h.execute(self._task("tr4"), "S01", self._script("e.py"),
+                              self.home, solver="highs", episode_id="epA")
+            h.record(first)
+            other = h.execute(self._task("tr4"), "S01", self._script("f.py"),
+                              self.home, solver="highs", episode_id="epB")
+            self.assertEqual(other.cost.retries, 0.0)
+            self.assertIn("retries", other.cost.measured_dims())
         finally:
             h.close()
 

@@ -2,11 +2,10 @@
 
 The core question of induction is "what does the evidence entitle me to
 claim?" — a claim's applicability is read off the very executions that
-support it: the family they came from, and the span of structural features
-they covered. Nothing is quantized into fixed bins and nothing has to be
-manually widened: as evidence accumulates (a task at another scale, a
-neighbouring coupling magnitude), the claim's intervals follow it, and
-in-scope failures are what pull it back down.
+support it: the family they came from, and the structural cell those
+executions occupy. Nothing is quantized into fixed bins by hand and nothing
+has to be manually widened: a claim's cell is what its evidence demonstrated,
+and in-scope failures are what pull it back down.
 
 Entries are never born validated. Predictions are verified by future
 executions (forward validation), not by self-test on training data. Those
@@ -19,6 +18,19 @@ Admission is gated, revision is not: creating a claim takes two independent
 tasks (three runs of one instance generalize about that instance), while an
 entry that already exists is refreshed by any new matching evidence.
 
+Induction is not limited to restating one cell's statistics. The patterns
+worth generalizing are relations ACROSS evidence — how strategies compare
+under one structural condition (``strategy_contrast``), what changed after an
+intervention (``intervention_recovery``), whether a relation recurs in an
+independent family (``structural_reproduction``), and where a strategy's
+advantage reverses (``advantage_reversal``). The detectors live in
+:mod:`or_harness.strategy.triggers`; this engine can also read PEER evidence
+(:meth:`InductionEngine.induce`'s ``peer_evidence``) so a claim it writes can
+record the contrast or the boundary it was induced from, not only its own
+cell's mean. Peer evidence is recorded as applicability/risk text on the
+entry — it never becomes a second statistic, and it never creates a claim by
+itself.
+
 The only LLM injection point is phrasing: the harness may attach free-text
 applicability notes, which are kept for the reader and never scored.
 """
@@ -29,7 +41,9 @@ from statistics import mean
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
+    COST_DIMENSIONS,
     CostVector,
+    ExecutionRecord,
     GROUPING_FEATURES,
     PredictionTrack,
     ProblemProfile,
@@ -40,7 +54,7 @@ from or_harness.core.schema import (
     min_interval_width,
     predicates_cover,
 )
-from or_harness.strategy.stats import ConditionalStats, GroupStats
+from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
 from or_harness.strategy.verification import VERIFIED, verify_candidate
 
@@ -66,7 +80,9 @@ class InductionEngine:
                notes: Optional[List[str]] = None,
                dry_run: bool = False, force: bool = False,
                verify: Optional[Dict[str, Any]] = None,
-               execution_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+               execution_ids: Optional[Sequence[str]] = None,
+               peer_evidence: Optional[Dict[str, List[ExecutionRecord]]] = None
+               ) -> Dict[str, Any]:
         """Create or refresh the entry for (strategy, evidence set).
 
         Guard rails:
@@ -89,6 +105,17 @@ class InductionEngine:
 
         ``notes`` are harness-written applicability notes (free text): kept on
         the entry for the reader, never scored.
+
+        ``peer_evidence`` is an optional ``{label: records}`` map of
+        STRUCTURALLY COMPARABLE evidence the claim was induced against — the
+        other strategies' executions in the same cell (``strategy_contrast``),
+        or the same strategy's executions in a neighbouring cell
+        (``advantage_reversal``). It is read ONLY to phrase the claim: each
+        entry gets one line per peer under ``risk_conditions`` naming the
+        observed difference (``label``, n, mean quality, complete cost dims).
+        Peer evidence never contributes to this entry's statistics, never
+        satisfies the admission gate, and never creates an entry on its own —
+        a contrast is a reason to look, not a claim by itself.
 
         ``verify`` optionally carries the harness's offline admission check
         ``{"purpose", "claim", "check", "executions", "supporting"}``; the
@@ -140,16 +167,39 @@ class InductionEngine:
 
         quality_hat = cell.mean_quality
         lo, hi = self._honest_interval(cell)
-        cost_hat = cell.mean_cost
         fail_prob = cell.fail_rate
-        # Cost intervals only for dimensions that were ever measured — an
-        # unmeasured dimension carries no interval (unknown), never a
-        # fabricated band around a placeholder zero. The interval key set
-        # doubles as the entry's measured-dimension mask.
+        # Cost claims are COMPLETE-OR-SILENT. A dimension enters the entry's
+        # cost claim only when EVERY supporting record measured it: a mean
+        # over a subset ("3 of 4 records reported tokens") is a partial
+        # observation dressed up as a full claim, and downstream that number
+        # feeds strategy selection and world-model prediction as if it were
+        # the whole truth. A dimension short of the full count is withheld —
+        # the entry is still created, its quality claim and its other cost
+        # dimensions are unaffected, and the withheld dimension simply reads
+        # as unknown until the missing records are backfilled
+        # (``orx record --override`` amends already-recorded facts in place).
+        # The interval key set doubles as the entry's measured-dimension mask.
+        complete_dims = cell.complete_dims()
         measured_cost_interval = {d: band for d, band in
                                   self._cost_interval().items()
-                                  if cell.n_measured.get(d, 0) > 0}
+                                  if d in complete_dims}
+        withheld = {d: {"n_measured": int(cell.n_measured.get(d, 0)),
+                        "n": int(cell.n)}
+                    for d in COST_DIMENSIONS if d not in complete_dims}
+        # A cost vector carrying ONLY the complete dimensions: an incomplete
+        # dimension keeps a placeholder zero and stays out of the mask, so no
+        # consumer can read a partial mean as a measured value.
+        cost_hat = CostVector(
+            **{d: (float(getattr(cell.mean_cost, d)) if d in complete_dims
+                   else 0.0) for d in COST_DIMENSIONS},
+            measured=set(complete_dims))
         note_texts = [str(n).strip() for n in (notes or []) if str(n).strip()]
+        # Relations read off PEER evidence (contrast / reversal). These are
+        # applicability NOTES, never statistics: they describe what the claim
+        # was induced against, they are not scored, and they cannot create a
+        # claim. Only COMPLETE cost dimensions are quoted, for the same
+        # reason the entry withholds a partial mean.
+        relation_notes = self._peer_relations(cell, peer_evidence)
         verification, verification_note = self._run_verification(
             verify, dry_run, strategy_id=strategy_id, profile=profile)
 
@@ -162,7 +212,7 @@ class InductionEngine:
                        or self._cost_estimates_changed(existing, cost_hat,
                                                        measured_cost_interval,
                                                        cell.n_measured))
-            if not changed and not note_texts:
+            if not changed and not note_texts and not relation_notes:
                 return {"created": None,
                         "skipped": f"entry {existing.entry_id} already encodes this "
                                    "evidence (restatement-only entries are forbidden)",
@@ -170,6 +220,9 @@ class InductionEngine:
             if dry_run:
                 out = {"created": None, "would_update": existing.entry_id,
                        "cell": cell.to_dict()}
+                self._note_withheld(out, withheld, cell)
+                if relation_notes:
+                    out["peer_relations"] = relation_notes
                 if verification is not None:
                     out["verification"] = verification
                 return out
@@ -209,10 +262,15 @@ class InductionEngine:
                     "re-verify with induce --verify to re-publish")
             if note_texts:
                 existing.applicability.extend(note_texts)
+            if relation_notes:
+                existing.risk_conditions.extend(relation_notes)
             self.sbank.update(existing)
             out = {"updated": existing.entry_id, "cell": cell.to_dict(),
                    "predicates": predicates,
                    "notes_added": len(note_texts)}
+            self._note_withheld(out, withheld, cell)
+            if relation_notes:
+                out["peer_relations"] = relation_notes
             if substantive and verification is None \
                     and existing.verification_state == "verified":
                 out["verification_stale"] = True
@@ -226,6 +284,9 @@ class InductionEngine:
             out: Dict[str, Any] = {"would_create": {"strategy_id": strategy_id,
                                                     "predicates": predicates},
                                    "cell": cell.to_dict()}
+            self._note_withheld(out, withheld, cell)
+            if relation_notes:
+                out["peer_relations"] = relation_notes
             if verification is not None:
                 out["verification"] = verification
             return out
@@ -240,6 +301,7 @@ class InductionEngine:
             cost_support_n=dict(cell.n_measured),
             failure_prob=fail_prob,
             applicability=note_texts,
+            risk_conditions=list(relation_notes),
             fallback_strategy_id=None,
             provenance=cell.execution_ids[:50],
             support_n=cell.n,
@@ -249,6 +311,9 @@ class InductionEngine:
         self.sbank.add(entry)
         out = {"created": entry.entry_id, "entry": entry.to_dict(),
                "predicates": predicates, "cell": cell.to_dict()}
+        self._note_withheld(out, withheld, cell)
+        if relation_notes:
+            out["peer_relations"] = relation_notes
         if verification is not None:
             out["verification"] = verification
         if verification_note is not None:
@@ -259,6 +324,83 @@ class InductionEngine:
             # of having to infer it from an empty field.
             out["skipped"] = UNVERIFIED_NOTE
         return out
+
+    @staticmethod
+    def _peer_relations(cell: GroupStats,
+                        peer_evidence: Optional[Dict[str, List[ExecutionRecord]]]
+                        ) -> List[str]:
+        """Phrase the CONTRAST a claim was induced against, one line per peer.
+
+        Induction is not only a restatement of one cell: a claim is often
+        worth committing precisely because another strategy performs
+        differently in the same cell, or because the SAME strategy performs
+        differently in a neighbouring cell. Those relations are the reason to
+        look, so they belong on the entry the reader will consult later.
+
+        They are written to ``risk_conditions`` (free text, never scored):
+        a relation is a boundary the reader must respect, and pretending the
+        framework can verify a sentence would be theatre. Each line quotes
+        the peer's label, supporting count, mean quality, and only its
+        COMPLETE cost dimensions — an incomplete mean is withheld here for
+        the same reason the entry withholds it. Nothing from the peer enters
+        this entry's statistics.
+
+        Returns an empty list when there is no peer evidence, so a plain
+        induction is byte-for-byte what it was before."""
+        if not peer_evidence:
+            return []
+        lines: List[str] = []
+        for label, records in peer_evidence.items():
+            if not records:
+                continue
+            n = len(records)
+            qualities = [quality_score(r) for r in records]
+            mean_q = mean(qualities) if qualities else 0.0
+            dq = mean_q - cell.mean_quality
+            parts = [f"{label}: meanQ={mean_q:.2f} (n={n}) vs "
+                     f"this cell meanQ={cell.mean_quality:.2f}"]
+            # Cost only where BOTH sides are complete: a partial mean on one
+            # side would make the ratio meaningless.
+            for dim in COST_DIMENSIONS:
+                peer_measured = [r for r in records
+                                 if dim in (r.cost.measured_dims()
+                                            if r.cost is not None else [])]
+                if len(peer_measured) != n:
+                    continue
+                if cell.n_measured.get(dim, 0) != cell.n:
+                    continue
+                peer_mean = mean(getattr(r.cost, dim) for r in records)
+                ours = getattr(cell.mean_cost, dim)
+                parts.append(f"{dim}: {peer_mean:.4g} vs {ours:.4g}")
+            direction = ("lower" if dq < 0 else "higher" if dq > 0
+                         else "equal")
+            lines.append("contrast vs " + "; ".join(parts)
+                         + f" — quality is {direction} by {abs(dq):.2f}")
+        return lines
+
+    @staticmethod
+    def _note_withheld(out: Dict[str, Any], withheld: Dict[str, Dict[str, int]],
+                       cell: GroupStats) -> None:
+        """Attach the incomplete-dimension report to an induce outcome.
+
+        Silence would leave the harness believing its entry carries a cost
+        claim it does not. The report names the missing dimensions, how many
+        records supported them, and how to close the gap — the fix is a
+        backfill (``record --override`` amends an already-recorded fact), so
+        nothing has to be re-run."""
+        if not withheld:
+            return
+        out["cost_claim_withheld"] = {
+            "dimensions": withheld,
+            "supporting_executions": list(cell.execution_ids[:50]),
+            "note": ("these dimensions were measured on only some supporting "
+                     "records, so no cost claim was written for them (a mean "
+                     "over a subset is a partial observation, not a claim). "
+                     "Backfill the missing records with `orx amend-cost "
+                     "<execution_id> --override <dim>=<value>` (amends in "
+                     "place, idempotent) and re-run induce; the claim is "
+                     "withheld, not refused"),
+        }
 
     def _run_verification(self, verify: Optional[Dict[str, Any]],
                           dry_run: bool, *, strategy_id: str,

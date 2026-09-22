@@ -199,8 +199,13 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
             record = harness.execute(task_json, strategy_id, str(script),
                                      str(workdir), solver="highs")
             llm_tokens = 1500.0 * law["cost_scale"]
-            outcome = harness.record(record, override={"llm_tokens": llm_tokens},
-                                     prediction=prediction)
+            # tool_calls counts ALL tool invocations in the attempt's scope
+            # (writing the script, running it, reading the result) — the
+            # simulated harness knows this, the sandbox cannot see it.
+            outcome = harness.record(
+                record,
+                override={"llm_tokens": llm_tokens, "tool_calls": 3.0},
+                prediction=prediction)
             record = harness.bank.get(record.execution_id)  # post-backfill fact
             scalar = record.cost.scalarize(
                 cost_weights or harness.selector.cost_weights)
@@ -242,7 +247,8 @@ def _warmup(harness: ORHarness, workdir: Path) -> None:
             record = harness.execute(task_json, strategy_id, str(script),
                                      str(workdir), solver="highs")
             harness.record(record,
-                           override={"llm_tokens": 1500.0 * law["cost_scale"]})
+                           override={"llm_tokens": 1500.0 * law["cost_scale"],
+                                     "tool_calls": 3.0})
     harness.induce(all_=True)
 
 

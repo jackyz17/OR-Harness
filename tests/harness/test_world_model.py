@@ -851,9 +851,13 @@ class TestBugfixRegressions(HarnessTestCase):
         # The staged execution is visible to the snapshot's budget view.
         self.assertEqual(cons["n_attempts"], 1)
         self.assertEqual(cons["n_staged"], 1)
-        # Executor-measured dimensions are known (not unknown).
-        self.assertIn("tool_calls", cons["n_measured"])
-        self.assertGreater(cons["n_measured"]["tool_calls"], 0)
+        # Executor-measured dimensions are known (not unknown). tool_calls
+        # is a harness declaration and stays unknown until an override —
+        # the executor measures latency and (here, reported) runtime only.
+        self.assertIn("latency_s", cons["n_measured"])
+        self.assertGreater(cons["n_measured"]["latency_s"], 0)
+        self.assertGreater(cons["n_measured"]["solver_runtime_s"], 0)
+        self.assertIn("tool_calls", cons["unknown_dims"])
 
     def test_reference_rollup_not_double_counted_any_type(self):
         """P1 (round 2): cost attribution follows rollup, not action type —

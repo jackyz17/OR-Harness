@@ -67,6 +67,13 @@ class GroupStats:
     #: measured. A dimension with n_measured == 0 is UNKNOWN for this cell
     #: (mean_cost reports a placeholder 0, never evidence of cheap).
     n_measured: Dict[str, int] = field(default_factory=dict)
+    #: ``solver_runtime_s`` split by provenance. A script-reported runtime
+    #: (the inner solve) and a wall-clock proxy (the whole process, including
+    #: interpreter start-up and imports) are DIFFERENT quantities under one
+    #: dimension name, so their means must never be averaged together. Shape:
+    #: ``{provenance: {"n": int, "mean": float}}``.
+    solver_runtime_by_provenance: Dict[str, Dict[str, float]] = \
+        field(default_factory=dict)
     #: Per-scale-feature [min, max] over the supporting records, for
     #: pre-execution scale comparability checks (no thresholds — callers
     #: decide whether a target profile lies outside the sample coverage).
@@ -84,18 +91,45 @@ class GroupStats:
 
     def measured_cost(self, dim: str) -> Optional[float]:
         """Mean of ``dim`` over records that measured it, or None when no
-        record measured it (unknown — never a default zero)."""
+        record measured it (unknown — never a default zero).
+
+        ``solver_runtime_s`` is special-cased: when the cell's measured
+        records span MORE THAN ONE provenance, the mean is NOT a comparable
+        quantity (a reported inner-solve time averaged with a whole-process
+        wall clock), so it returns None. ``solver_runtime_by_provenance``
+        carries the per-provenance means for a caller that wants one."""
         if self.n_measured.get(dim, 0) == 0:
+            return None
+        if dim == "solver_runtime_s" and len(
+                self.solver_runtime_by_provenance) > 1:
             return None
         return getattr(self.mean_cost, dim)
 
-    def quality_trend(self) -> float:
-        """Simple slope proxy: mean(second half) - mean(first half)."""
-        if len(self.quality_values) < 3:
-            return 0.0
-        mid = len(self.quality_values) // 2
-        first, second = self.quality_values[:mid], self.quality_values[mid:]
-        return mean(second) - mean(first)
+    def complete_dims(self) -> set:
+        """Dimensions measured on EVERY supporting record.
+
+        The completeness bar for a cost CLAIM: a dimension measured on only
+        some records is a partial observation, and publishing its subset mean
+        would dress a fragment up as a full claim. Callers that need a
+        per-dimension mean should check membership here first."""
+        if self.n <= 0:
+            return set()
+        return {d for d in COST_DIMENSIONS
+                if self.n_measured.get(d, 0) == self.n}
+
+    def comparable_cost(self, dim: str) -> Optional[float]:
+        """Mean of ``dim`` when it is both COMPLETE and comparable, else None.
+
+        Stricter than :meth:`measured_cost`: the dimension must be measured on
+        every supporting record (no partial-subset means) and, for
+        ``solver_runtime_s``, must not mix provenances. None means "no claim
+        is entitled here" — unknown, never a default zero."""
+        if dim not in self.complete_dims():
+            return None
+        if dim == "solver_runtime_s" and len(
+                self.solver_runtime_by_provenance) > 1:
+            return None
+        return getattr(self.mean_cost, dim)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -108,6 +142,9 @@ class GroupStats:
             "std_quality": round(self.std_quality, 4),
             "mean_cost": {d: round(v, 4) for d, v in self.mean_cost.to_dict().items()},
             "n_measured": dict(self.n_measured),
+            "solver_runtime_by_provenance": {
+                p: {"n": int(v["n"]), "mean": round(v["mean"], 4)}
+                for p, v in self.solver_runtime_by_provenance.items()},
             "scale_ranges": {d: [round(lo, 4), round(hi, 4)]
                              for d, (lo, hi) in self.scale_ranges.items()},
             "mean_retries": round(self.mean_retries, 4),
@@ -210,6 +247,28 @@ class ConditionalStats:
                 if r.strategy_id == strategy_id
                 and group_key(r.profile_snapshot) == key]
 
+    def cells_in_family(self, strategy_id: str,
+                        family: str) -> Dict[str, GroupStats]:
+        """Every structural cell of ONE strategy inside ONE family.
+
+        The "where does this strategy's advantage change" view, keyed by the
+        DERIVED cell of each record's own profile snapshot (never the stored
+        index column). Unlike :meth:`cross_family` this keeps the family
+        fixed and varies the STRUCTURE, so a caller can compare a strategy
+        against itself across conditions — the comparison an applicability
+        boundary is read off. Unknown-structure records form their own cell
+        rather than being dropped: they are a distinct condition, not a
+        missing one."""
+        by_cell: Dict[str, List[ExecutionRecord]] = {}
+        for rec in self.bank.query(strategy_id=strategy_id):
+            if not self._is_attempt_evidence(rec):
+                continue
+            if rec.profile_snapshot.family != family:
+                continue
+            by_cell.setdefault(group_key(rec.profile_snapshot), []).append(rec)
+        return {key: self._aggregate(key, strategy_id, recs)
+                for key, recs in by_cell.items()}
+
     def aggregate(self, group_l1: str, strategy_id: str,
                   records: Sequence[ExecutionRecord]) -> GroupStats:
         """Public aggregator (used by induction for a cell it already read)."""
@@ -277,6 +336,11 @@ class ConditionalStats:
         # attempt-scope statistics.
         sums: Dict[str, float] = {d: 0.0 for d in COST_DIMENSIONS}
         counts: Dict[str, int] = {d: 0 for d in COST_DIMENSIONS}
+        # Runtime sums are kept PER PROVENANCE: "reported" (inner solve) and
+        # "wall_proxy" (whole process) are different quantities, and a mean
+        # over their mixture is a number about nothing.
+        runtime_sums: Dict[str, float] = {}
+        runtime_counts: Dict[str, int] = {}
         scale_mins: Dict[str, float] = {}
         scale_maxs: Dict[str, float] = {}
         for rec in records:
@@ -299,6 +363,11 @@ class ConditionalStats:
                 if d in measured:
                     sums[d] += getattr(rec.cost, d)
                     counts[d] += 1
+            if "solver_runtime_s" in measured:
+                provenance = rec.solver_runtime_provenance or "wall_proxy"
+                runtime_sums[provenance] = (runtime_sums.get(provenance, 0.0)
+                                            + rec.cost.solver_runtime_s)
+                runtime_counts[provenance] = runtime_counts.get(provenance, 0) + 1
             for feat, value in rec.profile_snapshot.scale_features.items():
                 scale_mins[feat] = min(scale_mins.get(feat, float("inf")), value)
                 scale_maxs[feat] = max(scale_maxs.get(feat, float("-inf")), value)
@@ -307,6 +376,10 @@ class ConditionalStats:
         stats.mean_quality = mean(stats.quality_values)
         stats.std_quality = pstdev(stats.quality_values) if stats.n > 1 else 0.0
         stats.n_measured = counts
+        stats.solver_runtime_by_provenance = {
+            p: {"n": float(runtime_counts[p]),
+                "mean": runtime_sums[p] / runtime_counts[p]}
+            for p in runtime_sums}
         stats.scale_ranges = {feat: (scale_mins[feat], scale_maxs[feat])
                               for feat in scale_mins}
         measured_dims = {d for d in COST_DIMENSIONS if counts[d] > 0}

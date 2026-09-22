@@ -6,7 +6,8 @@ backend). It walks the WHOLE slow-time-scale loop in order, and it is the
 demonstration the milestone asks for:
 
 1. **frozen input + real candidate** — closed task experience is turned
-   into a REAL induction candidate bundle (the existing C1-C6 scan), the
+   into a REAL induction candidate bundle (the existing induction-pattern
+   scan), the
    capability evidence, the task targeting and the baseline are frozen, and
    a capability prediction is requested under ``wm-ce/1``;
 2. **the protocol really reaches the provider** — a LOCAL HTTP STUB SERVER
@@ -300,7 +301,7 @@ def main() -> int:
     bundles = h.induction_candidates()
     print(f"candidates built       : {len(bundles)}")
     assert bundles, ("the seeded evidence must produce a real candidate "
-                     "bundle through the existing C1-C6 scan")
+                     "bundle through the existing induction-pattern scan")
     bundle = bundles[0]
     print(f"bundle                 : {bundle['bundle_id']} "
           f"({bundle['kind']}, strategy {bundle['strategy_id']})")

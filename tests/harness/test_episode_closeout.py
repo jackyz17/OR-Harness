@@ -677,7 +677,7 @@ class TestWindowScopeAggregation(M4Case):
         self.assertEqual(runtime["actual"],
                          first.cost.solver_runtime_s
                          + second.cost.solver_runtime_s)
-        # The summary's scope covered both executions (tool_calls=2).
+        # The summary's scope covered both executions.
         from or_harness.world_model.episode_closeout import (
             summarize_real_outcome,
         )
@@ -685,7 +685,11 @@ class TestWindowScopeAggregation(M4Case):
             prediction.prediction_id)
         scope_summary = summarize_real_outcome(self.h, stored)
         self.assertEqual(len(scope_summary.execution_ids), 2)
-        self.assertEqual(scope_summary.cost["tool_calls"]["total"], 2.0)
+        # tool_calls is a HARNESS declaration, not an executor measurement:
+        # with no override supplied it stays unknown (never a fabricated
+        # constant per record). The genuinely measured dimensions are known.
+        self.assertIsNone(scope_summary.cost["tool_calls"]["total"])
+        self.assertEqual(scope_summary.cost["solver_runtime_s"]["n_measured"], 2)
 
     def test_declared_round_window_excludes_other_rounds(self):
         """A prediction declaring round r1 is scored against round 1's

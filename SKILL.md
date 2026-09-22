@@ -163,7 +163,7 @@ Induction never runs automatically after an online action. A knowledge change is
 - **Execution Evidence Bank** — append-only episodic facts: the strategy actually used, the quality/cost actually observed, failures, artifacts. Never stores generalizations. Only cost dimensions may be backfilled.
 - **Strategic Knowledge Bank** — induced commitments (expected quality, cost, failure risk, prediction intervals, applicability read off evidence). Mutation happens at INDUCTION time only. Creating an entry takes ≥2 executions from ≥2 distinct tasks; publishing it takes a passed admission check (`induce --verify`).
 - **Conditional statistics** — on-the-fly aggregation per (strategy × structural cell); a recount, never persisted.
-- **CostVector** — five dimensions, stored raw and never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Each record carries a measured-dimension mask; unmeasured dimensions are excluded from means and errors. Unknown ≠ zero.
+- **CostVector** — five dimensions, stored raw and never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Each record carries a measured-dimension mask meaning "this value is a real observation": the executor measures only `latency_s` and `solver_runtime_s`, while `tool_calls` (ALL tool invocations — commands, sandbox runs, solver calls), `retries` and `llm_tokens` are YOUR declarations and stay unknown until supplied. Unknown ≠ zero. A strategic entry publishes a cost dimension only when every supporting record measured it.
 - **Cold archive** — cards for retired entries that veto re-induction of the same failed generalization; `induce --force` lifts that veto when you judge the environment has drifted.
 
 Detailed semantics — structural grouping, coupling derivation, CIR, memory layers, the disposal ladder and the verification philosophy — are in [references/concepts.md](references/concepts.md).
@@ -178,7 +178,8 @@ Every command prints one JSON line: `{"result": {...}, "summary": "..."}`. Exit 
 | `recall` | Both retrieval channels: structural `recommendations[]` + text `vector_recall` |
 | `predict` | Freeze the pre-execution cost expectation; pass the snapshot to `record --prediction` |
 | `execute` | Sandbox-run solve.py and stage the execution |
-| `record` | Persist the fact: cost backfill → quality checks → cost feedback → C1–C6 hints |
+| `record` | Persist the fact: cost backfill → quality checks → cost feedback → induction-pattern hints |
+| `amend-cost` | Backfill cost dimensions of an ALREADY-RECORDED execution (the repair path for a reported cost gap) |
 | `induce` | The only place knowledge changes |
 | `inspect` | Query one memory layer |
 | `snapshot` / `action` / `budget` | Freeze belief state / report an action YOU performed / consumption view |
@@ -214,7 +215,7 @@ Report to the user: the chosen strategy and solver with the evidence that drove 
 - **Predict before acting.** A prediction made after the execution is hindsight, and binding it to a different strategy's action records a mismatch instead of a score.
 - **An attempt is not a strategy window.** One `execute` call is one attempt; modeling/repair/verify is auxiliary overhead. The same strategy chosen again is a different selection round.
 - **Failures are raw material.** Record every attempt, including timeouts and infeasibilities; backfill from staging rather than re-typing.
-- **Cost learning needs the backfill.** `llm_tokens` is invisible to the sandbox — supply it at record time or the dimension stays unmeasured.
+- **Cost learning needs the backfill.** `llm_tokens`, `tool_calls` and `retries` are invisible to the sandbox — the executor measures only `latency_s` and `solver_runtime_s`. Supply them at record time (`--override`) or with `amend-cost`, or the dimension stays unmeasured and no cost claim can be published for it.
 - **A knowledge entry appearing is not a capability gain.** Predicting, binding the fact and verifying the effect are three different things; only the third supports "the harness got stronger".
 - **The sample is counted in TASK-EPISODES.** Ten predictions bound to one execution are ONE independent truth, and a task counts as later only when its WORK ran after the operation.
 - **Retirement is deliberate.** `retire` is irreversible; `--force` on induction lifts a cold-archive veto. Reserve both for genuine drift and genuine dead ends.
@@ -227,7 +228,7 @@ Read on demand — one hop, no chains.
 - [references/commands.md](references/commands.md) — exact CLI/API arguments and output semantics for every command. Read before calling something whose flags you do not remember.
 - [references/concepts.md](references/concepts.md) — the "why": two-layer memory, structural grouping and coupling derivation, CIR, CostVector, disposal ladder, verification philosophy.
 - [references/modeling.md](references/modeling.md) — the GAMS-style model syntax, constraint label rules, verification layers, and the CIR schema. Read before writing your first model or CIR.
-- [references/induction.md](references/induction.md) — C1–C6, applicability as family + structural cell, the creation gate and admission verification, the offline lifecycle.
+- [references/induction.md](references/induction.md) — the four induction-worthy patterns, applicability as family + structural cell, the creation gate and admission verification, the offline lifecycle.
 - [references/world_model_contract.md](references/world_model_contract.md) — the unified prediction contracts, `contract_only`, attempt vs strategy window, the capability sources of H, the legacy migration table.
 - [references/prediction_context.md](references/prediction_context.md) — the frozen prediction input context: joint representation, math-attribute origins, the two retrieval channels and their evidence classes.
 - [references/strategy_outcome.md](references/strategy_outcome.md) — the strategy-outcome prediction service (wm-so/1): protocol, comparison yardstick, prediction–choice–execution binding.
