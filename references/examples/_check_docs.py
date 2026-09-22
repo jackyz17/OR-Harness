@@ -74,6 +74,8 @@ DOCUMENTED_FLAGS = [
     ("budget", ["--task", "--episode", "--declare"]),
     ("gc", ["--mode", "--dry-run"]),
     ("retire", ["--entry", "--reason"]),
+    ("exclude-execution", ["--execution", "--reason", "--superseded-by"]),
+    ("restore-execution", ["--execution", "--reason"]),
     ("rebuild-index", ["--layer", "--dry-run"]),
     ("context", ["--task", "--episode", "--top", "--code", "--cir",
                  "--math", "--include-unverified", "--context-id",

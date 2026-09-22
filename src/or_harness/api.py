@@ -3214,10 +3214,22 @@ class ORHarness:
                      action_id: str) -> OutcomePrediction:
         """Bind a prediction to the real action that ran. Request identity
         is checked (type/task/episode/strategy/solver/timing/scope);
-        mismatches recorded, not silently compared."""
+        mismatches recorded, not silently compared.
+
+        ``action_id`` accepts EITHER the action id (``ac_...``) OR the
+        ``execution_id`` (``ex_...``) that the action produced — the latter
+        is what ``orx execute`` prints, and requiring the caller to first
+        look up the action id made the normal predict -> execute -> bind
+        loop fail whenever the two sides' episode ids did not line up. An
+        execution id is resolved through the action's ``linked_execution_id``
+        link; an ambiguous or unknown id raises rather than guessing."""
         action = self.actions.get(action_id)
         if action is None:
-            raise StorageError(f"unknown action_id {action_id!r}")
+            action = self.actions.by_execution(action_id)
+        if action is None:
+            raise StorageError(
+                f"unknown action_id/execution_id {action_id!r}: no action "
+                "carries that id and no action links to that execution")
         # The linked execution's measurement scope (when the execution is
         # already staged/recorded) — an attempt-scope prediction must not
         # be scored against a task-scope total.
@@ -5081,7 +5093,9 @@ class ORHarness:
                dry_run: bool = False, force: bool = False,
                notes: Optional[List[str]] = None,
                verify: Optional[Dict[str, Any]] = None,
-               execution_ids: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+               execution_ids: Optional[Sequence[str]] = None,
+               family: Optional[str] = None,
+               cell: Optional[str] = None) -> Dict[str, Any]:
         """Consolidate Execution Evidence into Strategic Knowledge.
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
@@ -5103,7 +5117,15 @@ class ORHarness:
         computed by the framework from real executions. Without it the entry
         is ``unverified`` and is not published as strategic knowledge —
         recall falls back to the raw conditional statistics.
-        """
+
+        ``family`` / ``cell`` narrow the target set so a verification check
+        applies ONLY to the structural unit it was written for. ``--verify``
+        is per-claim, and one payload applied to every cell of a strategy
+        would cross-contaminate families (an allocation check overwriting a
+        scheduling verdict). ``family`` selects one family's targets;
+        ``cell`` selects one structural cell (family + coupling tokens) and
+        implies its family. Both are applied to ``_induction_targets`` and
+        compose with ``strategy_id``."""
         # The maintenance action begins BEFORE induction runs: the PRE
         # snapshot freezes the knowledge state as it was, so the recorded
         # transition shows what the induction actually changed. Dry-run
@@ -5120,7 +5142,8 @@ class ORHarness:
                         self._enrich_entry(entry_id)
                     result["revisions"] = self.induction.revise()
             else:
-                targets = self._induction_targets(strategy_id, all_)
+                targets = self._induction_targets(strategy_id, all_,
+                                                  family=family, cell=cell)
                 results = []
                 for profile, sid in targets:
                     results.append(self.induction.induce(
@@ -5399,6 +5422,49 @@ class ORHarness:
         self.index_sync.forget_entry(entry_id)
         return {"retired": entry_id, "cold_archive_card": card.to_dict()}
 
+    def exclude_execution(self, execution_id: str, reason: str, *,
+                          superseded_by: Optional[str] = None
+                          ) -> Dict[str, Any]:
+        """Withdraw a wrong execution fact from the evidence set.
+
+        The Evidence Bank is append-only, so a bad observation is never
+        deleted — it is EXCLUDED: the row stays for audit, its ``source``
+        becomes ``"excluded"``, and every statistics / induction / trigger /
+        retrieval path (all of which require ``source == "executed"``) stops
+        counting it. ``superseded_by`` links the corrected re-run.
+
+        The change lands in the derived layers at the next ``induce`` /
+        ``rebuild-index``: exclusion rewrites no entry. Its vector is removed
+        from the execution index immediately (a stale vector would keep
+        surfacing the withdrawn fact in recall)."""
+        record = self.bank.exclude(execution_id, reason,
+                                   superseded_by=superseded_by)
+        unindexed = None
+        if self.embedding_index is not None:
+            from or_harness.strategy.embedding_index import LAYER_EXECUTION
+            try:
+                unindexed = self.embedding_index.remove(LAYER_EXECUTION,
+                                                        [execution_id])
+            except Exception as exc:  # noqa: BLE001 - never block the exclusion
+                unindexed = {"removed": 0,
+                             "deferred": f"{type(exc).__name__}: {exc}"}
+        return {"excluded": execution_id, "reason": str(reason),
+                "superseded_by": superseded_by,
+                "correction": record.execution_features.get("correction"),
+                "index": unindexed}
+
+    def restore_execution(self, execution_id: str, reason: str
+                          ) -> Dict[str, Any]:
+        """Reverse :meth:`exclude_execution`: the fact counts again.
+
+        A second explicit statement (an exclusion can itself be wrong). The
+        correction history is kept on the fact. Re-indexing is left to the
+        caller via ``rebuild_index`` — a restore is rare and explicit, so it
+        does not silently rewrite derived index state."""
+        record = self.bank.restore(execution_id, reason)
+        return {"restored": execution_id, "reason": str(reason),
+                "correction": record.execution_features.get("correction")}
+
     # -- retrieval index maintenance ----------------------------------------------
 
     def rebuild_index(self, layer: str = "both",
@@ -5570,13 +5636,23 @@ class ORHarness:
                   and not p.quality.get("feasible", False)]
         return prior
 
-    def _induction_targets(self, strategy_id: Optional[str], all_: bool):
+    def _induction_targets(self, strategy_id: Optional[str], all_: bool,
+                           family: Optional[str] = None,
+                           cell: Optional[str] = None):
         """One induction target per (structural group, strategy).
 
         The group is DERIVED from each record's own profile snapshot rather
         than read from the stored index column: legacy rows carry the old
         index format, and letting that decide targets would make the facts
-        invisible to induction."""
+        invisible to induction.
+
+        ``family`` narrows to one family; ``cell`` narrows to one structural
+        cell (a full ``group_key`` token). ``cell`` is compared against the
+        record's DERIVED key, so it works regardless of the stored index
+        format. Passing either widens the implicit ``--all`` scope: naming a
+        unit is itself an explicit selection, so it does not also require
+        ``--all``."""
+        explicit_unit = family is not None or cell is not None
         targets = []
         seen = set()
         for rec in self.bank.all():
@@ -5584,10 +5660,15 @@ class ORHarness:
                 continue
             if strategy_id and rec.strategy_id != strategy_id:
                 continue
-            key = (group_key(rec.profile_snapshot), rec.strategy_id)
+            derived = group_key(rec.profile_snapshot)
+            if family is not None and rec.profile_snapshot.family != family:
+                continue
+            if cell is not None and derived != cell:
+                continue
+            key = (derived, rec.strategy_id)
             if key in seen:
                 continue
-            if not all_ and strategy_id is None:
+            if not all_ and strategy_id is None and not explicit_unit:
                 continue
             seen.add(key)
             targets.append((rec.profile_snapshot, rec.strategy_id))

@@ -385,7 +385,9 @@ def cmd_induce(args) -> int:
                 return _fail("--verify must be a JSON object", 2)
         result = h.induce(strategy_id=args.strategy, all_=args.all,
                           rebuild=args.rebuild, dry_run=args.dry_run,
-                          force=args.force, notes=notes, verify=verify)
+                          force=args.force, notes=notes, verify=verify,
+                          family=getattr(args, "family", None),
+                          cell=getattr(args, "cell", None))
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
@@ -412,6 +414,13 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
                      + ", ".join(r["updated"] for r in revised))
     if skipped:
         parts.append(f"Skipped {len(skipped)}: {skipped[0]['skipped']}")
+    scope = []
+    if getattr(args, "family", None):
+        scope.append(f"family={args.family}")
+    if getattr(args, "cell", None):
+        scope.append(f"cell={args.cell}")
+    if scope:
+        parts.append("Scoped to " + ", ".join(scope) + ".")
     transitions = [rev for rev in (result.get("revisions") or [])
                    if rev.get("transitions")]
     for rev in transitions:
@@ -1254,6 +1263,40 @@ def cmd_retire(args) -> int:
         h.close()
 
 
+def cmd_exclude_execution(args) -> int:
+    h = _harness(args)
+    try:
+        result = h.exclude_execution(
+            args.execution, reason=args.reason,
+            superseded_by=getattr(args, "superseded_by", None))
+        parts = [f"Execution {args.execution} EXCLUDED from the evidence set "
+                 f"(reason: {args.reason}). The fact is preserved for audit — "
+                 "it is not deleted — but it no longer counts in statistics, "
+                 "induction, triggers or vector recall."]
+        if result.get("superseded_by"):
+            parts.append(f"It is superseded by {result['superseded_by']}.")
+        idx = result.get("index") or {}
+        if idx:
+            parts.append(f"Index: {idx.get('removed', 0)} vector removed.")
+        parts.append("Derived layers pick this up at the next `orx induce`.")
+        return _emit(result, " ".join(parts))
+    finally:
+        h.close()
+
+
+def cmd_restore_execution(args) -> int:
+    h = _harness(args)
+    try:
+        result = h.restore_execution(args.execution, reason=args.reason)
+        return _emit(result, f"Execution {args.execution} RESTORED to the "
+                             "evidence set (reason: "
+                             f"{args.reason}). Run `orx rebuild-index "
+                             "--layer execution` to re-index it, and "
+                             "`orx induce` to refresh the derived layers.")
+    finally:
+        h.close()
+
+
 def cmd_rebuild_index(args) -> int:
     """Explicit retrieval-index maintenance (first build / repair / model
     change). The only path allowed to embed in bulk — recall never writes."""
@@ -1705,7 +1748,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "[...], \"supporting\": [...]}. The framework evaluates "
                         "those checks on the executions you supply; "
                         "feasibility alone is not a check, and without a "
-                        "verdict the entry is NOT published")
+                        "verdict the entry is NOT published. The check applies "
+                        "ONLY to the targets this call selects — narrow with "
+                        "--family/--cell so one claim never overwrites another "
+                        "unit's verdict")
+    p.add_argument("--family", default=None,
+                   help="restrict induction to ONE family (implies --all "
+                        "scope: naming a unit is an explicit selection)")
+    p.add_argument("--cell", default=None, metavar="GROUP_KEY",
+                   help="restrict induction to ONE structural cell (the full "
+                        "group_key token, e.g. 'family=routing|rc[..]|..'); "
+                        "implies its family and --all scope")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
@@ -1784,7 +1837,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="bind a prediction to the real action that ran, "
                             "then compare (type/strategy/solver checked)")
     p.add_argument("--prediction", required=True)
-    p.add_argument("--action", required=True)
+    p.add_argument("--action", required=True, metavar="ACTION_ID|EXECUTION_ID",
+                   help="the action id (ac_...) OR the execution id (ex_...) "
+                        "the action produced — the latter is what `orx "
+                        "execute` prints, so no separate lookup is needed")
     p.set_defaults(func=cmd_bind_outcome)
 
     p = sub.add_parser(
@@ -2071,6 +2127,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--entry", required=True)
     p.add_argument("--reason", required=True)
     p.set_defaults(func=cmd_retire)
+
+    p = sub.add_parser(
+        "exclude-execution",
+        help="withdraw a wrong execution FACT from the evidence set "
+             "(append-only: the row is preserved, but stops counting)")
+    p.add_argument("--execution", required=True, metavar="EXECUTION_ID")
+    p.add_argument("--reason", required=True,
+                   help="why this fact is withdrawn (kept on the fact for "
+                        "audit)")
+    p.add_argument("--superseded-by", default=None, metavar="EXECUTION_ID",
+                   help="the corrected re-run that replaces it (a link, never "
+                        "an inference)")
+    p.set_defaults(func=cmd_exclude_execution)
+
+    p = sub.add_parser(
+        "restore-execution",
+        help="reverse an exclusion: the fact counts as evidence again")
+    p.add_argument("--execution", required=True, metavar="EXECUTION_ID")
+    p.add_argument("--reason", required=True)
+    p.set_defaults(func=cmd_restore_execution)
 
     p = sub.add_parser(
         "rebuild-index",

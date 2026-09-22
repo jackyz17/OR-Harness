@@ -672,7 +672,14 @@ class Strategy:
 # ---------------------------------------------------------------------------
 
 VERIFICATION_LEVELS = ("basic", "strong")
-EXECUTION_SOURCES = ("executed", "compacted")
+#: How an evidence row stands relative to the statistics. ``executed`` =
+#: a real observation that counts; ``compacted`` = a lossy summary (kept
+#: out of statistics by design); ``excluded`` = a fact that WAS observed
+#: but has been withdrawn from the evidence set (an explicit correction:
+#: the row is preserved for audit, the reason is recorded, and every
+#: statistics/induction/retrieval path — all of which require
+#: ``source == "executed"`` — stops counting it).
+EXECUTION_SOURCES = ("executed", "compacted", "excluded")
 
 
 @dataclass
@@ -863,6 +870,9 @@ class ExecutionRecord:
         verification = data.get("verification_level", "basic")
         if verification not in VERIFICATION_LEVELS:
             raise ValueError(f"verification_level must be one of {VERIFICATION_LEVELS}")
+        source = str(data.get("source", "executed"))
+        if source not in EXECUTION_SOURCES:
+            raise ValueError(f"source must be one of {EXECUTION_SOURCES}")
         cost = CostVector.from_dict(data.get("cost") or {})
         raw_measured = data.get("cost_measured")
         if isinstance(raw_measured, list):
@@ -883,7 +893,7 @@ class ExecutionRecord:
             execution_features=dict(data.get("execution_features") or {}),
             verification_level=verification,
             created_at=float(data.get("created_at", time.time())),
-            source=str(data.get("source", "executed")),
+            source=source,
             cir_snapshot=(dict(data["cir_snapshot"])
                           if data.get("cir_snapshot") else None),
             retention_reason=data.get("retention_reason"),

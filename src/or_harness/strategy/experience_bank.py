@@ -35,6 +35,7 @@ around unused today.
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import (
@@ -160,6 +161,73 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
                          (self.store.dumps(rec.to_dict()), execution_id))
+        return rec
+
+    def exclude(self, execution_id: str, reason: str, *,
+                superseded_by: Optional[str] = None) -> ExecutionRecord:
+        """Withdraw a fact from the evidence set WITHOUT deleting it.
+
+        The Evidence Bank is append-only, so a wrong observation cannot be
+        erased — but it must stop counting. This is the explicit correction
+        channel: the row is preserved for audit, its ``source`` becomes
+        ``"excluded"`` (every statistics / induction / trigger / retrieval
+        path requires ``source == "executed"``, so the fact drops out of
+        all of them at once), and the reason is recorded on the fact under
+        ``execution_features.correction``.
+
+        ``superseded_by`` names the execution that replaces it (e.g. a
+        re-run with a corrected answer) — a link, never an auto-inference:
+        the correction is always the harness's explicit statement. Nothing
+        is recomputed here; derived layers pick the change up at the next
+        ``induce`` / ``rebuild-index``."""
+        rec = self.get(execution_id)
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        if rec.source == "excluded":
+            raise StorageError(
+                f"execution {execution_id!r} is already excluded")
+        if superseded_by is not None and self.get(superseded_by) is None:
+            raise StorageError(
+                f"superseded_by execution {superseded_by!r} does not exist")
+        rec.execution_features["correction"] = {
+            "excluded": True,
+            "reason": str(reason),
+            "superseded_by": (str(superseded_by)
+                              if superseded_by is not None else None),
+            "excluded_at": time.time(),
+        }
+        rec.source = "excluded"
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE executions SET payload=?, source=? "
+                "WHERE execution_id=?",
+                (self.store.dumps(rec.to_dict()), rec.source, execution_id))
+        return rec
+
+    def restore(self, execution_id: str, reason: str) -> ExecutionRecord:
+        """Reverse :meth:`exclude`: the fact counts as evidence again.
+
+        A second explicit statement, because an exclusion can itself be
+        wrong. The correction record is kept (``restored`` + reason) rather
+        than erased, so the fact's history shows both decisions."""
+        rec = self.get(execution_id)
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        if rec.source != "excluded":
+            raise StorageError(
+                f"execution {execution_id!r} is not excluded (source="
+                f"{rec.source!r})")
+        correction = dict(rec.execution_features.get("correction") or {})
+        correction["restored"] = True
+        correction["restore_reason"] = str(reason)
+        correction["restored_at"] = time.time()
+        rec.execution_features["correction"] = correction
+        rec.source = "executed"
+        with self.store.transaction() as conn:
+            conn.execute(
+                "UPDATE executions SET payload=?, source=? "
+                "WHERE execution_id=?",
+                (self.store.dumps(rec.to_dict()), rec.source, execution_id))
         return rec
 
     # -- reads --------------------------------------------------------------------

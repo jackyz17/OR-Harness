@@ -374,6 +374,24 @@ class ActionLog:
             (action_id,)).fetchone()
         return self._decode(row) if row else None
 
+    def by_execution(self, execution_id: str) -> Optional[ActionRecord]:
+        """The action that PRODUCED one execution, or None.
+
+        The reverse lookup for ``action_records.linked_execution_id``: a
+        caller that knows only the execution (the id ``orx execute`` prints)
+        can still reach the action a prediction must be bound to. Newest
+        first when a single execution is somehow linked more than once."""
+        if not execution_id:
+            return None
+        rows = self.store.conn.execute(
+            "SELECT payload FROM action_records "
+            "ORDER BY started_at DESC, action_id DESC").fetchall()
+        for row in rows:
+            record = self._decode(row)
+            if record.linked_execution_id == execution_id:
+                return record
+        return None
+
     def query(self, *, task_id: Optional[str] = None,
               episode_id: Optional[str] = None,
               action_type: Optional[str] = None,

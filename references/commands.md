@@ -78,6 +78,8 @@ Field discipline: `observed_*` (what happened) and `expected_*` (what the knowle
 | Index built by a different embedding model | `embedding model changed (was X, now Y)` |
 | Embedding call failed | `embedding backend error: ...` |
 
+The retrieval document is built from `text`, `description`, `objective`, `requirements`, `business_rules`, `constraints` and `spec` (in that order), so a task that states its problem in a plain `text` field is indexed the same way as one using `description`. Only a task with NONE of these keys reports `no task text`.
+
 `vector_recall.unindexed` counts current memories with no vector — legacy records whose text was never captured, or a write whose index sync was deferred — and states where to find them (`orx inspect --bank experience|strategic`, `--bank texts`, and the profile channel).
 
 `--include-unverified` is the offline/inspection view: unpublished candidates appear in BOTH channels (the structural path returns them with a warning; the text path stops filtering by admission state).
@@ -133,13 +135,15 @@ Appends the fact to the Execution Evidence Bank, then runs the automatic chain: 
 
 Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
 
-## `orx induce [--strategy S | --all] [--rebuild] [--dry-run] [--force] [--note TEXT] [--verify JSON]`
+## `orx induce [--strategy S | --all] [--family F] [--cell GROUP_KEY] [--rebuild] [--dry-run] [--force] [--note TEXT] [--verify JSON]`
 
 Consolidates facts into Strategic Knowledge (your explicit call — hints never auto-induce). This is the ONLY place knowledge changes: it (i) builds or refreshes the claim of each (family, structural cell, strategy) evidence set — its applicability is read off the supporting records (the cell its evidence occupies, never a cross-sample span that could stretch across incomparable regions); and (ii) replays the frozen checks recorded on the facts, reporting what it did under `result.revisions` (promotion at ≥5 checks / ≥70% hits **with a verified claim**, demotion at 3 consecutive misses, dormancy wakeup). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). One evidence set owns exactly one claim: re-inducing refreshes it rather than restating it (dormant entries included, so a woken claim keeps its id). `--rebuild` re-induces the whole Strategic Knowledge Bank from currently retained evidence (cold archive preserved); the result may differ from the previous bank — exact reconstruction is not a requirement. New entries inherit `strategy_type`, `actions` and `fallback_strategy_id` from the catalog vocabulary (harness-supplied values are never overwritten). `--dry-run` never writes — including under `--force` (a rehearsal does not lift a cold-archive veto).
 
 **Independent evidence gate (creation only).** Creating a claim takes at least 2 supporting executions from ≥2 distinct `task_id`s: repeating one task is repetition, not reproduction. Every count comes from the same facts — executed, attempt-scope, in the target's structural cell — so a task-scope total can never stand in for an independent attempt. When only one task is behind the evidence the call creates nothing and returns `verification {tasks, required_tasks}` plus a `skipped` reason — the evidence is NOT discarded (recall still answers from it as `conditional_stats`), and refreshing an entry that already exists is never blocked, no matter how repetitive the new evidence is.
 
 **`--verify JSON` publishes the candidate.** Admission and creation are separate: the gate above decides whether evidence may become a *candidate*; this decides whether the candidate's claim may become *published knowledge*. See [induction.md](induction.md#admission-verification-offline-what-makes-a-claim-published) for the payload and the three checks (`rule` / `repair` / `cost_saving`). The framework computes the verdict from the executions you supply; without it the entry is `unverified` and **is not published** — recall answers from `conditional_stats` and `predict_cost` will not quote it.
+
+**`--family` / `--cell` scope the check to ONE structural unit.** A verification payload is written for a specific claim, so it must apply to a specific target set — one payload applied to every cell of a strategy would cross-contaminate families (an allocation check overwriting a scheduling verdict). `--family F` restricts induction to that family; `--cell GROUP_KEY` restricts it to one structural cell (the full `group_key` token, e.g. `family=routing|rc[..]|tc[..]|rx[..]`, compared against each record's DERIVED key so a stale index column never mis-selects). Either flag implies the `--all` scope — naming a unit is itself an explicit selection — and composes with `--strategy`.
 
 What the verdict requires, concretely: a declared criterion the framework can evaluate itself (`reference_status`, `reference_objective`, `semantic_probe`) or a genuinely independent comparison — **feasibility alone is a precondition, not a check**, and a bare `semantic_ok` boolean is recorded as `agent-declared` but cannot carry a verdict. Every execution you pass is evaluated (a counterexample anywhere in the batch refutes, whatever the order), the evidence must be for THIS strategy and family, and a comparison must be like-for-like (same task, same measurement scope for costs; a repeated execution id is not an independent comparison). Failed executions yield `insufficient_evidence` (not `refuted`): "we could not check it" is not "we checked it and it failed".
 
@@ -268,9 +272,9 @@ It is deliberately **not** the same as the ordinary-action knowledge evaluation 
 
 The verdict is computed from the induction that actually followed — never from the assessment's own opinion of itself. A rejected or deferred recommendation is `inconclusive`, not a miss: the predicted consequence was never given a chance to occur. Idempotent: a second call returns the stored verdict.
 
-## `orx bind-outcome --prediction ID --action ACTION_ID`
+## `orx bind-outcome --prediction ID --action ACTION_ID|EXECUTION_ID`
 
-Bind a prediction to the real action that ran, then compare. Type/strategy/solver are checked: a mismatch (you predicted strategy A, executed B) is recorded and NOT scored — no counterfactual truth is fabricated. The comparison covers only fields both sides define: status category, feasibility, quality (when the execution produced a solution), and cost per dimension (both sides measured — the same both-sides-measured discipline as cost feedback). Missing comparisons are listed with reasons. The feedback is APPENDED to the frozen prediction — the original is never modified, and re-running the comparison is idempotent (the model is never re-invoked). Online comparison records facts and errors only; knowledge updates still go through explicit offline induction with verification.
+Bind a prediction to the real action that ran, then compare. `--action` accepts **either** the action id (`ac_...`) **or** the `execution_id` (`ex_...`) that the action produced — the latter is what `orx execute` prints, so the natural predict → execute → bind loop needs no separate lookup, and a mismatch between the prediction's episode and the execution's episode does not block binding (it is recorded as a `binding_mismatch` and the comparison covers only the matching parts). Type/strategy/solver are checked: a mismatch (you predicted strategy A, executed B) is recorded and NOT scored — no counterfactual truth is fabricated. The comparison covers only fields both sides define: status category, feasibility, quality (when the execution produced a solution), and cost per dimension (both sides measured — the same both-sides-measured discipline as cost feedback). Missing comparisons are listed with reasons. The feedback is APPENDED to the frozen prediction — the original is never modified, and re-running the comparison is idempotent (the model is never re-invoked). Online comparison records facts and errors only; knowledge updates still go through explicit offline induction with verification.
 
 Query predictions with `orx inspect --bank predictions [--task ID]`.
 
@@ -362,6 +366,14 @@ Disposes only of the derived layer. `compact` is **deferred**: lossy evidence co
 ## `orx retire --entry ID --reason "..."`
 
 Your explicit, irreversible confirmation: moves an entry to the cold archive. Its vector leaves the retrieval index with it, so a later `recall` can never surface the retired advice.
+
+## `orx exclude-execution --execution EXECUTION_ID --reason "..." [--superseded-by EXECUTION_ID]`
+
+Withdraw a **wrong execution fact** from the evidence set. The Evidence Bank is append-only, so a bad observation is never deleted — but it must stop counting. The row is preserved for audit, its `source` becomes `excluded`, and the reason is recorded on the fact under `execution_features.correction`. Every statistics / induction / trigger / retrieval path requires `source == "executed"`, so the fact drops out of **all** of them at once; its vector is removed from the execution index immediately. `--superseded-by` names the corrected re-run that replaces it (a link, never an inference — the correction is always your explicit statement). Derived layers pick the change up at the next `orx induce`. This is the ONLY way to un-count a fact: `record` never rewrites, and the fact's `execution_id` stays visible in `inspect --bank experience`.
+
+## `orx restore-execution --execution EXECUTION_ID --reason "..."`
+
+Reverse an exclusion — a second explicit statement, because an exclusion can itself be wrong. The fact counts as evidence again (source back to `executed`) and the correction history keeps both decisions. Re-indexing is deliberately NOT automatic: run `orx rebuild-index --layer execution` to re-embed it, then `orx induce` to refresh the derived layers.
 
 ## `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
 

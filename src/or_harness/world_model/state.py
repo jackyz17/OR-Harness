@@ -66,10 +66,13 @@ def _labelled(value: Any, provenance: str = "observed",
 
 #: Task keys that carry problem semantics (kept in the snapshot's P when no
 #: explicit task_ref exists, so a future model can recover WHAT was asked,
-#: not just a hash). Bulky/derived artifacts are excluded.
-_TASK_PAYLOAD_KEYS = ("task_id", "family", "description", "objective",
-                      "constraints", "spec", "requirements", "business_rules",
-                      "data_ref")
+#: not just a hash). Bulky/derived artifacts are excluded. ``text`` is the
+#: plain "the task is this sentence" field a caller naturally reaches for;
+#: it is accepted alongside the structured keys so a task written that way
+#: is never silently text-less.
+_TASK_PAYLOAD_KEYS = ("task_id", "family", "description", "text",
+                      "objective", "constraints", "spec", "requirements",
+                      "business_rules", "data_ref")
 
 
 def _task_payload(task: Dict[str, Any]) -> Dict[str, Any]:
@@ -86,7 +89,7 @@ def _task_payload(task: Dict[str, Any]) -> Dict[str, Any]:
 #: grouping LABEL, not prose, and counting it would make almost every task
 #: "have text" — hiding the honest "no task text" state behind a one-word
 #: document that matches nothing meaningfully.
-TEXT_TASK_KEYS = ("description", "objective", "requirements",
+TEXT_TASK_KEYS = ("text", "description", "objective", "requirements",
                   "business_rules", "constraints", "spec")
 
 

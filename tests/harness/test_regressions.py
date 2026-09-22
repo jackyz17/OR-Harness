@@ -282,5 +282,184 @@ class TestPrecision(_Case):
             h2.close()
 
 
+class TestBindOutcomeByExecutionId(_Case):
+    """Defect: `bind-outcome` required the action id, so the natural
+    predict -> execute -> bind loop failed whenever the caller only had the
+    execution id `orx execute` prints (and the two sides' episode ids did
+    not line up). Binding by execution id must resolve the action."""
+
+    def _prediction_and_execution(self, pred_episode=None, action_episode=None):
+        from or_harness.world_model.prediction import ActionSpec
+        task = {"task_id": "t1", "family": "routing", "description": "route"}
+        spec = ActionSpec(action_type="execute_strategy", task_id="t1",
+                          strategy_id="S01")
+        prediction = self.h.predict_outcome(task, spec, pred_episode)
+        pre = self.h.snapshot(task, action_episode)
+        action = self.h.actions.begin_action(
+            "execute_strategy", "t1", action_episode, pre_snapshot=pre,
+            params={"strategy_id": "S01", "solver": "highs"})
+        execution_id = "ex_under_test"
+        self.h.actions.end_action(action.action_id, status="completed",
+                                  linked_execution_id=execution_id,
+                                  rollup="reference")
+        return prediction, action, execution_id
+
+    def test_binding_by_execution_id_resolves_the_action(self):
+        prediction, action, execution_id = self._prediction_and_execution(
+            pred_episode=None, action_episode="EP_workforce_v2_001")
+        bound = self.h.bind_outcome(prediction.prediction_id, execution_id)
+        self.assertEqual(bound.bound_action_id, action.action_id)
+        # No episode on the prediction side means no episode mismatch is
+        # invented — an unknown identity is not a wrong one.
+        self.assertIsNone(bound.binding_mismatch)
+
+    def test_binding_by_action_id_still_works(self):
+        prediction, action, _ = self._prediction_and_execution()
+        bound = self.h.bind_outcome(prediction.prediction_id, action.action_id)
+        self.assertEqual(bound.bound_action_id, action.action_id)
+
+    def test_unknown_id_names_both_possibilities(self):
+        from or_harness.core.storage import StorageError
+        prediction, _, _ = self._prediction_and_execution()
+        with self.assertRaises(StorageError) as ctx:
+            self.h.bind_outcome(prediction.prediction_id, "ex_nope")
+        self.assertIn("execution_id", str(ctx.exception))
+
+
+class TestTaskTextField(_Case):
+    """Defect: a task carrying its problem statement in `text` (the natural
+    key) was reported as having NO text, so vector recall silently degraded
+    to profile-only."""
+
+    def test_text_field_is_read_as_task_text(self):
+        from or_harness.world_model.state import task_text
+        self.assertEqual(task_text({"task_id": "t1", "text": "route 3 trucks"}),
+                         "route 3 trucks")
+
+    def test_text_field_reaches_the_retrieval_document(self):
+        text = self.h.capture_task_text(
+            {"task_id": "t1", "text": "load the distribution centre first"})
+        self.assertIsNotNone(text)
+        self.assertIn("load the distribution centre",
+                      self.h.store.get_task_text("t1", text))
+
+    def test_text_and_description_both_contribute(self):
+        from or_harness.world_model.state import task_text
+        joined = task_text({"task_id": "t1", "text": "short form",
+                            "description": "long form"})
+        self.assertIn("short form", joined)
+        self.assertIn("long form", joined)
+
+
+class TestInduceCellScope(_Case):
+    """Defect: `induce --verify` applied one admission payload to EVERY cell
+    of a strategy, so a check written for one family overwrote another
+    family's verdict."""
+
+    def _seed_two_families(self):
+        self.add("ex_r1", "tr1", family="routing")
+        self.add("ex_r2", "tr2", family="routing")
+        self.add("ex_a1", "ta1", family="allocation")
+        self.add("ex_a2", "ta2", family="allocation")
+
+    def test_family_filter_selects_only_that_family(self):
+        self._seed_two_families()
+        targets = self.h._induction_targets("S01", False, family="allocation")
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0][0].family, "allocation")
+
+    def test_cell_filter_selects_exactly_one_cell(self):
+        self._seed_two_families()
+        routing = [r for r in self.h.bank.all()
+                   if r.profile_snapshot.family == "routing"][0]
+        targets = self.h._induction_targets(
+            "S01", False, cell=group_key(routing.profile_snapshot))
+        self.assertEqual(len(targets), 1)
+        self.assertEqual(targets[0][0].family, "routing")
+
+    def test_scoped_verify_does_not_touch_other_families(self):
+        self._seed_two_families()
+        verify = {"purpose": "rule", "claim": "S01 holds here",
+                  "check": {"reference_objective": 100.0},
+                  "executions": [self.make_record(execution_id="ex_v",
+                                                  task_id="t_verify")]}
+        self.h.induce(strategy_id="S01", verify=verify, family="routing")
+        # Every entry this scoped call created belongs to routing only — the
+        # allocation cell was never a target, so no allocation entry exists.
+        self.assertGreaterEqual(self.h.sbank.count(), 1)
+        for entry in self.h.sbank.list():
+            self.assertEqual(entry.predicates["family"], "routing")
+    def test_naming_a_unit_implies_all_scope(self):
+        self._seed_two_families()
+        # No --all and no --strategy, but an explicit family: still selected.
+        targets = self.h._induction_targets(None, False, family="routing")
+        self.assertEqual(len(targets), 1)
+
+
+class TestEvidenceExclusion(_Case):
+    """Defect: a wrong execution fact could not be withdrawn (the bank is
+    append-only), so it kept polluting statistics. Exclusion must preserve
+    the row, record the reason, and drop it out of every evidence path."""
+
+    def _seed_and_induce(self):
+        self.add("ex_bad", "t1", tokens=99999)
+        self.add("ex_good", "t2", tokens=100)
+        return self.h.induce(strategy_id="S01")
+
+    def test_excluded_fact_leaves_the_statistics(self):
+        self._seed_and_induce()
+        profile = self.h.bank.get("ex_bad").profile_snapshot
+        from or_harness.strategy.stats import ConditionalStats
+        stats = ConditionalStats(self.h.bank)
+        before = stats.aggregate(group_key(profile), "S01",
+                                 stats.evidence(profile, "S01"))
+        self.h.exclude_execution("ex_bad", reason="wrong answer in toolrepair")
+        after = stats.aggregate(group_key(profile), "S01",
+                                stats.evidence(profile, "S01"))
+        self.assertEqual(before.n, 2)
+        self.assertEqual(after.n, 1)
+        self.assertNotIn("ex_bad", after.execution_ids)
+
+    def test_exclusion_preserves_the_row_and_records_the_reason(self):
+        self._seed_and_induce()
+        out = self.h.exclude_execution("ex_bad", reason="bad", superseded_by=None)
+        record = self.h.bank.get("ex_bad")
+        self.assertIsNotNone(record, "the fact must be preserved for audit")
+        self.assertEqual(record.source, "excluded")
+        self.assertEqual(record.execution_features["correction"]["reason"], "bad")
+        self.assertEqual(out["excluded"], "ex_bad")
+
+    def test_excluded_fact_is_not_evidence(self):
+        from or_harness.strategy.stats import ConditionalStats
+        self._seed_and_induce()
+        self.h.exclude_execution("ex_bad", reason="bad")
+        stats = ConditionalStats(self.h.bank)
+        profile = self.h.bank.get("ex_bad").profile_snapshot
+        ids = {r.execution_id for r in stats.evidence(profile, "S01")}
+        self.assertNotIn("ex_bad", ids)
+
+    def test_superseding_link_is_validated(self):
+        from or_harness.core.storage import StorageError
+        self._seed_and_induce()
+        with self.assertRaises(StorageError):
+            self.h.exclude_execution("ex_bad", reason="bad",
+                                     superseded_by="ex_missing")
+
+    def test_restore_returns_the_fact_to_evidence(self):
+        self._seed_and_induce()
+        self.h.exclude_execution("ex_bad", reason="bad")
+        self.h.restore_execution("ex_bad", reason="the answer was right")
+        record = self.h.bank.get("ex_bad")
+        self.assertEqual(record.source, "executed")
+        self.assertTrue(record.execution_features["correction"]["restored"])
+
+    def test_double_exclusion_is_refused(self):
+        from or_harness.core.storage import StorageError
+        self._seed_and_induce()
+        self.h.exclude_execution("ex_bad", reason="bad")
+        with self.assertRaises(StorageError):
+            self.h.exclude_execution("ex_bad", reason="bad again")
+
+
 if __name__ == "__main__":
     unittest.main()
