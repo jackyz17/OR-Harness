@@ -32,9 +32,174 @@ The module is pure-stdlib, has no dependency on the rest of ``or_harness``
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+# ---------------------------------------------------------------------------
+# Shape contract (fail-closed)
+# ---------------------------------------------------------------------------
+
+#: The ONLY keys a CIR object may carry.  ``issues`` is included because
+#: :meth:`CouplingAwareIR.to_dict` emits it, so a round trip must parse.
+_CIR_KEYS: Tuple[str, ...] = ("entities", "decisions", "constraints",
+                              "relations", "coupling_groups", "issues")
+#: The list-valued keys (``issues`` is excluded: it is a validation report,
+#: not a structural input, and a caller may legitimately drop it).
+_CIR_LIST_KEYS: Tuple[str, ...] = _CIR_KEYS[:-1]
+#: Scalar coupling dimensions.  These are NOT CIR keys: they belong in
+#: ``annotations.coupling``.  Named here only so a misplaced scalar gets a
+#: hint that says where it should have gone.
+_SCALAR_KEYS: Tuple[str, ...] = ("semantic_coupling", "resource_coupling",
+                                 "temporal_coupling", "route_complexity")
+
+#: Environment escape hatch.  ``OR_CIR_STRICT=0`` downgrades the POLICY
+#: checks (unknown keys, empty CIR) so a legacy task that carries extra keys
+#: keeps loading.  Structural checks are never downgraded — a non-object or a
+#: wrongly typed list cannot be deserialized at all, so pretending to accept
+#: it would only move the failure somewhere less legible.
+CIR_STRICT_ENV = "OR_CIR_STRICT"
+
+
+def cir_strict() -> bool:
+    """Whether the CIR policy checks are enforced (see :data:`CIR_STRICT_ENV`)."""
+    raw = os.environ.get(CIR_STRICT_ENV)
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+class CIRFormatError(ValueError):
+    """A CIR payload does not have the documented shape.
+
+    Carries the offending key(s) plus a repair hint, so an agent that wrote
+    the CIR can fix it in one turn instead of guessing.  ``str(exc)`` is the
+    detail AND the hint, so even a caller that only logs the message gets an
+    actionable sentence.
+    """
+
+    def __init__(self, kind: str, detail: str, hint: str, **ctx: Any) -> None:
+        super().__init__(f"{detail} {hint}")
+        self.kind = kind
+        self.detail = detail
+        self.hint = hint
+        self.ctx = ctx
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"kind": self.kind, "detail": self.detail,
+                "hint": self.hint, **self.ctx}
+
+
+def _nested_hint(unknown: List[str], data: Dict[str, Any]) -> Optional[str]:
+    """A hint for ``{"cir": {...}}`` — the nesting mistake we actually hit."""
+    nested = [k for k in unknown if isinstance(data[k], dict)
+              and any(kk in data[k] for kk in _CIR_KEYS)]
+    if not nested:
+        return None
+    return (f"The CIR looks NESTED under {nested!r}. Put its keys DIRECTLY "
+            f"under 'coupling': {{\"entities\": [...], ...}} — NOT "
+            f"{{\"cir\": {{...}}}}.")
+
+
+def _scalar_hint(unknown: List[str]) -> Optional[str]:
+    """A hint for scalar coupling values written where the CIR belongs."""
+    scalar = [k for k in unknown if k in _SCALAR_KEYS]
+    if not scalar:
+        return None
+    return (f"{scalar} are SCALAR coupling values, not CIR keys — they belong "
+            f"in annotations.coupling, not task.coupling.")
+
+
+def cir_shape_problems(data: Any, *, allow_empty: bool = False,
+                       strict: Optional[bool] = None) -> List[Dict[str, Any]]:
+    """Every shape problem with a CIR payload, as structured dicts.
+
+    Never raises. Used by :func:`_validate_shape` to decide what to reject,
+    and by a caller that wants to LINT a payload instead (``OR_CIR_STRICT=0``
+    downgrades the policy checks, and this is how the downgraded problems are
+    still reported rather than silently swallowed).
+
+    ``severity`` separates the two kinds:
+
+    * ``structural`` — the payload cannot be deserialized at all (not an
+      object, a list key holding a non-list). These are ALWAYS errors: there
+      is no lenient reading of ``"entities": {...}``.
+    * ``policy`` — the payload parses but violates the documented contract
+      (unknown keys, an empty CIR). These are what ``OR_CIR_STRICT=0``
+      downgrades.
+    """
+    if strict is None:
+        strict = cir_strict()
+    problems: List[Dict[str, Any]] = []
+
+    def add(kind: str, detail: str, hint: str, severity: str,
+            **ctx: Any) -> None:
+        problems.append({"severity": severity, "kind": kind, "detail": detail,
+                         "hint": hint, **ctx})
+
+    if not isinstance(data, dict):
+        add("not_object",
+            f"CIR must be a JSON object, got {type(data).__name__}.",
+            'Wrap it as {"entities": [...], "decisions": [...], '
+            '"relations": [...]}.', "structural")
+        return problems
+
+    unknown = [k for k in data if k not in _CIR_KEYS]
+    if unknown:
+        add("unknown_keys", f"Unknown CIR key(s): {unknown}.",
+            _nested_hint(unknown, data) or _scalar_hint(unknown)
+            or f"Allowed keys: {list(_CIR_KEYS)}.", "policy",
+            unknown_keys=unknown, allowed=list(_CIR_KEYS))
+
+    for key in _CIR_LIST_KEYS:
+        value = data.get(key)
+        if value is not None and not isinstance(value, list):
+            add("bad_type",
+                f"'{key}' must be a list, got {type(value).__name__}.",
+                f'Use "{key}": [ ... ].', "structural", key=key)
+
+    if not allow_empty and not any(data.get(k) for k in _CIR_LIST_KEYS):
+        add("empty_cir",
+            "CIR present but carries no entities/decisions/constraints/"
+            "relations.",
+            "Fill in at least entities + decisions + relations, or omit the "
+            "'coupling' field entirely if this task has no CIR.", "policy")
+
+    if strict:
+        return problems
+    # Downgraded: the POLICY problems become lints; the STRUCTURAL ones stay
+    # errors, because a payload that cannot be deserialized has no lenient
+    # reading — downgrading them would only move the failure into a
+    # nonsense TypeError deeper in the parser.
+    for p in problems:
+        if p["severity"] == "policy":
+            p["severity"] = "lint"
+    return problems
+
+
+def _validate_shape(data: Any, *, allow_empty: bool = True,
+                    strict: Optional[bool] = None) -> None:
+    """Reject a malformed CIR payload, or return quietly.
+
+    Structural problems (not an object, a list key holding a non-list) always
+    raise: ``from_dict`` cannot deserialize them, so accepting them would
+    either crash with a nonsense ``TypeError`` or silently parse to an EMPTY
+    CIR — which is the failure mode this gate exists to kill.
+
+    Policy problems (unknown keys, an empty CIR) raise only when ``strict``
+    (default: :func:`cir_strict`); ``OR_CIR_STRICT=0`` downgrades them, and
+    :func:`cir_shape_problems` is how the downgraded ones stay visible.
+    """
+    for problem in cir_shape_problems(data, allow_empty=allow_empty,
+                                      strict=strict):
+        if problem["severity"] == "lint":
+            continue
+        ctx = {k: v for k, v in problem.items()
+               if k not in ("severity", "kind", "detail", "hint")}
+        raise CIRFormatError(problem["kind"], problem["detail"],
+                             problem["hint"], **ctx)
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -219,9 +384,20 @@ class CouplingAwareIR:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "CouplingAwareIR":
-        if not isinstance(data, dict):
-            raise ValueError("CIR must be a JSON object")
+    def from_dict(cls, data: Dict[str, Any], *,
+                  strict: Optional[bool] = None,
+                  allow_empty: bool = True) -> "CouplingAwareIR":
+        """Build a CIR from a JSON object.
+
+        ``strict`` (default: :func:`cir_strict`) enforces the shape contract
+        first: without it a misspelled or nested payload parses into an EMPTY
+        CIR with no error, and every consumer downstream then treats a
+        malformed problem as an uncoupled one.  ``allow_empty=False`` rejects
+        a CIR that carries no structural content at all — appropriate for an
+        agent-supplied CIR, never for the internal round trip (an empty CIR
+        is a legitimate value that :meth:`to_dict` can produce).
+        """
+        _validate_shape(data, allow_empty=allow_empty, strict=strict)
         return cls(
             entities=[Entity.from_dict(d) for d in (data.get("entities") or [])],
             decisions=[Decision.from_dict(d) for d in (data.get("decisions") or [])],
@@ -240,6 +416,56 @@ class CouplingAwareIR:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False,
                           sort_keys=True, separators=(",", ":"))
+
+
+def cir_from_task(task: Any, *, allow_empty: bool = False,
+                  strict: Optional[bool] = None) -> Optional["CouplingAwareIR"]:
+    """The CIR a task's own ``coupling`` field declares, or ``None``.
+
+    THE single resolution point for the task-side CIR, so ``profile``,
+    ``snapshot``, ``execute``, ``recall`` and the prediction context cannot
+    disagree about whether a task has a CIR — or about whether the one it has
+    is well-formed.
+
+    Three outcomes, and the middle one is the point of this function:
+
+    * no ``coupling`` key (or ``None``) -> ``None``: the task has no CIR,
+      which is a normal state;
+    * a well-formed object -> the parsed :class:`CouplingAwareIR`;
+    * anything else -> :class:`CIRFormatError`.  A ``coupling`` field that is
+      a string, a list, or an object of the wrong shape is NOT "no CIR": the
+      caller MEANT to declare one, so silently reading it as absent would
+      make a malformed problem indistinguishable from an uncoupled one.
+
+    ``allow_empty`` defaults to False because this is the INPUT boundary: a
+    task that carries ``"coupling": {}`` declared a CIR and supplied nothing,
+    which is far more often a broken payload than an intentional one.  The
+    internal deserializer (:meth:`CouplingAwareIR.from_dict`) defaults the
+    other way, because an empty CIR is a value ``to_dict`` can legitimately
+    produce and a round trip must survive it.
+    """
+    if not isinstance(task, dict) or task.get("coupling") is None:
+        return None
+    raw = task["coupling"]
+    if isinstance(raw, CouplingAwareIR):
+        return raw
+    return CouplingAwareIR.from_dict(raw, strict=strict,
+                                     allow_empty=allow_empty)
+
+
+def coerce_cir(cir: Any, *, allow_empty: bool = False,
+               strict: Optional[bool] = None) -> Optional["CouplingAwareIR"]:
+    """A :class:`CouplingAwareIR` for *cir*, accepting a dict or an instance.
+
+    ``profile_task`` takes the effective CIR from several callers; some hand
+    it a parsed object and some a raw JSON object (a CLI ``--cir`` literal).
+    Normalizing here means the shape gate sees BOTH forms, instead of the
+    dict form slipping past it into ``coupling_from_cir``.
+    """
+    if cir is None or isinstance(cir, CouplingAwareIR):
+        return cir
+    return CouplingAwareIR.from_dict(cir, strict=strict,
+                                     allow_empty=allow_empty)
 
 
 # ---------------------------------------------------------------------------

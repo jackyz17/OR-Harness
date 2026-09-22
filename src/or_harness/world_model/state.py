@@ -280,8 +280,17 @@ class BeliefSnapshot:
         problem = dict(problem_state or {})
         problem.setdefault("task_digest", _stable_digest(task))
         problem.setdefault("task_ref", task.get("task_ref"))
-        if task.get("coupling") and "cir_snapshot" not in problem:
-            problem["cir_snapshot"] = copy.deepcopy(task["coupling"])
+        if "cir_snapshot" not in problem:
+            # Store the PARSED CIR, never the caller's raw dict. The raw dict
+            # is what made this a false-positive signal: a nested
+            # ``{"cir": {...}}`` payload was frozen verbatim, so the snapshot
+            # looked like it carried a structure while every consumer parsed
+            # zero entities out of it. ``cir_from_task`` also REJECTS a
+            # malformed CIR here, so a bad shape can never reach the store.
+            from or_harness.core.coupling import cir_from_task
+            cir = cir_from_task(task)
+            if cir is not None:
+                problem["cir_snapshot"] = cir.to_dict()
         if task.get("model") is not None and "model_digest" not in problem:
             problem["model_digest"] = _stable_digest(task["model"])
         if problem.get("task_ref") is None:

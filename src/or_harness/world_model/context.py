@@ -115,7 +115,7 @@ def _excerpt(text: str, limit: int = MAX_EXCERPT_CHARS) -> str:
 
 def resolve_effective_cir(task: Dict[str, Any],
                           cir: Optional[Any] = None) -> Any:
-    """The ONE CIR this request is about.
+    """The ONE CIR this request is about, shape-checked.
 
     An explicit ``cir`` wins over the task's own ``coupling`` field. This is
     deliberately a single resolution point: the joint representation, the
@@ -123,12 +123,23 @@ def resolve_effective_cir(task: Dict[str, Any],
     must all describe the SAME problem structure, or one request would carry
     two structural judgments and could retrieve knowledge from the wrong
     cell.
+
+    The result is a parsed :class:`~or_harness.core.coupling.CouplingAwareIR`
+    (or ``None``), never the caller's raw dict: a malformed CIR raises
+    :class:`~or_harness.core.coupling.CIRFormatError` HERE, so ``execute`` /
+    ``context`` / ``snapshot`` refuse it exactly as ``profile`` does, instead
+    of one entry point validating and another storing a shape it never
+    checked.
+
+    Note the callers that must accept a raw dict: ``snapshot`` and
+    ``execute`` freeze whatever the task carried, so the shape gate is what
+    stops a malformed CIR from becoming a frozen ``cir_snapshot`` that reads
+    as eight entities while parsing to zero.
     """
+    from or_harness.core.coupling import cir_from_task, coerce_cir
     if cir is not None:
-        return cir
-    if isinstance(task, dict) and isinstance(task.get("coupling"), dict):
-        return task["coupling"]
-    return None
+        return coerce_cir(cir)
+    return cir_from_task(task)
 
 
 def task_with_effective_cir(task: Dict[str, Any],
@@ -142,15 +153,28 @@ def task_with_effective_cir(task: Dict[str, Any],
     With no effective CIR the task is returned with its ``coupling`` removed,
     so a caller-supplied CIR REPLACES the task's own rather than being
     silently overridden by it.
+
+    The payload is carried through AS SUPPLIED, never re-serialized from the
+    parsed CIR. This is load-bearing, not cosmetic: the effective input
+    version is digested from this task, and the execution side digests the
+    RAW task (``BeliefSnapshot.build``), so a normalization that added
+    default fields (``attrs``, ``issues``) would make the same problem
+    produce two different identities — and the binding check would report a
+    content change where nothing changed. Parsing normalizes for USE;
+    identity must follow what the caller actually wrote.
+
+    The shape gate still runs (``resolve_effective_cir``), so a malformed
+    CIR raises here rather than being routed to consumers unchecked.
     """
-    resolved = resolve_effective_cir(task, cir)
+    resolved = resolve_effective_cir(task, cir)   # gate; raises on bad shape
     copy_task = dict(task or {})
     if resolved is None:
         copy_task.pop("coupling", None)
-    elif hasattr(resolved, "to_dict"):
-        copy_task["coupling"] = resolved.to_dict()
+    elif cir is not None:
+        copy_task["coupling"] = (cir.to_dict() if hasattr(cir, "to_dict")
+                                 else copy.deepcopy(dict(cir)))
     else:
-        copy_task["coupling"] = copy.deepcopy(dict(resolved))
+        copy_task["coupling"] = copy.deepcopy(task["coupling"])
     return copy_task
 
 
@@ -600,11 +624,18 @@ def build_joint_representation(
         text = task_text(task)
     digest = task_text_digest(task)
 
-    # CIR: relations kept as relations. A dict or a CouplingAwareIR both work.
+    # CIR: relations kept as relations. The SAME resolution point as the
+    # profile, so the joint representation can never describe a different
+    # structure than the one the retrieval key was built from — and a
+    # malformed CIR is rejected here too, not rendered as an empty structure.
+    #
+    # The digest is taken from the INPUT payload, not from the parsed object:
+    # ``effective_input_version`` digests the task JSON as the caller supplied
+    # it, so re-serializing the parsed CIR here would make the joint
+    # representation's digest disagree with the frozen input version of the
+    # very context that contains it.
     cir_dict: Dict[str, Any] = {"present": False}
-    resolved_cir = cir
-    if resolved_cir is None and isinstance(task.get("coupling"), dict):
-        resolved_cir = task["coupling"]
+    resolved_cir = resolve_effective_cir(task, cir)
     if cir_source is None:
         cir_source = ("caller_supplied" if cir is not None
                       else "task_coupling")

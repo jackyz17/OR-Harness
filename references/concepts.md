@@ -67,7 +67,7 @@ A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this grou
 
 Strict Evidence ↔ Knowledge linkage is an **induction-time** requirement **by target design**: evidence must support and validate a candidate before admission. This is a migration target — today entries are born `candidate` and forward prediction checks still run online; moving admission validation offline is the next Induction round's job. Once admitted (and also under the current regime), an entry's continued validity does NOT depend on preserving its original supporting evidence — compacting or deleting old evidence never invalidates an entry. New evidence accumulates normally and influences knowledge again at the **next induction cycle**.
 
-When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet.
+When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet. The snapshot is the PARSED CIR, never the caller's raw `coupling` payload: a payload of the wrong shape is rejected before the execution runs, so a record can never carry a structure that looks present while parsing to zero entities.
 
 ## Task texts: a retrieval attachment, not a third bank
 

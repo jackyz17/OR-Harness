@@ -198,7 +198,7 @@ How old shapes are preserved or interpreted. **Nothing is auto-migrated, no tabl
 | `call_cost` | `trace.call_cost` | the prediction call's own spend, unchanged |
 | `evidence_basis` / `unsupported_fields` | `trace.*` | preserved verbatim |
 | `action_spec` | `CandidateRef` | mechanical mapping; the spec's execution `params` and `budget_hint` are carried through **verbatim**. `measurement_scope="attempt"` → `scope="attempt"` (recorded as `scope_basis="legacy_attempt"`); a legacy `"task"` scope is **refused**, never silently shrunk — pass `scope=` to declare the narrowing yourself |
-| `OutcomePrediction`, snapshots, config, logs | unchanged | still readable; the old path still returns `not_configured` with no provider |
+| `OutcomePrediction`, snapshots, config, logs | unchanged | still readable; the old path returns `not_configured` with no provider — a BLOCKER, since the world model is mandatory |
 
 **Not convertible, on purpose** (the full list is `LEGACY_UNMAPPABLE` in `contracts.py`, and it is returned by every legacy read): knowledge references into a capability level, experience counts into capability, tool availability into a `T` level, `budget_state` into a predicted state, and fine-grained `state_changes` into per-field predictions. No capability increment, risk severity or measurement is derived from any of them.
 

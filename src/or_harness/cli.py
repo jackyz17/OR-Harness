@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from or_harness.api import ORHarness, PREDICTION_MODES
+from or_harness.core.coupling import CIRFormatError
 from or_harness.core.schema import ExecutionRecord
 from or_harness.core.storage import StorageError
 
@@ -28,6 +29,35 @@ def _fail(message: str, exit_code: int = 2) -> int:
     print(json.dumps({"result": {"error": message}, "summary": message},
                      ensure_ascii=False, separators=(",", ":")))
     return exit_code
+
+
+def _fail_structured(error: Dict[str, Any], summary: str,
+                     exit_code: int = 2) -> int:
+    """A precondition failure whose payload is a MACHINE-READABLE object.
+
+    ``_fail`` carries one prose string, which is enough for "unknown
+    strategy_id" but not for a malformed CIR: the agent needs the offending
+    key(s) and the repair hint as separate fields to act on without parsing
+    English. Same exit code as every other precondition failure.
+    """
+    print(json.dumps({"result": {"error": error}, "summary": summary},
+                     ensure_ascii=False, separators=(",", ":")))
+    return exit_code
+
+
+def _cir_error_payload(exc: Any) -> Dict[str, Any]:
+    """The structured error for a rejected CIR payload."""
+    detail = getattr(exc, "detail", None)
+    hint = getattr(exc, "hint", None)
+    if detail is None:                       # a plain ValueError/TypeError
+        detail, hint = str(exc), ("Check the CIR shape: an object with "
+                                  "list-valued entities/decisions/constraints/"
+                                  "relations.")
+    payload: Dict[str, Any] = {"kind": "cir_format",
+                               "cause": getattr(exc, "kind", "invalid"),
+                               "detail": detail, "hint": hint}
+    payload.update(getattr(exc, "ctx", {}) or {})
+    return payload
 
 
 def _load_json_arg(value: str) -> Any:
@@ -144,7 +174,10 @@ def cmd_profile(args) -> int:
     h = _harness(args)
     try:
         from or_harness.core.coupling import (
-            CouplingAwareIR,
+            CIRFormatError,
+            cir_from_task,
+            cir_shape_problems,
+            coerce_cir,
             derive_coupling_groups,
             infer_structural_relations,
             render_modeling_guidance,
@@ -152,13 +185,25 @@ def cmd_profile(args) -> int:
         )
         from or_harness.profiling.model_syntax import verify_model
         task = _load_json_arg(args.task)
+        allow_empty = bool(getattr(args, "allow_empty_cir", False))
         # -- CIR side (validation, structural inference, groups, guidance) --
+        # The shape gate runs FIRST: a malformed CIR is rejected here with a
+        # named key and a repair hint, instead of parsing to an empty
+        # structure that silently runs the whole episode in [unknown].
         coupling: Dict[str, Any] = {"cir": None, "modeling_guidance": []}
         cir_obj = None
-        if args.cir:
-            cir_obj = CouplingAwareIR.from_dict(_load_json_arg(args.cir))
-        elif isinstance(task.get("coupling"), dict):
-            cir_obj = CouplingAwareIR.from_dict(task["coupling"])
+        try:
+            if args.cir:
+                cir_obj = coerce_cir(_load_json_arg(args.cir),
+                                     allow_empty=allow_empty)
+            else:
+                cir_obj = cir_from_task(task, allow_empty=allow_empty)
+        except (CIRFormatError, TypeError) as exc:
+            payload = _cir_error_payload(exc)
+            return _fail_structured(
+                payload,
+                f"CIR rejected ({payload['cause']}): {payload['detail']} "
+                f"{payload['hint']}")
         if cir_obj is not None:
             validate_cir(cir_obj)
             parsed = None
@@ -180,14 +225,68 @@ def cmd_profile(args) -> int:
                 "but recommended: it is the pre-model understanding that "
                 "improves both the profile derivation and the model you "
                 "write after choosing a strategy.")
+        # With OR_CIR_STRICT=0 the policy checks are downgraded, not dropped:
+        # every problem the gate found is still reported, as a lint. Without
+        # this, "lenient" would mean "silent" — the exact failure the shape
+        # gate exists to prevent.
+        raw_cir = (_load_json_arg(args.cir) if args.cir
+                   else task.get("coupling"))
+        if raw_cir is not None:
+            lints = [p for p in cir_shape_problems(
+                raw_cir, allow_empty=allow_empty)
+                if p["severity"] == "lint"]
+            if lints:
+                coupling["shape_lints"] = lints
         # -- Profile side --
         profile = h.profile(task, cir=cir_obj)
         report = h.derivation_report(task, cir=cir_obj)
+        # An honest account of what the CIR actually contributed. Reported
+        # even when the profile came out fully determined, because the
+        # failure this guards against is a CIR that PARSED to nothing while
+        # looking present — see the shape gate above.
+        coupling["health"] = _cir_health(coupling.get("cir"))
         result = {"profile": profile.to_dict(), "derivation": report,
                   "coupling": coupling}
         return _emit(result, _summarize_profile(profile, report, coupling))
     finally:
         h.close()
+
+
+def _cir_health(cir: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """What a parsed CIR really carries: counts, issues, and honesty flags.
+
+    ``parsed`` is the field that matters. A CIR object that is PRESENT but
+    contributes no decisions cannot derive any scalar dimension
+    (``coupling_from_cir`` returns None for every one of them), so a caller
+    that only checks ``cir is not None`` would believe it had a structural
+    signal it does not have.
+    """
+    if cir is None:
+        return {"present": False, "parsed": False, "entities": 0,
+                "decisions": 0, "constraints": 0, "relations": 0,
+                "issues": 0, "contributes_scalars": False,
+                "note": ("no CIR supplied: the structural dimensions come "
+                         "from the spec or stay unknown")}
+    counts = {k: len(cir.get(k) or [])
+              for k in ("entities", "decisions", "constraints", "relations")}
+    parsed = any(counts.values())
+    issues = len(cir.get("issues") or [])
+    contributes = counts["decisions"] > 0
+    if not parsed:
+        note = ("the CIR is present but EMPTY: it derives no scalar "
+                "dimensions, so the profile's coupling comes from the spec "
+                "or stays unknown — this is not evidence of weak coupling")
+    elif not contributes:
+        note = ("the CIR has entities but no decisions: no scalar dimension "
+                "can be derived from it (only decisions carry indexes and "
+                "resource relations)")
+    elif issues:
+        note = (f"{issues} validation issue(s): the CIR was still used, but "
+                "the structure it describes may be incomplete")
+    else:
+        note = "CIR parsed and contributes structural signal"
+    return {"present": True, "parsed": parsed, **counts, "issues": issues,
+            "contributes_scalars": contributes, "note": note}
 
 
 def _summarize_profile(profile, report, coupling=None) -> str:
@@ -206,6 +305,9 @@ def _summarize_profile(profile, report, coupling=None) -> str:
                          + "; ".join(f"[{g['type']}] {g['implication']}"
                                     for g in guidance[:4])
                          + (" ..." if len(guidance) > 4 else ""))
+        health = coupling.get("health") or {}
+        if health and not health.get("contributes_scalars"):
+            parts.append("CIR contribution: " + str(health.get("note")) + ".")
     elif coupling.get("message"):
         parts.append(coupling["message"])
     parts.append(f"Profile for {profile.problem_id} "
@@ -1647,6 +1749,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cir", default=None,
                    help="optional CIR JSON literal/file (overrides the "
                         "task's 'coupling' field)")
+    p.add_argument("--allow-empty-cir", action="store_true",
+                   help="accept a CIR that carries no entities/decisions/"
+                        "constraints/relations (default: reject it, so a "
+                        "malformed or nested CIR is never mistaken for an "
+                        "empty one). $OR_CIR_STRICT=0 downgrades all CIR "
+                        "policy checks")
     p.set_defaults(func=cmd_profile)
 
     p = sub.add_parser("recall", help="recall accumulated experience for a task")
@@ -2264,6 +2372,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         return args.func(args)
+    except CIRFormatError as exc:
+        # Every CIR entry point (profile, context, snapshot, execute, recall,
+        # predict) funnels through the same shape gate, so the structured
+        # rejection is handled ONCE here rather than in each command — a
+        # per-command handler is exactly how one entry point ends up without
+        # one.
+        payload = _cir_error_payload(exc)
+        return _fail_structured(
+            payload,
+            f"CIR rejected ({payload['cause']}): {payload['detail']} "
+            f"{payload['hint']}")
     except (ValueError, StorageError, FileNotFoundError, json.JSONDecodeError) as exc:
         return _fail(f"{type(exc).__name__}: {exc}")
     except Exception as exc:  # pragma: no cover - crash guard

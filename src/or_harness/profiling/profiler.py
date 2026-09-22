@@ -106,11 +106,13 @@ def profile_task(task: Dict[str, Any],
     # The CIR is a pre-model artifact: when the caller does not pass one
     # explicitly, read it from the task's optional ``coupling`` field.
     # This is what wires recall()/execute() to coupling-aware signatures.
+    # Both forms go through the shared shape gate: a malformed CIR is
+    # REJECTED here rather than silently parsing to an empty structure (a
+    # malformed problem must not look like an uncoupled one).
+    from or_harness.core.coupling import cir_from_task, coerce_cir
+    cir = coerce_cir(cir)
     if cir is None:
-        coupling_data = task.get("coupling")
-        if isinstance(coupling_data, dict):
-            from or_harness.core.coupling import CouplingAwareIR
-            cir = CouplingAwareIR.from_dict(coupling_data)
+        cir = cir_from_task(task)
 
     model_report: Optional[ModelReport] = None
     model_coupling: Dict[str, Optional[float]] = {}

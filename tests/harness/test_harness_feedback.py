@@ -300,6 +300,13 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                 "constraints": [], "relations": [], "coupling_groups": []}
 
     def test_execute_captures_cir_snapshot(self):
+        """The snapshot is the PARSED CIR, not the caller's raw payload.
+
+        Storing the raw payload made the record a false-positive signal: a
+        nested ``{"cir": {...}}`` froze verbatim, so the record looked like
+        it carried a structure while every consumer parsed zero entities.
+        """
+        from or_harness.core.coupling import CouplingAwareIR
         rec = self.make_record(execution_id="ex_cir1", task_id="t_cir",
                                strategy_id="S01")
         h = ORHarness(home=self.home, executor=_StubExecutor(rec))
@@ -307,11 +314,30 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             task = {"task_id": "t_cir", "family": "allocation",
                     "coupling": self._cir(), "spec": {}}
             out = h.execute(task, "S01", "solve.py", self.home, solver="highs")
-            self.assertEqual(out.cir_snapshot, task["coupling"])
+            expected = CouplingAwareIR.from_dict(self._cir()).to_dict()
+            self.assertEqual(out.cir_snapshot, expected)
             # The snapshot persists through the Evidence Bank.
             h.record(out)
             stored = h.bank.get("ex_cir1")
-            self.assertEqual(stored.cir_snapshot, task["coupling"])
+            self.assertEqual(stored.cir_snapshot, expected)
+        finally:
+            h.close()
+
+    def test_execute_refuses_a_malformed_cir(self):
+        """A malformed CIR is a precondition failure, not a silent empty
+        structure — execute must not run a solve under a CIR nobody parsed."""
+        from or_harness.core.coupling import CIRFormatError
+        rec = self.make_record(execution_id="ex_cir3", task_id="t_cir3",
+                               strategy_id="S01")
+        h = ORHarness(home=self.home, executor=_StubExecutor(rec))
+        try:
+            task = {"task_id": "t_cir3", "family": "allocation",
+                    "coupling": {"cir": self._cir()}, "spec": {}}
+            with self.assertRaises(CIRFormatError) as caught:
+                h.execute(task, "S01", "solve.py", self.home, solver="highs")
+            self.assertIn("NESTED", caught.exception.hint)
+            # Nothing was staged: the refusal happens before the solve.
+            self.assertEqual(h.bank.pending(), [])
         finally:
             h.close()
 

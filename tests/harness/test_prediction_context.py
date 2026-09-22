@@ -1203,18 +1203,75 @@ class TestOneCirForTheWholeRequest(ContextCase):
         self.assertEqual(len(ctx.joint.cir["relations"]), 1)
 
     def test_effective_cir_helper_is_the_single_resolution_point(self):
+        """Resolution PARSES (so the gate runs once); routing keeps the input.
+
+        Those are two different jobs. ``resolve_effective_cir`` hands back a
+        parsed ``CouplingAwareIR`` so a malformed CIR cannot be resolved by
+        one consumer and rejected by another. ``task_with_effective_cir``
+        routes the payload AS SUPPLIED, because the effective input version
+        is digested from it and the execution side digests the raw task — a
+        normalization here would give one problem two identities.
+        """
+        from or_harness.core.coupling import CouplingAwareIR
         from or_harness.world_model.context import (
             resolve_effective_cir,
             task_with_effective_cir,
         )
         task = self._weak_task()
         task["coupling"] = self.CIR
-        self.assertIs(resolve_effective_cir(task, self.CIR), self.CIR)
-        self.assertIs(resolve_effective_cir(task), task["coupling"])
+        parsed = CouplingAwareIR.from_dict(self.CIR).to_dict()
+        resolved = resolve_effective_cir(task, self.CIR)
+        self.assertIsInstance(resolved, CouplingAwareIR)
+        self.assertEqual(resolved.to_dict(), parsed)
+        # The task's own CIR is read through the same parser.
+        self.assertEqual(resolve_effective_cir(task).to_dict(), parsed)
         self.assertIsNone(resolve_effective_cir({}, None))
-        # A supplied CIR reaches every existing consumer through the task.
-        self.assertEqual(task_with_effective_cir(task, self.CIR)["coupling"],
-                         self.CIR)
+        # Routing preserves the payload byte-for-byte: identity follows what
+        # the caller wrote, not how the parser normalized it.
+        routed = task_with_effective_cir(task, self.CIR)
+        self.assertEqual(routed["coupling"], self.CIR)
+        self.assertNotEqual(routed["coupling"], parsed)
+        self.assertEqual(task_with_effective_cir(task)["coupling"], self.CIR)
+
+    def test_a_malformed_cir_is_refused_by_the_resolution_point(self):
+        """A coupling field that is not a CIR is refused, never read as
+        'no CIR' — that is the whole point of a single gate."""
+        from or_harness.core.coupling import CIRFormatError
+        from or_harness.world_model.context import resolve_effective_cir
+        # Scalars where the CIR belongs (they go in annotations.coupling).
+        with self.assertRaises(CIRFormatError) as caught:
+            resolve_effective_cir({"coupling": dict(self.WEAK)})
+        self.assertIn("annotations.coupling", caught.exception.hint)
+        # A nested CIR: the mistake that silently parsed to nothing before.
+        with self.assertRaises(CIRFormatError) as caught:
+            resolve_effective_cir({"coupling": {"cir": self.CIR}})
+        self.assertIn("NESTED", caught.exception.hint)
+
+    def test_the_effective_version_does_not_depend_on_parser_normalization(self):
+        """A regression found by the strategy_outcome example.
+
+        The execution side digests the RAW task (``BeliefSnapshot.build``);
+        the prediction side digests the EFFECTIVE input. When routing
+        re-serialized the parsed CIR, the parsed form gained default fields
+        (``attrs``, ``issues``) and the same problem produced two identities
+        — so a binding reported "the task's content changed" when nothing
+        had. Identity must follow what the caller wrote.
+        """
+        from or_harness.core.coupling import CouplingAwareIR
+        from or_harness.world_model.context import effective_input_version
+        from or_harness.world_model.state import task_text_digest
+
+        task = dict(_task("t1"))
+        task["coupling"] = self.CIR          # a CIR with defaulted fields
+        # The parsed form really is different (this is what caused the bug).
+        self.assertNotEqual(CouplingAwareIR.from_dict(self.CIR).to_dict(),
+                            self.CIR)
+        # Identity via the task's own coupling == the raw task's digest.
+        self.assertEqual(effective_input_version(task), task_text_digest(task))
+        # ... and via an explicit CIR of the same content.
+        weak = {k: v for k, v in task.items() if k != "coupling"}
+        self.assertEqual(effective_input_version(weak, self.CIR),
+                         task_text_digest(task))
 
 
 class TestMemoryContentVersion(ContextCase):
@@ -1387,13 +1444,12 @@ class TestStructureConsistencyIsChecked(ContextCase):
     def test_the_effective_input_is_resolved_before_the_check(self):
         """A supplied CIR defines the structure the snapshot must match."""
         task = self._weak_task()
-        snap = self.h.snapshot(task, "ep1")
+        snap = self.h.snapshot(task, "ep1")   # frozen with the WEAK structure
         # Rebuilding with the SAME effective structure succeeds ...
-        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap,
-                                              cir=task["annotations"]
-                                              ["coupling"])
-        self.assertEqual(ctx.joint.sources["cir"], "caller_supplied")
-        # ... while a different one is refused, in that order.
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        self.assertEqual(ctx.joint.sources["cir"], "none")
+        # ... while a supplied CIR that changes the structure is refused, and
+        # the refusal happens BEFORE the snapshot is accepted.
         with self.assertRaises(ValueError):
             self.h.build_prediction_context(task, "ep1", snapshot=snap,
                                             cir=self.STRONG)

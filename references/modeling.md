@@ -77,6 +77,26 @@ Submit the CIR via `orx profile --task t.json` (the single analysis entry) **bef
 | `constraints` | `id, kind, expr, attrs` | `kind` examples: capacity, balance, temporal, precedence, logical, global, … |
 | `relations` | `source, target, type, evidence, detail` | `type` examples: uses_resource, shares_resource, competes_for, precedes, flows_to, depends_on, constrained_by, … |
 | `coupling_groups` | `type, members, resource, implication` | `type` examples: shared_bottleneck, route_convergence, temporal_propagation_chain, global_constraint, cross_stage_coupling, … |
+| `issues` | `layer, code, detail` | Validation report; written by the framework, accepted on input for round-trip |
+
+These six keys are the ONLY allowed ones. A `coupling` object carrying anything else is rejected at `orx profile` (exit 2) with a structured `error` naming the offending key — because the alternative is worse than an error: an unrecognised key parses to an EMPTY CIR, and every consumer downstream then treats a malformed problem as an uncoupled one.
+
+### Shape contract (fail-closed)
+
+| Failure | `error.cause` | Fix |
+|---|---|---|
+| `"coupling": {"cir": {...}}` (nested) | `unknown_keys` | Put the keys directly under `coupling` |
+| `"entites": [...]` (typo) | `unknown_keys` | Allowed keys are the six above |
+| `"entities": {...}` (dict, not list) | `bad_type` | Use a list |
+| `"coupling": {}` (empty) | `empty_cir` | Fill it in, drop the field, or pass `--allow-empty-cir` |
+| `"coupling": {"resource_coupling": 0.9}` (scalar) | `unknown_keys` | Scalars belong in `annotations.coupling` |
+| `"coupling": "text"` (not an object) | `not_object` | Wrap it in an object |
+
+Every rejection carries a `hint`, and the two mistakes that actually happen — nesting and scalar confusion — get a targeted one. `OR_CIR_STRICT=0` downgrades the policy checks (`unknown_keys`, `empty_cir`) for a legacy task, reporting them in `result.coupling.shape_lints` instead of failing; structural problems (`not_object`, `bad_type`) are never downgraded, because a payload that cannot be deserialized has no lenient reading.
+
+### Health (what the CIR actually contributed)
+
+`result.coupling.health` reports `{present, parsed, entities, decisions, constraints, relations, issues, contributes_scalars, note}`. `contributes_scalars` is false when the CIR carries no decisions — and a CIR with no decisions derives NO scalar dimension, so a profile whose coupling came from the CIR can silently have come from nowhere. Read `health.note` rather than assuming a present CIR means a structural signal.
 
 ### Evidence levels (critical)
 
@@ -100,4 +120,5 @@ Co-occurrence is structural evidence only. A semantic relation (`shares_resource
 - **Semantic upgrade**: a structural edge upgrades to `uses_resource` ONLY when the target entity is resource-like AND a capacity-ish constraint mentions BOTH the source decision AND the target resource. Co-occurrence alone never produces semantic relations; capacity-ish words are deliberately narrow (`capacity`, `limit`, `cap`, `budget`, `resource`, `available` — not `demand`/`max`).
 - **Coupling groups**: `shared_bottleneck` (≥2 decisions using the same resource) is the only pattern derived deterministically. Other group types are the agent's responsibility — declared by the agent, validated and rendered by the framework.
 - **Modeling guidance**: each coupling group renders an explicit implication (e.g. "ensure one aggregate capacity constraint covers all relevant decisions").
-- **CIR ↔ model cross-check**: when both CIR and `model` are present, flags missing decisions (both directions) and unsupported relations. A decision→resource relation (the normal `uses_resource` shape) only requires the decision to appear in some model constraint; the variable-variable co-occurrence check applies only to decision→decision relations.
+
+The `model` field is verified independently (L1/L2 above) and its own structural reading is reported as `derivation.model_coupling` — a DIAGNOSTIC. It is not cross-checked against the CIR: the CIR is the pre-strategy understanding and the model is a post-strategy artifact, so they are reported side by side for you to compare rather than reconciled automatically.

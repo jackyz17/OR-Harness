@@ -2,20 +2,23 @@
 
 Covers:
 - schema round-trip (to_dict / from_dict / to_json)
+- the shape gate: nested / typo / bad type / empty / scalar / non-object
 - L1 format validation (empty names, duplicates, bad evidence)
 - L2 referential integrity (dangling source/target/member/resource)
 - domain-generality (unknown kinds accepted, no hard-coded enum)
 - structural inference: co-occurrence → depends_on only (never semantic)
 - semantic upgrade: capacity keyword + resource-kind entity → uses_resource
 - shared_bottleneck derivation
-- CIR ↔ model cross-check (missing decisions, relation not in model)
 - the merged `orx profile` analysis output (CIR + guidance + profile)
 """
+import json
+import os
 import unittest
 
 from helpers import HarnessTestCase
 
 from or_harness.core.coupling import (
+    CIRFormatError,
     CouplingAwareIR,
     Entity,
     Decision,
@@ -23,6 +26,9 @@ from or_harness.core.coupling import (
     Relation,
     CouplingGroup,
     CouplingIssue,
+    cir_from_task,
+    cir_shape_problems,
+    coerce_cir,
     validate_cir,
     infer_structural_relations,
     derive_coupling_groups,
@@ -57,6 +63,18 @@ class TestCIRSchema(HarnessTestCase):
         cir2 = CouplingAwareIR.from_dict(d)
         self.assertEqual(cir2.to_dict(), d)
 
+    def test_round_trip_empty_survives_a_strict_input_gate(self):
+        """The internal deserializer must not reject what to_dict produces.
+
+        ``allow_empty`` is False at the INPUT boundary and True at the
+        deserializer: an empty CIR is a value ``to_dict`` can legitimately
+        produce, so a round trip that enforced the input policy would break.
+        """
+        d = CouplingAwareIR().to_dict()
+        self.assertEqual(CouplingAwareIR.from_dict(d).to_dict(), d)
+        self.assertEqual(CouplingAwareIR.from_dict(d, allow_empty=True)
+                         .to_dict(), d)
+
     def test_unknown_kind_accepted(self):
         """Domain-generality: any kind string is accepted, never rejected."""
         cir = CouplingAwareIR(
@@ -70,6 +88,122 @@ class TestCIRSchema(HarnessTestCase):
         cir = CouplingAwareIR(entities=[Entity(name="E1")])
         s = cir.to_json()
         self.assertIn("E1", s)
+
+
+class TestCIRShapeGate(HarnessTestCase):
+    """The six failure modes that used to parse into an EMPTY CIR silently.
+
+    Before the gate, ``{"coupling": {"cir": {...}}}`` and
+    ``{"coupling": {"entites": [...]}}`` both produced a zero-entity CIR with
+    no error, so a malformed problem was indistinguishable from an uncoupled
+    one and the whole episode ran in the ``[unknown]`` cell.
+    """
+
+    #: FM1 — the nesting mistake we actually hit.
+    NESTED = {"cir": {"entities": [{"name": "M1"}]}}
+    #: FM2 — a typo.
+    TYPO = {"entites": [{"name": "M1"}]}
+    #: FM3 — a dict where a list belongs.
+    BAD_TYPE = {"entities": {"M1": {}}}
+    #: FM4 — an empty CIR.
+    EMPTY = {}
+    #: FM5 — scalar coupling in the CIR slot.
+    SCALAR = {"resource_coupling": 0.9}
+    #: FM6 — not an object at all.
+    NOT_OBJECT = "just a string"
+
+    def _cause(self, payload, **kwargs):
+        with self.assertRaises(CIRFormatError) as caught:
+            CouplingAwareIR.from_dict(payload, allow_empty=False, **kwargs)
+        return caught.exception
+
+    def test_fm1_nested_is_named_with_a_repair_hint(self):
+        exc = self._cause(self.NESTED)
+        self.assertEqual(exc.kind, "unknown_keys")
+        self.assertEqual(exc.ctx["unknown_keys"], ["cir"])
+        self.assertIn("NESTED", exc.hint)
+        self.assertIn("DIRECTLY", exc.hint)
+
+    def test_fm2_typo_lists_the_allowed_keys(self):
+        exc = self._cause(self.TYPO)
+        self.assertEqual(exc.kind, "unknown_keys")
+        self.assertEqual(exc.ctx["unknown_keys"], ["entites"])
+        self.assertIn("entities", exc.hint)
+
+    def test_fm3_bad_type_names_the_key(self):
+        exc = self._cause(self.BAD_TYPE)
+        self.assertEqual(exc.kind, "bad_type")
+        self.assertEqual(exc.ctx["key"], "entities")
+        self.assertIn("list", exc.detail)
+
+    def test_fm4_empty_cir_is_refused(self):
+        exc = self._cause(self.EMPTY)
+        self.assertEqual(exc.kind, "empty_cir")
+
+    def test_fm4_empty_cir_allowed_when_asked(self):
+        cir = CouplingAwareIR.from_dict(self.EMPTY, allow_empty=True)
+        self.assertEqual(cir.entities, [])
+
+    def test_fm5_scalar_is_redirected_to_annotations(self):
+        exc = self._cause(self.SCALAR)
+        self.assertEqual(exc.kind, "unknown_keys")
+        self.assertIn("annotations.coupling", exc.hint)
+
+    def test_fm6_non_object(self):
+        exc = self._cause(self.NOT_OBJECT)
+        self.assertEqual(exc.kind, "not_object")
+
+    def test_error_str_is_actionable_without_the_object(self):
+        """A caller that only logs the message still gets the repair hint."""
+        message = str(self._cause(self.NESTED))
+        self.assertIn("Unknown CIR key(s)", message)
+        self.assertIn("NESTED", message)
+
+    def test_structural_problems_are_never_downgraded(self):
+        """OR_CIR_STRICT=0 downgrades POLICY, never STRUCTURE: a payload that
+        cannot be deserialized has no lenient reading."""
+        self._cause(self.NOT_OBJECT, strict=False)
+        self._cause(self.BAD_TYPE, strict=False)
+
+    def test_legacy_extra_keys_downgrade_to_lints(self):
+        problems = cir_shape_problems(self.NESTED, strict=False)
+        self.assertTrue(problems)
+        self.assertTrue(all(p["severity"] == "lint" for p in problems))
+        # The payload now loads (as an empty CIR) instead of raising.
+        cir = CouplingAwareIR.from_dict(self.NESTED, strict=False,
+                                       allow_empty=True)
+        self.assertEqual(cir.entities, [])
+
+    def test_shape_problems_never_raise(self):
+        for payload in (self.NESTED, self.TYPO, self.BAD_TYPE, self.EMPTY,
+                        self.SCALAR, self.NOT_OBJECT):
+            self.assertIsInstance(cir_shape_problems(payload), list)
+
+    def test_strict_env_var_downgrades_the_policy(self):
+        self.addCleanup(os.environ.pop, "OR_CIR_STRICT", None)
+        os.environ["OR_CIR_STRICT"] = "0"
+        cir = CouplingAwareIR.from_dict(self.TYPO, allow_empty=True)
+        self.assertEqual(cir.entities, [])
+
+    def test_cir_from_task_distinguishes_absent_from_malformed(self):
+        # Absent: a normal state.
+        self.assertIsNone(cir_from_task({"task_id": "t1"}))
+        self.assertIsNone(cir_from_task({"task_id": "t1", "coupling": None}))
+        # Present and well-formed.
+        cir = cir_from_task({"coupling": {"entities": [{"name": "E1"}]}})
+        self.assertEqual(len(cir.entities), 1)
+        # Present and malformed: an error, NOT 'no CIR'.
+        with self.assertRaises(CIRFormatError):
+            cir_from_task({"coupling": "not_a_dict"})
+
+    def test_coerce_cir_normalizes_both_input_forms(self):
+        raw = {"entities": [{"name": "E1"}], "decisions": [{"name": "x"}]}
+        parsed = CouplingAwareIR.from_dict(raw)
+        self.assertIs(coerce_cir(parsed), parsed)     # already parsed
+        self.assertIsNone(coerce_cir(None))
+        self.assertEqual(coerce_cir(raw).to_dict(), parsed.to_dict())
+        with self.assertRaises(CIRFormatError):
+            coerce_cir(self.SCALAR)
 
 
 class TestCIRValidation(HarnessTestCase):
@@ -443,15 +577,15 @@ class TestProfileAnalysisEntry(HarnessTestCase):
     """The merged `orx profile` analysis output: CIR + guidance + profile
     in one call (the understand entry was consolidated into profile)."""
 
-    def _run_profile_cli(self, task):
+    def _run_profile_cli(self, task, extra=None):
         import json
         from or_harness.cli import main
-        import io, contextlib, tempfile, os
+        import io, contextlib, tempfile
         with tempfile.TemporaryDirectory() as home:
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 code = main(["--home", home, "profile",
-                             "--task", json.dumps(task)])
+                             "--task", json.dumps(task), *(extra or [])])
             out = json.loads(buf.getvalue())
         return code, out
 
@@ -538,11 +672,76 @@ CONSTRAINTS:
         self.assertEqual(derivation["resource_coupling"]["origin"], "cir")
         self.assertNotIn("cir_warnings", out["result"]["coupling"])
 
-    def test_bad_coupling_data(self):
+    def test_bad_coupling_data_is_refused(self):
+        """A non-object coupling field is a precondition failure (exit 2),
+        not a silent 'no CIR'."""
         code, out = self._run_profile_cli(
             {"task_id": "t1", "family": "f", "coupling": "not_a_dict"})
+        self.assertEqual(code, 2)
+        error = out["result"]["error"]
+        self.assertEqual(error["kind"], "cir_format")
+        self.assertEqual(error["cause"], "not_object")
+
+    def test_nested_cir_is_named_and_refused(self):
+        """The failure we actually hit: the CIR nested under 'cir'."""
+        code, out = self._run_profile_cli(
+            {"task_id": "t1", "family": "f",
+             "coupling": {"cir": {"entities": [{"name": "M1"}]}}})
+        self.assertEqual(code, 2)
+        error = out["result"]["error"]
+        self.assertEqual(error["cause"], "unknown_keys")
+        self.assertEqual(error["unknown_keys"], ["cir"])
+        self.assertIn("NESTED", error["hint"])
+
+    def test_scalar_coupling_in_the_cir_slot_is_redirected(self):
+        code, out = self._run_profile_cli(
+            {"task_id": "t1", "family": "f",
+             "coupling": {"resource_coupling": 0.9}})
+        self.assertEqual(code, 2)
+        error = out["result"]["error"]
+        self.assertEqual(error["cause"], "unknown_keys")
+        self.assertIn("annotations.coupling", error["hint"])
+
+    def test_empty_cir_is_refused_unless_allowed(self):
+        task = {"task_id": "t1", "family": "f", "coupling": {}}
+        code, out = self._run_profile_cli(task)
+        self.assertEqual(code, 2)
+        self.assertEqual(out["result"]["error"]["cause"], "empty_cir")
+        code, out = self._run_profile_cli(task, extra=["--allow-empty-cir"])
         self.assertEqual(code, 0)
-        self.assertIsNone(out["result"]["coupling"]["cir"])
+        health = out["result"]["coupling"]["health"]
+        self.assertTrue(health["present"])
+        self.assertFalse(health["parsed"])
+        self.assertFalse(health["contributes_scalars"])
+
+    def test_health_reports_a_cir_that_contributes(self):
+        task = {
+            "task_id": "t1", "family": "scheduling",
+            "coupling": {
+                "entities": [{"name": "R1", "kind": "resource"}],
+                "decisions": [{"name": "x"}, {"name": "y"}],
+                "relations": [
+                    {"source": "x", "target": "R1",
+                     "type": "uses_resource", "evidence": "semantic"},
+                    {"source": "y", "target": "R1",
+                     "type": "uses_resource", "evidence": "semantic"},
+                ],
+            },
+        }
+        code, out = self._run_profile_cli(task)
+        self.assertEqual(code, 0)
+        health = out["result"]["coupling"]["health"]
+        self.assertTrue(health["parsed"])
+        self.assertTrue(health["contributes_scalars"])
+        self.assertEqual(health["decisions"], 2)
+
+    def test_no_coupling_field_reports_no_cir_health(self):
+        code, out = self._run_profile_cli(
+            {"task_id": "t1", "family": "routing"})
+        self.assertEqual(code, 0)
+        health = out["result"]["coupling"]["health"]
+        self.assertFalse(health["present"])
+        self.assertIn("no CIR supplied", health["note"])
 
 
 if __name__ == "__main__":

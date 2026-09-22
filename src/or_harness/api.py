@@ -4921,9 +4921,15 @@ class ORHarness:
             profile=profile, verification_level=verification_level)
         # Evidence completeness: preserve the coupling-aware representation
         # snapshot (CIR) that was actually solved. Snapshot only — CIR
-        # extraction and coupling understanding are untouched.
-        if task.get("coupling"):
-            record.cir_snapshot = dict(task["coupling"])
+        # extraction and coupling understanding are untouched. The PARSED
+        # form is stored: freezing the raw payload made the record look like
+        # it carried a structure while every consumer parsed nothing out of
+        # it, and a malformed CIR is refused rather than persisted.
+        if task.get("coupling") is not None:
+            from or_harness.core.coupling import cir_from_task
+            cir = cir_from_task(task)
+            if cir is not None:
+                record.cir_snapshot = cir.to_dict()
         if record.task_text_digest is None:
             record.task_text_digest = task_text_ver
         # Safety net: stage every execution — successes AND failures — so a

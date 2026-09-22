@@ -37,7 +37,7 @@ DOCUMENTED_FLAGS = [
                   "--operation-desc", "--scope", "--targeting", "--baseline",
                   "--horizon", "--horizon-tasks", "--expected-change",
                   "--verification"]),
-    ("profile", ["--task", "--cir"]),
+    ("profile", ["--task", "--cir", "--allow-empty-cir"]),
     ("recall", ["--task", "--top", "--exclude", "--memory-mode",
                 "--include-unverified"]),
     ("predict", ["--task", "--strategy"]),

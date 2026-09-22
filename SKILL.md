@@ -11,7 +11,7 @@ description: >
   accumulated execution evidence and reusable strategic knowledge; or to run
   offline consolidation over completed tasks. Provides coupling-aware problem
   understanding, a sandboxed executor with seven solver adapters, a two-layer
-  strategy memory, and optional world-model decision support. Do not use for
+  strategy memory, and a required world-model consequence predictor. Do not use for
   one-off optimization questions with no repetition, generic math proofs, or
   non-optimization tasks.
 ---
@@ -20,7 +20,7 @@ description: >
 
 You are the orchestrator; this layer advises, executes and remembers. Every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`) — no hidden state, no background work. You may refuse any recommendation, request alternatives, execute without recording, override recorded costs, and you alone decide when to consolidate.
 
-A model is called ONLY when you configure a provider (`--world-model URL::MODEL` or `ORHarness(world_model=...)`) and explicitly invoke a prediction command. Without one, every world-model command returns `not_configured`.
+The world model is a REQUIRED component of both the online loop and offline consolidation: configure a provider (`--world-model URL::MODEL` or `ORHarness(world_model=...)`). If none is configured, `not_configured` is a BLOCKER — the loop cannot run to spec, and that is a configuration error, not a legitimate degraded mode. Multi-step planning (`plan-next`) remains optional.
 
 ## Invariants (do not reinterpret these)
 
@@ -30,6 +30,8 @@ recommendation ≠ selection ≠ execution
 prediction ≠ fact        hypothetical ≠ observed        unknown ≠ 0
 online solving ≠ offline consolidation
 no world-model parameter update inside an episode
+predict-outcome / bind-outcome / predict-capability  are REQUIRED
+plan-next / choose-next                               are OPTIONAL
 Execution Evidence ≠ Strategic Knowledge
 knowledge growth ≠ demonstrated capability improvement
 predicted cost ≠ measured cost
@@ -42,7 +44,8 @@ Problem P
   → profile / coupling-aware understanding        (CIR + profile + guidance)
   → retrieve evidence and strategic knowledge     (recall: structural + text)
   → generate candidate strategies
-  → optional world-model consequence prediction   (predict-outcome / plan-next)
+  → MANDATORY world-model consequence prediction  (predict-outcome)
+  → optional multi-step planning                  (plan-next)
   → compare and EXPLICITLY select
   → model the problem                             (intermediate representation)
   → implement / solve / repair / verify
@@ -69,7 +72,7 @@ completed episode / trajectory
   → close out the real outcome and prediction feedback   (close-episode)
   → archive Execution Evidence
   → form induction / revision candidates
-  → optional capability-evolution prediction             (predict-capability)
+  → MANDATORY capability-evolution prediction            (predict-capability)
   → accept / reject / defer explicitly                   (accept-/reject-capability)
   → real induction / revision                            (induce)
   → verification                                         (induce --verify)
@@ -83,22 +86,24 @@ Induction never runs automatically after an online action. A knowledge change is
 
 | Situation | Action |
 |---|---|
-| No `--world-model` configured | Run the core loop directly. World-model commands return an explicit `not_configured` — nothing silently degrades |
-| World model configured, any task | `recall` → `predict-outcome` the chosen candidate BEFORE executing → `bind-outcome` after. Every execution feeds calibration; an unbound prediction is discarded evidence |
-| World model configured, high-stakes decision (expensive run, tied candidates, unfamiliar cell) | `plan-next` compares candidates by PREDICTED consequences before choosing; bind the selected path's prediction rather than re-predicting the chosen candidate |
+| No `--world-model` configured | STOP. The world model is mandatory; `not_configured` blocks both the online loop and offline consolidation. Configure a provider before proceeding. |
+| Any task | `recall` → `predict-outcome` the chosen candidate BEFORE executing → `bind-outcome` after. MANDATORY: every executed action feeds calibration; an unbound prediction is discarded evidence |
+| OPTIONAL — high-stakes decision (expensive run, tied candidates, unfamiliar cell) | `plan-next` compares candidates by PREDICTED consequences before choosing; bind the selected path's prediction rather than re-predicting the chosen candidate. This, and only this, is skippable |
 | Facing an induction decision | `assess-induction` to evaluate the value BEFORE committing; then accept or reject explicitly |
 | No embedding backend configured | The text channel is off: `recall` returns `degraded` plus the structural channel alone |
 | Embedding configured, no index yet | `orx rebuild-index` once; `record` / `induce` / `retire` keep it current afterwards |
 | Simple problem, one independent constraint, no shared resources | CIR optional — state the skip decision explicitly |
 
-**Cost discipline**: every world-model call spends real tokens, charged to the decision action or the maintenance scope. `plan-next` and `assess-induction` are avoidable planning overhead — skip them when a plain `recall` already answers the question. `predict-outcome` / `bind-outcome` are not: they collect calibration data (one pair per executed action).
+**Cost discipline**: every world-model call spends real tokens, charged to the decision action or the maintenance scope. `plan-next` and `assess-induction` are avoidable planning overhead — skip them when a plain `recall` already answers the question. `predict-outcome` / `bind-outcome` (one pair per executed action) and `predict-capability` are MANDATORY: they are the only source of calibration evidence and are never skipped.
 
 ## Recognition table (what to do when you see this)
 
 | Situation | Action |
 |---|---|
 | Shared resources, cross-stage dependencies, or temporal propagation | Extract a CIR and submit it as `coupling` before choosing a strategy |
+| `profile` exits 2 with `error.kind: cir_format` | The CIR shape is wrong — read `error.hint` (it names the offending key) and resubmit. A malformed CIR is never silently read as an empty one |
 | `profile` returns non-empty `coupling.cir.issues` | Fix the CIR and re-run `profile` before writing solve.py |
+| `coupling.health.contributes_scalars` is false | The CIR parsed but derives no dimension (no decisions, or empty). The profile's coupling then comes from the spec or stays `null` — `health.note` says which |
 | `recall` or `orx context` reports `degraded` | Only the structural channel ran. No backend, no task text, a missing index and a backend failure are four DIFFERENT facts, and all four differ from "ran and matched nothing" — an empty `vector_recall` is never evidence that no similar memory exists |
 | A `vector_recall` hit is `different_cell` | Read its text and outcome for context; `profile_cell` shows which structure its numbers describe |
 | A knowledge hit has `reusable: false` | `reason` names the conflict, or `unknown` — a needed value is missing; measure it before applying |
@@ -124,8 +129,9 @@ Induction never runs automatically after an online action. A knowledge change is
 
 ## Verification (before every record)
 
-**CIR** (at `orx profile`, before choosing a strategy) — check `result.coupling.cir` and `modeling_guidance`:
+**CIR** (at `orx profile`, before choosing a strategy) — check `result.coupling.cir`, `coupling.health` and `modeling_guidance`:
 
+- `coupling.health.contributes_scalars` is true, or `health.note` explains why not — a CIR that parses to nothing derives no dimension, so the profile's coupling is NOT a structural measurement;
 - every resource, product, site, period or route in the task description appears as an entity or is reachable via a decision's indexes;
 - every `uses_resource` / `shares_resource` / `competes_for` relation connects a decision to a resource-like entity, not two decisions with no shared resource;
 - each detected coupling group matches a coupling pattern the task actually implies (e.g. "all modes use the same downstream capacity" → `shared_bottleneck` on that capacity);
