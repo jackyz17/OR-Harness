@@ -1,5 +1,5 @@
 ---
-name: or-harness
+name: or-harness-wm
 description: >
   Formulate, solve, retry, decompose, validate and debug large-scale industrial
   optimization problems (LP, MILP, scheduling, routing, assignment, network
