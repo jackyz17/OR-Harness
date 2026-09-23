@@ -37,7 +37,6 @@ from or_harness.core.schema import (
     GROUPING_FEATURES,
     CostVector,
     ExecutionRecord,
-    Strategy,
     bin_label,
     group_key,
 )
@@ -75,7 +74,6 @@ class InductionHint:
 
 
 def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
-                   catalog: Dict[str, Strategy],
                    entries_expected: Optional[Dict[str, Dict[str, float]]] = None,
                    prior_failures: Optional[List[ExecutionRecord]] = None
                    ) -> List[InductionHint]:

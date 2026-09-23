@@ -134,7 +134,7 @@ class TestSelectionValidity(HarnessTestCase):
                 cost_measured=("solver_runtime_s", "latency_s")))
         recs = self.h.selector.recall(self.make_profile(problem_id="q"),
                                       top=10, memory_mode="cost-aware")
-        by_id = {r.strategy.strategy_id: r for r in recs}
+        by_id = {r.strategy_id: r for r in recs}
         s06 = by_id["S06"]
         # Unknown tokens are not compared — and not scored as cheap.
         self.assertNotIn("llm_tokens", s06.cost_known_dims)
@@ -142,8 +142,8 @@ class TestSelectionValidity(HarnessTestCase):
         self.assertEqual(s06.expected_cost.llm_tokens, 0.0)
         # Quality tied + solver runtime tied -> S01 lexicographically first;
         # S06 must NOT outrank S01 on the placeholder-zero token cost.
-        ordered = [r.strategy.strategy_id for r in recs
-                   if r.strategy.strategy_id in ("S01", "S06")]
+        ordered = [r.strategy_id for r in recs
+                   if r.strategy_id in ("S01", "S06")]
         self.assertLess(ordered.index("S01"), ordered.index("S06"))
 
     def test_no_common_dimension_declares_cost_not_comparable(self):
@@ -164,7 +164,7 @@ class TestSelectionValidity(HarnessTestCase):
                 cost_measured=("solver_runtime_s",)))
         recs = self.h.selector.recall(self.make_profile(problem_id="q"),
                                       top=10, memory_mode="cost-aware")
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.cost_basis_dims, [])
         self.assertTrue(any("not comparable" in w for w in s01.risk_warnings))
 

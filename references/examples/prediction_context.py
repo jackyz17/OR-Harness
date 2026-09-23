@@ -247,6 +247,10 @@ def main() -> int:
     print("=" * 72)
     print("6. Degradation: no backend vs a healthy run that found nothing")
     print("=" * 72)
+    # The structural channel reports REAL memory, not a menu: give this cell
+    # something that was actually executed, otherwise there would be nothing
+    # for the non-degraded channel to return.
+    _solve(h, TASK)
     saved = {k: os.environ.pop(k, None) for k in
              ("OR_EMBEDDING_BACKEND", "OR_EMBEDDING_BASE_URL",
               "OR_EMBEDDING_MODEL", "OR_EMBEDDING_API_KEY")}
@@ -258,6 +262,8 @@ def main() -> int:
               f"{json.dumps(ctx_nb.degraded, sort_keys=True)}")
         print(f"structural status        : "
               f"{ctx_nb.retrieval.structural['status']}")
+        print(f"structural recs          : "
+              f"{[r['strategy_id'] for r in ctx_nb.retrieval.structural['recommendations']]}")
         assert ctx_nb.retrieval.channels_run == ["structural"]
         assert ctx_nb.retrieval.semantic["status"] == "degraded"
         assert "no embedding backend" in ctx_nb.retrieval.semantic["reason"]

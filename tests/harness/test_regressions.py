@@ -205,8 +205,7 @@ class TestTriggers(_Case):
         last = self.h.bank.get("ex_S02_1")
         expected = {e.strategy_id: {"quality": e.expected_quality_hat}
                     for e in self.h.sbank.matching(last.profile_snapshot)}
-        hints = [h for h in check_triggers(last, self.h.stats, self.h.catalog,
-                                           expected)
+        hints = [h for h in check_triggers(last, self.h.stats, expected)
                  if h.pattern == "strategy_contrast"]
         self.assertTrue(hints, "a 5x cost gap must still be reported")
         self.assertEqual(hints[0].evidence["kind"], "cost")
@@ -220,7 +219,7 @@ class TestTriggers(_Case):
                      gap=0.95)
         record = self.add("ex_near", "near", strategy_id="S01", rc=0.90,
                           gap=0.05)
-        hints = check_triggers(record, self.h.stats, self.h.catalog)
+        hints = check_triggers(record, self.h.stats)
         # strategy_contrast needs two eligible strategies IN THE CELL; S07's
         # evidence is in another cell, so no contrast may be claimed.
         self.assertNotIn("strategy_contrast", {h.pattern for h in hints})
@@ -234,7 +233,7 @@ class TestTriggers(_Case):
         for i in range(4):
             last = self.add(f"ex_ok{i}", f"ok{i}", gap=0.0)
         patterns = {h.pattern for h in
-                    check_triggers(last, self.h.stats, self.h.catalog)}
+                    check_triggers(last, self.h.stats)}
         self.assertNotIn("stable_success", patterns)
         self.assertNotIn("extreme_performance", patterns)
         self.assertNotIn("drift", patterns)

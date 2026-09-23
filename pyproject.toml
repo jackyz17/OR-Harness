@@ -41,4 +41,4 @@ orx = "or_harness.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-or_harness = ["py.typed", "strategy/catalog.json"]
+or_harness = ["py.typed"]

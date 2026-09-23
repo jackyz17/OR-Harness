@@ -1,12 +1,18 @@
 """Core data schemas for or_harness.
 
-Five schemas define the whole system:
+Four schemas define the whole system:
 
 - :class:`ProblemProfile`   — what the problem looks like (structure, coupling).
-- :class:`Strategy`         — a named solving strategy with applicability and priors.
 - :class:`CostVector`       — five-dimensional execution cost, never collapsed at rest.
 - :class:`ExecutionRecord`  — Execution Evidence storage unit: an append-only fact.
 - :class:`StrategicEntry`   — Strategic Knowledge storage unit: a calibrated commitment.
+
+There is deliberately NO ``Strategy`` schema. A strategy is an IDENTIFIER plus
+whatever the memory that mentions it happens to record; the framework keeps no
+built-in directory of methods, applicability conditions or fallback chains, so
+it has nothing to validate an outer agent's method name against. Content about
+a method lives on the evidence that used it (``ExecutionRecord``) or on the
+claim induced from it (``StrategicEntry``) — never in a schema of its own.
 
 Terminology discipline (do not blur):
   Execution Evidence Bank = episodic facts ("what actually happened"):
@@ -559,6 +565,292 @@ def pattern_hash(predicates: Dict[str, Any], strategy_id: str = "") -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+# ---------------------------------------------------------------------------
+# Task-result checks (a fact ABOUT an execution, not a rewrite of it)
+# ---------------------------------------------------------------------------
+
+#: The task-check verdicts, mirrored here so consumers never import the
+#: verification module (which owns the evaluation) just to compare a string.
+TASK_CHECK_STATES = ("passed", "failed", "insufficient")
+
+
+def task_check_state(record: Any) -> Optional[str]:
+    """The TASK-RESULT verdict attached to an execution, or None.
+
+    ``None`` means NO task check was ever run for this execution — a
+    different fact from ``insufficient`` (a check ran and could not decide),
+    and different again from ``passed``/``failed``. Consumers must keep them
+    apart: an unchecked execution keeps its historical behaviour (nothing
+    changes for every record recorded before this channel existed), while a
+    ``failed`` one is an answer CONFIRMED not to satisfy the task and must
+    stop counting as a success sample without leaving the evidence set.
+
+    Reads ``execution_features.task_check.state``; a malformed annotation
+    (missing/unknown state) is reported as ``None`` rather than guessed —
+    an unreadable verdict is an absent verdict.
+
+    Accepts an ``ExecutionRecord`` or its ``to_dict()`` payload.
+    """
+    if isinstance(record, dict):
+        features = record.get("execution_features") or {}
+    else:
+        features = getattr(record, "execution_features", None) or {}
+    block = features.get("task_check")
+    if not isinstance(block, dict):
+        return None
+    state = block.get("state")
+    return str(state) if state in TASK_CHECK_STATES else None
+
+
+def task_check_block(record: Any) -> Optional[Dict[str, Any]]:
+    """The full task-check annotation of an execution, or None.
+
+    The state alone is enough to gate a statistic; the full block is what a
+    reader needs to see WHY (diffs, scope, what was not checked)."""
+    if isinstance(record, dict):
+        features = record.get("execution_features") or {}
+    else:
+        features = getattr(record, "execution_features", None) or {}
+    block = features.get("task_check")
+    return dict(block) if isinstance(block, dict) else None
+
+
+def task_effective_quality(record: Any, observed: float) -> float:
+    """The quality an execution may contribute, given its task check.
+
+    The ONE rule every quality consumer shares, so recall, statistics, the
+    world-model feedback and the calibration summary cannot disagree:
+
+    - ``failed`` → ``0.0``: the answer was checked and does NOT satisfy the
+      task, so it is a zero-quality observation however optimal the solver's
+      own model was. It stays in the evidence set (the cost is real, the
+      failure is raw material) — it just cannot be a success sample.
+    - ``passed`` / ``insufficient`` / ``None`` → the observed value
+      unchanged. A check that could not decide is NOT evidence of failure,
+      and an unchecked execution is not retroactively demoted.
+    """
+    return 0.0 if task_check_state(record) == "failed" else observed
+
+
+# ---------------------------------------------------------------------------
+# Relation claims (structured strategic claims on an entry)
+# ---------------------------------------------------------------------------
+
+#: Distinct tasks a relation needs before it may be published as knowledge.
+#: A single-task repair is a verified FACT about that task; transferring it
+#: to future tasks is a knowledge claim and needs independent evidence.
+RELATION_MIN_TASKS = 2
+
+
+def empty_relation_verification() -> Dict[str, Any]:
+    """The honest default verification block of a relation nobody checked."""
+    return {
+        "state": "unverified",
+        "purpose": None,
+        "claim": None,
+        "assertions": [],
+        "checks": [],
+        "evidence": [],
+        "conclusion": None,
+        "scope": {},
+        "verified_at": None,
+        "stale_after_revision": False,
+        "stale_reason": None,
+    }
+
+
+def _relation_verification_block(raw: Any) -> Dict[str, Any]:
+    """Normalize a relation's verification block.
+
+    Same discipline as the entry verification block: ``state`` is
+    load-bearing, everything else is the audit trail. ``scope`` records the
+    executions/assertions the verdict actually covered."""
+    data = dict(raw) if isinstance(raw, dict) else {}
+    state = str(data.get("state", "unverified"))
+    if state not in VERIFICATION_STATES:
+        state = "unverified"
+    return {
+        "state": state,
+        "purpose": data.get("purpose"),
+        "claim": data.get("claim"),
+        "assertions": copy_any_list(data.get("assertions")),
+        "checks": copy_any_list(data.get("checks")),
+        "evidence": copy_any_list(data.get("evidence")),
+        "conclusion": data.get("conclusion"),
+        "scope": dict(data.get("scope") or {}),
+        "verified_at": data.get("verified_at"),
+        "stale_after_revision": bool(data.get("stale_after_revision", False)),
+        "stale_reason": data.get("stale_reason"),
+    }
+
+
+def copy_any_list(raw: Any) -> List[Any]:
+    """A defensive shallow-ish copy of a JSON list payload."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out: List[Any] = []
+    for item in raw:
+        if isinstance(item, dict):
+            out.append(dict(item))
+        elif isinstance(item, (list, tuple)):
+            out.append(list(item))
+        else:
+            out.append(item)
+    return out
+
+
+def validate_relation(raw: Any) -> Dict[str, Any]:
+    """Normalize and validate ONE relation claim.
+
+    The minimal field constraint (an arbitrary JSON container is refused):
+    - ``claim``: non-empty statement of what is asserted;
+    - ``evidence``: at least one ``{"execution_id", "role"}`` entry — a
+      relation is always anchored to explicitly referenced evidence. The
+      role names the part that evidence plays in THIS claim (free string:
+      ``dropped``/``preserved``, ``before``/``after``, ``strategy_a``, ...);
+    - ``subject``: optional free-form subject for a claim that does not
+      belong to one strategy (e.g. ``principle:cross_period_state``).
+      It names the entry the relation is stored on when no strategy entry
+      applies;
+    - ``conditions``: optional predicates (+ optional note); when absent the
+      host entry's predicates apply;
+    - ``check``: optional declaration of what is computationally checkable
+      (assertions); a claim may legitimately have none yet.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("a relation must be a JSON object")
+    claim = str(raw.get("claim") or "").strip()
+    if not claim:
+        raise ValueError("a relation requires a non-empty 'claim'")
+    evidence_raw = raw.get("evidence")
+    if not isinstance(evidence_raw, (list, tuple)) or not evidence_raw:
+        raise ValueError("a relation requires a non-empty 'evidence' list of "
+                         "{execution_id, role} references")
+    evidence: List[Dict[str, Any]] = []
+    for item in evidence_raw:
+        if not isinstance(item, dict):
+            raise ValueError("every relation evidence entry must be an object "
+                             "with 'execution_id' and 'role'")
+        execution_id = str(item.get("execution_id") or "").strip()
+        role = str(item.get("role") or "").strip()
+        if not execution_id:
+            raise ValueError("relation evidence entry is missing "
+                             "'execution_id'")
+        if not role:
+            raise ValueError(f"relation evidence entry {execution_id} is "
+                             "missing 'role' (the part this evidence plays "
+                             "in the claim)")
+        evidence.append({"execution_id": execution_id, "role": role})
+    conditions_raw = raw.get("conditions")
+    conditions: Dict[str, Any] = {}
+    if conditions_raw is not None:
+        if not isinstance(conditions_raw, dict):
+            raise ValueError("relation 'conditions' must be an object")
+        predicates = conditions_raw.get("predicates")
+        conditions = {
+            "predicates": (dict(predicates)
+                           if isinstance(predicates, dict) else {}),
+            "note": (str(conditions_raw["note"])
+                     if conditions_raw.get("note") else None),
+        }
+    check = raw.get("check")
+    kind = raw.get("kind") or raw.get("source")
+    if kind is not None:
+        kind = str(kind)
+    subject = (str(raw["subject"]).strip()
+               if str(raw.get("subject") or "").strip() else None)
+    # Identity: an explicit ``relation_id`` wins; otherwise the id is DERIVED
+    # from (subject, kind) so re-submitting the same claim REVISES it rather
+    # than appending a duplicate. A changed claim under the same identity is
+    # what "the claim was revised" means, and the merge step is where the old
+    # verdict is invalidated. Keep several distinct relations under one
+    # subject by giving them distinct kinds (or explicit ids).
+    relation_id = str(raw.get("relation_id") or "").strip()
+    if not relation_id:
+        identity = json.dumps({"subject": subject, "kind": kind},
+                              sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        relation_id = f"rel_{digest}"
+    relation = {
+        "relation_id": relation_id,
+        "claim": claim,
+        "subject": subject,
+        "kind": kind,
+        "evidence": evidence,
+        "conditions": conditions,
+        "check": (dict(check) if isinstance(check, dict) else None),
+        "verification": _relation_verification_block(raw.get("verification")),
+    }
+    # DERIVED identity travels with the relation. The caller never submits
+    # these (they are read off the recorded facts), but a round-trip through
+    # storage MUST preserve them: dropping them here silently emptied the
+    # evidence identity a consumer needs to judge the claim.
+    for derived in ("tasks", "strategy_ids", "family", "cell"):
+        if derived in raw:
+            value = raw.get(derived)
+            if isinstance(value, (list, tuple)):
+                relation[derived] = [str(v) for v in value]
+            elif value is None:
+                relation[derived] = None
+            else:
+                relation[derived] = str(value)
+    return relation
+
+
+def relation_state(relation: Dict[str, Any]) -> str:
+    """The relation's admission state (``unverified`` when absent)."""
+    block = (relation or {}).get("verification") or {}
+    return str(block.get("state") or "unverified")
+
+
+def relation_is_published(relation: Dict[str, Any]) -> bool:
+    """Whether a relation may act as published strategic knowledge.
+
+    Two independent conditions, both about THIS relation:
+    - its own verdict is ``verified`` and not stale;
+    - its verification scope covers at least two distinct tasks. A
+      single-task repair is a verified FACT about that task; transferring it
+      to future tasks is a knowledge claim and needs independent evidence.
+
+    An ``unverified`` / ``insufficient_evidence`` / ``refuted`` relation is
+    held, not published — the same discipline the entry's own admission
+    applies to its statistical claim. Publication is per-relation: one
+    relation going stale never invalidates another."""
+    block = (relation or {}).get("verification") or {}
+    if block.get("stale_after_revision"):
+        return False
+    if block.get("state") != "verified":
+        return False
+    return len(relation_scope_tasks(relation)) >= RELATION_MIN_TASKS
+
+
+def published_relations(entry: "StrategicEntry") -> List[Dict[str, Any]]:
+    """The entry's relations that may be consumed as knowledge."""
+    return [r for r in (entry.relations or []) if relation_is_published(r)]
+
+
+def relation_scope_tasks(relation: Dict[str, Any]) -> Set[str]:
+    """The distinct tasks the relation's verification actually covered."""
+    scope = ((relation or {}).get("verification") or {}).get("scope") or {}
+    tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)}
+    if tasks:
+        return tasks
+    # A relation whose verdict has no scope block (legacy or hand-written)
+    # falls back to the evidence's own task list — the facts still name the
+    # tasks, so the gate stays decidable rather than defaulting to "pass".
+    return {str(t) for t in ((relation or {}).get("tasks") or []) if str(t)}
+
+
+def relation_knowledge_publishable(entry: "StrategicEntry") -> bool:
+    """Whether ANY of the entry's relation knowledge may be published.
+
+    Relation publication is decided per relation (see
+    :func:`relation_is_published`), independent of the entry's statistical
+    claim — so an entry whose statistics were never verified can still
+    publish the relations it holds."""
+    return bool(published_relations(entry))
+
+
 def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool:
     """True when the profile satisfies every predicate.
 
@@ -608,63 +900,6 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
         if not (o_lo <= i_lo and i_hi <= o_hi):
             return False
     return True
-
-
-# ---------------------------------------------------------------------------
-# Strategy
-# ---------------------------------------------------------------------------
-
-@dataclass
-class Strategy:
-    """A named solving strategy.
-
-    The catalog is a cold-start *vocabulary*: it carries structural knowledge
-    (applicability conditions, modeling actions, fallback chain, solver family)
-    but NO prior quality/cost/risk scores. Without accumulated experience the
-    selector honestly reports "no evidence" rather than fabricating priors.
-    """
-
-    strategy_id: str
-    name: str
-    description: str = ""
-    applicability: Dict[str, Any] = field(default_factory=dict)
-    actions: List[str] = field(default_factory=list)
-    fallback: Optional[str] = None
-    solver_family: Optional[str] = None
-    #: Strategy type (free-form: modeling/decomposition/solver_selection/
-    #: execution/recovery). Vocabulary-level tag; induction may inherit it
-    #: into ``StrategicEntry.strategy_type``.
-    strategy_type: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "strategy_id": self.strategy_id,
-            "name": self.name,
-            "description": self.description,
-            "applicability": self.applicability,
-            "actions": list(self.actions),
-            "fallback": self.fallback,
-            "solver_family": self.solver_family,
-            "strategy_type": self.strategy_type,
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Strategy":
-        if not isinstance(data, dict):
-            raise ValueError("Strategy must be a JSON object")
-        for key in ("strategy_id", "name"):
-            if not data.get(key):
-                raise ValueError(f"Strategy.{key} is required")
-        return cls(
-            strategy_id=str(data["strategy_id"]),
-            name=str(data["name"]),
-            description=str(data.get("description", "")),
-            applicability=dict(data.get("applicability") or {}),
-            actions=[str(a) for a in (data.get("actions") or [])],
-            fallback=data.get("fallback"),
-            solver_family=data.get("solver_family"),
-            strategy_type=data.get("strategy_type"),
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -998,10 +1233,26 @@ class StrategicEntry:
     with an interval, calibration tracking, and cross-group feature
     predicates.
 
-    ``strategy_type`` / ``actions`` / ``fallback_strategy_id`` inherit the
-    catalog vocabulary at induce time so the entry is self-contained (the
-    catalog may evolve after the entry was written). ``applicability`` holds
-    harness-written notes: free text, kept for the reader, never scored.
+    ``strategy_type`` / ``actions`` / ``fallback_strategy_id`` are free-form
+    fields the HARNESS (or a migration) may fill in. The framework fills in
+    none of them: there is no built-in directory of method vocabulary, and
+    inferring a method's type or actions from its id would be fabrication.
+    An empty field means the memory does not record it. ``applicability``
+    holds harness-written notes: free text, kept for the reader, never
+    scored.
+
+    ``relations`` holds STRUCTURED relation claims (see
+    :func:`validate_relation`): cross-task knowledge that is not a
+    restatement of one cell's statistics — a structural condition paired
+    with a strategy/modeling choice and its quality/cost/risk consequence.
+    Each relation carries its OWN verification block, independent of the
+    entry's own admission: a verified relation does NOT publish the entry's
+    statistical claim, and a stale/refuted relation does not invalidate
+    another relation. An entry may be created for a relation-only claim
+    (``strategy_id`` naming a free-form subject such as
+    ``principle:cross_period_state``) — such an entry carries no statistical
+    claim (``support_n = 0``) and is published iff it has at least one
+    published relation.
     """
 
     entry_id: str
@@ -1040,8 +1291,8 @@ class StrategicEntry:
     #: "solver_selection", "execution", "recovery"). No rigid taxonomy;
     #: multiple types coexist inside one Strategic Knowledge Bank.
     strategy_type: Optional[str] = None
-    #: Recommended actions/adaptations, inherited from the catalog
-    #: vocabulary at induce time (harness may override).
+    #: Recommended actions/adaptations — harness-supplied free text. The
+    #: framework never fills this in from a directory.
     actions: List[str] = field(default_factory=list)
     #: Admission verification (offline only). ``state`` gates publishing: a
     #: candidate with ``state != "verified"`` is not published as strategic
@@ -1049,7 +1300,21 @@ class StrategicEntry:
     #: the block is the audit trail: what claim was checked, which executions
     #: were used, what check was applied, and why that conclusion followed.
     #: Never a bare boolean — a claim is only ever backed by a readable check.
+    #: This block speaks ONLY about the entry's STATISTICAL claim; relation
+    #: claims carry their own ``verification`` inside ``relations``.
     verification: Dict[str, Any] = field(default_factory=dict)
+    #: Structured relation claims (see :func:`validate_relation`). Each has
+    #: its own verification; the entry-level block never covers them.
+    relations: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def is_relation_only(self) -> bool:
+        """True when the entry carries no statistical claim — a knowledge
+        entry created for a relation, whose ``strategy_id`` is a free-form
+        subject rather than a strategy id. Such an entry has no
+        quality/cost/failure statistics to publish, and its publication is
+        decided entirely by its relations."""
+        return bool(self.relations) and self.support_n == 0
 
     @property
     def is_published(self) -> bool:
@@ -1122,6 +1387,7 @@ class StrategicEntry:
             "actions": list(self.actions),
             "verification": (dict(self.verification)
                              if self.verification else None),
+            "relations": [dict(r) for r in (self.relations or [])],
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -1178,6 +1444,8 @@ class StrategicEntry:
             actions=[str(a) for a in (data.get("actions") or [])],
             verification=(_verification_block(data["verification"])
                           if data.get("verification") is not None else {}),
+            relations=[validate_relation(r)
+                       for r in (data.get("relations") or [])],
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )

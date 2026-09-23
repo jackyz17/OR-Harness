@@ -119,10 +119,12 @@ def _summarize_recall(result: Dict[str, Any]) -> str:
     recs = result["recommendations"]
     parts: List[str] = []
     if not recs:
-        parts.append("No applicable strategies.")
+        basis = result.get("recommendations_basis") or {}
+        parts.append("No memory for this problem. "
+                     + str(basis.get("reason") or ""))
     else:
         top = recs[0]
-        parts.append(f"Top candidate: {top['strategy_id']} ({top['name']}), "
+        parts.append(f"Top recalled strategy: {top['strategy_id']}, "
                      f"score {top['score']}, evidence={top['evidence']}, "
                      f"E[Q]={top['expected']['quality']}, "
                      f"P(fail)={top['expected']['failure_prob']}.")
@@ -346,6 +348,7 @@ def cmd_recall(args) -> int:
         task = _load_json_arg(args.task)
         result = h.recall(task, top=args.top,
                           exclude=args.exclude or [],
+                          candidates=args.candidate or None,
                           memory_mode=args.memory_mode,
                           include_unverified=args.include_unverified)
         return _emit(result, _summarize_recall(result))
@@ -480,6 +483,51 @@ def cmd_record(args) -> int:
         h.close()
 
 
+def cmd_check_task(args) -> int:
+    """Check whether an execution's ANSWER satisfies the original task.
+
+    The step between `execute` and `record`: the executor's own verdict says
+    the MODEL was solved (a legal status, a finite objective, a gap), never
+    that the answer is a valid answer to the TASK. A relaxed LP answered with
+    fractional values is `optimal` with `gap=0` and still wrong, and without
+    this call it would enter recall, the conditional statistics, the
+    world-model feedback and offline induction as a success sample.
+    """
+    h = _harness(args)
+    try:
+        check = _load_json_arg(args.check) if args.check else {}
+        if not isinstance(check, dict):
+            return _fail("--check must be a JSON object")
+        try:
+            result = h.check_task_result(args.execution_id, check,
+                                         episode_id=args.episode)
+        except ValueError as exc:
+            return _fail(str(exc))
+        report = result["report"]
+        state = report["state"]
+        if state == "passed":
+            summary = (f"Task check for {args.execution_id}: PASSED on "
+                       f"{', '.join(report['scope']['basis'])}. This covers "
+                       "the declared bases only — it is not a proof that the "
+                       "model represents the task. Unchecked: "
+                       + "; ".join(report["scope"]["unchecked"]) + ".")
+        elif state == "failed":
+            diffs = "; ".join(d["reason"] for d in report["diffs"][:3])
+            summary = (f"Task check for {args.execution_id}: FAILED. {diffs}. "
+                       "The attempt stays recorded with its real cost and "
+                       "can be cited as contrast evidence; it can no longer "
+                       "count as a success sample. Diagnose the cause "
+                       "yourself and re-solve in the same episode — never "
+                       "change the task to match a reference value.")
+        else:
+            summary = (f"Task check for {args.execution_id}: INSUFFICIENT — "
+                       f"the answer's validity is UNKNOWN, not confirmed. "
+                       f"{report['conclusion']}")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
 def cmd_amend_cost(args) -> int:
     """Backfill cost dimensions of an already-recorded execution.
 
@@ -539,19 +587,33 @@ def cmd_induce(args) -> int:
                 return _fail(f"--verify must be JSON: {exc}", 2)
             if not isinstance(verify, dict):
                 return _fail("--verify must be a JSON object", 2)
+        relations = None
+        if getattr(args, "relation", None):
+            relations = []
+            for raw in args.relation:
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    return _fail(f"--relation must be JSON: {exc}", 2)
+                if not isinstance(parsed, dict):
+                    return _fail("--relation must be a JSON object", 2)
+                relations.append(parsed)
         result = h.induce(strategy_id=args.strategy, all_=args.all,
                           rebuild=args.rebuild, dry_run=args.dry_run,
                           force=args.force, notes=notes, verify=verify,
                           family=getattr(args, "family", None),
                           cell=getattr(args, "cell", None),
                           peer_strategy_ids=getattr(args, "peer_strategy", None),
-                          peer_cells=getattr(args, "peer_cell", None))
+                          peer_cells=getattr(args, "peer_cell", None),
+                          relations=relations)
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
 
 
 def _summarize_induce(result: Dict[str, Any], args) -> str:
+    if getattr(args, "relation", None):
+        return _summarize_relations(result)
     if args.rebuild:
         if result.get("dry_run") or "would_rebuild" in result:
             return (f"Rebuild plan: {result.get('would_rebuild', 0)} cells would "
@@ -599,6 +661,39 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
         parts.append(f"Induction action {action['action_id']} recorded in "
                      f"the maintenance scope (business result: "
                      f"{action.get('business_result', 'unknown')}).")
+    return " ".join(parts)
+
+
+def _summarize_relations(result: Dict[str, Any]) -> str:
+    """Summary for a relation submission (``induce --relation``)."""
+    parts: List[str] = []
+    saved = result.get("saved", 0)
+    published = result.get("published", 0)
+    if saved:
+        parts.append(f"Saved {saved} relation claim(s)")
+    if published:
+        parts.append(f"{published} published as knowledge (own verification + "
+                     ">=2 independent tasks)")
+    for item in result.get("relations") or []:
+        entry_id = item.get("created_entry") or item.get("saved")
+        if not entry_id:
+            if item.get("skipped"):
+                parts.append(f"Refused: {item['skipped']}")
+            continue
+        publication = item.get("publication") or {}
+        relation = item.get("relation") or {}
+        claim = str(relation.get("claim") or "")[:80]
+        state = publication.get("state", "unverified")
+        if publication.get("published"):
+            parts.append(f"Entry {entry_id}: {state} relation published — "
+                         f"{claim}")
+        else:
+            reasons = "; ".join(publication.get("reasons") or []) or \
+                "not yet publishable"
+            parts.append(f"Entry {entry_id}: relation saved as {state} but NOT "
+                         f"published ({reasons})")
+    if not parts:
+        parts.append("No relation was submitted.")
     return " ".join(parts)
 
 
@@ -955,6 +1050,19 @@ def cmd_close_episode(args) -> int:
             min_calibration_samples=args.min_samples
             if args.min_samples is not None else None)
         closeout = result["closeout"]
+        if closeout is None:
+            # The close-out was REFUSED (there is still a running action).
+            # `closeout` is None by contract in that case, so the pending
+            # state must be handled BEFORE anything reads its fields —
+            # reaching for `closeout['terminal_state']` crashed with a
+            # TypeError and reported "unexpected TypeError" instead of the
+            # actionable reason.
+            unfinished = result.get("unfinished_actions") or []
+            return _fail(
+                f"Episode {args.task}/{args.episode} is still OPEN: "
+                f"{len(unfinished)} action(s) are running "
+                f"({', '.join(unfinished)}). {result.get('note', '')}",
+                2)
         if result.get("already_closed"):
             return _emit(result,
                          f"Episode {args.task}/{args.episode} was already "
@@ -987,6 +1095,19 @@ def cmd_close_episode(args) -> int:
             parts.append("No calibration samples yet "
                          "(insufficient_evidence until closed episodes "
                          "accumulate).")
+        # The close-out ends the episode; it does NOT certify the answer.
+        # Reporting the task-check coverage here is what keeps those two
+        # facts apart in the caller's head.
+        checks = result.get("task_checks") or {}
+        if checks.get("n_executions"):
+            verdicts = checks.get("verdicts") or {}
+            rendered = ", ".join(f"{k}={v}"
+                                 for k, v in sorted(verdicts.items()))
+            parts.append(
+                f"Task-result checks: {rendered or 'none'} "
+                f"({checks.get('unchecked', 0)} of "
+                f"{checks['n_executions']} unchecked)."
+                + (" " + checks["note"] if checks.get("note") else ""))
         return _emit(result, " ".join(parts))
     finally:
         h.close()
@@ -1820,10 +1941,21 @@ def build_parser() -> argparse.ArgumentParser:
                         "policy checks")
     p.set_defaults(func=cmd_profile)
 
-    p = sub.add_parser("recall", help="recall accumulated experience for a task")
+    p = sub.add_parser("recall",
+                       help="recall REAL accumulated experience for a task "
+                            "(no built-in candidate menu: an empty result "
+                            "means memory holds nothing here)")
     p.add_argument("--task", required=True)
     p.add_argument("--top", type=int, default=3)
     p.add_argument("--exclude", nargs="*", default=[])
+    p.add_argument("--candidate", action="append", default=None,
+                   metavar="STRATEGY_ID",
+                   help="a method YOU are considering (repeatable). "
+                        "Restricts the result to these ids and reports the "
+                        "ones with no memory under "
+                        "`candidates_without_evidence`. The framework "
+                        "never invents evidence for them and never blocks "
+                        "their execution")
     p.add_argument("--memory-mode", default="cost-aware",
                    choices=["none", "cases", "strategic", "cost-aware"])
     p.add_argument("--include-unverified", action="store_true",
@@ -1883,6 +2015,35 @@ def build_parser() -> argparse.ArgumentParser:
                         "e.g. 'contrast'; when omitted, any mark already on "
                         "the record is preserved")
     p.set_defaults(func=cmd_record)
+
+    p = sub.add_parser(
+        "check-task",
+        help="check whether an execution's ANSWER satisfies the original "
+             "task (not merely that the solver solved its own model)",
+        epilog=("Run this between `execute` and `record` (or later, on an "
+                "already-recorded execution — a late correction is a real "
+                "event). The executor's verdict covers the solver's own "
+                "model; this covers the TASK. Declare only the bases that "
+                "apply: a check that cannot run reports `insufficient`, "
+                "which is neither a pass nor a failure. `failed` never "
+                "deletes the attempt — the cost is real and the failure is "
+                "raw material — it stops the answer from counting as a "
+                "success sample."))
+    p.add_argument("execution_id", metavar="EXECUTION_ID")
+    p.add_argument("--check", default=None, metavar="JSON",
+                   help=("the check basis, e.g. '{\"reference_objective\": "
+                         "10755, \"integer\": {\"variables\": [\"x1\", "
+                         "\"x2\"]}}'. Supported keys: reference_objective "
+                         "(+tolerance), reference_status, integer "
+                         "({variables?, tolerance?}), recompute_objective "
+                         "({coefficients, constant?, tolerance?}), "
+                         "semantic_probe ([{path, equals|min|max|in}]), "
+                         "intent (relaxation|intermediate). Omitted: the "
+                         "verdict is `insufficient` — never a default pass"))
+    p.add_argument("--episode", default=None,
+                   help="episode to scope the check to (defaults to the "
+                        "episode of the action that produced the execution)")
+    p.set_defaults(func=cmd_check_task)
 
     p = sub.add_parser(
         "amend-cost",
@@ -1958,6 +2119,22 @@ def build_parser() -> argparse.ArgumentParser:
                         "against (advantage_reversal: where does its "
                         "advantage weaken or flip). Same read-only contract "
                         "as --peer-strategy. Repeatable")
+    p.add_argument("--relation", action="append", default=None, metavar="JSON",
+                   help="submit a STRUCTURED relation claim (repeatable). "
+                        "{\"claim\": TEXT, \"evidence\": [{\"execution_id\": "
+                        "ID, \"role\": ROLE}, ...], \"subject\": NAME?, "
+                        "\"conditions\": {\"predicates\": {...}, \"note\": "
+                        "TEXT}?, \"check\": {\"assertions\": [...]}?, "
+                        "\"kind\": NAME?}. The role names the part each "
+                        "referenced execution plays in THIS claim "
+                        "(dropped/preserved, before/after, strategy_a, ...); "
+                        "tasks/family/strategy ids are DERIVED from the "
+                        "recorded facts. An optional free-form 'subject' "
+                        "(e.g. 'principle:cross_period_state') carries a "
+                        "claim that belongs to no strategy id. The "
+                        "relation is published on its OWN verification plus "
+                        ">=2 independent tasks — it never publishes the host "
+                        "entry's statistical claim")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
@@ -2253,8 +2430,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--episode", default=None)
     p.add_argument("--candidates", default=None,
                    help="JSON list of ActionSpec objects (literal or file); "
-                        "omitted = catalog vocabulary filtered by "
-                        "applicability and available solver families")
+                        "REQUIRED — the framework does not generate a "
+                        "candidate menu. Propose the methods you want "
+                        "compared; `recall` shows what memory already "
+                        "holds for this problem")
     p.add_argument("--horizon", type=int, default=1, choices=[1, 2])
     p.add_argument("--max-calls", type=int, default=6,
                    help="max world-model calls for the whole decision")

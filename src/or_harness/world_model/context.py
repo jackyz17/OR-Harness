@@ -799,6 +799,17 @@ def _structural_hits(recommendations: Sequence[Dict[str, Any]]
                                       rec.get("expected") or {}),
                                   "confidence": rec.get("confidence"),
                                   "basis": rec.get("basis"),
+                                  # The boundary text and the structured
+                                  # relation claims travel with the hit: a
+                                  # verified entry's conditions, edges and
+                                  # verification scope are part of what the
+                                  # knowledge SAYS, and dropping them here
+                                  # once made the structural channel carry
+                                  # less than the stats channel.
+                                  "risk_warnings": list(
+                                      rec.get("risk_warnings") or []),
+                                  "relations": copy.deepcopy(
+                                      rec.get("relations") or []),
                                   "reusable": True}))
         else:
             hits.append(_hit(

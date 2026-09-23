@@ -65,6 +65,8 @@ See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, a
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
 
+An entry may also carry **structured relation claims** (`induce --relation`): a structural condition paired with a modeling/solving choice and its consequence, anchored to explicitly referenced executions with roles. They are not a third memory — they live on the StrategicEntry, and each carries its **own** verification, independent of the entry's statistical admission: a verified relation does not publish the entry's statistics, and a stale or refuted relation does not invalidate another relation. A relation may also exist with no statistical claim at all (its `subject` names the principle). See [induction.md](induction.md#structured-relation-claims-induce---relation).
+
 Strict Evidence ↔ Knowledge linkage is an **induction-time** requirement **by target design**: evidence must support and validate a candidate before admission. This is a migration target — today entries are born `candidate` and forward prediction checks still run online; moving admission validation offline is the next Induction round's job. Once admitted (and also under the current regime), an entry's continued validity does NOT depend on preserving its original supporting evidence — compacting or deleting old evidence never invalidates an entry. New evidence accumulates normally and influences knowledge again at the **next induction cycle**.
 
 When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet. The snapshot is the PARSED CIR, never the caller's raw `coupling` payload: a payload of the wrong shape is rejected before the execution runs, so a record can never carry a structure that looks present while parsing to zero entities.
@@ -78,11 +80,28 @@ The task-text versions captured on the write paths (`task_texts`, keyed by `(tas
 - A legacy record whose text was never captured keeps `task_text_digest = None` and is simply not vector-indexed. It is labelled (counted under `vector_recall.unindexed`) and remains fully visible through the profile channel and `orx inspect --bank texts`, and the text is never reconstructed from a guess.
 - The index built from them (`{home}/index/*.embedding.json`) stores `{id, doc_digest, vector}` only — never a snapshot of the record. Recall re-reads the current record by id, so validity is always current and a changed document is detected by digest mismatch (reported as `stale`, excluded) rather than being served as a current similarity.
 
-## The catalog: structural vocabulary, not prior knowledge
+## No candidate menu: memory IS the candidate set
 
-The strategy catalog (S01–S10) is a **cold-start vocabulary**: it carries structural knowledge — applicability conditions (which coupling profiles a strategy suits), modeling actions, fallback chains, and solver-family hints — but **no prior quality/cost/risk scores**.
+There is **no built-in strategy directory**. Nothing in the codebase ships a list of method names, descriptions, applicability rules, action lists or fallback chains, and nothing loads one.
 
-Without accumulated experience, `recall` returns `evidence="no_memory"` with `score=-inf` and `confidence=0` rather than fabricated priors. Fabricated priors would prejudice the learning loop toward whatever numbers were guessed, instead of letting evidence accumulate from real executions. The catalog vocabulary is still useful at cold start — applicability filtering narrows the candidate menu — but the selection is your call, not a score ranking.
+A strategy is a **candidate** when, and only when, the memory really holds something about it in this structural cell:
+
+| Candidate because | Evidence kind |
+|---|---|
+| it was really executed and recorded here | `conditional_stats` (a recount) |
+| a claim about it here passed admission | `strategic_entry` (a commitment) |
+
+With nothing in either, `recall` returns an **empty list** plus `recommendations_basis.reason` saying so. It does not return a `no_memory` row at score `-inf`, a zero quality, or a zero risk — a fabricated row is indistinguishable downstream from a measured one, and the whole point of the memory layer is that a number means "this was observed".
+
+**The outer agent proposes the candidates.** You name the methods you are considering (`recall --candidate X --candidate Y`, `plan-next --candidates`, `predict --strategy X`, `execute --strategy X`). Supplying them to `recall` only *filters* the real memory: the ones with no memory come back under `candidates_without_evidence` rather than being given a score.
+
+**No directory membership is required anywhere.** `predict` and `execute` accept any method id. An unknown cost basis is reported as `source="unknown"` with `expected_cost=null` — never a default zero, and never a refusal. The checks that remain are about *legality and safety*, not identity: the strategy id must be non-empty, the solver must be named, `code_path` must live inside `workspace`, and the sandbox's timeout/rlimits/budget rules are unchanged.
+
+**Content comes from evidence, never from a directory.** A method's recorded type, actions and fallback live on the `StrategicEntry` that the harness wrote (or migrated); induction fills in **none** of them, because inferring a method's actions from its id would be fabrication. An entry with no recorded actions reports `[]` — "the memory does not record this", which is a fact, not a gap to paper over. Two different methods that happen to share an id are **not merged**: their entries are reported separately, each with its own content, and their executions stay separate samples.
+
+**Retrieval documents are composed from what already exists** — the entry's own applicability notes, its own relation claims, its own recorded actions, and a readable transcription of its predicates. A method's name and description are not evidence about what ran, so they are not part of the document either.
+
+**Historical ids stay readable.** Records and entries written under an earlier naming scheme (S01, S04, …) are ordinary strings to this build: they recall, predict, induce and inspect exactly as before. Nothing is rewritten and nothing is back-filled.
 
 ## CostVector: five dimensions, never folded at rest
 
@@ -126,6 +145,28 @@ Lossy compaction and the summary consumption contract are left to the Cost/Induc
 An induced entry is a prediction hypothesis. Two separate things must hold before it counts as published knowledge: its CLAIM must pass an admission check at induction time (`induce --verify` — a rule holding, a repair working, or a quality-preserving cost saving, judged by the framework from real executions), and its PREDICTIONS are then validated by *future* executions checking its interval — never by self-testing on the training data. This is why entries are born `candidate`, why intervals are floored by sample size (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions with ≥70% hit rate ON TOP of the passed admission check.
 
 The only text a model writes into the knowledge layer is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and sit outside scoring — a sentence cannot be verified, so it is not scored. (A configured world model may separately produce *predictions*, but those live in their own log and never enter an entry, a statistic, or a verdict; see [world_model_contract.md](world_model_contract.md).)
+
+### Three different questions, three different layers
+
+The framework keeps apart three things that are easy to conflate, and conflating them is how a wrong answer becomes training data:
+
+| Question | Layer | Who answers |
+|---|---|---|
+| Did the solver solve the MODEL it was given? | the execution's own `quality` | the executor (`status`, finite objective, gap) |
+| Is this a valid answer to the TASK? | `execution_features.task_check` | `orx check-task`, from the check bases YOU declare |
+| Does the strategic CLAIM hold? | the entry's `verification` | `induce --verify`, offline |
+
+A relaxed LP answered with fractional values passes the first (it is `optimal` with `gap=0`), fails the second (the units cannot be shipped), and says nothing about the third. **Solver optimality is a property of the model as written, not of the task**: a model with the wrong variable domain, the wrong objective or a missing constraint is optimally wrong. That is why a task-level verdict is a separate fact attached to the execution rather than an edit of its quality — the observation must survive so a correction can be judged against it.
+
+**A confirmed-wrong answer stays in the evidence set.** Its cost is real and its failure is raw material, so it is never deleted, excluded, or rewritten. What changes is that it may no longer count as a success sample: every quality consumer reads `0.0` for it, while its cost still counts in the task total. Three states, never merged:
+
+- `passed` — every DECLARED basis held. This covers the declared bases only: the model's fidelity to the task and any undeclared constraint remain UNCHECKED, and the report says so.
+- `failed` — a declared basis ran and did not hold.
+- `insufficient` — no basis declared, no solution vector recorded, a needed variable missing, or the execution produced no usable result. **Not a pass, not a failure.** An unchecked answer's validity is UNKNOWN, and the framework never demands a reference value to fill the gap.
+
+The framework does not parse natural-language constraints: a constraint is checkable only through a probe or a recomputation you declare. A matching objective never proves the model correct — which is why the old "no gold ⇒ matched" shortcut is gone: with nothing declared, the honest verdict is `insufficient`.
+
+**A task check passing is not a knowledge claim passing.** The admission gate (`induce --verify`) is untouched by this layer: an execution whose answer was validated still has to earn any entry's verification separately, and an entry's verification says nothing about a particular execution's answer.
 
 ## World-model outcome predictions: shadow hypotheses, never decisions
 

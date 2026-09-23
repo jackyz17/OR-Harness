@@ -25,11 +25,12 @@ from or_harness.core.schema import (
     compute_cost_feedback,
     group_key,
     profile_matches,
+    task_check_block,
+    task_check_state,
 )
 from or_harness.core.storage import StorageError, Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
 from or_harness.profiling.profiler import derivation_report, profile_task
-from or_harness.strategy.catalog import load_catalog
 from or_harness.strategy.embedding_index import (
     EmbeddingBackend,
     EmbeddingIndex,
@@ -158,7 +159,6 @@ class ORHarness:
                  alpha: float = 1.0, beta: float = 1.0, gamma: float = 1.0,
                  delta: float = 0.0,
                  cost_weights: Optional[Dict[str, float]] = None,
-                 catalog_path: Optional[str] = None,
                  executor: Optional[SafePythonExecutor] = None,
                  world_model: Optional[WorldModelProvider] = None,
                  embedding: Optional[EmbeddingBackend] = None,
@@ -171,8 +171,13 @@ class ORHarness:
         self.bank = ExperienceBank(self.store)
         self.sbank = StrategicBank(self.store)
         self.stats = ConditionalStats(self.bank)
-        self.catalog = load_catalog(catalog_path)
-        self.selector = Selector(self.catalog, self.sbank, self.stats,
+        # NO built-in strategy directory. The candidate set is derived from
+        # memory at recall time (real executions + real entries), and the
+        # outer agent proposes the candidates it wants compared. A built-in
+        # directory would be a second, fabricated source of candidates and of
+        # method content (names, descriptions, actions, fallbacks) that no
+        # execution ever observed.
+        self.selector = Selector(self.sbank, self.stats,
                                  alpha=alpha, beta=beta, gamma=gamma,
                                  cost_weights=cost_weights)
         self.executor = executor or SafePythonExecutor()
@@ -258,7 +263,7 @@ class ORHarness:
         # Index synchronization (writes) — deliberately separate from recall
         # (read-only). A failed sync is reported, never fatal.
         self.index_sync = IndexSynchronizer(self.bank, self.sbank,
-                                           self.catalog, self.store,
+                                           self.store,
                                            self.embedding_index)
         # Episode budget declarations (task_id/episode_id -> {dim: limit}).
         # Declarations PERSIST in the store's meta table (declare_budget);
@@ -375,8 +380,16 @@ class ORHarness:
 
     def _coverage_view(self, profile, knowledge: Dict[str, Any]) -> Dict[str, Any]:
         """Conditional capability evidence: cell statistics + layered
-        knowledge, with coverage gaps. NO composite capability score."""
+        knowledge, with coverage gaps. NO composite capability score.
+
+        ``strategies_without_evidence`` lists strategies that this family's
+        memory really contains but that have NO attempt-scope evidence in
+        THIS structural cell. It is derived from the evidence, not from a
+        directory: a strategy nobody ever ran in this family is not "missing
+        evidence", it is simply not part of the memory at all.
+        """
         cells = self.stats.for_profile(profile)
+        seen = self.stats.strategy_ids_in_family(profile.family)
         return {
             "cell_statistics": {sid: cell.to_dict() for sid, cell
                                 in cells.items()},
@@ -386,11 +399,13 @@ class ORHarness:
                 "unverified": knowledge["unverified"],
             },
             "coverage_gaps": {
-                "strategies_without_evidence": [
-                    sid for sid in self.catalog
-                    if sid not in cells or cells[sid].n == 0],
-                "note": "strategies with no attempt-scope evidence in this "
-                        "structural cell; no quality claim is made for them",
+                "strategies_without_evidence": sorted(
+                    sid for sid in seen
+                    if sid not in cells or cells[sid].n == 0),
+                "note": "strategies with recorded evidence elsewhere in this "
+                        "family but none in this structural cell; no quality "
+                        "claim is made for them. A strategy absent from this "
+                        "list was never tried in this family at all",
             },
         }
 
@@ -3275,55 +3290,30 @@ class ORHarness:
                          episode_id: Optional[str],
                          candidates: Optional[Sequence[ActionSpec]],
                          limit: int) -> List[ActionSpec]:
-        """Assemble the bounded root-candidate list.
+        """The bounded root-candidate list — supplied BY THE CALLER.
 
-        Sources (no new LLM agent, no retrieval system):
-        1. caller-supplied ActionSpecs (taken as-is, identity reconciled by
-           predict-time discipline);
-        2. otherwise the catalog vocabulary, filtered by applicability and
-           available solver families, turned into execute_strategy specs
-           whose params FREEZE the strategy description (meaning, actions,
-           fallback) the candidate stands for. With no memory this menu
-           carries NO fabricated performance claims — the prediction step
-           is where consequences come from."""
+        The framework does not generate candidates. There is no directory to
+        enumerate and no planner-side menu to fall back on: a candidate is a
+        method the outer agent decided to consider for THIS problem, and the
+        framework's job is to predict, execute and record it. An empty
+        ``candidates`` therefore yields an empty list, which the planning
+        entry points report as ``no_candidates`` with that reason.
+
+        Identity is reconciled here (task/episode) so the caller need not
+        repeat them, and the caller's objects are never mutated — the spec is
+        value-copied first.
+        """
         task_id = str(task.get("task_id", ""))
-        if candidates:
-            specs = []
-            for spec in list(candidates)[:limit]:
-                spec = ActionSpec.from_dict(spec.to_dict())  # value copy
-                if not spec.task_id:
-                    spec.task_id = task_id
-                if spec.episode_id is None:
-                    spec.episode_id = episode_id
-                specs.append(spec)
-            return specs
-        from or_harness.adapters.solver import available_families
-        profile = self.profile(task)
-        families = set(available_families())
+        if not candidates:
+            return []
         specs = []
-        for strategy in self.catalog.values():
-            if len(specs) >= limit:
-                break
-            if strategy.solver_family and families \
-                    and strategy.solver_family not in families:
-                continue  # tool capability filter
-            from or_harness.core.schema import profile_matches
-            if strategy.applicability and not profile_matches(
-                    profile, strategy.applicability):
-                continue
-            specs.append(ActionSpec(
-                action_type="execute_strategy",
-                task_id=task_id,
-                episode_id=episode_id,
-                strategy_id=strategy.strategy_id,
-                params={
-                    "strategy_name": strategy.name,
-                    "strategy_type": strategy.strategy_type,
-                    "actions": list(strategy.actions),
-                    "fallback_strategy_id": strategy.fallback,
-                    "solver_family": strategy.solver_family,
-                },
-            ))
+        for spec in list(candidates)[:limit]:
+            spec = ActionSpec.from_dict(spec.to_dict())  # value copy
+            if not spec.task_id:
+                spec.task_id = task_id
+            if spec.episode_id is None:
+                spec.episode_id = episode_id
+            specs.append(spec)
         return specs
 
     def plan_next(self, task: Dict[str, Any],
@@ -3470,10 +3460,12 @@ class ORHarness:
                  if s.action_type in PLANNABLE_ACTION_TYPES]
         if not specs:
             plan.status = "no_candidates"
-            reason = ("no plannable candidates: planning currently "
-                      f"supports {PLANNABLE_ACTION_TYPES} only, after "
-                      "applicability and tool-capability filtering. Fall "
-                      "back to `recall` for a memory-based ordering.")
+            reason = ("no plannable candidates were supplied: the framework "
+                      "does not generate a candidate menu — propose the "
+                      f"methods you want compared (planning supports "
+                      f"{PLANNABLE_ACTION_TYPES}). `recall` tells you what "
+                      "memory already holds for this problem; it is not a "
+                      "menu either.")
             if plan.truncation_reason:
                 reason = plan.truncation_reason + ". " + reason
             plan.truncation_reason = reason
@@ -3899,7 +3891,9 @@ class ORHarness:
                  if s.action_type == "execute_strategy"]
         if not specs:
             plan.status = "no_candidates"
-            reason = ("no execute_strategy candidates to compare under the "
+            reason = ("no execute_strategy candidates were supplied: the "
+                      "framework does not generate a candidate menu — "
+                      "propose the methods you want compared under the "
                       "strategy-outcome protocol")
             if plan.truncation_reason:
                 reason = plan.truncation_reason + ". " + reason
@@ -4672,35 +4666,59 @@ class ORHarness:
 
     def recall(self, task: Dict[str, Any], *, top: int = 3,
                exclude: Optional[Sequence[str]] = None,
+               candidates: Optional[Sequence[str]] = None,
                memory_mode: str = "cost-aware",
                include_unverified: bool = False,
                vector_top_k: Optional[int] = None) -> Dict[str, Any]:
         """Recall accumulated experience for this task.
 
-        TWO INDEPENDENT CHANNELS, never blended into one number:
+        TWO INDEPENDENT CHANNELS, never blended into one number, and never
+        one erased by the other:
 
         - ``recommendations`` / ``available_solver_families`` /
-          ``solver_advisories``: the structural channel, unchanged —
-          applicable candidates with their evidence-based scores.
+          ``solver_advisories``: the structural channel — the strategies this
+          cell has REAL memory about, with their evidence-based scores.
         - ``vector_recall``: the text-similarity channel (embedding), which
           surfaces memories whose TEXT is close regardless of structural
           cell. Its ``similarity`` is a discovery signal only; it is never a
           quality, cost, or risk estimate, and a cross-cell hit never enters
           the target cell's statistics.
 
+        **No candidate menu.** There is no built-in strategy directory to
+        fall back on: when memory holds nothing for this cell,
+        ``recommendations`` is EMPTY and ``recommendations_basis`` says so in
+        words. An empty structural channel does NOT suppress the text
+        channel — a semantic hit is still returned, and the two facts are
+        reported side by side.
+
+        ``candidates`` is the CALLER's proposal set (the methods the outer
+        agent is considering). Supplying it restricts ``recommendations`` to
+        those ids and reports the rest under
+        ``candidates_without_evidence`` — the framework never invents
+        evidence for them, never ranks them, and never blocks their
+        execution (``execute``/``predict_cost`` accept any id).
+
         When the text channel cannot run (no backend, no task text, missing
         or model-incompatible index, backend error) the structural result is
         returned BY ITSELF with ``degraded`` explaining why, rather than
-        silently looking like a text search that found nothing.
+        silently looking like a text search that found nothing. A retrieval
+        FAILURE and a retrieval that ran with NO HITS are different facts and
+        are labelled differently.
 
         READ-ONLY: the query text is embedded in memory and never written;
         no index item is created and no migration is triggered.
         """
         profile = self.profile(task)
+        proposed = (None if candidates is None
+                    else sorted({str(c) for c in candidates}))
         recs = self.selector.recall(profile, top=top, exclude=exclude,
+                                    candidates=proposed,
                                     memory_mode=memory_mode,
                                     include_unverified=include_unverified)
         solvers = available_families()
+        known = self.selector.candidate_ids(
+            profile, memory_mode=memory_mode,
+            include_unverified=include_unverified)
         result = {
             "profile": profile.to_dict(),
             # The task VERSION this result was produced for. Recorded so a
@@ -4710,9 +4728,25 @@ class ORHarness:
             # evidence (see world_model.context.retrieval_reuse_problems).
             "task_digest": task_text_digest(task),
             "recommendations": [r.to_dict() for r in recs],
+            "recommendations_basis": self._recall_basis(
+                recs, known, proposed, memory_mode),
             "available_solver_families": solvers,
             "solver_advisories": solver_advisories(self.bank),
+            # RELATION knowledge travels in its own section. The structural
+            # channel above is keyed on the strategy ids MEMORY holds, and
+            # its entry filter (`is_publishable`) speaks about the
+            # STATISTICAL claim. A relation claim is published on its own
+            # verdict, and a relation-only entry names a free-form subject
+            # rather than a strategy — neither would survive the
+            # recommendation filter. This section carries them with their
+            # verification state intact so a caller can gate on it.
+            "knowledge": self._relation_knowledge(profile,
+                                                  include_unverified),
         }
+        if proposed is not None:
+            result["candidates_proposed"] = list(proposed)
+            result["candidates_without_evidence"] = [
+                sid for sid in proposed if sid not in known]
         profiling = profile.annotations.get("profiling") or {}
         if profiling.get("coupling_warnings"):
             result["coupling_warnings"] = profiling["coupling_warnings"]
@@ -4729,6 +4763,130 @@ class ORHarness:
                                   "reason": str(exc)}
         return result
 
+    @staticmethod
+    def _recall_basis(recs: List[Any], known: List[str],
+                      proposed: Optional[List[str]],
+                      memory_mode: str) -> Dict[str, Any]:
+        """WHY ``recommendations`` holds what it holds (always present).
+
+        An empty list is a real answer that must be distinguishable from a
+        failure and from a filter the caller applied. The three cases named
+        here — no memory at all, memory outside the caller's proposal set,
+        and a memory-free mode — are the only reasons this build can produce
+        an empty structural channel.
+        """
+        evidence_by_kind = sorted({r.evidence for r in recs})
+        if memory_mode == "none":
+            reason = ("memory_mode='none': memory was deliberately not "
+                      "consulted, so nothing is recalled. This is a choice, "
+                      "not an absence of experience")
+        elif recs:
+            reason = ("recalled from real memory: "
+                      f"{len(recs)} strategy/strategies with "
+                      f"{'/'.join(evidence_by_kind)} evidence in this "
+                      "structural cell")
+        elif known:
+            reason = ("this cell HAS memory for "
+                      f"{len(known)} strategy/strategies "
+                      f"({', '.join(known)}), but none of them survived the "
+                      "filters you applied (exclude / candidates / top)")
+        else:
+            reason = ("NO MEMORY for this structural cell: nothing has been "
+                      "executed or induced here. The framework does not "
+                      "supply a candidate menu — propose the methods you "
+                      "want to try (see `orx execute` / `orx plan-next "
+                      "--candidates`), and they will be predicted, executed "
+                      "and recorded")
+        return {
+            "n_recommendations": len(recs),
+            "evidence_kinds": evidence_by_kind,
+            "memory_mode": memory_mode,
+            "candidates_with_memory": list(known),
+            "candidates_proposed": (None if proposed is None
+                                    else list(proposed)),
+            "reason": reason,
+        }
+
+    def _relation_knowledge(self, profile, include_unverified: bool
+                            ) -> List[Dict[str, Any]]:
+        """The structured relation claims applicable to this profile.
+
+        Read through ``verified_knowledge_view`` so the SAME layering rules
+        apply as everywhere else (an unpublished relation is never dressed up
+        as knowledge). Each item names the entry, the relation, and the
+        relation's own verification state — a consumer gates on the state, and
+        ``newer_evidence_since_verification`` reports how many matching
+        executions arrived AFTER the verdict so a frozen batch of evidence is
+        never mistaken for a standing guarantee about future tasks.
+        """
+        from or_harness.core.schema import (relation_is_published,
+                                            relation_state)
+        from or_harness.world_model.state import verified_knowledge_view
+        layers = verified_knowledge_view(profile, self.sbank)
+        out: List[Dict[str, Any]] = []
+        for layer in ("verified", "legacy_unknown", "unverified"):
+            if layer == "unverified" and not include_unverified:
+                continue
+            for ref in layers.get(layer) or []:
+                relations = ref.get("relations") or []
+                if not relations:
+                    continue
+                for relation in relations:
+                    published = relation_is_published(relation)
+                    if not published and not include_unverified:
+                        continue
+                    item = {
+                        "layer": layer,
+                        "entry_id": ref.get("entry_id"),
+                        "strategy_id": ref.get("strategy_id"),
+                        # Whether this entry is knowledge about a CONDITION
+                        # (no statistical claim) or a strategy's claim that
+                        # additionally carries a relation.
+                        "relation_only": bool(ref.get("support_n") == 0),
+                        "relation_id": relation.get("relation_id"),
+                        "claim": relation.get("claim"),
+                        "kind": relation.get("kind"),
+                        "conditions": copy.deepcopy(
+                            relation.get("conditions") or {}),
+                        "evidence": copy.deepcopy(
+                            relation.get("evidence") or []),
+                        "tasks": list(relation.get("tasks") or []),
+                        "verification_state": relation_state(relation),
+                        "verification_scope": copy.deepcopy(
+                            (relation.get("verification") or {}).get("scope")
+                            or {}),
+                        "published": published,
+                        "newer_evidence_since_verification":
+                            self._newer_evidence_count(relation),
+                    }
+                    out.append(item)
+        return out
+
+    def _newer_evidence_count(self, relation: Dict[str, Any]) -> Optional[int]:
+        """Matching executions recorded AFTER this relation's verdict.
+
+        A visibility annotation, never a lifecycle state: a frozen batch of
+        evidence remains a true historical fact, and this count simply tells
+        a reader that the world has moved on since the check ran.
+        """
+        block = (relation.get("verification") or {})
+        verified_at = block.get("verified_at")
+        if not verified_at:
+            return None
+        conditions = ((relation.get("conditions") or {}).get("predicates")
+                      or {})
+        count = 0
+        for record in self.bank.all():
+            if record.source != "executed":
+                continue
+            if record.created_at <= float(verified_at):
+                continue
+            if conditions and not profile_matches(record.profile_snapshot,
+                                                  conditions):
+                continue
+            count += 1
+        return count
+
     def predict_cost(self, task: Dict[str, Any], strategy_id: str
                      ) -> PredictionSnapshot:
         """Pre-execution cost expectation for (problem conditions, strategy).
@@ -4743,9 +4901,12 @@ class ORHarness:
         3. unknown (no usable evidence — never a default zero presented as
            cheap, and never a task-scope total re-labelled as an attempt
            prediction).
+
+        ``strategy_id`` is NOT checked against any directory: the outer
+        agent may name a method the framework has never heard of, and the
+        honest answer is rung 3 (``source="unknown"``), not a refusal. A
+        missing cost basis never blocks a legitimate execution.
         """
-        if strategy_id not in self.catalog:
-            raise ValueError(f"unknown strategy_id {strategy_id!r}")
         profile = self.profile(task)
         # Published knowledge only: a candidate whose admission verification
         # is missing a verdict must not act as a verified entry prediction
@@ -4896,9 +5057,17 @@ class ORHarness:
         task carries a CIR (``coupling`` field), a snapshot is preserved on
         the record so offline induction can re-bin this episode by structural
         context. The record makes no generalization claim.
+
+        ``strategy_id`` is whatever the outer agent actually did — it is not
+        validated against a directory (there is none). What IS still checked:
+        the strategy id must be non-empty, the solver must be named, and
+        ``code_path`` must live inside ``workspace`` (the executor's own
+        policy). Sandbox, timeout, rlimits and budget checks are unchanged.
         """
-        if strategy_id not in self.catalog:
-            raise ValueError(f"unknown strategy_id {strategy_id!r}")
+        if not str(strategy_id or "").strip():
+            raise ValueError(
+                "strategy_id is required: the record must name the method "
+                "that actually ran (there is no default strategy)")
         # Frozen pre-strategy signature: profile is derived from the task's
         # coupling (CIR) / spec / annotations / model fields ONLY — never
         # from solve.py.  The generated solve script is a post-strategy
@@ -4930,10 +5099,34 @@ class ORHarness:
         action = self.actions.begin_action(
             "execute_strategy", str(task["task_id"]), episode_id,
             pre_snapshot=pre, params=exec_params)
-        record = self.executor.execute(
-            Path(code_path), Path(workspace), solver=solver,
-            task_id=str(task["task_id"]), strategy_id=strategy_id,
-            profile=profile, verification_level=verification_level)
+        try:
+            record = self.executor.execute(
+                Path(code_path), Path(workspace), solver=solver,
+                task_id=str(task["task_id"]), strategy_id=strategy_id,
+                profile=profile, verification_level=verification_level)
+        except BaseException as exc:
+            # The PRE snapshot is already bound and the action is already
+            # persisted as ``running``. An exception between here and
+            # ``end_action`` (a solve script outside its workspace, a
+            # filesystem error, an interrupt) would leave that action
+            # running FOREVER — and a running action blocks episode
+            # close-out, so a single mistyped path could make the whole
+            # episode unclosable. End the action honestly instead: it
+            # really did fail, and the reason is recorded. The exception
+            # is re-raised unchanged (this is bookkeeping, not error
+            # swallowing).
+            try:
+                self.actions.end_action(
+                    action.action_id, status="failed",
+                    outcome={"error": f"{type(exc).__name__}: {exc}",
+                             "phase": "executor",
+                             "note": ("the execution raised before producing "
+                                      "a record: no execution fact exists "
+                                      "for this action, and its cost is "
+                                      "whatever was already amended onto it")})
+            except Exception:  # noqa: BLE001 - never mask the original error
+                pass
+            raise
         # Evidence completeness: preserve the coupling-aware representation
         # snapshot (CIR) that was actually solved. Snapshot only — CIR
         # extraction and coupling understanding are untouched. The PARSED
@@ -5097,10 +5290,8 @@ class ORHarness:
             self.bank.set_cost_feedback(record.execution_id, cost_feedback)
         expected_map = {e.strategy_id: {"quality": e.expected_quality_hat}
                         for e in self.sbank.matching(record.profile_snapshot)}
-        # expected_map already uses {sid: {"quality": q}} format, matching
-        # the new check_triggers signature.
         prior_failures = self._prior_failures(record)
-        hints = check_triggers(record, self.stats, self.catalog, expected_map,
+        hints = check_triggers(record, self.stats, expected_map,
                                prior_failures=prior_failures)
         unrecorded = [p.execution_id for p in
                       self.bank.pending(task_id=record.task_id)]
@@ -5140,7 +5331,9 @@ class ORHarness:
                family: Optional[str] = None,
                cell: Optional[str] = None,
                peer_strategy_ids: Optional[Sequence[str]] = None,
-               peer_cells: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+               peer_cells: Optional[Sequence[str]] = None,
+               relations: Optional[Sequence[Dict[str, Any]]] = None
+               ) -> Dict[str, Any]:
         """Consolidate Execution Evidence into Strategic Knowledge.
 
         Input = facts (ExecutionRecord rows, source="executed"); output =
@@ -5153,9 +5346,11 @@ class ORHarness:
         misses), dormancy wakeup — reported under ``revisions``. Cost feedback
         never alters entry state.
         Once an entry exists its validity does not depend on the survival of
-        the supporting evidence rows. New entries inherit the catalog
-        vocabulary's strategy_type/actions — extension points for future
-        induction — without ever overwriting harness-supplied values.
+        the supporting evidence rows. An entry's ``strategy_type`` /
+        ``actions`` / ``fallback_strategy_id`` are whatever the harness (or a
+        migration) put there — the framework fills in NONE of them, because a
+        built-in directory is not evidence about the method that actually
+        ran. Missing content stays missing and is visible as missing.
 
         Induction reads relations, not only one cell's means.
         ``peer_strategy_ids`` names OTHER strategies to compare against inside
@@ -5181,7 +5376,26 @@ class ORHarness:
         scheduling verdict). ``family`` selects one family's targets;
         ``cell`` selects one structural cell (family + coupling tokens) and
         implies its family. Both are applied to ``_induction_targets`` and
-        compose with ``strategy_id``."""
+        compose with ``strategy_id``.
+
+        ``relations`` submits STRUCTURED relation claims (see
+        :meth:`InductionEngine.submit_relation`). Each references real
+        executions with a role and declares what is checkable; the framework
+        derives the evidence identity, saves the relation and (with
+        ``verify``) computes its verdict. A relation does NOT require a
+        strategy id at all: its own optional ``subject`` names a free-form
+        subject (e.g. ``principle:cross_period_state``) so cross-task
+        knowledge that does not belong to one strategy still has a
+        create/save/verify/recall path. Submitting relations performs NO
+        statistical induction — pass ``strategy_id`` separately when a
+        statistical claim should also be refreshed.
+        """
+        if relations:
+            # Relations are a SEPARATE knowledge shape: they carry their own
+            # verification, do not require a strategy id, and must not be
+            # silently folded into a per-cell statistical induction.
+            return self._submit_relations(
+                relations, dry_run=dry_run, force=force, verify=verify)
         # The maintenance action begins BEFORE induction runs: the PRE
         # snapshot freezes the knowledge state as it was, so the recorded
         # transition shows what the induction actually changed. Dry-run
@@ -5194,8 +5408,6 @@ class ORHarness:
             if rebuild:
                 result = self.induction.rebuild(dry_run=dry_run)
                 if not dry_run:
-                    for entry_id in result.get("entry_ids", []):
-                        self._enrich_entry(entry_id)
                     result["revisions"] = self.induction.revise()
             else:
                 targets = self._induction_targets(strategy_id, all_,
@@ -5208,11 +5420,6 @@ class ORHarness:
                         execution_ids=execution_ids,
                         peer_evidence=self._peer_evidence(
                             profile, sid, peer_strategy_ids, peer_cells)))
-                if not dry_run:
-                    for r in results:
-                        entry_id = r.get("created") or r.get("updated")
-                        if entry_id:
-                            self._enrich_entry(entry_id)
                 result: Dict[str, Any] = {"results": results}
                 if targets:
                     # Offline revision of the entries this call covers:
@@ -5253,6 +5460,47 @@ class ORHarness:
                 result["knowledge_feedback_error"] = (
                     f"{type(exc).__name__}: {exc}")
         return result
+
+    def _submit_relations(self, relations: Sequence[Dict[str, Any]], *,
+                          dry_run: bool, force: bool,
+                          verify: Optional[Dict[str, Any]]
+                          ) -> Dict[str, Any]:
+        """Save (and optionally verify) structured relation claims.
+
+        A relation is knowledge about a STRUCTURAL CONDITION paired with a
+        choice and its consequence — it is not a restatement of one cell's
+        statistics, so it does not go through the statistical admission gate.
+        It carries its own verification, and its publication gate is the
+        cross-task independence requirement: a claim about future tasks needs
+        evidence from at least two distinct tasks. A single-task relation is
+        still SAVED (and may be verified as a fact about that task); it is
+        simply not published as transferable knowledge.
+
+        Nothing here is fabricated: the evidence identity (tasks, family,
+        cell, strategy ids) is derived from the recorded facts, and the
+        verification is computed by the framework from those facts.
+        """
+        results = []
+        created: List[str] = []
+        for raw in relations:
+            try:
+                outcome = self.induction.submit_relation(
+                    raw, dry_run=dry_run, force=force, verify=verify)
+            except ValueError as exc:
+                outcome = {"saved": None, "skipped": f"invalid relation: {exc}"}
+            results.append(outcome)
+            entry_id = outcome.get("created_entry") or outcome.get("saved")
+            if entry_id and not dry_run:
+                created.append(entry_id)
+        if not dry_run:
+            self.index_sync.sync_entries()
+        return {
+            "relations": results,
+            "saved": len([r for r in results
+                          if r.get("saved") or r.get("created_entry")]),
+            "published": len([r for r in results
+                              if (r.get("publication") or {}).get("published")]),
+        }
 
     def _begin_induce_action(self, strategy_id: Optional[str],
                              all_: bool, rebuild: bool) -> Dict[str, Any]:
@@ -5380,32 +5628,6 @@ class ORHarness:
                 # source of truth.
                 "knowledge_delta": outcome["knowledge_delta"],
                 "knowledge_after": outcome["knowledge_after"]}
-
-    def _enrich_entry(self, entry_id: str) -> None:
-        """Inherit catalog vocabulary (strategy_type, actions) into an entry.
-
-        Only fills EMPTY fields — never overwrites values the harness already
-        supplied. Keeps InductionEngine decoupled from the catalog while
-        letting new entries carry the vocabulary's structural knowledge.
-        """
-        entry = self.sbank.get(entry_id)
-        if entry is None:
-            return
-        strat = self.catalog.get(entry.strategy_id)
-        if strat is None:
-            return
-        changed = False
-        if not entry.strategy_type and strat.strategy_type:
-            entry.strategy_type = strat.strategy_type
-            changed = True
-        if not entry.actions and strat.actions:
-            entry.actions = list(strat.actions)
-            changed = True
-        if not entry.fallback_strategy_id and strat.fallback:
-            entry.fallback_strategy_id = strat.fallback
-            changed = True
-        if changed:
-            self.sbank.update(entry)
 
     def inspect(self, *, bank: str = "experience",
                 task_id: Optional[str] = None,
@@ -5809,3 +6031,223 @@ class ORHarness:
             seen.add(key)
             targets.append((rec.profile_snapshot, rec.strategy_id))
         return targets
+
+    # -- task-result checks (solver success vs. task correctness) ---------------
+
+    def check_task_result(self, execution_id: str,
+                          check: Optional[Dict[str, Any]] = None,
+                          *, episode_id: Optional[str] = None
+                          ) -> Dict[str, Any]:
+        """Check whether an execution's ANSWER satisfies the ORIGINAL task.
+
+        The step the framework was missing. ``orx execute`` answers "did the
+        solver solve the model it was given" (a legal status, a finite
+        objective, a gap). It cannot answer "is this a valid answer to the
+        task", and the difference is not academic: a relaxed LP answered with
+        fractional values reports ``optimal`` with ``gap=0`` and would
+        otherwise become a positive quality sample in recall, the conditional
+        statistics, the world-model feedback and offline induction.
+
+        ``check`` declares what the framework may verify (see
+        :func:`or_harness.strategy.verification.verify_task_result`):
+        ``reference_objective`` (+``tolerance``), ``reference_status``,
+        ``integer`` (``{"variables": [...] | omitted, "tolerance": t}``),
+        ``recompute_objective`` (``{"coefficients": {...}, "constant": k}``),
+        ``semantic_probe`` (``{"path", equals|min|max|in}``), and an optional
+        ``intent`` (``relaxation`` / ``intermediate``) marking an execution
+        whose answer is deliberately NOT the task's answer.
+
+        Three verdicts, and none of them is a default:
+
+        - ``passed`` — every DECLARED basis held on the recorded values. The
+          report still names what it did not check (the model's fidelity to
+          the task, undeclared constraints), so "passed" is never read as
+          "fully validated".
+        - ``failed`` — a declared basis ran and did not hold. The execution
+          is NOT demoted or rewritten: its observed quality and cost stand,
+          and it stays in the evidence set (the cost is real, the failure is
+          raw material). What changes is that it can no longer count as a
+          success sample (see :func:`or_harness.core.schema.task_check_state`).
+        - ``insufficient`` — no basis declared, no solution vector recorded, a
+          needed variable missing, or the execution produced no usable
+          result. NOT a pass, NOT a failure, and NEVER a request that the
+          user supply a reference.
+
+        Recording (the same two channels the rest of the harness uses):
+
+        1. a ``verify`` ACTION — the framework really performed this check, so
+           it is logged as an executed action (audit trail, per-call history);
+        2. ``execution_features.task_check`` on the execution — a narrow
+           annotation written through ``ExperienceBank.set_task_check``, which
+           works for staged (unrecorded) and recorded executions alike, so a
+           check may legitimately arrive AFTER the episode closed.
+
+        Also returned: the REFLECTION MATERIAL the outer agent needs to locate
+        the problem (task text + digest, the model/code hashes, prior attempts
+        in the same episode, the full report). Locating the cause is the
+        agent's job — the framework does not classify the failure as a
+        modeling mistake, does not rebuild the model, and never relaxes the
+        task to match a reference value.
+        """
+        from or_harness.strategy.verification import verify_task_result
+        record = self.bank.get(execution_id)
+        staged = False
+        if record is None:
+            record = self.bank.get_pending(execution_id)
+            staged = record is not None
+        if record is None:
+            raise ValueError(
+                f"unknown execution_id {execution_id!r}: neither a recorded "
+                "fact nor a staged execution")
+        task_id = str(record.task_id)
+        resolved_episode = episode_id
+        if resolved_episode is None:
+            action = self.actions.by_execution(execution_id)
+            resolved_episode = action.episode_id if action is not None else None
+        report = verify_task_result(record, check or {})
+        # The annotation travels with the verdict so a LATE correction is
+        # scoped: an evaluation of episode A is not invalidated by a failure
+        # in episode B of the same task.
+        report["task_id"] = task_id
+        report["episode_id"] = resolved_episode
+        report["staged"] = staged
+        # (1) The verify action — an executed action, because the framework
+        # really ran these checks on real values. Its PRE snapshot is taken
+        # from the task payload recovered for this episode (the same reader
+        # ``_recover_task_text`` uses), never from a fabricated one-field
+        # stub: the snapshot has to mean the same thing here as everywhere
+        # else, and a stub would produce a snapshot of a different problem.
+        task = self._task_payload_for(record, resolved_episode)
+        snap = self.snapshot(task, resolved_episode)
+        action = self.actions.begin_action(
+            "verify", task_id, resolved_episode, pre_snapshot=snap,
+            params={"execution_id": execution_id,
+                    "basis": list(report["scope"]["basis"]),
+                    "intent": report.get("intent")})
+        self.actions.end_action(
+            action.action_id, status="completed",
+            outcome={"state": report["state"],
+                     "execution_id": execution_id,
+                     "checks_run": [c.get("check") for c in report["checks"]],
+                     "n_diffs": len(report["diffs"]),
+                     "unchecked": list(report["scope"]["unchecked"])},
+            linked_execution_id=execution_id, rollup="own")
+        report["action_id"] = action.action_id
+        # (2) The fact annotation.
+        self.bank.set_task_check(execution_id, report)
+        result: Dict[str, Any] = {
+            "report": report,
+            "state": report["state"],
+            "execution_id": execution_id,
+            "action_id": action.action_id,
+            "staged": staged,
+        }
+        if report["state"] == "failed":
+            result["reflection_material"] = self._reflection_material(
+                record, report, resolved_episode)
+            result["next"] = (
+                "the answer does not satisfy the task. Diagnose WHY yourself "
+                "(task statement, model, implementation, or the reference "
+                "basis), state the basis for the change, and re-solve in the "
+                "same episode — do NOT alter the task to match the reference. "
+                "The failed attempt stays recorded with its real cost and can "
+                "be cited as contrast evidence")
+        elif report["state"] == "insufficient":
+            result["next"] = (
+                "the answer's validity is UNKNOWN, not confirmed: declare the "
+                "check basis that applies, or record the solution vector "
+                "(result.json `variables`) so a domain check can run. An "
+                "unchecked answer is not evidence that the task was solved")
+        return result
+
+    def _task_payload_for(self, record: ExecutionRecord,
+                          episode_id: Optional[str]) -> Dict[str, Any]:
+        """The task payload an action of this episode should snapshot.
+
+        Priority: (1) the most recent real belief snapshot of this
+        task/episode — it froze the task as it was; (2) the record's own
+        profile and the stored task text; (3) a minimal payload carrying the
+        identity, which is honest (``snapshot`` will report the coupling
+        dimensions as unknown rather than invent them).
+
+        This exists because a ``verify`` action needs a PRE snapshot and the
+        caller of a task check supplies only an execution id: fabricating a
+        two-field task stub would freeze a snapshot of a DIFFERENT problem.
+        """
+        best: Optional[BeliefSnapshot] = None
+        for snap in self.snapshots(task_id=record.task_id):
+            if snap.hypothetical:
+                continue
+            if episode_id is not None and snap.episode_id != episode_id:
+                continue
+            if best is None or (snap.created_at, snap.snapshot_id) > \
+                    (best.created_at, best.snapshot_id):
+                best = snap
+        if best is not None:
+            payload = (best.problem_state or {}).get("task_payload")
+            if isinstance(payload, dict) and payload.get("task_id"):
+                return dict(payload)
+        profile = record.profile_snapshot
+        task: Dict[str, Any] = {
+            "task_id": record.task_id,
+            "family": getattr(profile, "family", "") or "",
+        }
+        text = None
+        if record.task_text_digest:
+            text = self.store.get_task_text(record.task_id,
+                                            record.task_text_digest)
+        if text:
+            task["description"] = text
+        return task
+
+    def _reflection_material(self, record: ExecutionRecord,
+                             report: Dict[str, Any],
+                             episode_id: Optional[str]) -> Dict[str, Any]:
+        """What the outer agent needs to locate a task-check failure.
+
+        Deliberately MATERIAL, not a diagnosis: the framework supplies the
+        original task, the artifacts that were produced, the check report and
+        the earlier attempts of this episode. Deciding whether the problem is
+        the task's interpretation, the model, the implementation or the
+        reference basis is the agent's judgment — the framework does not
+        presume it is a modeling error and does not prescribe a rebuild.
+        """
+        from or_harness.world_model.state import task_text
+        text = None
+        if record.task_text_digest:
+            text = self.store.get_task_text(record.task_id,
+                                            record.task_text_digest)
+        if text is None:
+            text = task_text({"task_id": record.task_id})
+        prior: List[Dict[str, Any]] = []
+        for other in self.bank.query(task_id=record.task_id):
+            if other.execution_id == record.execution_id:
+                continue
+            prior.append({
+                "execution_id": other.execution_id,
+                "strategy_id": other.strategy_id,
+                "status": (other.quality or {}).get("status"),
+                "objective": (other.quality or {}).get("objective"),
+                "task_check": task_check_state(other),
+            })
+        return {
+            "task_id": record.task_id,
+            "episode_id": episode_id,
+            "task_text": text,
+            "task_text_digest": record.task_text_digest,
+            "strategy_id": record.strategy_id,
+            "solver": dict(record.solver),
+            "code_hash": (record.solver or {}).get("code_hash"),
+            "reported_quality": dict(record.quality or {}),
+            "solution_variables": (
+                record.execution_features.get("solution_variables")),
+            "check_report": report,
+            "prior_attempts": prior,
+            "guidance": (
+                "the framework did not classify this failure: read the task "
+                "text against the check report and decide whether the task "
+                "was misread, the model mis-specified, the implementation "
+                "wrong, or the reference basis itself wrong. State the basis "
+                "for whatever you change, and never change the task to match "
+                "a reference value"),
+        }

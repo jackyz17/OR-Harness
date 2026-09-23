@@ -639,10 +639,48 @@ class TestDocumentBuilders(HarnessTestCase):
 
     def test_entry_document_is_built_from_existing_fields(self):
         entry = _entry(applicability=["notes here"])
-        doc = document_entry(entry, None)
+        entry.actions = ["split along the resource axis"]
+        doc = document_entry(entry)
         self.assertIn("notes here", doc)
         self.assertIn("strategy S04", doc)
         self.assertIn("family routing", doc)
+        self.assertIn("split along the resource axis", doc)
+
+    def test_entry_document_carries_no_directory_content(self):
+        """The document is composed of text the ENTRY already has.
+
+        Nothing is pulled from a built-in directory: two entries that share a
+        strategy id but record different content produce different documents,
+        and an entry that records nothing produces a document without any
+        method description at all.
+        """
+        bare = _entry(entry_id="se_bare")
+        doc = document_entry(bare)
+        self.assertNotIn("monolithic", doc)
+        self.assertNotIn("MILP in one pass", doc)
+        # Same id, different recorded content -> different document.
+        other = _entry(entry_id="se_other", applicability=["a different note"])
+        self.assertNotEqual(document_digest(doc),
+                            document_digest(document_entry(other)))
+
+    def test_entry_document_carries_relation_claims(self):
+        """A relation's claim is part of what the knowledge says, so a text
+        search must be able to find it — and editing it must move the digest
+        (which is what invalidates the old vector)."""
+        entry = _entry()
+        entry.relations = [{
+            "relation_id": "rel_1",
+            "claim": "keep the cross-period state",
+            "evidence": [{"execution_id": "ex_1", "role": "preserved"}],
+            "verification": {"state": "verified"},
+        }]
+        doc = document_entry(entry)
+        self.assertIn("keep the cross-period state", doc)
+        edited = document_entry(entry)
+        self.assertEqual(document_digest(doc), document_digest(edited))
+        entry.relations[0]["claim"] = "a revised claim"
+        revised = document_entry(entry)
+        self.assertNotEqual(document_digest(doc), document_digest(revised))
 
     def test_readable_predicates_covers_the_unknown_bucket(self):
         text = readable_predicates({"family": "vrp", "route_complexity": "unknown",

@@ -1230,6 +1230,26 @@ class TestDocumentationMatchesCode(unittest.TestCase):
                          f"{completed.stderr}")
         self.assertIn("All assertions passed", completed.stdout)
 
+    def test_no_directory_example_passes(self):
+        """The empty-bank walkthrough must really run: it is the executable
+        statement that no built-in strategy directory exists."""
+        import subprocess
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                            "..", ".."))
+        script = os.path.join(root, "references", "examples",
+                              "no_catalog.py")
+        env = dict(os.environ, PYTHONPATH=os.path.join(root, "src"))
+        completed = subprocess.run(
+            [sys.executable, script], cwd=root, env=env,
+            capture_output=True, text=True)
+        self.assertEqual(completed.returncode, 0,
+                         f"documented example failed:\n{completed.stdout}\n"
+                         f"{completed.stderr}")
+        self.assertIn("All assertions passed", completed.stdout)
+        # The example's whole point: an empty bank, a method nobody listed.
+        self.assertIn("NO MEMORY", completed.stdout)
+        self.assertIn("custom:two-phase-milp", completed.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

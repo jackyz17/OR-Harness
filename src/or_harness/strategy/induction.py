@@ -47,16 +47,26 @@ from or_harness.core.schema import (
     GROUPING_FEATURES,
     PredictionTrack,
     ProblemProfile,
+    RELATION_MIN_TASKS as SCHEMA_RELATION_MIN_TASKS,
     StrategicEntry,
+    empty_relation_verification,
     empty_verification,
     evidence_predicates,
     group_key,
     min_interval_width,
     predicates_cover,
+    relation_is_published,
+    relation_scope_tasks,
+    relation_state,
+    validate_relation,
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
-from or_harness.strategy.verification import VERIFIED, verify_candidate
+from or_harness.strategy.verification import (
+    VERIFIED,
+    verify_candidate,
+    verify_relation,
+)
 
 #: v1 cost interval: multiplicative band around the point estimate. Actual
 #: cost within [0.5x, 2.0x] of the prediction counts as a hit.
@@ -67,6 +77,13 @@ COST_INTERVAL_BAND = (0.5, 2.0)
 UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
                    "strategic knowledge — recall falls back to conditional "
                    "statistics until an admission check passes")
+
+#: Distinct tasks a RELATION needs before it may be published as knowledge.
+#: A single-task repair is a verified FACT about that task; transferring it
+#: to future tasks is a knowledge claim and needs independent evidence.
+#: (The rule itself lives in ``core.schema.RELATION_MIN_TASKS`` — this alias
+#: keeps the induction module's public name stable.)
+RELATION_MIN_TASKS = SCHEMA_RELATION_MIN_TASKS
 
 
 class InductionEngine:
@@ -81,7 +98,8 @@ class InductionEngine:
                dry_run: bool = False, force: bool = False,
                verify: Optional[Dict[str, Any]] = None,
                execution_ids: Optional[Sequence[str]] = None,
-               peer_evidence: Optional[Dict[str, List[ExecutionRecord]]] = None
+               peer_evidence: Optional[Dict[str, List[ExecutionRecord]]] = None,
+               relations: Optional[Sequence[Dict[str, Any]]] = None
                ) -> Dict[str, Any]:
         """Create or refresh the entry for (strategy, evidence set).
 
@@ -324,6 +342,270 @@ class InductionEngine:
             # of having to infer it from an empty field.
             out["skipped"] = UNVERIFIED_NOTE
         return out
+
+    # -- relation claims -----------------------------------------------------------
+
+    def submit_relation(self, raw: Dict[str, Any], *,
+                        dry_run: bool = False, force: bool = False,
+                        verify: Optional[Dict[str, Any]] = None
+                        ) -> Dict[str, Any]:
+        """Create or refresh a STRUCTURED relation claim on an entry.
+
+        Two host shapes, ONE knowledge object:
+
+        - **strategy-anchored**: the evidence's own strategy (or the
+          relation's ``subject`` when it names an existing entry) resolves to
+          an entry, and the relation is appended to that entry's
+          ``relations``. Peer evidence never enters the host's statistics and
+          never satisfies its admission gate.
+        - **relation-only**: no host applies, so a knowledge entry is created
+          whose ``strategy_id`` is the relation's free-form ``subject`` (e.g.
+          ``principle:cross_period_state``) and which carries NO statistical
+          claim (``support_n = 0``). Its predicates come from the relation's
+          ``conditions``. Such an entry is published iff it holds at least one
+          published relation, so a claim that does not belong to a single
+          strategy still has a creation/save/verify/recall path.
+
+        The framework DERIVES everything the evidence implies (tasks, family,
+        measurement scope, strategy ids) — the caller submits only execution
+        ids and the role each plays. Verification reuses
+        :func:`verify_relation`; the cross-task independence requirement
+        (:data:`RELATION_MIN_TASKS`) is a PUBLICATION gate, not a save gate:
+        a single-task relation is saved and may be verified as a fact about
+        that task, but it is not published as transferable knowledge.
+        """
+        relation = validate_relation(raw)
+        subject = relation.get("subject")
+        # Resolve the referenced executions and derive the evidence identity.
+        resolved = self._resolve_relation_evidence(relation["evidence"])
+        if resolved.get("problem") is not None:
+            return {"saved": None, "skipped": resolved["problem"]}
+        records = resolved["records"]
+        relation["evidence"] = resolved["evidence"]
+        relation["strategy_ids"] = resolved["strategy_ids"]
+        relation["tasks"] = resolved["tasks"]
+        relation["family"] = resolved["family"]
+        relation["cell"] = resolved["cell"]
+        # Applicability: the relation's own conditions when declared,
+        # otherwise the evidence's own structural cell.
+        conditions = relation.get("conditions") or {}
+        predicates = dict(conditions.get("predicates") or {})
+        if not predicates:
+            predicates = evidence_predicates(
+                records, family=resolved["family"] or None)
+        # Verification (optional): the relation's OWN verdict.
+        if verify:
+            report = verify_relation(
+                str(verify.get("claim") or relation["claim"]),
+                evidence=verify.get("executions") or records,
+                roles=relation["evidence"],
+                assertions=(verify.get("check") or {}).get("assertions"))
+            relation["verification"] = report
+        else:
+            relation["verification"] = empty_relation_verification()
+        relation["verification"]["scope"] = dict(
+            relation["verification"].get("scope") or {})
+        relation["verification"]["scope"].setdefault(
+            "distinct_tasks", len(relation["tasks"]))
+
+        # -- locate or create the host entry ----------------------------------
+        effective_subject = subject
+        if not effective_subject and len(resolved["strategy_ids"]) == 1:
+            # Evidence from exactly one strategy: the knowledge entry is
+            # named after it, so the relation attaches to (or creates) that
+            # strategy's entry rather than an anonymous one.
+            effective_subject = resolved["strategy_ids"][0]
+        entry = self._relation_host(subject, predicates,
+                                    resolved["strategy_ids"])
+        if dry_run:
+            return {"saved": None,
+                    "would_" + ("update" if entry is not None else "create"):
+                        entry.entry_id if entry is not None else
+                        (effective_subject or "relation"),
+                    "relation": relation,
+                    "publication": self._relation_publication(relation)}
+        if entry is None:
+            entry = self._new_relation_entry(
+                effective_subject or "relation", predicates)
+            veto = self._relation_veto(entry, relation)
+            if veto is not None:
+                if not force:
+                    return {"saved": None, "vetoed": veto,
+                            "skipped": ("cold-archive veto (use --force to "
+                                        "override)")}
+                self.sbank.revive(veto["pattern_hash"], force=True)
+            entry.relations.append(relation)
+            self.sbank.add(entry)
+            return {"saved": entry.entry_id, "created_entry": entry.entry_id,
+                    "entry": entry.to_dict(), "relation": relation,
+                    "publication": self._relation_publication(relation)}
+        # Existing host: merge the relation (dedup by relation_id) and, on a
+        # SUBSTANTIVE change to an already-verified relation, mark it stale.
+        replaced = False
+        for index, current in enumerate(entry.relations):
+            if current.get("relation_id") != relation["relation_id"]:
+                continue
+            merged = self._merge_relation(current, relation,
+                                          fresh_verdict=bool(verify))
+            entry.relations[index] = merged
+            replaced = True
+            break
+        if not replaced:
+            entry.relations.append(relation)
+        self.sbank.update(entry)
+        return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
+                "relation": relation,
+                "publication": self._relation_publication(relation)}
+
+    def _resolve_relation_evidence(self, evidence: List[Dict[str, Any]]
+                                   ) -> Dict[str, Any]:
+        """Resolve execution ids to records and derive the evidence identity.
+
+        Nothing here is taken from the caller except the ids and roles: the
+        tasks, family, structural cell and strategy ids are read from the
+        recorded facts, so a caller cannot submit a second, contradictory
+        identity for the same evidence."""
+        bank = self.stats.bank
+        records: List[ExecutionRecord] = []
+        resolved: List[Dict[str, Any]] = []
+        for item in evidence:
+            record = bank.get(item["execution_id"])
+            if record is None:
+                return {"problem": (f"unknown execution {item['execution_id']!r}: "
+                                    "a relation may only reference recorded "
+                                    "facts")}
+            if record.source != "executed":
+                return {"problem": (f"execution {item['execution_id']!r} is "
+                                    f"{record.source!r}, not 'executed': only "
+                                    "real facts may support a relation")}
+            records.append(record)
+            resolved.append({
+                "execution_id": record.execution_id,
+                "role": item["role"],
+                "task_id": record.task_id,
+                "strategy_id": record.strategy_id,
+                "family": record.profile_snapshot.family,
+                "measurement_scope": record.measurement_scope,
+            })
+        tasks = sorted({r.task_id for r in records if r.task_id})
+        families = {r.profile_snapshot.family for r in records}
+        family = sorted(families)[0] if len(families) == 1 else None
+        cells = {group_key(r.profile_snapshot) for r in records}
+        cell = sorted(cells)[0] if len(cells) == 1 else None
+        strategy_ids = sorted({r.strategy_id for r in records})
+        return {"records": records, "evidence": resolved, "tasks": tasks,
+                "family": family, "cell": cell, "strategy_ids": strategy_ids,
+                "problem": None}
+
+    def _relation_host(self, subject: Optional[str],
+                       predicates: Dict[str, Any],
+                       strategy_ids: Sequence[str] = ()
+                       ) -> Optional[StrategicEntry]:
+        """The entry a relation should attach to, when one exists.
+
+        Resolution order: an entry under the relation's free-form subject;
+        otherwise the strategy entry of the evidence's own cell (so a
+        relation about S04's executions naturally attaches to S04's existing
+        claim rather than spawning a second entry for the same knowledge
+        object)."""
+        if subject:
+            for entry in self.sbank.list(strategy_id=subject,
+                                         include_dormant=True):
+                return entry
+            return None
+        for sid in strategy_ids or ():
+            found = self._find_existing(sid, predicates, include_dormant=True)
+            if found is not None:
+                return found
+        return None
+
+    def _new_relation_entry(self, subject: Optional[str],
+                            predicates: Dict[str, Any]) -> StrategicEntry:
+        """A knowledge entry for a relation with no strategy host."""
+        return StrategicEntry(
+            entry_id=StrategicEntry.new_id(),
+            strategy_id=str(subject or "relation"),
+            pattern={"predicates": dict(predicates)},
+            expected_quality_hat=0.0,
+            quality_interval=(0.0, 1.0),
+            expected_cost_hat=CostVector(measured=set()),
+            failure_prob=0.0,
+            support_n=0,
+            verification=empty_verification(),
+            relations=[],
+        )
+
+    def _relation_veto(self, entry: StrategicEntry,
+                       relation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        card = self.sbank.archive_vetoes(entry.strategy_id,
+                                         entry.predicates)
+        if card is None:
+            return None
+        return {"pattern_hash": card.pattern_hash, "reason": card.reason}
+
+    @staticmethod
+    def _merge_relation(current: Dict[str, Any],
+                        incoming: Dict[str, Any], *,
+                        fresh_verdict: bool) -> Dict[str, Any]:
+        """Refresh an existing relation in place, marking a stale verdict.
+
+        A SUBSTANTIVE change (claim text, conditions, evidence set, check)
+        invalidates the previous verdict: the old check no longer covers the
+        new claim. A pure re-submission with identical content is a no-op.
+
+        ``fresh_verdict`` says the caller supplied a NEW verification. That
+        verdict WINS outright — it was computed over the incoming evidence,
+        so the previous one is neither kept nor marked stale. Marking a
+        fresh verdict stale was the defect that made a re-verified (and
+        refuted) relation keep reading as its old published state."""
+        substantive_keys = ("claim", "conditions", "check")
+        substantive = any(current.get(k) != incoming.get(k)
+                          for k in substantive_keys)
+        current_evidence = [(e.get("execution_id"), e.get("role"))
+                            for e in current.get("evidence") or []]
+        incoming_evidence = [(e.get("execution_id"), e.get("role"))
+                             for e in incoming.get("evidence") or []]
+        if current_evidence != incoming_evidence:
+            substantive = True
+        merged = dict(incoming)
+        previous = dict(current.get("verification") or {})
+        if fresh_verdict:
+            # The incoming verdict already reflects the incoming evidence.
+            return merged
+        if substantive and previous.get("state") == "verified":
+            merged["verification"] = dict(previous)
+            merged["verification"]["stale_after_revision"] = True
+            merged["verification"]["stale_reason"] = (
+                "relation claim substantively revised (claim/conditions/"
+                "evidence/check) without a fresh verification; re-submit with "
+                "--verify to re-publish")
+        elif not substantive and previous.get("state") == "verified":
+            # Identical re-submission: keep the existing verdict.
+            merged["verification"] = previous
+        return merged
+
+    @staticmethod
+    def _relation_publication(relation: Dict[str, Any]) -> Dict[str, Any]:
+        """Why a relation is (or is not) publishable, from the ONE rule.
+
+        The decision itself lives in ``relation_is_published`` — this only
+        reports the reasons, so the gate cannot drift between the place that
+        decides and the place that explains."""
+        state = relation_state(relation)
+        scope_tasks = relation_scope_tasks(relation)
+        reasons: List[str] = []
+        if state != "verified":
+            reasons.append(f"verification state is {state!r}")
+        if len(scope_tasks) < RELATION_MIN_TASKS:
+            reasons.append(
+                f"verification covers {len(scope_tasks)} task(s); a "
+                f"transferable knowledge claim needs >= {RELATION_MIN_TASKS} "
+                "independent tasks (a single-task repair is a verified fact "
+                "about that task, not yet knowledge)")
+        return {"published": relation_is_published(relation), "state": state,
+                "distinct_tasks": len(scope_tasks),
+                "required_tasks": RELATION_MIN_TASKS,
+                "reasons": reasons}
 
     @staticmethod
     def _peer_relations(cell: GroupStats,

@@ -125,7 +125,7 @@ class TestIndependentEvidence(HarnessTestCase):
         self._record("lonely", [0.0, 0.0, 0.0])
         self.h.induce(strategy_id="S01")
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "conditional_stats")
         self.assertEqual(len(s01.evidence_refs), 3)
 

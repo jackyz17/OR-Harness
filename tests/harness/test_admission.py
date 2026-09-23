@@ -391,7 +391,7 @@ class TestPublishingGate(HarnessTestCase):
         self.assertEqual(entry.verification_state, "unverified")
         # Recall does not present it as strategic knowledge...
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "conditional_stats")
         # ...and it cannot drive a prediction either (the second door): the
         # snapshot falls back down the provenance ladder instead of quoting
@@ -412,7 +412,7 @@ class TestPublishingGate(HarnessTestCase):
         self.assertEqual(entry.verification_state, "verified")
         self.assertNotIn("skipped", result)
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
 
     def test_refuted_candidate_is_not_published(self):
@@ -426,7 +426,7 @@ class TestPublishingGate(HarnessTestCase):
         entry = self.h.sbank.get(result["created"])
         self.assertEqual(entry.verification_state, "refuted")
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "conditional_stats")
 
     def test_insufficient_evidence_does_not_masquerade_as_verified(self):
@@ -448,7 +448,7 @@ class TestPublishingGate(HarnessTestCase):
         entry_id = self.h.induce(strategy_id="S01")["results"][0]["created"]
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5,
                                       include_unverified=True)
-        s01 = next(r for r in recs if r.strategy.strategy_id == "S01")
+        s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
         self.assertIn(entry_id, s01.evidence_refs)
 
@@ -465,12 +465,19 @@ class TestPublishingGate(HarnessTestCase):
         self.h.induce(strategy_id="S01")
         self.assertEqual(self.h.sbank.get(entry_id).verification_state, "verified")
 
-    def test_no_verified_knowledge_still_offers_the_catalog(self):
-        """Gating publishing must not stop the harness from trying."""
+    def test_gating_publishing_does_not_block_execution(self):
+        """Gating publishing must not stop the harness from trying.
+
+        With no memory at all, recall reports NOTHING — and the harness can
+        still predict and execute the method it proposed, because neither
+        entry accepts a directory as a precondition.
+        """
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=3)
-        self.assertTrue(recs)
-        self.assertTrue(all(r.evidence in ("no_memory", "conditional_stats")
-                            for r in recs))
+        self.assertEqual(recs, [])
+        snapshot = self.h.predict_cost(
+            {"task_id": "q", "family": "routing"}, "custom:never-run")
+        self.assertEqual(snapshot.source, "unknown")
+        self.assertIsNone(snapshot.expected_cost)
 
 
 if __name__ == "__main__":

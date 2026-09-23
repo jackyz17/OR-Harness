@@ -20,6 +20,8 @@ from or_harness.core.schema import (
     GROUPING_FEATURES,
     bin_label,
     group_key,
+    task_check_state,
+    task_effective_quality,
 )
 from or_harness.strategy.experience_bank import ExperienceBank
 
@@ -39,14 +41,26 @@ def quality_score(record: ExecutionRecord) -> float:
 
     Infeasible = 0. Otherwise 1 - clamped gap. Gap semantics come from the
     execution verification layer; statistics never reinterpret them.
+
+    TASK-CHECK GATE: a solver that reports ``optimal`` with ``gap=0`` has
+    answered ITS OWN model, not necessarily the task — a relaxed LP with
+    fractional values is exactly that case. When a task-level check has
+    CONFIRMED the answer does not satisfy the task (``task_check.state ==
+    "failed"``), the quality this record may contribute is 0.0: it stays in
+    the cell (its cost is real, the failure is raw material for induction)
+    but it is never a success sample. ``insufficient`` and absent checks
+    change nothing — a check that could not decide is not evidence of
+    failure, and history is not retroactively demoted.
     """
     q = record.quality or {}
     if not q.get("feasible", False):
         return 0.0
     gap = q.get("gap")
     if gap is None:
-        return 1.0 if q.get("status") == "optimal" else 0.5
-    return max(0.0, min(1.0, 1.0 - float(gap)))
+        observed = 1.0 if q.get("status") == "optimal" else 0.5
+    else:
+        observed = max(0.0, min(1.0, 1.0 - float(gap)))
+    return task_effective_quality(record, observed)
 
 
 @dataclass
@@ -78,6 +92,13 @@ class GroupStats:
     #: pre-execution scale comparability checks (no thresholds — callers
     #: decide whether a target profile lies outside the sample coverage).
     scale_ranges: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    #: How many supporting records carry a task-result check, by verdict.
+    #: Reported so a reader can see the LIMIT of the cell's quality figure:
+    #: ``mean_quality`` over records whose answers were confirmed wrong is a
+    #: lower bound on the strategy's real quality, not a measurement of it.
+    #: Keys are the verdicts actually present (``passed`` / ``failed`` /
+    #: ``insufficient``); an empty dict means no record was ever checked.
+    task_checks: Dict[str, int] = field(default_factory=dict)
     fallback_triggered: int = 0
     execution_ids: List[str] = field(default_factory=list)
 
@@ -149,6 +170,7 @@ class GroupStats:
                              for d, (lo, hi) in self.scale_ranges.items()},
             "mean_retries": round(self.mean_retries, 4),
             "fallback_triggered": self.fallback_triggered,
+            "task_checks": dict(self.task_checks),
             "execution_ids": list(self.execution_ids),
         }
 
@@ -246,6 +268,17 @@ class ConditionalStats:
         return [r for r in self._family_records(profile)
                 if r.strategy_id == strategy_id
                 and group_key(r.profile_snapshot) == key]
+
+    def strategy_ids_in_family(self, family: str) -> List[str]:
+        """Every strategy this family's evidence base really contains.
+
+        The candidate vocabulary MEMORY holds — read off recorded facts,
+        never off a directory. It spans all cells of the family, so a caller
+        can tell "this strategy was tried in this family but not in this
+        structural cell" (a coverage gap) apart from "this strategy was never
+        tried here at all" (not part of the memory)."""
+        return sorted({r.strategy_id for r in self.bank.query(family=family)
+                       if self._is_attempt_evidence(r)})
 
     def cells_in_family(self, strategy_id: str,
                         family: str) -> Dict[str, GroupStats]:
@@ -351,6 +384,9 @@ class ConditionalStats:
             stats.quality_values.append(q)
             if rec.quality.get("feasible", False):
                 stats.n_feasible += 1
+            verdict = task_check_state(rec)
+            if verdict is not None:
+                stats.task_checks[verdict] = stats.task_checks.get(verdict, 0) + 1
             if rec.failures:
                 stats.n_failures += 1
                 if any(f.recovery_action for f in rec.failures):

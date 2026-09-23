@@ -63,6 +63,10 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import is_finite_number as _finite
+from or_harness.core.schema import (
+    task_check_state,
+    task_effective_quality,
+)
 
 #: Version of the close-out record schema.
 EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
@@ -379,14 +383,15 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             }
         else:
             observed: List[float] = []
+            task_check_gated = 0
             for record in records:
                 quality = record.quality or {}
                 gap = quality.get("gap")
                 status = quality.get("status")
                 if status == "optimal":
-                    observed.append(1.0)
+                    value = 1.0
                 elif gap is not None and _finite(gap):
-                    observed.append(max(0.0, 1.0 - float(gap)))
+                    value = max(0.0, 1.0 - float(gap))
                 elif quality.get("feasible"):
                     # A feasible solution with no gap/bound: the 0.5
                     # heuristic is NOT an observed quality truth.
@@ -396,6 +401,18 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                                   "gap/bound: the normalized quality is "
                                   "the 0.5 heuristic, not an observation",
                     }
+                    continue
+                else:
+                    continue
+                # TASK-CHECK GATE: an answer CONFIRMED not to satisfy the
+                # task is a zero-quality observation. The calibration
+                # channel compares the prediction against the TASK's real
+                # outcome, so a relaxed answer's solver-side optimum must
+                # not be scored as if the task had been solved.
+                effective = task_effective_quality(record, value)
+                if effective != value:
+                    task_check_gated += 1
+                observed.append(effective)
             if observed:
                 # Window rule (declared BEFORE evaluation): the LAST
                 # in-scope attempt's qualified solution is the window's
@@ -411,6 +428,13 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     "n_observations": len(observed),
                     "all_observations": [round(v, 6) for v in observed],
                 }
+                if task_check_gated:
+                    summary.benefit["task_check_gated"] = task_check_gated
+                    summary.benefit["task_check_note"] = (
+                        f"{task_check_gated} in-scope observation(s) were "
+                        "set to 0.0 because a task-level check confirmed "
+                        "the answer does not satisfy the task: the solver's "
+                        "own optimality is not the task's outcome")
                 if "benefit" not in summary.eligibility:
                     summary.eligibility["benefit"] = {
                         "eligibility": "evaluable",
@@ -724,6 +748,14 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                      "declared yardstick, restated — never re-chosen after "
                      "the result was seen"),
         }
+        # Carry the task-check gate through: a reader comparing "predicted
+        # 0.8, observed 0.0" must be able to see that the zero came from a
+        # CONFIRMED-wrong answer, not from a genuinely bad solve.
+        if summary.benefit.get("task_check_gated"):
+            evaluation.benefit["task_check_gated"] = \
+                summary.benefit["task_check_gated"]
+            evaluation.benefit["task_check_note"] = \
+                summary.benefit.get("task_check_note")
         n_compared += 1
 
     # -- cost -----------------------------------------------------------------
@@ -1049,7 +1081,46 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         "already_closed": False,
         "evaluations": [e.to_dict() for e in evaluations],
         "calibration_summary": summary_block,
+        "task_checks": _episode_task_check_summary(harness, task_id,
+                                                   episode_id),
     }
+
+
+def _episode_task_check_summary(harness, task_id: str,
+                                episode_id: Optional[str]
+                                ) -> Dict[str, Any]:
+    """How many of the episode's executions carry a task-result verdict.
+
+    Reported, never enforced: closing an episode whose answers were never
+    checked is legitimate (the check may not be runnable yet), but the
+    close-out must not let that read as "the answers were validated". A
+    ``close-out`` is the end of the episode, NOT a statement that the answer
+    was right.
+    """
+    counts: Dict[str, int] = {}
+    unchecked = 0
+    n = 0
+    for record in harness.bank.query(task_id=task_id):
+        n += 1
+        verdict = task_check_state(record)
+        if verdict is None:
+            unchecked += 1
+        else:
+            counts[verdict] = counts.get(verdict, 0) + 1
+    summary: Dict[str, Any] = {"n_executions": n, "verdicts": counts,
+                              "unchecked": unchecked}
+    if unchecked:
+        summary["note"] = (
+            f"{unchecked} of {n} execution(s) carry no task-result check: "
+            "their answers' validity is UNKNOWN (feasibility is the solver's "
+            "verdict on its own model, not on the task). The close-out ends "
+            "the episode; it does not certify the answer")
+    elif counts.get("failed"):
+        summary["note"] = (
+            f"{counts['failed']} execution(s) were confirmed NOT to satisfy "
+            "the task: they remain recorded evidence with real cost, but they "
+            "are not success samples")
+    return summary
 
 
 def _put_evaluation(store, evaluation: StrategyPredictionEvaluation
@@ -1147,10 +1218,25 @@ def build_calibration_summary(harness, *,
     evaluations = _iter_closed_evaluations(harness)
     groups: Dict[str, Dict[str, Any]] = {}
     exclusions: Dict[str, int] = {}
+    corrected: List[Dict[str, Any]] = []
     for evaluation in evaluations:
         if evaluation.state != "evaluated":
             state = evaluation.state or "other"
             exclusions[state] = exclusions.get(state, 0) + 1
+            continue
+        # LATE CORRECTION: a task-level check that arrived AFTER this
+        # evaluation was stored may have confirmed the answer does not
+        # satisfy the task. The STORED evaluation is never rewritten (it
+        # is the honest record of what was known then), but it must not
+        # keep counting as a calibration sample now that the validity
+        # judgment changed. It leaves the mean and is counted separately.
+        is_corrected, correction = _evaluation_validity_correction(
+            harness, evaluation)
+        if is_corrected:
+            exclusions["validity_corrected"] = exclusions.get(
+                "validity_corrected", 0) + 1
+            corrected.append({"evaluation_id": evaluation.evaluation_id,
+                              **correction})
             continue
         benefit = evaluation.benefit or {}
         metric = str(benefit.get("metric") or "(none)")
@@ -1249,6 +1335,7 @@ def build_calibration_summary(harness, *,
         "n_evaluated": sum(1 for e in evaluations
                            if e.state == "evaluated"),
         "exclusions": exclusions,
+        "validity_corrections": corrected,
         "groups": out_groups,
         "note": ("experience calibration of the strategy-outcome "
                  "prediction service, from CLOSED episodes only; grouped "
@@ -1257,8 +1344,65 @@ def build_calibration_summary(harness, *,
                  "separate from the legacy knowledge-prediction "
                  "reliability (a knowledge hit rate never proves OR "
                  "prediction accuracy), and never a model weight or a "
-                 "fitted calibrator"),
+                 "fitted calibrator. A sample whose answer was LATER "
+                 "confirmed not to satisfy the task is counted under "
+                 "exclusions.validity_corrected and leaves the means — the "
+                 "stored evaluation itself is never rewritten"),
     }
+
+
+def _evaluation_validity_correction(harness, evaluation
+                                   ) -> Tuple[bool, Dict[str, Any]]:
+    """Whether a stored evaluation was overtaken by a LATE task check.
+
+    Returns ``(is_corrected, detail)``. The evaluation is read-only here —
+    the framework never rewrites a stored evaluation, because it is the
+    honest record of what was known when the episode closed. What CAN change
+    is whether that sample may keep counting toward calibration: when a
+    task-level check performed AFTER the evaluation was stored confirmed the
+    answer does not satisfy the task, the sample's validity judgment is
+    superseded.
+
+    Both conditions are required, so a check that was already on record at
+    close-out (and therefore already influenced the evaluation) does not get
+    double-counted as a correction:
+
+    1. an in-scope execution of this evaluation carries a ``failed`` task
+       check now, and
+    2. that check was stored AFTER the evaluation was written.
+    """
+    task_id = str(evaluation.task_id or "")
+    if not task_id:
+        return False, {}
+    episode_id = evaluation.episode_id
+    for record in harness.bank.query(task_id=task_id):
+        if task_check_state(record) != "failed":
+            continue
+        block = record.execution_features.get("task_check") or {}
+        # Episode scoping when the annotation names one: a failure in a
+        # DIFFERENT episode of the same task is a different truth and must
+        # not invalidate this sample. An annotation with no episode is
+        # task-scoped and counts.
+        annotated_episode = block.get("episode_id")
+        if (episode_id is not None and annotated_episode is not None
+                and annotated_episode != episode_id):
+            continue
+        checked_at = block.get("checked_at")
+        if checked_at is None:
+            continue
+        if float(checked_at) <= float(evaluation.created_at):
+            continue  # the check was already known at close-out
+        return True, {
+            "execution_id": record.execution_id,
+            "task_id": task_id,
+            "checked_at": float(checked_at),
+            "evaluation_created_at": float(evaluation.created_at),
+            "reason": ("a task-result check stored after this evaluation "
+                       "confirmed the answer does not satisfy the task; the "
+                       "stored evaluation is kept as history but no longer "
+                       "counts as a calibration sample"),
+        }
+    return False, {}
 
 
 def calibration_summary_for_context(harness) -> Dict[str, Any]:

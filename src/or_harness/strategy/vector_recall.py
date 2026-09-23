@@ -44,6 +44,7 @@ from or_harness.core.schema import (
     UNKNOWN_BUCKET,
     ProblemProfile,
     group_key,
+    task_check_state,
 )
 from or_harness.strategy.embedding_index import (
     LAYER_EXECUTION,
@@ -175,6 +176,18 @@ def _execution_entry(harness, item: Dict[str, Any], score: float,
         "failures": len(record.failures),
         "status": record.quality.get("status"),
         "measurement_scope": record.measurement_scope,
+        # The TASK-level verdict travels with the hit. A hit whose answer was
+        # confirmed not to satisfy the task is still worth reading (its cost
+        # and failure are real) but its `observed_quality` must not be read
+        # as a quality the strategy achieved. `None` = never checked, which
+        # is NOT a pass.
+        "task_check": task_check_state(record),
+        "task_check_limitations": (
+            ["the answer was confirmed NOT to satisfy the task: the observed "
+             "quality is a solver-side figure, not a task result"]
+            if task_check_state(record) == "failed"
+            else (["the answer's validity is UNKNOWN: no task-level check has "
+                   "been run"] if task_check_state(record) is None else [])),
         "profile_cell": record_cell,
         "structural_match": structural,
     }
@@ -191,8 +204,7 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
         return None  # dormant entries are not consulted
     if not include_unverified and not is_publishable(entry):
         return None  # a candidate is not knowledge yet
-    strategy = harness.catalog.get(entry.strategy_id)
-    claim_text = document_entry(entry, strategy)
+    claim_text = document_entry(entry)
     if document_digest(claim_text) != item.get("doc_digest"):
         return None  # the claim text changed; the vector is stale
     structural, reusable, reason = classify_applicability(task_profile,

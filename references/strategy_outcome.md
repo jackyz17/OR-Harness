@@ -49,7 +49,7 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
   --candidate '{"action_type":"execute_strategy","strategy_id":"S02"}'
 ```
 
-**Candidates.** A candidate is a `CandidateRef` (or a legacy `ActionSpec`, whose execution params and budget hint are preserved verbatim and whose unmappable scopes are refused). A candidate may cover modelling / decomposition / solving / repair — it is not just one solver call. The service does NOT generate candidates (they come from you or the existing catalog/recall) and never generates solve.py.
+**Candidates.** A candidate is a `CandidateRef` (or a legacy `ActionSpec`, whose execution params and budget hint are preserved verbatim and whose unmappable scopes are refused). A candidate may cover modelling / decomposition / solving / repair — it is not just one solver call. The service does NOT generate candidates — they come from YOU (there is no built-in strategy directory to enumerate, and `recall` is a report on real memory rather than a menu) — and it never generates solve.py.
 
 **Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the choice and the execution binding, so a result is never bound to a configuration that was not the one predicted.
 

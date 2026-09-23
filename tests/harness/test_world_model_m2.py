@@ -110,8 +110,9 @@ class TestDefaultCompatibility(HarnessTestCase):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         task = _task()
+        # Empty memory: recall reports nothing rather than a menu.
         recs = h.recall(task)
-        self.assertTrue(recs["recommendations"])
+        self.assertEqual(recs["recommendations"], [])
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01"))
         result = h.record(self.make_record(task_id="t1", strategy_id="S01"))
         self.assertTrue(result["recorded"])
@@ -484,8 +485,13 @@ class TestShadowLoop(HarnessTestCase):
         identical to without one."""
         task = _task()
         h_plain = self._harness()
+        # Real evidence first: the comparison must be about a NON-EMPTY
+        # recall, otherwise it would pass trivially.
+        h_plain.bank.append(self.make_record(task_id="t1", strategy_id="S01"))
         recs_plain = h_plain.recall(task)
+        self.assertTrue(recs_plain["recommendations"])
         h_wm = self._harness(_ScriptedProvider(_GOOD_PAYLOAD))
+        h_wm.bank.append(self.make_record(task_id="t1", strategy_id="S01"))
         h_wm.predict_outcome(task, _spec(), "ep1")
         recs_wm = h_wm.recall(task)
         self.assertEqual(

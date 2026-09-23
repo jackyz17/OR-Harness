@@ -69,6 +69,26 @@ COUPLING_BY_FAMILY = {
                    "route_complexity": 0.4, "semantic_coupling": 0.7},
 }
 
+#: The SIMULATED HARNESS's own candidate set, per family — an explicit
+#: ablation fixture, not a framework directory. In a real run the outer agent
+#: names the methods it wants compared; here the runner plays that role and
+#: proposes exactly the strategies its hidden ground truth covers. The
+#: framework never sees this list except as the caller's proposal, and it
+#: never adds to it: a strategy the harness does not propose is not scored.
+CANDIDATES_BY_FAMILY: Dict[str, List[str]] = {
+    family: sorted(laws) for family, laws in GROUND_TRUTH.items()
+}
+
+#: The method the simulated harness falls back to when it consults NO memory
+#: (``memory_mode="none"``): its own declared default, chosen by the caller.
+#: This is the ``none`` arm of the ablation — it exists to show what a harness
+#: that ignores its memory does, and it is a fixture decision, not a
+#: framework-supplied recommendation.
+DEFAULT_STRATEGY_BY_FAMILY: Dict[str, str] = {
+    family: candidates[0]
+    for family, candidates in CANDIDATES_BY_FAMILY.items()
+}
+
 
 @dataclass
 class SyntheticTask:
@@ -163,9 +183,18 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                warmup: bool = True) -> RunMetrics:
     """Run one ablation mode over the task stream.
 
-    The simulated harness: recommends (in the ablation mode), executes the top
-    recommendation, records with llm_tokens backfilled from the cost law, and
-    induces every ``induce_every`` tasks (an explicit harness decision).
+    The simulated harness plays the OUTER AGENT's role: it proposes the
+    methods it is considering (``CANDIDATES_BY_FAMILY`` — its own declared
+    hypothesis set), asks the framework to recall what memory holds for them,
+    executes the best-scoring one, records with llm_tokens backfilled from the
+    cost law, and induces every ``induce_every`` tasks (an explicit harness
+    decision).
+
+    Under ``memory_mode="none"`` the harness consults no memory at all, so
+    recall returns nothing and it runs its OWN declared default
+    (``DEFAULT_STRATEGY_BY_FAMILY``). That is the point of the ``none`` arm:
+    it shows what an agent that ignores its memory does. It is not a
+    framework recommendation — the framework has no default to offer.
 
     ``warmup`` executes every (family, strategy) pair once BEFORE the measured
     stream, mirroring a harness's exploration phase. This aligns the evidence
@@ -184,10 +213,16 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
             _warmup(harness, workdir)
         for index, task in enumerate(tasks):
             task_json = task.to_task_json()
-            recs = harness.recall(task_json, top=1, memory_mode=mode)
-            if not recs["recommendations"]:
-                continue
-            strategy_id = recs["recommendations"][0]["strategy_id"]
+            proposed = CANDIDATES_BY_FAMILY[task.family]
+            recs = harness.recall(task_json, top=1, memory_mode=mode,
+                                  candidates=proposed)
+            if recs["recommendations"]:
+                strategy_id = recs["recommendations"][0]["strategy_id"]
+            else:
+                # No memory consulted (or nothing recalled for the proposed
+                # methods): the harness falls back to ITS OWN default. The
+                # framework supplies no menu here.
+                strategy_id = DEFAULT_STRATEGY_BY_FAMILY[task.family]
             law = _execution_law(task, strategy_id)
             script = workdir / f"solve_{task.task_id}.py"
             script.write_text(_solve_script(law["quality"], law["cost_scale"]),

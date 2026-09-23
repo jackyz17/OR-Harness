@@ -36,10 +36,9 @@ from or_harness.strategy.embedding_index import (
 class IndexSynchronizer:
     """Best-effort index maintenance for one harness instance."""
 
-    def __init__(self, bank, sbank, catalog, store, index):
+    def __init__(self, bank, sbank, store, index):
         self.bank = bank
         self.sbank = sbank
-        self.catalog = catalog
         self.store = store
         self.index = index
 
@@ -57,7 +56,7 @@ class IndexSynchronizer:
         return document_execution(record, text)
 
     def entry_document(self, entry) -> str:
-        return document_entry(entry, self.catalog.get(entry.strategy_id))
+        return document_entry(entry)
 
     # -- incremental syncs ----------------------------------------------------------
 

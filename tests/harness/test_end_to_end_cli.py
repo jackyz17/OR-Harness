@@ -59,16 +59,18 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["profile"]["source"], "harness_supplied")
         self.assertIn("summary", out)
 
-        # 2. recall (cold start -> no evidence)
+        # 2. recall (cold start -> NO memory: an empty result with a reason,
+        #    never a fabricated candidate menu)
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
-        recs = out["result"]["recommendations"]
-        self.assertTrue(recs)
-        self.assertEqual(recs[0]["evidence"], "no_memory")
+        self.assertEqual(out["result"]["recommendations"], [])
+        self.assertIn("NO MEMORY", out["result"]["recommendations_basis"]["reason"])
 
-        # 2b. predict (cold start -> unknown, never a default zero)
+        # 2b. predict (cold start -> unknown, never a default zero). The
+        #     method is one the framework has never seen: it is accepted and
+        #     reported as unknown rather than refused.
         proc = run_orx(self.home, "predict", "--task", str(self.task_path),
                        "--strategy", "S01")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -340,6 +342,132 @@ class TestEndToEndCLI(HarnessTestCase):
             run_orx(self.home, "record", "--execution", str(path))
         proc = run_orx(self.home, "induce", "--strategy", "S01")
         self.assertTrue(json.loads(proc.stdout)["result"]["results"][0]["created"])
+
+    def test_relation_claim_end_to_end(self):
+        """`induce --relation` across processes: a structured claim that does
+        not belong to a catalog strategy is saved, verified, published and
+        recalled — then refuted by a counterexample."""
+        # Two recorded facts on two tasks, with a quality difference.
+        def solve(objective):
+            return textwrap.dedent(f"""
+                import json
+                with open("result.json", "w") as fh:
+                    json.dump({{"status": "optimal",
+                               "objective_value": {objective},
+                               "objective_bound": 100.0,
+                               "runtime_seconds": 0.01}}, fh)
+            """)
+
+        before_path = self.work / "before.py"
+        before_path.write_text(solve(140.0), encoding="utf-8")
+        after_path = self.work / "after.py"
+        after_path.write_text(solve(100.0), encoding="utf-8")
+        exec_ids = {}
+        for label, code, task in (("before", before_path, self.task_path),
+                                  ("after", after_path, self.task2_path)):
+            proc = run_orx(self.home, "execute", "--task", str(task),
+                           "--strategy", "S01", "--code", str(code),
+                           "--workspace", str(self.work), "--solver", "highs")
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            execution = json.loads(proc.stdout)["result"]["execution"]
+            path = self.work / f"rel_{label}.json"
+            path.write_text(json.dumps(execution), encoding="utf-8")
+            run_orx(self.home, "record", "--execution", str(path))
+            exec_ids[label] = execution["execution_id"]
+
+        relation = {
+            "subject": "principle:repair_keeps_period_state",
+            "claim": "保留跨期状态的修复在两个任务上提升了质量",
+            "evidence": [{"execution_id": exec_ids["before"], "role": "before"},
+                         {"execution_id": exec_ids["after"], "role": "after"}],
+            "check": {"assertions": [
+                {"kind": "comparison", "metric": "quality",
+                 "roles_a": ["after"], "roles_b": ["before"],
+                 "direction": "higher", "min_gap": 0.2, "mode": "group"}]},
+        }
+        verify = {"purpose": "relation",
+                  "check": {"assertions": relation["check"]["assertions"]}}
+        proc = run_orx(self.home, "induce", "--relation", json.dumps(relation),
+                       "--verify", json.dumps(verify))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["result"]["saved"], 1)
+        # Two distinct tasks: the claim is published as knowledge.
+        self.assertEqual(out["result"]["published"], 1)
+        self.assertIn("published", out["summary"])
+
+        # Recall surfaces it with its own verification state.
+        proc = run_orx(self.home, "recall", "--task", str(self.task_path))
+        knowledge = json.loads(proc.stdout)["result"]["knowledge"]
+        self.assertTrue(knowledge)
+        self.assertEqual(knowledge[0]["verification_state"], "verified")
+        self.assertTrue(knowledge[0]["published"])
+        self.assertEqual(knowledge[0]["strategy_id"],
+                         "principle:repair_keeps_period_state")
+
+        # A counterexample (worse 'after') refutes the group comparison.
+        worse_path = self.work / "worse.py"
+        worse_path.write_text(solve(300.0), encoding="utf-8")
+        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+                       "--strategy", "S01", "--code", str(worse_path),
+                       "--workspace", str(self.work), "--solver", "highs")
+        execution = json.loads(proc.stdout)["result"]["execution"]
+        path = self.work / "rel_worse.json"
+        path.write_text(json.dumps(execution), encoding="utf-8")
+        run_orx(self.home, "record", "--execution", str(path))
+        relation["evidence"].append(
+            {"execution_id": execution["execution_id"], "role": "after"})
+        proc = run_orx(self.home, "induce", "--relation", json.dumps(relation),
+                       "--verify", json.dumps(verify))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["result"]["published"], 0)
+        self.assertIn("refuted", out["summary"])
+
+    def test_relation_single_task_is_saved_but_not_published(self):
+        """The cross-task gate reported through the CLI: a single-task fact
+        is saved and verified, but never published as transferable knowledge."""
+        def solve(objective):
+            return textwrap.dedent(f"""
+                import json
+                with open("result.json", "w") as fh:
+                    json.dump({{"status": "optimal",
+                               "objective_value": {objective},
+                               "objective_bound": 100.0,
+                               "runtime_seconds": 0.01}}, fh)
+            """)
+
+        exec_ids = []
+        for objective in (140.0, 100.0):
+            code = self.work / f"s_{objective}.py"
+            code.write_text(solve(objective), encoding="utf-8")
+            proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+                           "--strategy", "S01", "--code", str(code),
+                           "--workspace", str(self.work), "--solver", "highs")
+            execution = json.loads(proc.stdout)["result"]["execution"]
+            path = self.work / f"s_{execution['execution_id']}.json"
+            path.write_text(json.dumps(execution), encoding="utf-8")
+            run_orx(self.home, "record", "--execution", str(path))
+            exec_ids.append(execution["execution_id"])
+        relation = {
+            "subject": "principle:single_task",
+            "claim": "同一任务上的修复",
+            "evidence": [{"execution_id": exec_ids[0], "role": "before"},
+                         {"execution_id": exec_ids[1], "role": "after"}],
+            "check": {"assertions": [
+                {"kind": "comparison", "metric": "quality",
+                 "roles_a": ["after"], "roles_b": ["before"],
+                 "direction": "higher", "min_gap": 0.2, "mode": "paired"}]},
+        }
+        verify = {"purpose": "relation",
+                  "check": {"assertions": relation["check"]["assertions"]}}
+        proc = run_orx(self.home, "induce", "--relation", json.dumps(relation),
+                       "--verify", json.dumps(verify))
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertEqual(out["result"]["saved"], 1)
+        self.assertEqual(out["result"]["published"], 0)
+        self.assertIn("NOT published", out["summary"])
 
     def test_quality_misses_demote_at_next_induce(self):
         # Seed an entry, then record three executions far outside its interval.

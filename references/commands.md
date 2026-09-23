@@ -44,11 +44,30 @@ The `modeling_guidance` entries each carry `{type, members, resource, implicatio
 
 **Profile side** (`result.profile` + `result.derivation`): coupling derivation priority — CIR (task JSON `coupling` field, best — derived from its relations/indexes) > structured `spec` fields > your `annotations.coupling` supply. `semantic_coupling` is never derived. **The key is IDENTITY, frozen before the strategy**: the `model` field and a solve script are POST-strategy artifacts, so neither is ever a key source — the model is verified (L1+L2) and its own reading is reported as `derivation.model_coupling` (a diagnostic), so a divergence from the key is VISIBLE without being silently absorbed into it. The `derivation` report carries per-dimension value/origin/notes and `coupling_warnings` when a supplied value contradicts the structural derivation across a bin boundary. The retrieval signature and the modeling guidance come from the SAME structure, not two parallel lines.
 
-## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--memory-mode M] [--include-unverified]`
+## `orx recall --task t.json [--top 3] [--exclude S04 S06] [--candidate ID ...] [--memory-mode M] [--include-unverified]`
 
-Recalls accumulated experience through **two independent channels**. They answer different questions and are never blended into one number.
+Recalls accumulated experience through **two independent channels**. They answer different questions and are never blended into one number — and an empty result on one never erases the other.
 
-**Structural channel — "what may I REUSE?"** (`result.recommendations[]`). Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: **published** Strategic Knowledge entry → conditional statistics → **no evidence** (`evidence="no_memory"`, `score=-inf`, `confidence=0`). An entry that is not published (an unverified candidate, or one whose admission check was `refuted` / `insufficient_evidence`) is skipped, so recall falls back to the statistics — which is what "we have a candidate but no knowledge yet" should look like.
+**There is no candidate menu.** Nothing ships a list of method names, descriptions or applicability rules. A strategy appears in `recommendations` when the memory really holds something about it in this structural cell — a recorded execution (`conditional_stats`) or an admission-verified claim (`strategic_entry`). With nothing in either, `recommendations` is **empty** and `recommendations_basis.reason` says so; there is no `no_memory` row, no `-inf` score, no zero-quality placeholder.
+
+**Structural channel — "what may I REUSE?"** (`result.recommendations[]`). Score = `α·Q̂ − β·C_scalar − γ·R̂` (weights configurable via `--alpha/--beta/--gamma/--cost-weights`). Evidence precedence per strategy: **published** Strategic Knowledge entry → conditional statistics → *nothing* (the strategy is simply absent). An entry that is not published (an unverified candidate, or one whose admission check was `refuted` / `insufficient_evidence`) is skipped, so recall falls back to the statistics — which is what "we have a candidate but no knowledge yet" should look like. Every recommendation carries `strategy_id` and nothing else about the method's identity: no `name`, no `description`. What the backing entry itself records travels in `recommendation.knowledge` (`entry_id`, `strategy_type`, `actions`, `fallback_strategy_id`, `applicability`, `support_n`, `verification_state`) — empty lists mean the memory does not record it.
+
+`--candidate ID` (repeatable) is **your** proposal set: the methods you are considering. It restricts `recommendations` to those ids and reports the rest under `result.candidates_without_evidence`. It never creates evidence, never scores a memory-less strategy, and never blocks its execution.
+
+`result.recommendations_basis` is always present and names why the list holds what it holds — the three possible empty cases (no memory at all, memory filtered out by your `exclude`/`candidate`/`top`, or `--memory-mode none`) are distinguished in words:
+
+```jsonc
+"recommendations_basis": {
+  "n_recommendations": 0,
+  "evidence_kinds": [],
+  "memory_mode": "cost-aware",
+  "candidates_with_memory": [],          // ids this cell HAS memory for
+  "candidates_proposed": ["custom:x"],   // null when you proposed none
+  "reason": "NO MEMORY for this structural cell: ... propose the methods you want to try ..."
+}
+```
+
+**Relation channel — "what does the memory SAY about this condition?"** (`result.knowledge[]`). Structured relation claims whose conditions match this task, carried **separately** from `recommendations`. The separation is deliberate: `recommendations` is keyed on the strategy ids memory holds and filtered by `is_publishable`, which speaks about the **statistical** claim — so a verified relation whose host statistics were never verified would be filtered out, and a relation-only entry names no strategy id at all. Each item carries `relation_id`, `claim`, `kind`, `conditions`, `evidence`, `tasks`, `verification_state`, `verification_scope`, `published`, and `newer_evidence_since_verification` (matching executions recorded after the verdict — a visibility annotation, not a lifecycle state). Published relations may be used as strategic grounds; `unverified` / `refuted` / stale ones appear only with `--include-unverified`, clearly labelled, and are never dressed up as available knowledge.
 
 **Text channel — "what should I LOOK AT?"** (`result.vector_recall`). The task text is embedded and compared with every indexed memory, **with no structural pre-filter**, so a nearly identical problem from a different structural cell still surfaces. `similarity` is the raw text cosine: it is **never** a quality, cost, or risk estimate and never enters a score.
 
@@ -62,6 +81,8 @@ Recalls accumulated experience through **two independent channels**. They answer
     "task_text_digest": "…",
     "observed_quality": {...}, "observed_cost": {...},   // what ACTUALLY happened
     "failures": 2, "status": "feasible", "measurement_scope": "attempt",
+    "task_check": "passed|failed|insufficient|null",
+    "task_check_limitations": ["…present when the answer was NOT validated…"],
     "profile_cell": "family=vrp|rc[0.25,0.50]|...",
     "structural_match": "same_cell|different_cell|unknown"
   }],
@@ -81,7 +102,7 @@ Recalls accumulated experience through **two independent channels**. They answer
 }
 ```
 
-Field discipline: `observed_*` (what happened) and `expected_*` (what the knowledge claims) are separate fields — a promise is never read as a measurement. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the contradiction and `unknown` means a value needed to decide is missing. `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are filtered out **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled. `stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
+Field discipline: `observed_*` (what happened) and `expected_*` (what the knowledge claims) are separate fields — a promise is never read as a measurement. `task_check` carries the TASK-level verdict when one exists: `failed` means the answer was confirmed NOT to satisfy the task, so its `observed_quality` is a solver-side figure and must not be read as a quality the strategy achieved (`task_check_limitations` says so in words); `null` means **never checked** — which is not a pass. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the contradiction and `unknown` means a value needed to decide is missing. `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are filtered out **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled. `stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
 
 **Degradation is explicit.** When the text channel cannot run, `result.degraded = {"path": "profile_only", "reason": ...}` explains it, and the structural result is returned intact:
 
@@ -93,17 +114,19 @@ Field discipline: `observed_*` (what happened) and `expected_*` (what the knowle
 | Index built by a different embedding model | `embedding model changed (was X, now Y)` |
 | Embedding call failed | `embedding backend error: ...` |
 
+**“Could not look” is not “looked and found nothing”.** A `degraded` block means the channel never ran; a `vector_recall` block with empty hit lists means it ran and nothing matched. The two are reported separately so an empty structural channel plus a degraded text channel is never read as “no similar memory exists”.
+
 The retrieval document is built from `text`, `description`, `objective`, `requirements`, `business_rules`, `constraints` and `spec` (in that order), so a task that states its problem in a plain `text` field is indexed the same way as one using `description`. Only a task with NONE of these keys reports `no task text`.
 
 `vector_recall.unindexed` counts current memories with no vector — legacy records whose text was never captured, or a write whose index sync was deferred — and states where to find them (`orx inspect --bank experience|strategic`, `--bank texts`, and the profile channel).
 
 `--include-unverified` is the offline/inspection view: unpublished candidates appear in BOTH channels (the structural path returns them with a warning; the text path stops filtering by admission state).
 
-When no experience exists for any strategy, all candidates return with `evidence="no_memory"` — the catalog still provides the strategy vocabulary (applicability, actions, fallback, solver family) but makes no quality/cost/risk claims. Pick based on structural fit and your own judgment.
+When no experience exists for any strategy, `recommendations` is EMPTY and `recommendations_basis` says why. That is the normal cold-start state: propose the methods you want to try and they will be predicted, executed and recorded. `recall` is a memory report, not a menu — `predict`/`execute` accept any id you name.
 
-Result: `result.recommendations[]`, each `{strategy_id, name, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis, cost_known_dims, cost_basis_dims}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before). Note: when `evidence="conditional_stats"`, the `expected` fields report OBSERVED means (a recount from the Evidence Bank), not a knowledge commitment — no interval, no calibration track, no lifecycle.
+Result: `result.recommendations[]`, each `{strategy_id, score, expected{quality, cost, failure_prob}, evidence, evidence_refs, confidence, cross_family, risk_warnings, basis, cost_known_dims, cost_basis_dims, knowledge}` plus `result.available_solver_families` (family → usable solver names; pick the concrete solver yourself) and `result.solver_advisories` (solvers with environment-class failures in this memory — e.g. a subprocess-based solver the sandbox rejected before). Note: when `evidence="conditional_stats"`, the `expected` fields report OBSERVED means (a recount from the Evidence Bank), not a knowledge commitment — no interval, no calibration track, no lifecycle.
 
-`--memory-mode`: `none` (no memory consulted; all candidates return `no_memory`) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
+`--memory-mode`: `none` (memory deliberately NOT consulted: `recommendations` is empty and the basis says it was a choice) | `cases` (statistics, no cost weighting) | `strategic` (entries + statistics, no cost weighting) | `cost-aware` (adds cost scalarization).
 
 **Read-only.** `recall` writes nothing — the query text is embedded in memory only, no text row is created, no index item is touched, no migration runs. Text is persisted on the WRITE paths (`execute` / `record`).
 
@@ -126,7 +149,7 @@ If the text is English/CJK mixed, both are handled (the local backend tokenizes 
 
 ## `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME [--verification basic]`
 
-You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox: no network/shell/pathlib, `open()` only for a literal relative `result.json`, POSIX rlimits + wall-clock timeout. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`.
+You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox: no network/shell/pathlib, `open()` only for a literal relative `result.json`, POSIX rlimits + wall-clock timeout. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`, and — whenever a task-level check will need to read the answer — `variables`, an object of variable name → value (e.g. `{"x1": 2, "x2": 3}`). The solution vector is what makes `orx check-task` possible: integrality and objective recomputation can only be checked against actual values. It is stored on the record as `execution_features.solution_variables` (truncated past 2000 entries, with `solution_variables_truncated` naming what was dropped — a check needing a dropped variable reports it as unchecked rather than passing).
 
 The profile used in `execute` is the same frozen pre-strategy signature from `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only.
 
@@ -135,6 +158,35 @@ Every execution is automatically staged in a pending area (successes and failure
 The executor measures only what it can observe: `latency_s` and `solver_runtime_s`. `tool_calls`, `retries` and `llm_tokens` are **yours to declare** — they stay out of `cost_measured` (a constant is not a measurement). `tool_calls` counts ALL tool invocations in the attempt's scope (shell commands, file reads/writes, sandbox runs, solver calls), so the executor records only its provable floor in `execution_features.tool_calls_lower_bound`. `retries` gets a measured zero only when the framework can PROVE this is the first attempt of that (task, episode, strategy); otherwise it stays unknown. A script rejected by the sandbox policy measures nothing at all (`cost_measured` is empty) — 0.0 seconds of solving would be a fabricated fact. `execution_features.cost_notes` explains any rejected or suspicious value.
 
 `execute` also persists the task text (`task_texts`, keyed by `(task_id, text_digest)`) — that is where the retrieval document comes from. Solving the SAME `task_id` with different content creates separate versions, so each execution stays linked to the text actually in force, and the two can never be confused later.
+
+## `orx check-task <execution_id> [--check JSON] [--episode ep1]`
+
+Answers the question `execute` cannot: **does this answer satisfy the ORIGINAL task?** The executor's own verdict covers the solver's MODEL (a legal status, a finite objective, a gap); a relaxed LP answered with fractional values is `optimal` with `gap=0` and still wrong. Without this call such an answer enters recall, the conditional statistics, the world-model feedback and offline induction as a success sample.
+
+Run it between `execute` and `record`, or later on an already-recorded execution (a late correction is a real event — see the close-out section below).
+
+**`--check JSON`** declares what the framework may verify. Every base is optional; only what you declare is evaluated, and everything else is listed as UNCHECKED in `report.scope.unchecked`:
+
+| Key | Meaning |
+|---|---|
+| `reference_objective` (+ `tolerance`) | the reported objective must agree with the reference. Default tolerance `1e-6 * max(1, abs(reference))` — the SAME rule admission verification uses |
+| `reference_status` | the reported solver status must equal it (e.g. `"optimal"`) |
+| `integer` | `{"variables": ["x1","x2"]?, "tolerance": 1e-6?}` — every named variable (or every recorded variable) must be integral. This is the basis that catches an LP relaxation |
+| `recompute_objective` | `{"coefficients": {"x1": 7}, "constant": 0?, "tolerance": 1e-6?}` — the objective is recomputed from the recorded solution and compared with the reported one |
+| `semantic_probe` | one or more `{"path", equals\|min\|max\|in}` probes over the record payload, e.g. `{"path": "execution_features.solution_variables.x1", "min": 0}` |
+| `intent` | `"relaxation"` or `"intermediate"` — marks an execution whose answer is deliberately NOT the task's answer. It is recorded and reported, never treated as a pass for the task |
+
+**Three verdicts, and none of them is a default:**
+
+- **`passed`** — every declared basis held on the recorded values. The report still names what it did not check (the model's fidelity to the task, undeclared constraints), so `passed` is never read as "fully validated".
+- **`failed`** — a declared basis ran and did not hold. The execution is **not** demoted or rewritten: its observed quality and cost stand and it stays in the evidence set (the cost is real, the failure is raw material). What changes is that it can no longer count as a success sample: every quality consumer (statistics, world-model feedback, calibration) reads `0.0` for it, while its cost still counts in the task total.
+- **`insufficient`** — no basis declared, no solution vector recorded, a needed variable missing, or the execution produced no usable result. **Not a pass, not a failure**, and never a demand that you supply a reference. An unchecked answer's validity is UNKNOWN.
+
+The framework does **not** parse natural-language constraints: a constraint is checked only through a `semantic_probe` or a `recompute_objective` you declare. A matching objective never proves the model correct.
+
+**Recording.** Two channels: a `verify` ACTION (the framework really ran these checks, so it is logged with its verdict — the per-check history is auditable) and `execution_features.task_check` on the execution itself (a narrow annotation that works for staged and recorded executions alike). `task_check.state` is `passed` / `failed` / `insufficient`; a malformed or absent annotation reads as "no check", never as a pass.
+
+**On `failed`, the response carries `reflection_material`** — the task text, the code hash, the recorded solution vector, the check report and the earlier attempts of the episode — plus the `next` instruction. Locating the cause (task interpretation, model, implementation, or the reference basis itself) is YOUR job: the framework does not classify the failure as a modeling mistake, does not rebuild the model, and never relaxes the task to match a reference value.
 
 ## `orx predict --task t.json --strategy S`
 
@@ -162,9 +214,9 @@ A `tool_calls` declaration below the sandbox's provable lower bound is refused (
 
 Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). Always backfill `llm_tokens` here — it is invisible to the sandbox. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
 
-## `orx induce [--strategy S | --all] [--family F] [--cell GROUP_KEY] [--peer-strategy S] [--peer-cell GROUP_KEY] [--rebuild] [--dry-run] [--force] [--note TEXT] [--verify JSON]`
+## `orx induce [--strategy S | --all] [--family F] [--cell GROUP_KEY] [--peer-strategy S] [--peer-cell GROUP_KEY] [--relation JSON] [--rebuild] [--dry-run] [--force] [--note TEXT] [--verify JSON]`
 
-Consolidates facts into Strategic Knowledge (your explicit call — hints never auto-induce). This is the ONLY place knowledge changes: it (i) builds or refreshes the claim of each (family, structural cell, strategy) evidence set — its applicability is read off the supporting records (the cell its evidence occupies, never a cross-sample span that could stretch across incomparable regions); and (ii) replays the frozen checks recorded on the facts, reporting what it did under `result.revisions` (promotion at ≥5 checks / ≥70% hits **with a verified claim**, demotion at 3 consecutive misses, dormancy wakeup). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). One evidence set owns exactly one claim: re-inducing refreshes it rather than restating it (dormant entries included, so a woken claim keeps its id). `--rebuild` re-induces the whole Strategic Knowledge Bank from currently retained evidence (cold archive preserved); the result may differ from the previous bank — exact reconstruction is not a requirement. New entries inherit `strategy_type`, `actions` and `fallback_strategy_id` from the catalog vocabulary (harness-supplied values are never overwritten). `--dry-run` never writes — including under `--force` (a rehearsal does not lift a cold-archive veto).
+Consolidates facts into Strategic Knowledge (your explicit call — hints never auto-induce). This is the ONLY place knowledge changes: it (i) builds or refreshes the claim of each (family, structural cell, strategy) evidence set — its applicability is read off the supporting records (the cell its evidence occupies, never a cross-sample span that could stretch across incomparable regions); and (ii) replays the frozen checks recorded on the facts, reporting what it did under `result.revisions` (promotion at ≥5 checks / ≥70% hits **with a verified claim**, demotion at 3 consecutive misses, dormancy wakeup). New entries are born `candidate` with honest intervals (width floored by sample size; n=2 cannot claim [0.95, 1.0]). One evidence set owns exactly one claim: re-inducing refreshes it rather than restating it (dormant entries included, so a woken claim keeps its id). `--rebuild` re-induces the whole Strategic Knowledge Bank from currently retained evidence (cold archive preserved); the result may differ from the previous bank — exact reconstruction is not a requirement. The framework fills in NONE of an entry's `strategy_type` / `actions` / `fallback_strategy_id` — there is no built-in directory to copy them from, and inferring a method's actions from its id would be fabrication. What the harness writes is what travels; an empty field means the memory does not record it. `--dry-run` never writes — including under `--force` (a rehearsal does not lift a cold-archive veto).
 
 **Independent evidence gate (creation only).** Creating a claim takes at least 2 supporting executions from ≥2 distinct `task_id`s: repeating one task is repetition, not reproduction. Every count comes from the same facts — executed, attempt-scope, in the target's structural cell — so a task-scope total can never stand in for an independent attempt. When only one task is behind the evidence the call creates nothing and returns `verification {tasks, required_tasks}` plus a `skipped` reason — the evidence is NOT discarded (recall still answers from it as `conditional_stats`), and refreshing an entry that already exists is never blocked, no matter how repetitive the new evidence is.
 
@@ -181,6 +233,25 @@ Each element of `result.results` reports `created` (entry id) / `updated` (entry
 `--note "TEXT"` (optional, repeatable, you phrase it): free-text applicability notes attached to the entries this call creates or refreshes. They are kept for the reader and shown by `inspect`; they never enter scoring — the framework does not pretend to verify a sentence. Because these notes are part of an entry's retrieval document, the knowledge index items are refreshed after this call (`result.index_sync`, best effort — same `synced`/`deferred`/`skipped` contract as `record`). `--dry-run` writes nothing, index included.
 
 **Induction reads relations, not only one cell's means.** `--peer-strategy S` names another strategy to compare against inside each target's OWN cell (the `strategy_contrast` pattern); `--peer-cell GROUP_KEY` names another structural cell to compare the SAME strategy against (the `advantage_reversal` pattern, i.e. where its advantage weakens or flips). Both are repeatable, and both are **read-only**: each relation is written as one line under the entry's `risk_conditions` naming the observed difference (the peer label, its n, its mean quality, and only the cost dimensions measured on EVERY record on both sides — a partial mean would make the ratio meaningless), and reported under `result.results[].peer_relations`. Peer evidence never enters the target's statistics, never satisfies the admission gate, and never creates an entry on its own: a contrast is a reason to look, not a claim by itself. Without these flags the induction output is unchanged.
+
+**`--relation JSON` submits a STRUCTURED relation claim** (repeatable). This is the path for cross-task knowledge that is **not** one strategy's statistics — a modeling principle, a necessary condition, a repair pattern. Payload:
+
+```json
+{"subject": "principle:cross_period_state",
+ "claim": "the sentence being asserted",
+ "evidence": [{"execution_id": "ex_..", "role": "dropped"},
+              {"execution_id": "ex_..", "role": "preserved"}],
+ "conditions": {"predicates": {"family": "scheduling",
+                               "temporal_coupling": [0.5, 1.0]}},
+ "check": {"assertions": [...]},
+ "kind": "intervention_recovery"}
+```
+
+`claim` and `evidence` are required; every evidence entry needs an `execution_id` for a **recorded** fact and a `role` naming the part it plays in *this* claim (free strings — `dropped`/`preserved`, `before`/`after`, `strategy_a`, …). The framework DERIVES `tasks`, `family`, structural cell and `strategy_ids` from those facts, so a caller never submits a second, contradictory identity. `subject` is optional and matters for knowledge that names no strategy id: with no host entry the claim creates a **relation-only entry** (`support_n = 0`, no statistical claim) whose `strategy_id` is the subject; with a host it is appended to that entry's `relations`. `conditions` are the applicability predicates (omitted → read off the evidence's cell). `kind` is an optional note about what prompted the claim — never a verification template.
+
+Verification reuses `--verify` with `purpose: "relation"`; each assertion carries its own semantics (`probe` / `status` / `comparison`). `comparison` declares `metric`, `roles_a`/`roles_b`, `direction`, `min_gap`, `mode` (`paired` compares only same-task pairs, one per side; `group` compares the sides' means over a metric every referenced record measured), and `aggregation` (`all` = every pair must meet the gap, one comparable counterexample refutes; `mean` = the batch mean must). Pairing is per assertion, never a property of the whole batch. The verdict is `verified` only when every declared assertion held — "no violation found within this scope", never a guarantee about future tasks; `insufficient_evidence` covers an unmeasured metric, a missing counterpart or nothing computable declared (**not** a refutation); `refuted` means an assertion ran on real evidence and failed. Only the declared parts are covered: "quality higher AND tokens lower" needs both assertions.
+
+**Publication is per relation**, on two conditions: its own verdict is `verified` (and not stale), and its verification scope covers ≥2 distinct tasks. A single-task relation is SAVED and verifiable as a fact about that task, but reported as not published (`result.relations[].publication.reasons` says why). Neither condition touches the host entry's statistical claim, and the host's admission never grants the relation anything. Re-submitting the same `subject`+`kind` REVISES that relation (a substantive change without a fresh verdict marks it `stale_after_revision`; a fresh verdict wins; an identical re-submission keeps the verdict). Result: `result.{relations[], saved, published}`. See [induction.md](induction.md#structured-relation-claims-induce---relation).
 
 ## `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts [--task ID] [--strategy S] [--status candidate] [--episode EP]`
 
@@ -323,7 +394,11 @@ Bind a strategy-outcome prediction to the real action that ran. The binding chec
 
 ## `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
 
-**Episode close-out.** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice. Full spec: [episode_closeout.md](episode_closeout.md).
+**Episode close-out.** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice.
+
+**A close-out is the end of the episode, NOT a certification of the answer.** The result carries `task_checks = {n_executions, verdicts, unchecked, note}` reporting how many of the episode's executions carry a task-result verdict (`orx check-task`). An execution confirmed NOT to satisfy the task contributes `0.0` to the benefit observation and the gate is recorded in `evaluations[].benefit.task_check_gated` — so a reader seeing "predicted 0.8, observed 0.0" can tell a confirmed-wrong answer from a genuinely bad solve. Unchecked answers keep their observed value and the note says their validity is UNKNOWN. Full spec: [episode_closeout.md](episode_closeout.md).
+
+**Late corrections change later USE, not history.** A task check run on an already-closed episode writes the verdict onto the fact (statistics pick it up on the next read), but the STORED evaluation is never rewritten: it is the honest record of what was known then. What changes is whether the sample keeps counting: an evaluation whose in-scope execution was confirmed failed by a check stored AFTER the evaluation was written is reported under `exclusions.validity_corrected` and leaves the calibration means, with the detail in `validity_corrections[]`.
 
 ## `orx calibration [--min-samples N]`
 
@@ -375,7 +450,7 @@ The two-stage feedback state of every capability prediction (read-only): fact bo
 
 **A missing `K` adds NOTHING** (`path.incomparable["knowledge"]` says so). This is the deliberate mirror of unknown risk: an unknown *downside* is charged in full, but an unknown *upside* is paid nothing — paying it would make the system prefer whichever action it understands least. `K = None` means "no justified value", never "worth nothing". `delta_knowledge` and `knowledge_detail` on each path show the term and why it came out that way, labelled `heuristic_uncalibrated` (it is a transparent heuristic, not a calibrated expected value).
 
-- **Candidates**: `--candidates` (your own ActionSpec list, recommended when you have domain hypotheses), or the catalog vocabulary filtered by applicability and available solvers. Without memory, candidates carry no fabricated performance claims — consequences come from the world model.
+- **Candidates**: `--candidates` (your own ActionSpec list) is REQUIRED. The framework does not generate a candidate menu — there is no directory to enumerate. You propose the methods you want compared (with their configuration), and the world model predicts their consequences; `orx recall` shows what memory already holds for this problem.
 - **Bounds**: candidate count, horizon (1–2), `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend (the model calls) is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any path's score.
 - **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
 - **Unknowns**: missing quality/cost/risk predictions are reported per path under `incomparable` (unknown never auto-wins); a second step the first prediction cannot support (no incumbent) is truncated and marked `conditional_unsupported`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).

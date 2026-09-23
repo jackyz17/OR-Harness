@@ -154,6 +154,10 @@ class KnowledgeRef:
     status: str
     verification_state: str
     snapshot_at: float
+    #: STRUCTURED relation claims (see ``core.schema.validate_relation``),
+    #: each with its own verification block. A relation is published on its
+    #: own verdict, independent of the entry's statistical admission.
+    relations: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -170,6 +174,7 @@ class KnowledgeRef:
             "support_n": self.support_n,
             "status": self.status,
             "verification_state": self.verification_state,
+            "relations": copy.deepcopy(self.relations or []),
             "snapshot_at": self.snapshot_at,
         }
 
@@ -189,6 +194,7 @@ class KnowledgeRef:
             support_n=entry.support_n,
             status=entry.status,
             verification_state=entry.verification_state,
+            relations=[copy.deepcopy(r) for r in (entry.relations or [])],
             snapshot_at=time.time(),
         )
 
@@ -209,6 +215,9 @@ class KnowledgeRef:
             status=str(data.get("status", "candidate")),
             verification_state=str(data.get("verification_state",
                                             "unverified")),
+            relations=[copy.deepcopy(dict(r))
+                       for r in (data.get("relations") or [])
+                       if isinstance(r, dict)],
             snapshot_at=float(data.get("snapshot_at", time.time())),
         )
 
@@ -229,7 +238,7 @@ class BeliefSnapshot:
     episode_id: Optional[str]
     created_at: float
     #: H — harness state: value-copied knowledge refs, experience counts,
-    #: catalog version, tool configuration summary.
+    #: tool configuration summary.
     harness_state: Dict[str, Any] = field(default_factory=dict)
     #: P — problem state: profile + task digest + optional task_ref /
     #: cir_snapshot / model_digest.
@@ -393,17 +402,36 @@ def verified_knowledge_view(profile: ProblemProfile, sbank,
       compatibility, but never counted as verified-knowledge growth.
     - ``unverified``: unverified / insufficient_evidence / refuted
       candidates — held by the framework, not knowledge.
+
+    RELATION claims are layered on their OWN verdict, independent of the
+    entry's statistical admission: an entry whose statistical claim was never
+    verified but which holds a published relation is ``verified`` knowledge
+    for that relation's sake. A relation-only entry (no statistical claim) is
+    ``verified`` iff it holds at least one published relation.
     """
     from or_harness.strategy.selector import is_publishable
+    from or_harness.core.schema import relation_knowledge_publishable
     layers: Dict[str, List[Dict[str, Any]]] = {
         "verified": [], "legacy_unknown": [], "unverified": []}
     for entry in sbank.matching(profile, include_dormant=True):
         block = entry.verification or {}
-        if not block:
-            layer = "legacy_unknown"
-        elif block.get("state") == "verified" and is_publishable(entry):
+        statistical_verified = (bool(block)
+                                and block.get("state") == "verified"
+                                and is_publishable(entry))
+        relations_published = relation_knowledge_publishable(entry)
+        if statistical_verified or relations_published:
             layer = "verified"
+        elif not block:
+            # No verification block at all: a legacy entry written before
+            # admission verification existed. Kept for historical recall
+            # compatibility, but never counted as verified-knowledge growth.
+            layer = "legacy_unknown"
         else:
             layer = "unverified"
-        layers[layer].append(KnowledgeRef.from_entry(entry).to_dict())
+        ref = KnowledgeRef.from_entry(entry).to_dict()
+        # The relation list travels with the ref, but a NON-published
+        # relation must never look like an admitted claim: its verification
+        # state is carried verbatim so the consumer can gate on it.
+        ref["relations_published"] = relations_published
+        layers[layer].append(ref)
     return layers

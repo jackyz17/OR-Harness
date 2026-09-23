@@ -24,6 +24,14 @@ Mutability contract (fact-preserving, append-first):
     feedback annotation (a computed summary over the frozen prediction
     snapshot and the actual cost). Narrow by design — it cannot rewrite any
     other execution feature.
+  - ``set_task_check``: the only channel that writes the record's TASK-RESULT
+    check annotation (``execution_features.task_check``). Narrow for the same
+    reason: the solver's own verdict says the MODEL was solved, never that the
+    answer satisfies the TASK, so the task-level verdict is a separate fact
+    attached to the same record. It is written AFTER the fact may already be
+    recorded (a late correction is a real event), and it never rewrites the
+    observed quality, the cost, or the source — an answer confirmed wrong is
+    still the answer that was produced, and its cost is still real.
   - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
     execution and the harness's explicit recording decision.
 
@@ -175,6 +183,51 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
                          (self.store.dumps(rec.to_dict()), execution_id))
+        return rec
+
+    def set_task_check(self, execution_id: str,
+                       report: Optional[Dict[str, Any]]) -> ExecutionRecord:
+        """Write (or clear) the record's TASK-RESULT check annotation.
+
+        The second narrow channel, same shape as :meth:`set_cost_feedback`:
+        it touches ONLY ``execution_features.task_check`` and can rewrite no
+        other feature, no observed quality, no cost, and no ``source``.
+
+        Why this is a separate fact rather than an edit of ``quality``: the
+        solver's ``quality`` says the MODEL was solved (a legal status, a
+        finite objective, a gap). It cannot say the answer satisfies the
+        TASK — a relaxed LP answered with fractional values is ``optimal``
+        with ``gap=0`` and still wrong. Overwriting ``quality`` would also
+        destroy the observation, and the observation is exactly what a
+        correction has to be judged against.
+
+        The report may arrive AFTER the fact was recorded (a correction
+        learned late). That is the point: statistics and calibration re-read
+        this annotation, so a corrected validity takes effect on the next
+        read, while the original execution, its prediction and any stored
+        historical evaluation stay untouched. Staged (unrecorded) executions
+        are updated in place too, so the annotation survives
+        ``record --from-staged`` verbatim.
+
+        ``report=None`` removes the annotation (a check withdrawn — the
+        answer's validity returns to UNKNOWN, never to a default verdict).
+        """
+        rec = self.get(execution_id)
+        staged = False
+        if rec is None:
+            rec = self.get_pending(execution_id)
+            staged = rec is not None
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        if report is None:
+            rec.execution_features.pop("task_check", None)
+        else:
+            rec.execution_features["task_check"] = dict(report)
+        table = "pending_executions" if staged else "executions"
+        with self.store.transaction() as conn:
+            conn.execute(
+                f"UPDATE {table} SET payload=? WHERE execution_id=?",
+                (self.store.dumps(rec.to_dict()), execution_id))
         return rec
 
     def exclude(self, execution_id: str, reason: str, *,

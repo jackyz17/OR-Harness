@@ -17,6 +17,8 @@ Four patterns are worth generalizing. They are named for what they are — no hi
 
 All detectors are scoped to the target's **structural cell**, not the whole family: evidence from a structurally different region cannot create, dilute, or veto a relation. `structural_reproduction` is the only cross-family pattern and it compares each family's evidence in the same cell; `advantage_reversal` is the only cross-cell pattern and it stays inside one family.
 
+These four are **what draws your attention**, not a classification your final claim must fit. An `intervention_recovery` observation may end up as a modeling rule; a `structural_reproduction` may occur within one family. When you submit a structured relation (below), `kind` is an optional note about the prompt, and the verdict is decided by the assertions you declare — never by the pattern name.
+
 **The lesson is the relation, not the win.** `strategy_contrast` reports a comparison between two strategies under one structural condition; `advantage_reversal` reports where an advantage weakens or flips — an applicability boundary or a counterexample. Neither is a success count. `intervention_recovery` names the change in real outcome; a success after an intervention is **evidence, not proof of causation by itself**, so the hint carries both sides and you draw the conclusion.
 
 All detectors are purely statistical — they detect patterns in observed data, not divergence from fabricated baselines. For `intervention_recovery`, the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
@@ -93,7 +95,7 @@ Two things that are NOT verification:
 
 Forward calibration cannot substitute either: five frozen hits raise an entry's calibration confidence, but a `candidate` reaches `validated` **only** if its claim was verified. (A `refuted` claim can never be `validated`; the bank refuses the write.)
 
-**Unverified candidates are recorded, not published.** Recall does not present them as strategic knowledge (it falls back to `conditional_stats`), and they cannot serve a cost prediction either. The catalog remains available, so this gates *publishing*, never *trying*. Entries written before this mechanism existed have no verdict recorded: they stay usable (discarding accumulated knowledge would be worse) and their provenance stays visible in `inspect`. Use `recall --include-unverified` (offline/inspection) to see the candidate with an explicit warning.
+**Unverified candidates are recorded, not published.** Recall does not present them as strategic knowledge (it falls back to `conditional_stats`), and they cannot serve a cost prediction either. This gates *publishing*, never *trying* — and nothing else fills the gap: there is no built-in directory of methods, so an unpublished claim is simply not presented as knowledge until a verdict exists. Entries written before this mechanism existed have no verdict recorded: they stay usable (discarding accumulated knowledge would be worse) and their provenance stays visible in `inspect`. Use `recall --include-unverified` (offline/inspection) to see the candidate with an explicit warning.
 
 ## Forward validation and lifecycle (applied offline)
 
@@ -115,23 +117,91 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 - **intervention_recovery** detects a recorded intervention within one execution, or a cross-execution chain when the solver changed. Retrying the same solver is not an intervention, and other automatic detection is not attempted this round — if you fixed something, say so in the record.
 - **structural_reproduction** is a hint that reproduction happened at one structure across families. It never verifies knowledge and never widens applicability. One task's observation is not transferable knowledge.
 - **advantage_reversal** detects a boundary between two cells of one family. It does not claim WHY the advantage flips, and it never merges the cells into one applicability range.
-- All four patterns are hints: they never satisfy the admission gate.
+- All four patterns are hints: they never satisfy the admission gate, and they never decide how a submitted relation is verified.
 
-## Recording the relation on the claim (peer evidence)
+## Structured relation claims (`induce --relation`)
 
-A hint tells you a relation exists. When you induce, you can carry that relation onto the entry itself, so a later reader sees what the claim was induced against:
+Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
 
-```bash
-# the other strategy's executions in THIS target's own cell
-orx induce --strategy S01 --peer-strategy S04
+`induce --relation '<json>'` submits such a claim. The JSON is:
 
-# this strategy's executions in ANOTHER structural cell
-orx induce --strategy S01 --peer-cell 'family=routing|rc[0.75,1.00]|..'
+```json
+{"subject": "principle:cross_period_state",
+ "claim": "the sentence being asserted (yours to write)",
+ "evidence": [{"execution_id": "ex_...", "role": "dropped"},
+              {"execution_id": "ex_...", "role": "preserved"}],
+ "conditions": {"predicates": {"family": "scheduling",
+                               "temporal_coupling": [0.5, 1.0]},
+                "note": "optional"},
+ "check": {"assertions": [ ... ]},
+ "kind": "intervention_recovery"}
 ```
 
-Each relation becomes one line under the entry's `risk_conditions` naming the observed difference (the peer label, its n, its mean quality, and only the cost dimensions measured on **every** record on both sides), and is reported back under `result.results[].peer_relations`. The CLI summary prints the first one.
+- **`evidence` + `role` is the anchor.** Every reference names a recorded execution and the part it plays in *this* claim. Roles are free strings (`dropped`/`preserved`, `before`/`after`, `strategy_a`, `violation`/`satisfying`, …) — they are not a taxonomy, and nothing forces your claim into one of the four trigger patterns. `kind` is an optional note about what prompted the claim.
+- **Identity is derived, never submitted.** Tasks, family, structural cell and strategy ids are read off the recorded facts. You supply ids and roles only, so the same evidence cannot acquire two contradictory identities.
+- **`subject` is optional** and matters only for knowledge that does not belong to one strategy. With no host entry, the claim creates a **relation-only entry** whose `strategy_id` is your subject and which carries no statistical claim (`support_n = 0`). With a strategy host (the evidence's own strategy, or a subject naming an existing entry), the relation is appended to that entry's `relations` — the peer evidence still never enters the host's statistics.
+- **`conditions`** are the applicability predicates; when omitted they are read off the evidence's own structural cell.
 
-The contract is deliberately narrow: peer evidence is read **only to phrase the claim**. It never enters the target's statistics, never satisfies the admission gate, and never creates an entry on its own — a contrast is a reason to look, not a claim by itself. An induction with no peer flags is byte-for-byte what it was before.
+### What the framework checks (`--verify` with `purpose: relation`)
+
+The framework computes **only what your structured declaration makes computable** — it does not parse the claim sentence and does not promise to notice that a sentence overreaches its evidence. Each assertion carries its own semantics:
+
+| Assertion | Checks | Applies to |
+|---|---|---|
+| `{"kind": "probe", "roles": [...], "path": "quality.feasible", "equals"/"min"/"max"/"in": ...}` | every record of those roles satisfies the probe (the framework reads the dotted path itself) | any claim |
+| `{"kind": "status", "roles": [...], "status": "optimal"}` | every record of those roles finished with that status | any claim |
+| `{"kind": "comparison", "metric": "quality"\|"cost:<dim>"\|"<dotted.path>", "roles_a": [...], "roles_b": [...], "direction": "higher"\|"lower", "min_gap": 0.1, "mode": "paired"\|"group", "aggregation": "all"\|"mean"}` | the declared difference between the two role groups | numerical claims |
+
+**Pairing is a property of the assertion, not of the batch.** `mode: "paired"` compares only records that share a `task_id`, one per side; records with no counterpart are listed as `unpaired_execution_ids` in the scope and are **not** mixed into the statistic. `mode: "group"` compares the two sides' means over a metric every referenced record measured (a metric measured on only some records is `insufficient_evidence`, never a subset mean dressed up as a claim). A claim may declare one paired and one group assertion — each is evaluated over its own scope.
+
+**`aggregation` decides how an unfavourable sample is treated:**
+- `"all"` — every pair must meet the direction and gap. One comparable counterexample refutes the claim. Use it when you are asserting "on every such task".
+- `"mean"` — the batch mean must meet the direction and gap. A single negative pair does not refute it. Use it when you are asserting "on average across this batch".
+
+**Only the declared parts are covered.** "Quality is higher **and** tokens are lower" needs a `quality` assertion *and* a `cost:llm_tokens` assertion; declare only the first and the verification scope records the cost part as unchecked. The verdict is never extended to parts you did not declare.
+
+**What `verified` means.** Every declared assertion held over the referenced evidence — "no violation was found **within this scope**", not "true for every future task". The `verification.scope` block names the executions, tasks, roles, and which assertions were checked and unchecked. Verdicts: `verified` / `insufficient_evidence` (nothing computable declared, a metric unmeasured, no counterpart, evidence unusable — **not** a refutation) / `refuted` (an assertion ran on real evidence and failed).
+
+### Publication is per relation, on two conditions
+
+1. its **own** verdict is `verified` and not stale;
+2. its verification scope covers **≥2 distinct tasks**.
+
+Condition 2 is the same independence rule the statistical gate uses: a single-task repair is a verified **fact about that task**; transferring it to future tasks is a knowledge claim and needs independent evidence. A single-task relation is still **saved** (and verifiable as that fact) — it is simply not published, and `publication.reasons` says exactly why.
+
+Neither condition touches the host entry's statistical claim, and the host's admission never grants the relation anything: **a verified relation does not publish the entry's statistics, and a stale or refuted relation does not invalidate another relation.**
+
+### Revision
+
+Re-submitting the same `subject`+`kind` **revises** that relation (the id is derived from the two, so a revision never appends a duplicate). Give distinct relations under one subject distinct `kind`s.
+
+- A **substantive** change (claim text, conditions, evidence set, check) with no fresh verification marks the previous verdict `stale_after_revision` — the old check no longer covers the new claim.
+- A **fresh** verification wins outright: it was computed over the incoming evidence, so it is neither kept nor marked stale.
+- An **identical** re-submission keeps the verdict.
+
+`recall` reports `newer_evidence_since_verification` on each relation: matching executions recorded after the verdict. It is a visibility annotation, not a lifecycle state — a frozen batch remains a true historical fact, and this count simply tells you the world has moved on. Decide whether to re-verify.
+
+### Reading relations back
+
+`orx recall` carries them in a **`knowledge` section**, separate from `recommendations`. That separation is deliberate: `recommendations` is keyed on the strategy ids memory holds and filtered by `is_publishable`, which speaks about the **statistical** claim — so a verified relation whose host statistics were never verified would otherwise be filtered out, and a relation-only entry names no strategy id at all. `knowledge[]` items carry the claim, conditions, evidence, verification state and scope, `published`, and the newer-evidence count. `--include-unverified` also returns refuted/stale relations, clearly labelled.
+
+In a world-model context the same content reaches `provider_view` through the structural hit, and the entry's boundary text (`risk_conditions`) travels with it — verified knowledge's conditions, edges and verification scope are part of what the knowledge *says*.
+
+### Relation vs statistical admission (do not blur)
+
+| | Statistical claim | Relation claim |
+|---|---|---|
+| Verification | entry's `verification` block | the relation's own `verification` |
+| Checks | `rule` / `repair` / `cost_saving` over one strategy's executions | `relation` assertions over explicitly referenced evidence with roles |
+| Gate | ≥2 tasks + ≥2 executions in the cell | own verdict + ≥2 tasks in the relation's scope |
+| Publication | `is_publishable(entry)` | `relation_is_published(relation)`, per relation |
+| Failure scope | the entry | that one relation |
+
+## Peer evidence as phrasing (`--peer-strategy` / `--peer-cell`)
+
+The older, narrower path: naming another strategy (same cell) or another cell (same strategy) writes one contrast line under the entry's `risk_conditions` and reports it under `peer_relations`. It remains a **phrasing** mechanism — read only to state what the claim was induced against, never a statistic, never satisfying the admission gate, never creating an entry.
+
+When the relation itself is the knowledge you want (verified, scoped, revisable, recallable), use `--relation` instead: it is the structured form of exactly this observation. A plain induction with no peer flags and no relations is unchanged.
 
 ## Applicability notes
 

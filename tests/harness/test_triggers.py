@@ -12,7 +12,6 @@ import unittest
 from helpers import HarnessTestCase
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector, FailureRecord
-from or_harness.strategy.catalog import load_catalog
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.triggers import check_triggers
@@ -23,10 +22,9 @@ class TriggerCase(HarnessTestCase):
         super().setUp()
         self.bank = ExperienceBank(self.store)
         self.stats = ConditionalStats(self.bank)
-        self.catalog = load_catalog()
 
     def check(self, record, **kwargs):
-        return check_triggers(record, self.stats, self.catalog, **kwargs)
+        return check_triggers(record, self.stats, **kwargs)
 
     def patterns(self, record, **kwargs):
         return {h.pattern for h in self.check(record, **kwargs)}
@@ -373,7 +371,6 @@ class TestRetiredCriteriaLeftNoPath(unittest.TestCase):
         try:
             bank = ExperienceBank(case.store)
             stats = ConditionalStats(bank)
-            catalog = load_catalog()
             last = None
             for i in range(4):
                 last = case.make_record(
@@ -381,7 +378,7 @@ class TestRetiredCriteriaLeftNoPath(unittest.TestCase):
                     gap=0.05,
                     cost_measured=tuple(COST_DIMENSIONS))
                 bank.append(last)
-            patterns = {h.pattern for h in check_triggers(last, stats, catalog)}
+            patterns = {h.pattern for h in check_triggers(last, stats)}
             self.assertEqual(
                 patterns - {"strategy_contrast", "intervention_recovery",
                             "structural_reproduction", "advantage_reversal"},

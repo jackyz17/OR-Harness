@@ -10,7 +10,7 @@ import unittest
 from helpers import HarnessTestCase, MEASURED_ALL
 
 from or_harness.api import ORHarness
-from or_harness.core.schema import CostVector, FailureRecord, StrategicEntry, Strategy
+from or_harness.core.schema import CostVector, FailureRecord, StrategicEntry
 from or_harness.profiling.model_syntax import (
     coupling_from_model,
     parse_model,
@@ -24,7 +24,6 @@ from or_harness.strategy.triggers import (
     classify_failure,
     solver_advisories,
 )
-from or_harness.strategy.catalog import load_catalog
 
 
 SIRL_MODEL = textwrap.dedent("""
@@ -211,7 +210,6 @@ class TestCrossExecutionRecovery(HarnessTestCase):
         super().setUp()
         self.bank = ExperienceBank(self.store)
         self.stats = ConditionalStats(self.bank)
-        self.catalog = load_catalog()
 
     def failed_record(self, execution_id, solver, error="security policy: blocked import subprocess"):
         rec = self.make_record(execution_id=execution_id, task_id="t1",
@@ -224,7 +222,7 @@ class TestCrossExecutionRecovery(HarnessTestCase):
         failed = self.failed_record("ex_f1", "pulp")
         success = self.make_record(execution_id="ex_s1", task_id="t1",
                                    solver={"name": "ortools", "code_hash": "y"})
-        hints = check_triggers(success, self.stats, self.catalog,
+        hints = check_triggers(success, self.stats,
                                prior_failures=[failed])
         c4 = [h for h in hints if h.pattern == "intervention_recovery"]
         self.assertTrue(c4)
@@ -236,7 +234,7 @@ class TestCrossExecutionRecovery(HarnessTestCase):
         failed = self.failed_record("ex_f2", "pulp")
         success = self.make_record(execution_id="ex_s2", task_id="t1",
                                    solver={"name": "pulp", "code_hash": "y"})
-        hints = check_triggers(success, self.stats, self.catalog,
+        hints = check_triggers(success, self.stats,
                                prior_failures=[failed])
         self.assertFalse(any(h.pattern == "intervention_recovery"
                              for h in hints))
@@ -291,9 +289,9 @@ class _StubExecutor:
 
 class TestEvidenceKnowledgeSemantics(HarnessTestCase):
     """The two memory layers: Evidence records ACTUAL facts (including the
-    CIR snapshot of the task actually solved); Knowledge entries inherit the
-    catalog vocabulary (strategy_type/actions) without overwriting
-    harness-supplied values."""
+    CIR snapshot of the task actually solved); Knowledge entries carry only
+    what the harness (or a migration) put on them — the framework fills in no
+    method vocabulary from any directory."""
 
     @staticmethod
     def _cir():
@@ -354,33 +352,52 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         finally:
             h.close()
 
-    def test_induce_inherits_catalog_vocabulary(self):
+    def test_induce_does_not_invent_method_vocabulary(self):
+        """Induction forms a CLAIM; it does not describe the method.
+
+        There is no directory to copy strategy_type/actions/fallback from, so
+        an induced entry reports them as unrecorded — which is what the memory
+        really knows.
+        """
         h = ORHarness(home=self.home)
         try:
-            h.catalog["S01"] = Strategy(
-                strategy_id="S01", name="decompose",
-                strategy_type="decomposition", fallback="S06",
-                actions=["find bottleneck", "decompose locals"])
             for i in range(2):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_enc{i}", task_id=f"te{i}",
                     strategy_id="S01", gap=0.05))
             result = h.induce(strategy_id="S01")
             entry = h.sbank.get(result["results"][0]["created"])
-            self.assertEqual(entry.strategy_type, "decomposition")
-            self.assertEqual(entry.actions,
-                             ["find bottleneck", "decompose locals"])
-            # The entry is self-contained: it also carries the recovery
-            # advice the catalog declares for this strategy.
-            self.assertEqual(entry.fallback_strategy_id, "S06")
+            self.assertIsNone(entry.strategy_type)
+            self.assertEqual(entry.actions, [])
+            self.assertIsNone(entry.fallback_strategy_id)
         finally:
             h.close()
 
-    def test_rebuild_enriches_entries(self):
+    def test_harness_supplied_vocabulary_survives_induction(self):
+        """A harness that DOES record the method's content keeps it."""
         h = ORHarness(home=self.home)
         try:
-            h.catalog["S01"] = Strategy(strategy_id="S01", name="monolithic",
-                                        strategy_type="modeling")
+            entry = StrategicEntry(
+                entry_id="se_keep", strategy_id="S01",
+                pattern={"predicates": {}},
+                strategy_type="execution", actions=["harness-custom"],
+                fallback_strategy_id="custom:fallback")
+            h.sbank.add(entry)
+            for i in range(2):
+                h.bank.append(self.make_record(
+                    execution_id=f"ex_keep{i}", task_id=f"tk{i}",
+                    strategy_id="S01", gap=0.05))
+            h.induce(strategy_id="S01")
+            kept = h.sbank.get("se_keep")
+            self.assertEqual(kept.strategy_type, "execution")
+            self.assertEqual(kept.actions, ["harness-custom"])
+            self.assertEqual(kept.fallback_strategy_id, "custom:fallback")
+        finally:
+            h.close()
+
+    def test_rebuild_does_not_invent_method_vocabulary(self):
+        h = ORHarness(home=self.home)
+        try:
             for i in range(2):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_rb{i}", task_id=f"tr{i}",
@@ -388,25 +405,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             result = h.induce(rebuild=True)
             self.assertEqual(result["rebuilt"], 1)
             entry = h.sbank.get(result["entry_ids"][0])
-            self.assertEqual(entry.strategy_type, "modeling")
-        finally:
-            h.close()
-
-    def test_enrichment_never_overwrites_harness_values(self):
-        h = ORHarness(home=self.home)
-        try:
-            h.catalog["S01"] = Strategy(strategy_id="S01", name="x",
-                                        strategy_type="modeling",
-                                        actions=["catalog-action"])
-            entry = StrategicEntry(
-                entry_id="se_keep", strategy_id="S01",
-                pattern={"predicates": {}},
-                strategy_type="execution", actions=["harness-custom"])
-            h.sbank.add(entry)
-            h._enrich_entry("se_keep")
-            kept = h.sbank.get("se_keep")
-            self.assertEqual(kept.strategy_type, "execution")
-            self.assertEqual(kept.actions, ["harness-custom"])
+            self.assertIsNone(entry.strategy_type)
         finally:
             h.close()
 

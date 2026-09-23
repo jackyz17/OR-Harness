@@ -46,6 +46,11 @@ from or_harness.core.schema import COST_DIMENSIONS, CostVector
 PURPOSE_RULE = "rule"
 PURPOSE_REPAIR = "repair"
 PURPOSE_COST_SAVING = "cost_saving"
+#: A STRUCTURED RELATION claim: assertions over explicitly referenced
+#: evidence with roles (see :func:`verify_relation`). Not a statistic about
+#: one strategy — the check is the set of computable assertions the claim
+#: declares, evaluated over the referenced evidence.
+PURPOSE_RELATION = "relation"
 
 #: Objective values must agree within this relative tolerance for a
 #: "results are close enough to compare cost" judgment.
@@ -739,5 +744,891 @@ def _verify_cost_saving(purpose: Optional[str], claim: str,
                       f"{dim} fell from {base_cost} to {cand_cost}"))
 
 
-__all__ = ["verify_candidate", "VERIFIED", "INSUFFICIENT", "REFUTED",
-           "PURPOSE_RULE", "PURPOSE_REPAIR", "PURPOSE_COST_SAVING"]
+# ---------------------------------------------------------------------------
+# Relation claims: assertions over explicitly referenced evidence
+# ---------------------------------------------------------------------------
+
+#: Assertion kinds the framework can actually COMPUTE. Anything else is
+#: reported as an unsupported assertion (never silently ignored): the
+#: framework checks what a structured declaration makes computable, and the
+#: outer agent owns interpretation and phrasing.
+ASSERTION_PROBE = "probe"
+ASSERTION_STATUS = "status"
+ASSERTION_COMPARISON = "comparison"
+
+#: Aggregation modes for a comparison assertion.
+AGGREGATION_ALL = "all"
+AGGREGATION_MEAN = "mean"
+
+#: Pairing modes for a comparison assertion. ``paired`` compares only records
+#: that share a task (one per side); ``group`` compares the two sides' means.
+#: Pairing is a property of the ASSERTION, never of the whole batch: a claim
+#: may carry a paired assertion and a group assertion side by side, each
+#: evaluated over its own scope.
+MODE_PAIRED = "paired"
+MODE_GROUP = "group"
+
+
+def _metric_value(fact: Dict[str, Any], metric: str) -> Optional[float]:
+    """The numeric value of a declared comparison metric on one fact."""
+    metric = str(metric or "")
+    if metric in ("quality", "quality_score"):
+        from or_harness.strategy.stats import quality_score
+        return quality_score(_copy_for_score(fact))
+    if metric.startswith("cost:"):
+        dim = metric.split(":", 1)[1]
+        if dim not in fact["measured"] or fact["cost"] is None:
+            return None
+        return _finite(getattr(fact["cost"], dim, None))
+    if metric in COST_DIMENSIONS:
+        if metric not in fact["measured"] or fact["cost"] is None:
+            return None
+        return _finite(getattr(fact["cost"], metric, None))
+    if metric.startswith("quality."):
+        found, observed = _resolve(fact.get("payload") or {}, metric)
+        return _finite(observed) if found else None
+    found, observed = _resolve(fact.get("payload") or {}, metric)
+    return _finite(observed) if found else None
+
+
+def _direction_ok(delta: float, direction: str, min_gap: float) -> bool:
+    """Whether a signed difference satisfies the declared direction/gap.
+
+    ``delta`` = (side_a - side_b). ``higher`` requires a positive advantage of
+    at least ``min_gap``; ``lower`` requires a negative one of at least
+    ``min_gap``."""
+    gap = abs(delta)
+    if gap < min_gap:
+        return False
+    return delta > 0 if direction == "higher" else delta < 0
+
+
+def _assertion_checks(assertion: Dict[str, Any],
+                      by_role: Dict[str, List[Dict[str, Any]]],
+                      checks: List[Dict[str, Any]]) -> Tuple[str, Optional[str]]:
+    """Evaluate ONE assertion over the role-partitioned evidence.
+
+    Returns ``(state, failure_reason)`` where state is ``VERIFIED`` /
+    ``REFUTED`` / ``INSUFFICIENT``. Every record of every named role is
+    evaluated, so a counterexample anywhere in the scope is found regardless
+    of ordering."""
+    kind = str(assertion.get("kind") or "")
+    roles = [str(r) for r in (assertion.get("roles") or [])]
+
+    def _role_records(role_list: List[str]) -> Optional[List[Dict[str, Any]]]:
+        out: List[Dict[str, Any]] = []
+        for role in role_list:
+            records = by_role.get(role)
+            if not records:
+                return None
+            out.extend(records)
+        return out
+
+    if kind == ASSERTION_PROBE:
+        records = _role_records(roles)
+        if records is None:
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind, "roles": roles,
+                           "problem": "a named role has no evidence"})
+            return INSUFFICIENT, ("a named role has no referenced evidence, "
+                                  "so the assertion cannot run")
+        probe = {k: v for k, v in assertion.items()
+                 if k in ("path", "equals", "min", "max", "in")}
+        for fact in records:
+            result = _evaluate_probe(fact, probe)
+            result["check"] = "assertion_probe"
+            result["role_records"] = True
+            result["execution_id"] = fact["execution_id"]
+            checks.append(result)
+            if result.get("ok") is None:
+                return INSUFFICIENT, (f"probe {probe.get('path')!r} declares "
+                                      "no comparison")
+            if not result["ok"]:
+                return REFUTED, (f"probe {probe.get('path')!r} failed on "
+                                 f"{fact['execution_id']}")
+        return VERIFIED, None
+
+    if kind == ASSERTION_STATUS:
+        records = _role_records(roles)
+        if records is None:
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind, "roles": roles,
+                           "problem": "a named role has no evidence"})
+            return INSUFFICIENT, ("a named role has no referenced evidence, "
+                                  "so the assertion cannot run")
+        expected = str(assertion.get("status"))
+        for fact in records:
+            status = str(fact["quality"].get("status", ""))
+            ok = status == expected
+            checks.append({"check": "assertion_status", "source": FRAMEWORK,
+                           "execution_id": fact["execution_id"],
+                           "observed": status, "expected": expected, "ok": ok})
+            if not ok:
+                return REFUTED, (f"{fact['execution_id']} finished with status "
+                                 f"{status!r}, not {expected!r}")
+        return VERIFIED, None
+
+    if kind == ASSERTION_COMPARISON:
+        side_a = _role_records([str(r) for r in
+                                (assertion.get("roles_a") or [])])
+        side_b = _role_records([str(r) for r in
+                                (assertion.get("roles_b") or [])])
+        if side_a is None or side_b is None:
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind,
+                           "roles_a": assertion.get("roles_a"),
+                           "roles_b": assertion.get("roles_b"),
+                           "problem": "a named role has no evidence"})
+            return INSUFFICIENT, ("a named role has no referenced evidence, "
+                                  "so the comparison cannot run")
+        metric = str(assertion.get("metric") or "")
+        direction = str(assertion.get("direction") or "higher")
+        min_gap = _finite(assertion.get("min_gap"))
+        min_gap = 0.0 if min_gap is None else min_gap
+        mode = str(assertion.get("mode") or MODE_GROUP)
+        aggregation = str(assertion.get("aggregation") or AGGREGATION_ALL)
+        # Requirement declared by the claim itself: when the assertion names
+        # two strategies, the framework can check each side is internally
+        # consistent about which strategy ran.
+        if assertion.get("require_strategy_ids"):
+            for label, side in (("roles_a", side_a), ("roles_b", side_b)):
+                ids = {f["strategy_id"] for f in side if f["strategy_id"]}
+                if len(ids) > 1:
+                    checks.append({"check": "assertion_strategy_consistent",
+                                   "source": FRAMEWORK, "side": label,
+                                   "strategy_ids": sorted(ids), "ok": False})
+                    return INSUFFICIENT, (f"{label} mixes strategies "
+                                          f"{sorted(ids)}: the comparison has "
+                                          "no single strategy per side")
+        if mode == MODE_PAIRED:
+            pairs, unpaired = _pair_by_task(side_a, side_b)
+            checks.append({"check": "assertion_paired_scope",
+                           "source": FRAMEWORK, "metric": metric,
+                           "n_pairs": len(pairs),
+                           "unpaired_execution_ids": [
+                               f["execution_id"] for f in unpaired],
+                           "note": ("only same-task pairs participate; "
+                                    "records without a counterpart on the "
+                                    "other side are recorded but not counted")})
+            if not pairs:
+                return INSUFFICIENT, ("no task has comparable records on both "
+                                      "sides, so a paired comparison cannot "
+                                      "be made")
+            deltas: List[float] = []
+            for task_id, fact_a, fact_b in pairs:
+                value_a = _metric_value(fact_a, metric)
+                value_b = _metric_value(fact_b, metric)
+                checks.append({"check": "assertion_pair", "source": FRAMEWORK,
+                               "task_id": task_id, "metric": metric,
+                               "a": {"execution_id": fact_a["execution_id"],
+                                     "value": value_a},
+                               "b": {"execution_id": fact_b["execution_id"],
+                                     "value": value_b}})
+                if value_a is None or value_b is None:
+                    return INSUFFICIENT, (f"{metric} is not measurable on both "
+                                          f"sides of task {task_id} — an "
+                                          "unmeasured metric cannot be "
+                                          "compared")
+                deltas.append(value_a - value_b)
+            if aggregation == AGGREGATION_MEAN:
+                mean_delta = sum(deltas) / len(deltas)
+                ok = _direction_ok(mean_delta, direction, min_gap)
+                checks.append({"check": "assertion_mean_delta",
+                               "source": FRAMEWORK, "metric": metric,
+                               "mean_delta": round(mean_delta, 6),
+                               "direction": direction, "min_gap": min_gap,
+                               "ok": ok})
+                if not ok:
+                    return REFUTED, (f"the mean paired advantage "
+                                     f"({mean_delta:.4g}) does not meet "
+                                     f"{direction} {min_gap}")
+            else:
+                for delta in deltas:
+                    ok = _direction_ok(delta, direction, min_gap)
+                    if not ok:
+                        return REFUTED, (f"a paired comparison failed the "
+                                         f"declared direction/gap "
+                                         f"(delta {delta:.4g})")
+                checks.append({"check": "assertion_all_pairs",
+                               "source": FRAMEWORK, "metric": metric,
+                               "n_pairs": len(deltas),
+                               "direction": direction, "min_gap": min_gap,
+                               "ok": True})
+            return VERIFIED, None
+        # group mode: compare the two sides' means over complete metrics
+        values_a = [_metric_value(f, metric) for f in side_a]
+        values_b = [_metric_value(f, metric) for f in side_b]
+        if any(v is None for v in values_a) or any(v is None for v in values_b):
+            checks.append({"check": "assertion_metric_complete",
+                           "source": FRAMEWORK, "metric": metric,
+                           "measured_a": [v is not None for v in values_a],
+                           "measured_b": [v is not None for v in values_b]})
+            return INSUFFICIENT, (f"{metric} is not measured on every "
+                                  "referenced record — a mean over a subset "
+                                  "is a partial observation, not a claim")
+        mean_a = sum(values_a) / len(values_a)
+        mean_b = sum(values_b) / len(values_b)
+        delta = mean_a - mean_b
+        ok = _direction_ok(delta, direction, min_gap)
+        checks.append({"check": "assertion_group_means", "source": FRAMEWORK,
+                       "metric": metric, "mean_a": round(mean_a, 6),
+                       "mean_b": round(mean_b, 6), "delta": round(delta, 6),
+                       "direction": direction, "min_gap": min_gap, "ok": ok})
+        if not ok:
+            return REFUTED, (f"the group mean difference ({delta:.4g}) does "
+                             f"not meet {direction} {min_gap}")
+        return VERIFIED, None
+
+    checks.append({"check": "assertion_supported", "source": FRAMEWORK,
+                   "kind": kind, "problem": "unsupported assertion kind"})
+    return INSUFFICIENT, (f"assertion kind {kind!r} is not computable by the "
+                          "framework; only probe/status/comparison are "
+                          "evaluated")
+
+
+def _pair_by_task(side_a: List[Dict[str, Any]],
+                  side_b: List[Dict[str, Any]]
+                  ) -> Tuple[List[Tuple[str, Dict[str, Any], Dict[str, Any]]],
+                             List[Dict[str, Any]]]:
+    """Pair records that share a task, one per side (most recent wins).
+
+    Records without a counterpart on the other side are returned separately:
+    they are NOT silently mixed into a paired statistic."""
+    by_task_b: Dict[str, List[Dict[str, Any]]] = {}
+    for fact in side_b:
+        by_task_b.setdefault(fact["task_id"], []).append(fact)
+    pairs: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    used_b: Set[str] = set()
+    unpaired: List[Dict[str, Any]] = []
+    for fact_a in side_a:
+        candidates = [f for f in by_task_b.get(fact_a["task_id"], [])
+                      if f["execution_id"] not in used_b]
+        if not candidates:
+            unpaired.append(fact_a)
+            continue
+        fact_b = candidates[-1]
+        used_b.add(fact_b["execution_id"])
+        pairs.append((fact_a["task_id"], fact_a, fact_b))
+    for fact_b in side_b:
+        if fact_b["execution_id"] not in used_b:
+            unpaired.append(fact_b)
+    return pairs, unpaired
+
+
+def verify_relation(claim: str,
+                    *, evidence: Sequence[Any] = (),
+                    roles: Optional[Sequence[Dict[str, str]]] = None,
+                    assertions: Optional[Sequence[Dict[str, Any]]] = None,
+                    purpose: str = PURPOSE_RELATION
+                    ) -> Dict[str, Any]:
+    """Evaluate a structured relation claim's declared assertions.
+
+    The framework computes ONLY what the claim declares as checkable; it does
+    not parse natural language and does not promise to detect that a sentence
+    overreaches its evidence. ``roles`` names the part each referenced
+    execution plays in THIS claim (free strings), and every assertion reads
+    evidence through those roles.
+
+    Reused machinery (never a second verifier): :func:`_as_fact`
+    normalization, the distinct/identified guards, the precondition discipline
+    (:data:`PRECONDITION_CHECKS`), and the complete-metric rule. The result
+    carries a ``scope`` block naming exactly which executions and assertions
+    the verdict covered — ``verified`` means "no violation was found within
+    this scope", never "true for every future task".
+    """
+    records = [_as_fact(r) for r in evidence]
+    role_list = [dict(r) for r in (roles or [])]
+    assertion_list = [dict(a) for a in (assertions or [])]
+    declared = [str(a.get("kind")) for a in assertion_list]
+
+    if not records:
+        return _relation_report(INSUFFICIENT, claim, [],
+                                assertion_list, scope={},
+                                conclusion=("no evidence was referenced, so "
+                                            "no assertion could run"))
+    dupes = _duplicate_ids(records)
+    if dupes:
+        return _relation_report(
+            INSUFFICIENT, claim, [], assertion_list,
+            scope={"evidence": [f["execution_id"] for f in records]},
+            conclusion=("the same execution was referenced more than once, so "
+                        "it is not independent evidence: "
+                        + ", ".join(sorted(dupes))))
+    if not all(_identified(f) for f in records):
+        return _relation_report(
+            INSUFFICIENT, claim, [], assertion_list,
+            scope={"evidence": [f["execution_id"] for f in records]},
+            conclusion=("an execution carries no execution_id, so the evidence "
+                        "cannot be retraced and is not a check"))
+    # Role partition: every referenced execution must have a role, and every
+    # assertion reads through those roles.
+    by_role: Dict[str, List[Dict[str, Any]]] = {}
+    role_of = {str(r.get("execution_id")): str(r.get("role"))
+               for r in role_list}
+    for fact in records:
+        role = role_of.get(fact["execution_id"])
+        if not role:
+            return _relation_report(
+                INSUFFICIENT, claim, [], assertion_list,
+                scope={"evidence": [f["execution_id"] for f in records]},
+                conclusion=(f"execution {fact['execution_id']} has no role "
+                            "declared, so the framework cannot know what part "
+                            "it plays in the claim"))
+        by_role.setdefault(role, []).append(fact)
+    scope = {
+        "evidence": [{"execution_id": f["execution_id"],
+                      "role": role_of.get(f["execution_id"]),
+                      "task_id": f["task_id"],
+                      "strategy_id": f["strategy_id"]}
+                     for f in records],
+        "tasks": sorted({f["task_id"] for f in records if f["task_id"]}),
+        "roles": sorted(by_role),
+        "assertions_declared": declared,
+    }
+    if not assertion_list:
+        return _relation_report(
+            INSUFFICIENT, claim, [], assertion_list, scope=scope,
+            conclusion=("no assertion was declared: the framework has nothing "
+                        "it can compute, so the claim stays unverified — "
+                        "declare probe/status/comparison assertions for the "
+                        "parts of the claim that are checkable"))
+
+    checks: List[Dict[str, Any]] = []
+    usable = [f for f in records if _usable(f)]
+    if not usable:
+        checks.append({"check": "execution_completed", "source": FRAMEWORK,
+                       "observed": False})
+        return _relation_report(
+            INSUFFICIENT, claim, checks, assertion_list, scope=scope,
+            conclusion=("no referenced execution produced a usable result, so "
+                        "the assertions could not run — not refuted"))
+    verified_assertions: List[int] = []
+    for index, assertion in enumerate(assertion_list):
+        state, reason = _assertion_checks(assertion, by_role, checks)
+        if state == INSUFFICIENT:
+            scope["assertions_checked"] = verified_assertions
+            scope["assertions_unchecked"] = [
+                i for i in range(len(assertion_list))
+                if i not in verified_assertions and i != index]
+            return _relation_report(INSUFFICIENT, claim, checks,
+                                    assertion_list, scope=scope,
+                                    conclusion=("an assertion could not be "
+                                                "decided: " + str(reason)))
+        if state == REFUTED:
+            scope["assertions_checked"] = verified_assertions
+            scope["assertions_unchecked"] = [
+                i for i in range(len(assertion_list))
+                if i not in verified_assertions and i != index]
+            return _relation_report(REFUTED, claim, checks, assertion_list,
+                                    scope=scope,
+                                    conclusion=("the claim did not hold on "
+                                                "real evidence: " + str(reason)))
+        verified_assertions.append(index)
+    scope["assertions_checked"] = verified_assertions
+    scope["assertions_unchecked"] = []
+    return _relation_report(
+        VERIFIED, claim, checks, assertion_list, scope=scope,
+        conclusion=("every declared assertion held over the referenced "
+                    "evidence; this is a verified claim WITHIN THIS SCOPE — "
+                    "no violation was found among the referenced executions, "
+                    "not a guarantee about every future task"))
+
+
+def _relation_report(state: str, claim: str, checks: List[Dict[str, Any]],
+                     assertions: List[Dict[str, Any]], *,
+                     scope: Dict[str, Any],
+                     conclusion: str) -> Dict[str, Any]:
+    """The relation verdict, carrying its own scope and audit trail."""
+    return {
+        "state": state,
+        "purpose": PURPOSE_RELATION,
+        "claim": claim,
+        "assertions": assertions,
+        "checks": checks,
+        "evidence": [str(e.get("execution_id")) for e in
+                     (scope.get("evidence") or [])
+                     if isinstance(e, dict) and e.get("execution_id")],
+        "scope": scope,
+        "conclusion": conclusion,
+        "verified_at": time.time(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# TASK-RESULT checks: does the answer satisfy the ORIGINAL task?
+# ---------------------------------------------------------------------------
+#
+# A different question from everything above. Admission verification asks
+# "does this strategic claim hold"; the executor's own check asks "did the
+# solver reach a legal status with a finite objective". NEITHER asks "is this
+# answer actually a valid answer to the task", and that gap is how a relaxed
+# LP solution (an optimal fractional answer to an integer problem) becomes a
+# positive quality sample and poisons recall, statistics, world-model
+# feedback and offline induction.
+#
+# Scope discipline (the same red lines, restated for this layer):
+#
+# 1. **A solver's optimality is not task correctness.** `optimal` + `gap=0`
+#    says the answer is best for the MODEL AS WRITTEN. A model with the wrong
+#    variable domain, the wrong objective or a missing constraint is
+#    optimally wrong. Only a check the harness declares is evaluated here.
+# 2. **No gold is not a pass.** With no check basis the honest verdict is
+#    `insufficient` — never "matched", never "probably fine", and never a
+#    demand that the user supply a reference.
+# 3. **The framework does not understand natural language constraints.** It
+#    evaluates the check bases that are computable (a reference value, a
+#    status, declared integer domains, an objective recomputation, explicit
+#    value probes). Anything not declared is listed as UNCHECKED in the
+#    report's scope, so "passed" is never read as "fully validated".
+
+#: Task-result verdicts. Deliberately NOT the admission vocabulary: a task
+#: check answers "is this answer acceptable", not "is this claim true".
+TASK_CHECK_PASSED = "passed"
+TASK_CHECK_FAILED = "failed"
+TASK_CHECK_INSUFFICIENT = "insufficient"
+
+#: Declared intent of an execution that must not be read as a plain success.
+INTENT_RELAXATION = "relaxation"
+INTENT_INTERMEDIATE = "intermediate"
+TASK_INTENTS = (INTENT_RELAXATION, INTENT_INTERMEDIATE)
+
+#: What a task check can never establish, whatever passes. Always reported in
+#: ``scope.unchecked`` so a `passed` verdict is not over-read.
+_TASK_CHECK_UNCHECKED_ALWAYS = (
+    "whether the MODEL represents the task (a correct answer to a wrong "
+    "model is still wrong)",
+    "constraint satisfaction not declared as a probe or a recomputation",
+)
+
+
+def _solution_variables(fact: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
+    """The recorded solution vector of a fact: ``(present, values)``.
+
+    Read from ``execution_features.solution_variables`` — the executor stores
+    the script-reported ``result.json`` ``variables`` map there. Absent means
+    absent: a check needing a variable reports it as missing rather than
+    treating the solution as empty (an empty solution would silently satisfy
+    an "all variables are integers" test)."""
+    payload = fact.get("payload") or {}
+    features = payload.get("execution_features") or {}
+    raw = features.get("solution_variables")
+    if not isinstance(raw, dict) or not raw:
+        return False, {}
+    return True, dict(raw)
+
+
+def _variable_value(values: Dict[str, Any],
+                    name: str) -> Tuple[bool, Any]:
+    """Resolve one variable name, supporting dotted paths into a nested map."""
+    return _resolve(values, str(name))
+
+
+def _task_check_report(state: str, *, execution_id: str, checks: List[Dict[str, Any]],
+                       diffs: List[Dict[str, Any]], basis: List[str],
+                       unchecked: List[str], intent: Optional[str],
+                       conclusion: str) -> Dict[str, Any]:
+    """The task-result verdict: identity, scope, checks, diffs, unchecked."""
+    return {
+        "state": state,
+        "execution_id": execution_id,
+        "checks": checks,
+        "diffs": diffs,
+        "scope": {
+            "basis": basis,
+            "unchecked": unchecked,
+        },
+        "intent": intent,
+        "conclusion": conclusion,
+        "checked_at": time.time(),
+    }
+
+
+def _task_check_declared(check: Dict[str, Any]) -> List[str]:
+    """Which check bases the harness actually declared."""
+    declared: List[str] = []
+    if _finite(check.get("reference_objective")) is not None:
+        declared.append("reference_objective")
+    if check.get("reference_status") is not None:
+        declared.append("reference_status")
+    if check.get("integer") is not None:
+        declared.append("integer")
+    if check.get("recompute_objective") is not None:
+        declared.append("recompute_objective")
+    if check.get("semantic_probe") is not None:
+        declared.append("semantic_probe")
+    return declared
+
+
+def verify_task_result(execution: Any,
+                       check: Optional[Dict[str, Any]] = None
+                       ) -> Dict[str, Any]:
+    """Check whether ONE execution's answer satisfies the original task.
+
+    ``check`` is the harness's declaration of what is checkable. Every base is
+    optional; the framework evaluates ONLY what is declared and reports the
+    rest as unchecked:
+
+    - ``reference_objective`` (+ optional ``tolerance``): the reported
+      objective must agree with the reference. The tolerance rule is the SAME
+      one admission verification uses (``1e-6 * max(1, |reference|)`` unless
+      overridden) — one rule, one place.
+    - ``reference_status``: the reported solver status must equal it.
+    - ``integer``: ``{"variables": [names] | omitted, "tolerance": t}`` —
+      every named variable (or every recorded variable) must be integral
+      within ``t``. This is the check that catches an LP relaxation answered
+      with fractional values.
+    - ``recompute_objective``: ``{"coefficients": {name: c}, "constant": k,
+      "tolerance": t}`` — the objective is RECOMPUTED from the recorded
+      solution vector and compared with the reported one.
+    - ``semantic_probe``: one or more ``{"path", equals|min|max|in}`` probes
+      over the record payload (the same probe evaluator admission uses).
+
+    A ``failed`` verdict means a declared check ran on real values and did not
+    hold. ``insufficient`` means the check could not be decided (no basis
+    declared, no solution vector, a needed variable missing, the execution
+    produced no usable result) — which is NOT a pass and NOT a failure. A
+    ``passed`` verdict covers only the declared bases: the report always names
+    what it did not check.
+    """
+    fact = _as_fact(execution)
+    execution_id = fact["execution_id"]
+    check = dict(check or {})
+    intent = check.get("intent")
+    if intent is not None and str(intent) not in TASK_INTENTS:
+        raise ValueError(
+            f"intent must be one of {TASK_INTENTS} or omitted (got {intent!r})")
+    intent = str(intent) if intent is not None else None
+    unchecked = list(_TASK_CHECK_UNCHECKED_ALWAYS)
+    if intent == INTENT_RELAXATION:
+        unchecked.append(
+            "the harness declared this a deliberate relaxation: its answer is "
+            "not the task's answer, so a pass here does not make it one")
+    elif intent == INTENT_INTERMEDIATE:
+        unchecked.append(
+            "the harness declared this an intermediate solve: it is a step "
+            "toward the answer, not the answer")
+
+    if not execution_id:
+        return _task_check_report(
+            TASK_CHECK_INSUFFICIENT, execution_id="", checks=[], diffs=[],
+            basis=[], unchecked=unchecked, intent=intent,
+            conclusion=("the execution carries no execution_id, so the check "
+                        "cannot be attached to a fact and is not a check"))
+
+    declared = _task_check_declared(check)
+    if not declared:
+        return _task_check_report(
+            TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+            checks=[{"check": "task_check_basis", "source": FRAMEWORK,
+                     "declared": []}], diffs=[], basis=[],
+            unchecked=unchecked + ["every check base (none was declared)"],
+            intent=intent,
+            conclusion=("no check basis was declared: the framework has "
+                        "nothing it can compute, so the answer's validity is "
+                        "UNKNOWN — feasibility and optimality are properties "
+                        "of the solver's own model, not of the task. Declare "
+                        "reference_objective / reference_status / integer / "
+                        "recompute_objective / semantic_probe as applicable"))
+
+    if not _usable(fact):
+        return _task_check_report(
+            TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+            checks=[{"check": "execution_completed", "source": FRAMEWORK,
+                     "observed": False,
+                     "status": fact["quality"].get("status")}],
+            diffs=[], basis=declared, unchecked=unchecked, intent=intent,
+            conclusion=("the execution produced no usable result, so the "
+                        "declared check could not run — this is not a failure "
+                        "of the answer"))
+
+    checks: List[Dict[str, Any]] = []
+    diffs: List[Dict[str, Any]] = []
+    ran = 0
+
+    # -- reference status -----------------------------------------------------
+    reference_status = check.get("reference_status")
+    if reference_status is not None:
+        ran += 1
+        status = str(fact["quality"].get("status", ""))
+        ok = status == str(reference_status)
+        checks.append({"check": "reference_status", "source": FRAMEWORK,
+                       "observed": status, "expected": reference_status,
+                       "ok": ok})
+        if not ok:
+            diffs.append({"basis": "reference_status", "observed": status,
+                          "expected": reference_status,
+                          "reason": (f"the solver finished {status!r}, not the "
+                                     f"declared {reference_status!r}")})
+            return _task_check_report(
+                TASK_CHECK_FAILED, execution_id=execution_id, checks=checks,
+                diffs=diffs, basis=declared, unchecked=unchecked,
+                intent=intent,
+                conclusion=(f"the answer's status {status!r} does not match "
+                            f"the declared {reference_status!r}"))
+
+    # -- reference objective (ONE tolerance rule) ------------------------------
+    reference = _finite(check.get("reference_objective"))
+    if reference is not None:
+        ran += 1
+        objective = _finite(fact["quality"].get("objective"))
+        tolerance = _finite(check.get("tolerance"))
+        tol = (tolerance if tolerance is not None
+               else 1e-6 * max(1.0, abs(reference)))
+        gap = None if objective is None else abs(objective - reference)
+        ok = objective is not None and gap <= tol
+        checks.append({"check": "reference_objective", "source": FRAMEWORK,
+                       "observed": objective, "reference": reference,
+                       "tolerance": tol, "abs_diff": gap, "ok": ok})
+        if not ok:
+            diffs.append({"basis": "reference_objective", "observed": objective,
+                          "expected": reference, "tolerance": tol,
+                          "abs_diff": gap,
+                          "reason": ("no objective value was reported"
+                                     if objective is None else
+                                     f"the objective differs from the reference "
+                                     f"by {gap:.6g}, outside the tolerance "
+                                     f"{tol:.6g}")})
+            return _task_check_report(
+                TASK_CHECK_FAILED, execution_id=execution_id, checks=checks,
+                diffs=diffs, basis=declared, unchecked=unchecked,
+                intent=intent,
+                conclusion=(f"the objective does not match the reference "
+                            f"within {tol:.6g}"))
+
+    # -- integer domains (the LP-relaxation trap) ------------------------------
+    integer_spec = check.get("integer")
+    if integer_spec is not None:
+        ran += 1
+        spec = integer_spec if isinstance(integer_spec, dict) else {}
+        present, values = _solution_variables(fact)
+        if not present:
+            checks.append({"check": "integer_domains", "source": FRAMEWORK,
+                           "ran": False,
+                           "problem": "no solution vector was recorded"})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + ["integer domains (no solution vector "
+                                       "was recorded)"],
+                intent=intent,
+                conclusion=("the integer-domain check needs the recorded "
+                            "solution vector and this execution carries none "
+                            "(the script must report `variables` in "
+                            "result.json) — the answer's domain validity is "
+                            "UNKNOWN, not confirmed"))
+        names = spec.get("variables")
+        if names is None:
+            names = sorted(values)
+            scope_note = "every recorded variable"
+        else:
+            names = [str(n) for n in names]
+            scope_note = "the declared variables"
+        tol = _finite(spec.get("tolerance"))
+        tol = 1e-6 if tol is None else tol
+        missing = [n for n in names if not _variable_value(values, n)[0]]
+        if missing:
+            checks.append({"check": "integer_domains", "source": FRAMEWORK,
+                           "ran": False, "missing_variables": missing})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + [
+                    "integer domains for " + ", ".join(missing)
+                    + " (absent from the recorded solution vector)"],
+                intent=intent,
+                conclusion=("the integer-domain check names variables the "
+                            "solution vector does not contain ("
+                            + ", ".join(missing)
+                            + "): the answer's domain validity is UNKNOWN"))
+        non_integer: List[Dict[str, Any]] = []
+        for name in names:
+            found, raw = _variable_value(values, name)
+            value = _finite(raw)
+            if not found or value is None:
+                # A non-numeric value (a string label, a nested structure) is
+                # not integral and not comparable: recorded, never coerced.
+                non_integer.append({"variable": name, "value": raw,
+                                    "fractional_part": None,
+                                    "reason": "the value is not numeric"})
+                continue
+            fractional = abs(value - round(value))
+            if fractional > tol:
+                non_integer.append({"variable": name, "value": value,
+                                    "fractional_part": round(fractional, 12),
+                                    "reason": (f"{value} is not an integer "
+                                               f"(fractional part "
+                                               f"{fractional:.6g})")})
+        checks.append({"check": "integer_domains", "source": FRAMEWORK,
+                       "ran": True, "scope": scope_note,
+                       "n_variables": len(names),
+                       "n_non_integer": len(non_integer),
+                       "tolerance": tol,
+                       "ok": not non_integer})
+        if non_integer:
+            diffs.extend({"basis": "integer_domains", **item}
+                         for item in non_integer)
+            return _task_check_report(
+                TASK_CHECK_FAILED, execution_id=execution_id, checks=checks,
+                diffs=diffs, basis=declared, unchecked=unchecked,
+                intent=intent,
+                conclusion=(f"{len(non_integer)} of {len(names)} "
+                            f"{scope_note} are not integral: this is not a "
+                            "valid answer to an integer task, whatever the "
+                            "solver's own optimality says"))
+
+    # -- objective recomputation from the solution -----------------------------
+    recompute = check.get("recompute_objective")
+    if recompute is not None:
+        ran += 1
+        spec = recompute if isinstance(recompute, dict) else {}
+        coefficients = spec.get("coefficients") or {}
+        if not isinstance(coefficients, dict) or not coefficients:
+            checks.append({"check": "recompute_objective", "source": FRAMEWORK,
+                           "ran": False,
+                           "problem": "no coefficients were declared"})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + ["objective recomputation (no "
+                                       "coefficients declared)"],
+                intent=intent,
+                conclusion=("the recomputation declares no coefficients, so "
+                            "the objective could not be recomputed"))
+        present, values = _solution_variables(fact)
+        if not present:
+            checks.append({"check": "recompute_objective", "source": FRAMEWORK,
+                           "ran": False,
+                           "problem": "no solution vector was recorded"})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + ["objective recomputation (no solution "
+                                       "vector was recorded)"],
+                intent=intent,
+                conclusion=("the recomputation needs the recorded solution "
+                            "vector and this execution carries none"))
+        missing = [str(n) for n in coefficients
+                   if not _variable_value(values, str(n))[0]]
+        if missing:
+            checks.append({"check": "recompute_objective", "source": FRAMEWORK,
+                           "ran": False, "missing_variables": sorted(missing)})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + ["objective recomputation (variables "
+                                       "absent from the solution vector: "
+                                       + ", ".join(sorted(missing)) + ")"],
+                intent=intent,
+                conclusion=("the recomputation needs variables the solution "
+                            "vector does not contain, so it could not run"))
+        total = _finite(spec.get("constant")) or 0.0
+        unreadable: List[str] = []
+        for name, coefficient in coefficients.items():
+            _, raw = _variable_value(values, str(name))
+            value = _finite(raw)
+            coef = _finite(coefficient)
+            if value is None or coef is None:
+                unreadable.append(str(name))
+                continue
+            total += coef * value
+        if unreadable:
+            checks.append({"check": "recompute_objective", "source": FRAMEWORK,
+                           "ran": False, "unreadable_variables": sorted(unreadable)})
+            return _task_check_report(
+                TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                checks=checks, diffs=diffs, basis=declared,
+                unchecked=unchecked + ["objective recomputation (a "
+                                       "coefficient or value was not numeric: "
+                                       + ", ".join(sorted(unreadable)) + ")"],
+                intent=intent,
+                conclusion=("a declared coefficient or solution value was not "
+                            "numeric, so the objective could not be recomputed"))
+        reported = _finite(fact["quality"].get("objective"))
+        tol = _finite(spec.get("tolerance"))
+        tol = (tol if tol is not None
+               else 1e-6 * max(1.0, abs(reported if reported is not None
+                                        else total)))
+        diff = None if reported is None else abs(reported - total)
+        ok = reported is not None and diff <= tol
+        checks.append({"check": "recompute_objective", "source": FRAMEWORK,
+                       "recomputed": round(total, 9), "reported": reported,
+                       "tolerance": tol, "abs_diff": diff, "ok": ok})
+        if not ok:
+            diffs.append({"basis": "recompute_objective",
+                          "observed": reported, "expected": round(total, 9),
+                          "tolerance": tol, "abs_diff": diff,
+                          "reason": ("no objective value was reported"
+                                     if reported is None else
+                                     f"the reported objective differs from the "
+                                     f"value recomputed from the solution by "
+                                     f"{diff:.6g}, outside the tolerance "
+                                     f"{tol:.6g}: the answer does not satisfy "
+                                     f"the declared objective")})
+            return _task_check_report(
+                TASK_CHECK_FAILED, execution_id=execution_id, checks=checks,
+                diffs=diffs, basis=declared, unchecked=unchecked,
+                intent=intent,
+                conclusion=("the objective recomputed from the recorded "
+                            "solution does not match the reported one: the "
+                            "answer does not satisfy the declared objective"))
+
+    # -- value probes (the same evaluator admission uses) ----------------------
+    probe = check.get("semantic_probe")
+    if probe is not None:
+        for item in (probe if isinstance(probe, list) else [probe]):
+            ran += 1
+            result = _evaluate_probe(fact, dict(item or {}))
+            result["check"] = "semantic_probe"
+            checks.append(result)
+            if result.get("ok") is None:
+                return _task_check_report(
+                    TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
+                    checks=checks, diffs=diffs, basis=declared,
+                    unchecked=unchecked + [f"probe {result.get('path')!r} "
+                                           "(declares no comparison)"],
+                    intent=intent,
+                    conclusion=(f"the probe {result.get('path')!r} declares "
+                                "no comparison, so it could not decide"))
+            if not result["ok"]:
+                diffs.append({"basis": "semantic_probe",
+                              "path": result.get("path"),
+                              "observed": result.get("observed"),
+                              "expected": (result.get("expected")
+                                           if "expected" in result
+                                           else {"min": result.get("min"),
+                                                 "max": result.get("max")}),
+                              "reason": (f"the value at {result.get('path')!r} "
+                                         "does not satisfy the declared "
+                                         "comparison")})
+                return _task_check_report(
+                    TASK_CHECK_FAILED, execution_id=execution_id,
+                    checks=checks, diffs=diffs, basis=declared,
+                    unchecked=unchecked, intent=intent,
+                    conclusion=(f"the declared probe "
+                                f"{result.get('path')!r} failed on the "
+                                "recorded values"))
+
+    if ran == 0:
+        # Unreachable while `declared` is non-empty, but kept explicit: a
+        # silent `passed` with nothing evaluated is the exact failure mode
+        # this layer exists to prevent.
+        return _task_check_report(
+            TASK_CHECK_INSUFFICIENT, execution_id=execution_id, checks=checks,
+            diffs=diffs, basis=declared, unchecked=unchecked, intent=intent,
+            conclusion=("no declared check actually ran, so the answer's "
+                        "validity is UNKNOWN"))
+    return _task_check_report(
+        TASK_CHECK_PASSED, execution_id=execution_id, checks=checks,
+        diffs=[], basis=declared, unchecked=unchecked, intent=intent,
+        conclusion=("every declared check passed on the recorded values. This "
+                    "covers the declared bases only: it is not a proof that "
+                    "the model represents the task, and the unchecked items "
+                    "above are still unknown"))
+
+
+__all__ = ["verify_candidate", "verify_relation", "verify_task_result",
+           "VERIFIED", "INSUFFICIENT",
+           "REFUTED", "PURPOSE_RULE", "PURPOSE_REPAIR", "PURPOSE_COST_SAVING",
+           "PURPOSE_RELATION", "TASK_CHECK_PASSED", "TASK_CHECK_FAILED",
+           "TASK_CHECK_INSUFFICIENT", "TASK_INTENTS", "INTENT_RELAXATION",
+           "INTENT_INTERMEDIATE"]

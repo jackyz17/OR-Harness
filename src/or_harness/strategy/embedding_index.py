@@ -54,7 +54,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence, Tuple
 
-from or_harness.core.schema import ExecutionRecord, StrategicEntry, Strategy
+from or_harness.core.schema import ExecutionRecord, StrategicEntry
 #: ONE digest convention across the harness: the same truncation, the same
 #: sort-keys/compact separators, the same ``default=str`` width rules. The
 #: helper is imported rather than re-implemented so an index digest can
@@ -285,27 +285,29 @@ def document_execution(record: ExecutionRecord, task_text: str) -> str:
     return " ".join(part for part in parts if part)
 
 
-def document_entry(entry: StrategicEntry,
-                   strategy: Optional[Strategy] = None) -> str:
+def document_entry(entry: StrategicEntry) -> str:
     """The retrieval document of one strategic entry (knowledge text).
 
-    Composed ENTIRELY of text that already exists: the harness-written
-    ``applicability`` notes, the catalog's name/description/actions, and a
-    readable transcription of the entry's predicates. No new summarization
-    step is invented — a generated paraphrase would be unverifiable content
-    masquerading as the claim.
+    Composed ENTIRELY of text that ALREADY EXISTS on the entry: the
+    harness-written ``applicability`` notes, the entry's structured relation
+    claims, its own recorded actions, and a readable transcription of its
+    predicates. No new summarization step is invented — a generated
+    paraphrase would be unverifiable content masquerading as the claim — and
+    nothing is pulled from a built-in directory: a method's name and
+    description are not evidence about what ran.
     """
     parts: List[str] = []
-    catalog_text = [v for v in (
-        (strategy.name if strategy else None),
-        (strategy.description if strategy else None),
-        " ".join(strategy.actions) if strategy and strategy.actions else None,
-    ) if v]
-    if catalog_text:
-        parts.append(" ".join(catalog_text))
     parts.extend(str(note) for note in entry.applicability if str(note).strip())
     if entry.risk_conditions:
         parts.append("risks: " + "; ".join(str(r) for r in entry.risk_conditions))
+    # Relation claims are part of what the knowledge SAYS: a reader searching
+    # by text must be able to find "keep the cross-period state", which lives
+    # in a relation, not in the entry's own notes. Editing a claim moves the
+    # digest, so the existing stale-vector rule drops the old vector.
+    for relation in entry.relations or []:
+        claim = str((relation or {}).get("claim") or "").strip()
+        if claim:
+            parts.append("relation: " + claim)
     if entry.actions:
         parts.append("actions: " + " ".join(str(a) for a in entry.actions))
     parts.append(readable_predicates(entry.predicates))

@@ -54,6 +54,7 @@ import copy
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from or_harness.core.schema import task_effective_quality
 from or_harness.world_model.knowledge import MEASUREMENT_PREFIX
 
 #: Knowledge-evaluation states (see module docstring).
@@ -312,15 +313,22 @@ def _observed_quality(record) -> Tuple[Optional[float], Optional[str]]:
     "a record was produced" masquerade as "the expected knowledge was
     supported". The knowledge channel judges claims, so it may only use
     measurements.
+
+    TASK-CHECK GATE: a task-level check CONFIRMING the answer does not
+    satisfy the task makes the measured quality 0.0, whatever the solver's
+    own model said. The world-model feedback is about the TASK's outcome, so
+    an optimally-wrong answer must not register as evidence supporting a
+    claim.
     """
     quality = getattr(record, "quality", None)
     if not isinstance(quality, dict) or not quality.get("feasible"):
         return None, "the execution produced no feasible result"
     gap = quality.get("gap")
     if gap is not None:
-        return max(0.0, min(1.0, 1.0 - float(gap))), "measured gap"
+        return (task_effective_quality(
+            record, max(0.0, min(1.0, 1.0 - float(gap)))), "measured gap")
     if quality.get("status") == "optimal":
-        return 1.0, "optimal status"
+        return task_effective_quality(record, 1.0), "optimal status"
     return None, ("the result is feasible but carries no gap or optimality "
                   "basis: its quality is not measured, so no claim can be "
                   "judged against it")

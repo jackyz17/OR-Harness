@@ -30,6 +30,15 @@ AGENT_FACING_DOCS = [
     "references/episode_closeout.md",
 ]
 
+#: Runnable examples the docs may point at. They are scripts, not prose, so
+#: they are checked for EXISTENCE and (by the test suite) for running clean.
+DOCUMENTED_EXAMPLES = [
+    "references/examples/no_catalog.py",
+    "references/examples/task_check.py",
+    "references/examples/episode_closeout.py",
+    "references/examples/strategy_outcome.py",
+]
+
 #: (command, [flags]) that the docs tell an agent to use.
 DOCUMENTED_FLAGS = [
     ("contract", ["--kind", "--payload", "--task", "--spec", "--episode",
@@ -38,8 +47,8 @@ DOCUMENTED_FLAGS = [
                   "--horizon", "--horizon-tasks", "--expected-change",
                   "--verification"]),
     ("profile", ["--task", "--cir", "--allow-empty-cir"]),
-    ("recall", ["--task", "--top", "--exclude", "--memory-mode",
-                "--include-unverified"]),
+    ("recall", ["--task", "--top", "--exclude", "--candidate",
+                "--memory-mode", "--include-unverified"]),
     ("predict", ["--task", "--strategy"]),
     ("predict-outcome", ["--task", "--action-spec", "--episode",
                          "--parent-action", "--context", "--no-context"]),
@@ -63,9 +72,10 @@ DOCUMENTED_FLAGS = [
                              "--allow-descriptive"]),
     ("capability-feedback", ["--prediction"]),
     ("bind-outcome", ["--prediction", "--action"]),
+    ("check-task", ["--check", "--episode"]),
     ("induce", ["--strategy", "--all", "--rebuild", "--dry-run", "--force",
                 "--note", "--verify", "--family", "--cell", "--peer-strategy",
-                "--peer-cell"]),
+                "--peer-cell", "--relation"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
                    "--max-calls", "--delta", "--prediction-mode",
                    "--protocol"]),
@@ -298,6 +308,13 @@ def main() -> int:
             if not resolved.exists():
                 failures.append(f"{doc} links to missing {target}")
         print(f"{doc:44s} links OK")
+
+    # The runnable examples the docs promise must be present.
+    for example in DOCUMENTED_EXAMPLES:
+        if not (ROOT / example).exists():
+            failures.append(f"documented example {example} is missing")
+    print(f"runnable examples                         "
+          f"{len(DOCUMENTED_EXAMPLES)} present")
 
     if failures:
         print("\nFAILURES:")

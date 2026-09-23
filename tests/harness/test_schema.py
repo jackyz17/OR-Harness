@@ -9,7 +9,6 @@ from or_harness.core.schema import (
     ExecutionRecord,
     ProblemProfile,
     StrategicEntry,
-    Strategy,
     evidence_predicates,
     group_key,
     min_interval_width,
@@ -44,30 +43,21 @@ class TestSchemaRoundTrip(HarnessTestCase):
         with self.assertRaises(ValueError):
             ProblemProfile.from_dict({"problem_id": "x"})
 
-    def test_strategy_round_trip(self):
-        s = Strategy(strategy_id="S01", name="monolithic",
-                     applicability={"family": "routing"},
-                     actions=["build", "solve"], fallback="S02",
-                     solver_family="milp")
-        s2 = Strategy.from_dict(s.to_dict())
-        self.assertEqual(s2.strategy_id, "S01")
-        self.assertEqual(s2.applicability, s.applicability)
-        self.assertEqual(s2.fallback, "S02")
-        self.assertEqual(s2.solver_family, "milp")
-
-    def test_strategy_type_round_trip(self):
-        s = Strategy(strategy_id="S01", name="monolithic",
-                     strategy_type="modeling")
-        self.assertEqual(Strategy.from_dict(s.to_dict()).strategy_type, "modeling")
-        # Old catalog payloads without the field load with None.
-        self.assertIsNone(Strategy.from_dict(
-            {"strategy_id": "S02", "name": "x"}).strategy_type)
-
     def test_execution_record_actual_aliases(self):
         r = self.make_record(feasible=False, gap=0.12, status="feasible")
         # Facts store ACTUAL observations; aliases make this explicit.
         self.assertIs(r.actual_quality, r.quality)
         self.assertIs(r.actual_cost, r.cost)
+
+    def test_there_is_no_strategy_schema(self):
+        """A strategy is an id plus whatever memory records about it.
+
+        The framework keeps no built-in directory of methods, so there is no
+        schema whose absence would make an outer agent's method name
+        'invalid'.
+        """
+        import or_harness.core.schema as schema
+        self.assertFalse(hasattr(schema, "Strategy"))
 
     def test_execution_record_cir_snapshot_round_trip(self):
         cir = {"entities": [{"name": "R1", "kind": "resource", "attrs": {}}],

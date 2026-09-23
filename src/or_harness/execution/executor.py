@@ -63,6 +63,29 @@ from or_harness.core.schema import (
 
 ALLOWED_STATUSES = ("optimal", "feasible", "infeasible", "unbounded", "timeout", "error")
 
+#: How many entries of a script-reported ``variables`` map are kept. A
+#: solution vector is EVIDENCE a task-level check can read (integrality,
+#: objective recomputation), so it is preserved rather than dropped — but a
+#: model with 10^5 variables must not turn every record into a megabyte
+#: blob. Truncation is always REPORTED (``solution_variables_truncated``),
+#: never silent: a check that needed a dropped variable sees the key absent
+#: and says so instead of passing.
+MAX_SOLUTION_VARIABLES = 2000
+
+
+def _solution_variables(raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalize a script-reported ``variables`` map (or None).
+
+    Accepts a JSON object of name -> number/bool/string; anything else (a
+    list, a scalar, a missing key) is reported as NO solution rather than
+    coerced into one — a check must never run against a fabricated vector.
+    A nested structure is kept as-is: the check layer decides whether it
+    can resolve a path into it.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    return {str(key): value for key, value in raw.items()}
+
 
 def _resource_limits(cpu_seconds: int, memory_bytes: int, file_bytes: int):
     def apply_limits() -> None:
@@ -106,6 +129,14 @@ class ExecutionOutcome:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     stdout: str = ""
     stderr: str = ""
+    #: The solution vector the script reported (``result.json``'s optional
+    #: ``variables`` map), or None when it reported none. This is what makes
+    #: a TASK-level check possible (integer domains, objective
+    #: recomputation): the solver's own feasibility verdict cannot answer
+    #: "does this satisfy the original task", but the actual variable values
+    #: can. Absent is reported as absent — never fabricated, never treated
+    #: as an empty solution.
+    variables: Optional[Dict[str, Any]] = None
 
 
 class SafePythonExecutor:
@@ -223,6 +254,7 @@ class SafePythonExecutor:
             wall_seconds=wall,
             message=str(payload.get("message", "")),
             diagnostics=dict(payload.get("diagnostics") or {}),
+            variables=_solution_variables(payload.get("variables")),
             stdout=stdout, stderr=stderr)
 
     # -- verification (infrastructure, not a research contribution) -----------
@@ -351,6 +383,23 @@ class SafePythonExecutor:
         execution_features: Dict[str, Any] = {}
         if outcome.diagnostics:
             execution_features["solver_diagnostics"] = dict(outcome.diagnostics)
+        if outcome.variables is not None:
+            # The solution vector is the ONLY evidence a task-level check
+            # (integer domain, objective recomputation, per-value probes)
+            # can read. Truncation is reported explicitly so a check that
+            # needed a dropped variable stays insufficient instead of
+            # silently passing.
+            kept = dict(list(outcome.variables.items())[:MAX_SOLUTION_VARIABLES])
+            execution_features["solution_variables"] = kept
+            if len(outcome.variables) > len(kept):
+                execution_features["solution_variables_truncated"] = {
+                    "n_reported": len(outcome.variables),
+                    "n_kept": len(kept),
+                    "dropped": sorted(set(outcome.variables) - set(kept)),
+                    "note": ("the solution vector exceeded the storage limit; "
+                             "a check needing a dropped variable will report "
+                             "it as unchecked"),
+                }
         if outcome.executed:
             # The one call this executor can PROVE happened. The total
             # ``tool_calls`` (all tool invocations in the declared scope) is
