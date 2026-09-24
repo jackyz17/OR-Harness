@@ -845,7 +845,14 @@ class ORHarness:
             from or_harness.world_model.episode_closeout import (
                 calibration_summary_for_context,
             )
-            strategy_calibration = calibration_summary_for_context(self)
+            # The published summary, filtered to the ATTACHED provider's
+            # model identity: another model's error statistics are not
+            # evidence about this one, so they are withheld (and the
+            # withholding is reported on the block).
+            strategy_calibration = calibration_summary_for_context(
+                self,
+                model_identity=self.strategy_predictions.model_identity
+                .get("provider_model"))
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -1545,23 +1552,122 @@ class ORHarness:
             out.append(evaluation.to_dict())
         return out
 
-    def calibration_summary(self, *, min_samples: Optional[int] = None
+    def calibration_summary(self, *, min_samples: Optional[int] = None,
+                            rebuild: bool = False
                             ) -> Dict[str, Any]:
-        """The published experience-calibration summary (wm-so/1).
+        """The published experience-calibration summary (wm-calib/2).
 
-        Aggregated from CLOSED episodes' eligible evaluations only — an
-        active episode never reads its own not-yet-closed feedback. This
-        is the OR strategy-outcome reliability, kept separate from the
-        legacy knowledge-prediction reliability; it is a measured record,
-        not a fitted calibrator and not a promise of future accuracy."""
+        By default this READS the published summary — one row lookup, no
+        history scan. The published object is rebuilt whenever the window
+        changes (a close-out, a late task check, an exclusion, a restore),
+        so the read path never has to.
+
+        ``rebuild=True`` (``orx calibration --rebuild``) rebuilds and
+        republishes it from the current window — the explicit migration
+        path for a store that predates this version, and the repair path
+        for a summary that was never published.
+
+        Aggregated from the WINDOW's eligible evaluations only — an active
+        episode never reads its own not-yet-closed feedback. This is the OR
+        strategy-outcome reliability, kept separate from the legacy
+        knowledge-prediction reliability; it is a measured record, not a
+        fitted calibrator and not a promise of future accuracy."""
         from or_harness.world_model.episode_closeout import (
             DEFAULT_MIN_CALIBRATION_SAMPLES,
+            CalibrationPolicy,
             build_calibration_summary,
+            published_calibration_summary,
+            republish_calibration,
         )
-        return build_calibration_summary(
-            self, min_samples=(min_samples
-                               if min_samples is not None
-                               else DEFAULT_MIN_CALIBRATION_SAMPLES))
+        policy = CalibrationPolicy.from_env()
+        if rebuild:
+            return republish_calibration(
+                self, policy=policy,
+                min_calibration_samples=(min_samples
+                                         if min_samples is not None
+                                         else DEFAULT_MIN_CALIBRATION_SAMPLES))
+        published = published_calibration_summary(self)
+        if published is None:
+            # Nothing published yet: build one now so an explicit read is
+            # never empty, and publish it so later prediction reads are
+            # O(1). (The prediction path itself does NOT do this — it
+            # reports the gap instead of turning a read into a write.)
+            return republish_calibration(
+                self, policy=policy,
+                min_calibration_samples=(min_samples
+                                         if min_samples is not None
+                                         else DEFAULT_MIN_CALIBRATION_SAMPLES))
+        if min_samples is not None:
+            return build_calibration_summary(
+                self, min_samples=min_samples, policy=policy)
+        return published
+
+    def archive_calibration(self, *, dry_run: bool = False,
+                            policy: Optional[Any] = None
+                            ) -> Dict[str, Any]:
+        """Move OUT-OF-WINDOW episode detail to the archive (retention).
+
+        Only DETAIL moves (evaluation, prediction and frozen-context
+        payloads); the close-out registry tombstone stays online so a
+        repeated close remains idempotent and the window stays locatable.
+        The archive is bounded by a per-file size cap, a total size cap and
+        an age cap, so "the archive is bounded" is a true statement.
+        """
+        from or_harness.world_model.episode_closeout import (
+            CalibrationPolicy,
+            archive_calibration_detail,
+        )
+        return archive_calibration_detail(
+            self, policy=policy or CalibrationPolicy.from_env(),
+            dry_run=dry_run)
+
+    def calibration_retention(self) -> Dict[str, Any]:
+        """What the online store currently holds vs the retention policy.
+
+        A read-only view of the three scopes (window / grace / archive) so
+        an operator can see the online capacity, the archive capacity and
+        the retention period as three separate numbers instead of one."""
+        from or_harness.world_model.episode_closeout import (
+            CalibrationPolicy,
+            archive_dir,
+            calibration_window,
+        )
+        policy = CalibrationPolicy.from_env()
+        window = calibration_window(self, policy)
+        total_closeouts = len(self.store.closeout_registry())
+        archived = len(self.store.closeout_registry(archived=True))
+        directory = archive_dir(self)
+        archive_files = []
+        if directory.exists():
+            for path in sorted(directory.iterdir()):
+                if path.is_file():
+                    archive_files.append({
+                        "name": path.name,
+                        "bytes": path.stat().st_size,
+                    })
+        return {
+            "policy": policy.to_dict(),
+            "online": {
+                "n_window_episodes": len(window),
+                "n_closeouts_total": total_closeouts,
+                "n_closeouts_archived": archived,
+                "n_contract_predictions":
+                    self.store.count_contract_predictions(),
+                "n_prediction_contexts":
+                    self.store.count_prediction_contexts(),
+            },
+            "archive": {
+                "directory": str(directory),
+                "files": archive_files,
+                "total_bytes": sum(f["bytes"] for f in archive_files),
+            },
+            "note": ("three separate scopes: the WINDOW decides which closed "
+                     "episodes calibrate; the GRACE period decides how long "
+                     "online detail is kept for a possible late check; the "
+                     "ARCHIVE caps bound what history is kept on disk. "
+                     "Registry tombstones stay online permanently so a "
+                     "repeated close is still idempotent"),
+        }
 
     def bind_strategy_outcome(self, prediction_id: str,
                               action_id: str) -> "StrategyOutcomePrediction":
@@ -5728,10 +5834,22 @@ class ORHarness:
             except Exception as exc:  # noqa: BLE001 - never block the exclusion
                 unindexed = {"removed": 0,
                              "deferred": f"{type(exc).__name__}: {exc}"}
-        return {"excluded": execution_id, "reason": str(reason),
-                "superseded_by": superseded_by,
-                "correction": record.execution_features.get("correction"),
-                "index": unindexed}
+        # An exclusion can change a calibration sample (a withdrawn fact is
+        # no longer evidence): republish when the affected episode is in
+        # the window.
+        republished = self._republish_calibration_if_in_window(
+            str(record.task_id), self._episode_of(execution_id))
+        result: Dict[str, Any] = {"excluded": execution_id,
+                                  "reason": str(reason),
+                                  "superseded_by": superseded_by,
+                                  "correction": record.execution_features.get(
+                                      "correction"),
+                                  "index": unindexed}
+        if republished is not None:
+            result["calibration_republished"] = {
+                "reason": "the exclusion can change a calibration sample",
+                "n_evaluated": republished.get("n_evaluated")}
+        return result
 
     def restore_execution(self, execution_id: str, reason: str
                           ) -> Dict[str, Any]:
@@ -5742,8 +5860,39 @@ class ORHarness:
         caller via ``rebuild_index`` — a restore is rare and explicit, so it
         does not silently rewrite derived index state."""
         record = self.bank.restore(execution_id, reason)
-        return {"restored": execution_id, "reason": str(reason),
-                "correction": record.execution_features.get("correction")}
+        republished = self._republish_calibration_if_in_window(
+            str(record.task_id), self._episode_of(execution_id))
+        result: Dict[str, Any] = {"restored": execution_id,
+                                  "reason": str(reason),
+                                  "correction": record.execution_features.get(
+                                      "correction")}
+        if republished is not None:
+            result["calibration_republished"] = {
+                "reason": "the restore can change a calibration sample",
+                "n_evaluated": republished.get("n_evaluated")}
+        return result
+
+    def _episode_of(self, execution_id: str) -> Optional[str]:
+        """The episode an execution's action belongs to, or None."""
+        action = self.actions.by_execution(execution_id)
+        return action.episode_id if action is not None else None
+
+    def _republish_calibration_if_in_window(self, task_id: str,
+                                            episode_id: Optional[str]
+                                            ) -> Optional[Dict[str, Any]]:
+        """Rebuild the published summary if a correction can affect it.
+
+        The single trigger every correction channel calls. It is cheap when
+        it does nothing (one indexed window lookup) and rebuilds only when
+        the affected episode is actually in the calibration window.
+        """
+        from or_harness.world_model.episode_closeout import (
+            republish_if_in_window,
+        )
+        try:
+            return republish_if_in_window(self, task_id, episode_id)
+        except Exception:  # a republish failure must never lose the fact
+            return None
 
     # -- retrieval index maintenance ----------------------------------------------
 
@@ -6135,6 +6284,14 @@ class ORHarness:
         report["action_id"] = action.action_id
         # (2) The fact annotation.
         self.bank.set_task_check(execution_id, report)
+        # (3) REPUBLISH if this correction can change the calibration. A
+        # late verdict on an episode still in the window changes a
+        # calibration sample, so the published summary must be rebuilt —
+        # otherwise a stale label would keep being served to later
+        # predictions. An episode outside the window cannot change the
+        # statistics and is skipped without a rebuild.
+        republished = self._republish_calibration_if_in_window(
+            task_id, resolved_episode)
         result: Dict[str, Any] = {
             "report": report,
             "state": report["state"],
@@ -6142,6 +6299,14 @@ class ORHarness:
             "action_id": action.action_id,
             "staged": staged,
         }
+        if republished is not None:
+            result["calibration_republished"] = {
+                "reason": ("this task-result check can change a calibration "
+                           "sample in the current window"),
+                "n_evaluated": republished.get("n_evaluated"),
+                "calibration_version": republished.get(
+                    "calibration_version"),
+            }
         if report["state"] == "failed":
             result["reflection_material"] = self._reflection_material(
                 record, report, resolved_episode)

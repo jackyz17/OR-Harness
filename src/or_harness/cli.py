@@ -1119,12 +1119,15 @@ def cmd_calibration(args) -> int:
     try:
         result = h.calibration_summary(
             min_samples=args.min_samples
-            if args.min_samples is not None else None)
+            if args.min_samples is not None else None,
+            rebuild=bool(getattr(args, "rebuild", False)))
         groups = result.get("groups") or {}
         if not groups:
-            summary = ("No calibration samples from closed episodes yet: "
+            summary = ("No calibration samples in the current window: "
                        "reliability is unknown (insufficient_evidence), "
                        "never guessed.")
+            if result.get("missing"):
+                summary += " " + str(result["missing"])
         else:
             parts = []
             for name, group in sorted(groups.items()):
@@ -1137,6 +1140,8 @@ def cmd_calibration(args) -> int:
                         f"({group['n_distinct_episodes']} episode(s)), "
                         f"benefit MAE="
                         f"{group.get('mean_benefit_abs_error')}, "
+                        f"signed="
+                        f"{group.get('mean_benefit_signed_error')}, "
                         f"interval coverage="
                         f"{group.get('interval_coverage')}")
             summary = ("Strategy-outcome experience calibration: "
@@ -1144,6 +1149,51 @@ def cmd_calibration(args) -> int:
                        + ". A measured record of past closed episodes — "
                          "not a promise that future predictions improve.")
         return _emit(result, summary)
+    finally:
+        h.close()
+
+
+def cmd_archive_calibration(args) -> int:
+    """Move OUT-OF-WINDOW episode detail to the archive (retention)."""
+    h = _harness(args)
+    try:
+        result = h.archive_calibration(dry_run=bool(args.dry_run))
+        removed = result.get("removed") or {}
+        n_records = result.get("n_records", 0)
+        if result.get("dry_run"):
+            summary = (f"Dry run: {n_records} record(s) would be archived "
+                       f"({len(result.get('held_for_late_check') or [])} "
+                       "episode(s) held online for a possible late check).")
+        else:
+            summary = (
+                f"Archived {n_records} record(s) "
+                f"({removed.get('evaluations', 0)} evaluation(s), "
+                f"{removed.get('contract_predictions', 0)} prediction(s), "
+                f"{removed.get('prediction_contexts', 0)} context(s)); "
+                f"{len(result.get('held_for_late_check') or [])} episode(s) "
+                "held online for a possible late check. Registry rows stay "
+                "online, so a repeated close remains idempotent.")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
+def cmd_retention(args) -> int:
+    """Report the online/archive retention state (read-only)."""
+    h = _harness(args)
+    try:
+        result = h.calibration_retention()
+        online = result["online"]
+        archive = result["archive"]
+        return _emit(
+            result,
+            f"Online: {online['n_window_episodes']} window episode(s), "
+            f"{online['n_closeouts_total']} closed total, "
+            f"{online['n_contract_predictions']} prediction(s), "
+            f"{online['n_prediction_contexts']} context(s). "
+            f"Archive: {len(archive['files'])} file(s), "
+            f"{archive['total_bytes']} bytes. Three separate scopes — see "
+            "`policy`.")
     finally:
         h.close()
 
@@ -2278,12 +2328,32 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "calibration",
         help="read the published strategy-outcome experience-calibration "
-             "summary (closed episodes only; read-only)")
+             "summary (window of closed episodes; read-only unless "
+             "--rebuild)")
     p.add_argument("--min-samples", type=int, default=None,
                    help="override the minimum-sample threshold for this "
                         "read (the effective value is recorded on the "
                         "summary)")
+    p.add_argument("--rebuild", action="store_true",
+                   help="rebuild and republish the summary from the current "
+                        "window instead of reading the published one (the "
+                        "explicit migration/repair path)")
     p.set_defaults(func=cmd_calibration)
+
+    p = sub.add_parser(
+        "archive-calibration",
+        help="move OUT-OF-WINDOW episode detail (evaluations, predictions, "
+             "contexts) to the archive; registry rows stay online so a "
+             "repeated close remains idempotent")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be archived without moving it")
+    p.set_defaults(func=cmd_archive_calibration)
+
+    p = sub.add_parser(
+        "retention",
+        help="report the online/archive retention state and the three "
+             "separate scopes (window / late-check grace / archive caps)")
+    p.set_defaults(func=cmd_retention)
 
     p = sub.add_parser(
         "evaluations",

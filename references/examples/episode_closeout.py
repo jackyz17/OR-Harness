@@ -17,8 +17,12 @@ channel, in order:
    same episode counts nothing twice;
 4. **the cross-episode channel** — a SECOND episode's fresh context reads
    the FIRST episode's published summary (here: insufficient evidence at
-   the default sample minimum — an honest state, not a failure), while
-   the first episode's own stored context stays byte-identical.
+   the default sample minimum — an honest state, not a failure) together
+   with the framework's own OCCURRENCE statistics, while the first
+   episode's own stored context stays byte-identical;
+5. **retention** — the three scopes (window / late-check grace / archive
+   caps) reported as separate numbers, and a dry-run archive pass that
+   moves nothing while every episode is still in the window.
 
 This fixture proves the PROCESS is correct. It does NOT prove the
 prediction model is accurate, and it does NOT prove the harness's
@@ -63,7 +67,7 @@ PAYLOAD = {
                 "interval": [0.6, 0.95],
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
     "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
-    "risk": {"events": [{"event": "model_invalid", "probability": 0.2}]},
+    "risk": {"events": [{"event": "timeout", "probability": 0.2}]},
     "uncertainty": {"execution_randomness": 0.3, "knowledge_gap": 0.6},
 }
 
@@ -183,15 +187,21 @@ def main() -> int:
     # The observed quality is 1 - gap = 0.9 (the FAILED attempt never
     # contributed a quality observation; its COST stays in scope).
     assert benefit["observed"] == 0.9
+    print(f"benefit signed error   : {benefit['signed_error']} "
+          "(positive = under-predicted)")
     cost = evaluation["cost"]
     print(f"cost per-dim           : "
           f"{ {k: v['abs_error'] for k, v in cost['per_dim'].items()} }")
+    print(f"cost log-ratio         : "
+          f"{ {k: v['log_ratio'] for k, v in cost['per_dim'].items()} }")
     print(f"cost excluded          : {cost['excluded']}")
     risk = evaluation["risk"]
     print(f"risk                   : {risk['scored']}")
+    print(f"observed units         : "
+          f"{ {k: v['label'] for k, v in risk['observed_units'].items()} }")
     interval = evaluation["interval"]
     print(f"interval               : {interval['predicted_interval']} "
-          f"covered={interval['covered']} "
+          f"covered={interval['covered']} width={interval['width']} "
           f"(observed {interval['observed']})")
     assert evaluation["state"] == "evaluated"
     assert interval["covered"]  # 0.9 is inside [0.6, 0.95]
@@ -228,15 +238,23 @@ def main() -> int:
     ctx2 = h.build_prediction_context(task, "ep2")
     calibration = ctx2.strategy_calibration
     group = calibration["groups"][
-        "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+        "strategy_outcome|(unknown)|normalized_objective_gap|1-gap|attempt"]
     print(f"episode-2 context      : {ctx2.context_id}")
     print(f"calibration samples    : {group['n_samples']} "
           f"({group['n_distinct_episodes']} distinct episode, "
           f"min {calibration['min_samples']})")
     print(f"calibration basis      : {group['basis']} "
           f"(reliability={group['reliability']})")
+    print(f"calibration version    : {calibration['calibration_version']} "
+          f"(events {calibration['event_vocabulary_version']})")
     assert group["basis"] == "insufficient_evidence"
     assert group["reliability"] is None
+    # The framework's OWN occurrence statistics, counted by observation
+    # unit rather than by prediction count.
+    occurrence = calibration["occurrence"]["timeout"]
+    print(f"occurrence (timeout)   : {occurrence['n_observation_units']} "
+          f"unit(s), rate={occurrence['unit_occurrence_rate']}")
+    assert occurrence["n_observation_units"] == 1
     # The provider really receives the summary content with the context.
     h.predict_strategy_outcome(
         task, {"action_type": "execute_strategy",
@@ -252,6 +270,26 @@ def main() -> int:
     print(f"close-out readable     : "
           f"{stored_closeout['terminal_state']}, "
           f"{len(stored_closeout['evaluation_ids'])} evaluation(s)")
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("5. Retention: three scopes, a bounded archive")
+    print("=" * 72)
+    retention = h.calibration_retention()
+    policy = retention["policy"]
+    print(f"window                 : {policy['window']} episode(s)")
+    print(f"late-check grace       : {policy['late_check_grace_days']} day(s)")
+    print(f"archive caps           : file={policy['archive_max_file_bytes']}B "
+          f"total={policy['archive_max_total_bytes']}B "
+          f"age={policy['archive_retention_days']}d")
+    print(f"online now             : "
+          f"{retention['online']['n_closeouts_total']} closed, "
+          f"{retention['online']['n_contract_predictions']} prediction(s)")
+    # Nothing is out of window yet, so a dry run moves nothing.
+    dry = h.archive_calibration(dry_run=True)
+    print(f"archive (dry run)      : {dry['n_records']} record(s) would move")
+    assert dry["n_records"] == 0
 
     h.close()
     tmp.cleanup()

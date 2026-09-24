@@ -119,6 +119,26 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "on (e.g. \"retrieval_evidence.hits[0]\", \"capability.sources.m\").\n"
     "- unsupported_fields: object {field: reason} for fields you cannot or "
     "will not predict.\n"
+    "CALIBRATION EVIDENCE: the context may carry a "
+    "`strategy_outcome_calibration` block describing how THIS model's past "
+    "predictions turned out. Use it to adjust your numbers, and read it "
+    "carefully:\n"
+    "  * it is grouped by (model, metric, unit, scope). Only groups whose "
+    "model/metric/unit/scope MATCH the metric and scope you are predicting "
+    "under are your evidence. A group with a different metric, unit or "
+    "scope is NOT comparable to what you are about to predict — do not cite "
+    "it as support for this number.\n"
+    "  * `mean_benefit_signed_error` is directed: POSITIVE means the real "
+    "outcome was historically BETTER than predicted (this model "
+    "under-predicts benefit); NEGATIVE means it over-predicts.\n"
+    "  * `mean_cost_log_ratio` is directed per dimension: POSITIVE means the "
+    "real cost was historically HIGHER than predicted (under-predicts "
+    "cost); NEGATIVE means over-predicts.\n"
+    "  * `basis: insufficient_evidence` means too few independent episodes "
+    "to say anything: do NOT treat such a group as calibration.\n"
+    "  * these are measured PAST errors, not a promise about this "
+    "prediction, and they carry NO per-strategy breakdown (they are a "
+    "global diagnostic).\n"
     "Do NOT fabricate evidence. If the context contains no relevant "
     "experience or knowledge for the candidate, say so in "
     "unsupported_fields and leave the numeric fields omitted. Output the "
@@ -143,6 +163,12 @@ def build_strategy_outcome_request(
     candidate) and supplies the CONTENT (joint representation, retrieval
     evidence, capability evidence, constraints). The model fills only the
     prediction content — the request says so explicitly.
+
+    The context's calibration block is FILTERED before it is sent: only the
+    groups whose SCOPE matches this candidate's scope are kept, because a
+    window-scope error statistic is not evidence about a single attempt (and
+    the reverse). The filtering is reported on the request, so a reader can
+    see that a group was withheld rather than absent.
     """
     request: Dict[str, Any] = {
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
@@ -159,10 +185,49 @@ def build_strategy_outcome_request(
                      "evidence"),
         },
     }
+    # Scope filtering of the calibration block (the model identity was
+    # already filtered when the context was frozen, since that is decided by
+    # the attached provider, not by this candidate).
+    view = request["prediction_context"]
+    calibration = view.get("strategy_outcome_calibration")
+    if isinstance(calibration, dict) and calibration.get("groups"):
+        filtered, withheld = _filter_calibration_by_scope(
+            calibration, candidate.scope)
+        view["strategy_outcome_calibration"] = filtered
+        if withheld:
+            view["strategy_outcome_calibration"]["withheld_groups"] = withheld
+            view["strategy_outcome_calibration"]["filter_note"] = (
+                f"{len(withheld)} calibration group(s) under a different "
+                f"scope were withheld: their errors describe a different "
+                "measurement unit and are not evidence about this "
+                f"candidate's scope ({candidate.scope!r})")
     if benefit_baseline_hint:
         request["benefit_baseline_hint"] = copy.deepcopy(
             benefit_baseline_hint)
     return request
+
+
+def _filter_calibration_by_scope(calibration: Dict[str, Any],
+                                 scope: str) -> Tuple[Dict[str, Any], List[str]]:
+    """Keep only the calibration groups whose declared scope matches.
+
+    Group keys are ``strategy_outcome|<model>|<metric>|<unit>|<scope>``; a
+    group under a different scope measures a different unit (one attempt vs
+    a whole strategy window), so its error statistics are not evidence
+    about this candidate. Returns ``(filtered_calibration, withheld_keys)``.
+    """
+    filtered = copy.deepcopy(calibration)
+    kept: Dict[str, Any] = {}
+    withheld: List[str] = []
+    for key, group in (calibration.get("groups") or {}).items():
+        parts = str(key).split("|")
+        group_scope = parts[4] if len(parts) > 4 else None
+        if group_scope is None or group_scope == str(scope):
+            kept[key] = copy.deepcopy(group)
+        else:
+            withheld.append(str(key))
+    filtered["groups"] = kept
+    return filtered, withheld
 
 
 def parse_strategy_outcome_payload(
@@ -470,14 +535,77 @@ def parse_strategy_outcome_payload(
     return prediction
 
 
+def model_identity_label(identity: Optional[Dict[str, Any]]) -> str:
+    """The single string that names a model identity, or ``(unknown)``.
+
+    ONE rule, used both when a prediction records its identity and when the
+    calibration groups by it, so a prediction and its group can never
+    disagree about which model produced them. A model NAME is not a model
+    VERSION: when only a name is known the label says so, and when nothing
+    is known the answer is ``(unknown)`` — never the provider name standing
+    in for a version.
+    """
+    identity = identity or {}
+    model = identity.get("provider_model")
+    version = identity.get("provider_version")
+    if model and version:
+        return f"{model}@{version}"
+    if model:
+        return str(model)
+    if version:
+        return f"(model unknown)@{version}"
+    return "(unknown)"
+
+
 class StrategyOutcomeService:
     """Predict / persist / bind strategy-outcome predictions (wm-so/1)."""
 
     def __init__(self, store, provider):
         self.store = store
         self.provider = provider
+        # The provider's OWN identity, read once. Different models are
+        # different predictors, so the calibration groups by this identity
+        # and never pools their errors. ``provider_model`` is the name the
+        # provider reports; ``provider_version`` is recorded ONLY when the
+        # provider actually exposes one — a name is not a version, and
+        # inventing a version from a name would silently merge two builds.
+        self.model_identity = self._describe_identity()
+
+    @property
+    def model_identity_label(self) -> str:
+        """This service's identity as the calibration group label."""
+        return model_identity_label(self.model_identity)
+
+    def _describe_identity(self) -> Dict[str, Any]:
+        try:
+            described = self.provider.describe() or {}
+        except Exception:  # a provider that cannot describe itself
+            return {}
+        identity: Dict[str, Any] = {}
+        model = described.get("model")
+        if model:
+            identity["provider_model"] = str(model)
+        version = described.get("model_version") or described.get("version")
+        if version:
+            identity["provider_version"] = str(version)
+        provider_name = described.get("provider")
+        if provider_name:
+            identity["provider_name"] = str(provider_name)
+        return identity
 
     # -- predict -----------------------------------------------------------
+
+    def _stamp_identity(self, prediction: StrategyOutcomePrediction
+                        ) -> None:
+        """Record which model made this prediction, on the prediction itself.
+
+        The identity travels with the FROZEN prediction (not looked up at
+        close-out), so a later evaluation can group by it without trusting
+        today's provider configuration: the model that is attached now may
+        not be the model that made an old prediction.
+        """
+        for key, value in self.model_identity.items():
+            prediction.trace.model_info.setdefault(key, value)
 
     def predict(self, context: Any, candidate: CandidateRef,
                 *, timeout_s: Optional[float] = None,
@@ -536,6 +664,7 @@ class StrategyOutcomeService:
                 and not prediction.trace.model_info.get("parse_error"):
             prediction.trace.model_info["parse_error"] = (
                 "the model's payload failed validation; see notes")
+        self._stamp_identity(prediction)
         self._save(prediction)
         return prediction
 
@@ -569,6 +698,11 @@ class StrategyOutcomeService:
                 vector.mark_measured("latency_s")
             if vector.measured_dims():
                 trace.call_cost = vector
+        # A FAILED call was still made by THIS model: its identity is
+        # recorded too, so an evaluation of a failed prediction can tell
+        # which model produced it.
+        for key, value in self.model_identity.items():
+            trace.model_info.setdefault(key, value)
         return StrategyOutcomePrediction(
             candidate=candidate,
             status=status,

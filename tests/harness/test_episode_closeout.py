@@ -65,10 +65,15 @@ GOOD_PAYLOAD = {
                 "baseline": {"kind": "conditional_stats", "value": 0.7}},
     "cost": {"llm_tokens": 1200, "solver_runtime_s": 3.0},
     "risk": {"events": [
-        {"event": "model_invalid", "probability": 0.2},
+        {"event": "timeout", "probability": 0.2},
     ]},
     "uncertainty": {"execution_randomness": 0.3, "knowledge_gap": 0.6},
 }
+
+#: The calibration group key prefix for the stub provider: it reports no
+#: model name, so its identity is honestly ``(unknown)`` — never the
+#: provider name standing in for a version.
+GROUP_PREFIX = "strategy_outcome|(unknown)|"
 
 
 class StubProvider(WorldModelProvider):
@@ -456,7 +461,7 @@ class TestEvaluationEligibility(M4Case):
         # benefit side, and no fake error is manufactured.
         provider = StubProvider(payload={
             "cost": {"llm_tokens": 100},
-            "risk": {"events": [{"event": "model_invalid",
+            "risk": {"events": [{"event": "timeout",
                                  "probability": 0.2}]},
         })
         h = ORHarness(home=self.home, world_model=provider,
@@ -572,7 +577,7 @@ class TestCalibrationChannel(M4Case):
         self.assertEqual(calibration["protocol"], "wm-so/1")
         self.assertEqual(calibration["n_evaluations_total"], 1)
         group = calibration["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["n_samples"], 1)
         # Below the default minimum: insufficient evidence, no figure.
         self.assertEqual(group["basis"], "insufficient_evidence")
@@ -620,7 +625,7 @@ class TestCalibrationChannel(M4Case):
         self.h.close_episode("t1", "ep1", min_calibration_samples=1)
         summary = self.h.calibration_summary(min_samples=1)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["basis"], "measured")
         self.assertEqual(summary["min_samples"], 1)
         self.assertEqual(summary["min_samples_basis"],
@@ -816,7 +821,7 @@ class TestUnobservedIsNotALabel(M4Case):
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "customer_demand_shortfall", "probability": 0.3},
-            {"event": "model_invalid", "probability": 0.2},
+            {"event": "timeout", "probability": 0.2},
         ]
         provider = StubProvider(payload=payload)
         h = ORHarness(home=self.home, world_model=provider,
@@ -834,12 +839,40 @@ class TestUnobservedIsNotALabel(M4Case):
         scored = {e["event"]: e for e in risk["scored"]}
         unscored = {e["event"]: e for e in risk["unscored"]}
         # The observable event IS scored (not_occurred).
-        self.assertIn("model_invalid", scored)
+        self.assertIn("timeout", scored)
         # The unobservable one is NOT scored — no fake label.
         self.assertNotIn("customer_demand_shortfall", scored)
         self.assertIn("customer_demand_shortfall", unscored)
         self.assertIn("no observation channel",
                       unscored["customer_demand_shortfall"]["reason"])
+
+    def test_retired_event_names_are_not_aliased(self):
+        """A prediction naming a RETIRED event gets no label and no alias
+        mapping: the old, wider meaning must not be counted under a new,
+        narrower name."""
+        payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        payload["risk"]["events"] = [
+            {"event": "model_invalid", "probability": 0.2}]
+        provider = StubProvider(payload=payload)
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id,
+                                record.action_id)
+        result = h.close_episode("t1", "ep1")
+        risk = result["evaluations"][0]["risk"]
+        self.assertEqual(risk["scored"], [],
+                         "a retired event name is never scored")
+        unscored = {e["event"]: e for e in risk["unscored"]}
+        self.assertIn("model_invalid", unscored)
+        self.assertIn("retired", unscored["model_invalid"]["reason"])
+        self.assertIn("task_check_failed",
+                      unscored["model_invalid"]["reason"])
 
     def test_unconfirmed_budget_keeps_label_unknown(self):
         """An UNCONFIRMED ledger (partially unmeasured cost) is not
@@ -867,17 +900,19 @@ class TestUnobservedIsNotALabel(M4Case):
         self.assertEqual(view["status"], "unconfirmed")
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        # NOT scored: the unconfirmed ledger is not a not_occurred label.
+        # NOT scored. The prediction declares attempt scope while the
+        # ledger is episode-scoped, so the scope itself does not match:
+        # the label stays unknown and the reason says so.
         self.assertEqual(risk["scored"], [])
         self.assertIn("budget_exhausted",
                       {e["event"] for e in risk["unscored"]})
-        self.assertTrue(any("cannot be confirmed" in e["reason"]
+        self.assertTrue(any("scope_mismatch" in e["reason"]
                             for e in risk["unscored"]))
 
-    def test_confirmed_within_budget_scores_not_occurred(self):
-        """A CONFIRMED within-budget verdict (every contributing item
-        measured the declared dimension) over a completed scope IS a
-        not_occurred observation."""
+    def test_confirmed_within_budget_is_a_framework_observation(self):
+        """A CONFIRMED within-budget ledger IS a not_occurred observation —
+        recorded by the FRAMEWORK, counted by observation unit, even though
+        no attempt-scope prediction may be scored against it."""
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "budget_exhausted", "probability": 0.5}]
@@ -903,12 +938,21 @@ class TestUnobservedIsNotALabel(M4Case):
         self.assertEqual(view["status"], "ok")
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        self.assertEqual(risk["scored"][0]["label"], "not_occurred")
-        self.assertEqual(risk["scored"][0]["brier"], 0.25)
+        # The attempt-scope prediction is NOT scored against the
+        # episode-scoped ledger...
+        self.assertEqual(risk["scored"], [])
+        # ...but the framework still OBSERVED the event, by its own unit.
+        observation = risk["observed_units"]["budget_exhausted"]
+        self.assertEqual(observation["label"], "not_occurred")
+        self.assertEqual(observation["unit"], "episode")
+        self.assertEqual(observation["n_units"], 1)
 
-    def test_budget_exhausted_is_observable(self):
+    def test_budget_exhausted_is_observable_by_the_framework(self):
         # budget_exhausted HAS a channel: a declared budget exceeded by
-        # real consumption is an observed event.
+        # real consumption is an observed event. The observation is the
+        # framework's, counted by episode, and is reported in the
+        # occurrence statistics even though the attempt-scope prediction
+        # may not be scored against the episode-wide ledger.
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "budget_exhausted", "probability": 0.5}]
@@ -926,8 +970,16 @@ class TestUnobservedIsNotALabel(M4Case):
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        self.assertEqual(risk["scored"][0]["label"], "occurred")
-        self.assertEqual(risk["scored"][0]["brier"], 0.25)
+        self.assertEqual(risk["observed_units"]["budget_exhausted"]["label"],
+                         "occurred")
+        self.assertEqual(risk["scored"], [],
+                         "an attempt-scope prediction is not scored against "
+                         "the episode-scoped budget ledger")
+        summary = h.calibration_summary()
+        occurrence = summary["occurrence"]["budget_exhausted"]
+        self.assertEqual(occurrence["observation_unit"], "episode")
+        self.assertEqual(occurrence["n_occurred"], 1)
+        self.assertEqual(occurrence["unit_occurrence_rate"], 1.0)
 
 
 class TestCalibrationGrouping(M4Case):
@@ -968,7 +1020,7 @@ class TestCalibrationGrouping(M4Case):
         self._close_with_predictions(n=5)
         summary = self.h.calibration_summary(min_samples=5)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(group["n_distinct_episodes"], 1)
         self.assertEqual(group["correlated_predictions"], 4)
@@ -983,16 +1035,16 @@ class TestCalibrationGrouping(M4Case):
                                      unit="percent", episode="ep2")
         summary = self.h.calibration_summary()
         keys = set(summary["groups"])
-        self.assertIn("strategy_outcome|normalized_objective_gap|1-gap"
+        self.assertIn(GROUP_PREFIX + "normalized_objective_gap|1-gap"
                       "|attempt", keys)
-        self.assertIn("strategy_outcome|normalized_objective_gap|percent"
+        self.assertIn(GROUP_PREFIX + "normalized_objective_gap|percent"
                       "|attempt", keys)
 
     def test_brier_reported_per_event_name(self):
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
-            {"event": "model_invalid", "probability": 0.2},
-            {"event": "timeout", "probability": 0.4},
+            {"event": "timeout", "probability": 0.2},
+            {"event": "solver_reported_infeasible", "probability": 0.4},
         ]
         provider = StubProvider(payload=payload)
         h = ORHarness(home=self.home, world_model=provider,
@@ -1008,10 +1060,11 @@ class TestCalibrationGrouping(M4Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary(min_samples=1)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         # Per-event means, never one pooled Brier.
-        self.assertIn("model_invalid", group["mean_brier_by_event"])
         self.assertIn("timeout", group["mean_brier_by_event"])
+        self.assertIn("solver_reported_infeasible",
+                      group["mean_brier_by_event"])
         self.assertNotIn("mean_brier", group)
 
     def test_same_episode_name_across_tasks_is_distinct_episodes(self):
@@ -1027,7 +1080,7 @@ class TestCalibrationGrouping(M4Case):
                 n=1, task_id=f"task{index}", episode="ep1")
         summary = self.h.calibration_summary(min_samples=5)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(
             group["n_distinct_episodes"], 5,
@@ -1045,7 +1098,7 @@ class TestCalibrationGrouping(M4Case):
         self._close_with_predictions(n=5, task_id="t1", episode="ep1")
         summary = self.h.calibration_summary(min_samples=2)
         group = summary["groups"][
-            "strategy_outcome|normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(group["n_distinct_episodes"], 1)
         self.assertEqual(group["basis"], "insufficient_evidence")

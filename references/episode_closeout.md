@@ -2,11 +2,11 @@
 
 **Status: implemented.** This is the fourth phase of the reconstruction: after the unified contract (phase 1), the frozen prediction input context (phase 2) and the strategy-outcome prediction service (phase 3, wm-so/1), this phase closes the loop — a real episode ends, its bound predictions are evaluated against their real outcomes field by field, and the aggregate becomes experience calibration that later episodes read.
 
-- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/1`
+- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/2`; risk-event vocabulary: `wm-events/2`
 - Python module: `or_harness.world_model.episode_closeout`
-- API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary`
-- CLI: `orx close-episode` / `orx calibration` / `orx evaluations`
-- Tests: `tests/harness/test_episode_closeout.py`
+- API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary` / `archive_calibration` / `calibration_retention`
+- CLI: `orx close-episode` / `orx calibration` / `orx evaluations` / `orx archive-calibration` / `orx retention`
+- Tests: `tests/harness/test_episode_closeout.py`, `tests/harness/test_calibration_v2.py`
 - Runnable example: [`references/examples/episode_closeout.py`](examples/episode_closeout.py)
 
 Related: the prediction service in [`references/strategy_outcome.md`](strategy_outcome.md), the input context in [`references/prediction_context.md`](prediction_context.md), the contract objects in [`references/world_model_contract.md`](world_model_contract.md).
@@ -57,7 +57,7 @@ For each bound prediction, the close-out derives what ACTUALLY happened from the
 - **benefit observations** use the prediction's OWN declared metric/unit/baseline (the yardstick is frozen at prediction time; it is never re-chosen after the result is known). This build has an observation adapter for exactly ONE metric — the solver's normalized gap (`optimal` → 1.0; otherwise `1-gap`). A prediction declaring any other metric (a business cost-saving ratio, a completion rate) is reported `scope_mismatch`: the solver's 1-gap number is never re-labelled as a metric it did not measure. A feasible solution with no gap/bound is the 0.5 heuristic — reported `unverified`, never scored. Other benefit kinds have no observation adapter either: reported, not evaluated.
 - **window benefit rule** (declared before evaluation, applied uniformly): the LAST qualified in-scope attempt's solution is the window's benefit observation. All in-scope failed retries' measured costs still count.
 - **cost** is scoped: an ATTEMPT-scope prediction is compared against the bound action's own execution; a STRATEGY-WINDOW-scope prediction is compared against the WHOLE window of its selection round — every in-scope execution, failed retries included (an 11s-then-17s window reports 28s, not 17s). Modelling/verification/other attempts are auxiliary overhead — real spend, reported separately, never charged to the predicted scope. Per-dimension totals carry completeness (`complete` only when every in-scope item measured the dimension); `latency_s` is never summed.
-- **risk events** get labels `occurred` / `not_occurred` / unknown — and only events with a real OBSERVATION CHANNEL can ever be labelled: the in-scope executions' statuses and failure classes (`model_invalid`, `no_feasible_solution`, `timeout`, `environment_failure`/`model_failure`) and the episode's budget view (`budget_exhausted`). A business risk with no observation channel keeps label `unknown` whatever the logs show — "no failure log" is not evidence it did not happen — and is excluded from scoring. A completed scope with no such observed event is a `not_occurred` label of ONE trajectory (the basis says so).
+- **risk events** are observed by the **framework**, independently of what the model predicted, and each event has ONE observation unit. `task_check_failed` reflects the CHECK RESULT and nothing more (kind, covered scope and basis travel with the label) — a failed check does not mean the model was wrong. `environment_failure` / `implementation_failure` are the executor's own recorded `error_class` (a legacy record without one stays unknown — the cause is never inferred from prose). `solver_reported_infeasible` is a FACT about the solver's verdict, never by itself a strategy failure (correctly identifying that the original problem is infeasible is a valid outcome). `timeout` is an observation, not a verdict on the strategy. `budget_exhausted` is decided by the episode-scoped ledger. The retired names `model_invalid` / `no_feasible_solution` / `model_failure` get NO label and NO alias — see the vocabulary table in §5.
 - **verification**: solver `optimal` does not prove business requirements; the summary reports the verification evidence that exists (verify actions, executor checks), nothing more. A task-level check (`orx check-task`) is part of that evidence, and a `failed` verdict replaces the solver-side quality with `0.0` for the benefit observation: the calibration channel compares against the TASK's outcome, so a relaxed answer's solver-side optimum is not scored as if the task had been solved.
 
 ## 4. The per-field evaluation
@@ -66,10 +66,12 @@ Each field is judged on its own eligibility — never a blanket verdict:
 
 | Field | Compared when | Excluded when (and why it matters) |
 |---|---|---|
-| benefit | the prediction declared a value AND the same metric was observed under the same scope | no baseline/value predicted (`not_predicted`); no qualified observation (`unobserved`); heuristic-only quality (`unverified`); other metric kinds (`scope_mismatch`); binding identity not established (`identity_mismatch`) |
-| cost | per dimension: predicted AND completely measured on the real scope; error = absolute + log-ratio | partially-measured totals are excluded (an incomplete total is not a truth); zero predicted or actual produces no relative error |
-| risk | per event: a predicted probability AND a known label → Brier score | no probability (`not_predicted`); unknown label (never a 0 label by default); events are never averaged across names |
-| interval | the prediction saved an interval AND an observed value exists → covered yes/no | no interval saved, or nothing comparable to cover |
+| benefit | the prediction declared a value AND the same metric was observed under the same scope | no baseline/value predicted (`not_predicted`); no qualified observation (`unobserved`); heuristic-only quality (`unverified`); other metric kinds (`scope_mismatch`); binding identity not established (`identity_mismatch`). The DECLARED metric/unit always travel with the block, so an unobservable sample still groups by what it said it was predicting |
+| cost | per dimension: predicted AND completely measured on the real scope; error = absolute + directed `log(actual/predicted)` | partially-measured totals are excluded (an incomplete total is not a truth); zero predicted or actual produces no relative ratio (a substituted value would be a fabrication) |
+| risk | per event: a predicted probability AND a known label → Brier score | no probability (`not_predicted`); unknown label (never a 0 label by default); a RETIRED event name (no label, no alias); events are never averaged across names |
+| interval | the prediction saved an interval AND an observed value exists → covered yes/no + `width` | no interval saved, or nothing comparable to cover |
+
+**Directed feedback.** `benefit.signed_error = observed - predicted` (positive = the prediction was too LOW) and `cost.per_dim[dim].log_ratio = log(actual/predicted)` (positive = cost was under-predicted) let a later prediction tell an over-estimate from an under-estimate, not merely "off by this much". The absolute errors are kept unchanged alongside them.
 
 Excluded fields are **neither hits nor misses**: they never enter a denominator. An evaluation with nothing comparable is `excluded` with the per-field reasons; a scope still running is `pending`. The FROZEN prediction is read, never rewritten — no post-hoc "better" prediction is regenerated closer to the result.
 
@@ -78,37 +80,104 @@ Excluded fields are **neither hits nor misses**: they never enter a denominator.
 ## 5. The experience calibration summary
 
 ```bash
-orx calibration [--min-samples N]
+orx calibration [--min-samples N] [--rebuild]
 ```
 
-Aggregated from **closed episodes only** — an open episode never calibrates anything, least of all itself. Grouped by (metric, unit, scope) so different definitions never mix (the same metric under a different unit or scope is a DIFFERENT group), risk events are scored PER EVENT NAME (different events are different random variables; their Brier scores are reported separately, never pooled into one mean), and each group reports: sample count, DISTINCT episode count, mean absolute benefit error, mean per-dimension cost log-error, interval coverage rate, and per-event Brier means. The sample threshold counts DISTINCT EPISODES (independent truths) — one truth bound to several re-planning predictions is marked `correlated_predictions`, never counted as independent samples, so five predictions over one execution cannot cross the threshold. An episode's identity is the full `(task_id, episode_id)` pair, because episode ids are chosen per task: five different tasks that each used `ep1` are five independent task-episodes, and deduplicating on the bare `episode_id` would collapse them into one sample. A group below the sample minimum (`--min-samples`, default 5, effective value and basis recorded on the summary) reports `insufficient_evidence` with `reliability: null` — no figure is invented.
+Aggregated from the **WINDOW** — the newest N closed task-episodes (default 50, `OR_CALIBRATION_WINDOW`). The window is the sample set: it bounds both the statistics and the work a close-out does, so a prediction reads a small published summary instead of scanning history. An open episode never calibrates anything, least of all itself.
+
+Grouped by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>` — a different metric, unit, scope **or predicting model** is a DIFFERENT group, never pooled. Each group reports:
+
+| Statistic | Meaning |
+|---|---|
+| `n_samples` / `n_distinct_episodes` / `correlated_predictions` | Prediction-observation pairs, independent episodes, and the pairs that repeat one truth. The threshold counts DISTINCT EPISODES (a `(task_id, episode_id)` pair), so five re-planning predictions over one execution cannot cross it |
+| `mean_benefit_abs_error` / `mean_benefit_signed_error` | Magnitude and DIRECTION of benefit error (signed positive = historically under-predicted) |
+| `mean_cost_log_error` / `mean_cost_log_ratio` per dimension | Magnitude and DIRECTION of cost error (log-ratio positive = historically under-predicted cost) |
+| `interval_coverage` / `mean_interval_width` | Coverage alone cannot tell a tight interval from a mile-wide one |
+| `mean_brier_by_event` / `n_brier_samples_by_event` | Per EVENT NAME, never pooled across names |
+| `mean_predicted_probability` / `scored_occurrence_rate` | Both over the SAME denominator (predictions with a probability AND a label), so their difference is a meaningful over/under-estimate signal |
+
+A group below the sample minimum (`--min-samples`, default 5) reports `insufficient_evidence` with `reliability: null` — no figure is invented. The summary is labelled `applicability: "global_diagnostic"`: it carries NO strategy or problem-condition breakdown, so it is NOT a claim about the conditional bias of the candidate currently under consideration.
 
 This is a **measured record, not a promise**: writing the summary does not claim future predictions improve, and it is NOT a fitted calibrator or a model weight (training-free is unchanged). It is kept SEPARATE from the legacy knowledge-prediction reliability (`prediction_class_reliability`): a knowledge hit rate never proves OR strategy-outcome accuracy.
 
-**When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT (groups, counts, sources — not an id) under `strategy_outcome_calibration`, sent to the provider as part of the context. Stored contexts never change: episode 1's context keeps what it froze, episode 2's context reads what episode 1 published. An active episode does not see its own not-yet-closed feedback.
+### Two counting units
 
-## 6. Window rounds (the identity extension)
+The summary reports two numbers that are never conflated:
+
+- **prediction-observation pairs** (`groups`): one per eligible prediction. This is the sample for judging a probability.
+- **observation units** (`occurrence`): the framework's own count of how often an event really happened — once per execution (or per episode for `budget_exhausted`), however many predictions were bound to it. Each entry reports `n_observation_units`, `n_occurred` / `n_not_occurred` / `n_unknown` and `unit_occurrence_rate` over its OWN denominator (labelled observation units). It is reported separately and must never be subtracted from a `mean_predicted_probability` computed over a different sample set.
+
+An event the model never predicted still counts in `occurrence` (it is a real observation) and can never produce a Brier score. An **excluded** evaluation is removed from `groups` but its observations STILL count in `occurrence`: exclusion is a statement about prediction comparability, not about whether the execution happened.
+
+### The risk-event vocabulary (`wm-events/2`)
+
+| Event | Unit | Source | Note |
+|---|---|---|---|
+| `environment_failure` | execution | `error_class == 'environment'` | A record with no recorded class stays UNKNOWN |
+| `implementation_failure` | execution | `error_class == 'model'` | The harness's own code failed — NOT a modelling error |
+| `timeout` | execution | `status == 'timeout'` | An observation, not a verdict on the strategy |
+| `solver_reported_infeasible` | execution | `status == 'infeasible'` | A verdict, not by itself a failure |
+| `task_check_failed` | execution | `task_check.state` | The CHECK RESULT only; kind/scope/basis travel with it |
+| `budget_exhausted` | episode | the declared budget view | Only a scope matching the ledger's (the episode) can be scored |
+
+**Retired** (no label, no alias): `model_invalid` (a solver error or a failed check cannot establish that the MODEL was wrong — use `task_check_failed` for the check result), `no_feasible_solution` (ambiguous between a reported infeasibility and a failure to find a solution), `model_failure` (renamed `implementation_failure`).
+
+**Scope matching.** The budget ledger is episode-scoped, so an attempt- or strategy-window-scope prediction is NOT scored against it — the label stays unknown with an explicit `scope_mismatch` basis, while the framework still records the FACT under `occurrence`. This round deliberately builds no per-attempt budget system.
+
+**When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT under `strategy_outcome_calibration` — a SINGLE-ROW read, no history scan. The block is filtered twice: by the ATTACHED provider's model identity (another model's errors are not evidence about this one, and the withheld keys are named under `withheld_groups`) and, in the request, by the candidate's scope. Stored contexts never change: episode 1's context keeps what it froze.
+
+**Corrections republish.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary — otherwise a stale label would keep being served. An episode outside the window cannot change the statistics and is skipped without a rebuild. Publication is atomic: the evaluations and the registry row are written first, then the summary and its `published` flag in ONE transaction. A crash between them leaves `published=0`, which the next close (or `orx calibration --rebuild`) detects and finishes without re-counting.
+
+## 6. Retention: three separate scopes
+
+```bash
+orx retention
+orx archive-calibration [--dry-run]
+```
+
+One "retention" number cannot honestly bound the online database, decide which episodes calibrate, and cap the archive at the same time, so the three questions are answered separately (all configurable, all recorded on the summary):
+
+| Scope | Question | Default | Env var |
+|---|---|---|---|
+| **window** | Which closed task-episodes calibrate? | 50 | `OR_CALIBRATION_WINDOW` |
+| **late-check grace** | How long is ONLINE detail kept for a possible late check? Applies ONLY to episodes with an unchecked execution | 30 days | `OR_CALIBRATION_LATE_CHECK_GRACE_DAYS` |
+| **archive caps** | What history is kept on disk? Per file / total / age — whichever bites first evicts the oldest file | 64 MB / 1 GB / 365 days | `OR_CALIBRATION_ARCHIVE_*` |
+
+An episode whose executions all carry a verdict is NOT held by the grace period: it leaves the online set as soon as it drops out of the window. Only episodes genuinely awaiting a verdict are kept — there is no blanket extra retention.
+
+**Only DETAIL is archived** (evaluation, prediction and frozen-context payloads) into `{home}/archive/calibration/calibration-NNNN.jsonl`. The **close-out registry tombstone stays online permanently**: it is what keeps a repeated close idempotent and the window locatable after the payloads are gone, so archiving can never cause a duplicate close or a double count. Re-running the archive pass is idempotent (an id already on disk is skipped). Restoring an archived payload is possible for AUDIT, but a restored payload never re-enters the calibration automatically — the window is decided by the registry's `closed_at` ordering.
+
+**Automatic maintenance.** Every close-out runs a LIGHT check (one indexed count of registry rows outside the window and not yet archived). Only when that count crosses `OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD` (default 200) does an archive pass run, so retention is maintained without archiving on every close.
+
+## 7. Window rounds (the identity extension)
 
 `ORHarness.strategy_execution_window(..., round_index=N)` (and the `win::task::episode::strategy::rN` window id) selects ONE selection round of a (task, episode, strategy): the actions from the Nth recorded choice of that strategy up to the next recorded choice of any strategy. The same strategy chosen twice — or switched away and back — is TWO windows with TWO ids; a round that does not exist is reported not-comparable with the reason. Legacy three-part window ids still parse (`round_index=None`).
 
-## 7. Known limitations
+## 8. Known limitations
 
 - **Planner suggestion vs close-out evaluation (open)**: a candidate with no comparable benefit or failing quality checks can still be SUGGESTED by the planner's conservative yardstick. The close-out's evaluation does NOT depend on the planner's utility or the suggestion — eligibility is decided by the prediction–outcome match and the measurement basis only. Automatic recommendation reliability is not yet claimed.
 - **Scoring rules are decision rules, not measurements (open)**: "unknown cost charged the peak share / unknown risk the full weight" are DECISION RULES, not measured facts. The calibration summary reports measured errors only; it never presents those rules as observations.
-- Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE: it is written onto the fact (statistics pick it up on the next read), and a calibration sample whose in-scope execution was confirmed failed by a check stored AFTER the evaluation was written is reported under `exclusions.validity_corrected` and leaves the means, with the detail in `validity_corrections[]`. Rewriting the stored evaluation itself remains refused.
+- **No framework channel can adjudicate a MODELLING error (open)**: a task check reports whether its DECLARED bases held, not whether the model was wrong — the cause (misread task, implementation bug, unmet requirement, wrong reference) is the agent's diagnosis. That is why `model_invalid` is retired rather than derived, and why a risk the framework cannot observe keeps label `unknown`.
+- **Budget risk is episode-scoped only (open)**: this round keeps the episode-level over-budget FACT and marks narrower-scope predictions `scope_mismatch`. A per-attempt budget system is deliberately out of scope.
+- Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE: it is written onto the fact (statistics pick it up on the next read), a calibration sample whose in-scope execution was confirmed failed by a check stored AFTER the evaluation was written is reported under `exclusions.validity_corrected` and leaves the means, and the published summary is REPUBLISHED so later predictions see it. Rewriting the stored evaluation itself remains refused.
+- **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
 - **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
 - **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction this layer exists to preserve.
-- **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
-- **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction the layer exists to preserve.
 
-## 8. Verification checklist for a consuming agent
+## 9. Verification checklist for a consuming agent
 
 - [ ] Did the episode really end? `close-episode` on an episode with running actions is REFUSED (`state="pending"`, `closeout: null`): end them first, then close — their results could never enter a frozen record.
 - [ ] Is the terminal state honest? `failed`/`aborted`/`budget_exhausted` are endings, not failures of the close-out.
 - [ ] Am I reading the close-out as a certification of the answer? It is not: read `task_checks` — `unchecked` executions have UNKNOWN validity, and a `failed` one was confirmed not to satisfy the task. A task check passing is also not a knowledge claim passing (`induce --verify` is a separate gate).
-- [ ] Am I reading an `excluded` evaluation as a miss? Excluded is neither hit nor miss — check `exclusion_reasons` (including `validity_corrected`, a late task-check correction).
-- [ ] Am I reading the close-out as a certification of the answer? It is not: read `task_checks` — `unchecked` executions have UNKNOWN validity, and a `failed` one was confirmed not to satisfy the task. A task check passing is also not a knowledge claim passing (`induce --verify` is a separate gate).
+- [ ] Am I reading a failed task check as "the model was wrong"? It is not: `task_check_failed` reports the CHECK RESULT, and the cause is your diagnosis. The framework deliberately has no `model_invalid` label.
+- [ ] Am I reading `solver_reported_infeasible` as a failure? It is a verdict — correctly identifying an infeasible ORIGINAL problem is a valid outcome.
+- [ ] Am I reading an `excluded` evaluation as a miss? Excluded is neither hit nor miss — check `exclusion_reasons` (including `validity_corrected`, a late task-check correction). Its observations still count in `occurrence`.
+- [ ] Am I subtracting `unit_occurrence_rate` from `mean_predicted_probability`? Do NOT: they have different denominators. Compare `scored_occurrence_rate` with `mean_predicted_probability` instead — those share a sample set.
 - [ ] Am I reading `insufficient_evidence` as a bad reliability? It is the honest unknown: too few samples, no figure claimed.
+- [ ] Am I reading the calibration as the CURRENT candidate's conditional bias? It is not: `applicability` says `global_diagnostic` — there is no per-strategy breakdown.
+- [ ] Am I comparing another model's error statistics to this model? The context filters by model identity; a withheld group is named under `withheld_groups`.
 - [ ] Did a later episode's context change? It should not: stored contexts are frozen; only NEW contexts read the published summary.
-- [ ] Am I counting one truth twice? Re-planning predictions bound to the same outcome are marked correlated; the DISTINCT-EPISODE count is the sample base and the threshold counts episodes, never predictions.
+- [ ] Am I counting one truth twice? Re-planning predictions bound to the same outcome are marked correlated; the DISTINCT-EPISODE count is the sample base and the threshold counts episodes, never predictions. Occurrence rates are counted by observation unit, so several predictions over one execution are ONE event.
 - [ ] Am I treating the calibration as a capability gain? It is a record of past errors. H evidence about the world model comes only from these real evaluations — never from the model's self-assessment.
+- [ ] Did a correction reach later predictions? A late check/exclusion/restore on a WINDOW episode republishes the summary; `orx calibration --rebuild` is the explicit repair path.
+- [ ] Is the archive bounded? Check `orx retention`: the per-file, total and age caps are all enforced — a total cap is what makes "bounded" true.

@@ -16,7 +16,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 try:  # POSIX flock; gracefully degrade elsewhere.
     import fcntl  # type: ignore
@@ -154,8 +154,29 @@ CREATE TABLE IF NOT EXISTS contract_predictions (
 CREATE INDEX IF NOT EXISTS idx_contract_preds_task
     ON contract_predictions(task_id);
 
--- World-model M5: harness-capability-evolution predictions under the
--- wm-ce/1 protocol. A SEPARATE table from contract_predictions on purpose:
+-- World-model M4 (calibration retention): the CLOSE-OUT REGISTRY. One row
+-- per closed (task, episode). It exists so the calibration WINDOW can be
+-- located by an indexed ``closed_at`` ordering instead of scanning and
+-- deserialising every stored evaluation, and so the idempotence of a
+-- repeated close survives the archiving of the episode's detail: this
+-- tombstone is tiny and stays ONLINE permanently, which is what makes
+-- "archive the detail" safe (a re-close is still detected, and the window
+-- is still locatable, without the payloads).
+CREATE TABLE IF NOT EXISTS episode_closeouts (
+    task_id        TEXT NOT NULL,
+    episode_id     TEXT NOT NULL DEFAULT '',
+    closed_at      REAL NOT NULL,
+    terminal_state TEXT NOT NULL DEFAULT 'completed',
+    evaluation_ids TEXT NOT NULL DEFAULT '[]',
+    published      INTEGER NOT NULL DEFAULT 0,
+    archived       INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (task_id, episode_id)
+);
+CREATE INDEX IF NOT EXISTS idx_closeouts_closed_at
+    ON episode_closeouts(closed_at);
+CREATE INDEX IF NOT EXISTS idx_closeouts_published
+    ON episode_closeouts(published);
+
 -- that table is read as strategy-outcome payloads by the budget ledger and
 -- the query entry, so a capability record stored there would either
 -- mis-deserialize as an OR prediction or silently disappear from the
@@ -325,6 +346,11 @@ class Store:
     def count_task_texts(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM task_texts").fetchone()
+        return int(row["n"])
+
+    def count_prediction_contexts(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM prediction_contexts").fetchone()
         return int(row["n"])
 
     # -- outcome predictions (M2, legacy protocol) -----------------------------
@@ -521,6 +547,182 @@ class Store:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM capability_predictions").fetchone()
         return int(row["n"])
+
+    # -- close-out registry (calibration window / retention) -------------------
+
+    def put_closeout_registry(self, task_id: str, episode_id: Optional[str],
+                              *, closed_at: float, terminal_state: str,
+                              evaluation_ids: Sequence[str],
+                              published: bool,
+                              archived: bool = False) -> None:
+        """Record (or refresh) one closed episode's registry row.
+
+        ``INSERT OR REPLACE`` on the (task_id, episode_id) primary key: the
+        row is DERIVED state about one episode's close, so re-writing it
+        with the same identity is a refresh, never a duplicate. The row is
+        deliberately tiny and is never archived — it is the tombstone that
+        keeps a repeated close idempotent after the episode's detail has
+        been moved to the archive.
+        """
+        with self.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO episode_closeouts "
+                "(task_id, episode_id, closed_at, terminal_state, "
+                " evaluation_ids, published, archived) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (str(task_id), str(episode_id or ""), float(closed_at),
+                 str(terminal_state), json.dumps(list(evaluation_ids)),
+                 1 if published else 0, 1 if archived else 0))
+
+    def get_closeout_registry(self, task_id: str,
+                              episode_id: Optional[str]
+                              ) -> Optional[Dict[str, Any]]:
+        """One episode's registry row, or None when it was never closed."""
+        row = self.conn.execute(
+            "SELECT task_id, episode_id, closed_at, terminal_state, "
+            "evaluation_ids, published, archived FROM episode_closeouts "
+            "WHERE task_id=? AND episode_id=?",
+            (str(task_id), str(episode_id or ""))).fetchone()
+        if row is None:
+            return None
+        return {
+            "task_id": str(row["task_id"]),
+            "episode_id": row["episode_id"] or None,
+            "closed_at": float(row["closed_at"]),
+            "terminal_state": str(row["terminal_state"]),
+            "evaluation_ids": list(json.loads(row["evaluation_ids"] or "[]")),
+            "published": bool(row["published"]),
+            "archived": bool(row["archived"]),
+        }
+
+    def closeout_registry(self, *, limit: Optional[int] = None,
+                          offset: int = 0,
+                          published: Optional[bool] = None,
+                          archived: Optional[bool] = None,
+                          before: Optional[float] = None
+                          ) -> List[Dict[str, Any]]:
+        """Registry rows NEWEST FIRST, by ``closed_at``.
+
+        The ORDER BY ``closed_at`` uses the index, so the calibration window
+        is located without touching any evaluation payload: the window is
+        "the first N rows", not "every evaluation, filtered after reading".
+        ``before`` bounds the rows to those closed strictly before a
+        timestamp (used by the archive pass to find episodes past the grace
+        period).
+        """
+        sql = ("SELECT task_id, episode_id, closed_at, terminal_state, "
+               "evaluation_ids, published, archived FROM episode_closeouts")
+        clauses: List[str] = []
+        params: List[Any] = []
+        if published is not None:
+            clauses.append("published=?")
+            params.append(1 if published else 0)
+        if archived is not None:
+            clauses.append("archived=?")
+            params.append(1 if archived else 0)
+        if before is not None:
+            clauses.append("closed_at < ?")
+            params.append(float(before))
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY closed_at DESC, task_id DESC, episode_id DESC"
+        if limit is not None:
+            sql += " LIMIT ? OFFSET ?"
+            params.extend([int(limit), int(offset)])
+        rows = self.conn.execute(sql, params).fetchall()
+        return [{
+            "task_id": str(r["task_id"]),
+            "episode_id": r["episode_id"] or None,
+            "closed_at": float(r["closed_at"]),
+            "terminal_state": str(r["terminal_state"]),
+            "evaluation_ids": list(json.loads(r["evaluation_ids"] or "[]")),
+            "published": bool(r["published"]),
+            "archived": bool(r["archived"]),
+        } for r in rows]
+
+    def count_closeouts(self, **kwargs: Any) -> int:
+        """How many registry rows match (used for the auto-archive check)."""
+        return len(self.closeout_registry(**kwargs))
+
+    def mark_closeout_archived(self, task_id: str,
+                               episode_id: Optional[str]) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE episode_closeouts SET archived=1 "
+                "WHERE task_id=? AND episode_id=?",
+                (str(task_id), str(episode_id or "")))
+
+    def set_closeout_published(self, task_id: str, episode_id: Optional[str],
+                               published: bool) -> None:
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE episode_closeouts SET published=? "
+                "WHERE task_id=? AND episode_id=?",
+                (1 if published else 0, str(task_id),
+                 str(episode_id or "")))
+
+    def delete_evaluation(self, evaluation_id: str) -> None:
+        """Remove one evaluation payload from the ONLINE store.
+
+        Called only by the archive pass, AFTER the payload has been written
+        to the archive file: the row is detail, not identity, and the
+        registry tombstone keeps the episode locatable without it.
+        """
+        self.delete_evaluation_many([evaluation_id])
+
+    def delete_evaluation_many(self, evaluation_ids: Sequence[str]) -> int:
+        """Remove several evaluation payloads (archive pass only)."""
+        ids = [str(e) for e in evaluation_ids]
+        if not ids:
+            return 0
+        removed = 0
+        with self.transaction() as conn:
+            for chunk_start in range(0, len(ids), 400):
+                chunk = ids[chunk_start:chunk_start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"DELETE FROM meta WHERE key IN ({placeholders})",
+                    [f"strategy_evaluation|{e}" for e in chunk])
+                removed += cur.rowcount
+        return removed
+
+    def delete_contract_predictions(self, prediction_ids: Sequence[str]
+                                    ) -> int:
+        """Remove strategy-outcome prediction payloads from the online store.
+
+        Same rule as :meth:`delete_evaluation`: only the archive pass calls
+        this, and only after the payloads are safely on disk.
+        """
+        ids = [str(p) for p in prediction_ids]
+        if not ids:
+            return 0
+        removed = 0
+        with self.transaction() as conn:
+            for chunk_start in range(0, len(ids), 500):
+                chunk = ids[chunk_start:chunk_start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"DELETE FROM contract_predictions WHERE prediction_id "
+                    f"IN ({placeholders})", chunk)
+                removed += cur.rowcount
+        return removed
+
+    def delete_prediction_contexts(self, context_ids: Sequence[str]) -> int:
+        """Remove frozen-context payloads from the online store (archive
+        pass only, after the payloads are on disk)."""
+        ids = [str(c) for c in context_ids]
+        if not ids:
+            return 0
+        removed = 0
+        with self.transaction() as conn:
+            for chunk_start in range(0, len(ids), 500):
+                chunk = ids[chunk_start:chunk_start + 500]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"DELETE FROM prediction_contexts WHERE context_id "
+                    f"IN ({placeholders})", chunk)
+                removed += cur.rowcount
+        return removed
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

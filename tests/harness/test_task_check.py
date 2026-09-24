@@ -541,14 +541,15 @@ class TestLateCorrection(TaskCheckCase):
         self.assertEqual(first_summary["n_evaluated"], 1)
 
         # The correction arrives late: the answer was fractional after all.
-        self.h.bank.set_task_check(record.execution_id, {
-            "state": "failed",
-            "execution_id": record.execution_id,
-            "task_id": "t1",
-            "episode_id": "ep1",
-            "diffs": [{"basis": "integer_domains", "variable": "x1"}],
-            "checked_at": __import__("time").time() + 10,
-        })
+        # It is written through the API (the documented path), so the
+        # published summary is REPUBLISHED as part of the correction — the
+        # stored evaluation is untouched, but the summary a later context
+        # reads already reflects the correction.
+        late = self.h.check_task_result(
+            record.execution_id,
+            {"reference_objective": 999.0})
+        self.assertEqual(late["state"], "failed")
+        self.assertIn("calibration_republished", late)
         second_summary = self.h.calibration_summary()
         # The stored evaluation is NOT rewritten...
         self.assertEqual(self.h.get_strategy_evaluation(
@@ -561,6 +562,65 @@ class TestLateCorrection(TaskCheckCase):
         # Statistics pick the corrected judgment up on the next read.
         self.assertEqual(quality_score(self.h.bank.get(record.execution_id)),
                          0.0)
+
+    def test_late_correction_republishes_the_published_summary(self):
+        """A late check must reach the PUBLISHED summary, not only a fresh
+        rebuild — otherwise later predictions keep reading a stale label."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="late3")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        # A context built now reads the published summary (no correction).
+        before = self.h.build_prediction_context(
+            _task("t1"), "ep2").strategy_calibration
+        self.assertEqual(before["exclusions"].get("validity_corrected"), None)
+
+        self.h.check_task_result(
+            record.execution_id,
+            {"reference_objective": 999.0})
+        # A context built AFTER the correction sees it WITHOUT any rebuild
+        # call: the correction republished the summary.
+        after = self.h.build_prediction_context(
+            _task("t1"), "ep2").strategy_calibration
+        self.assertEqual(after["exclusions"].get("validity_corrected"), 1)
+        self.assertTrue(after["validity_corrections"])
+        # The first context is frozen and unchanged.
+        self.assertNotEqual(after, before)
+
+    def test_raw_annotation_does_not_republish(self):
+        """The raw bank channel (``set_task_check``) is a narrow fact write,
+        not a calibration trigger: a correction written that way is picked
+        up on the NEXT rebuild/close, and the read path reports the stored
+        summary. Documented behaviour, so a caller knows which channel
+        updates the published summary."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        record = self.solve(task, variables={"x1": 2, "x2": 3},
+                            objective=10755.0, tag="late4")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        self.h.bank.set_task_check(record.execution_id, {
+            "state": "failed",
+            "execution_id": record.execution_id,
+            "task_id": "t1",
+            "episode_id": "ep1",
+            "diffs": [{"basis": "reference_objective", "expected": 999.0}],
+            "checked_at": __import__("time").time() + 10,
+        })
+        # The published summary is unchanged until an explicit rebuild.
+        published = self.h.calibration_summary()
+        self.assertEqual(published["exclusions"].get("validity_corrected"),
+                         None)
+        rebuilt = self.h.calibration_summary(rebuild=True)
+        self.assertEqual(rebuilt["exclusions"].get("validity_corrected"), 1)
 
     def test_check_recorded_before_closeout_is_not_a_correction(self):
         """A known-at-the-time failure must not be double-counted."""

@@ -51,6 +51,7 @@ Everything is optional beyond `task_id`. **You do not need a mathematical model,
 | `execution_constraints` | declared budget + consumption status, available solver families, executor limits |
 | `knowledge_targets` | the framework's structural proposal set, **frozen** (see §6) |
 | `reliability` | the measured reliability of past predictions, **frozen** |
+| `strategy_calibration` | the PUBLISHED strategy-outcome experience calibration, frozen (see §6b) |
 | `snapshot` | the frozen condition blocks (X/B + coverage + harness condition) of the snapshot this context was built from |
 | `cell_evidence` | per strategy, the distinct-task count behind the cell's statistics, **frozen** |
 | `sources` | where each part came from (snapshot id, task version, channel list, CIR origin) |
@@ -227,6 +228,28 @@ This is the phase's most important engineering boundary.
 | `predict_outcome(..., context=False)` | no | yes, once | no |
 | `plan_next` | yes, once per decision | yes, per candidate | no |
 | `recall` | yes | no | no |
+
+---
+
+## 6b. The experience-calibration block
+
+`strategy_calibration` carries the **published** strategy-outcome calibration (see [episode_closeout.md](episode_closeout.md)) frozen into the context, sent to the provider as `strategy_outcome_calibration`. It is a DIFFERENT thing from `reliability`:
+
+| | `reliability` | `strategy_calibration` |
+|---|---|---|
+| About | the legacy KNOWLEDGE-prediction classes | the wm-so/1 strategy-outcome service |
+| Source | the prediction log's hit/miss record | closed episodes' per-field evaluations |
+| Never | proves OR prediction accuracy | a fitted calibrator or a model weight |
+
+**A single-row read.** The block is the LAST PUBLISHED summary object, not a rebuild: building a context never scans the evaluation history, so a prediction read stays O(1) however long the history is. When nothing has been published the block is empty and carries a `missing` note — the context records the gap instead of turning a read into a write.
+
+**Filtered by model identity.** Only the groups produced by the ATTACHED provider's model are sent; another model's errors are not evidence about this one. The withheld keys are named under `withheld_groups` with a `filter_note`, so a reader can tell a withheld group from an absent one. A `(unknown)` group (a legacy prediction with no recorded identity) is kept only when the current identity is itself unknown.
+
+**Scope-filtered in the request.** `build_strategy_outcome_request` additionally keeps only the groups whose declared SCOPE matches the candidate's: an attempt-scope error statistic is not evidence about a whole strategy window (and the reverse). Withheld scope keys are reported on the request.
+
+**What the model is told.** The system prompt explains that `mean_benefit_signed_error` / `mean_cost_log_ratio` are DIRECTED (positive = under-predicted), that `insufficient_evidence` groups are not calibration, and that the statistics are global diagnostics with no per-strategy breakdown — a measured record of past errors, never a promise about the current prediction.
+
+**Historical reconstruction reports it MISSING.** A context rebuilt from a snapshot does not read today's summary: the gap is appended to `missing` with the reason. Frozen contexts never change; only NEW contexts read a newer publication.
 
 ---
 

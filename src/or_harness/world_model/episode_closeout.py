@@ -56,6 +56,9 @@ Design boundaries (the reasons this module is shaped the way it is):
 from __future__ import annotations
 
 import copy
+import json
+import math
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -64,6 +67,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import is_finite_number as _finite
 from or_harness.core.schema import (
+    task_check_block,
     task_check_state,
     task_effective_quality,
 )
@@ -71,8 +75,21 @@ from or_harness.core.schema import (
 #: Version of the close-out record schema.
 EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
 
-#: Version of the calibration summary schema.
-CALIBRATION_SUMMARY_VERSION = "wm-calib/1"
+#: Version of the calibration summary schema. ``wm-calib/2`` adds the
+#: DIRECTED statistics (signed benefit error, log cost ratio), the two
+#: counting units (observation units vs prediction-observation pairs), the
+#: model-identity grouping key and the versioned risk-event vocabulary. A
+#: v1 summary and a v2 summary count different things under the same event
+#: names, so they are never pooled.
+CALIBRATION_SUMMARY_VERSION = "wm-calib/2"
+
+#: Version of the FRAMEWORK's risk-event vocabulary. Bumped whenever an
+#: event's MEANING or its observation channel changes: a summary built
+#: under one vocabulary must never be pooled with another, because the
+#: same name would then count two different things. ``model_invalid`` used
+#: to mean "the solver reported an error", which is not a modelling
+#: verdict and was retired in v2.
+EVENT_VOCABULARY_VERSION = "wm-events/2"
 
 #: Terminal states an episode may be closed under. Only ``completed``
 #: claims success; the others are honest endings, never dressed up.
@@ -105,14 +122,109 @@ _BENEFIT_METRIC_ALIASES = {
     "normalized_gap": "normalized_objective_gap",
 }
 
-#: Risk-event names this build can actually OBSERVE, and from what: the
-#: in-scope executions' statuses/failure classes and the episode's budget
-#: view. An event outside this vocabulary has NO observation channel —
-#: its label stays unknown and it is never scored, because "no failure
-#: log" is not evidence that a business risk did not happen.
-OBSERVABLE_RISK_EVENTS = ("model_invalid", "no_feasible_solution",
-                          "timeout", "environment_failure",
-                          "budget_exhausted")
+#: Risk-event names this build can actually OBSERVE, with the observation
+#: UNIT each is counted in. Two units exist and they are never conflated:
+#:
+#: - ``execution``: the event is a property of ONE execution. The unit of
+#:   observation is the execution itself, so a re-planning prediction bound
+#:   to the same execution does NOT create a second observation.
+#: - ``episode``: the event is a property of the whole episode (its budget
+#:   ledger), so it is observed once per episode.
+#:
+#: An event outside this vocabulary has NO observation channel — its label
+#: stays unknown and it is never scored, because "no failure log" is not
+#: evidence that a business risk did not happen.
+#:
+#: Each name says WHAT IT OBSERVED, never WHY it happened. In particular
+#: ``environment_failure`` / ``implementation_failure`` are the executor's
+#: OWN recorded classification (``FailureRecord.error_class``); neither is
+#: a statement about the mathematical model. ``solver_reported_infeasible``
+#: is a pure observation of the solver's verdict, never by itself a failure
+#: of the strategy: correctly diagnosing that the ORIGINAL problem is
+#: infeasible is a valid result.
+OBSERVABLE_RISK_EVENTS: Dict[str, Dict[str, Any]] = {
+    "environment_failure": {
+        "unit": "execution",
+        "source": "ExecutionRecord.failures[].error_class == 'environment' "
+                  "(sandbox policy, missing module, import error)",
+        "applicability": "an in-scope execution of the bound prediction",
+        "measured": "the executor recorded the failure class at run time",
+        "note": "an execution whose failure carries NO error_class (a record "
+                "written before the class existed) keeps the label unknown: "
+                "the class is never re-derived from prose after the fact",
+    },
+    "implementation_failure": {
+        "unit": "execution",
+        "source": "ExecutionRecord.failures[].error_class == 'model' "
+                  "(the harness's own script/stack failed)",
+        "applicability": "an in-scope execution of the bound prediction",
+        "measured": "the executor recorded the failure class at run time",
+        "note": "this is an IMPLEMENTATION failure, NOT a mathematical "
+                "modelling error; the two are never conflated",
+    },
+    "timeout": {
+        "unit": "execution",
+        "source": "ExecutionRecord.quality.status == 'timeout'",
+        "applicability": "an in-scope execution of the bound prediction",
+        "measured": "the executor's wall-clock/CPU limit fired",
+        "note": "a timeout is not evidence that the strategy is wrong",
+    },
+    "solver_reported_infeasible": {
+        "unit": "execution",
+        "source": "ExecutionRecord.quality.status == 'infeasible'",
+        "applicability": "an in-scope execution of the bound prediction",
+        "measured": "the solver reported infeasibility",
+        "note": "a REPORTED infeasibility is a fact about the solver's "
+                "verdict, never automatically a strategy failure: correctly "
+                "identifying that the original problem is infeasible is a "
+                "VALID outcome. Whether the infeasibility was correct is a "
+                "task-check question (task_check_failed), not this event's",
+    },
+    "task_check_failed": {
+        "unit": "execution",
+        "source": "execution_features.task_check.state",
+        "applicability": "an in-scope execution carrying a task-result check",
+        "measured": "the harness declared check bases and they ran on real "
+                    "values",
+        "note": "reflects the CHECK RESULT and nothing more: it says the "
+                "declared bases did not hold, NOT that the model was wrong "
+                "(the cause may be a misread task, an implementation bug, an "
+                "unmet requirement, or a wrong reference). The check kind, "
+                "its covered scope and its basis travel with the label",
+    },
+    "budget_exhausted": {
+        "unit": "episode",
+        "source": "the episode's declared budget view (measured real "
+                  "consumption)",
+        "applicability": "only a prediction whose DECLARED scope matches the "
+                         "budget ledger's scope (the episode)",
+        "measured": "every dimension the declared budget names is measured",
+        "note": "the ledger is episode-scoped, so an attempt- or "
+                "strategy-window-scope prediction has NO matching budget "
+                "range: its label stays unknown with a scope_mismatch basis",
+    },
+}
+
+#: Event names RETIRED in this vocabulary, and why. A prediction naming one
+#: of these gets NO label and NO alias mapping: ``model_invalid`` used to be
+#: derived from a solver ``error`` status, which is not a modelling verdict,
+#: and ``no_feasible_solution`` conflated "reported infeasible" with "failed
+#: to find a solution". Mapping them onto the new names would silently count
+#: the old, wider meaning under a narrower label.
+RETIRED_RISK_EVENTS: Dict[str, str] = {
+    "model_invalid": "retired in wm-events/2: a solver error status or a "
+                     "failed task check cannot establish that the MODEL was "
+                     "wrong. Use task_check_failed for the check result; the "
+                     "cause of a failure is the agent's diagnosis, not a "
+                     "framework label",
+    "no_feasible_solution": "retired in wm-events/2: ambiguous between a "
+                            "REPORTED infeasibility (solver_reported_"
+                            "infeasible) and a failure to find any feasible "
+                            "solution. The two are different facts",
+    "model_failure": "retired in wm-events/2: renamed implementation_failure, "
+                     "which says what was observed (the harness's own code "
+                     "failed) instead of implying a modelling error",
+}
 
 
 def _observable_benefit_metric(metric: Any) -> Optional[str]:
@@ -122,12 +234,151 @@ def _observable_benefit_metric(metric: Any) -> Optional[str]:
     return _BENEFIT_METRIC_ALIASES.get(name)
 
 
+#: The scope the BUDGET LEDGER actually measures. ``budget.view`` aggregates
+#: the whole episode (its own recorded attempts plus the prediction calls),
+#: so its unit is the episode. A prediction can only be scored against
+#: ``budget_exhausted`` when its declared scope equals this — and NO
+#: prediction scope currently does (``attempt`` and ``strategy_window`` are
+#: both narrower). This round deliberately does not build a per-attempt
+#: budget system, so the event's FACT is still recorded (see
+#: ``observe_episode_events``) while its Brier channel stays closed with an
+#: explicit scope_mismatch basis rather than borrowing the episode verdict.
+BUDGET_LEDGER_SCOPE = "episode"
+
+
+def _budget_scope_matches(candidate: Any) -> bool:
+    """Whether a prediction's declared scope matches the budget ledger."""
+    return str(getattr(candidate, "scope", "attempt")) == BUDGET_LEDGER_SCOPE
+
+
 def _normalize_event_name(name: Any) -> str:
     return str(name or "").strip().lower().replace(" ", "_").replace("-", "_")
 
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:12]}"
+
+
+# ---------------------------------------------------------------------------
+# retention / window / archive defaults (all configurable)
+# ---------------------------------------------------------------------------
+
+#: How many CLOSED task-episodes participate in the published calibration.
+#: The window is the unit of the calibration sample set — it bounds both the
+#: statistics and the work a close-out does, so prediction reads a small,
+#: published summary instead of scanning the whole history.
+DEFAULT_CALIBRATION_WINDOW = 50
+
+#: Days a closed episode's ONLINE detail is kept so a LATE task check can
+#: still land on it. This is a grace period for episodes that may still be
+#: awaiting a check, NOT an unconditional extra retention for every episode:
+#: an episode whose in-scope executions all carry a verdict leaves the
+#: online set as soon as it drops out of the window.
+DEFAULT_LATE_CHECK_GRACE_DAYS = 30.0
+
+#: Archive directory name under the harness home.
+ARCHIVE_DIRNAME = "calibration"
+
+#: Archive capacity limits. All three are enforced (whichever bites first
+#: evicts the OLDEST archive file), so the archive has a real, finite bound
+#: rather than "whatever accumulates".
+DEFAULT_ARCHIVE_MAX_FILE_BYTES = 64 * 1024 * 1024      # 64 MB per file
+DEFAULT_ARCHIVE_MAX_TOTAL_BYTES = 1024 * 1024 * 1024   # 1 GB in total
+DEFAULT_ARCHIVE_RETENTION_DAYS = 365.0
+
+#: How many closed episodes may sit OUTSIDE the window (and past the grace
+#: period) before an automatic archive pass runs after a close-out. Keeps
+#: the online detail bounded without archiving on every single close.
+DEFAULT_AUTO_ARCHIVE_THRESHOLD = 200
+
+#: Environment variables that override the defaults above (the effective
+#: values are recorded on every published summary).
+ENV_CALIBRATION_WINDOW = "OR_CALIBRATION_WINDOW"
+ENV_LATE_CHECK_GRACE_DAYS = "OR_CALIBRATION_LATE_CHECK_GRACE_DAYS"
+ENV_ARCHIVE_MAX_FILE_BYTES = "OR_CALIBRATION_ARCHIVE_MAX_FILE_BYTES"
+ENV_ARCHIVE_MAX_TOTAL_BYTES = "OR_CALIBRATION_ARCHIVE_MAX_TOTAL_BYTES"
+ENV_ARCHIVE_RETENTION_DAYS = "OR_CALIBRATION_ARCHIVE_RETENTION_DAYS"
+ENV_AUTO_ARCHIVE_THRESHOLD = "OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD"
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value >= 0 else default
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(_env_float(name, float(default)))
+
+
+@dataclass
+class CalibrationPolicy:
+    """The three retention scopes, kept EXPLICIT and separate.
+
+    They answer three different questions and are never collapsed into one
+    number, because a single "retention" setting cannot honestly bound the
+    online database, decide which episodes calibrate, and cap the archive at
+    the same time:
+
+    - ``window``: which closed task-episodes CALIBRATE (the statistics).
+    - ``late_check_grace_days``: how long an episode's ONLINE detail is kept
+      so a late task check can still land on it. Applies to episodes that
+      may still be awaiting a check; an episode whose executions all carry a
+      verdict is not held by this.
+    - ``archive_*``: what HISTORY is actually kept on disk — with a per-file
+      size cap, a total-size cap and an age cap, so the archive cannot grow
+      without bound (a total-size cap is what makes "the archive is bounded"
+      a true statement).
+    """
+
+    window: int = DEFAULT_CALIBRATION_WINDOW
+    late_check_grace_days: float = DEFAULT_LATE_CHECK_GRACE_DAYS
+    archive_max_file_bytes: int = DEFAULT_ARCHIVE_MAX_FILE_BYTES
+    archive_max_total_bytes: int = DEFAULT_ARCHIVE_MAX_TOTAL_BYTES
+    archive_retention_days: float = DEFAULT_ARCHIVE_RETENTION_DAYS
+    auto_archive_threshold: int = DEFAULT_AUTO_ARCHIVE_THRESHOLD
+
+    @classmethod
+    def from_env(cls, **overrides: Any) -> "CalibrationPolicy":
+        """Defaults <- environment <- explicit overrides (later wins)."""
+        policy = cls(
+            window=_env_int(ENV_CALIBRATION_WINDOW,
+                            DEFAULT_CALIBRATION_WINDOW),
+            late_check_grace_days=_env_float(
+                ENV_LATE_CHECK_GRACE_DAYS, DEFAULT_LATE_CHECK_GRACE_DAYS),
+            archive_max_file_bytes=_env_int(
+                ENV_ARCHIVE_MAX_FILE_BYTES, DEFAULT_ARCHIVE_MAX_FILE_BYTES),
+            archive_max_total_bytes=_env_int(
+                ENV_ARCHIVE_MAX_TOTAL_BYTES, DEFAULT_ARCHIVE_MAX_TOTAL_BYTES),
+            archive_retention_days=_env_float(
+                ENV_ARCHIVE_RETENTION_DAYS, DEFAULT_ARCHIVE_RETENTION_DAYS),
+            auto_archive_threshold=_env_int(
+                ENV_AUTO_ARCHIVE_THRESHOLD, DEFAULT_AUTO_ARCHIVE_THRESHOLD),
+        )
+        for key, value in overrides.items():
+            if value is not None and hasattr(policy, key):
+                setattr(policy, key, value)
+        return policy
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "window": int(self.window),
+            "late_check_grace_days": float(self.late_check_grace_days),
+            "archive_max_file_bytes": int(self.archive_max_file_bytes),
+            "archive_max_total_bytes": int(self.archive_max_total_bytes),
+            "archive_retention_days": float(self.archive_retention_days),
+            "auto_archive_threshold": int(self.auto_archive_threshold),
+            "note": ("three separate scopes: the WINDOW decides which closed "
+                     "task-episodes calibrate; the GRACE period decides how "
+                     "long online detail is kept for a possible late check; "
+                     "the ARCHIVE caps (per-file, total, age) bound what "
+                     "history is kept on disk"),
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +413,17 @@ class RealOutcomeSummary:
     cost: Dict[str, Any] = field(default_factory=dict)
     auxiliary_cost: Dict[str, Any] = field(default_factory=dict)
     #: Observed risk events: occurred / not_occurred / unknown + basis.
+    #: One row per event the PREDICTION named, plus the framework-observed
+    #: events it did not (``predicted=False``) — the model never adjudicates
+    #: its own prediction, and an event nobody predicted still counts as an
+    #: observation.
     risk_events: List[Dict[str, Any]] = field(default_factory=list)
+    #: The framework's OWN observation of every event in the vocabulary,
+    #: keyed by event name, with its observation unit and unit ids. This is
+    #: what the calibration layer counts OCCURRENCE RATES from: one
+    #: execution observed once is one unit, however many predictions were
+    #: bound to it.
+    observed_events: Dict[str, Any] = field(default_factory=dict)
     #: Verification evidence for the solution the window produced.
     verification: Dict[str, Any] = field(default_factory=dict)
     #: Per-field eligibility: field -> (eligibility, reason).
@@ -183,6 +444,7 @@ class RealOutcomeSummary:
             "cost": copy.deepcopy(self.cost),
             "auxiliary_cost": copy.deepcopy(self.auxiliary_cost),
             "risk_events": copy.deepcopy(self.risk_events),
+            "observed_events": copy.deepcopy(self.observed_events),
             "verification": copy.deepcopy(self.verification),
             "eligibility": copy.deepcopy(self.eligibility),
             "notes": list(self.notes),
@@ -484,106 +746,29 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         "separately and never charged to this prediction's scope")
 
     # -- risk event observations -------------------------------------------
-    # An event is observed ONLY through a channel this build really has:
-    # the in-scope executions' statuses and failure classes, and the
-    # episode's declared-budget view. An event outside that vocabulary
-    # (a business risk with no observation channel) keeps label=None —
-    # "no failure log" is not evidence it did not happen.
-    observed_events: Dict[str, str] = {}
-    for record in records:
-        status = (record.quality or {}).get("status")
-        if status == "error":
-            observed_events["model_invalid"] = "occurred"
-        elif status == "timeout":
-            observed_events["timeout"] = "occurred"
-        elif status == "infeasible":
-            observed_events["no_feasible_solution"] = "occurred"
-        for failure in record.failures or []:
-            error_class = str(getattr(failure, "error_class", None)
-                              or "model")
-            observed_events[f"{error_class}_failure"] = "occurred"
-    # The budget channel, THREE states: a declared budget CONFIRMED
-    # exceeded by real consumption is an OBSERVED budget_exhausted event;
-    # a CONFIRMED within-budget verdict (status "ok") over a completed
-    # scope is a not_occurred observation; anything else — an UNCONFIRMED
-    # ledger (some cost dimension unmeasured), no declared budget, or an
-    # incomplete scope — keeps the label unknown: "not yet known to
-    # exceed" is NOT "did not exhaust".
-    budget_event_label: Optional[str] = None
-    budget_event_basis = ""
-    declared_budget = (harness._load_budget(
-        candidate.task_id, candidate.episode_id) or {})
-    if declared_budget:
-        budget_view = harness.budget.view(
-            candidate.task_id, candidate.episode_id,
-            budget=declared_budget)
-        budget_status = budget_view.get("status")
-        if budget_status == "exceeded":
-            budget_event_label = "occurred"
-            budget_event_basis = ("declared budget exceeded by measured "
-                                  "real consumption")
-        elif budget_status == "ok":
-            budget_event_label = "not_occurred"
-            budget_event_basis = ("declared budget confirmed within "
-                                  "limits (every dimension measured)")
-        else:
-            # "unconfirmed" / "no_budget_declared": the ledger cannot
-            # establish either direction — the label stays unknown.
-            budget_event_label = None
-            budget_event_basis = (
-                f"budget status {budget_status!r}: the consumption cannot "
-                "be confirmed in either direction, so the label stays "
-                "unknown and the event is excluded from scoring")
-    window_complete = bool(records) and action.status != "running"
-    risk_events: List[Dict[str, Any]] = []
-    predicted_events = (prediction.risk.events
-                        if prediction.risk is not None else [])
-    for event in predicted_events:
-        canonical = _normalize_event_name(event.event)
-        label: Optional[str]
-        if canonical in observed_events:
-            label = "occurred"
-        elif canonical == "budget_exhausted":
-            # The budget channel decides this event alone: the generic
-            # "completed scope without the event" branch never applies to
-            # it (an unconfirmed ledger is not evidence of no exhaustion).
-            label = budget_event_label
-        elif canonical not in OBSERVABLE_RISK_EVENTS:
-            # No observation channel exists for this event name: the
-            # label stays unknown whatever the executions did — an
-            # unobserved business risk is never scored as "did not
-            # happen" on the strength of an absent log.
-            label = None
-        elif window_complete:
-            # The event IS in the observable vocabulary and the scope
-            # completed without it appearing: the absence is an
-            # observation of THIS scope (still a single trajectory).
-            label = "not_occurred"
-        else:
-            label = None
-        if canonical == "budget_exhausted":
-            basis = ("observed on the in-scope execution(s)"
-                     if label == "occurred" else budget_event_basis)
-        else:
-            basis = ("observed on the in-scope execution(s)"
-                     if label == "occurred" else
-                     "completed scope with no such observed event "
-                     "(single trajectory)"
-                     if label == "not_occurred" else
-                     (f"no observation channel exists for event "
-                      f"{event.event!r}: the label stays unknown "
-                      "and the event is excluded from scoring"
-                      if canonical not in OBSERVABLE_RISK_EVENTS
-                      else
-                      "unknown: the scope was not fully observed, "
-                      "so absence is not evidence"))
-        risk_events.append({
-            "event": event.event,
-            "predicted_probability": event.probability,
-            "label": label,
-            "label_basis": basis,
-        })
-    summary.risk_events = risk_events
+    # The framework observes the events on its OWN, from the in-scope
+    # executions and the episode's budget ledger — it does NOT start from
+    # the model's predicted list. A prediction that never mentioned an event
+    # the framework really observed is still recorded (it feeds the
+    # occurrence-rate statistic); a prediction that mentioned an event with
+    # no observation channel keeps the label unknown. The two lists are
+    # merged by name below.
+    observed = observe_episode_events(
+        harness, records, task_id=candidate.task_id,
+        episode_id=candidate.episode_id, scope_complete=(
+            bool(records) and action.status != "running"))
+    summary.observed_events = observed["events"]
+    summary.risk_events = _pair_predicted_events(
+        prediction, observed, candidate)
+    # A per-prediction label is never the whole story: the framework's own
+    # observation is kept so the calibration layer can count OCCURRENCE
+    # RATES by observation unit (an execution observed once is one unit,
+    # however many predictions were bound to it).
+    summary.notes.append(
+        "risk events are observed by the framework independently of the "
+        "model's predictions; the observation unit is the execution (or the "
+        "episode for the budget ledger), so several predictions bound to one "
+        "execution produce ONE observation, not several")
 
     # -- verification -----------------------------------------------------
     verification_level = (action.params or {}).get("verification_level")
@@ -602,6 +787,309 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                  "recorded"),
     }
     return summary
+
+
+# ---------------------------------------------------------------------------
+# 1b. framework-side risk observation (independent of any prediction)
+# ---------------------------------------------------------------------------
+
+
+def _execution_event_observations(records: Sequence[Any]
+                                  ) -> Dict[str, Dict[str, Any]]:
+    """Observe the execution-unit events on a set of executions.
+
+    Each event carries the OBSERVATION UNIT (the execution it was seen on),
+    so a later aggregation can count it once however many predictions were
+    bound to that execution. An event that cannot be decided for a given
+    execution (a record written before ``error_class`` existed) keeps
+    ``label=None`` and says why — it is never inferred from prose.
+    """
+    events: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        quality = record.quality or {}
+        status = quality.get("status")
+
+        if status == "timeout":
+            _note_occurrence(events, "timeout", record.execution_id,
+                             "the executor's time limit fired")
+        if status == "infeasible":
+            # A REPORTED infeasibility is a fact about the solver's
+            # verdict. It is never by itself a strategy failure, so it is
+            # recorded under its own name and never mapped onto a
+            # failure/validity label.
+            _note_occurrence(
+                events, "solver_reported_infeasible", record.execution_id,
+                "the solver reported infeasibility (a verdict, not by "
+                "itself a strategy failure)")
+
+        for failure in (record.failures or []):
+            error_class = getattr(failure, "error_class", None)
+            if error_class == "environment":
+                _note_occurrence(
+                    events, "environment_failure", record.execution_id,
+                    "the executor recorded an ENVIRONMENT failure "
+                    "(sandbox policy / missing module)")
+            elif error_class == "model":
+                _note_occurrence(
+                    events, "implementation_failure", record.execution_id,
+                    "the executor recorded the harness's OWN code failing "
+                    "(an implementation failure, not a modelling error)")
+            elif status == "error":
+                # An error WITH a failure record but NO recorded class: the
+                # class is not re-derived from prose after the fact. The
+                # record stays unknown for both failure events.
+                for name in ("environment_failure", "implementation_failure"):
+                    _note_unknown(
+                        events, name, record.execution_id,
+                        "the failure carries no recorded error_class (a "
+                        "record written before the class existed): the "
+                        "cause is UNKNOWN and is not inferred from the "
+                        "error text")
+        if status == "error" and not (record.failures or []):
+            for name in ("environment_failure", "implementation_failure"):
+                _note_unknown(
+                    events, name, record.execution_id,
+                    "the execution failed without a failure record: the "
+                    "cause is UNKNOWN")
+
+        # The task-check channel: the CHECK RESULT, and nothing more.
+        verdict = task_check_state(record)
+        block = task_check_block(record) or {}
+        if verdict == "failed":
+            _note_occurrence(
+                events, "task_check_failed", record.execution_id,
+                "a declared task check ran on real values and did not hold",
+                detail={"checks": [c.get("check") for c in
+                                   (block.get("checks") or [])],
+                        "unchecked": list(
+                            (block.get("scope") or {}).get("unchecked")
+                            or []),
+                        "intent": block.get("intent")})
+        elif verdict == "passed":
+            _note_non_occurrence(
+                events, "task_check_failed", record.execution_id,
+                "a declared task check passed on its declared bases (the "
+                "covered scope is listed; a pass is not proof that the "
+                "whole model matches the task)")
+        else:
+            _note_unknown(
+                events, "task_check_failed", record.execution_id,
+                "no task check is on record for this execution: whether "
+                "the answer satisfies the task is UNKNOWN")
+    return events
+
+
+def _note_occurrence(events: Dict[str, Dict[str, Any]], name: str,
+                     unit_id: Optional[str], basis: str,
+                     detail: Optional[Dict[str, Any]] = None) -> None:
+    entry = events.setdefault(name, {
+        "event": name,
+        "unit": OBSERVABLE_RISK_EVENTS[name]["unit"],
+        "label": "not_occurred",
+        "label_basis": "",
+        "unit_ids": [],
+    })
+    entry["label"] = "occurred"
+    entry["label_basis"] = basis
+    if unit_id is not None and unit_id not in entry["unit_ids"]:
+        entry["unit_ids"].append(unit_id)
+    if detail:
+        entry.setdefault("detail", []).append(detail)
+
+
+def _note_non_occurrence(events: Dict[str, Dict[str, Any]], name: str,
+                         unit_id: Optional[str], basis: str) -> None:
+    entry = events.setdefault(name, {
+        "event": name,
+        "unit": OBSERVABLE_RISK_EVENTS[name]["unit"],
+        "label": "not_occurred",
+        "label_basis": "",
+        "unit_ids": [],
+    })
+    # An occurrence elsewhere in the scope dominates: a completed scope
+    # with one timeout IS a timeout observation, whatever else passed.
+    if entry["label"] != "occurred":
+        entry["label_basis"] = basis
+    if unit_id is not None and unit_id not in entry["unit_ids"]:
+        entry["unit_ids"].append(unit_id)
+
+
+def _note_unknown(events: Dict[str, Dict[str, Any]], name: str,
+                  unit_id: Optional[str], basis: str) -> None:
+    entry = events.setdefault(name, {
+        "event": name,
+        "unit": OBSERVABLE_RISK_EVENTS[name]["unit"],
+        "label": None,
+        "label_basis": "",
+        "unit_ids": [],
+    })
+    if entry["label"] is None and not entry["label_basis"]:
+        entry["label_basis"] = basis
+    if unit_id is not None and unit_id not in entry["unit_ids"]:
+        entry["unit_ids"].append(unit_id)
+
+
+def observe_episode_events(harness, records: Sequence[Any], *,
+                           task_id: str,
+                           episode_id: Optional[str],
+                           scope_complete: bool
+                           ) -> Dict[str, Any]:
+    """The FRAMEWORK's own observation of the risk events of one scope.
+
+    Built from the in-scope executions and the episode's budget ledger —
+    never from a prediction. This is the single source both the per-
+    prediction labelling and the occurrence-rate statistic read, so the two
+    can never disagree about what happened.
+
+    ``scope_complete`` gates the "did not occur" direction for the
+    execution-unit events: a scope that has not finished has no absence
+    evidence, so those labels stay unknown. The budget event is decided by
+    the ledger alone (its unit is the episode).
+    """
+    events = _execution_event_observations(records)
+    # A scope that did not fully complete cannot support a not_occurred
+    # label: the absence of an event in an unfinished scope is not evidence.
+    if not scope_complete:
+        for name, entry in events.items():
+            if entry["label"] == "not_occurred":
+                entry["label"] = None
+                entry["label_basis"] = (
+                    "the scope did not fully complete, so the absence of "
+                    "this event is not evidence")
+    # Every observable execution-unit event is reported even when NOTHING
+    # happened, so the occurrence-rate denominator is explicit rather than
+    # an artefact of which events the model happened to predict.
+    for name, definition in OBSERVABLE_RISK_EVENTS.items():
+        if definition["unit"] != "execution":
+            continue
+        if name not in events:
+            events[name] = {
+                "event": name,
+                "unit": "execution",
+                "label": ("not_occurred" if (records and scope_complete)
+                          else None),
+                "label_basis": ("the completed scope produced no such "
+                                "observation" if (records and scope_complete)
+                                else "no in-scope execution to observe"),
+                "unit_ids": [r.execution_id for r in records],
+            }
+    # The budget ledger: unit = episode. THREE states, as before, but
+    # recorded as a framework fact whether or not any prediction named it.
+    declared_budget = (harness._load_budget(task_id, episode_id) or {})
+    budget_entry: Dict[str, Any] = {
+        "event": "budget_exhausted",
+        "unit": "episode",
+        "label": None,
+        "label_basis": "",
+        "unit_ids": [f"{task_id}|{episode_id or ''}"],
+    }
+    if declared_budget:
+        budget_view = harness.budget.view(task_id, episode_id,
+                                          budget=declared_budget)
+        budget_status = budget_view.get("status")
+        if budget_status == "exceeded":
+            budget_entry["label"] = "occurred"
+            budget_entry["label_basis"] = (
+                "the declared budget was exceeded by measured real "
+                "consumption")
+        elif budget_status == "ok":
+            budget_entry["label"] = "not_occurred"
+            budget_entry["label_basis"] = (
+                "the declared budget was confirmed within limits (every "
+                "declared dimension measured)")
+        else:
+            budget_entry["label_basis"] = (
+                f"budget status {budget_status!r}: consumption cannot be "
+                "confirmed in either direction, so the label stays unknown")
+    else:
+        budget_entry["label_basis"] = (
+            "no budget was declared for this episode, so no budget event "
+            "can be observed")
+    events["budget_exhausted"] = budget_entry
+    return {
+        "vocabulary_version": EVENT_VOCABULARY_VERSION,
+        "task_id": task_id,
+        "episode_id": episode_id,
+        "scope_complete": bool(scope_complete),
+        "events": events,
+    }
+
+
+def _pair_predicted_events(prediction, observed: Dict[str, Any],
+                           candidate) -> List[Dict[str, Any]]:
+    """Pair the model's predicted events with the framework's observations.
+
+    One row per event the MODEL predicted, plus the framework-observed
+    events it did not (marked ``predicted=False``, with no probability —
+    they feed the occurrence-rate statistic and can never produce a Brier
+    score). The framework never lets the model adjudicate its own
+    prediction: the label comes from the observation, never from the
+    probability.
+    """
+    events = observed["events"]
+    rows: List[Dict[str, Any]] = []
+    seen: set = set()
+    predicted_events = (prediction.risk.events
+                        if prediction.risk is not None else [])
+    for event in predicted_events:
+        canonical = _normalize_event_name(event.event)
+        seen.add(canonical)
+        definition = OBSERVABLE_RISK_EVENTS.get(canonical)
+        retired = RETIRED_RISK_EVENTS.get(canonical)
+        observation = events.get(canonical)
+        if definition is None:
+            label = None
+            basis = (f"event {event.event!r} is not in the framework's "
+                     f"observation vocabulary ({EVENT_VOCABULARY_VERSION}): "
+                     + (retired if retired else
+                        "no observation channel exists for it, so its label "
+                        "stays unknown and it is never scored"))
+        else:
+            # The budget event is decided by the LEDGER, whose scope is the
+            # episode. A prediction whose DECLARED scope is narrower has no
+            # matching budget range: the label stays unknown with an
+            # explicit scope_mismatch basis instead of borrowing the
+            # episode-wide verdict.
+            if canonical == "budget_exhausted" \
+                    and not _budget_scope_matches(candidate):
+                label = None
+                basis = (
+                    f"scope_mismatch: the budget ledger is EPISODE-scoped, "
+                    f"and this prediction declares scope "
+                    f"{getattr(candidate, 'scope', 'attempt')!r}. The "
+                    "episode-wide budget verdict is not this scope's "
+                    "outcome, so the label stays unknown")
+            elif observation is None:
+                label = None
+                basis = "the framework recorded no observation for this event"
+            else:
+                label = observation["label"]
+                basis = observation["label_basis"]
+        rows.append({
+            "event": event.event,
+            "canonical_event": canonical,
+            "predicted": True,
+            "observation_unit": (definition or {}).get("unit"),
+            "predicted_probability": event.probability,
+            "label": label,
+            "label_basis": basis,
+        })
+    # Framework-observed events the model did NOT predict: recorded so the
+    # occurrence rate has an honest denominator, never scored for accuracy.
+    for name, observation in events.items():
+        if name in seen:
+            continue
+        rows.append({
+            "event": name,
+            "canonical_event": name,
+            "predicted": False,
+            "observation_unit": observation.get("unit"),
+            "predicted_probability": None,
+            "label": observation.get("label"),
+            "label_basis": observation.get("label_basis"),
+            "unit_ids": list(observation.get("unit_ids") or []),
+        })
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -628,6 +1116,13 @@ class StrategyPredictionEvaluation:
     #: strategy_window): part of the calibration grouping key, so samples
     #: under different scopes never pool.
     scope: str = "attempt"
+    #: The IDENTITY of the model that made the prediction, as the provider
+    #: described itself (``provider_model`` / ``provider_version``).
+    #: Different models are different predictors, so their errors never
+    #: pool. ``"(unknown)"`` is the honest value for a prediction that
+    #: recorded no identity (a legacy record) — it is never guessed from
+    #: the provider NAME, which is not a version.
+    model_identity: str = "(unknown)"
     created_at: float = field(default_factory=time.time)
     #: benefit / cost / risk / interval blocks, each with eligibility.
     benefit: Dict[str, Any] = field(default_factory=dict)
@@ -648,6 +1143,7 @@ class StrategyPredictionEvaluation:
             "task_id": self.task_id,
             "episode_id": self.episode_id,
             "scope": self.scope,
+            "model_identity": self.model_identity,
             "created_at": self.created_at,
             "state": self.state,
             "benefit": copy.deepcopy(self.benefit),
@@ -668,6 +1164,7 @@ class StrategyPredictionEvaluation:
             task_id=str(data.get("task_id", "")),
             episode_id=data.get("episode_id"),
             scope=str(data.get("scope", "attempt")),
+            model_identity=str(data.get("model_identity") or "(unknown)"),
             created_at=float(data.get("created_at", time.time())),
             state=str(data.get("state", "evaluated")),
             benefit=copy.deepcopy(dict(data.get("benefit") or {})),
@@ -678,6 +1175,22 @@ class StrategyPredictionEvaluation:
                                (data.get("exclusion_reasons") or [])],
             notes=[str(n) for n in (data.get("notes") or [])],
         )
+
+
+def _prediction_model_identity(prediction) -> str:
+    """The identity of the model that made a prediction, or ``(unknown)``.
+
+    Read from ``trace.model_info`` (written by the prediction service from
+    the provider's own ``describe()``). The label comes from the SAME
+    helper the service uses for its own identity, so a prediction and its
+    calibration group can never disagree about which model produced it.
+    """
+    info = (prediction.trace.model_info
+            if prediction.trace is not None else {}) or {}
+    from or_harness.world_model.strategy_prediction import (
+        model_identity_label,
+    )
+    return model_identity_label(info)
 
 
 def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
@@ -709,6 +1222,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         task_id=prediction.candidate.task_id,
         episode_id=prediction.candidate.episode_id,
         scope=prediction.candidate.scope,
+        model_identity=_prediction_model_identity(prediction),
     )
     identity_problems = {k: v for k, v in summary.eligibility.items()
                          if k.startswith("identity.")}
@@ -716,37 +1230,57 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
 
     # -- benefit -----------------------------------------------------------
     benefit = prediction.benefit
+    # The DECLARED yardstick travels with the evaluation whatever the
+    # eligibility: grouping is by what the prediction SAID it was
+    # predicting, so an unobservable sample still lands in the group it
+    # belongs to instead of a nameless bucket.
+    declared_yardstick = ({
+        "metric": benefit.metric, "unit": benefit.unit,
+        "predicted": (round(float(benefit.value), 6)
+                      if benefit.value is not None else None),
+    } if benefit is not None else {})
     if benefit is None or benefit.value is None:
         evaluation.benefit = {
             "eligibility": "not_predicted",
             "reason": "the prediction carried no benefit value",
+            **declared_yardstick,
         }
     elif "observed" not in summary.benefit:
         entry = summary.eligibility.get("benefit", {})
         evaluation.benefit = {
             "eligibility": entry.get("eligibility", "unobserved"),
             "reason": entry.get("reason", "no benefit observation"),
+            **declared_yardstick,
         }
     elif identity_problems:
         evaluation.benefit = {
             "eligibility": "identity_mismatch",
             "reason": "the binding identity is not established: the real "
                       "outcome may not be this prediction's truth",
+            **declared_yardstick,
         }
     else:
         observed = summary.benefit["observed"]
+        predicted = float(benefit.value)
         evaluation.benefit = {
             "eligibility": "evaluable",
             "metric": benefit.metric,
             "unit": benefit.unit,
-            "predicted": round(float(benefit.value), 6),
+            "predicted": round(predicted, 6),
             "observed": observed,
-            "abs_error": round(abs(float(benefit.value) - observed), 6),
+            "abs_error": round(abs(predicted - observed), 6),
+            # DIRECTED error: positive = the prediction was too LOW (the
+            # real outcome was better than predicted); negative = too HIGH.
+            # A magnitude alone cannot tell an over-estimate from an
+            # under-estimate, which is exactly what a later prediction needs
+            # to correct for.
+            "signed_error": round(observed - predicted, 6),
             "baseline": (benefit.baseline.to_dict()
                          if benefit.baseline is not None else None),
             "note": ("the metric/unit/baseline are the prediction's OWN "
                      "declared yardstick, restated — never re-chosen after "
-                     "the result was seen"),
+                     "the result was seen; signed_error = observed - "
+                     "predicted (positive = under-predicted)"),
         }
         # Carry the task-check gate through: a reader comparing "predicted
         # 0.8, observed 0.0" must be able to see that the zero came from a
@@ -795,12 +1329,20 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "abs_error": round(abs(p - a), 6),
             }
             if p > 0 and a > 0:
-                entry["log_error"] = round(abs(__import__("math").log(
-                    a / p)), 4)
+                ratio = math.log(a / p)
+                # DIRECTED error: positive = the real cost was HIGHER than
+                # predicted (under-predicted), negative = lower. The
+                # absolute log-error is kept alongside so existing readers
+                # see no change.
+                entry["log_ratio"] = round(ratio, 4)
+                entry["log_error"] = round(abs(ratio), 4)
             else:
+                entry["log_ratio"] = None
                 entry["log_error"] = None
                 entry["note"] = ("zero predicted or actual: no relative "
-                                 "error is manufactured")
+                                 "ratio is manufactured (a log-ratio would "
+                                 "be infinite or undefined, and a "
+                                 "substituted value would be a fabrication)")
             per_dim[dim] = entry
             n_compared += 1
         evaluation.cost = {
@@ -809,43 +1351,84 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "excluded": excluded,
             "note": ("only dimensions the prediction predicted AND the "
                      "real scope measured completely participate; "
-                     "auxiliary overhead is never charged to this scope"),
+                     "auxiliary overhead is never charged to this scope; "
+                     "log_ratio = log(actual/predicted) (positive = "
+                     "under-predicted cost)"),
         }
 
     # -- risk -------------------------------------------------------------------
+    # The framework's OWN observation of every vocabulary event travels with
+    # EVERY evaluation, whatever the prediction carried: an event nobody
+    # predicted is still an observation, and the occurrence rate is counted
+    # from these units, not from how many predictions happened to name one.
+    observed_units: Dict[str, Dict[str, Any]] = {}
+    for name, observation in (summary.observed_events or {}).items():
+        if not isinstance(observation, dict) or "label" not in observation:
+            continue
+        observed_units[name] = {
+            "unit": observation.get("unit"),
+            "label": observation.get("label"),
+            "n_units": len(observation.get("unit_ids") or []),
+            "label_basis": observation.get("label_basis"),
+            "unit_ids": list(observation.get("unit_ids") or []),
+        }
     risk = prediction.risk
     if risk is None or not risk.events:
         evaluation.risk = {
             "eligibility": "not_predicted",
             "reason": "the prediction carried no risk events",
+            "scored": [],
+            "unscored": [],
+            "observed_units": observed_units,
         }
     elif identity_problems:
         evaluation.risk = {
             "eligibility": "identity_mismatch",
             "reason": "the binding identity is not established: the real "
                       "outcome may not be this prediction's truth",
+            "scored": [],
+            "unscored": [],
+            "observed_units": observed_units,
         }
     else:
         scored: List[Dict[str, Any]] = []
         unscored: List[Dict[str, Any]] = []
         for observed_event in summary.risk_events:
-            probability = observed_event["predicted_probability"]
+            probability = observed_event.get("predicted_probability")
             label = observed_event["label"]
             if probability is None:
+                # Either the model gave no probability, or the event was
+                # observed by the FRAMEWORK and never predicted. Either way
+                # it is NOT a scored pair — but it IS an observation, and
+                # the occurrence-rate statistic counts it.
                 unscored.append({
                     "event": observed_event["event"],
-                    "reason": "the prediction gave no probability",
+                    "predicted": bool(observed_event.get("predicted")),
+                    "observation_unit": observed_event.get(
+                        "observation_unit"),
+                    "label": label,
+                    "reason": ("the model did not predict this event: it is "
+                               "observed by the framework and counted in "
+                               "the occurrence rate, but no Brier score can "
+                               "be computed without a probability"
+                               if not observed_event.get("predicted") else
+                               "the prediction gave no probability"),
                 })
                 continue
             if label is None:
                 unscored.append({
                     "event": observed_event["event"],
+                    "predicted": True,
+                    "observation_unit": observed_event.get(
+                        "observation_unit"),
+                    "label": None,
                     "reason": observed_event["label_basis"],
                 })
                 continue
             y = 1.0 if label == "occurred" else 0.0
             scored.append({
                 "event": observed_event["event"],
+                "canonical_event": observed_event.get("canonical_event"),
                 "predicted_probability": round(float(probability), 6),
                 "label": label,
                 "label_basis": observed_event["label_basis"],
@@ -856,9 +1439,13 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "eligibility": ("evaluable" if scored else "unobserved"),
             "scored": scored,
             "unscored": unscored,
+            "observed_units": observed_units,
             "note": ("a Brier score is one sample of a probability's "
                      "quality, never a verdict from a single trajectory; "
-                     "events are never averaged across different names"),
+                     "events are never averaged across different names; "
+                     "`scored` holds prediction-observation PAIRS while "
+                     "`observed_units` counts each real observation once, "
+                     "however many predictions were bound to it"),
         }
 
     # -- interval ------------------------------------------------------------
@@ -871,6 +1458,11 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "predicted_interval": [lo, hi],
                 "observed": observed,
                 "covered": bool(lo <= observed <= hi),
+                # Width is reported alongside coverage: a "covered" verdict
+                # from a mile-wide interval is not the same evidence as one
+                # from a tight interval, and coverage alone cannot tell them
+                # apart.
+                "width": round(float(hi) - float(lo), 6),
             }
             n_compared += 1
         else:
@@ -977,6 +1569,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
                   finish_action_id: Optional[str] = None,
                   min_calibration_samples: int =
                   DEFAULT_MIN_CALIBRATION_SAMPLES,
+                  policy: Optional[CalibrationPolicy] = None,
                   ) -> Dict[str, Any]:
     """Close ONE episode and publish its experience calibration.
 
@@ -984,28 +1577,54 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
     (pending, never a fabricated ending), (2) summarizes and evaluates
     every BOUND strategy-outcome prediction of the episode against its
     real outcome, (3) records the close-out once (idempotent), and (4)
-    folds the eligible evaluations into the versioned calibration summary
-    that later episodes' prediction contexts read.
+    republishes the versioned calibration summary that later episodes'
+    prediction contexts read.
 
     It does NOT run a solver, call the prediction model, or trigger
     induction. A failed/aborted/budget-exhausted episode closes honestly
     under its own terminal state — never dressed up as completed.
+
+    **Publication is atomic and recoverable.** The evaluation records and
+    the registry row are written FIRST (transaction 1); the summary is then
+    rebuilt from the window and published in a SINGLE transaction that also
+    flips the registry's ``published`` flag (transaction 2). A crash between
+    the two leaves ``published=0``, which the next close (or an explicit
+    ``rebuild``) detects and finishes — the episode is never "closed but
+    unpublished" without a trace, and nothing is ever counted twice.
     """
     if terminal_state not in EPISODE_TERMINAL_STATES:
         raise ValueError(
             f"terminal_state must be one of {EPISODE_TERMINAL_STATES}")
+    policy = policy or CalibrationPolicy.from_env()
     store = harness.store
     key = f"episode_closeout|{task_id}|{episode_id or ''}"
     row = store.conn.execute(
         "SELECT value FROM meta WHERE key=?", (key,)).fetchone()
     if row is not None:
         stored = EpisodeCloseout.from_dict(store.loads(row["value"]))
-        return {
+        registry = store.get_closeout_registry(task_id, episode_id)
+        result: Dict[str, Any] = {
             "closeout": stored.to_dict(),
             "already_closed": True,
             "note": ("this episode was already closed: the stored record "
                      "stands, nothing was re-counted or re-billed"),
         }
+        if registry is not None and not registry["published"]:
+            # The previous close crashed between its two transactions: the
+            # evaluations and the registry row exist, the summary does not.
+            # Finish the publication now instead of leaving the episode
+            # permanently unpublished (the alternative — reporting
+            # already_closed and moving on — would silently starve every
+            # later context of this episode's feedback).
+            published = republish_calibration(
+                harness, policy=policy,
+                min_calibration_samples=min_calibration_samples)
+            result["calibration_summary"] = published
+            result["recovered_publication"] = True
+            result["note"] += ("; the previous close had not published its "
+                               "summary, so the publication was completed "
+                               "now (nothing was re-counted)")
+        return result
 
     # Unfinished actions BLOCK the close-out: an episode with a running
     # action has no final state to evaluate against, and closing anyway
@@ -1051,31 +1670,37 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         evaluation = evaluate_strategy_prediction(prediction, summary)
         evaluations.append(evaluation)
 
-    # Persist the evaluations FIRST (append-only, keyed by evaluation id;
-    # a re-close is blocked by the closeout key below, so no duplicate
-    # contributions can appear).
+    # TRANSACTION 1: the evaluations (append-only, keyed by evaluation id)
+    # and the close-out record + registry row. A re-close is blocked by the
+    # closeout key above, so no duplicate contributions can appear. The
+    # registry row is written with published=0 and flipped in transaction 2.
     for evaluation in evaluations:
         _put_evaluation(store, evaluation)
         closeout.evaluation_ids.append(evaluation.evaluation_id)
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+            (key, store.dumps(closeout.to_dict())))
+    store.put_closeout_registry(
+        task_id, episode_id, closed_at=closeout.created_at,
+        terminal_state=terminal_state,
+        evaluation_ids=closeout.evaluation_ids, published=False)
 
-    # THEN record the close-out, and only afterwards build the summary:
-    # the summary aggregates CLOSED episodes' evaluations, so this
-    # episode's samples must be persisted AND its close-out recorded
-    # before the summary is generated — otherwise the first close-out's
-    # own return misses this round's samples.
-    with store.transaction() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
-            (key, store.dumps(closeout.to_dict())))
-    summary_block = build_calibration_summary(
-        harness, min_samples=min_calibration_samples)
+    # TRANSACTION 2: rebuild the window's summary and publish it atomically.
+    summary_block = republish_calibration(
+        harness, policy=policy,
+        min_calibration_samples=min_calibration_samples)
     closeout.calibration_published = True
-    # Re-write the record with the publication flag (the summary itself
-    # is derived data; only the flag is stored).
     with store.transaction() as conn:
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
             (key, store.dumps(closeout.to_dict())))
+
+    # Automatic retention maintenance: a LIGHT check (one indexed COUNT of
+    # registry rows outside the window and past the grace period). Only when
+    # that count crosses the configured threshold does an archive pass run —
+    # so retention is maintained without archiving on every single close.
+    archive_result = maybe_auto_archive(harness, policy=policy)
     return {
         "closeout": closeout.to_dict(),
         "already_closed": False,
@@ -1083,6 +1708,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         "calibration_summary": summary_block,
         "task_checks": _episode_task_check_summary(harness, task_id,
                                                    episode_id),
+        "retention": archive_result,
     }
 
 
@@ -1160,76 +1786,182 @@ def episode_closeout_record(harness, task_id: str,
 # ---------------------------------------------------------------------------
 
 
-def _iter_closed_evaluations(harness
-                             ) -> List[StrategyPredictionEvaluation]:
-    """Every evaluation of every CLOSED episode (the only admissible
-    samples: an open episode's feedback must not calibrate anything,
-    least of all itself)."""
+#: Meta key of the PUBLISHED calibration summary. The summary is derived
+#: data, but it is published as ONE stored object so a normal prediction
+#: read is a single row lookup instead of a full-history scan. It is
+#: rewritten atomically whenever the window changes.
+PUBLISHED_SUMMARY_KEY = "calibration_summary|published"
+
+
+def calibration_window(harness, policy: Optional[CalibrationPolicy] = None
+                       ) -> List[Dict[str, Any]]:
+    """The CLOSED task-episodes that participate in the current calibration.
+
+    Located through the registry's indexed ``closed_at`` ordering — the
+    newest ``policy.window`` rows, and NOTHING else is read. This is the
+    whole point of the registry: the window is "the first N registry rows",
+    so a prediction read never scans or deserialises the evaluation history
+    to discover which samples are recent.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    return harness.store.closeout_registry(limit=policy.window)
+
+
+def _evaluations_for_window(harness, window: Sequence[Dict[str, Any]]
+                            ) -> List[StrategyPredictionEvaluation]:
+    """Read ONLY the evaluations named by the window's registry rows.
+
+    Each registry row carries its ``evaluation_ids``, so this reads exactly
+    the window's payloads — no ``LIKE`` scan over the whole meta table, no
+    deserialising rows that will be discarded. An id whose payload has been
+    archived (or was never written) is skipped: the registry is the index,
+    and a missing payload is a fact about the archive, not an error.
+    """
+    wanted: List[str] = []
+    for row in window:
+        wanted.extend(str(e) for e in (row.get("evaluation_ids") or []))
+    if not wanted:
+        return []
     out: List[StrategyPredictionEvaluation] = []
-    rows = harness.store.conn.execute(
-        "SELECT key, value FROM meta WHERE key LIKE "
-        "'strategy_evaluation|%'").fetchall()
-    for row in rows:
-        try:
-            evaluation = StrategyPredictionEvaluation.from_dict(
-                harness.store.loads(row["value"]))
-        except Exception:
-            continue
-        if episode_closeout_record(harness, evaluation.task_id,
-                                   evaluation.episode_id) is None:
-            continue
-        out.append(evaluation)
+    for chunk_start in range(0, len(wanted), 400):
+        chunk = wanted[chunk_start:chunk_start + 400]
+        rows = harness.store.conn.execute(
+            f"SELECT value FROM meta WHERE key IN "
+            f"({','.join('?' for _ in chunk)})",
+            [f"strategy_evaluation|{eid}" for eid in chunk]).fetchall()
+        for row in rows:
+            try:
+                out.append(StrategyPredictionEvaluation.from_dict(
+                    harness.store.loads(row["value"])))
+            except Exception:
+                continue
     return out
+
+
+def _iter_closed_evaluations(harness, policy: Optional[CalibrationPolicy]
+                             = None
+                             ) -> List[StrategyPredictionEvaluation]:
+    """Every evaluation of every closed episode IN THE CURRENT WINDOW.
+
+    Kept under its original name because callers and tests use it, but its
+    meaning is now bounded: the window is the sample set, so this is
+    O(window) rather than O(history). An open episode's feedback still
+    never calibrates anything (only registry rows exist for CLOSED
+    episodes).
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    return _evaluations_for_window(harness,
+                                   calibration_window(harness, policy))
+
+
+def _collect_observation_units(evaluation, unit_observations
+                               ) -> None:
+    """Add one evaluation's framework observations to the window's tally.
+
+    Deduplicated by (event, unit id), so an execution observed by several
+    bound predictions counts ONCE. Called for EVERY evaluation — including
+    excluded ones — because an exclusion removes a prediction from the
+    SCORING samples, not the execution from what really happened.
+    """
+    risk = evaluation.risk or {}
+    for event_name, observation in (risk.get("observed_units")
+                                    or {}).items():
+        if not isinstance(observation, dict):
+            continue
+        unit_ids = observation.get("unit_ids")
+        if not unit_ids:
+            # Legacy evaluation without unit ids: fall back to the episode
+            # identity so the unit is still counted once.
+            unit_ids = [f"{evaluation.task_id}|"
+                        f"{evaluation.episode_id or ''}"]
+        bucket = unit_observations.setdefault(
+            event_name, {"unit": observation.get("unit"),
+                         "occurred": set(), "not_occurred": set(),
+                         "unknown": set(), "seen": set()})
+        label = observation.get("label")
+        for unit_id in unit_ids:
+            key = str(unit_id)
+            if key in bucket["seen"]:
+                continue
+            bucket["seen"].add(key)
+            if label == "occurred":
+                bucket["occurred"].add(key)
+            elif label == "not_occurred":
+                bucket["not_occurred"].add(key)
+            else:
+                bucket["unknown"].add(key)
 
 
 def build_calibration_summary(harness, *,
                               min_samples: int =
-                              DEFAULT_MIN_CALIBRATION_SAMPLES
+                              DEFAULT_MIN_CALIBRATION_SAMPLES,
+                              policy: Optional[CalibrationPolicy] = None
                               ) -> Dict[str, Any]:
-    """Aggregate closed-episode evaluations into a versioned summary.
+    """Aggregate the WINDOW's evaluations into a versioned summary.
 
-    Grouped by (metric, unit, scope) so different definitions never mix —
-    the same metric name under a different unit or a different scope is a
-    DIFFERENT group, never pooled. Risk events are scored PER EVENT NAME:
-    different events are different random variables and their Brier
-    scores are never averaged together. The sample threshold counts
-    DISTINCT EPISODES (independent truths), not predictions: one truth
-    bound to five re-planning predictions is ONE episode's evidence, and
-    counting the predictions would let a single execution cross the
-    threshold five times over. An episode's identity is the FULL pair
-    ``(task_id, episode_id)``: episode ids are chosen per task, so five
-    different tasks that each used ``ep1`` are five independent
-    task-episodes, never one — deduplicating on the bare ``episode_id``
-    would silently collapse them into a single sample.
+    Grouped by (model identity, metric, unit, scope) so different
+    definitions never mix — the same metric name under a different unit,
+    scope or PREDICTING MODEL is a DIFFERENT group, never pooled. Risk
+    events are scored PER EVENT NAME: different events are different random
+    variables and their Brier scores are never averaged together. The
+    sample threshold counts DISTINCT EPISODES (independent truths), not
+    predictions: one truth bound to five re-planning predictions is ONE
+    episode's evidence. An episode's identity is the FULL pair
+    ``(task_id, episode_id)``.
 
-    Each group reports: sample count, distinct-episode count (repeated
-    predictions marked correlated, never counted as independent), mean
-    absolute benefit error, mean per-dimension cost log-error, interval
-    coverage rate, and per-event Brier means. A group below
-    ``min_samples`` DISTINCT EPISODES reports ``insufficient_evidence`` —
-    no reliability figure is invented.
+    Two counting units are reported and NEVER conflated:
+
+    - **prediction-observation pairs** (``n_scored`` / ``mean_brier`` /
+      ``mean_predicted_probability`` / ``scored_occurrence_rate``): the
+      sample for judging a probability, one per eligible prediction.
+    - **observation units** (``n_observation_units`` /
+      ``unit_occurrence_rate``): the framework's own count of how often an
+      event really happened, once per execution (or per episode for the
+      budget event). Several predictions bound to one execution are ONE
+      unit — otherwise the occurrence rate would inflate with the number
+      of predictions rather than the number of real events.
+
+    ``mean_predicted_probability`` and ``scored_occurrence_rate`` share the
+    SAME denominator (predictions with both a probability and a label), so
+    their difference is a meaningful over/under-estimate signal.
+    ``unit_occurrence_rate`` has its OWN denominator (all observed units)
+    and is labelled separately — it must never be subtracted from a mean
+    probability computed over a different sample set.
+
+    Each group also reports DIRECTED statistics (mean signed benefit error,
+    mean per-dimension cost log-ratio) so a reader can tell "historically
+    too high" from "historically too low", not just "off by this much".
+    A group below ``min_samples`` DISTINCT EPISODES reports
+    ``insufficient_evidence`` — no reliability figure is invented.
 
     This is measured EXPERIENCE reliability, not a fitted calibrator and
     not a model weight: writing the summary does not promise future
     predictions improve. It is kept SEPARATE from the legacy knowledge
-    prediction reliability (``prediction_class_reliability``): a knowledge
-    hit rate never proves OR strategy-outcome accuracy.
+    prediction reliability (``prediction_class_reliability``).
     """
-    evaluations = _iter_closed_evaluations(harness)
+    policy = policy or CalibrationPolicy.from_env()
+    window = calibration_window(harness, policy)
+    evaluations = _evaluations_for_window(harness, window)
     groups: Dict[str, Dict[str, Any]] = {}
     exclusions: Dict[str, int] = {}
     corrected: List[Dict[str, Any]] = []
+    # Observation units are counted from the FRAMEWORK's observation, keyed
+    # by (event, unit id) so a re-observation of the same execution never
+    # doubles. Because the window is episode-based and the evaluation rows
+    # carry their own observed_units, the dedup is global across the window.
+    unit_observations: Dict[str, Dict[str, Any]] = {}
     for evaluation in evaluations:
+        # OBSERVATION UNITS ARE COLLECTED FIRST, from EVERY evaluation —
+        # including an excluded or corrected one. An exclusion is a
+        # statement about the PREDICTION's comparability, not about whether
+        # the execution happened: the framework really observed that
+        # execution, so the occurrence rate would be biased if it were
+        # dropped. (Prediction SCORING, below, is what exclusion removes.)
+        _collect_observation_units(evaluation, unit_observations)
         if evaluation.state != "evaluated":
             state = evaluation.state or "other"
             exclusions[state] = exclusions.get(state, 0) + 1
             continue
-        # LATE CORRECTION: a task-level check that arrived AFTER this
-        # evaluation was stored may have confirmed the answer does not
-        # satisfy the task. The STORED evaluation is never rewritten (it
-        # is the honest record of what was known then), but it must not
-        # keep counting as a calibration sample now that the validity
-        # judgment changed. It leaves the mean and is counted separately.
         is_corrected, correction = _evaluation_validity_correction(
             harness, evaluation)
         if is_corrected:
@@ -1242,41 +1974,64 @@ def build_calibration_summary(harness, *,
         metric = str(benefit.get("metric") or "(none)")
         unit = str(benefit.get("unit") or "(none)")
         scope = str(evaluation.scope or "(none)")
-        group_key = f"strategy_outcome|{metric}|{unit}|{scope}"
+        model_identity = str(evaluation.model_identity or "(unknown)")
+        group_key = (f"strategy_outcome|{model_identity}|{metric}|{unit}"
+                     f"|{scope}")
         group = groups.setdefault(
             group_key, {
                 "n": 0, "episodes": set(), "benefit_abs_errors": [],
-                "cost_log_errors": {}, "interval_covered": [],
-                "brier_by_event": {}, "correlated_predictions": 0,
+                "benefit_signed_errors": [], "cost_log_errors": {},
+                "cost_log_ratios": {}, "interval_covered": [],
+                "interval_widths": [], "brier_by_event": {},
+                "probability_by_event": {}, "scored_label_by_event": {},
+                "correlated_predictions": 0,
             })
         group["n"] += 1
-        # Full identity: episode ids are only unique WITHIN a task, so
-        # the pair is what names one independent episode. Two tasks that
-        # both used "ep1" are two episodes, not one.
         group["episodes"].add(
             (str(evaluation.task_id or ""),
              str(evaluation.episode_id or "")))
-        if benefit.get("eligibility") == "evaluable" \
-                and benefit.get("abs_error") is not None:
-            group["benefit_abs_errors"].append(
-                float(benefit["abs_error"]))
+        if benefit.get("eligibility") == "evaluable":
+            if benefit.get("abs_error") is not None:
+                group["benefit_abs_errors"].append(
+                    float(benefit["abs_error"]))
+            if benefit.get("signed_error") is not None:
+                group["benefit_signed_errors"].append(
+                    float(benefit["signed_error"]))
         cost = evaluation.cost or {}
         for dim, entry in (cost.get("per_dim") or {}).items():
             if entry.get("log_error") is not None:
                 group["cost_log_errors"].setdefault(dim, []).append(
                     float(entry["log_error"]))
+            if entry.get("log_ratio") is not None:
+                group["cost_log_ratios"].setdefault(dim, []).append(
+                    float(entry["log_ratio"]))
         interval = evaluation.interval or {}
         if interval.get("eligibility") == "evaluable":
             group["interval_covered"].append(
                 1.0 if interval.get("covered") else 0.0)
+            if interval.get("width") is not None:
+                group["interval_widths"].append(float(interval["width"]))
         risk = evaluation.risk or {}
         for entry in risk.get("scored") or []:
             # PER-EVENT accounting: different event names are different
             # variables; their scores are reported separately and never
-            # averaged into one number.
+            # averaged into one number. `scored` holds PREDICTION-
+            # OBSERVATION PAIRS, so this counts pairs, not real events.
             event_name = str(entry.get("event") or "(unnamed)")
             group["brier_by_event"].setdefault(event_name, []).append(
                 float(entry["brier"]))
+            probability = entry.get("predicted_probability")
+            if probability is not None:
+                group["probability_by_event"].setdefault(
+                    event_name, []).append(float(probability))
+            label = entry.get("label")
+            if label is not None:
+                group["scored_label_by_event"].setdefault(
+                    event_name, []).append(
+                        1.0 if label == "occurred" else 0.0)
+        # Observation units were collected BEFORE this point (see the top of
+        # the loop): they belong to the framework's own record of what
+        # happened, not to the prediction's eligibility.
 
     def _mean(values: Sequence[float]) -> Optional[float]:
         return round(sum(values) / len(values), 6) if values else None
@@ -1290,12 +2045,21 @@ def build_calibration_summary(harness, *,
             "n_distinct_episodes": distinct,
             "correlated_predictions": n - distinct,
             "mean_benefit_abs_error": _mean(group["benefit_abs_errors"]),
+            # DIRECTED: positive = historically UNDER-predicted benefit.
+            "mean_benefit_signed_error": _mean(
+                group["benefit_signed_errors"]),
             "mean_cost_log_error": {
                 dim: _mean(values)
                 for dim, values in sorted(
                     group["cost_log_errors"].items())},
+            # DIRECTED: positive = historically UNDER-predicted cost.
+            "mean_cost_log_ratio": {
+                dim: _mean(values)
+                for dim, values in sorted(
+                    group["cost_log_ratios"].items())},
             "interval_coverage": _mean(group["interval_covered"]),
             "n_interval_samples": len(group["interval_covered"]),
+            "mean_interval_width": _mean(group["interval_widths"]),
             "mean_brier_by_event": {
                 event: _mean(values)
                 for event, values in sorted(
@@ -1304,12 +2068,17 @@ def build_calibration_summary(harness, *,
                 event: len(values)
                 for event, values in sorted(
                     group["brier_by_event"].items())},
+            "mean_predicted_probability": {
+                event: _mean(values)
+                for event, values in sorted(
+                    group["probability_by_event"].items())},
+            # Same denominator as mean_predicted_probability: only
+            # predictions that had BOTH a probability and a label.
+            "scored_occurrence_rate": {
+                event: _mean(values)
+                for event, values in sorted(
+                    group["scored_label_by_event"].items())},
         }
-        # The threshold counts DISTINCT EPISODES (independent truths).
-        # Predictions are correlated samples of the same truth: five
-        # re-planning predictions over one execution are one episode's
-        # evidence, and counting them as five would let a single outcome
-        # cross the threshold.
         if distinct < min_samples:
             entry["reliability"] = None
             entry["basis"] = "insufficient_evidence"
@@ -1326,29 +2095,163 @@ def build_calibration_summary(harness, *,
                              "predictions improve")
         out_groups[name] = entry
 
+    # The framework's OWN occurrence statistics, per event name, counted by
+    # observation unit (never by prediction count).
+    occurrence: Dict[str, Any] = {}
+    for event_name, bucket in sorted(unit_observations.items()):
+        labelled = len(bucket["occurred"]) + len(bucket["not_occurred"])
+        occurrence[event_name] = {
+            "observation_unit": bucket["unit"],
+            "n_observation_units": len(bucket["seen"]),
+            "n_labelled_units": labelled,
+            "n_occurred": len(bucket["occurred"]),
+            "n_not_occurred": len(bucket["not_occurred"]),
+            "n_unknown": len(bucket["unknown"]),
+            # Denominator is ALL labelled observation units — a DIFFERENT
+            # sample set from mean_predicted_probability. Reported
+            # separately and never subtracted from a mean probability.
+            "unit_occurrence_rate": (
+                round(len(bucket["occurred"]) / labelled, 6)
+                if labelled else None),
+            "rate_basis": ("labelled observation units (an execution or an "
+                           "episode counted once, however many predictions "
+                           "were bound to it)"),
+        }
+
     return {
         "calibration_version": CALIBRATION_SUMMARY_VERSION,
+        "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
         "protocol": "wm-so/1",
         "min_samples": int(min_samples),
         "min_samples_basis": "distinct (task_id, episode_id) pairs",
+        "window": policy.to_dict(),
+        "n_window_episodes": len(window),
         "n_evaluations_total": len(evaluations),
         "n_evaluated": sum(1 for e in evaluations
                            if e.state == "evaluated"),
         "exclusions": exclusions,
         "validity_corrections": corrected,
         "groups": out_groups,
+        "occurrence": occurrence,
+        "applicability": "global_diagnostic",
+        "applicability_note": (
+            "these statistics carry NO strategy or problem-condition "
+            "breakdown: they are a global diagnostic of the model's past "
+            "error on this protocol, NOT a claim about the conditional "
+            "bias of the candidate currently under consideration"),
         "note": ("experience calibration of the strategy-outcome "
-                 "prediction service, from CLOSED episodes only; grouped "
-                 "by metric/unit/scope, risk events scored per event name, "
-                 "and the sample threshold counts DISTINCT EPISODES — kept "
-                 "separate from the legacy knowledge-prediction "
-                 "reliability (a knowledge hit rate never proves OR "
-                 "prediction accuracy), and never a model weight or a "
-                 "fitted calibrator. A sample whose answer was LATER "
+                 "prediction service, from CLOSED episodes IN THE WINDOW "
+                 "only; grouped by model identity/metric/unit/scope, risk "
+                 "events scored per event name, and the sample threshold "
+                 "counts DISTINCT EPISODES — kept separate from the legacy "
+                 "knowledge-prediction reliability (a knowledge hit rate "
+                 "never proves OR prediction accuracy), and never a model "
+                 "weight or a fitted calibrator. `groups` counts "
+                 "prediction-observation PAIRS; `occurrence` counts real "
+                 "OBSERVATION UNITS. A sample whose answer was LATER "
                  "confirmed not to satisfy the task is counted under "
                  "exclusions.validity_corrected and leaves the means — the "
                  "stored evaluation itself is never rewritten"),
     }
+
+
+def publish_calibration_summary(harness, summary: Dict[str, Any],
+                                window: Sequence[Dict[str, Any]]
+                                ) -> None:
+    """Publish a summary and flip the window's registry rows atomically.
+
+    ONE transaction writes the summary object AND marks every window
+    episode ``published=1``. Splitting these would allow a state where the
+    summary is visible but the registry still says "not published" (or the
+    reverse), which the recovery path would then try to repair twice.
+    """
+    store = harness.store
+    with store.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+            (PUBLISHED_SUMMARY_KEY, store.dumps(summary)))
+        for row in window:
+            conn.execute(
+                "UPDATE episode_closeouts SET published=1 "
+                "WHERE task_id=? AND episode_id=?",
+                (str(row["task_id"]), str(row["episode_id"] or "")))
+
+
+def republish_calibration(harness, *,
+                          policy: Optional[CalibrationPolicy] = None,
+                          min_calibration_samples: int =
+                          DEFAULT_MIN_CALIBRATION_SAMPLES
+                          ) -> Dict[str, Any]:
+    """Rebuild the window summary from current state and publish it.
+
+    The single place the published summary is written, so every trigger
+    (a close-out, a late task check, an exclusion, an archive pass, an
+    explicit rebuild) produces the same object by the same rules.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    window = calibration_window(harness, policy)
+    summary = build_calibration_summary(
+        harness, min_samples=min_calibration_samples, policy=policy)
+    summary["published_at"] = time.time()
+    publish_calibration_summary(harness, summary, window)
+    return summary
+
+
+def published_calibration_summary(harness
+                                  ) -> Optional[Dict[str, Any]]:
+    """The stored published summary, or None when nothing was published yet.
+
+    This is the read a NEW prediction context makes: ONE row lookup, no
+    history scan. A store that has never published (an old database, or a
+    project that never closed an episode) returns None and the caller
+    reports the calibration as MISSING rather than scanning to build one.
+    """
+    row = harness.store.conn.execute(
+        "SELECT value FROM meta WHERE key=?",
+        (PUBLISHED_SUMMARY_KEY,)).fetchone()
+    if row is None:
+        return None
+    try:
+        return harness.store.loads(row["value"])
+    except Exception:
+        return None
+
+
+def window_contains(harness, task_id: str, episode_id: Optional[str],
+                    policy: Optional[CalibrationPolicy] = None) -> bool:
+    """Whether one closed episode is currently IN the calibration window.
+
+    Used by the re-publication triggers (a late check, an exclusion) to
+    decide whether a change can affect the published summary at all: a
+    correction on an episode that has already left the window cannot change
+    the statistics, so no rebuild is needed.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    for row in calibration_window(harness, policy):
+        if str(row["task_id"]) == str(task_id) \
+                and str(row["episode_id"] or "") == str(episode_id or ""):
+            return True
+    return False
+
+
+def republish_if_in_window(harness, task_id: str,
+                           episode_id: Optional[str], *,
+                           policy: Optional[CalibrationPolicy] = None
+                           ) -> Optional[Dict[str, Any]]:
+    """Republish the summary IF the affected episode is in the window.
+
+    The trigger every correction channel calls after writing a fact that
+    could change a calibration sample (a late task check, an exclusion, a
+    restore). It is deliberately cheap when it does nothing: locating the
+    window is one indexed query, and an episode outside it returns None
+    without rebuilding. Without this hook a stale label would keep being
+    served to later predictions, which is exactly what the window is
+    supposed to prevent.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    if not window_contains(harness, task_id, episode_id, policy):
+        return None
+    return republish_calibration(harness, policy=policy)
 
 
 def _evaluation_validity_correction(harness, evaluation
@@ -1405,13 +2308,459 @@ def _evaluation_validity_correction(harness, evaluation
     return False, {}
 
 
-def calibration_summary_for_context(harness) -> Dict[str, Any]:
+def calibration_summary_for_context(harness, *,
+                                    policy: Optional[CalibrationPolicy] = None,
+                                    model_identity: Optional[str] = None
+                                    ) -> Dict[str, Any]:
     """The published calibration summary a NEW prediction context reads.
 
-    Returns the summary's actual CONTENT (groups, counts, sources), not an
-    id. An active episode does not see its own not-yet-closed feedback:
-    only CLOSED episodes contribute (enforced by
-    :func:`_iter_closed_evaluations`), so a context built mid-episode is
-    calibrated by history alone.
+    This is a SINGLE-ROW read of the last published summary — no history
+    scan, no rebuild. That is the point of publishing: a prediction read is
+    O(1) however long the history is. When nothing has ever been published
+    (an old database, or a project that never closed an episode) an EMPTY
+    summary carrying the MISSING note is returned: the context records that
+    no calibration was available rather than silently rebuilding one (which
+    would make a read path write, and would let a prediction scan the whole
+    history after all).
+
+    ``model_identity`` (the ATTACHED provider's identity, not a caller
+    guess) FILTERS the groups: only the groups produced by the SAME model
+    are sent. Another model's error statistics are not evidence about this
+    one, so they are withheld and the withholding is reported.
     """
-    return build_calibration_summary(harness)
+    summary = published_calibration_summary(harness)
+    if summary is None:
+        policy = policy or CalibrationPolicy.from_env()
+        return {
+            "calibration_version": CALIBRATION_SUMMARY_VERSION,
+            "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
+            "protocol": "wm-so/1",
+            "window": policy.to_dict(),
+            "n_window_episodes": 0,
+            "n_evaluations_total": 0,
+            "n_evaluated": 0,
+            "exclusions": {},
+            "validity_corrections": [],
+            "groups": {},
+            "occurrence": {},
+            "applicability": "global_diagnostic",
+            "missing": ("no calibration summary has been published yet: no "
+                        "closed episode has been evaluated in this store, or "
+                        "the summary predates this version. Run `orx "
+                        "calibration --rebuild` to build one from the "
+                        "current window"),
+            "note": ("no published calibration is available; the context "
+                     "records the gap rather than scanning history to fill "
+                     "it"),
+        }
+    if model_identity is not None:
+        summary = _filter_calibration_by_model(summary, model_identity)
+    return summary
+
+
+def _filter_calibration_by_model(summary: Dict[str, Any],
+                                 model_identity: str
+                                 ) -> Dict[str, Any]:
+    """Keep only the groups produced by the SAME model identity.
+
+    A different model is a different predictor, so its error statistics are
+    not evidence about the attached one. ``(unknown)`` groups (legacy
+    predictions with no recorded identity) are kept ONLY when the current
+    identity is itself unknown — otherwise a legacy group would silently
+    stand in for a model it may not describe.
+    """
+    filtered = copy.deepcopy(summary)
+    kept: Dict[str, Any] = {}
+    withheld: List[str] = []
+    for key, group in (summary.get("groups") or {}).items():
+        parts = str(key).split("|")
+        group_model = parts[1] if len(parts) > 1 else "(unknown)"
+        if group_model == str(model_identity):
+            kept[key] = copy.deepcopy(group)
+        else:
+            withheld.append(str(key))
+    filtered["groups"] = kept
+    if withheld:
+        filtered["withheld_groups"] = withheld
+        filtered["model_identity"] = str(model_identity)
+        filtered["filter_note"] = (
+            f"{len(withheld)} group(s) from a different model identity were "
+            f"withheld: they describe another model's errors and are not "
+            f"evidence about {model_identity!r}")
+    return filtered
+
+
+# ---------------------------------------------------------------------------
+# 6. retention: archiving the detail (never the identity)
+# ---------------------------------------------------------------------------
+
+
+def archive_dir(harness) -> "os.PathLike[str]":
+    """The archive directory under the harness home."""
+    return harness.home / "archive" / ARCHIVE_DIRNAME
+
+
+def _archive_files(harness) -> List["os.PathLike[str]"]:
+    directory = archive_dir(harness)
+    if not directory.exists():
+        return []
+    return sorted(p for p in directory.iterdir()
+                  if p.is_file() and p.name.startswith("calibration-")
+                  and p.name.endswith(".jsonl"))
+
+
+def _archived_ids(harness) -> set:
+    """Every record id already present in the archive.
+
+    Read from the archive files' first token of each line (the record id),
+    so a re-run of the archive pass is idempotent: an id already on disk is
+    never written twice.
+    """
+    ids: set = set()
+    for path in _archive_files(harness):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    archive_id = record.get("archive_id")
+                    if archive_id:
+                        ids.add(str(archive_id))
+        except OSError:
+            continue
+    return ids
+
+
+def _enforce_archive_limits(harness, policy: CalibrationPolicy
+                            ) -> Dict[str, Any]:
+    """Apply the archive's THREE caps: age, per-file size, total size.
+
+    Whichever bites first evicts the OLDEST file. This is what makes "the
+    archive is bounded" a true statement: a retention period alone would
+    let a burst of activity store an unbounded volume, and a size cap alone
+    would let stale data live forever. The TOTAL cap is honoured even when
+    it means removing the last remaining file — a cap that silently yields
+    to a single big file is not a cap.
+    """
+    removed: List[str] = []
+    now = time.time()
+
+    # 1. Age: delete files older than the retention period.
+    if policy.archive_retention_days > 0:
+        cutoff = now - policy.archive_retention_days * 86400.0
+        for path in list(_archive_files(harness)):
+            try:
+                if path.stat().st_mtime < cutoff:
+                    path.unlink()
+                    removed.append(path.name)
+            except OSError:
+                continue
+
+    # 2. Per-file size: reported, not repaired. Records are rolled at write
+    #    time so a file should not exceed the cap; a SINGLE record larger
+    #    than the cap is the only way one can, and it is named here.
+    oversized = [p.name for p in _archive_files(harness)
+                 if p.stat().st_size > policy.archive_max_file_bytes]
+
+    # 3. Total size: delete oldest files until the total fits. Unlike the
+    #    per-file cap, this one is allowed to remove the LAST file: the
+    #    total bound is the promise that the archive cannot grow forever.
+    def _total() -> int:
+        return sum(p.stat().st_size for p in _archive_files(harness)
+                   if p.exists())
+    while policy.archive_max_total_bytes > 0 \
+            and _total() > policy.archive_max_total_bytes:
+        current = _archive_files(harness)
+        if not current:
+            break
+        oldest = current[0]
+        try:
+            oldest.unlink()
+            removed.append(oldest.name)
+        except OSError:
+            break
+    return {
+        "removed_files": removed,
+        "oversized_files": oversized,
+        "remaining_files": len(_archive_files(harness)),
+        "total_bytes": _total(),
+    }
+
+
+def _append_archive_records(harness, records: Sequence[Dict[str, Any]],
+                            policy: CalibrationPolicy) -> Dict[str, Any]:
+    """Append records, rolling to a NEW file as soon as the cap is reached.
+
+    The roll is checked PER RECORD, not per batch: one batch of records can
+    legitimately exceed the per-file cap, and checking only at batch start
+    would leave a file far over the limit.
+    """
+    directory = archive_dir(harness)
+    directory.mkdir(parents=True, exist_ok=True)
+    files = _archive_files(harness)
+    target = files[-1] if files else directory / "calibration-0001.jsonl"
+    index = len(files) if files else 1
+    written = 0
+    written_to = target.name
+    for record in records:
+        line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
+        try:
+            size = target.stat().st_size
+        except OSError:
+            size = 0
+        if policy.archive_max_file_bytes > 0 \
+                and size and size + len(line.encode("utf-8")) \
+                > policy.archive_max_file_bytes:
+            index += 1
+            target = directory / f"calibration-{index:04d}.jsonl"
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write(line)
+        written += 1
+        written_to = target.name
+    return {"file": written_to, "written": written,
+            "files": [p.name for p in _archive_files(harness)]}
+
+
+def archive_calibration_detail(harness, *,
+                               policy: Optional[CalibrationPolicy] = None,
+                               dry_run: bool = False
+                               ) -> Dict[str, Any]:
+    """Move OUT-OF-WINDOW episode detail to the archive.
+
+    Three scopes are respected, and they are NOT the same scope:
+
+    1. **window** (``policy.window``): episodes still in it keep their
+       detail online, because they calibrate.
+    2. **grace** (``policy.late_check_grace_days``): a closed episode whose
+       in-scope executions do NOT all carry a task verdict is kept online
+       for this long, so a late check can still land on it. An episode
+       whose executions are all checked is NOT held by the grace period —
+       it leaves as soon as it is outside the window (no blanket extra
+       retention).
+    3. **archive caps**: per-file size, total size and age, so the archive
+       itself is bounded.
+
+    Only DETAIL is archived (evaluation payloads, prediction payloads,
+    frozen context payloads). The registry tombstone stays ONLINE forever:
+    it is what keeps a repeated close idempotent and the window locatable
+    after the payloads are gone. Re-running is idempotent (an id already in
+    the archive is skipped).
+
+    Restoring an archived payload is possible for AUDIT, but a restored
+    payload never re-enters the calibration automatically: the window is
+    decided by the registry's ``closed_at`` ordering, not by whether a
+    payload happens to be online.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    store = harness.store
+    window = calibration_window(harness, policy)
+    window_ids = {(str(r["task_id"]), str(r["episode_id"] or ""))
+                  for r in window}
+    already_archived = _archived_ids(harness)
+    cutoff = time.time() - policy.late_check_grace_days * 86400.0
+
+    # Candidate rows: closed, outside the window, not yet archived.
+    candidates = [r for r in store.closeout_registry(archived=False)
+                  if (str(r["task_id"]), str(r["episode_id"] or ""))
+                  not in window_ids]
+
+    to_archive: List[Dict[str, Any]] = []
+    held_for_late_check: List[Dict[str, Any]] = []
+    for row in candidates:
+        task_id = str(row["task_id"])
+        episode_id = row["episode_id"]
+        if _episode_awaits_check(harness, task_id, episode_id):
+            # An episode with an unchecked execution may still receive a
+            # late verdict: keep it online until the grace period expires.
+            if row["closed_at"] > cutoff:
+                held_for_late_check.append({
+                    "task_id": task_id, "episode_id": episode_id,
+                    "reason": ("an in-scope execution carries no task-result "
+                               "check and the grace period has not expired")})
+                continue
+        # Collect the detail payloads for this episode.
+        payloads = _episode_detail_payloads(harness, task_id, episode_id)
+        for payload in payloads:
+            if payload["archive_id"] in already_archived:
+                continue
+            payload["archived_at"] = time.time()
+            to_archive.append(payload)
+
+    result: Dict[str, Any] = {
+        "window_episodes": len(window),
+        "candidate_episodes": len(candidates),
+        "held_for_late_check": held_for_late_check,
+        "n_records": len(to_archive),
+        "dry_run": bool(dry_run),
+        "policy": policy.to_dict(),
+    }
+    if dry_run:
+        result["note"] = ("dry run: nothing was moved. The records listed "
+                          "would be appended to the archive and removed "
+                          "from the online store")
+        return result
+
+    write_info = _append_archive_records(harness, to_archive, policy) \
+        if to_archive else {"file": None, "written": 0}
+    # Only NOW remove the online payloads — after they are safely on disk.
+    evaluation_ids = [p["evaluation_id"] for p in to_archive
+                      if p.get("record_type") == "evaluation"]
+    prediction_ids = [p["prediction_id"] for p in to_archive
+                      if p.get("record_type") == "contract_prediction"]
+    context_ids = [p["context_id"] for p in to_archive
+                   if p.get("record_type") == "prediction_context"]
+    store.delete_evaluation_many(evaluation_ids)
+    store.delete_contract_predictions(prediction_ids)
+    store.delete_prediction_contexts(context_ids)
+    # Mark the fully-archived episodes' registry rows (the tombstone stays).
+    archived_episodes = {(p["task_id"], p["episode_id"] or "")
+                         for p in to_archive}
+    for task_id, episode_id in archived_episodes:
+        store.mark_closeout_archived(task_id, episode_id or None)
+
+    limits = _enforce_archive_limits(harness, policy)
+    result.update({
+        "archive_write": write_info,
+        "removed": {
+            "evaluations": len(evaluation_ids),
+            "contract_predictions": len(prediction_ids),
+            "prediction_contexts": len(context_ids),
+        },
+        "archive_limits": limits,
+        "note": ("only DETAIL was archived; the close-out registry rows "
+                 "stay online so a repeated close remains idempotent and "
+                 "the window remains locatable. A restored payload never "
+                 "re-enters the calibration automatically"),
+    })
+    return result
+
+
+def _episode_awaits_check(harness, task_id: str,
+                          episode_id: Optional[str]) -> bool:
+    """Whether any execution of the episode still lacks a task verdict.
+
+    This is the DIRECTED exception the grace period applies to: an episode
+    all of whose executions carry a verdict cannot benefit from a late
+    check, so it is not held online. Only episodes genuinely awaiting a
+    verdict are kept.
+    """
+    for record in harness.bank.query(task_id=task_id):
+        action = harness.actions.by_execution(record.execution_id)
+        if action is not None and episode_id is not None \
+                and action.episode_id != episode_id:
+            continue
+        if task_check_state(record) is None:
+            return True
+    return False
+
+
+def _episode_detail_payloads(harness, task_id: str,
+                             episode_id: Optional[str]
+                             ) -> List[Dict[str, Any]]:
+    """Every archivable detail payload of one closed episode.
+
+    Three record kinds are collected — evaluation payloads, strategy-outcome
+    prediction payloads and frozen context payloads — so retention covers
+    ALL the growing logs, not one query. Each carries an ``archive_id``
+    that makes the archive idempotent.
+    """
+    store = harness.store
+    out: List[Dict[str, Any]] = []
+    registry = store.get_closeout_registry(task_id, episode_id) or {}
+    for evaluation_id in registry.get("evaluation_ids") or []:
+        row = store.conn.execute(
+            "SELECT value FROM meta WHERE key=?",
+            (f"strategy_evaluation|{evaluation_id}",)).fetchone()
+        if row is None:
+            continue
+        out.append({
+            "archive_id": f"evaluation|{evaluation_id}",
+            "record_type": "evaluation",
+            "evaluation_id": str(evaluation_id),
+            "task_id": task_id,
+            "episode_id": episode_id,
+            "payload": row["value"],
+        })
+    for prediction_id in _prediction_ids_for(harness, task_id, episode_id):
+        raw = store.get_contract_prediction(prediction_id)
+        if raw is None:
+            continue
+        out.append({
+            "archive_id": f"contract_prediction|{prediction_id}",
+            "record_type": "contract_prediction",
+            "prediction_id": str(prediction_id),
+            "task_id": task_id,
+            "episode_id": episode_id,
+            "payload": raw,
+        })
+    for context_id in _context_ids_for(harness, task_id, episode_id):
+        raw = store.get_prediction_context(context_id)
+        if raw is None:
+            continue
+        out.append({
+            "archive_id": f"prediction_context|{context_id}",
+            "record_type": "prediction_context",
+            "context_id": str(context_id),
+            "task_id": task_id,
+            "episode_id": episode_id,
+            "payload": raw,
+        })
+    return out
+
+
+def _prediction_ids_for(harness, task_id: str,
+                        episode_id: Optional[str]) -> List[str]:
+    rows = harness.store.conn.execute(
+        "SELECT prediction_id FROM contract_predictions "
+        "WHERE task_id=? AND episode_id IS ?",
+        (str(task_id), episode_id)).fetchall()
+    return [str(r["prediction_id"]) for r in rows]
+
+
+def _context_ids_for(harness, task_id: str,
+                     episode_id: Optional[str]) -> List[str]:
+    rows = harness.store.conn.execute(
+        "SELECT context_id FROM prediction_contexts "
+        "WHERE task_id=? AND episode_id IS ?",
+        (str(task_id), episode_id)).fetchall()
+    return [str(r["context_id"]) for r in rows]
+
+
+def maybe_auto_archive(harness, *,
+                       policy: Optional[CalibrationPolicy] = None
+                       ) -> Dict[str, Any]:
+    """Light maintenance check after a close-out.
+
+    ONE indexed count of registry rows outside the window and not yet
+    archived. Only when that count crosses ``auto_archive_threshold`` does
+    an archive pass run — so retention is maintained automatically without
+    archiving on every close. Reported either way, so the caller can see
+    that the check happened and what it decided.
+    """
+    policy = policy or CalibrationPolicy.from_env()
+    store = harness.store
+    window = calibration_window(harness, policy)
+    window_ids = {(str(r["task_id"]), str(r["episode_id"] or ""))
+                  for r in window}
+    outside = [r for r in store.closeout_registry(archived=False)
+               if (str(r["task_id"]), str(r["episode_id"] or ""))
+               not in window_ids]
+    if len(outside) < policy.auto_archive_threshold:
+        return {
+            "checked": True,
+            "triggered": False,
+            "n_outside_window": len(outside),
+            "threshold": int(policy.auto_archive_threshold),
+            "note": ("below the auto-archive threshold: nothing was "
+                     "archived. The online detail is bounded by the window "
+                     "plus the late-check grace period"),
+        }
+    result = archive_calibration_detail(harness, policy=policy)
+    result.update({"checked": True, "triggered": True,
+                   "n_outside_window": len(outside)})
+    return result
