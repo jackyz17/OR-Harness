@@ -5,7 +5,7 @@
 - Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/2`; risk-event vocabulary: `wm-events/2`
 - Python module: `or_harness.world_model.episode_closeout`
 - API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary` / `archive_calibration` / `calibration_retention`
-- CLI: `orx close-episode` / `orx calibration` / `orx evaluations` / `orx archive-calibration` / `orx retention`
+- CLI: `orx close-episode` / `orx calibration` / `orx inspect --bank evaluations` / `orx archive-calibration` / `orx inspect --bank retention`
 - Tests: `tests/harness/test_episode_closeout.py`, `tests/harness/test_calibration_v2.py`
 - Runnable example: [`references/examples/episode_closeout.py`](examples/episode_closeout.py)
 
@@ -148,7 +148,7 @@ Every statistic carries its OWN evidence verdict (`benefit_evidence`, `cost_evid
 ## 6. Retention: three separate scopes
 
 ```bash
-orx retention
+orx inspect --bank retention
 orx archive-calibration [--dry-run]
 ```
 
@@ -202,4 +202,4 @@ An episode whose executions all carry a verdict is NOT held by the grace period:
 - [ ] Am I counting one truth twice? Re-planning predictions bound to the same outcome are marked correlated; the DISTINCT-EPISODE count is the sample base and the threshold counts episodes, never predictions. Occurrence rates are counted by observation unit, so several predictions over one execution are ONE event.
 - [ ] Am I treating the calibration as a capability gain? It is a record of past errors. H evidence about the world model comes only from these real evaluations — never from the model's self-assessment.
 - [ ] Did a correction reach later predictions? A late check/exclusion/restore on a WINDOW episode republishes the summary; `orx calibration --rebuild` is the explicit repair path.
-- [ ] Is the archive bounded? Check `orx retention`: the per-file, total and age caps are all enforced — a total cap is what makes "bounded" true.
+- [ ] Is the archive bounded? Check `orx inspect --bank retention`: the per-file, total and age caps are all enforced — a total cap is what makes "bounded" true.

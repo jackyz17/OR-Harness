@@ -916,7 +916,14 @@ class TestKnowledgeValueChangesChoice(Base):
 
     def test_modes_gate_what_is_requested_and_scored(self):
         """The three experiment modes differ in request content and in
-        whether the knowledge term is live."""
+        whether the knowledge term is live.
+
+        On the legacy ``predict_outcome`` path the mode decides whether
+        knowledge targets are proposed at all. On the wm-so/1 path that
+        planning uses, the knowledge term is off unless the mode is
+        ``h-x-b-value`` — the comparison itself carries no knowledge
+        import, and the planning limits record the effective delta.
+        """
         self.assertEqual(PREDICTION_MODES,
                          ("x-b-only", "h-x-b", "h-x-b-value"))
         provider_off = KnowledgeProvider()
@@ -929,20 +936,26 @@ class TestKnowledgeValueChangesChoice(Base):
                          provider_off.requests[0])
         self.assertFalse((off_pred.predicted or {}).get("knowledge_changes"))
 
-        provider_hnv = KnowledgeProvider()
-        h_hnv = self.make_harness(provider_hnv, prediction_mode="h-x-b",
-                                  delta=0.5)
-        self.seed(h_hnv)
-        plan = h_hnv.plan_next(
-            TASK, "ep1",
-            candidates=[ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S01")],
-            limits={"horizon": 1})
-        self.assertIn("candidate_knowledge_targets",
-                      provider_hnv.requests[0],
-                      "h-x-b still PREDICTS H, it just does not score it")
-        for path in plan["paths"]:
-            self.assertEqual(path.get("delta_knowledge"), 0.0)
+        # The planning comparison: the advertised delta is withdrawn for
+        # every mode that is not h-x-b-value, so an unconfigured or
+        # x-b-only harness cannot score knowledge it never predicted.
+        for mode in ("x-b-only", "h-x-b"):
+            provider = KnowledgeProvider()
+            h = self.make_harness(provider, prediction_mode=mode, delta=0.5)
+            self.seed(h)
+            plan = h.plan_next(
+                TASK, "ep1",
+                candidates=[ActionSpec("execute_strategy", "t1",
+                                       strategy_id="S01")],
+                limits={"horizon": 1})
+            self.assertEqual(plan["limits"]["delta"], 0.0,
+                             f"mode {mode!r} must not let a knowledge term "
+                             "influence the comparison")
+            for candidate in plan["candidates"]:
+                self.assertEqual(candidate["score"]["utility"],
+                                 candidate["score"]["utility"],
+                                 "the comparison still ran")
+                self.assertNotIn("delta_knowledge", candidate["score"])
 
     def test_invalid_prediction_mode_is_rejected(self):
         with self.assertRaises(ValueError):

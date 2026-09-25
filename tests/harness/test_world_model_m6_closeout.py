@@ -559,64 +559,61 @@ class TestExtraCostEntersScoring(Base):
 
 
 # ---------------------------------------------------------------------------
-# DEFECT 6 — the induction binding must be usable
+# DEFECT 6 — the maintenance feedback must be usable
 # ---------------------------------------------------------------------------
 
 
-class TestInductionBindingUsable(Base):
-    def test_assess_accept_bind_chain(self):
-        """D6: the documented chain must work end to end."""
+class TestCapabilityFeedbackUsable(Base):
+    """The M4 assessment chain was replaced by the M5 two-stage capability
+    feedback. The property DEFECT 6 was about — a documented chain that
+    actually works end to end — now lives there: predict -> compare ->
+    accept -> bind the FACT -> evaluate the EFFECT. `test_capability_evolution`
+    covers the chain; what is asserted HERE is the boundary that must not
+    regress: the removed chain is gone (no half-usable entry point), and the
+    M5 fact binding still never upgrades itself to a verified effect."""
+
+    def test_the_removed_chain_is_gone(self):
+        h = self.make_harness(ScriptedProvider())
+        for name in ("assess_induction", "accept_induction",
+                     "reject_induction", "bind_induction_outcome"):
+            self.assertFalse(
+                hasattr(h, name),
+                f"{name} was removed with the M4 assessment chain: the M5 "
+                "two-stage feedback is the remaining path, and a half-working "
+                "leftover would be worse than no entry point at all")
+
+    def test_candidate_scan_still_produces_the_evidence_package(self):
+        """The one M4 responsibility that survives — and that M5 depends on
+        — is the frozen candidate bundle."""
         h = self.make_harness(ScriptedProvider())
         self.seed(h, "t1")
         self.seed(h, "t2")
         bundles = h.induction_candidates()
         self.assertTrue(bundles, "two tasks of evidence must yield a bundle")
-        assessment = h.assess_induction(bundles[0])
-        assessment_id = assessment["assessment_id"]
-        accepted = h.accept_induction(assessment)
-        self.assertTrue(accepted.get("adoption_action_id"))
-        # The assessment id is discoverable where it was actually written.
-        decision = h.actions.get(assessment["decision_action_id"])
-        self.assertEqual((decision.outcome or {}).get("assessment_id"),
-                         assessment_id)
-        result = h.bind_induction_outcome(assessment_id)
-        self.assertTrue(result.get("compared"))
-        self.assertIn(result["verdict"]["status"],
-                      ("fulfilled", "missed", "inconclusive"))
+        bundle = bundles[0]
+        self.assertEqual(bundle["strategy_id"], "S01")
+        self.assertEqual(bundle["tasks"], ["t1", "t2"])
+        self.assertTrue(bundle["execution_ids"])
 
-    def test_binding_is_idempotent(self):
+    def test_binding_the_fact_never_verifies_the_effect(self):
+        """DEFECT 6's real discipline, in its surviving form: recording
+        that the maintenance OPERATION happened says nothing about whether
+        performance improved."""
         h = self.make_harness(ScriptedProvider())
-        self.seed(h, "t1")
-        self.seed(h, "t2")
-        assessment = h.assess_induction(h.induction_candidates()[0])
-        h.accept_induction(assessment)
-        first = h.bind_induction_outcome(assessment["assessment_id"])
-        second = h.bind_induction_outcome(assessment["assessment_id"])
-        self.assertEqual(first["verdict"]["status"],
-                         second["verdict"]["status"])
-        self.assertIn("already bound", second.get("note", ""))
-
-    def test_unknown_assessment_is_still_an_error(self):
-        h = self.make_harness(ScriptedProvider())
-        with self.assertRaises(StorageError):
-            h.bind_induction_outcome("ia_does_not_exist")
-
-    def test_acceptance_carries_the_induction_result_and_scope(self):
-        """The adoption record must hold what the binding reads: the
-        transition AND the evidence scope."""
-        h = self.make_harness(ScriptedProvider())
-        rec1 = self.seed(h, "t1")
-        rec2 = self.seed(h, "t2")
-        assessment = h.assess_induction(h.induction_candidates()[0])
-        accepted = h.accept_induction(assessment)
-        adoption = h.actions.get(accepted["adoption_action_id"])
-        linked = (adoption.outcome or {}).get("induction_result") or {}
-        self.assertEqual(linked.get("assessment_id"),
-                         assessment["assessment_id"])
-        self.assertIn("knowledge_delta", linked)
-        self.assertTrue(linked.get("execution_ids"),
-                        "the consolidated scope must be recorded")
-
+        prediction = h.predict_capability_evolution(
+            {"operation_type": "induce", "strategy_id": "S01",
+             "description": "consolidate S01",
+             "scope": {"execution_ids": ["ex1", "ex2"]}},
+            horizon="next 10 tasks", horizon_tasks=10)
+        # No operation was accepted, so there is no fact to bind — and
+        # certainly no verified effect.
+        bound = h.bind_capability_maintenance(prediction.prediction_id)
+        self.assertFalse(bound.get("already_bound"))
+        self.assertNotEqual(bound.get("state"), "bound")
+        self.assertNotEqual(
+            (h.capability_effect_evaluation(prediction.prediction_id) or {})
+            .get("state"),
+            "observed_improvement")
 
 # ---------------------------------------------------------------------------
 # The consolidation verdict itself

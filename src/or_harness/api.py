@@ -38,7 +38,6 @@ from or_harness.strategy.embedding_index import (
     index_dir_for,
 )
 from or_harness.strategy.experience_bank import ExperienceBank
-from or_harness.strategy.gc import GarbageCollector
 from or_harness.strategy.index_sync import IndexSynchronizer
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.selector import Selector, is_publishable
@@ -164,7 +163,6 @@ class ORHarness:
                  embedding: Optional[EmbeddingBackend] = None,
                  planning: bool = True,
                  plan_mode: str = "advise",
-                 induction_assessment: str = "advise",
                  prediction_mode: str = "h-x-b-value"):
         self.home = resolve_home(home)
         self.store = Store(self.home)
@@ -182,7 +180,6 @@ class ORHarness:
                                  cost_weights=cost_weights)
         self.executor = executor or SafePythonExecutor()
         self.induction = InductionEngine(self.stats, self.sbank)
-        self.gc = GarbageCollector(self.bank, self.sbank, self.stats)
         # World-model M1 substrate: action log + budget ledger (log/index
         # facilities — NOT a third knowledge bank).
         self.actions = ActionLog(self.store)
@@ -223,13 +220,6 @@ class ORHarness:
         self.planning = bool(planning)
         self.plan_mode = plan_mode
         # World-model M4: offline maintenance assessment.
-        # "advise" = recommendations emitted for the agent to explicitly
-        # accept/reject; "shadow" = evaluations recorded without advice;
-        # "disabled" = returns disabled status without model calls.
-        if induction_assessment not in ("advise", "shadow", "disabled"):
-            raise ValueError(
-                "induction_assessment must be 'advise', 'shadow', or 'disabled'")
-        self.induction_assessment_mode = induction_assessment
         # World-model M6: what the world model is asked to predict, and
         # whether a knowledge term may influence the choice.
         #
@@ -880,7 +870,6 @@ class ORHarness:
                 "gamma": self.selector.gamma, "delta": self.delta,
                 "prediction_mode": self.prediction_mode,
                 "plan_mode": self.plan_mode,
-                "induction_assessment": self.induction_assessment_mode,
             },
             provider=self.world_model.describe(),
             prompt_template_version=self._prompt_template_version(),
@@ -2346,6 +2335,28 @@ class ORHarness:
             },
         }
         self.actions._update(adoption)
+        # AUTOMATIC BINDING (stage 1): the maintenance fact just became
+        # real, so it is bound NOW — the adoption action names the
+        # prediction explicitly, so no name guessing is involved, and the
+        # binding is idempotent by prediction (a retry returns the stored
+        # fact without re-counting or re-billing). A failure is reported,
+        # never raised: the operation really ran and its knowledge delta
+        # must survive a bookkeeping problem. `bind-capability` remains the
+        # manual/recovery path.
+        binding: Dict[str, Any] = {"bound": False}
+        try:
+            bound = self.bind_capability_maintenance(
+                target_id, adoption_action_id=adoption.action_id)
+            binding = {
+                "bound": bool(bound.get("state") == "bound"
+                              or bound.get("already_bound")),
+                "already_bound": bool(bound.get("already_bound")),
+                "state": bound.get("state"),
+                "binding": (bound.get("binding") or {}).get("binding_id"),
+            }
+        except Exception as exc:  # noqa: BLE001 - never lose the knowledge
+            binding["reason"] = (f"{type(exc).__name__}: {exc}; bind it "
+                                 "explicitly with `orx bind-capability`")
         return {
             "adoption_action_id": adoption.action_id,
             "capability_prediction_id": target_id,
@@ -2353,10 +2364,17 @@ class ORHarness:
             "operation_type": operation_type,
             "execution_ids": execution_ids,
             "operation_result": result,
-            "note": ("the operation ran on the prediction's OWN scope; bind "
-                     "the real fact with bind_capability_maintenance, and "
-                     "remember the capability effect is still unverified "
-                     "until qualified later tasks produce real results"),
+            "maintenance_binding": binding,
+            "note": ("the operation ran on the prediction's OWN scope and "
+                     "its real maintenance fact was bound automatically"
+                     if binding.get("bound") else
+                     "the operation ran on the prediction's OWN scope, but "
+                     "the maintenance fact could NOT be bound automatically "
+                     "— bind it with bind_capability_maintenance"),
+            "still_unverified": ("the capability EFFECT is unverified until "
+                                 "qualified later tasks produce real "
+                                 "results: evaluate_capability_effect "
+                                 "decides that, not this call"),
         }
 
     def _retire_target_entry(self, prediction: Any) -> Optional[str]:
@@ -3426,48 +3444,47 @@ class ORHarness:
                   episode_id: Optional[str] = None, *,
                   candidates: Optional[Sequence[ActionSpec]] = None,
                   limits: Optional[Any] = None,
-                  second_step: Optional[Sequence[ActionSpec]] = None,
-                  protocol: str = "legacy",
                   ) -> Dict[str, Any]:
         """Bounded next-step planning over predicted action consequences.
 
-        Freezes ONE root snapshot, evaluates <= limits.max_root_candidates
-        root candidates (horizon 1 or 2; the second step is predicted FROM
-        the hypothetical successor state of the first), and recommends the
-        first step of the best path — the agent then explicitly accepts,
+        Freezes ONE root snapshot, predicts <= ``limits.max_root_candidates``
+        macro strategy candidates under the wm-so/1 protocol (benefit / cost
+        / risk / uncertainty, all conditioned on ONE shared prediction
+        input context), compares them on a conservative yardstick and
+        recommends the best candidate — the agent then explicitly accepts,
         rejects, or overrides it (``choose_next``).
 
-        ``protocol`` selects the prediction protocol:
+        Horizon is FIXED at 1: one macro comparison, then re-planning from
+        the REAL observation of the chosen step. There is no imagined
+        multi-step rollout — asking for one raises rather than degrading
+        quietly.
 
-        - ``"legacy"`` (the default): the existing ``OutcomePrediction``
-          path, unchanged — horizon 1 or 2, the old request shape and the
-          old scoring. This is the compatibility boundary; nothing about
-          it moved.
-        - ``"strategy-outcome"``: the M3 protocol. ONE frozen context is
-          built for the whole decision, every candidate is predicted under
-          the wm-so/1 strategy-outcome protocol (benefit/cost/risk/
-          uncertainty), the candidates are compared on a conservative
-          yardstick, and the suggestion is the first step of the best
-          candidate. Horizon is FIXED at 1 for this protocol (no
-          multi-step imagination tree is built for it); passing
-          ``horizon=2`` with it is refused rather than silently ignored.
-
-        The decision is recorded as a real ``select_strategy`` action whose
+        The decision is recorded as a real ``select_strategy`` action whos
         own cost carries the planning calls' spend (also aggregated in the
         returned plan). Nothing is executed by this call; the suggestion
-        never writes X.selected_plan — only ``choose_next`` does."""
-        from or_harness.world_model.planner import (
-            PlanLimits,
-            PlanResult,
-            PLANNABLE_ACTION_TYPES,
-            build_hypothetical_successor,
-            comparison_norms,
-            evaluate_path,
-            second_step_dependency_ok,
-        )
+        never writes X.selected_plan — only ``choose_next`` does.
+
+        Every compared candidate's prediction id is returned under
+        ``candidates``, so the chosen one can be handed straight to
+        ``execute(prediction_id=...)`` — the candidate is predicted ONCE.
+        """
+        from or_harness.world_model.planner import PlanLimits, PlanResult
         limits = (limits if isinstance(limits, PlanLimits)
                   else PlanLimits.from_dict(limits))
-        limits.horizon = max(1, min(2, limits.horizon))
+        # ONE protocol: the wm-so/1 macro strategy comparison. The legacy
+        # OutcomePrediction rollout (and its horizon-2 imagination tree)
+        # was REMOVED rather than left reachable: two protocols behind one
+        # entry point meant two prediction logs, two scoring rules and an
+        # agent that had to know which one it was in. Re-planning after the
+        # real observation replaces the second imagined step.
+        if limits.horizon != 1:
+            raise ValueError(
+                f"planning supports horizon=1 only (got "
+                f"{limits.horizon}): it compares macro strategy candidates "
+                "once, then you re-plan from the REAL observation of the "
+                "chosen step. There is no imagined multi-step rollout — "
+                "execute the step and plan again with what actually "
+                "happened")
         # Inherit the harness's configured evaluation yardstick unless the
         # caller explicitly overrode it: planning must not silently ignore
         # the alpha/beta/gamma and cost weights the rest of the system
@@ -3491,432 +3508,8 @@ class ORHarness:
                             else self.delta)
         if self.prediction_mode != "h-x-b-value":
             limits.delta = 0.0
-        if protocol == "strategy-outcome":
-            if limits.horizon != 1:
-                raise ValueError(
-                    "the strategy-outcome protocol plans at horizon=1 only: "
-                    "one macro strategy comparison, then re-planning from "
-                    "the real observation. Pass horizon=1 (the default) or "
-                    "use the legacy protocol for two-step rollouts")
-            return self._plan_next_strategy_outcome(
-                task, episode_id, candidates=candidates, limits=limits)
-        if protocol not in ("legacy",):
-            raise ValueError(
-                f"unknown protocol {protocol!r}; expected 'legacy' or "
-                "'strategy-outcome'")
-        task_id = str(task.get("task_id", ""))
-        plan = PlanResult(plan_id=PlanResult.new_id(),
-                          root_snapshot_id="",
-                          decision_action_id=None,
-                          task_id=task_id,
-                          episode_id=episode_id,
-                          limits=limits)
-        if not self.planning:
-            plan.status = "disabled"
-            plan.truncation_reason = ("planning is disabled "
-                                      "(ORHarness(planning=False))")
-            return plan.to_dict()
-        # (1) Freeze the root state ONCE for the whole decision.
-        root = self.snapshot(task, episode_id)
-        plan.root_snapshot_id = root.snapshot_id
-        # Budget honesty up front: an exceeded REAL budget stops planning
-        # (planning itself would spend more); unknown consumption is
-        # reported, never claimed as "within budget".
-        declared = self._load_budget(task_id, episode_id)
-        budget_view = self.budget.view(task_id, episode_id,
-                                       budget=declared)
-        plan.budget_confirmation = (
-            budget_view["status"] if declared else "unknown")
-        if budget_view["status"] == "exceeded":
-            plan.status = "fallback"
-            plan.truncation_reason = (
-                "declared budget already exceeded by real consumption; "
-                "planning would spend more — returning without model "
-                "calls. Report the current best solution instead.")
-            return plan.to_dict()
-        # (2) Bounded candidate list, with identity validation: every
-        # candidate must belong to THIS task/episode (a spec naming
-        # another task or episode is rejected, never silently re-labelled
-        # — the root state and the prediction must describe the same
-        # decision).
-        specs = self._candidate_specs(task, episode_id, candidates,
-                                      limits.max_root_candidates)
-        valid_specs = []
-        identity_conflicts = []
-        for spec in specs:
-            if spec.task_id and spec.task_id != task_id:
-                identity_conflicts.append(
-                    f"{spec.action_type}/{spec.strategy_id}: task_id "
-                    f"{spec.task_id!r} != {task_id!r}")
-                continue
-            if (spec.episode_id is not None and episode_id is not None
-                    and spec.episode_id != episode_id):
-                identity_conflicts.append(
-                    f"{spec.action_type}/{spec.strategy_id}: episode_id "
-                    f"{spec.episode_id!r} != {episode_id!r}")
-                continue
-            spec.task_id = task_id
-            spec.episode_id = episode_id
-            valid_specs.append(spec)
-        if identity_conflicts:
-            plan.truncation_reason = (
-                "candidate identity conflict (rejected): "
-                + "; ".join(identity_conflicts))
-        specs = [s for s in valid_specs
-                 if s.action_type in PLANNABLE_ACTION_TYPES]
-        if not specs:
-            plan.status = "no_candidates"
-            reason = ("no plannable candidates were supplied: the framework "
-                      "does not generate a candidate menu — propose the "
-                      f"methods you want compared (planning supports "
-                      f"{PLANNABLE_ACTION_TYPES}). `recall` tells you what "
-                      "memory already holds for this problem; it is not a "
-                      "menu either.")
-            if plan.truncation_reason:
-                reason = plan.truncation_reason + ". " + reason
-            plan.truncation_reason = reason
-            return plan.to_dict()
-        # (3) Decision (parent) action: the planning spend lands here.
-        decision = self.actions.begin_action(
-            "select_strategy", task_id, episode_id, pre_snapshot=root,
-            params={"kind": "plan_next", "horizon": limits.horizon,
-                    "limits": limits.to_dict()})
-        plan.decision_action_id = decision.action_id
-        started = time.monotonic()
-        predictions: List[OutcomePrediction] = []
-        calls_made = 0
-        stop_reason: Optional[str] = None
-        hypothetical_snaps: Dict[str, str] = {}  # pred_id -> snapshot_id
-        # M6: the structural targets proposed per root candidate, plus the
-        # measured reliability of past predictions by class. Both are read
-        # ONCE per decision (the banks are not re-read mid-decision).
-        knowledge_targets: Dict[str, List[Any]] = {}
-        reliability_table = self.prediction_reliability_table()
-        # Phase 2: ONE shared prediction input context for the whole
-        # decision. Every root candidate is evaluated against the SAME
-        # problem representation, X/B, retrieval evidence, capability
-        # evidence and execution constraints — only the candidate's own
-        # config/scope changes. Building it per candidate would let a bank
-        # that moved mid-decision contaminate the comparison, and would
-        # re-embed the same query once per candidate.
-        plan_context = self.build_prediction_context(
-            task, episode_id, snapshot=root, historical=False,
-            candidates=specs, top=limits.max_root_candidates)
-
-        def _real_budget_exceeded() -> Optional[str]:
-            """Re-check the REAL ledger before the next model call: the
-            budget view is refreshed (planning spend itself lands in it),
-            so an overrun mid-decision stops further calls instead of
-            reporting ok against an already-exceeded budget."""
-            if not declared:
-                return None
-            view = self.budget.view(task_id, episode_id, budget=declared)
-            if view["status"] == "exceeded":
-                return ("declared budget exceeded by real consumption "
-                        "(including this planning's own spend); no "
-                        "further model calls")
-            return None
-
-        def _bounds_exhausted() -> Optional[str]:
-            """The shared budget gate, re-evaluated BEFORE every model call.
-
-            All three bounds are checked in one place so the root loop and
-            the horizon-2 loop cannot drift apart in what they enforce:
-            the model-call count, the wall clock, and the REAL ledger (whose
-            view is refreshed each time so planning's own spend counts
-            against the decision that is spending it)."""
-            if calls_made >= limits.max_model_calls:
-                return (f"model-call budget exhausted "
-                        f"({limits.max_model_calls})")
-            if time.monotonic() - started > limits.time_budget_s:
-                return ("planning time budget exhausted "
-                        f"({limits.time_budget_s}s)")
-            return _real_budget_exceeded()
-
-        for spec in specs:
-            stop_reason = _bounds_exhausted()
-            if stop_reason:
-                break
-            # Remaining time budget caps THIS call's own timeout: the
-            # provider never waits longer than the decision's budget
-            # allows. A sync provider that cannot honour it is declared
-            # limited, not silently over-budget (see WorldModelProvider).
-            remaining = limits.time_budget_s - (time.monotonic() - started)
-            if remaining <= 0:
-                stop_reason = ("planning time budget exhausted "
-                               f"({limits.time_budget_s}s)")
-                break
-            target_set = self.knowledge_targets(root, spec)
-            for target in target_set:
-                knowledge_targets.setdefault(target.strategy_id, []).append(
-                    target)
-            prediction = self.predictions.predict_outcome(
-                task, spec, root, timeout_s=remaining,
-                knowledge_targets=target_set,
-                reliability=reliability_table,
-                prediction_context=plan_context)
-            prediction.model_info["knowledge_targets_proposed"] = [
-                t.strategy_id for t in target_set]
-            # The FULL targets are kept too: judging a later verdict needs
-            # the claim's own interval / entry id / strategy, and re-deriving
-            # them after the fact would read banks that may have changed
-            # since the prediction was frozen.
-            prediction.model_info["knowledge_targets_proposed_full"] = [
-                t.to_dict() for t in target_set]
-            self.predictions._save(prediction)
-            calls_made += 1
-            predictions.append(prediction)
-        # (4) Horizon=2: condition the second step on the first step's
-        # hypothetical successor — never a second independent root
-        # prediction.
-        continuation: Dict[str, List[OutcomePrediction]] = {}
-        planning_error: Optional[str] = None
-        try:
-            if limits.horizon == 2 and stop_reason is None:
-                followups = list(second_step or [])
-                for first in predictions:
-                    stop_reason = _bounds_exhausted()
-                    if stop_reason:
-                        break
-                    if first.status != "valid":
-                        continue
-                    if not second_step_dependency_ok(first):
-                        continuation[first.prediction_id] = []
-                        continue
-                    hypo = build_hypothetical_successor(root, first, task)
-                    # Persist for auditability: the hypothetical flag keeps it
-                    # out of every real-state query and out of episode
-                    # progress inheritance; the rollout stays inspectable.
-                    with self.store.transaction() as conn:
-                        conn.execute(
-                            "INSERT OR REPLACE INTO belief_snapshots "
-                            "(snapshot_id, task_id, episode_id, created_at, "
-                            "payload) VALUES (?,?,?,?,?)",
-                            (hypo.snapshot_id, hypo.task_id, hypo.episode_id,
-                             hypo.created_at, self.store.dumps(hypo.to_dict())))
-                    hypothetical_snaps[first.prediction_id] = hypo.snapshot_id
-                    # Second-step identity: the follow-up candidate gets
-                    # the SAME task/episode validation as a root
-                    # candidate — a spec explicitly naming ANOTHER task
-                    # is rejected (skipped, never silently re-labelled),
-                    # and the caller's object is never mutated (the spec
-                    # is normalized on a value copy).
-                    followup_source = (followups[0] if followups else
-                                       first.action_spec)
-                    if (followup_source.task_id
-                            and followup_source.task_id != task_id):
-                        continuation[first.prediction_id] = []
-                        path_note = (
-                            f"second-step identity conflict (rejected): "
-                            f"task_id {followup_source.task_id!r} != "
-                            f"{task_id!r}; no model call made")
-                        stop_reason = (stop_reason + "; " + path_note
-                                       if stop_reason else path_note)
-                        continue
-                    second_spec = ActionSpec.from_dict(
-                        followup_source.to_dict())
-                    second_spec.episode_id = root.episode_id
-                    if not second_spec.task_id:
-                        second_spec.task_id = task_id
-                    remaining = limits.time_budget_s -                         (time.monotonic() - started)
-                    if remaining <= 0:
-                        stop_reason = ("planning time budget exhausted")
-                        break
-                    second = self.predictions.predict_outcome(
-                        task, second_spec, hypo, timeout_s=remaining,
-                        prediction_context=plan_context)
-                    calls_made += 1
-                    continuation[first.prediction_id] = [second]
-        except Exception as exc:
-            # A planning failure mid-way is NOT a silent success: persist
-            # the completed part (predictions already made keep their known
-            # cost), charge the real spend to the decision action, and end
-            # it as failed. The error is recorded, never re-invoked.
-            planning_error = f"{type(exc).__name__}: {exc}"
-            stop_reason = f"planning aborted: {planning_error}"
-        # Post-call deadline check: the LAST call's return may already be
-        # over budget (a sync provider cannot be interrupted mid-call).
-        # That is reported as truncation — never a quiet "ok" against an
-        # exhausted budget. Costs already incurred stay recorded.
-        if stop_reason is None and planning_error is None \
-                and time.monotonic() - started > limits.time_budget_s:
-            stop_reason = ("planning time budget exhausted after the "
-                           f"final model call ({limits.time_budget_s}s); "
-                           "the completed calls are kept and their cost "
-                           "is recorded")
-        # (5) Common yardstick, then per-path evaluation.
-        all_predictions = predictions + [p for ps in continuation.values()
-                                         for p in ps]
-        cost_basis, norms = comparison_norms(all_predictions,
-                                             limits.cost_weights)
-        for first in predictions:
-            steps = [first] + continuation.get(first.prediction_id, [])
-            # Knowledge value of THIS path, assembled from the structural
-            # needs of the root candidate that produced it. Skipped entirely
-            # when the term is off, so a disabled term costs nothing and
-            # changes nothing.
-            knowledge: Optional[tuple] = None
-            if limits.delta:
-                from or_harness.world_model.knowledge import knowledge_value
-                from or_harness.world_model.knowledge_track import (
-                    reliability_lookup,
-                )
-                targets = knowledge_targets.get(
-                    first.action_spec.strategy_id or "", [])
-                knowledge = knowledge_value(
-                    targets, steps,
-                    reliability=reliability_lookup(reliability_table))
-            if (limits.horizon == 2 and first.status == "valid"
-                    and not continuation.get(first.prediction_id)):
-                # Second step was required but could not be produced.
-                path = evaluate_path([first], limits, norms, cost_basis,
-                                     knowledge=knowledge)
-                if stop_reason is None:
-                    path.notes.append(
-                        "conditional_unsupported: the first prediction did "
-                        "not establish what a second execution step "
-                        "depends on (e.g. a usable incumbent); evaluated "
-                        "as a one-step path")
-                else:
-                    path.notes.append(f"second step truncated: {stop_reason}")
-            else:
-                path = evaluate_path(steps, limits, norms, cost_basis,
-                                     knowledge=knowledge)
-            if first.prediction_id in hypothetical_snaps:
-                path.hypothetical_snapshot_id = \
-                    hypothetical_snaps[first.prediction_id]
-            plan.paths.append(path)
-        # (6) Real planning spend -> decision action own cost.
-        plan.model_calls_made = calls_made
-        planning_total: Dict[str, float] = {}
-        planning_measured: set = set()
-        for prediction in all_predictions:
-            if prediction.call_cost is None:
-                continue
-            for dim in prediction.call_cost.measured_dims():
-                planning_total[dim] = planning_total.get(dim, 0.0) + \
-                    getattr(prediction.call_cost, dim)
-                planning_measured.add(dim)
-        if planning_measured:
-            self.actions.amend_action_cost_increment(
-                decision.action_id,
-                **{d: planning_total[d] for d in planning_measured})
-            for prediction in all_predictions:
-                if prediction.call_cost is not None:
-                    prediction.model_info["charged_to_parent_action"] = \
-                        decision.action_id
-                    self.predictions._save(prediction)
-            plan.planning_cost = {
-                "cost": {d: round(planning_total[d], 4)
-                         for d in sorted(planning_measured)},
-                "measured": sorted(planning_measured),
-                "note": "REAL spend of the planning model calls, charged "
-                        "once to the decision action as own cost — sunk, "
-                        "never part of any path's utility",
-            }
-        # (7) Budget re-check AFTER the planning spend is on the books,
-        # BEFORE the suggestion: an exceeded real budget withholds the
-        # suggestion (the plan's own cost is real and stays recorded).
-        if declared:
-            final_view = self.budget.view(task_id, episode_id,
-                                          budget=declared)
-            plan.budget_confirmation = final_view["status"]
-            if final_view["status"] == "exceeded" and not planning_error:
-                plan.status = "fallback"
-                plan.truncation_reason = (
-                    "declared budget exceeded by real consumption "
-                    "(including this planning's own spend); the "
-                    "suggestion is withheld — report the current best "
-                    "solution instead.")
-                self.actions.end_action(
-                    decision.action_id, status="completed",
-                    outcome={"kind": "plan_next_evaluation",
-                             "plan_id": plan.plan_id,
-                             "n_paths": len(plan.paths),
-                             "suggested": None,
-                             "suggestion_withheld": True,
-                             "status": plan.status,
-                             "truncation_reason": plan.truncation_reason})
-                return plan.to_dict()
-        # (8) Suggestion (first step only).
-        comparable = [p for p in plan.paths if p.utility is not None]
-        suggested_path = (max(comparable, key=lambda p: p.utility)
-                          if comparable else None)
-        if suggested_path is not None and self.plan_mode == "advise":
-            plan.suggested = suggested_path.steps[0].action_spec
-            parts = [
-                f"U={suggested_path.utility} = "
-                f"{limits.alpha}*Q({suggested_path.q_terminal}) - "
-                f"{limits.beta}*C({suggested_path.c_path}) - "
-                f"{limits.gamma}*R({suggested_path.r_terminal})",
-                f"evaluated {len(plan.paths)} path(s) from root snapshot "
-                f"{plan.root_snapshot_id}",
-            ]
-            if suggested_path.incomparable:
-                parts.append("incomparable: "
-                             + "; ".join(suggested_path.incomparable.values()))
-            plan.suggestion_basis = "; ".join(parts)
-        elif suggested_path is not None:
-            plan.suggestion_basis = ("shadow mode: paths evaluated and "
-                                     "recorded; suggestion withheld")
-        plan.status = "truncated" if stop_reason else "ok"
-        if stop_reason:
-            plan.truncation_reason = stop_reason
-        # A mid-planning exception is a FAILED decision, not a truncated
-        # one: the evaluation itself could not complete.
-        if planning_error:
-            plan.status = "failed"
-            plan.truncation_reason = stop_reason
-        # Honesty: when EVERY candidate's prediction was unusable (all
-        # paths incomparable), "ok" would falsely suggest the evaluation
-        # succeeded. Report the real reason — no valid prediction — so
-        # the caller never mistakes "model output unusable" for a quiet
-        # "no recommendation".
-        if not comparable and plan.status == "ok":
-            plan.status = "no_valid_predictions"
-            statuses = sorted({p.status for p in all_predictions})
-            plan.truncation_reason = (
-                "no candidate carried a usable prediction "
-                f"(statuses: {statuses}); no suggestion is possible. "
-                "This is the model output's problem, not a framework "
-                "failure — the calls happened and their cost is recorded.")
-        # (8) End the decision action. The outcome records the FULL
-        # evaluation (frozen input refs, candidates, paths with utilities,
-        # prediction refs, decomposition, comparison basis/norms, budget,
-        # stopping reasons, and suggestion) — NOT a selection:
-        # X.selected_plan is written only by choose_next. A planning
-        # error ends the action as failed with the error recorded.
-        self.actions.end_action(
-            decision.action_id,
-            status="failed" if planning_error else "completed",
-            outcome={"kind": "plan_next_evaluation",
-                     "plan_id": plan.plan_id,
-                     "root_snapshot_id": plan.root_snapshot_id,
-                     "n_paths": len(plan.paths),
-                     "paths": [p.to_dict() for p in plan.paths],
-                     "suggested": (plan.suggested.to_dict()
-                                   if plan.suggested else None),
-                     "suggestion_basis": plan.suggestion_basis,
-                     "suggestion_withheld": self.plan_mode == "shadow",
-                     "status": plan.status,
-                     "error": planning_error,
-                     "truncation_reason": plan.truncation_reason,
-                     "model_calls_made": int(plan.model_calls_made),
-                     "planning_cost": copy.deepcopy(plan.planning_cost),
-                     "budget_confirmation": plan.budget_confirmation,
-                     "cost_basis": list(cost_basis),
-                     "cost_norms": dict(norms),
-                     "prediction_context_id": plan_context.context_id,
-                     "prediction_context_version": plan_context.version,
-                     "hypothetical_snapshots": dict(hypothetical_snaps)})
-        result = plan.to_dict()
-        # The ONE shared input context of this decision, referenced (not
-        # copied) on the plan record: every candidate of the comparison was
-        # conditioned on it, and the stored context resolves its content.
-        result["prediction_context_id"] = plan_context.context_id
-        result["prediction_context_version"] = plan_context.version
-        return result
-
+        return self._plan_next_strategy_outcome(
+            task, episode_id, candidates=candidates, limits=limits)
     def _plan_next_strategy_outcome(
             self, task: Dict[str, Any],
             episode_id: Optional[str] = None, *,
@@ -4077,6 +3670,17 @@ class ORHarness:
             # gate sees them before the next call is considered.
             _charge_call(prediction)
             predictions.append((spec, prediction))
+        # Post-call deadline check: the LAST call's return may already be
+        # over budget (a sync provider cannot be interrupted mid-call), and
+        # no further iteration would catch it. That is reported as
+        # truncation — never a quiet "ok" against an exhausted budget. The
+        # costs already incurred stay recorded.
+        if stop_reason is None \
+                and time.monotonic() - started > limits.time_budget_s:
+            stop_reason = ("planning time budget exhausted after the "
+                           f"final model call ({limits.time_budget_s}s); "
+                           "the completed calls are kept and their cost "
+                           "is recorded")
         plan.model_calls_made = calls_made
         # Conservative comparison on ONE yardstick.
         only_predictions = [p for _spec, p in predictions]
@@ -4317,443 +3921,6 @@ class ORHarness:
         bundles = build_induction_candidates(self)
         return [b.to_dict() for b in bundles]
 
-    def assess_induction(self, bundle: Dict[str, Any], *,
-                         budget: Optional[Dict[str, float]] = None,
-                         workload_forecast: Optional[Dict[str, Any]] = None,
-                         time_budget_s: float = 30.0,
-                         ) -> Dict[str, Any]:
-        """Explicitly evaluate the consequences and value of an induction
-        action using the world model (M4).
-
-        Input = an InductionCandidateBundle (frozen evidence), an optional
-        maintenance budget, and an optional workload forecast.
-
-        Asks the world model to predict the induction action's consequences:
-        candidate formation probability, expected reuse benefit,
-        generalization risk, and execution cost under the induced claim.
-        The assessment value = reuse_benefit - induction_cost - risk.
-
-        Returns an auditable :class:`InductionAssessment` dict. The
-        assessment cost (model calls) is charged ONCE to a maintenance
-        decision action. Does NOT perform induction and does NOT modify
-        the Strategic Bank."""
-        from or_harness.world_model.maintenance import (
-            InductionAssessment,
-            InductionCandidateBundle,
-        )
-        b = InductionCandidateBundle.from_dict(bundle)
-        assessment = InductionAssessment(
-            assessment_id=InductionAssessment.new_id(),
-            bundle_id=b.bundle_id,
-            decision_action_id=None,
-            recommendation="defer",
-            target_strategy_id=b.strategy_id,
-            target_family=b.family,
-            workload_forecast=copy.deepcopy(workload_forecast),
-            # The evidence scope travels with the assessment so a later
-            # ``accept_induction`` can restrict the induction to exactly the
-            # bundle's own executions (no silent widening) and so the
-            # delayed binding can verify the scope it judges against.
-            execution_ids=list(b.execution_ids),
-        )
-        if self.induction_assessment_mode == "disabled":
-            assessment.status = "disabled"
-            assessment.recommendation_basis = (
-                "induction assessment is disabled "
-                "(ORHarness(induction_assessment='disabled'))")
-            return assessment.to_dict()
-
-        # (1) Maintenance decision action.
-        episode_id = f"maint_eval_{int(time.time())}"
-        decision = self.actions.begin_action(
-            "induce", MAINTENANCE_TASK_ID, episode_id,
-            params={"kind": "induction_assessment",
-                    "assessment_id": assessment.assessment_id,
-                    "bundle_id": b.bundle_id,
-                    "target_strategy_id": b.strategy_id,
-                    "target_family": b.family,
-                    "bundle_kind": b.kind,
-                    "workload_forecast": workload_forecast})
-        assessment.decision_action_id = decision.action_id
-
-        # (2) Freeze maintenance belief state.
-        # Task representation for maintenance snapshot.
-        maint_task = {
-            "task_id": MAINTENANCE_TASK_ID,
-            "family": b.family,
-            "spec": {"target_strategy_id": b.strategy_id,
-                     "n_supporting": b.n_supporting},
-            "annotations": {"bundle": b.to_dict()},
-        }
-        root = self.snapshot(maint_task, episode_id)
-
-        # (3) ActionSpec for the induction candidate.
-        spec = ActionSpec(
-            action_type="induce",
-            task_id=MAINTENANCE_TASK_ID,
-            episode_id=episode_id,
-            strategy_id=b.strategy_id,
-            params={"bundle": b.to_dict(),
-                    "kind": b.kind,
-                    "target_entry_id": b.target_entry_id,
-                    "workload_forecast": workload_forecast},
-            measurement_scope="task",
-        )
-
-        # (4) Provider call with timeout budget.
-        started = time.monotonic()
-        prediction = self.predictions.predict_outcome(
-            maint_task, spec, root, timeout_s=time_budget_s)
-        assessment.prediction_id = prediction.prediction_id
-
-        # (5) Real call cost -> decision action own cost.
-        dims = self._charge_call_cost(prediction, decision.action_id)
-        if dims:
-            assessment.assessment_cost = {
-                "cost": {d: round(dims[d], 4) for d in sorted(dims)},
-                "measured": sorted(dims),
-                "note": "REAL spend of the maintenance assessment call",
-            }
-
-        # (6) Form recommendation from prediction + evidence.
-        if prediction.status != "valid":
-            assessment.status = prediction.status
-            assessment.recommendation = "insufficient_evidence"
-            assessment.recommendation_basis = (
-                f"prediction returned status {prediction.status!r}: "
-                f"{prediction.error or 'no usable prediction'}; "
-                "deferring induction until valid assessment is possible")
-            if prediction.status == "not_configured":
-                assessment.status = "not_configured"
-        else:
-            p = prediction.predicted
-            # Direct consequence fields.
-            form_prob = float(p.get("candidate_formation_prob", 1.0)
-                              if p.get("candidate_formation_prob") is not None
-                              else 1.0)
-            assessment.candidate_formation_prob = form_prob
-            assessment.predicted_quality_claim = p.get("quality")
-            if isinstance(p.get("cost"), dict):
-                assessment.predicted_cost_claim = dict(p["cost"])
-            assessment.confidence = prediction.confidence
-            assessment.unsupported_fields = dict(
-                prediction.unsupported_fields)
-
-            # Value decomposition.
-            # reuse_benefit: from model or workload forecast.
-            reuse_benefit = p.get("expected_reuse_benefit")
-            gen_risk = p.get("generalization_risk", p.get("failure_prob", 0.0))
-            if gen_risk is not None:
-                gen_risk = float(gen_risk)
-            assessment.predicted_generalization_risk = gen_risk
-
-            # Workload multiplier: if forecast supplied, scale benefit.
-            workload_mult = 1.0
-            if workload_forecast and isinstance(
-                    workload_forecast.get("expected_matching_tasks"),
-                    (int, float)):
-                workload_mult = max(
-                    0.0, float(workload_forecast["expected_matching_tasks"]))
-
-            if reuse_benefit is not None:
-                reuse_benefit = float(reuse_benefit) * workload_mult
-            assessment.expected_reuse_benefit = reuse_benefit
-
-            # Net value = reuse_benefit - (alpha*0 + beta*cost + gamma*risk)
-            # Normalized scalar using harness selector weights.
-            if reuse_benefit is not None and gen_risk is not None:
-                net = (self.selector.alpha * reuse_benefit
-                       - self.selector.gamma * gen_risk)
-                assessment.net_value = round(net, 4)
-
-            # Recommendation logic:
-            # - Insufficient evidence: bundle has fewer than 2 tasks
-            #   (should not happen via build_induction_candidates, but checked)
-            # - Defer: net_value <= 0 or candidate_formation_prob < 0.5
-            # - Induce_new / Revise: net_value > 0 and formation_prob >= 0.5
-            if len(b.tasks) < 2 and b.kind == "new_claim":
-                assessment.recommendation = "insufficient_evidence"
-                assessment.recommendation_basis = (
-                    f"bundle has evidence from only {len(b.tasks)} task "
-                    f"({b.tasks}); claim requires >=2 distinct tasks")
-            elif form_prob < 0.5:
-                assessment.recommendation = "defer"
-                assessment.recommendation_basis = (
-                    f"low predicted candidate formation probability "
-                    f"({form_prob:.2f}); deferring until stronger evidence")
-            elif assessment.net_value is not None and assessment.net_value <= 0:
-                assessment.recommendation = "defer"
-                assessment.recommendation_basis = (
-                    f"expected net value is non-positive ({assessment.net_value:.4f} "
-                    f"= benefit {reuse_benefit} - risk {gen_risk}); "
-                    "cost/risk outweighs expected reuse benefit")
-            elif b.kind == "revision":
-                assessment.recommendation = "revise"
-                basis_parts = [
-                    f"revision of entry {b.target_entry_id} recommended",
-                    f"evidence: {b.n_supporting} executions across {len(b.tasks)} tasks",
-                ]
-                if assessment.net_value is not None:
-                    basis_parts.append(f"net_value={assessment.net_value:.4f}")
-                assessment.recommendation_basis = "; ".join(basis_parts)
-            else:
-                assessment.recommendation = "induce_new"
-                basis_parts = [
-                    f"new claim for ({b.family}, {b.strategy_id}) recommended",
-                    f"evidence: {b.n_supporting} executions across {len(b.tasks)} tasks",
-                ]
-                if assessment.net_value is not None:
-                    basis_parts.append(f"net_value={assessment.net_value:.4f}")
-                assessment.recommendation_basis = "; ".join(basis_parts)
-
-        # (7) Shadow mode withholds advice.
-        if self.induction_assessment_mode == "shadow":
-            assessment.recommendation_basis = (
-                "shadow mode: induction consequence evaluated and "
-                f"recorded (predicted recommendation: {assessment.recommendation}); "
-                "advice withheld — no action recommended to agent")
-
-        # (8) End maintenance decision action.
-        self.actions.end_action(
-            decision.action_id,
-            status="completed" if assessment.status == "ok" else "failed",
-            outcome={"kind": "induction_assessment",
-                     "assessment_id": assessment.assessment_id,
-                     "bundle_id": b.bundle_id,
-                     "recommendation": assessment.recommendation,
-                     "recommendation_basis": assessment.recommendation_basis,
-                     "status": assessment.status,
-                     "prediction_id": assessment.prediction_id,
-                     "net_value": assessment.net_value,
-                     "target_strategy_id": b.strategy_id,
-                     "target_family": b.family,
-                     "bundle_kind": b.kind})
-        return assessment.to_dict()
-
-    def accept_induction(self, assessment_dict: Dict[str, Any], *,
-                         verify: Optional[Dict[str, Any]] = None,
-                         notes: Optional[List[str]] = None,
-                         force: bool = False) -> Dict[str, Any]:
-        """Accept an induction assessment recommendation and execute the
-        induction strictly on the chosen bundle's scope.
-
-        The bundle's exact execution IDs are passed to ``induce`` —
-        preventing silent scope widening. Records an explicit adoption
-        action linked to the assessment decision."""
-        bundle_id = assessment_dict.get("bundle_id")
-        strategy_id = assessment_dict.get("target_strategy_id")
-        recommendation = assessment_dict.get("recommendation")
-        if recommendation not in ("induce_new", "revise"):
-            raise ValueError(
-                f"cannot accept assessment with recommendation {recommendation!r} "
-                "(only 'induce_new' and 'revise' can be accepted)")
-
-        # Record explicit adoption action.
-        #
-        # The action is reported BEFORE the induction (the adoption decision
-        # is what triggers it), then AMENDED with the induction's own result.
-        # Without the amendment, ``bind_induction_outcome`` would have to
-        # guess which induction followed this decision; carrying the result
-        # and its evidence scope on the record makes the binding verifiable
-        # rather than inferred.
-        decision_id = assessment_dict.get("decision_action_id")
-        adoption = self.actions.report_action(
-            "induce", MAINTENANCE_TASK_ID,
-            f"maint_adopt_{int(time.time())}",
-            params={"assessment_id": assessment_dict.get("assessment_id"),
-                    "bundle_id": bundle_id,
-                    "action": "accepted",
-                    "recommendation": recommendation,
-                    "execution_ids": list(assessment_dict.get(
-                        "execution_ids") or [])},
-            outcome={"accepted": True,
-                     "assessment_id": assessment_dict.get("assessment_id")},
-            status="completed")
-        if decision_id:
-            adoption.parent_action_id = decision_id
-            self.actions._update(adoption)
-
-        # Execute induction with scope restricted to the bundle.
-        # Find the profile from the bundle's evidence.
-        rec_ids = assessment_dict.get("execution_ids")
-        induce_res = self.induce(
-            strategy_id=strategy_id,
-            verify=verify,
-            notes=notes,
-            force=force,
-            execution_ids=rec_ids)
-        # Amend the adoption record with the induction that actually ran:
-        # its transition, the evidence scope it consolidated, and the
-        # assessment it answers. This is the reference the delayed binding
-        # reads.
-        adoption.outcome = {
-            "accepted": True,
-            "assessment_id": assessment_dict.get("assessment_id"),
-            "induction_result": {
-                "assessment_id": assessment_dict.get("assessment_id"),
-                "business_result": induce_res.get("business_result"),
-                "knowledge_delta": induce_res.get("knowledge_delta"),
-                "knowledge_after": induce_res.get("knowledge_after"),
-                "execution_ids": list(rec_ids or []),
-            },
-        }
-        self.actions._update(adoption)
-        return {
-            "adoption_action_id": adoption.action_id,
-            "assessment_id": assessment_dict.get("assessment_id"),
-            "accepted": True,
-            "induction_result": induce_res,
-        }
-
-    def bind_induction_outcome(self, assessment_id: str) -> Dict[str, Any]:
-        """Compare an induction assessment's predictions against the REAL
-        induction outcome and record the verdict (M6).
-
-        This is the delayed feedback of the MAINTENANCE decision: it
-        answers "was it right to expect this induction to form a claim /
-        yield a usable entry?" — the slow counterpart of
-        :meth:`compare_prediction`, which judges the fast X/B predictions.
-
-        Deliberately NOT the same as :meth:`evaluate_knowledge_consolidation`:
-        that one judges what an ORDINARY solving action predicted about the
-        knowledge it fed; this one judges the induction DECISION's own
-        expectation. Both are needed, and neither substitutes for the other.
-
-        The verdict is computed from the induction that actually followed
-        the assessment (found through the actions that reference it), never
-        from the assessment's own opinion of itself. Idempotent: a second
-        call returns the stored verdict rather than recomputing it.
-        """
-        assessment_action = None
-        adoption_action = None
-        for action in self.actions.query():
-            # The assessment ID lives in the decision action's OUTCOME (it is
-            # a result of running the assessment), while an adoption action
-            # repeats it in its params. Reading both is what makes the
-            # documented assess -> accept -> bind chain work.
-            params = action.params or {}
-            outcome = action.outcome or {}
-            if (params.get("assessment_id") != assessment_id
-                    and outcome.get("assessment_id") != assessment_id):
-                continue
-            if params.get("action") in ("accepted", "rejected"):
-                adoption_action = action
-            elif outcome.get("kind") == "induction_assessment":
-                assessment_action = action
-        if assessment_action is None:
-            raise StorageError(
-                f"unknown assessment_id {assessment_id!r}: no assessment "
-                "action references it")
-        outcome = assessment_action.outcome or {}
-        # The adoption action must BELONG to this assessment, not merely
-        # mention the id: an adoption carrying another assessment's result
-        # would bind this one to the wrong induction.
-        if adoption_action is not None:
-            linked = ((adoption_action.outcome or {})
-                      .get("induction_result") or {})
-            if linked and linked.get("assessment_id") not in (
-                    None, assessment_id):
-                adoption_action = None
-        prediction_id = outcome.get("prediction_id")
-        if not prediction_id:
-            return {"assessment_id": assessment_id, "compared": False,
-                    "reason": "the assessment recorded no prediction id"}
-        prediction = self.predictions.get(prediction_id)
-        if prediction is None:
-            return {"assessment_id": assessment_id, "compared": False,
-                    "reason": "the referenced prediction no longer exists"}
-        if prediction.feedback is not None \
-                and prediction.feedback.get("induction_binding"):
-            return {"assessment_id": assessment_id, "compared": True,
-                    "verdict": prediction.feedback["induction_binding"],
-                    "note": "already bound: the stored verdict stands"}
-        if adoption_action is None:
-            return {"assessment_id": assessment_id, "compared": False,
-                    "reason": "no accept/reject decision was recorded for "
-                              "this assessment; nothing to bind against"}
-        adopted = bool((adoption_action.params or {}).get("action")
-                       == "accepted")
-        if not adopted:
-            # A rejection is not a wrong prediction: the agent declined to
-            # act, so the assessment's expectations were never given a
-            # chance to come true. Recorded, never scored as a miss.
-            verdict = {
-                "compared": False,
-                "status": "inconclusive",
-                "reason": "the recommendation was rejected or deferred, so "
-                          "the predicted consequence was never given a "
-                          "chance to occur",
-                "adoption_action_id": adoption_action.action_id,
-            }
-            prediction.feedback = dict(prediction.feedback or {})
-            prediction.feedback["induction_binding"] = verdict
-            self.predictions._save(prediction)
-            return {"assessment_id": assessment_id, "compared": False,
-                    "verdict": verdict}
-        induction_result = ((adoption_action.outcome or {}).get(
-            "induction_result") or {})
-        delta = self._induction_transition(induction_result)
-        created = delta["created"]
-        predicted = prediction.predicted or {}
-        formed = bool(created)
-        formation_pred = predicted.get("candidate_formation_prob")
-        compared: Dict[str, Any] = {}
-        not_compared: Dict[str, str] = {}
-        if formation_pred is None:
-            not_compared["candidate_formation_prob"] = "not predicted"
-        else:
-            compared["candidate_formation_prob"] = {
-                "predicted": formation_pred,
-                "actual": 1.0 if formed else 0.0,
-                "match": (float(formation_pred) >= 0.5) == formed,
-            }
-        status = "fulfilled" if formed else "missed"
-        verdict = {
-            "compared": True,
-            "status": status,
-            "entries_created": list(created),
-            "compared_fields": compared,
-            "not_compared": not_compared,
-            "adoption_action_id": adoption_action.action_id,
-            "note": ("an entry FORMING is not the same as publishable "
-                     "strategic knowledge: admission verification still "
-                     "decides that, and this verdict does not speak to it"),
-        }
-        prediction.feedback = dict(prediction.feedback or {})
-        prediction.feedback["induction_binding"] = verdict
-        self.predictions._save(prediction)
-        return {"assessment_id": assessment_id, "compared": True,
-                "verdict": verdict}
-
-    def reject_induction(self, assessment_dict: Dict[str, Any], *,
-                         reason: Optional[str] = None) -> Dict[str, Any]:
-        """Explicitly reject or defer an induction recommendation.
-
-        Records the rejection as a maintenance action — no induction
-        is executed, Strategic Bank is untouched."""
-        decision_id = assessment_dict.get("decision_action_id")
-        record = self.actions.report_action(
-            "induce", MAINTENANCE_TASK_ID,
-            f"maint_reject_{int(time.time())}",
-            params={"assessment_id": assessment_dict.get("assessment_id"),
-                    "bundle_id": assessment_dict.get("bundle_id"),
-                    "action": "rejected",
-                    "reason": reason},
-            outcome={"accepted": False,
-                     "rejected": True,
-                     "reason": reason,
-                     "assessment_id": assessment_dict.get("assessment_id")},
-            status="completed")
-        if decision_id:
-            record.parent_action_id = decision_id
-            self.actions._update(record)
-        return {
-            "rejection_action_id": record.action_id,
-            "assessment_id": assessment_dict.get("assessment_id"),
-            "accepted": False,
-            "rejected": True,
-            "reason": reason,
-        }
 
     # -- world-model M3: bounded planning ------------------------------------
     def profile(self, task: Dict[str, Any],
@@ -5154,7 +4321,8 @@ class ORHarness:
     def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
                 workspace: str, *, solver: str,
                 verification_level: str = "basic",
-                episode_id: Optional[str] = None) -> ExecutionRecord:
+                episode_id: Optional[str] = None,
+                prediction_id: Optional[str] = None) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
 
         The returned record is an evidence unit: the strategy ACTUALLY used,
@@ -5169,6 +4337,16 @@ class ORHarness:
         the strategy id must be non-empty, the solver must be named, and
         ``code_path`` must live inside ``workspace`` (the executor's own
         policy). Sandbox, timeout, rlimits and budget checks are unchanged.
+
+        ``prediction_id`` (optional): the strategy-outcome prediction this
+        attempt is testing — the way ``plan-next`` hands over the prediction
+        it already made, so the candidate is not predicted twice. When
+        given, the real action is BOUND to that prediction as soon as the
+        action ends, through the SAME identity-checked, idempotent
+        :meth:`bind_strategy_outcome` the explicit path uses (no name
+        guessing, no second count). A binding failure never discards the
+        execution: the outcome is reported on ``record.prediction_binding``
+        and ``bind-strategy`` can bind later.
         """
         if not str(strategy_id or "").strip():
             raise ValueError(
@@ -5307,6 +4485,37 @@ class ORHarness:
         post = self.snapshot(task, episode_id, task_progress=progress)
         self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
+        # AUTOMATIC BINDING: when the caller named the prediction this
+        # attempt tests (the way ``plan-next`` hands over the candidate it
+        # already scored), bind it now — the action exists, its identity is
+        # recorded, and the binding is idempotent and identity-checked, so
+        # a re-run of the same call cannot double-count or silently match a
+        # different candidate. A failure is REPORTED on the record, never
+        # raised: the execution really happened and its evidence must
+        # survive a bookkeeping problem. ``bind-strategy`` remains the
+        # recovery and manual path.
+        if prediction_id:
+            binding: Dict[str, Any] = {"prediction_id": str(prediction_id),
+                                       "bound": False}
+            try:
+                bound = self.bind_strategy_outcome(prediction_id,
+                                                   action.action_id)
+                info = dict(bound.trace.model_info or {})
+                binding = {
+                    "prediction_id": str(prediction_id),
+                    "bound": bool(info.get("bound_action_id")
+                                  == action.action_id),
+                    "comparable": bound.trace.comparable,
+                    "trace": {
+                        "bound_action_id": info.get("bound_action_id"),
+                        "binding_mismatch": info.get("binding_mismatch"),
+                        "binding_unknown": info.get("binding_unknown"),
+                    },
+                }
+            except Exception as exc:  # noqa: BLE001 - never lose evidence
+                binding["reason"] = (f"{type(exc).__name__}: {exc}; bind it "
+                                     "explicitly with `orx bind-strategy`")
+            record.execution_features["prediction_binding"] = binding
         return record
 
     def record(self, record: ExecutionRecord,
@@ -5739,7 +4948,33 @@ class ORHarness:
                 task_id: Optional[str] = None,
                 strategy_id: Optional[str] = None,
                 status: Optional[str] = None,
-                episode_id: Optional[str] = None) -> Dict[str, Any]:
+                episode_id: Optional[str] = None,
+                evaluation_id: Optional[str] = None,
+                prediction_id: Optional[str] = None,
+                ) -> Dict[str, Any]:
+        """Query the memory layers (read-only).
+
+        One entry point for every read: the two banks, the derived layers
+        and the calibration/feedback views. Each ``bank`` value answers a
+        different question and none of them substitutes for another:
+
+        - ``experience`` / ``strategic`` / ``archive`` / ``actions`` /
+          ``snapshots`` / ``texts``: the stored layers, filtered by
+          ``task_id`` / ``strategy_id`` / ``status`` / ``episode_id``;
+        - ``predictions``: EVERY prediction generation under one roof —
+          legacy ``OutcomePrediction`` (``legacy_predictions``),
+          strategy-outcome (``strategy_predictions``) and
+          capability-evolution (``capability_predictions``). Pass
+          ``prediction_id`` to read ONE prediction across all three
+          generations instead of listing them;
+        - ``evaluations``: the stored post-hoc strategy-outcome
+          evaluations; ``evaluation_id`` reads one of them;
+        - ``retention``: the three retention scopes (window / late-check
+          grace / archive caps) and the online vs archive counts;
+        - ``capability``: the two-stage capability feedback state; pass
+          ``prediction_id`` for one prediction's fact binding + effect
+          evaluation in full.
+        """
         if bank == "experience":
             records = self.bank.query(task_id=task_id, strategy_id=strategy_id)
             return {"bank": "experience", "count": len(records),
@@ -5771,9 +5006,60 @@ class ORHarness:
             return {"bank": "snapshots", "count": len(snaps),
                     "snapshots": [s.to_dict() for s in snaps]}
         if bank == "predictions":
-            preds = self.predictions_query(task_id=task_id)
-            return {"bank": "predictions", "count": len(preds),
-                    "predictions": [p.to_dict() for p in preds]}
+            # EVERY prediction generation, each under its own key: the
+            # legacy M2 OutcomePrediction log, the wm-so/1 strategy-outcome
+            # channel that calibration aggregates, and the wm-ce/1
+            # capability-evolution predictions. They are different
+            # questions and different logs — one list would conflate them.
+            legacy = self.predictions_query(task_id=task_id,
+                                            episode_id=episode_id)
+            strategy = self.strategy_predictions.query(
+                task_id=task_id, episode_id=episode_id)
+            capability = self.capability_predictions.query(
+                task_id=task_id, episode_id=episode_id)
+            result: Dict[str, Any] = {
+                "bank": "predictions",
+                "count": (len(legacy) + len(strategy) + len(capability)),
+                "legacy_predictions": [p.to_dict() for p in legacy],
+                "strategy_predictions": [p.to_dict() for p in strategy],
+                "capability_predictions": [p.to_dict() for p in capability],
+            }
+            if prediction_id is not None:
+                single = self.read_prediction(prediction_id)
+                if single is None:
+                    raise ValueError(
+                        f"unknown prediction_id {prediction_id!r}")
+                result["prediction"] = single
+            return result
+        if bank == "evaluations":
+            if evaluation_id is not None:
+                single = self.get_strategy_evaluation(evaluation_id)
+                if single is None:
+                    raise ValueError(
+                        f"unknown evaluation_id {evaluation_id!r}")
+                return {"bank": "evaluations", "count": 1,
+                        "evaluation": single}
+            evaluations = self.strategy_prediction_evaluations(
+                task_id=task_id, episode_id=episode_id)
+            return {"bank": "evaluations", "count": len(evaluations),
+                    "evaluations": evaluations}
+        if bank == "retention":
+            return {"bank": "retention", **self.calibration_retention()}
+        if bank == "capability":
+            if prediction_id is not None:
+                single = self.get_capability_evolution_prediction(
+                    prediction_id)
+                if single is None:
+                    raise ValueError(
+                        f"unknown prediction_id {prediction_id!r}")
+                return {"bank": "capability", "count": 1,
+                        "prediction": single.to_dict(),
+                        "binding": self.capability_maintenance_binding(
+                            prediction_id),
+                        "evaluation": self.capability_effect_evaluation(
+                            prediction_id)}
+            return {"bank": "capability",
+                    **self.capability_feedback_summary()}
         if bank == "texts":
             # The retrieval SOURCE documents (not a knowledge bank): the
             # documented look-up entry point for records that carry no
@@ -5794,11 +5080,30 @@ class ORHarness:
             return {"bank": "texts", "count": len(entries),
                     "task_texts": entries}
         raise ValueError("bank must be experience|strategic|archive|"
-                         "actions|snapshots|predictions|texts")
+                         "actions|snapshots|predictions|evaluations|"
+                         "retention|capability|texts")
 
-    def collect_garbage(self, mode: str = "compact",
-                        dry_run: bool = False) -> Dict[str, Any]:
-        return self.gc.run(mode=mode, dry_run=dry_run)
+    def read_prediction(self, prediction_id: str
+                        ) -> Optional[Dict[str, Any]]:
+        """Read ONE prediction, whichever generation it belongs to.
+
+        The three prediction stores are separate logs, so the lookup is
+        tried in a fixed order and the result names its own generation —
+        an id is never silently resolved to a different kind of record.
+        """
+        stored = self.strategy_predictions.get(prediction_id)
+        if stored is not None:
+            return {"kind": "strategy_outcome",
+                    "prediction": stored.to_dict()}
+        capability = self.get_capability_evolution_prediction(prediction_id)
+        if capability is not None:
+            return {"kind": "capability_evolution",
+                    "prediction": capability.to_dict()}
+        legacy = self.predictions.get(prediction_id)
+        if legacy is not None:
+            return {"kind": "legacy_outcome",
+                    "prediction": legacy.to_dict()}
+        return None
 
     def retire(self, entry_id: str, reason: str) -> Dict[str, Any]:
         card = self.sbank.retire(entry_id, reason=reason)

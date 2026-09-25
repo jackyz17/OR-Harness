@@ -355,16 +355,24 @@ class TestFrozenSnapshotAndBaseline(HarnessTestCase):
             feedback["per_dimension"]["llm_tokens"]["predicted"], 1000.0)
 
     def test_paused_compaction_and_retention_mark_intact(self):
-        """Acceptance 9: GC compaction stays deferred (touches nothing),
-        explicit retention marks are preserved, and profiling works without
-        a CIR (the consolidated analysis entry)."""
+        """Acceptance 9: raw facts are never compacted, explicit
+        retention marks are preserved, and profiling works without a CIR
+        (the consolidated analysis entry).
+
+        Compaction was PAUSED and the `gc` entry point is GONE rather than
+        left advertising a cleanup it cannot perform: retirement is an
+        explicit decision (`retire`), and the retirement CANDIDATES are a
+        query (`inspect --bank strategic --status suspect|dormant`).
+        Storage growth is bounded by the calibration archive's three
+        scopes, not by a collector that defers."""
         rec = self.make_record(execution_id="ex_keep", task_id="tk")
         outcome = self.h.record(rec, retain_reason="contrast")
         stored = self.h.bank.get(outcome["execution_id"])
         self.assertEqual(stored.retention_reason, "contrast")
         n_before = self.h.bank.count()
-        gc_result = self.h.collect_garbage(mode="compact", dry_run=False)
-        self.assertTrue(gc_result.get("deferred"))
+        # The collector API is gone with the command: no entry point
+        # pretends to free space it never frees.
+        self.assertFalse(hasattr(self.h, "collect_garbage"))
         self.assertEqual(self.h.bank.count(), n_before)
         # The consolidated analysis entry works without a CIR: the profile
         # is still produced (no error, no separate understand step).

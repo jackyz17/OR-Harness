@@ -5,299 +5,217 @@ description: >
   optimization problems (LP, MILP, scheduling, routing, assignment, network
   flow, capacity planning, resource allocation, supply chain) whose decisions
   are highly coupled through shared resources, cross-stage dependencies or
-  temporal propagation. Use when the user asks to formulate, solve, retry,
-  decompose, validate or debug an optimization model; to compare candidate
-  solving strategies by expected quality/cost/risk; to retrieve or manage
-  accumulated execution evidence and reusable strategic knowledge; or to run
-  offline consolidation over completed tasks. Provides coupling-aware problem
-  understanding, a sandboxed executor with seven solver adapters, a two-layer
-  strategy memory, and a required world-model consequence predictor. Do not use for
-  one-off optimization questions with no repetition, generic math proofs, or
-  non-optimization tasks.
+  temporal propagation; and run the learning loop around them. Use when the
+  user asks to formulate, solve, retry, decompose, validate or debug an
+  optimization model; to compare candidate solving strategies by predicted
+  quality/cost/risk before committing; to retrieve or manage accumulated
+  execution evidence and reusable strategic knowledge; to check whether a
+  solver's answer satisfies the ORIGINAL task; to close out a finished episode
+  and read the resulting calibration; or to run offline consolidation
+  (induction, capability prediction, adoption) over completed tasks. Provides
+  coupling-aware problem understanding, a sandboxed executor with seven solver
+  adapters, a two-layer strategy memory, and a world-model consequence
+  predictor wired into both the online loop and offline maintenance. Do not use
+  for one-off optimization questions with no repetition, generic math proofs,
+  or non-optimization tasks.
 ---
 
 # OR-Harness: strategy learning for optimization agents
 
-You are the orchestrator; this layer advises, executes and remembers. Every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`) — no hidden state, no background work. You may refuse any recommendation, request alternatives, execute without recording, override recorded costs, and you alone decide when to consolidate.
+You are the orchestrator; this layer advises, executes and remembers. Every command is a stateless call against an explicit memory directory (`--home` or `$OR_HARNESS_HOME`) — no hidden state, no background work. Every command prints ONE JSON line: `{"result": {...}, "summary": "..."}` (exit `0` ok, `2` usage/precondition, `1` crash). You may refuse any recommendation, request alternatives, execute without recording, override recorded costs, and you alone decide when to consolidate.
 
-The world model is a REQUIRED component of both the online loop and offline consolidation: configure a provider (`--world-model URL::MODEL` or `ORHarness(world_model=...)`). If none is configured, `not_configured` is a BLOCKER — the loop cannot run to spec, and that is a configuration error, not a legitimate degraded mode. Multi-step planning (`plan-next`) remains optional.
+**The world model is REQUIRED** on both timescales. Configure a provider (`--world-model URL::MODEL`, API key from `$OR_WM_API_KEY`, or `ORHarness(world_model=...)`). With none, prediction returns `not_configured` and the loop cannot run to spec — that is a configuration error, not a degraded mode.
+
+## The ONE prediction path
+
+```
+predict-strategy  →  execute --prediction <id>  →  close-episode
+```
+
+There is exactly ONE agent-facing prediction protocol (`wm-so/1`) and ONE planning protocol (the same one). `plan-next` calls it for you; when you plan, **reuse the prediction id it already produced** instead of predicting the chosen candidate again. The legacy `predict_outcome` Python API survives only to read old records — no CLI/agent flow uses it.
 
 ## Invariants (do not reinterpret these)
 
 ```
 profile / coupling-aware understanding  BEFORE  detailed formulation
+strategy selection                      BEFORE  detailed modelling
 recommendation ≠ selection ≠ execution
 prediction ≠ fact        hypothetical ≠ observed        unknown ≠ 0
 online solving ≠ offline consolidation
 no world-model parameter update inside an episode
-predict-outcome / bind-outcome / predict-capability  are REQUIRED
-plan-next / choose-next                               are OPTIONAL
+planning is horizon 1, then re-plan from the REAL observation
 Execution Evidence ≠ Strategic Knowledge
 knowledge growth ≠ demonstrated capability improvement
-predicted cost ≠ measured cost
+predicted cost  ≠  measured cost       online bounds ≠ disk bounds
 ```
 
-## Online solving
+## Online solving (the main path)
 
 ```
 Problem P
-  → profile / coupling-aware understanding        (CIR + profile + guidance)
-  → retrieve REAL memory                          (recall: structural + text)
-  → YOU propose the candidate methods             (no built-in menu exists)
-  → MANDATORY world-model consequence prediction  (predict-outcome)
-  → optional multi-step planning                  (plan-next --candidates)
-  → compare and EXPLICITLY select
-  → model the problem                             (intermediate representation)
-  → implement / solve / repair / verify
-  → CHECK the answer against the original task    (check-task)
-  → record real execution facts
-  → update solving context X
-  → replan when necessary
-  → finish the task
+  → profile                     CIR validated + modeling guidance + profile
+  → recall                      what memory REALLY holds (structural + text)
+  → YOU propose the candidates  no built-in menu exists
+  → predict-strategy            MANDATORY: one prediction per candidate
+  → (optional) plan-next        compares candidates, returns their ids
+  → choose-next                 record your EXPLICIT selection
+  → model the problem           the GAMS-style representation
+  → write solve.py  → execute   staged automatically (success AND failure)
+  → check-task                  does the ANSWER satisfy the TASK?
+  → record                      persist the fact + cost backfill
+  → replan / retry / finish
+  → close-episode               evaluate the predictions, publish calibration
 ```
 
-1. **Profile** — put your coupling understanding in the task JSON's `coupling` field (a CIR) and run `orx profile --task t.json`. One call returns the validated CIR with `modeling_guidance`, the problem profile, and a derivation report naming each coupling dimension's value and origin. The profile does two jobs: it improves YOUR formulation, and it is the structural key that retrieves comparable evidence. A task with no `model` field is normal — strategy selection needs the task text, the CIR and the profile, never a finished formulation.
-2. **Recall** — `orx recall --task t.json --top 3`. This is a report on what the memory really holds, **not a menu**: a strategy appears only if it was really executed (`conditional_stats`) or an admission-verified claim covers it (`strategic_entry`). With nothing in either, `recommendations` is EMPTY and `recommendations_basis.reason` says so. Two independent channels: `recommendations` (structural — the profile decides which evidence is comparable) and `vector_recall` (text similarity, unfiltered by structural cell, so a near-identical problem in another cell is still visible). Read the structural verdict for reuse and the text hits for context; neither substitutes for the other. `--candidate X` restricts the report to methods YOU are considering and lists the memory-less ones under `candidates_without_evidence`. `--exclude` a candidate you distrust and re-recall. An empty structural channel does NOT mean "nothing similar exists" — check whether the text channel is `degraded`.
-3. **Propose and choose** — **you name the candidates**; the framework has no directory to enumerate and will not invent one. Weigh quality vs. cost vs. risk yourself. When quality is tied, prefer the cheaper candidate. Pick the solver from `available_solver_families`. Any method id is accepted by `predict`/`execute` — an unknown cost basis comes back as `source="unknown"` with `expected_cost=null`, never a refusal. Freeze the pre-execution expectation with `orx predict --task t.json --strategy S` and pass that snapshot to `record --prediction`: feedback compares against the prediction actually used, never a post-hoc estimate. If you planned with `plan-next`, record your explicit choice with `orx choose-next`.
-4. **Model the problem** (AFTER the strategy is chosen) — write the GAMS-style representation (SETS / PARAMETERS / VARIABLES / OBJECTIVE / CONSTRAINTS; [references/modeling.md](references/modeling.md)) as the task JSON's `model` field. The strategy may change the formulation (decomposition, rolling horizon, relaxation). The framework verifies it (L1 format + L2 symbol cross-reference) and reports what its structure says about coupling as a DIAGNOSTIC (`derivation.model_coupling`). The model is a POST-strategy artifact, so it never moves the structural key: the profile you retrieved with is the profile the execution is filed under. Do NOT re-run `profile` expecting the key to change — it will not.
-5. **Write solve.py** — follow the method you chose. The framework never generates code and never supplies the method's action list (it is not in any directory — if the memory recorded one for this method, `recall` shows it under `recommendation.knowledge.actions`; otherwise it is absent and you decide). The `model` is the blueprint, the code is a translation. The script must write `result.json` with `status`, `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds` — and, whenever a task check will need to read the answer, `variables` (variable name → value).
-6. **Execute** — `orx execute ...`. Every attempt, success or failure, is staged automatically. Inspect `result.execution.quality.problems` before recording.
-7. **Check the ANSWER against the task** — `orx check-task <execution_id> --check '{...}'`. `execute`'s verdict covers the solver's own MODEL; this covers the TASK. Declare the bases that apply (`reference_objective`, `reference_status`, `integer`, `recompute_objective`, `semantic_probe`, `intent`). `failed` means the answer does not satisfy the task — the attempt stays recorded with its real cost but stops counting as a success sample; diagnose the cause yourself (see Recovery) and re-solve in the SAME episode. `insufficient` means the validity is UNKNOWN — not a pass. Never change the task to match a reference value.
-8. **Record** — `orx record --execution <json> --override llm_tokens=<actual>`. The response lists `unrecorded_staged_executions` — backfill a failed attempt with `orx record --from-staged <id>` (verbatim, never re-typed).
-9. **On failure** — follow Recovery below before retrying.
-10. **Decide on induction** — hints are evidence, not orders. Induce only when you judge the pattern worth generalizing.
+1. **Understand (one step).** `orx profile --task t.json`. Put your coupling understanding in the task JSON's `coupling` field (a CIR). One call returns the validated CIR with `modeling_guidance`, the problem profile, and a per-dimension derivation report. A task with no `model` field is normal: strategy selection needs the task text, the CIR and the profile — never a finished formulation.
+2. **Recall.** `orx recall --task t.json --top 3`. This is a REPORT on real memory, **not a menu**. An empty result with `recommendations_basis.reason` is a valid, expected answer (a cold bank says so). Two independent channels: `recommendations` (structural) and `vector_recall` (text). Neither substitutes for the other; a `different_cell` hit is context to READ, never a statistic to apply.
+3. **Propose, predict, choose.** **You name the candidates** — there is no directory to enumerate and the framework will not invent one. Then `orx predict-strategy --task t.json --candidate c.json [--episode ep1]` for each. Weigh quality vs cost vs risk yourself; when quality ties, prefer the cheaper. Use `plan-next` instead when you want the comparison done for you: it freezes ONE context, predicts every candidate, and returns each candidate's `prediction_id`. Record your decision with `choose-next` (it is the only writer of `X.selected_plan`).
+4. **Model the problem** (AFTER the strategy is chosen). Write the GAMS-style representation into the task's `model` field; the framework verifies L1 shape and L2 symbol cross-reference and reports `derivation.model_coupling` as a DIAGNOSTIC. The model is a post-strategy artifact — the profile you retrieved with stays the structural key, and re-running `profile` will not move it.
+5. **Write `solve.py`.** The framework never generates code and never supplies a method's action list (there is none to supply — if memory recorded one, `recall` shows it under `recommendation.knowledge.actions`). `result.json` must carry `status`, `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds` — and `variables` whenever a task check will need the answer.
+6. **Execute, with the prediction.** `orx execute ... --prediction <id>`. The executed action is BOUND to that prediction automatically once it ends (identity checked: task/episode/strategy/solver/config; a mismatch is recorded, never scored). Omit `--prediction` only when you never predicted the candidate; `orx bind-strategy` can bind later. Every attempt is staged automatically, success or failure.
+7. **Check the ANSWER.** `orx check-task <execution_id> --check '{...}'`. `execute`'s verdict covers the solver's own MODEL; this covers the TASK. Declare the bases that apply (`reference_objective`, `reference_status`, `integer`, `recompute_objective`, `semantic_probe`, `intent`).
+   - `passed` covers the DECLARED bases only — not proof the model is right.
+   - `failed` → diagnose (misread task? mis-specified model? implementation bug? wrong reference?) and re-solve in the SAME episode. The attempt stays recorded with its real cost.
+   - `insufficient` → the validity is UNKNOWN, never a pass. Declare the missing basis, or make `solve.py` report `variables`.
+8. **Record.** `orx record --execution <json> --override llm_tokens=<actual>`. `llm_tokens`, `tool_calls` and `retries` are invisible to the sandbox — the executor measures only `latency_s` and `solver_runtime_s`. Supply them here or with `amend-cost`, or the dimension stays unmeasured and no cost claim can be published for it. A failed attempt is backfilled verbatim: `orx record --from-staged <id>`.
+9. **Close the episode** — `orx close-episode --task ID --episode EP --terminal STATE`. Idempotent. It reads what was recorded (no solver, no model call) and publishes the calibration. **A close-out is not a certification**: read its `task_checks` coverage.
 
-## Offline consolidation (a separate timescale, never inside an episode)
+## When something goes wrong
+
+- **`status=error`, security policy** — the script used a blocked construct (network/shell/pathlib/dynamic `open()`). Use only stdlib and a literal `open('result.json', 'w')`. Subprocess solvers (PuLP's CBC) cannot run in the sandbox — switch to an in-process solver (ortools, highspy). Record the failure with `--from-staged`.
+- **`status=error`, traceback** — fix the model or the script and re-execute. Each attempt is its own record: a first failure is `retries=0` (an observed zero); a retry declares `--override retries=N`.
+- **`status=timeout`** — the strategy may be too heavy at this scale. Re-`recall` with `--exclude <strategy>`, try the next candidate, record it.
+- **`quality.problems` non-empty** — fix the script and re-execute; the record waits for the check.
+- **`check-task` `failed`** — see step 7. Never change the task to match a reference value, and do not assume every mismatch is a modelling error.
+- **`close-episode` refuses with `state: "pending"`** — an action of the episode is still `running`. A genuinely stranded one means the process died mid-call.
+- **`recall` empty but you expected memory** — read `candidates_with_memory`: an id absent from it was never executed or induced in this cell.
+- **A `coupling_warnings` entry at profile time** — your supplied value contradicts the derivation. The derived value wins for grouping.
+
+## What the framework does for you vs what only you can do
+
+| The framework does this automatically | You must do this explicitly |
+|---|---|
+| Stages every execution (success and failure) | Propose the candidate methods (no menu exists) |
+| Binds `execute --prediction` to the real action | Declare the check bases for `check-task` |
+| Evaluates bound predictions at close-out | Record the fact (`orx record`) and the terminal state |
+| Maintains the retrieval index on `record`/`induce`/`retire` | Make the selection (`choose-next`) |
+| Binds the maintenance fact on `accept-capability` | Diagnose a failed check and re-solve |
+| Publishes/republishes the calibration summary | Decide when to consolidate offline |
+| Reports `unknown` instead of guessing | Never write a prediction off as a fact |
+
+## Offline consolidation (a separate timescale — never inside an episode)
 
 ```
-completed episode / trajectory
-  → close out the real outcome and prediction feedback   (close-episode)
-  → archive Execution Evidence
-  → form induction / revision candidates
-  → MANDATORY capability-evolution prediction            (predict-capability)
-  → accept / reject / defer explicitly                   (accept-/reject-capability)
-  → real induction / revision                            (induce)
-  → verification                                         (induce --verify)
-  → publish eligible Strategic Knowledge
-  → evaluate reuse on later real tasks                   (evaluate-capability)
+completed episodes
+  → close-episode                         evaluate + publish calibration
+  → archive-calibration                   move out-of-window DETAIL to the archive
+  → (optional) induction-candidates       freeze the evidence package
+  → predict-capability                    what would this operation change?
+  → compare-capability                    recommend one, or defer
+  → accept-capability / reject-capability EXPLICIT choice (accept runs it)
+  → evaluate-capability                   judge the EFFECT on LATER real tasks
 ```
 
-Induction never runs automatically after an online action. A knowledge change is observable immediately; a capability improvement requires later real tasks or an independent evaluation — never the operation's own report.
+- **Induction never runs automatically.** `orx induce` is the only place knowledge changes; creating an entry needs ≥2 executions from ≥2 DISTINCT tasks, and PUBLISHING it needs a passed admission check (`induce --verify`). An empty `strategy_type`/`actions` field means memory does not record it — record it yourself when you know it.
+- **`accept-capability` already ran the operation.** Do NOT call `induce` or `retire` again for the same decision: it dispatches the operation the prediction was about, and it binds the maintenance fact itself.
+- **`evaluate-capability` is not optional if you want to claim an improvement.** A knowledge change and a passed verification are NOT capability improvement — only real later tasks (counted in TASK-EPISODES, work must have run AFTER the operation) can support that.
+- **Structured relation claims** are for knowledge that is NOT one strategy's statistics (a modelling principle, a necessary condition, a repair pattern): `orx induce --relation '{...}' --verify '{"purpose":"relation",...}'`. See [references/induction.md](references/induction.md).
 
-**Induction forms a CLAIM; it does not describe the method.** An entry's `strategy_type` / `actions` / `fallback_strategy_id` are whatever the harness (or a migration) wrote on it — the framework fills in none of them, because there is no directory to copy from and inferring a method's actions from its id would be fabrication. An empty field means the memory does not record it; record it yourself when you know it (`recall` then carries it under `recommendation.knowledge`).
+## Two complete walkthroughs
 
-### Structured relation claims
+**A. Online solve with a failure and a retry**
 
-Read the cross-task evidence yourself: identify the **common condition**, compare the differences (comparable? same measurement scope? same difficulty mix?), and state the **claim and its boundary**. Then submit it:
-
+```bash
+orx profile --task t.json                     # CIR + profile + guidance
+orx recall --task t.json --top 3              # real memory, maybe empty
+orx plan-next --task t.json --episode ep1 \
+    --candidates candidates.json              # → result.plan.candidates[].prediction_id
+orx choose-next --decision pl_action_... --chosen chosen.json
+orx execute --task t.json --strategy S01 --code solve.py \
+    --workspace . --solver highs --episode ep1 --prediction sp_...
+                                              # bound automatically
+orx check-task ex_... --check '{"integer": {"variables": ["x1","x2"]}}'
+#   -> failed: diagnose, fix solve.py, re-execute in the SAME episode
+orx record --from-staged ex_... --override llm_tokens=1840,retries=1
+orx execute ... --prediction sp_retry_...     # the corrected attempt
+orx record --execution ex2.json --override llm_tokens=1810
+orx close-episode --task t1 --episode ep1 --terminal completed
 ```
-orx induce --relation '{"subject": "principle:cross_period_state",
-  "claim": "在时间耦合>=0.5 的调度任务上，时间分解必须保留跨期衔接状态",
-  "evidence": [{"execution_id": "ex_..", "role": "dropped"},
-               {"execution_id": "ex_..", "role": "preserved"}],
-  "conditions": {"predicates": {"family": "scheduling",
-                                "temporal_coupling": [0.5, 1.0]}},
-  "check": {"assertions": [...]}}' \
-  --verify '{"purpose": "relation", "check": {"assertions": [...]}}'
-```
 
-This is the path for knowledge that is **not** one strategy's statistics — a modeling principle, a necessary condition, a repair pattern. No strategy id is required (`subject` names it), and it does not go through the statistical admission gate. The framework derives the evidence identity (tasks/family/strategy ids) from the recorded facts, so you submit only execution ids and the role each plays. [references/induction.md](references/induction.md) has the assertion semantics and the publication gate.
+**B. Post-episode calibration, then optional offline induction**
+
+```bash
+orx inspect --bank retention                  # window / grace / archive caps
+orx inspect --bank evaluations --task t1      # the stored per-prediction verdicts
+orx calibration                               # the published wm-calib/2 summary
+orx archive-calibration --dry-run             # what would leave the online set
+
+orx induction-candidates                      # frozen evidence packages (no model call)
+orx predict-capability --operation op.json --bundle <bundle>
+orx compare-capability --predictions hp_1,hp_2 --horizon-tasks 10
+orx accept-capability --recommendation <json> # runs it AND binds the fact
+orx inspect --bank capability                 # fact bound vs effect verified
+orx evaluate-capability --prediction hp_1     # needs qualified LATER tasks
+```
 
 ## Tool policy
 
 | Situation | Action |
 |---|---|
-| No `--world-model` configured | STOP. The world model is mandatory; `not_configured` blocks both the online loop and offline consolidation. Configure a provider before proceeding. |
-| Any task | `recall` → `predict-outcome` the chosen candidate BEFORE executing → `bind-outcome` after. MANDATORY: every executed action feeds the M2 shadow-evaluation channel; an unbound prediction is discarded evidence |
-| Any task (the CALIBRATION channel) | `predict-strategy` the candidate BEFORE executing → `bind-strategy` after → the close-out evaluates it. This is the wm-so/1 channel that `orx calibration` aggregates — the M2 `predict-outcome` / `bind-outcome` pair above is a DIFFERENT log and never feeds calibration. Bind at least one per executed action: an unbound strategy prediction is discarded calibration evidence |
-| OPTIONAL — high-stakes decision (expensive run, tied candidates, unfamiliar cell) | `plan-next` compares candidates by PREDICTED consequences before choosing; bind the selected path's prediction rather than re-predicting the chosen candidate. This, and only this, is skippable |
-| Facing an induction decision | `assess-induction` to evaluate the value BEFORE committing; then accept or reject explicitly |
-| No embedding backend configured | The text channel is off: `recall` returns `degraded` plus the structural channel alone |
-| Embedding configured, no index yet | `orx rebuild-index` once; `record` / `induce` / `retire` keep it current afterwards |
+| No `--world-model` configured | STOP — `not_configured` blocks both loops. Configure a provider first |
+| Any task, before executing | `predict-strategy` per candidate (or `plan-next` once for all of them), then `execute --prediction`. One prediction per candidate — never two for the same decision |
+| After a `plan-next` suggestion | `choose-next`, then `execute --prediction <that candidate's id>` — do NOT call `predict-strategy` again |
+| High-stakes or tied candidates | Plan instead of predicting one at a time; that is the only reason `plan-next` exists |
+| Before treating an answer as a success | `check-task`. A relaxed LP is `optimal` with `gap=0` and still wrong |
+| Facing an induction decision | `induction-candidates` → `predict-capability` → `compare-capability`, then accept or reject explicitly |
+| No embedding backend configured | The text channel is off: `recall` returns `degraded` plus the structural channel alone. That is a different fact from "ran and matched nothing" |
+| Embedding configured, no index yet | `orx rebuild-index` once; `record`/`induce`/`retire` keep it current |
 | Simple problem, one independent constraint, no shared resources | CIR optional — state the skip decision explicitly |
-| Empty memory bank (cold start) | `recall` returns `recommendations: []` with a reason — that is the NORMAL cold-start state, not an error. Propose the methods you want to try yourself: the framework ships no directory and generates no menu. They become candidates the moment they really run |
-| `recall` returns no recommendations but you expected some | Read `recommendations_basis`: `candidates_with_memory` lists the ids this cell HAS memory for. If your id is not among them, nothing was ever executed or induced for it here — propose it and run it |
-| You want to compare a method the framework has never seen | Just name it: `predict --strategy <id>` returns `source: "unknown"` (cost is UNKNOWN, not zero) and `execute --strategy <id>` runs it. No directory membership is checked anywhere |
+| Cold start (empty bank) | `recall` returns `[]` with a reason. That is the NORMAL state: propose the methods you want and run them |
+| You distrust a memory hit | `recall --exclude <id>` and re-read |
+| A method the framework has never seen | Just name it: `predict-cost` reports `source: "unknown"` (cost UNKNOWN, not zero) and `execute` runs it |
+| An execution fact is WRONG | `exclude-execution --execution EX --reason "..."` (append-only: the row survives, stops counting). Reverse with `restore-execution` |
+| An entry looks dead | `inspect --bank strategic --status suspect` (or `dormant`) lists the candidates; `retire --entry ID --reason "..."` is the explicit, irreversible act |
+| Storage growth | `inspect --bank retention` shows the three scopes; `archive-calibration` moves out-of-window detail into a BOUNDED archive. Online capacity and total disk are separate numbers |
 
-**Cost discipline**: every world-model call spends real tokens, charged to the decision action or the maintenance scope. `plan-next` and `assess-induction` are avoidable planning overhead — skip them when a plain `recall` already answers the question. `predict-outcome` / `bind-outcome` and `predict-strategy` / `bind-strategy` (one pair each per executed action) and `predict-capability` are MANDATORY: they are the only source of evaluation evidence and are never skipped.
+## Decision rules
 
-## Recognition table (what to do when you see this)
-
-| Situation | Action |
-|---|---|
-| Shared resources, cross-stage dependencies, or temporal propagation | Extract a CIR and submit it as `coupling` before choosing a strategy |
-| `profile` exits 2 with `error.kind: cir_format` | The CIR shape is wrong — read `error.hint` (it names the offending key) and resubmit. A malformed CIR is never silently read as an empty one |
-| `profile` returns non-empty `coupling.cir.issues` | Fix the CIR and re-run `profile` before writing solve.py |
-| `coupling.health.contributes_scalars` is false | The CIR parsed but derives no dimension (no decisions, or empty). The profile's coupling then comes from the spec or stays `null` — `health.note` says which |
-| `recall` or `orx context` reports `degraded` | Only the structural channel ran. No backend, no task text, a missing index and a backend failure are four DIFFERENT facts, and all four differ from "ran and matched nothing" — an empty `vector_recall` is never evidence that no similar memory exists |
-| A `vector_recall` hit is `different_cell` | Read its text and outcome for context; `profile_cell` shows which structure its numbers describe |
-| A knowledge hit has `reusable: false` | `reason` names the conflict, or `unknown` — a needed value is missing; measure it before applying |
-| You are about to treat a `similarity` as a quality or cost estimate | It is a DISCOVERY signal. Read the hit's `evidence_class` and applicability label; a `different_cell` hit is context to read, never a statistic to apply |
-| `quality.problems` is non-empty | Fix the script and re-execute; the record waits for the check |
-| A solve succeeds but the objective looks wrong | Re-derive the model from the task; never adjust constraints to match a reference value |
-| `quality.feasible` is true and the objective matches your reference, but the answer may not be a valid one (fractional units for an integer task, an unmet constraint) | `orx check-task <execution_id> --check '{...}'` BEFORE treating it as a success. `execute`'s verdict covers the solver's own MODEL; a relaxed LP is `optimal` with `gap=0` and still wrong. On `failed`: diagnose the cause yourself and re-solve in the SAME episode — the attempt stays recorded with its real cost and becomes contrast evidence, but it can no longer count as a success sample |
-| `check-task` reports `insufficient` | The validity is UNKNOWN, not confirmed. Declare the check basis that applies, or make solve.py report `variables` so a domain check can run — an unchecked answer is not evidence that the task was solved |
-| A task-result verdict arrives AFTER the episode closed | Record it anyway: `orx check-task` works on recorded executions too. The stored evaluation is never rewritten, but the corrected judgment is used from then on — the benefit is re-derived (0.0 for a confirmed-wrong answer) while the measured cost is KEPT — and the published summary is republished when the episode is still in the window |
-| You predicted one strategy/solver and executed another | `bind-outcome` records the mismatch and skips the comparison — bind the action that actually ran |
-| A hint rests on repeated runs of one `task_id` | A claim needs ≥2 distinct tasks. Record a genuinely independent instance under its own `task_id` |
-| `record` reports `index_sync: deferred` | The fact is saved but not yet text-searchable. Recover with `orx rebuild-index` |
-| Requirements, capacity or objective changed | That is a NEW task context: a new `task_id` (or episode). Old X is not inherited, and a prediction is scored against the version it was made under |
-| A knowledge class reports `reliability: null` | Too few resolved samples. Honest unknown, not a failure — no value is granted until it has history |
-| `orx contract` returns `status: "contract_only"` | No forecast was made, even with a provider configured. `provider_configured`, `service_available` and `prediction_made` are three facts; only the last makes it `valid` |
-| Several candidates must be compared on the SAME evidence | `orx context --task t.json` once, then one prediction per candidate with `--context CTX`; `plan-next` does this internally |
-| A lesson is NOT one strategy's statistics (a modeling principle, a necessary condition, a repair pattern) | Submit it as a structured relation: `orx induce --relation '{...}' --verify '{"purpose":"relation",...}'`. No strategy id is needed — `subject` names it. Its verdict is its own, and it is published on ≥2 independent tasks. [references/induction.md](references/induction.md) |
-| A relation you verified is no longer showing up in `recall` | Check `recall --include-unverified` for its state: `refuted` (an assertion failed on real evidence) or `stale_after_revision` (you changed the claim without re-verifying). Re-submit with `--verify` to re-publish |
-| An episode is over | `orx close-episode --task ID --episode EP --terminal STATE`; idempotent. A close-out ends the episode — it does NOT certify the answer (read its `task_checks`). [references/episode_closeout.md](references/episode_closeout.md) |
-| An execution fact is WRONG and must stop counting | `orx exclude-execution --execution EX --reason "..."` — the bank is append-only, so the row is preserved but `source` becomes `excluded` and it leaves every statistics/induction/retrieval path. Reverse with `orx restore-execution`. [references/commands.md](references/commands.md) |
-| A prediction must be bound to a real run | `orx bind-outcome --prediction ID --action <ac_... OR the ex_... id `orx execute` printed>` |
-| You want to know what past predictions were worth | `orx calibration` (the WINDOW of closed episodes; below the sample minimum it reports `insufficient_evidence`; `--rebuild` republishes) and `orx evaluations` |
-| A task check FAILED | That is `task_check_failed` — the CHECK RESULT, not proof the model was wrong. Diagnose the cause yourself. The framework has no `model_invalid` label on purpose |
-| A solver reports `infeasible` | `solver_reported_infeasible` is a FACT about the verdict, not a strategy failure — correctly identifying an infeasible ORIGINAL problem is a valid outcome. Whether it was correct is a `check-task` question |
-| You want to compare a past probability with what happened | Use `scored_occurrence_rate` vs `mean_predicted_probability` (same sample set). Do NOT subtract `unit_occurrence_rate` — it counts real observations by unit, over a different denominator |
-| You want to know the DIRECTION of past error | Read `mean_benefit_signed_error` (positive = under-predicted benefit) and `mean_cost_log_ratio` (positive = under-predicted cost). They are global diagnostics, NOT the current candidate's conditional bias |
-| The calibration block has `withheld_groups` | Those groups came from a DIFFERENT model identity (or scope): they are not evidence about this prediction |
-| Storage is growing | `orx retention` shows the three scopes; `orx archive-calibration [--dry-run]` moves out-of-window detail to a BOUNDED archive. Registry tombstones stay online so re-closing stays idempotent |
-| Deciding whether an OFFLINE improvement is worth doing | `orx predict-capability` per candidate, then `orx compare-capability`. It recommends the largest NET saving over the declared window (cumulative saving minus the one-time maintenance cost, SAME unit) with no quality degradation; cross-unit savings, non-paying candidates, undeclared windows and unexecutable operation types are reported, not ranked, and `defer` is legitimate |
-| You accept a capability recommendation | `orx accept-capability --recommendation <json>` — the only offline entry that changes knowledge, and it runs the operation the prediction was about (a `retire` retires; an unsupported type is refused). `reject-capability` declines and changes nothing |
-| A capability operation has run | `orx bind-capability --prediction ID` records the FACT (knowledge delta, real cost, scope consistency). It never sets `effect_verified` |
-| You want to know whether the improvement helped | Wait for qualified LATER tasks, then `orx evaluate-capability --prediction ID`. Only closed episodes of tasks whose WORK ran after the operation, inside the frozen target and outside its own scope count, and only once the declared horizon is met — otherwise it stays `pending`. `orx capability-feedback` shows fact vs effect |
-
-## Verification (before every record)
-
-**CIR** (at `orx profile`, before choosing a strategy) — check `result.coupling.cir`, `coupling.health` and `modeling_guidance`:
-
-- `coupling.health.contributes_scalars` is true, or `health.note` explains why not — a CIR that parses to nothing derives no dimension, so the profile's coupling is NOT a structural measurement;
-- every resource, product, site, period or route in the task description appears as an entity or is reachable via a decision's indexes;
-- every `uses_resource` / `shares_resource` / `competes_for` relation connects a decision to a resource-like entity, not two decisions with no shared resource;
-- each detected coupling group matches a coupling pattern the task actually implies (e.g. "all modes use the same downstream capacity" → `shared_bottleneck` on that capacity);
-- `coupling.cir.issues` is empty.
-
-**Model** (after writing the `model`, before writing solve.py) — check `result.derivation`:
-
-- `model_verification.issues` is empty (L1 format + L2 symbol cross-reference);
-- `model_coupling` is present and plausible — it is a DIAGNOSTIC reading of the model's own structure, so a divergence from the profile's `origin` dimensions is worth understanding, but it never changes the structural key.
-
-**Execution** (after `execute`, before `record`) — check `result.execution`:
-
-- `quality.status` is one of optimal/feasible/infeasible/unbounded/timeout/ error — anything else is a broken script, not a solver result;
-- `quality.feasible` is true and `quality.objective` is finite when a solution is expected;
-- `quality.gap` is recorded (derived from the bound when the solver omits it);
-- `quality.problems` is empty;
-- the objective is plausible for the problem (right order of magnitude, right min/max direction) — the sandbox checks structure, not semantics.
-
-**Task result** (after `execute`, before treating the answer as a success) — run `orx check-task <execution_id> --check '{...}'`:
-
-- the task's own requirements are turned into check bases: a reference value (`reference_objective`, with `tolerance` when your reference is itself approximate), a required status, integer domains (`integer`), an objective recomputation (`recompute_objective`), or explicit value probes (`semantic_probe`). Only what you declare is checked; everything else is listed under `scope.unchecked`;
-- a `passed` verdict covers the DECLARED bases only — it is not proof that the model represents the task. If you cannot check something that matters, say so rather than implying it was validated;
-- on `failed`: the answer does not satisfy the task. Read `reflection_material` and decide whether the TASK was misread, the MODEL mis-specified, the implementation wrong, or the REFERENCE basis itself wrong. State the basis for whatever you change and re-solve in the SAME episode. Never alter the task to match a reference value, and do not assume every mismatch is a modeling error;
-- on `insufficient`: the validity is UNKNOWN. Declare the missing basis or make `solve.py` report `variables`; an unchecked answer must not be cited as evidence that the task was solved;
-- a deliberately non-answer (`intent: "relaxation"` / `"intermediate"`) is recorded as such: its solver-side optimum is never presented as the task's answer.
-
-**Relation claim** (before `induce --relation`) — check your own submission:
-
-- every `evidence` entry names a **recorded** execution and the **role** it plays in this claim — the framework refuses unknown ids and missing roles;
-- the `check.assertions` cover the parts of your claim you are actually asserting. A claim with two checkable parts needs two assertions; declaring one leaves the other explicitly unchecked in the verification scope;
-- `aggregation` matches your quantifier: `"all"` when you mean "on every such task" (one comparable counterexample refutes it), `"mean"` when you mean "on average across this batch";
-- `mode` matches your evidence: `"paired"` only compares same-task pairs — if your evidence is not paired, use `"group"` and say so in the claim;
-- the `conditions` predicates are the ones you mean; omitted, they are read off the evidence's own cell;
-- ≥2 distinct tasks if you intend the claim to be published as knowledge. A single-task relation is a verified fact about that task and will be reported as not published.
-
-## Recovery
-
-- **`check-task` says `failed`** — the answer does not satisfy the task. The framework returns MATERIAL, not a diagnosis: the task text, the artifacts that were produced, the check report and the earlier attempts of the episode. Decide yourself whether the task was MISREAD (a constraint or unit you did not model), the MODEL is mis-specified (wrong variable domain, wrong objective, a missing constraint), the IMPLEMENTATION is wrong (the code does not solve the model you wrote), or the REFERENCE BASIS is wrong (your gold value or tolerance is off). Report your reasoning as a `model` action with `revised_from` naming the failed execution, then re-solve in the SAME episode. Do not rebuild from scratch by default, do not assume the failure is a modeling error, and NEVER change the task to match a reference value.
-- **`check-task` says `insufficient`** — nothing was confirmed either way. Declare the check basis that applies, or make `solve.py` report `variables`. Do not treat an unchecked answer as validated.
-- **`status=error`, security policy** — the script used a blocked construct (network/shell/pathlib/dynamic `open()` paths). Use only stdlib and a literal `open('result.json', 'w')`. Subprocess-based solvers (PuLP's CBC) cannot run in the sandbox — switch to an in-process solver (ortools, highspy). Record the failed attempt with `--from-staged` so the memory learns it.
-- **`status=error`, traceback** — fix the model or script and re-execute. Each attempt is its own record: a first failure is `retries=0` (an observed zero); a retry declares `--override retries=N` (the absolute count of NEW retries).
-- **`status=timeout`** — the strategy may be too heavy for this scale. Re-recall with `--exclude <strategy>`, try the next candidate, and record the timeout.
-- **`close-episode` refuses with `state: "pending"`** — an action of the episode is still `running`, and a running scope has no final numbers. End it (or let it finish), then close. If a `running` action is left over from an `execute` that raised before producing a record, it was already ended as `failed` by the framework — a genuinely stranded one means the process died mid-call.
-- **`recall` returns no candidates** — read `recommendations_basis.reason`. On a cold bank this is the EXPECTED state, not an error: propose the methods you want to try and run them. If you expected memory for a specific id, check `candidates_with_memory` — an id absent from it was never executed or induced in this cell. A `vector_recall` hit for a structurally different problem is a strong hint that the coupling values are off.
-- **A `coupling_warnings` entry at profile time** — your supplied value contradicts the derivation. The derived value wins for grouping; correct your annotation.
-
-## Core concepts
-
-- **Execution Evidence Bank** — append-only episodic facts: the strategy actually used, the quality/cost actually observed, failures, artifacts. Never stores generalizations. Only cost dimensions may be backfilled.
-- **Strategic Knowledge Bank** — induced commitments (expected quality, cost, failure risk, prediction intervals, applicability read off evidence). Mutation happens at INDUCTION time only. Creating an entry takes ≥2 executions from ≥2 distinct tasks; publishing it takes a passed admission check (`induce --verify`).
-- **Conditional statistics** — on-the-fly aggregation per (strategy × structural cell); a recount, never persisted.
-- **No strategy directory** — the framework ships no list of method names, descriptions, applicability rules, actions or fallbacks, and nothing loads one. A strategy is a candidate because the MEMORY holds something about it here (a recorded execution, or an admission-verified claim). With neither, `recall` is empty and says so. You propose the methods; `predict`/`execute` accept any id, and an unknown cost basis is reported as `unknown`, never as zero.
-- **CostVector** — five dimensions, stored raw and never folded: `llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`. Each record carries a measured-dimension mask meaning "this value is a real observation": the executor measures only `latency_s` and `solver_runtime_s`, while `tool_calls` (ALL tool invocations — commands, sandbox runs, solver calls), `retries` and `llm_tokens` are YOUR declarations and stay unknown until supplied. Unknown ≠ zero. A strategic entry publishes a cost dimension only when every supporting record measured it.
-- **Cold archive** — cards for retired entries that veto re-induction of the same failed generalization; `induce --force` lifts that veto when you judge the environment has drifted.
-
-Detailed semantics — structural grouping, coupling derivation, CIR, memory layers, the disposal ladder and the verification philosophy — are in [references/concepts.md](references/concepts.md).
-
-## Commands
-
-Every command prints one JSON line: `{"result": {...}, "summary": "..."}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. All accept `--home DIR` (default `$OR_HARNESS_HOME`, else `./or_harness_home`). Exact arguments and output semantics: [references/commands.md](references/commands.md).
-
-| Command | Use it for |
-|---|---|
-| `profile` | The analysis entry: CIR validation + modeling guidance + profile + derivation. Run it first, and again after writing the `model` |
-| `recall` | Both retrieval channels: structural `recommendations[]` + text `vector_recall`. A REPORT on real memory, not a menu — an empty list plus `recommendations_basis` is a valid answer |
-| `predict` | Freeze the pre-execution cost expectation; pass the snapshot to `record --prediction`. Any strategy id is accepted; no evidence means `source="unknown"` |
-| `execute` | Sandbox-run solve.py and stage the execution |
-| `check-task` | Check whether an execution's ANSWER satisfies the original task (not merely that the solver solved its own model) |
-| `record` | Persist the fact: cost backfill → quality checks → cost feedback → induction-pattern hints |
-| `amend-cost` | Backfill cost dimensions of an ALREADY-RECORDED execution (the repair path for a reported cost gap) |
-| `induce` | The only place knowledge changes |
-| `inspect` | Query one memory layer |
-| `snapshot` / `action` / `budget` | Freeze belief state / report an action YOU performed / consumption view |
-| `predict-outcome` / `bind-outcome` | World-model shadow prediction, then its comparison against the real action |
-| `predict-strategy` / `bind-strategy` | Strategy-outcome prediction (wm-so/1) over one frozen context + one candidate; then the prediction–execution linkage |
-| `plan-next` / `choose-next` | Bounded planning over predicted consequences, then your explicit choice. `--candidates` is REQUIRED — the planner generates no menu |
-| `context` | Build or read the FROZEN prediction input context (no model call, no solver) |
-| `contract` | Build or read a unified world-model contract (no model call) |
-| `close-episode` / `calibration` / `evaluations` | Episode close-out, the published experience calibration (window of closed episodes), per-prediction evaluation records |
-| `archive-calibration` / `retention` | Move out-of-window detail to a BOUNDED archive; report the three retention scopes |
-| `assess-induction` / `bind-induction-outcome` | Evaluate an induction's value before committing; judge it afterwards |
-| `predict-capability` / `compare-capability` | Predict what ONE offline learning operation would change; compare frozen predictions |
-| `accept-capability` / `reject-capability` | Your explicit offline choice: accept runs the real operation, reject changes nothing |
-| `bind-capability` / `evaluate-capability` / `capability-feedback` | Bind the maintenance FACT, then judge the EFFECT on later real tasks |
-| `gc` / `retire` / `rebuild-index` / `doctor` | Derived-layer disposal; index build/repair; environment self-check |
-
-## Decision guidance
-
-- **induction hints after record** are evidence, not orders. Induce when you judge the pattern worth generalizing; you may also induce with no hint. Semantics: [references/induction.md](references/induction.md).
-- **status vs verification** — `status` tracks how an entry has behaved (`candidate` / `validated` / `suspect` / `dormant`); `verification.state` tracks whether the CLAIM was checked. They cannot contradict: `validated` requires `verified`, and a `refuted` claim can never be `validated`. Both are applied by `induce`, never by `record`.
-- **When to gc** — when `inspect` shows large groups fully covered by validated entries. Run `--dry-run` first.
-
-## Output requirements
-
-Report to the user: the chosen strategy and solver with the evidence that drove the choice; the objective value and key decisions with the status stated explicitly; the assumptions you made and data you had to interpret; the real cost you paid including the `llm_tokens` backfill; and any failed attempt that is part of the story. A plan suggestion is a recommendation — say which candidate you chose and whether you deviated.
-
-## Discipline
-
-- **A signal is not the decision.** A hint, a `similarity`, a model's self-reported `confidence` and a plan suggestion are inputs — the choice and the admission verdict remain yours or the framework's.
-- **A prediction is a shadow.** `plan-next` suggests, `choose-next` decides, `execute` acts. A prediction never becomes a fact, and an unexecuted candidate's prediction is never real feedback.
-- **Similarity discovers; structure decides reuse.** `applies` may be reused; `conflicts` and `unknown` may not — an unmeasured condition is not a satisfied one. One memory hit by both channels is ONE piece of evidence.
+- **A signal is not a decision.** A hint, a `similarity`, a model's self-reported `confidence` and a plan suggestion are inputs. The choice and the admission verdict remain yours or the framework's.
+- **A prediction is a shadow.** `plan-next` suggests, `choose-next` decides, `execute` acts. A prediction never becomes a fact.
+- **Similarity discovers; structure decides reuse.** `applies` may be reused; `conflicts` and `unknown` may not — an unmeasured condition is not a satisfied one.
 - **Measure coupling from structure.** Two independent resource constraints mean rc≈0, however resource-flavoured the task sounds.
 - **The model comes after the strategy, before the code.**
-- **Predict before acting.** A prediction made after the execution is hindsight, and binding it to a different strategy's action records a mismatch instead of a score.
-- **An attempt is not a strategy window.** One `execute` call is one attempt; modeling/repair/verify is auxiliary overhead. The same strategy chosen again is a different selection round.
-- **Failures are raw material.** Record every attempt, including timeouts and infeasibilities; backfill from staging rather than re-typing.
-- **A solved model is not a solved task.** `execute`'s verdict covers the solver's own model; `check-task` covers the TASK. A relaxed answer that matches your reference is still wrong, and a confirmed-wrong answer stops being a success sample without leaving the evidence set (its cost is real). Task validity and knowledge validity are separate gates.
-- **A close-out is not a certification.** `close-episode` ends the episode. It reports its `task_checks` coverage precisely so "the episode closed" is never read as "the answer was right".
-- **A failed check is not a modelling error.** `task_check_failed` reports that the DECLARED bases did not hold — the cause (misread task, implementation bug, unmet requirement, wrong reference) is YOUR diagnosis. The framework deliberately has no `model_invalid` label: a solver error status or a failed check cannot establish that the model was wrong.
-- **A reported infeasibility is a verdict, not a failure.** `solver_reported_infeasible` is recorded as a fact; correctly identifying an infeasible original problem is a valid outcome.
-- **Two units, never conflated.** Occurrence rates count real OBSERVATION UNITS (an execution counted once, however many predictions were bound to it), and labels are PER EXECUTION: one timeout among two runs is a 50% rate, not 100%. Brier/probability statistics count prediction-observation PAIRS; only `scored_occurrence_rate` shares a denominator with `mean_predicted_probability`.
-- **The occurrence tally is derived from the CURRENT facts**, not from frozen evaluation labels: a late check (in either direction) is reflected on the next read, and an episode with no bound prediction still contributes its real observations.
-- **A late correction is field-scoped.** A confirmed-wrong answer re-derives the benefit to 0.0 and KEEPS the measured cost; a withdrawn execution removes the sample; the correction applies only to the execution it names.
-- **A threshold is per statistic.** A group of many episodes can still have ONE sample for a risk only one prediction mentioned — read `brier_evidence_by_event` / `under_sampled_statistics`, and treat `basis: "partially_measured"` accordingly.
-- **The calibration is a window, and a global diagnostic.** It reads the newest N closed episodes and carries no per-strategy breakdown — never present it as the current candidate's conditional bias. Corrections on a window episode republish it; stored contexts stay frozen.
-- **Cost learning needs the backfill.** `llm_tokens`, `tool_calls` and `retries` are invisible to the sandbox — the executor measures only `latency_s` and `solver_runtime_s`. Supply them at record time (`--override`) or with `amend-cost`, or the dimension stays unmeasured and no cost claim can be published for it.
-- **A knowledge entry appearing is not a capability gain.** Predicting, binding the fact and verifying the effect are three different things; only the third supports "the harness got stronger".
-- **The sample is counted in TASK-EPISODES.** Ten predictions bound to one execution are ONE independent truth, and a task counts as later only when its WORK ran after the operation.
-- **Retirement is deliberate.** `retire` is irreversible; `--force` on induction lifts a cold-archive veto. Reserve both for genuine drift and genuine dead ends.
-- **The index is derived data.** Leave `{home}/index/*.embedding.json` alone; `record` / `induce` / `retire` maintain it, `rebuild-index` repairs it.
+- **An attempt is not a strategy window.** One `execute` is one attempt; modelling/repair/verify is auxiliary overhead.
+- **Failures are raw material.** Record every attempt, timeouts and infeasibilities included; backfill from staging rather than re-typing.
+- **A solved model is not a solved task.** Task validity and knowledge validity are separate gates, and a confirmed-wrong answer stops being a success sample without leaving the evidence set (its cost is real).
+- **A failed check is not a modelling error.** `task_check_failed` reports that the DECLARED bases did not hold; the cause is YOUR diagnosis. The framework deliberately has no `model_invalid` label.
+- **A reported infeasibility is a verdict, not a failure.** Correctly identifying an infeasible original problem is a valid outcome.
+- **Two units, never conflated.** Occurrence rates count real OBSERVATION UNITS (an execution once, however many predictions were bound to it), and labels are PER EXECUTION. Brier statistics count prediction–observation PAIRS; only `scored_occurrence_rate` shares a denominator with `mean_predicted_probability`. The occurrence tally is derived from CURRENT facts, not frozen labels.
+- **A correction is field-scoped.** A confirmed-wrong answer re-derives the benefit to `0.0` and KEEPS the measured cost; a withdrawn execution removes the sample; the correction applies only to the execution it names.
+- **A threshold is per statistic.** A group of many episodes can still have ONE sample for a risk only one prediction mentioned — read `brier_evidence_by_event` / `under_sampled_statistics`. A statistic nobody predicted is ABSENT, not under-sampled.
+- **The calibration is a window and a global diagnostic.** It reads the newest N closed episodes, carries no per-strategy breakdown, and must never be presented as the current candidate's conditional bias. It is a measured record of past errors — NOT trained model parameters and NOT a promise that future predictions improve.
+- **Three different things, three different bounds.** Calibration STATISTICS enter the prompt; the online input is BOUNDED (window/grace/archive caps); raw archive detail is separate. Bounded online input does not by itself bound total disk.
+- **A knowledge entry appearing is not a capability gain.** Predicting, binding the fact and verifying the effect are three different things.
+- **The sample is counted in TASK-EPISODES.** Ten predictions bound to one execution are ONE independent truth.
+- **Retirement is deliberate.** `retire` is irreversible; `induce --force` lifts a cold-archive veto (one-time). Reserve both for genuine drift and dead ends.
+- **Cost learning needs the backfill.** `llm_tokens`/`tool_calls`/`retries` are your declarations — unknown ≠ zero, and an unmeasured dimension supports no cost claim.
 
 ## References
 
-Read on demand — one hop, no chains.
+Read on demand — one hop, no chains. You do NOT need to read them all before starting; the workflow above is complete on its own.
 
-- [references/commands.md](references/commands.md) — exact CLI/API arguments and output semantics for every command. Read before calling something whose flags you do not remember.
-- [references/concepts.md](references/concepts.md) — the "why": two-layer memory, structural grouping and coupling derivation, CIR, CostVector, disposal ladder, verification philosophy.
-- [references/modeling.md](references/modeling.md) — the GAMS-style model syntax, constraint label rules, verification layers, and the CIR schema. Read before writing your first model or CIR.
-- [references/induction.md](references/induction.md) — the four induction-worthy patterns, applicability as family + structural cell, the creation gate and admission verification, the offline lifecycle.
-- [references/world_model_contract.md](references/world_model_contract.md) — the unified prediction contracts, `contract_only`, attempt vs strategy window, the capability sources of H, the legacy migration table.
-- [references/prediction_context.md](references/prediction_context.md) — the frozen prediction input context: joint representation, math-attribute origins, the two retrieval channels and their evidence classes.
-- [references/strategy_outcome.md](references/strategy_outcome.md) — the strategy-outcome prediction service (wm-so/1): protocol, comparison yardstick, prediction–choice–execution binding.
-- [references/episode_closeout.md](references/episode_closeout.md) — closing an episode, the real-outcome summary, per-field evaluation, the experience calibration channel, and how a task-result verdict enters it.
-- Runnable examples: [`references/examples/task_check.py`](references/examples/task_check.py) (check → diagnose → repair → record → close-out) and [`references/examples/episode_closeout.py`](references/examples/episode_closeout.py) (predict → execute → bind → close → calibrate). Read them when unsure how the pieces fit together.
+| Read it when | Reference |
+|---|---|
+| You are about to call a command whose flags you do not remember, or you need the exact output semantics / return states | [references/commands.md](references/commands.md) |
+| You want the "why": two-layer memory, structural grouping, CIR, CostVector, the disposal ladder, verification philosophy | [references/concepts.md](references/concepts.md) |
+| You are writing your FIRST model or CIR (syntax, constraint labels, verification layers) | [references/modeling.md](references/modeling.md) |
+| You are forming an induction decision, or submitting a structured relation claim (patterns, gate, verification semantics) | [references/induction.md](references/induction.md) |
+| You need the unified prediction contracts, `contract_only`, attempt vs strategy window, or the legacy migration table | [references/world_model_contract.md](references/world_model_contract.md) |
+| You are debugging what a prediction was conditioned on (the frozen input context, math-attribute origins, the two retrieval channels) | [references/prediction_context.md](references/prediction_context.md) |
+| You want the wm-so/1 protocol in detail (yardstick, binding identity, comparison rules) | [references/strategy_outcome.md](references/strategy_outcome.md) |
+| You are closing an episode, reading the calibration, or handling a late task-result verdict | [references/episode_closeout.md](references/episode_closeout.md) |
+| You are unsure how the pieces fit together and want a runnable script to read | [references/examples/task_check.py](references/examples/task_check.py) (check → diagnose → repair → record → close) and [references/examples/episode_closeout.py](references/examples/episode_closeout.py) (predict → execute → bind → close → calibrate) |
+
+## Reporting to the user
+
+State: the chosen strategy and solver with the evidence that drove the choice; the objective value and key decisions with the status stated explicitly; the assumptions you made and the data you had to interpret; the REAL cost you paid, including the `llm_tokens` backfill; and any failed attempt that is part of the story. A plan suggestion is a recommendation — say which candidate you chose and whether you deviated.

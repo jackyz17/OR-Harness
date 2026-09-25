@@ -1,6 +1,6 @@
 # Prediction input context (`wm-context/1`)
 
-**The strategy-outcome prediction service consumes this input** (see [`references/strategy_outcome.md`](strategy_outcome.md)). The legacy `predict_outcome` protocol is unchanged and remains the compatibility path.
+**The strategy-outcome prediction service consumes this input** (see [`references/strategy_outcome.md`](strategy_outcome.md)) — it is what `predict-strategy` and `plan-next` use. The legacy `predict_outcome` payload reader is kept so OLD records stay readable, but no agent-facing prediction flow uses that path.
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
 
@@ -21,8 +21,8 @@ This document is the authority for the INPUT side. The contract side (statuses, 
 |---|---|---|---|
 | Build the frozen prediction input | `orx context --task t.json` / `ORHarness.build_prediction_context` | a task JSON (nothing else is required) | a `PredictionContext` |
 | Read a stored input back | `orx context --context-id CTX` / `ORHarness.get_prediction_context` | the context id | the frozen context, **without re-running anything** |
-| Predict with a shared input | `orx predict-outcome --context CTX` / `predict_outcome(..., context=ctx)` | a task + an action spec | an `OutcomePrediction` conditioned on that input |
-| Predict without any context | `orx predict-outcome --no-context` / `predict_outcome(..., context=False)` | as before this phase | the pre-phase-2 request shape, exactly |
+| Predict with a shared input | `orx predict-strategy --context CTX` / `predict_strategy_outcome(..., context=ctx)` | a task + a candidate | a `StrategyOutcomePrediction` conditioned on that input |
+| Predict without naming a context | `orx predict-strategy` (builds one for this call) / `predict_strategy_outcome(..., context=None)` | a task + a candidate | a prediction conditioned on a context frozen FOR THIS CALL |
 
 **The minimum task fields** for a useful context:
 
@@ -161,7 +161,7 @@ The same check guards reuse at the prediction entry point: a context built under
 
 ### Reuse sends the FROZEN conditions, never re-derived ones
 
-`predict_outcome(..., context=ctx)` conditions the request entirely on the frozen content:
+`predict_strategy_outcome(..., context=ctx)` conditions the request entirely on the frozen content:
 
 | Condition | Where a reused context takes it from |
 |---|---|
@@ -224,8 +224,8 @@ This is the phase's most important engineering boundary.
 | `orx context --task` | yes | no | no |
 | `get_prediction_context` / `orx context --context-id` | no | no | no |
 | `predict_outcome` (context defaults to building one) | yes, once | **yes**, once | no |
-| `predict_outcome(..., context=ctx)` | no | **yes**, once | no |
-| `predict_outcome(..., context=False)` | no | yes, once | no |
+| `predict_strategy_outcome(..., context=ctx)` | no | **yes**, once | no |
+| `predict_strategy_outcome(..., context=...)` | no | yes, once | no |
 | `plan_next` | yes, once per decision | yes, per candidate | no |
 | `recall` | yes | no | no |
 
@@ -255,7 +255,7 @@ This is the phase's most important engineering boundary.
 
 ## 7. Compatibility
 
-- The legacy `predict_outcome` request is unchanged when no context is passed (`context=False`): the request still carries `action_spec`, `state` and the pre-existing `prediction_reliability` block. The `x-b-only` ablation's byte-compatibility rests on this.
+- A legacy `predict_outcome` call with `context=False` still produces its pre-phase-2 request shape (`action_spec`, `state`, the pre-existing `prediction_reliability` block). That path is only reachable through the Python API now — it is the record reader's substrate, not a prediction channel.
 - Stored predictions written before this phase remain readable: they simply have no `prediction_context_id`.
 - `recall` gained a `task_digest` field. It is additive.
 - The new `prediction_contexts` table is created idempotently alongside the others; no existing table is rewritten and no schema version token moved.
@@ -265,7 +265,7 @@ This is the phase's most important engineering boundary.
 
 ## 8. What is NOT here
 
-- **The legacy `predict_outcome` protocol is unchanged.** The provider still receives and returns the existing payload shape when that path is used; the new context travels as an additional request key. The strategy-outcome protocol is a SEPARATE path — see [`references/strategy_outcome.md`](strategy_outcome.md).
+- **The legacy `predict_outcome` protocol is unchanged** for the records it already wrote: the payload shape it produced is what the contract reader still parses. It is no longer an agent-facing prediction path — `predict-strategy` (wm-so/1) is the only one — so the two never compete for the same decision.
 - **Capability evolution is a separate service.** Its contract and service live in [`references/world_model_contract.md`](world_model_contract.md); the input context described here is shared with it.
 - **No task-closing scheduler, no offline learning schedule.**
 - **No capability evaluation system, no H score, no latent vectors.**

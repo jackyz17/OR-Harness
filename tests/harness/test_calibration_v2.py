@@ -1027,11 +1027,12 @@ class TestRetentionCli(CalibrationV2Case):
         self.assertEqual(code, 0)
         self.assertTrue(payload["result"]["dry_run"])
 
-    def test_retention_command(self):
-        code, payload = self._run(["retention"])
+    def test_retention_bank(self):
+        code, payload = self._run(["inspect", "--bank", "retention"])
         self.assertEqual(code, 0)
         self.assertIn("policy", payload["result"])
         self.assertIn("online", payload["result"])
+        self.assertIn("archive", payload["result"])
 
     def test_calibration_rebuild_flag(self):
         code, payload = self._run(["calibration", "--rebuild"])

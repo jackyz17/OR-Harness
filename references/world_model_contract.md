@@ -223,7 +223,7 @@ Use `prediction_kinds_for_mode(mode)` to get this mapping programmatically.
 The contract is one phase of a larger reconstruction. **Not implemented here**, and not to be described as done:
 
 - no new semantic extractor and no retrieval rework;
-- no switch away from the legacy `predict_outcome` shadow path (it is unchanged; the wm-so/1 service is a separate path — see [strategy_outcome.md](strategy_outcome.md));
+- the legacy `predict_outcome` payload reader is kept for OLD records (the wm-so/1 service is the path every agent-facing flow now uses — see [strategy_outcome.md](strategy_outcome.md));
 - no task-closing scheduler, no automatic offline learning schedule;
 - no H evaluation system;
 - no multi-step latent rollouts;
@@ -239,9 +239,10 @@ Also deliberately out of scope: a universal H score, renaming the existing actio
 > **The strategy-outcome service.** Implemented under the `wm-so/1`
 > protocol: see [references/strategy_outcome.md](strategy_outcome.md).
 > `predict-strategy` fills a `StrategyOutcomePrediction` from a frozen
-> context and one candidate; `plan-next --protocol strategy-outcome`
-> compares candidates on it; `bind-strategy` links the real execution. The
-> legacy `predict_outcome` path is unchanged.
+> context and one candidate; `plan-next`
+> compares candidates on it; `bind-strategy` links the real execution (or
+> `execute --prediction` does it automatically). The legacy `predict_outcome`
+> payload reader is kept for OLD records only — no agent-facing flow uses it.
 >
 > **Episode close-out.** Real-outcome summaries and per-field post-hoc
 > evaluation: see [references/episode_closeout.md](episode_closeout.md).

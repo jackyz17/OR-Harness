@@ -106,8 +106,12 @@ class StubProvider(WorldModelProvider):
                 "error": None, "latency_s": 0.02}
 
 
-def _solve(h, task, strategy="S02", objective=100.0):
-    """Execute and record one real attempt."""
+def _solve(h, task, strategy="S02", objective=100.0, prediction_id=None):
+    """Execute and record one real attempt.
+
+    ``prediction_id`` (when given) is the wm-so/1 prediction this attempt
+    tests, so the executed action is bound to it automatically — the
+    documented hand-over from `plan-next`."""
     work = Path(h.home) / f"ws_{task['task_id']}_{strategy}"
     work.mkdir(parents=True, exist_ok=True)
     script = work / "solve.py"
@@ -117,7 +121,8 @@ def _solve(h, task, strategy="S02", objective=100.0):
         "    json.dump({'status': 'optimal', 'objective_value': "
         f"{objective}, 'objective_bound': {objective}, "
         "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-    record = h.execute(task, strategy, str(script), str(work), solver="highs")
+    record = h.execute(task, strategy, str(script), str(work), solver="highs",
+                       episode_id="ep1", prediction_id=prediction_id)
     h.record(record)
     return record
 
@@ -206,7 +211,7 @@ def main() -> int:
                                strategy_id="S01"),
                     ActionSpec("execute_strategy", task["task_id"],
                                strategy_id="S02")],
-        limits={"horizon": 1}, protocol="strategy-outcome")
+        limits={"horizon": 1})
     suggested = (plan.get("suggested") or {}).get("strategy_id")
     print(f"prediction-driven plan : status={plan['status']}, "
           f"suggested={suggested}")
@@ -231,18 +236,29 @@ def main() -> int:
     print("=" * 72)
     print("3. Real execution, bound to the chosen candidate's prediction")
     print("=" * 72)
-    record = _solve(h, task, strategy="S02")
-    bound = h.bind_strategy_outcome(
-        predictions["S02"].prediction_id, record.action_id)
-    info = bound.trace.model_info
+    # REUSE the prediction the plan already made for the chosen candidate —
+    # predicting it again would create a duplicate for one decision.
+    chosen_id = next(
+        c["prediction_id"] for c in plan["candidates"]
+        if c["action_spec"]["strategy_id"] == "S02")
+    calls_before = len(provider.requests)
+    record = _solve(h, task, strategy="S02", prediction_id=chosen_id)
     print(f"execution              : {record.execution_id} "
           f"(status {record.quality['status']})")
-    print(f"binding mismatch       : {info.get('binding_mismatch')}")
-    print(f"comparable             : {bound.trace.comparable}")
+    # The binding happened automatically because the attempt named the
+    # prediction; no model call was made for it.
+    binding = record.execution_features["prediction_binding"]
+    print(f"auto-bound             : {binding['bound']} "
+          f"(mismatch={binding['trace']['binding_mismatch']})")
+    print(f"no second prediction   : "
+          f"{len(provider.requests) == calls_before}")
     print("NOTE: this is a PROCESS check (prediction -> choice -> execution"
           " -> binding), not a model-accuracy experiment.")
-    assert info.get("binding_mismatch") is None
-    assert bound.trace.comparable
+    assert binding["bound"]
+    assert binding["trace"]["binding_mismatch"] is None
+    assert binding["comparable"]
+    assert len(provider.requests) == calls_before, (
+        "planning's prediction must be REUSED, never predicted again")
 
     # ------------------------------------------------------------------
     print()

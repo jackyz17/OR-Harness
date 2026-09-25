@@ -68,11 +68,11 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["recommendations"], [])
         self.assertIn("NO MEMORY", out["result"]["recommendations_basis"]["reason"])
 
-        # 2b. predict (cold start -> unknown, never a default zero). The
-        #     method is one the framework has never seen: it is accepted and
-        #     reported as unknown rather than refused.
-        proc = run_orx(self.home, "predict", "--task", str(self.task_path),
-                       "--strategy", "S01")
+        # 2b. predict-cost (cold start -> unknown, never a default zero).
+        #     The method is one the framework has never seen: it is accepted
+        #     and reported as unknown rather than refused.
+        proc = run_orx(self.home, "predict-cost", "--task",
+                       str(self.task_path), "--strategy", "S01")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         prediction = out["result"]["prediction"]
@@ -160,9 +160,17 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(entries[0]["entry_id"], entry_id)
         self.assertEqual(entries[0]["verification"]["state"], "verified")
 
-        # 9. gc dry-run (nothing to compact yet, but the plan is empty cleanly)
-        proc = run_orx(self.home, "gc", "--dry-run")
+        # 9. the retirement CANDIDATES are a QUERY now (no collector claims
+        #    a cleanup it cannot perform): an entry with no evidence of
+        #    being suspect/dormant is simply not listed.
+        proc = run_orx(self.home, "inspect", "--bank", "strategic",
+                       "--status", "suspect")
         self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["result"]["count"], 0)
+        proc = run_orx(self.home, "inspect", "--bank", "predictions")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        out = json.loads(proc.stdout)
+        self.assertIn("legacy_predictions", out["result"])
 
         # 10. doctor
         proc = run_orx(self.home, "doctor")

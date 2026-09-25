@@ -263,22 +263,33 @@ def main() -> int:
     # history: the stored evaluation is byte-identical, but the sample
     # leaves the calibration means and is counted separately.
     stored_before = h.get_strategy_evaluation(evaluation["evaluation_id"])
-    import time
-    h.bank.set_task_check(repaired.execution_id, {
-        "state": "failed", "execution_id": repaired.execution_id,
-        "task_id": "check_demo", "episode_id": "ep1",
-        "diffs": [{"basis": "integer_domains", "variable": "x1"}],
-        "checked_at": time.time() + 10,
-    })
+    # Run the check through the PUBLIC entry point: it annotates the fact AND
+    # republishes the summary when the affected episode is still in the
+    # window, which is what makes a late verdict reachable without a rebuild.
+    late = h.check_task_result(repaired.execution_id,
+                               {"reference_objective": 99999.0})
+    print(f"late verdict           : {late['state']} "
+          f"(republished={bool(late.get('calibration_republished'))})")
     summary = h.calibration_summary()
     print(f"late correction        : "
+          f"corrections={len(summary['validity_corrections'])}, "
           f"exclusions={summary['exclusions']}")
     print(f"stored evaluation kept : "
           f"{h.get_strategy_evaluation(evaluation['evaluation_id']) == stored_before}")
-    assert summary["exclusions"].get("validity_corrected") == 1
+    # The correction is FIELD-SCOPED: a confirmed-wrong answer re-derives the
+    # benefit observation (the sample still counts, at its corrected value)
+    # while the measured COST is preserved — a wrong answer still cost what
+    # it cost. Only a WITHDRAWN execution removes the sample entirely
+    # (`exclusions.validity_corrected`), which is a different event.
+    correction = next(
+        c for c in summary["validity_corrections"]
+        if c.get("kind") == "live_rederivation")
+    assert correction["counted"] is True
+    assert correction["fields"] == ["benefit"]
+    assert correction["detail"]["benefit"]["cost_preserved"] is True
+    assert not summary["exclusions"].get("validity_corrected")
     assert h.get_strategy_evaluation(
         evaluation["evaluation_id"]) == stored_before
-    assert summary["validity_corrections"]
 
     h.close()
     tmp.cleanup()

@@ -357,7 +357,7 @@ def cmd_recall(args) -> int:
 
 
 def cmd_predict(args) -> int:
-    """Pre-execution cost expectation snapshot for one (task, strategy)."""
+    """Pre-execution COST expectation snapshot for one (task, strategy)."""
     h = _harness(args)
     try:
         task = _load_json_arg(args.task)
@@ -387,19 +387,50 @@ def cmd_execute(args) -> int:
     h = _harness(args)
     try:
         task = _load_json_arg(args.task)
+        prediction_id = getattr(args, "prediction", None)
         record = h.execute(task, args.strategy, args.code, args.workspace,
                            solver=args.solver,
                            verification_level=args.verification,
-                           episode_id=getattr(args, "episode", None))
+                           episode_id=getattr(args, "episode", None),
+                           prediction_id=prediction_id)
         out = {"execution": record.to_dict(),
                "execution_id": record.execution_id,
                "action_id": record.action_id}
         q = record.quality
-        return _emit(out,
-                     f"Execution {record.execution_id} finished with status "
-                     f"{q['status']} (feasible={q['feasible']}, gap={q['gap']}). "
-                     f"Cost so far: {record.cost.to_dict()}. Nothing is recorded "
-                     "yet — call `orx record` to persist, or discard.")
+        summary = (f"Execution {record.execution_id} finished with status "
+                   f"{q['status']} (feasible={q['feasible']}, "
+                   f"gap={q['gap']}). Cost so far: {record.cost.to_dict()}. "
+                   "Nothing is recorded yet — call `orx record` to persist, "
+                   "or discard.")
+        binding = getattr(record, "prediction_binding", None)
+        if prediction_id is not None:
+            if binding and binding.get("bound"):
+                info = binding.get("trace") or {}
+                mismatch = info.get("binding_mismatch")
+                unknown = info.get("binding_unknown")
+                if mismatch:
+                    out["prediction_binding"] = binding
+                    summary += (f" Prediction {prediction_id} was bound WITH "
+                                f"MISMATCH ({mismatch}): the comparison "
+                                "covers only matching parts; mismatched "
+                                "fields are recorded, never scored.")
+                else:
+                    out["prediction_binding"] = binding
+                    summary += (f" Prediction {prediction_id} bound "
+                                f"automatically"
+                                + (f" (unconfirmed fields: {unknown})"
+                                   if unknown else "")
+                                + "; the close-out will evaluate it.")
+            else:
+                out["prediction_binding"] = binding or {
+                    "bound": False,
+                    "reason": "the prediction was not bound"}
+                summary += (f" WARNING: prediction {prediction_id} could NOT "
+                            "be bound automatically ("
+                            f"{(binding or {}).get('reason') or 'unknown'}); "
+                            "bind it explicitly with `orx bind-strategy` "
+                            "once the action is on record.")
+        return _emit(out, summary)
     finally:
         h.close()
 
@@ -697,28 +728,28 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def cmd_assess_induction(args) -> int:
-    """Evaluate induction candidates using the world model (M4)."""
+def cmd_induction_candidates(args) -> int:
+    """Scan the bank for induction candidate bundles (no model call).
+
+    This is the EVIDENCE PACKAGE generator: it freezes, per candidate, the
+    experience scope, the task targeting and the baseline that
+    ``predict-capability --bundle`` consumes. It makes no model call and
+    changes no knowledge."""
     h = _harness(args)
     try:
-        if args.candidates_only:
-            bundles = h.induction_candidates()
-            return _emit({"count": len(bundles), "candidates": bundles},
-                         f"Found {len(bundles)} induction candidate(s).")
-        if args.bundle:
-            bundle = _load_json_arg(args.bundle)
-        else:
-            bundles = h.induction_candidates()
-            if not bundles:
-                return _emit({"status": "no_candidates", "candidates": []},
-                             "No induction candidates with sufficient evidence.")
-            bundle = bundles[0]
-        workload = _load_json_arg(args.workload) if args.workload else None
-        res = h.assess_induction(bundle, workload_forecast=workload)
-        summary = (f"Induction assessment {res.get('assessment_id')}: "
-                   f"recommendation={res.get('recommendation')} "
-                   f"({res.get('recommendation_basis', '')})")
-        return _emit(res, summary)
+        bundles = h.induction_candidates()
+        if not bundles:
+            return _emit(
+                {"count": 0, "candidates": []},
+                "No induction candidates with sufficient evidence. A claim "
+                "needs >=2 supporting executions from >=2 distinct tasks — "
+                "keep solving and recording.")
+        return _emit(
+            {"count": len(bundles), "candidates": bundles},
+            f"Found {len(bundles)} induction candidate(s). Each bundle "
+            "carries its own frozen evidence scope; pass one to "
+            "`orx predict-capability --bundle` to price the operation "
+            "before committing to it.")
     finally:
         h.close()
 
@@ -728,7 +759,48 @@ def cmd_inspect(args) -> int:
     try:
         result = h.inspect(bank=args.bank, task_id=args.task,
                            strategy_id=args.strategy, status=args.status,
-                           episode_id=getattr(args, "episode", None))
+                           episode_id=getattr(args, "episode", None),
+                           evaluation_id=getattr(args, "evaluation", None),
+                           prediction_id=getattr(args, "prediction", None))
+        if args.bank == "retention":
+            online = result["online"]
+            archive = result["archive"]
+            return _emit(
+                result,
+                f"Online: {online['n_window_episodes']} window episode(s), "
+                f"{online['n_closeouts_total']} closed total, "
+                f"{online['n_contract_predictions']} prediction(s), "
+                f"{online['n_prediction_contexts']} context(s). "
+                f"Archive: {len(archive['files'])} file(s), "
+                f"{archive['total_bytes']} bytes. Three separate scopes — "
+                "see `policy`.")
+        if args.bank == "capability":
+            if getattr(args, "prediction", None):
+                single = result["prediction"]
+                return _emit(
+                    result,
+                    f"Prediction {args.prediction}: status "
+                    f"{single['status']}, operation "
+                    f"{single['candidate_operation']['operation_type']}.")
+            return _emit(
+                result,
+                f"{result['n_predictions']} capability prediction(s): "
+                f"{result['n_fact_bound']} with a bound maintenance fact, "
+                f"{result['n_effect_verified']} with a VERIFIED effect. A "
+                "bound fact says the operation happened; only a verified "
+                "effect says real later performance moved.")
+        if args.bank == "evaluations":
+            if getattr(args, "evaluation", None):
+                return _emit(result, f"Evaluation {args.evaluation}: state "
+                                     f"{result['evaluation'].get('state')}.")
+            evaluations = result["evaluations"]
+            n_evaluated = sum(1 for e in evaluations
+                              if e.get("state") == "evaluated")
+            return _emit(
+                result,
+                f"{len(evaluations)} evaluation(s) stored ({n_evaluated} "
+                "evaluated). Excluded evaluations are neither hits nor "
+                "misses; pending ones wait for their scope to end.")
         count = result["count"]
         noun = {"experience": "records", "strategic": "entries",
                 "archive": "cards", "actions": "actions",
@@ -739,7 +811,10 @@ def cmd_inspect(args) -> int:
         detail = ""
         if args.bank == "strategic":
             detail = (" Entry track records show n_predictions, hit_rate, "
-                      "calibration_error, and consecutive_misses.")
+                      "calibration_error, and consecutive_misses. Suspect / "
+                      "dormant statuses are the retirement CANDIDATES "
+                      "(`--status suspect|dormant`); retiring them is "
+                      "explicit (`orx retire`).")
         elif args.bank == "archive":
             detail = (" A card blocks re-inducing that same pattern; lift it "
                       "with `induce --force` when the environment has "
@@ -748,6 +823,15 @@ def cmd_inspect(args) -> int:
             detail = (" Actions carry lifecycle status (running = begun, "
                       "not ended) and, for induce, a business result "
                       "separate from the lifecycle status.")
+        elif args.bank == "predictions":
+            detail = (f" Legacy M2: "
+                      f"{len(result['legacy_predictions'])}, "
+                      f"strategy-outcome (wm-so/1): "
+                      f"{len(result['strategy_predictions'])}, "
+                      f"capability-evolution (wm-ce/1): "
+                      f"{len(result['capability_predictions'])}. Separate "
+                      "logs, separate questions — only the wm-so/1 channel "
+                      "feeds `orx calibration`.")
         elif args.bank == "texts":
             detail = (" These are the retrieval SOURCE documents, not a "
                       "knowledge bank: they feed the embedding index and "
@@ -833,121 +917,6 @@ def cmd_budget(args) -> int:
         return _emit(result, summary)
     finally:
         h.close()
-
-
-def cmd_predict_outcome(args) -> int:
-    h = _harness(args)
-    try:
-        from or_harness.world_model.prediction import ActionSpec
-        task = _load_json_arg(args.task)
-        spec = ActionSpec.from_dict(_load_json_arg(args.action_spec))
-        if args.no_context:
-            context = False
-        elif args.context:
-            context = h.get_prediction_context(args.context)
-            if context is None:
-                return _fail(f"unknown context_id {args.context!r}")
-        else:
-            context = None
-        prediction = h.predict_outcome(
-            task, spec, args.episode,
-            parent_action_id=args.parent_action, context=context)
-        result = {"prediction": prediction.to_dict(),
-                  "prediction_id": prediction.prediction_id}
-        if prediction.status == "not_configured":
-            return _fail(f"prediction not enabled: {prediction.error}", 2)
-        if prediction.status != "valid":
-            return _emit(result,
-                         f"Prediction {prediction.prediction_id} failed "
-                         f"with status {prediction.status}: "
-                         f"{prediction.error or 'no detail'}. The call cost "
-                         "(if any) is recorded on the prediction.")
-        predicted = prediction.predicted
-        parts = [f"Prediction {prediction.prediction_id} (shadow) for "
-                 f"{spec.action_type}"
-                 + (f" {spec.strategy_id}" if spec.strategy_id else "")
-                 + ": "]
-        if "outcome_status" in predicted:
-            parts.append(f"expected status "
-                         f"{predicted['outcome_status']}; ")
-        if "quality" in predicted:
-            parts.append(f"E[Q]={predicted['quality']}; ")
-        if "failure_prob" in predicted:
-            parts.append(f"P(fail)={predicted['failure_prob']}; ")
-        cost = predicted.get("cost") or {}
-        if cost:
-            parts.append(f"cost={ {k: round(v, 2) for k, v in cost.items()} }; ")
-        if prediction.unsupported_fields:
-            parts.append(f"not predicted: "
-                         f"{', '.join(prediction.unsupported_fields)}; ")
-        parts.append("This is a hypothesis — it changes nothing. Execute "
-                     "the action yourself, then `orx bind-outcome "
-                     f"--prediction {prediction.prediction_id} --action "
-                     "<id>`.")
-        return _emit(result, "".join(parts))
-    finally:
-        h.close()
-
-
-def cmd_bind_outcome(args) -> int:
-    h = _harness(args)
-    try:
-        prediction = h.bind_outcome(args.prediction, args.action)
-        if prediction.binding_mismatch:
-            summary = (f"Prediction {args.prediction} bound to action "
-                       f"{args.action} WITH MISMATCH: "
-                       f"{prediction.binding_mismatch}. The comparison "
-                       "covers only matching parts; mismatched fields are "
-                       "recorded, not scored.")
-        else:
-            prediction = h.compare_prediction(args.prediction)
-            fb = prediction.feedback or {}
-            if fb.get("compared"):
-                fields = fb.get("compared_fields") or {}
-                matched = sum(1 for k in ("outcome_status", "feasible")
-                              if fields.get(k, {}).get("match"))
-                total = sum(1 for k in ("outcome_status", "feasible")
-                            if k in fields)
-                parts = [f"Prediction {args.prediction} bound and compared"
-                         f" against execution {fb.get('execution_id')}: "
-                         f"category {matched}/{total} matched."]
-                if "quality" in fields:
-                    parts.append(f"quality error "
-                                 f"{fields['quality']['abs_error']}; ")
-                if "cost" in fields:
-                    dims = ", ".join(
-                        f"{d}(log_err {v['log_error']})"
-                        for d, v in fields["cost"].items())
-                    parts.append(f"cost: {dims}.")
-                skipped = fb.get("not_compared") or {}
-                if skipped:
-                    parts.append(f"Not compared: "
-                                 f"{', '.join(skipped)}.")
-            else:
-                parts = [f"Prediction {args.prediction} bound but NOT "
-                         f"compared: {fb.get('reason')}."]
-            summary = " ".join(parts)
-        return _emit({"prediction": prediction.to_dict()}, summary)
-    finally:
-        h.close()
-
-
-def cmd_bind_induction_outcome(args) -> int:
-    h = _harness(args)
-    try:
-        result = h.bind_induction_outcome(args.assessment)
-    except StorageError as exc:
-        return _fail(str(exc))
-    verdict = result.get("verdict") or {}
-    if result.get("compared"):
-        return _emit(result, f"Induction assessment {args.assessment} "
-                             f"bound: {verdict.get('status')} "
-                             f"(entries created: "
-                             f"{len(verdict.get('entries_created') or [])}). "
-                             "An entry forming is not the same as "
-                             "publishable knowledge.")
-    return _emit(result, f"Induction assessment {args.assessment} not "
-                         f"compared: {result.get('reason') or verdict.get('reason')}")
 
 
 def cmd_predict_strategy(args) -> int:
@@ -1178,50 +1147,6 @@ def cmd_archive_calibration(args) -> int:
         h.close()
 
 
-def cmd_retention(args) -> int:
-    """Report the online/archive retention state (read-only)."""
-    h = _harness(args)
-    try:
-        result = h.calibration_retention()
-        online = result["online"]
-        archive = result["archive"]
-        return _emit(
-            result,
-            f"Online: {online['n_window_episodes']} window episode(s), "
-            f"{online['n_closeouts_total']} closed total, "
-            f"{online['n_contract_predictions']} prediction(s), "
-            f"{online['n_prediction_contexts']} context(s). "
-            f"Archive: {len(archive['files'])} file(s), "
-            f"{archive['total_bytes']} bytes. Three separate scopes — see "
-            "`policy`.")
-    finally:
-        h.close()
-
-
-def cmd_evaluations(args) -> int:
-    """List stored post-hoc prediction evaluations (read-only)."""
-    h = _harness(args)
-    try:
-        evaluations = h.strategy_prediction_evaluations(
-            task_id=args.task, episode_id=args.episode)
-        if args.evaluation:
-            single = h.get_strategy_evaluation(args.evaluation)
-            if single is None:
-                return _fail(f"unknown evaluation_id {args.evaluation!r}")
-            return _emit(single,
-                         f"Evaluation {args.evaluation}: state "
-                         f"{single.get('state')}.")
-        n_evaluated = sum(1 for e in evaluations
-                          if e.get("state") == "evaluated")
-        return _emit(
-            {"evaluations": evaluations, "count": len(evaluations)},
-            f"{len(evaluations)} evaluation(s) stored ({n_evaluated} "
-            "evaluated). Excluded evaluations are neither hits nor misses; "
-            "pending ones wait for their scope to end.")
-    finally:
-        h.close()
-
-
 def cmd_predict_capability(args) -> int:
     """Predict what an offline learning operation would change (M5, wm-ce/1).
 
@@ -1327,14 +1252,26 @@ def cmd_accept_capability(args) -> int:
         delta = ((result["operation_result"] or {}).get("knowledge_delta")
                  or {})
         created = delta.get("entries_created") or []
+        binding = result.get("maintenance_binding") or {}
+        if binding.get("bound"):
+            bind_note = ("The real maintenance fact was bound "
+                         "automatically"
+                         + (" (already bound: nothing was re-counted)"
+                            if binding.get("already_bound") else "")
+                         + ".")
+        else:
+            bind_note = ("WARNING: the maintenance fact could NOT be bound "
+                         f"automatically ({binding.get('reason') or 'unknown'}"
+                         "); bind it with `orx bind-capability`.")
         return _emit(result,
                      f"Accepted {result['capability_prediction_id']}: the "
                      f"operation ran on {len(result['execution_ids'])} "
                      f"scoped execution(s), {len(created)} entr(y/ies) "
-                     "created. Bind the real fact next "
-                     "(`orx bind-capability --prediction ...`); the "
-                     "capability EFFECT stays unverified until qualified "
-                     "later tasks produce real results.")
+                     f"created. {bind_note} Do NOT call `induce`/`retire` "
+                     "again for this decision — the operation has already "
+                     "run. The capability EFFECT stays unverified until "
+                     "qualified later tasks produce real results "
+                     "(`orx evaluate-capability`).")
     finally:
         h.close()
 
@@ -1459,38 +1396,21 @@ def cmd_evaluate_capability(args) -> int:
         h.close()
 
 
-def cmd_capability_feedback(args) -> int:
-    """Every capability prediction's two-stage feedback state (M5)."""
-    h = _harness(args)
-    try:
-        result = h.capability_feedback_summary()
-        if args.prediction:
-            single = h.get_capability_evolution_prediction(args.prediction)
-            if single is None:
-                return _fail(f"unknown prediction_id {args.prediction!r}")
-            return _emit(
-                {"prediction": single.to_dict(),
-                 "binding": h.capability_maintenance_binding(
-                     args.prediction),
-                 "evaluation": h.capability_effect_evaluation(
-                     args.prediction)},
-                f"Prediction {args.prediction}: status {single.status}, "
-                f"operation {single.candidate_operation.operation_type}.")
-        return _emit(result,
-                     f"{result['n_predictions']} capability prediction(s): "
-                     f"{result['n_fact_bound']} with a bound maintenance "
-                     f"fact, {result['n_effect_verified']} with a VERIFIED "
-                     "effect. A bound fact says the operation happened; only "
-                     "a verified effect says real later performance moved.")
-    finally:
-        h.close()
-
-
 def cmd_plan_next(args) -> int:
     h = _harness(args)
     try:
         from or_harness.world_model.prediction import ActionSpec
         task = _load_json_arg(args.task)
+        if getattr(args, "horizon", None) not in (None, 1):
+            # Refused EXPLICITLY rather than accepted-and-ignored: there is
+            # one horizon, and an agent that asked for a two-step rollout
+            # must be told what replaced it.
+            return _fail(
+                f"--horizon {args.horizon} is not supported: planning "
+                "compares macro strategy candidates once (horizon=1), then "
+                "you re-plan from the REAL observation of the chosen step. "
+                "Execute the step and plan again with what actually "
+                "happened — no imagined multi-step rollout is built")
         candidates = None
         if args.candidates:
             raw = _load_json_arg(args.candidates)
@@ -1502,10 +1422,8 @@ def cmd_plan_next(args) -> int:
                   "max_model_calls": args.max_calls}
         if getattr(args, "delta", None) is not None:
             limits["delta"] = args.delta
-        protocol = getattr(args, "protocol", "legacy") or "legacy"
         plan = h.plan_next(task, episode_id=args.episode,
-                           candidates=candidates, limits=limits,
-                           protocol=protocol)
+                           candidates=candidates, limits=limits)
         result = {"plan": plan, "decision_action_id": plan.get(
             "decision_action_id")}
         if plan.get("protocol"):
@@ -1514,23 +1432,49 @@ def cmd_plan_next(args) -> int:
         if status in ("disabled", "no_candidates", "fallback"):
             return _emit(result, f"plan_next returned status={status}: "
                                  f"{plan.get('truncation_reason')}")
-        paths = plan.get("paths") or []
-        parts = [f"Plan {plan['plan_id']}: {len(paths)} path(s) evaluated "
-                 f"from snapshot {plan['root_snapshot_id']} "
+        # Every compared candidate carries the prediction it was scored
+        # with. REUSE that id — never predict the chosen candidate again.
+        compared = plan.get("candidates") or []
+        parts = [f"Plan {plan['plan_id']}: {len(compared)} candidate(s) "
+                 f"compared from context "
+                 f"{plan.get('prediction_context_id')} "
                  f"(calls={plan.get('model_calls_made')}, "
                  f"planning_cost={plan.get('planning_cost')})."]
+        if compared:
+            by_strategy = {
+                (c.get("action_spec") or {}).get("strategy_id"): c
+                for c in compared
+                if (c.get("action_spec") or {}).get("strategy_id")}
+            ids = ", ".join(f"{sid}={c.get('prediction_id')}"
+                            for sid, c in by_strategy.items())
+            parts.append(f"Predictions: {ids}.")
         suggested = plan.get("suggested")
         if suggested:
-            parts.append(f"Suggested first step: {suggested['action_type']}"
-                         + (f" {suggested.get('strategy_id')}"
-                            if suggested.get("strategy_id") else "")
-                         + f" — {plan.get('suggestion_basis')}. Accept with "
-                           f"`orx choose-next --decision "
-                           f"{plan.get('decision_action_id')} --chosen ...`, "
-                           "or choose something else.")
+            step = (f"Suggested first step: {suggested['action_type']}"
+                    + (f" {suggested.get('strategy_id')}"
+                       if suggested.get("strategy_id") else "")
+                    + f" — {plan.get('suggestion_basis')}")
+            suggested_id = None
+            for c in compared:
+                spec = c.get("action_spec") or {}
+                if (spec.get("strategy_id") == suggested.get("strategy_id")
+                        and spec.get("action_type")
+                        == suggested.get("action_type")):
+                    suggested_id = c.get("prediction_id")
+                    break
+            if suggested_id:
+                step += (f". Accept with `orx choose-next --decision "
+                         f"{plan.get('decision_action_id')} --chosen ...`, "
+                         "then execute the step WITH that prediction (do "
+                         "NOT call predict-strategy again): `orx execute ... "
+                         f"--prediction {suggested_id}`.")
+            else:
+                step += (f". Accept with `orx choose-next --decision "
+                         f"{plan.get('decision_action_id')} --chosen ...`.")
+            parts.append(step)
         else:
             parts.append(plan.get("suggestion_basis")
-                         or "No suggestion (see paths).")
+                         or "No suggestion (see candidates).")
         return _emit(result, " ".join(parts))
     finally:
         h.close()
@@ -1561,25 +1505,6 @@ def cmd_choose_next(args) -> int:
         if result.get("deviation"):
             summary += " (deviation from the suggestion recorded)"
         return _emit(result, summary)
-    finally:
-        h.close()
-
-
-def cmd_gc(args) -> int:
-    h = _harness(args)
-    try:
-        result = h.collect_garbage(mode=args.mode, dry_run=args.dry_run)
-        if result.get("deferred"):
-            return _emit(result, f"GC deferred: {result['deferred']}")
-        if result.get("dry_run"):
-            actions = result["actions"]
-            if not actions:
-                return _emit(result, "GC dry-run: nothing to dispose.")
-            lines = [f"- {a['kind']} {a['target']}: {a['reason']}" for a in actions]
-            return _emit(result, "GC dry-run plan:\n" + "\n".join(lines))
-        return _emit(result,
-                     f"GC applied: retirement candidates listed but NOT "
-                     f"retired — retire entries explicitly.")
     finally:
         h.close()
 
@@ -2015,10 +1940,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "is held by the framework, not knowledge.")
     p.set_defaults(func=cmd_recall)
 
-    p = sub.add_parser("predict",
-                       help="pre-execution cost expectation snapshot for one "
-                            "(task, strategy); pass it back to `orx record` "
-                            "via --prediction")
+    p = sub.add_parser(
+        "predict-cost",
+        help="pre-execution COST expectation snapshot for one "
+             "(task, strategy), supported by past evidence; pass it back to "
+             "`orx record` via --prediction. This is NOT a world-model "
+             "prediction: no provider is called and no benefit/risk is "
+             "forecast")
     p.add_argument("--task", required=True)
     p.add_argument("--strategy", required=True)
     p.set_defaults(func=cmd_predict)
@@ -2033,6 +1961,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--episode", default=None,
                    help="episode id for the unified action record "
                         "(budget/progress scoping)")
+    p.add_argument("--prediction", default=None, metavar="PREDICTION_ID",
+                   help="the strategy-outcome prediction (wm-so/1) this "
+                        "attempt is testing, e.g. the id `plan-next` scored "
+                        "the candidate with. When given, the executed action "
+                        "is BOUND to it automatically once the action ends "
+                        "(identity checked: task/episode/strategy/solver/"
+                        "config; a mismatch is recorded, never scored). "
+                        "Omit it only when you did not predict this "
+                        "candidate; `orx bind-strategy` can bind later")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")
@@ -2190,12 +2127,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("inspect", help="query the memory layers")
     p.add_argument("--bank", default="experience",
                    choices=["experience", "strategic", "archive",
-                            "actions", "snapshots", "predictions", "texts"])
+                            "actions", "snapshots", "predictions", "texts",
+                            "evaluations", "retention", "capability"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
     p.add_argument("--episode", default=None,
                    help="filter actions by episode id")
+    p.add_argument("--evaluation", default=None, metavar="EVALUATION_ID",
+                   help="with --bank evaluations: read ONE evaluation "
+                        "instead of listing")
+    p.add_argument("--prediction", default=None, metavar="PREDICTION_ID",
+                   help="with --bank predictions: read ONE prediction "
+                        "across the legacy / strategy-outcome / capability "
+                        "generations; with --bank capability: read ONE "
+                        "prediction's fact binding + effect evaluation")
     p.set_defaults(func=cmd_inspect)
 
     p = sub.add_parser("snapshot",
@@ -2233,41 +2179,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="declare a budget, e.g. 'llm_tokens=50000,"
                         "solver_runtime_s=600'")
     p.set_defaults(func=cmd_budget)
-
-    p = sub.add_parser("predict-outcome",
-                       help="ask the configured world model for a "
-                            "structured prediction of ONE candidate "
-                            "action's consequences (shadow: never changes "
-                            "recommendations)")
-    p.add_argument("--task", required=True)
-    p.add_argument("--action-spec", required=True,
-                   help="candidate action JSON (literal or file): "
-                        '{"action_type": "execute_strategy", "strategy_id": '
-                        '"S01", "solver": "highs", ...}')
-    p.add_argument("--episode", default=None)
-    p.add_argument("--parent-action", default=None, metavar="ACTION_ID",
-                   help="action this prediction call belongs to (its model "
-                        "call cost is charged there as own cost)")
-    p.add_argument("--context", default=None, metavar="CTX_ID",
-                   help="reuse a FROZEN prediction input context built by "
-                        "`orx context` (its identity is verified against this "
-                        "task/version/episode); default builds a fresh one")
-    p.add_argument("--no-context", action="store_true",
-                   help="send no prediction context at all: the request keeps "
-                        "its pre-phase-2 shape exactly (the compatibility "
-                        "escape hatch; `x-b-only` byte-compatibility rests "
-                        "on this)")
-    p.set_defaults(func=cmd_predict_outcome)
-
-    p = sub.add_parser("bind-outcome",
-                       help="bind a prediction to the real action that ran, "
-                            "then compare (type/strategy/solver checked)")
-    p.add_argument("--prediction", required=True)
-    p.add_argument("--action", required=True, metavar="ACTION_ID|EXECUTION_ID",
-                   help="the action id (ac_...) OR the execution id (ex_...) "
-                        "the action produced — the latter is what `orx "
-                        "execute` prints, so no separate lookup is needed")
-    p.set_defaults(func=cmd_bind_outcome)
 
     p = sub.add_parser(
         "predict-strategy",
@@ -2348,22 +2259,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would be archived without moving it")
     p.set_defaults(func=cmd_archive_calibration)
-
-    p = sub.add_parser(
-        "retention",
-        help="report the online/archive retention state and the three "
-             "separate scopes (window / late-check grace / archive caps)")
-    p.set_defaults(func=cmd_retention)
-
-    p = sub.add_parser(
-        "evaluations",
-        help="list stored post-hoc evaluations of strategy-outcome "
-             "predictions (read-only)")
-    p.add_argument("--task", default=None)
-    p.add_argument("--episode", default=None)
-    p.add_argument("--evaluation", default=None, metavar="EVALUATION_ID",
-                   help="read ONE evaluation instead of listing")
-    p.set_defaults(func=cmd_evaluations)
 
     p = sub.add_parser(
         "predict-capability",
@@ -2480,15 +2375,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "the operation)")
     p.set_defaults(func=cmd_evaluate_capability)
 
-    p = sub.add_parser(
-        "capability-feedback",
-        help="the two-stage feedback state of every capability prediction "
-             "(M5): fact bound vs effect verified, read-only")
-    p.add_argument("--prediction", default=None,
-                   help="read ONE prediction's full state instead of "
-                        "summarizing")
-    p.set_defaults(func=cmd_capability_feedback)
-
     p = sub.add_parser("plan-next",
                        help="bounded next-step planning over predicted "
                             "action consequences (M3): freeze one root "
@@ -2504,7 +2390,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "candidate menu. Propose the methods you want "
                         "compared; `recall` shows what memory already "
                         "holds for this problem")
-    p.add_argument("--horizon", type=int, default=1, choices=[1, 2])
+    p.add_argument("--horizon", type=int, default=1,
+                   help="fixed at 1: planning compares macro strategy "
+                        "candidates once, then you re-plan from the REAL "
+                        "observation. Any other value is refused")
     p.add_argument("--max-calls", type=int, default=6,
                    help="max world-model calls for the whole decision")
     p.add_argument("--delta", type=float, default=argparse.SUPPRESS,
@@ -2522,21 +2411,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "off), 'h-x-b' predicts H as well but keeps the "
                         "knowledge value out of the decision, "
                         "'h-x-b-value' lets it influence the choice")
-    p.add_argument("--protocol", default="legacy",
-                   choices=["legacy", "strategy-outcome"],
-                   help="prediction protocol: 'legacy' (default) keeps the "
-                        "existing OutcomePrediction path and horizon 1-2; "
-                        "'strategy-outcome' compares candidates under the "
-                        "wm-so/1 strategy-outcome protocol (benefit/cost/"
-                        "risk/uncertainty, horizon fixed at 1)")
     p.set_defaults(func=cmd_plan_next)
-
-    p = sub.add_parser("bind-induction-outcome",
-                       help="bind an induction assessment's predictions to "
-                            "the REAL induction outcome and record the "
-                            "verdict (the assessment's own slow feedback)")
-    p.add_argument("--assessment", required=True, metavar="ASSESSMENT_ID")
-    p.set_defaults(func=cmd_bind_induction_outcome)
 
     p = sub.add_parser("choose-next",
                        help="record your explicit choice after a plan: "
@@ -2554,22 +2429,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="free-text note (e.g. deviation reason)")
     p.set_defaults(func=cmd_choose_next)
 
-    p = sub.add_parser("assess-induction",
-                       help="evaluate induction/revision candidates using the "
-                            "world model (M4)")
-    p.add_argument("--bundle", default=None,
-                   help="InductionCandidateBundle JSON (literal or @file); "
-                        "omitted = auto-scan candidate bundles from bank")
-    p.add_argument("--candidates-only", action="store_true",
-                   help="scan and return candidate bundles without evaluating")
-    p.add_argument("--workload", default=None,
-                   help="workload forecast JSON (e.g. expected_matching_tasks)")
-    p.set_defaults(func=cmd_assess_induction)
-
-    p = sub.add_parser("gc", help="dispose of the derived layer (harness's call)")
-    p.add_argument("--mode", default="compact", choices=["compact", "purge"])
-    p.add_argument("--dry-run", action="store_true")
-    p.set_defaults(func=cmd_gc)
+    p = sub.add_parser(
+        "induction-candidates",
+        help="scan the REAL bank for induction/revision candidate bundles "
+             "(frozen evidence, no model call). The evidence package is "
+             "what `predict-capability --bundle` consumes")
+    p.set_defaults(func=cmd_induction_candidates)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)

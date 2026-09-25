@@ -5,7 +5,7 @@
 - Protocol version: `wm-so/1`
 - Python module: `or_harness.world_model.strategy_prediction`
 - API: `ORHarness.predict_strategy_outcome` / `bind_strategy_outcome`
-- CLI: `orx predict-strategy` / `orx bind-strategy` / `orx plan-next --protocol strategy-outcome`
+- CLI: `orx predict-strategy` / `orx execute --prediction` (auto-binds) / `orx bind-strategy` (manual recovery) / `orx plan-next` (the only planning protocol)
 - Tests: `tests/harness/test_strategy_outcome.py`
 - Runnable example: [`references/examples/strategy_outcome.py`](examples/strategy_outcome.py)
 
@@ -80,11 +80,11 @@ One provider call per prediction. No retries, no default success values.
 ## 3. Comparing candidates and choosing
 
 ```bash
-orx plan-next --task t.json --episode ep1 --protocol strategy-outcome \
+orx plan-next --task t.json --episode ep1 \
   [--candidates specs.json] [--max-calls N]
 ```
 
-`plan-next --protocol strategy-outcome` (horizon fixed at 1):
+`plan-next` (horizon fixed at 1):
 
 1. freezes ONE context for the whole decision (every candidate is conditioned on the same problem representation, X/B, retrieval evidence, capability evidence and constraints — one embedding call, one snapshot);
 2. predicts each candidate under wm-so/1 (a failed prediction does not drag the others down; the model-call count, wall clock and the REAL budget are checked before every call);
@@ -120,7 +120,7 @@ Unexecuted candidates keep `unexecuted`/`unbound` semantics: no counterfactual t
 
 ## 5. Compatibility
 
-- The legacy `predict_outcome` / `plan-next` (default protocol) paths are unchanged, including `--no-context` byte-compatibility and the horizon=2 rollout under the old protocol.
+- The legacy `predict_outcome` Python API is kept for READING existing records (the contract reader, the record-time knowledge verdicts, `inspect --bank predictions`). No agent-facing entry point uses it, and the horizon=2 rollout is gone.
 - Old `OutcomePrediction` records remain readable; the new predictions live in their own `contract_predictions` log table (created idempotently, no schema-version move).
 - The `capability_evolution` kind has its own contract AND service (`wm-ce/1`): `predict-capability` / `compare-capability` / `accept-capability` / `bind-capability` / `evaluate-capability`. Its records live in a SEPARATE table, so neither generation is ever read as the other.
 - `HttpChatProvider` selects the system prompt by the REQUEST's protocol: a `wm-so/1` request gets the strategy-outcome prompt; everything else keeps the legacy prompts. The wire format stays the OpenAI chat shape.

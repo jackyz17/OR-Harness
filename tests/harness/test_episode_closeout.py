@@ -210,7 +210,7 @@ class TestPreFixesHold(M4Case):
                                    strategy_id="S02"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S04")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         self.assertEqual(plan["model_calls_made"], 1,
                          "the loop must stop after the first call's cost "
                          "is on the books")
@@ -249,7 +249,7 @@ class TestPreFixesHold(M4Case):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         # BOTH candidates were predicted: the malformed one is an invalid
         # RESULT, not an exception that kills the loop.
         self.assertEqual(plan["model_calls_made"], 2)
@@ -1154,7 +1154,7 @@ class TestCliCloseoutCommands(M4Case):
         self.assertEqual(code, 0)
         self.assertEqual(payload["result"]["protocol"], "wm-so/1")
 
-    def test_evaluations_command(self):
+    def test_evaluations_bank(self):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
@@ -1163,15 +1163,17 @@ class TestCliCloseoutCommands(M4Case):
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
-        code, payload = self._run(["evaluations", "--task", "t1"])
+        code, payload = self._run(["inspect", "--bank", "evaluations",
+                                   "--task", "t1"])
         self.assertEqual(code, 0)
         self.assertEqual(payload["result"]["count"], 1)
         evaluation_id = payload["result"]["evaluations"][0][
             "evaluation_id"]
         code, payload = self._run([
-            "evaluations", "--evaluation", evaluation_id])
+            "inspect", "--bank", "evaluations",
+            "--evaluation", evaluation_id])
         self.assertEqual(code, 0)
-        self.assertEqual(payload["result"]["evaluation_id"],
+        self.assertEqual(payload["result"]["evaluation"]["evaluation_id"],
                          evaluation_id)
 
 

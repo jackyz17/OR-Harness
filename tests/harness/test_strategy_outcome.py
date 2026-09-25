@@ -174,7 +174,7 @@ class TestPreFixesHold(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         request = self.provider.requests[0]
         block = request["prediction_context"]
         self.assertEqual(block["retrieval_evidence"]["semantic"]["status"],
@@ -250,7 +250,7 @@ class TestOneContextPerComparison(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         context_ids = {r["prediction_context"]["context_id"]
                        for r in self.provider.requests}
         self.assertEqual(len(context_ids), 1)
@@ -523,7 +523,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         return h, provider, plan
 
     def test_prediction_changes_the_suggestion(self):
@@ -561,7 +561,7 @@ class TestPredictionDrivesDecision(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         self.assertEqual(plan["status"], "no_valid_predictions")
         self.assertIn("Fall back to `recall`", plan["truncation_reason"])
         self.assertIsNone(plan["suggested"])
@@ -572,7 +572,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                 _task("t1"), "ep1",
                 candidates=[ActionSpec("execute_strategy", "t1",
                                        strategy_id="S01")],
-                limits={"horizon": 2}, protocol="strategy-outcome")
+                limits={"horizon": 2})
         self.assertIn("horizon=1 only", str(caught.exception))
 
     def test_budget_limit_stops_further_calls(self):
@@ -589,7 +589,7 @@ class TestPredictionDrivesDecision(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         self.assertEqual(plan["status"], "fallback")
         self.assertEqual(plan["model_calls_made"], 0)
 
@@ -607,7 +607,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S04")],
             limits={"horizon": 1, "max_model_calls": 2},
-            protocol="strategy-outcome")
+            )
         self.assertEqual(plan["model_calls_made"], 2)
         self.assertEqual(plan["status"], "truncated")
         self.assertIn("model-call budget exhausted",
@@ -677,7 +677,7 @@ class TestExecutionBinding(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1}, protocol="strategy-outcome")
+            limits={"horizon": 1})
         self.assertEqual(plan["model_calls_made"], 2)
         cost = plan["planning_cost"]
         self.assertTrue(cost, "failed calls' spend is real and recorded")
@@ -784,17 +784,41 @@ class TestCliStrategyCommands(StrategyCase):
         # the identity is KNOWN and the binding is comparable.
         self.assertIn("COMPARABLE", payload["summary"])
 
-    def test_plan_next_protocol_flag(self):
+    def test_plan_next_is_strategy_outcome_only(self):
+        """Planning speaks ONE protocol. The old `--protocol` selector is
+        gone, and a refusal (the removed flag, horizon=2) is a usage error
+        rather than a silently different comparison."""
         code, payload, seen = self._with_http_stub([
             "plan-next", "--task", json.dumps(_task("t1")),
             "--episode", "ep1",
             "--candidates", json.dumps([
                 {"action_type": "execute_strategy", "task_id": "t1",
-                 "strategy_id": "S01"}]),
-            "--protocol", "strategy-outcome"])
+                 "strategy_id": "S01"}])])
         self.assertEqual(code, 0)
         self.assertEqual(payload["result"]["protocol"], "strategy-outcome")
         self.assertTrue(seen, "the model was really called over HTTP")
+        # The compared candidate's prediction id is handed over, so the
+        # caller binds it instead of predicting again.
+        candidate = payload["result"]["plan"]["candidates"][0]
+        self.assertTrue(candidate["prediction_id"].startswith("sp_"))
+        # The removed selector is refused (a usage error).
+        with self.assertRaises(SystemExit):
+            self._run(["plan-next", "--task", json.dumps(_task("t1")),
+                       "--candidates", json.dumps([
+                           {"action_type": "execute_strategy",
+                            "strategy_id": "S01"}]),
+                       "--protocol", "legacy"])
+        # A two-step request is refused with the replacement path named —
+        # never silently downgraded to a different comparison.
+        code, rejected = self._run([
+            "plan-next", "--task", json.dumps(_task("t1")),
+            "--candidates", json.dumps([
+                {"action_type": "execute_strategy",
+                 "strategy_id": "S01"}]),
+            "--horizon", "2"])
+        self.assertEqual(code, 2)
+        self.assertIn("horizon=1", rejected["summary"])
+        self.assertIn("REAL observation", rejected["summary"])
 
 
 if __name__ == "__main__":

@@ -832,10 +832,14 @@ class TestTwoStageFeedback(M5Case):
 
     def test_binding_the_fact_never_verifies_the_effect(self):
         prediction, accepted = self._accepted()
+        # ACCEPTING the recommendation already bound the real maintenance
+        # fact automatically — the adoption action named the prediction, so
+        # no separate call is required and nothing can fall through.
         bound = self.h.bind_capability_maintenance(
             prediction.prediction_id,
             adoption_action_id=accepted["adoption_action_id"])
-        self.assertEqual(bound["state"], "bound")
+        self.assertTrue(bound["already_bound"],
+                        "accept-capability binds the fact itself")
         binding = bound["binding"]
         self.assertEqual(binding["stage"], "maintenance_fact")
         self.assertTrue(any("never sets effect_verified" in n
@@ -1083,15 +1087,18 @@ class TestTwoStageFeedback(M5Case):
         prediction, accepted = self._accepted()
         summary = self.h.capability_feedback_summary()
         self.assertEqual(summary["n_predictions"], 1)
-        self.assertEqual(summary["n_fact_bound"], 0)
-        self.assertEqual(summary["n_effect_verified"], 0)
-        self.h.bind_capability_maintenance(
-            prediction.prediction_id,
-            adoption_action_id=accepted["adoption_action_id"])
-        summary = self.h.capability_feedback_summary()
+        # Acceptance bound the fact automatically: the operation really
+        # ran, and that is a recorded fact.
         self.assertEqual(summary["n_fact_bound"], 1)
         self.assertEqual(summary["n_effect_verified"], 0,
                          "a bound fact is NOT a verified effect")
+        # Re-binding is a no-op: the fact is not counted twice.
+        again = self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=accepted["adoption_action_id"])
+        self.assertTrue(again["already_bound"])
+        self.assertEqual(
+            self.h.capability_feedback_summary()["n_fact_bound"], 1)
 
     # -- helpers ----------------------------------------------------------
 
@@ -2146,8 +2153,10 @@ class TestCli(M5Case):
         self.assertEqual(code, 2)
         self.assertIn("comma-separated", out)
 
-    def test_capability_feedback_is_readable_when_empty(self):
-        code, out = self._run(["capability-feedback"])
+    def test_capability_feedback_is_readable_through_inspect(self):
+        """The two-stage feedback view is one of `inspect`'s banks: the
+        old standalone command is gone, the capability is not."""
+        code, out = self._run(["inspect", "--bank", "capability"])
         self.assertEqual(code, 0)
         self.assertIn("0 capability prediction(s)", out)
 
@@ -2176,7 +2185,6 @@ class TestCli(M5Case):
             "bind-capability": ["--prediction", "--adoption-action"],
             "evaluate-capability": ["--prediction", "--tasks", "--paired",
                                     "--allow-descriptive"],
-            "capability-feedback": ["--prediction"],
         }
         for command, flags in expected.items():
             for action in parser._actions:
@@ -2191,6 +2199,20 @@ class TestCli(M5Case):
                     break
             else:
                 self.fail(f"command {command!r} is not in the parser")
+        # The two-stage view moved into `inspect` (a query bank), so the
+        # capability is still reachable through ONE entry point.
+        for action in parser._actions:
+            if hasattr(action, "choices") and action.choices \
+                    and "inspect" in action.choices:
+                inspect_parser = action.choices["inspect"]
+                bank = next(sub for sub in inspect_parser._actions
+                            if sub.dest == "bank")
+                self.assertIn("capability", bank.choices)
+                self.assertIn("evaluations", bank.choices)
+                self.assertIn("retention", bank.choices)
+                break
+        else:
+            self.fail("command 'inspect' is not in the parser")
 
 
 # ---------------------------------------------------------------------------
