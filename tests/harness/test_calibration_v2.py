@@ -494,13 +494,24 @@ class TestWindowAndPublication(CalibrationV2Case):
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         before = self.h.calibration_summary()
-        self.assertEqual(before["exclusions"].get("validity_corrected"), None)
+        self.assertEqual(before["validity_corrections"], [])
+        group_before = list(before["groups"].values())[0]
+        self.assertEqual(group_before["mean_benefit_abs_error"], 0.2)
         # A late check on a window episode.
         self.h.check_task_result(record.execution_id,
                                  {"reference_objective": 999.0})
         after = self.h.calibration_summary()
-        self.assertEqual(after["exclusions"].get("validity_corrected"), 1)
+        # The correction REPUBLISHED the summary, and the corrected benefit
+        # (0.0 — the answer does not satisfy the task) is what it reports.
         self.assertTrue(after["validity_corrections"])
+        self.assertEqual(after["validity_corrections"][0]["fields"],
+                         ["benefit"])
+        group_after = list(after["groups"].values())[0]
+        self.assertEqual(group_after["mean_benefit_abs_error"], 0.8)
+        # The measured cost is preserved: a wrong answer still cost what it
+        # cost, so the correction must not take that measurement with it.
+        self.assertEqual(group_after["mean_cost_log_error"],
+                         group_before["mean_cost_log_error"])
 
     def test_publication_is_recoverable_after_a_crash(self):
         """A close that crashes between its two transactions leaves
@@ -1027,6 +1038,361 @@ class TestRetentionCli(CalibrationV2Case):
         self.assertEqual(code, 0)
         self.assertEqual(payload["result"]["calibration_version"],
                          "wm-calib/2")
+
+
+# ---------------------------------------------------------------------------
+# 7. the review defects: per-execution labels, live derivation, migration
+# ---------------------------------------------------------------------------
+
+
+class TestPerExecutionLabels(CalibrationV2Case):
+    """Review P1-2: a scope-level label made a 50% rate read as 100%."""
+
+    def test_mixed_check_outcomes_give_a_fifty_percent_rate(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        first = self.solve(task, strategy="S04", tag="p1")
+        second = self.solve(task, strategy="S04", tag="p2")
+        self.h.check_task_result(first.execution_id,
+                                 {"reference_objective": 999.0})
+        self.h.check_task_result(second.execution_id,
+                                 {"reference_objective": 100.0})
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     first.action_id)
+        self.h.close_episode("t1", "ep1")
+        occurrence = self.h.calibration_summary()["occurrence"][
+            "task_check_failed"]
+        self.assertEqual(occurrence["n_observation_units"], 2)
+        self.assertEqual(occurrence["n_occurred"], 1)
+        self.assertEqual(occurrence["n_not_occurred"], 1)
+        self.assertEqual(occurrence["unit_occurrence_rate"], 0.5)
+
+    def test_timeout_and_success_give_a_fifty_percent_rate(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        self.solve(task, strategy="S04", status="timeout", objective=0.0,
+                   tag="t1")
+        self.solve(task, strategy="S04", tag="t2")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     self.h.actions.query(
+                                         task_id="t1",
+                                         action_type="execute_strategy")[0]
+                                     .action_id)
+        self.h.close_episode("t1", "ep1")
+        occurrence = self.h.calibration_summary()["occurrence"]["timeout"]
+        self.assertEqual(occurrence["n_observation_units"], 2)
+        self.assertEqual(occurrence["n_occurred"], 1)
+        self.assertEqual(occurrence["unit_occurrence_rate"], 0.5)
+
+    def test_occurrence_without_any_bound_prediction(self):
+        """An episode with NO prediction still produced real executions: its
+        observations must not vanish from the occurrence statistics.
+
+        TWO executions are used because a task check on a TIMED-OUT run
+        reports ``insufficient`` (there is no usable result to check) —
+        which is the honest verdict, so the check-failure event comes from a
+        run that actually produced an answer."""
+        task = _task("t1")
+        timed_out = self.solve(task, strategy="S04", status="timeout",
+                               objective=0.0, tag="nop1")
+        answered = self.solve(task, strategy="S04", tag="nop2")
+        self.h.check_task_result(answered.execution_id,
+                                 {"reference_objective": 999.0})
+        self.h.close_episode("t1", "ep1")
+        summary = self.h.calibration_summary()
+        self.assertEqual(summary["n_evaluations_total"], 0)
+        # No prediction existed, yet the framework's own observation is
+        # complete: two executions, one timeout, one failed check.
+        self.assertEqual(summary["occurrence"]["timeout"]["n_occurred"], 1)
+        self.assertEqual(
+            summary["occurrence"]["task_check_failed"]["n_occurred"], 1)
+        self.assertEqual(
+            summary["occurrence"]["task_check_failed"]["n_observation_units"],
+            2)
+        self.assertIsNotNone(timed_out.execution_id)
+
+
+class TestLiveCorrection(CalibrationV2Case):
+    """Review P1-3: frozen labels and imprecise scoping."""
+
+    def test_confirmed_failure_updates_the_occurrence_rate(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.check_task_result(record.execution_id,
+                                 {"reference_objective": 100.0})
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        before = self.h.calibration_summary()["occurrence"][
+            "task_check_failed"]
+        self.assertEqual(before["n_occurred"], 0)
+        self.assertEqual(before["unit_occurrence_rate"], 0.0)
+        # The check is overturned: the answer was wrong after all.
+        self.h.check_task_result(record.execution_id,
+                                 {"reference_objective": 999.0})
+        after = self.h.calibration_summary()["occurrence"][
+            "task_check_failed"]
+        self.assertEqual(after["n_occurred"], 1)
+        self.assertEqual(after["unit_occurrence_rate"], 1.0)
+        self.assertIn("current executions",
+                      after["source"])
+
+    def test_late_failure_on_one_execution_does_not_exclude_the_other(self):
+        task = _task("t1")
+        first_prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        first = self.solve(task, strategy="S04", tag="scope1")
+        second_prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        second = self.solve(task, strategy="S04", tag="scope2")
+        self.h.bind_strategy_outcome(first_prediction.prediction_id,
+                                     first.action_id)
+        self.h.bind_strategy_outcome(second_prediction.prediction_id,
+                                     second.action_id)
+        self.h.close_episode("t1", "ep1")
+        evaluations = self.h.strategy_prediction_evaluations(task_id="t1")
+        first_eval = next(
+            e for e in evaluations
+            if first.execution_id in (
+                e["risk"]["observed_units"].get("timeout") or {}
+            ).get("unit_ids", []))
+        second_eval = next(
+            e for e in evaluations
+            if second.execution_id in (
+                e["risk"]["observed_units"].get("timeout") or {}
+            ).get("unit_ids", []))
+        # Only ONE execution is confirmed wrong.
+        self.h.check_task_result(first.execution_id,
+                                 {"reference_objective": 999.0})
+        summary = self.h.calibration_summary()
+        moved = {c["evaluation_id"] for c in summary["validity_corrections"]}
+        # The correction lands on the evaluation that compared THAT
+        # execution; an evaluation of the sibling execution is untouched.
+        self.assertIn(first_eval["evaluation_id"], moved)
+        self.assertNotIn(second_eval["evaluation_id"], moved)
+
+    def test_exclusion_re_derives_the_statistics(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        before = self.h.calibration_summary()
+        self.assertEqual(before["n_evaluated"], 1)
+        self.h.exclude_execution(record.execution_id, "wrong fact")
+        after = self.h.calibration_summary()
+        # The withdrawn fact leaves the calibration entirely.
+        self.assertEqual(after["exclusions"].get("validity_corrected"), 1)
+        self.assertEqual(after["groups"], {})
+
+    def test_excluded_fact_still_counts_as_an_observation(self):
+        """Withdrawing a PREDICTION's comparability must not erase the fact
+        that the execution happened."""
+        task = _task("t1")
+        record = self.solve(task, strategy="S04", status="timeout",
+                            objective=0.0, tag="obs")
+        self.h.close_episode("t1", "ep1")
+        before = self.h.calibration_summary()["occurrence"]["timeout"]
+        self.assertEqual(before["n_occurred"], 1)
+        self.h.exclude_execution(record.execution_id, "wrong fact")
+        after = self.h.calibration_summary()["occurrence"]["timeout"]
+        self.assertEqual(after["n_occurred"], 1,
+                         "the execution really happened, so its observation "
+                         "stays")
+
+
+class TestLegacyMigration(CalibrationV2Case):
+    """Review P1-4: a legacy store and an interrupted close both lost
+    samples permanently."""
+
+    def test_legacy_store_is_backfilled_from_the_closeout_records(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        # Simulate a pre-registry store: the records exist, the index does
+        # not.
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM episode_closeouts")
+        rebuilt = self.h.calibration_summary(rebuild=True)
+        self.assertEqual(rebuilt["n_window_episodes"], 1)
+        self.assertEqual(rebuilt["n_evaluations_total"], 1)
+        self.assertEqual(rebuilt["n_evaluated"], 1)
+        # Backfilling is idempotent.
+        again = self.h.calibration_summary(rebuild=True)
+        self.assertEqual(again["n_window_episodes"], 1)
+
+    def test_interrupted_close_is_recovered_without_recounting(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        # Simulate a crash between the record and the registry row.
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM episode_closeouts")
+            conn.execute("DELETE FROM meta WHERE key=?",
+                         ("calibration_summary|published",))
+        recovered = self.h.close_episode("t1", "ep1")
+        self.assertTrue(recovered["already_closed"])
+        self.assertTrue(recovered.get("recovered_registry"))
+        summary = self.h.calibration_summary()
+        self.assertEqual(summary["n_window_episodes"], 1)
+        self.assertEqual(summary["n_evaluations_total"], 1)
+        # Nothing was counted twice.
+        self.assertEqual(
+            len(self.h.strategy_prediction_evaluations(task_id="t1")), 1)
+
+    def test_close_writes_the_record_and_the_registry_together(self):
+        """The atomicity claim is testable: after a close there is never a
+        record without a registry row."""
+        task = _task("t1")
+        record = self.solve(task, strategy="S04")
+        self.h.close_episode("t1", "ep1")
+        self.assertIsNotNone(self.h.episode_closeout_record("t1", "ep1"))
+        self.assertIsNotNone(self.h.store.get_closeout_registry("t1", "ep1"))
+
+
+class TestArchiveRetry(CalibrationV2Case):
+    """Review P2-5: an interrupted archive could never finish its cleanup."""
+
+    def test_retry_cleans_up_already_written_records(self):
+        for index in range(3):
+            task = _task(f"task{index}")
+            prediction = self.h.predict_strategy_outcome(
+                task, {"action_type": "execute_strategy",
+                       "strategy_id": "S04"}, "ep1")
+            record = self.solve(task, strategy="S04", tag=f"ar{index}")
+            self.h.check_task_result(record.execution_id,
+                                     {"reference_objective": 100.0})
+            self.h.bind_strategy_outcome(prediction.prediction_id,
+                                         record.action_id)
+            self.h.close_episode(f"task{index}", "ep1")
+        from or_harness.world_model.episode_closeout import (
+            CalibrationPolicy, archive_calibration_detail, _archive_files,
+        )
+        policy = CalibrationPolicy(window=1, late_check_grace_days=0.0)
+        first = archive_calibration_detail(self.h, policy=policy)
+        self.assertEqual(first["removed"]["evaluations"], 2)
+        # Simulate "file written, online delete not yet done": restore ONE
+        # archived evaluation payload from the archive FILE (that is what
+        # the online copy would be) and clear its episode's archived flag.
+        restored = None
+        for path in _archive_files(self.h):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                record = json.loads(line)
+                if record.get("record_type") == "evaluation":
+                    restored = record
+                    break
+            if restored:
+                break
+        self.assertIsNotNone(restored)
+        with self.h.store.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                (f"strategy_evaluation|{restored['evaluation_id']}",
+                 restored["payload"]))
+            conn.execute("UPDATE episode_closeouts SET archived=0 "
+                         "WHERE task_id=? AND episode_id=?",
+                         (restored["task_id"], restored["episode_id"] or ""))
+        retry = archive_calibration_detail(self.h, policy=policy)
+        # The retry recognised the record as already on disk, removed the
+        # online copy, and marked the episode archived.
+        self.assertEqual(retry["n_records"], 0)
+        self.assertEqual(retry["n_records_already_archived"], 1)
+        self.assertEqual(retry["removed"]["evaluations"], 1)
+        self.assertIsNone(
+            self.h.store.conn.execute(
+                "SELECT value FROM meta WHERE key=?",
+                (f"strategy_evaluation|{restored['evaluation_id']}",)
+            ).fetchone(), "the online copy must be gone after the retry")
+        # window=1 keeps only the newest episode online, so the RETRY left
+        # the same two out-of-window episodes archived — and the episode it
+        # had to finish cleaning up is among them.
+        archived = self.h.store.closeout_registry(archived=True)
+        self.assertEqual(len(archived), 2)
+        self.assertIn(restored["task_id"],
+                      {r["task_id"] for r in archived})
+
+
+class TestPerStatisticThreshold(CalibrationV2Case):
+    """Review P2-6: a group's episode count must not cover a single-sample
+    risk statistic."""
+
+    def test_a_risk_with_one_sample_is_flagged_inside_a_measured_group(self):
+        for index in range(5):
+            payload = json.loads(json.dumps(PAYLOAD))
+            payload["risk"]["events"] = (
+                [{"event": "timeout", "probability": 0.3}]
+                if index == 0 else [])
+            provider = StubProvider(payload=payload)
+            h = ORHarness(home=self.home, world_model=provider,
+                          embedding=self.backend)
+            self.addCleanup(h.close)
+            task = _task(f"task{index}")
+            prediction = h.predict_strategy_outcome(
+                task, {"action_type": "execute_strategy",
+                       "strategy_id": "S04"}, "ep1")
+            record = self.solve(task, strategy="S04", tag=f"th{index}")
+            h.bind_strategy_outcome(prediction.prediction_id,
+                                    record.action_id)
+            h.close_episode(f"task{index}", "ep1")
+        summary = self.h.calibration_summary(min_samples=5)
+        group = list(summary["groups"].values())[0]
+        # The GROUP has enough episodes...
+        self.assertEqual(group["n_distinct_episodes"], 5)
+        # ...but the timeout statistic has exactly one, and says so.
+        self.assertEqual(group["brier_evidence_by_event"]["timeout"][
+            "evidence"], "insufficient_evidence")
+        self.assertEqual(group["brier_evidence_by_event"]["timeout"][
+            "n_distinct_episodes"], 1)
+        self.assertIn("brier.timeout", group["under_sampled_statistics"])
+        self.assertEqual(group["basis"], "partially_measured")
+        # A statistic nobody predicted is ABSENT, not under-sampled.
+        self.assertNotIn("interval", group.get("under_sampled_statistics")
+                         or [])
+
+
+class TestPromptVocabulary(CalibrationV2Case):
+    """Review P2-7: the prompt was still telling the model to emit names the
+    observation layer had retired."""
+
+    def test_prompt_lists_only_observable_names(self):
+        from or_harness.world_model.strategy_prediction import (
+            STRATEGY_OUTCOME_SYSTEM_PROMPT as prompt,
+        )
+        from or_harness.world_model.episode_closeout import (
+            OBSERVABLE_RISK_EVENTS,
+        )
+        for name in OBSERVABLE_RISK_EVENTS:
+            self.assertIn(name, prompt,
+                          f"an observable event {name!r} must be named in "
+                          "the prompt so the model can use it")
+        # The old example list must be gone; the retired names may appear
+        # ONLY in the prohibition.
+        self.assertNotIn("risk EVENT (e.g. model_invalid", prompt)
+        self.assertIn("Do NOT invent names", prompt)
+        self.assertIn("model_invalid", prompt)
+        self.assertIn("no_feasible_solution", prompt)
 
 
 if __name__ == "__main__":

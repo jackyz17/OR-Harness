@@ -521,8 +521,13 @@ class TestRepairTrajectoryIsReadable(TaskCheckCase):
 
 class TestLateCorrection(TaskCheckCase):
 
-    def test_late_check_invalidates_the_calibration_sample(self):
-        """A check arriving AFTER close-out changes later use, not history."""
+    def test_late_check_corrects_the_benefit_and_keeps_the_cost(self):
+        """A check arriving AFTER close-out changes later use, not history.
+
+        The corrected sample keeps COUNTING: only the benefit observation is
+        re-derived (to 0.0 — the answer does not satisfy the task), while the
+        measured COST is preserved. Dropping the whole evaluation would throw
+        away a real measurement."""
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
@@ -539,6 +544,8 @@ class TestLateCorrection(TaskCheckCase):
             evaluation["evaluation_id"])
         first_summary = self.h.calibration_summary()
         self.assertEqual(first_summary["n_evaluated"], 1)
+        group_before = list(first_summary["groups"].values())[0]
+        self.assertEqual(group_before["mean_benefit_abs_error"], 0.2)
 
         # The correction arrives late: the answer was fractional after all.
         # It is written through the API (the documented path), so the
@@ -554,11 +561,21 @@ class TestLateCorrection(TaskCheckCase):
         # The stored evaluation is NOT rewritten...
         self.assertEqual(self.h.get_strategy_evaluation(
             evaluation["evaluation_id"]), stored_before)
-        # ...but it no longer counts as a calibration sample.
-        self.assertEqual(second_summary["exclusions"].get(
-            "validity_corrected"), 1)
+        # ...and the sample still COUNTS, with the benefit re-derived to 0.0.
         self.assertEqual(second_summary["n_evaluated"], 1)
-        self.assertTrue(second_summary["validity_corrections"])
+        correction = second_summary["validity_corrections"][0]
+        self.assertEqual(correction["kind"], "live_rederivation")
+        self.assertEqual(correction["fields"], ["benefit"])
+        self.assertTrue(correction["counted"])
+        self.assertIn("cost_preserved",
+                      correction["detail"]["benefit"])
+        # The benefit error is now |0.8 - 0.0| = 0.8, not |0.8 - 1.0| = 0.2.
+        group_after = list(second_summary["groups"].values())[0]
+        self.assertEqual(group_after["mean_benefit_abs_error"], 0.8)
+        # The COST measurement survives: the answer was wrong, but it really
+        # did cost what it cost.
+        self.assertEqual(group_after["mean_cost_log_error"],
+                         group_before["mean_cost_log_error"])
         # Statistics pick the corrected judgment up on the next read.
         self.assertEqual(quality_score(self.h.bank.get(record.execution_id)),
                          0.0)
@@ -578,7 +595,7 @@ class TestLateCorrection(TaskCheckCase):
         # A context built now reads the published summary (no correction).
         before = self.h.build_prediction_context(
             _task("t1"), "ep2").strategy_calibration
-        self.assertEqual(before["exclusions"].get("validity_corrected"), None)
+        self.assertEqual(before["validity_corrections"], [])
 
         self.h.check_task_result(
             record.execution_id,
@@ -587,8 +604,9 @@ class TestLateCorrection(TaskCheckCase):
         # call: the correction republished the summary.
         after = self.h.build_prediction_context(
             _task("t1"), "ep2").strategy_calibration
-        self.assertEqual(after["exclusions"].get("validity_corrected"), 1)
         self.assertTrue(after["validity_corrections"])
+        self.assertEqual(after["validity_corrections"][0]["fields"],
+                         ["benefit"])
         # The first context is frozen and unchanged.
         self.assertNotEqual(after, before)
 
@@ -617,10 +635,11 @@ class TestLateCorrection(TaskCheckCase):
         })
         # The published summary is unchanged until an explicit rebuild.
         published = self.h.calibration_summary()
-        self.assertEqual(published["exclusions"].get("validity_corrected"),
-                         None)
+        self.assertEqual(published["validity_corrections"], [])
         rebuilt = self.h.calibration_summary(rebuild=True)
-        self.assertEqual(rebuilt["exclusions"].get("validity_corrected"), 1)
+        self.assertTrue(rebuilt["validity_corrections"])
+        self.assertEqual(rebuilt["validity_corrections"][0]["fields"],
+                         ["benefit"])
 
     def test_check_recorded_before_closeout_is_not_a_correction(self):
         """A known-at-the-time failure must not be double-counted."""

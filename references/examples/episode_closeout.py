@@ -250,11 +250,23 @@ def main() -> int:
     assert group["basis"] == "insufficient_evidence"
     assert group["reliability"] is None
     # The framework's OWN occurrence statistics, counted by observation
-    # unit rather than by prediction count.
+    # unit rather than by prediction count. Labels are PER EXECUTION: the
+    # window's two real attempts (a failed one and a repaired one) are TWO
+    # units, not one — so a rate can never collapse a mixed outcome into a
+    # single verdict.
     occurrence = calibration["occurrence"]["timeout"]
     print(f"occurrence (timeout)   : {occurrence['n_observation_units']} "
-          f"unit(s), rate={occurrence['unit_occurrence_rate']}")
-    assert occurrence["n_observation_units"] == 1
+          f"unit(s), occurred={occurrence['n_occurred']}, "
+          f"rate={occurrence['unit_occurrence_rate']}")
+    assert occurrence["n_observation_units"] == 2
+    assert occurrence["n_occurred"] == 0
+    assert occurrence["unit_occurrence_rate"] == 0.0
+    check_occurrence = calibration["occurrence"]["task_check_failed"]
+    print(f"occurrence (check)     : "
+          f"{check_occurrence['n_observation_units']} unit(s), "
+          f"occurred={check_occurrence['n_occurred']}, "
+          f"unknown={check_occurrence['n_unknown']}")
+    assert check_occurrence["n_observation_units"] == 2
     # The provider really receives the summary content with the context.
     h.predict_strategy_outcome(
         task, {"action_type": "execute_strategy",

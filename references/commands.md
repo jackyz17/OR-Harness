@@ -398,7 +398,13 @@ Bind a strategy-outcome prediction to the real action that ran. The binding chec
 
 **A close-out is the end of the episode, NOT a certification of the answer.** The result carries `task_checks = {n_executions, verdicts, unchecked, note}` reporting how many of the episode's executions carry a task-result verdict (`orx check-task`). An execution confirmed NOT to satisfy the task contributes `0.0` to the benefit observation and the gate is recorded in `evaluations[].benefit.task_check_gated` — so a reader seeing "predicted 0.8, observed 0.0" can tell a confirmed-wrong answer from a genuinely bad solve. Unchecked answers keep their observed value and the note says their validity is UNKNOWN. Full spec: [episode_closeout.md](episode_closeout.md).
 
-**Late corrections change later USE, not history.** A task check run on an already-closed episode writes the verdict onto the fact (statistics pick it up on the next read), but the STORED evaluation is never rewritten: it is the honest record of what was known then. What changes is whether the sample keeps counting: an evaluation whose in-scope execution was confirmed failed by a check stored AFTER the evaluation was written is reported under `exclusions.validity_corrected` and leaves the calibration means, with the detail in `validity_corrections[]`. When the affected episode is still in the calibration WINDOW the published summary is REPUBLISHED as part of the correction (the result carries `calibration_republished`), so later predictions see the corrected judgment without waiting for a manual rebuild.
+**Late corrections change later USE, not history — and they are FIELD-SCOPED.** A task check run on an already-closed episode writes the verdict onto the fact, but the STORED evaluation is never rewritten: it is the honest record of what was known then. The calibration uses a LIVE re-derivation instead, reported in `validity_corrections[]`:
+- a check that now FAILS re-derives the benefit observation to `0.0` while **keeping the measured cost** (`kind: "live_rederivation"`, `fields: ["benefit"]`, `counted: true`) — a wrong answer still cost what it cost;
+- a check that was WITHDRAWN restores the un-gated observation;
+- an execution WITHDRAWN from the evidence set (`exclude-execution`) removes the sample entirely (`exclusions.validity_corrected`);
+- the correction is scoped to the executions the evaluation actually compared, so a late verdict on one execution does not disqualify a sibling's evaluation.
+
+When the affected episode is still in the calibration WINDOW the published summary is REPUBLISHED as part of the correction (the result carries `calibration_republished`), so later predictions see the corrected judgment without waiting for a manual rebuild.
 
 ## `orx calibration [--min-samples N] [--rebuild]`
 

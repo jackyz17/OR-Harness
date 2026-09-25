@@ -628,8 +628,18 @@ class TestCalibrationChannel(M4Case):
             GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
         self.assertEqual(group["basis"], "measured")
         self.assertEqual(summary["min_samples"], 1)
-        self.assertEqual(summary["min_samples_basis"],
-                         "distinct (task_id, episode_id) pairs")
+        # The threshold is applied PER STATISTIC, not once for the group: a
+        # group of many episodes where only one predicted a given risk has
+        # ONE sample for that risk, and its own verdict says so.
+        self.assertIn("PER STATISTIC", summary["min_samples_basis"])
+        # Every statistic carries its own evidence verdict.
+        self.assertEqual(group["benefit_evidence"]["evidence"], "measured")
+        self.assertEqual(group["interval_evidence"], None,
+                         "an interval nobody predicted is ABSENT, not "
+                         "under-sampled")
+        self.assertEqual(
+            group["brier_evidence_by_event"]["timeout"]["evidence"],
+            "measured")
 
     def test_calibration_separate_from_knowledge_reliability(self):
         task = _task("t1")

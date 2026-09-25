@@ -107,7 +107,14 @@ The summary reports two numbers that are never conflated:
 - **prediction-observation pairs** (`groups`): one per eligible prediction. This is the sample for judging a probability.
 - **observation units** (`occurrence`): the framework's own count of how often an event really happened — once per execution (or per episode for `budget_exhausted`), however many predictions were bound to it. Each entry reports `n_observation_units`, `n_occurred` / `n_not_occurred` / `n_unknown` and `unit_occurrence_rate` over its OWN denominator (labelled observation units). It is reported separately and must never be subtracted from a `mean_predicted_probability` computed over a different sample set.
 
-An event the model never predicted still counts in `occurrence` (it is a real observation) and can never produce a Brier score. An **excluded** evaluation is removed from `groups` but its observations STILL count in `occurrence`: exclusion is a statement about prediction comparability, not about whether the execution happened.
+**Labels are PER EXECUTION.** An episode whose two executions had different outcomes (one timed out, one passed its check) is ONE occurrence and ONE absence — a rate of 50%, not 100%. A scope-level verdict assigned to every execution in the scope would report every run as a failure whenever one failed.
+
+**Observation is derived from the CURRENT facts.** `occurrence` is rebuilt from the executions the window's episodes really produced on every read, NOT from the labels frozen in stored evaluations:
+- an episode with NO bound prediction still produced real executions, so its observations still count;
+- a late task check (in either direction) is reflected immediately;
+- a withdrawn (`exclude-execution`) fact still counts as an observation — it really ran — while leaving the prediction-comparison statistics.
+
+An event the model never predicted still counts in `occurrence` and can never produce a Brier score.
 
 ### The risk-event vocabulary (`wm-events/2`)
 
@@ -120,13 +127,23 @@ An event the model never predicted still counts in `occurrence` (it is a real ob
 | `task_check_failed` | execution | `task_check.state` | The CHECK RESULT only; kind/scope/basis travel with it |
 | `budget_exhausted` | episode | the declared budget view | Only a scope matching the ledger's (the episode) can be scored |
 
-**Retired** (no label, no alias): `model_invalid` (a solver error or a failed check cannot establish that the MODEL was wrong — use `task_check_failed` for the check result), `no_feasible_solution` (ambiguous between a reported infeasibility and a failure to find a solution), `model_failure` (renamed `implementation_failure`).
+**Retired** (no label, no alias): `model_invalid` (a solver error or a failed check cannot establish that the MODEL was wrong — use `task_check_failed` for the check result), `no_feasible_solution` (ambiguous between a reported infeasibility and a failure to find a solution), `model_failure` (renamed `implementation_failure`). The prediction prompt lists ONLY the observable names and explicitly forbids inventing the retired ones.
 
 **Scope matching.** The budget ledger is episode-scoped, so an attempt- or strategy-window-scope prediction is NOT scored against it — the label stays unknown with an explicit `scope_mismatch` basis, while the framework still records the FACT under `occurrence`. This round deliberately builds no per-attempt budget system.
 
 **When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT under `strategy_outcome_calibration` — a SINGLE-ROW read, no history scan. The block is filtered twice: by the ATTACHED provider's model identity (another model's errors are not evidence about this one, and the withheld keys are named under `withheld_groups`) and, in the request, by the candidate's scope. Stored contexts never change: episode 1's context keeps what it froze.
 
-**Corrections republish.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary — otherwise a stale label would keep being served. An episode outside the window cannot change the statistics and is skipped without a rebuild. Publication is atomic: the evaluations and the registry row are written first, then the summary and its `published` flag in ONE transaction. A crash between them leaves `published=0`, which the next close (or `orx calibration --rebuild`) detects and finishes without re-counting.
+**Corrections republish, and correct the RIGHT field.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary. The stored evaluation is never rewritten; the summary uses a LIVE re-derivation instead:
+- a check that now FAILS re-derives the benefit observation to `0.0` **and keeps the measured cost** — a wrong answer still cost what it cost, so the correction must not take a valid measurement with it;
+- a check that was WITHDRAWN restores the un-gated observation;
+- an execution WITHDRAWN from the evidence set removes the sample entirely (there is nothing left to calibrate against);
+- the correction is SCOPED to the executions the evaluation actually compared, so a late verdict on one execution does not disqualify a sibling's evaluation.
+
+Publication is atomic: the evaluations, the close-out record and the registry row are written in ONE transaction, then the summary and its `published` flag in a second. A crash between them leaves `published=0` (or a record with no registry row), which the next close or `orx calibration --rebuild` detects and finishes without re-counting.
+
+### Per-statistic thresholds
+
+Every statistic carries its OWN evidence verdict (`benefit_evidence`, `cost_evidence[dim]`, `interval_evidence`, `brier_evidence_by_event[event]`), because a group of 50 episodes where only ONE predicted a given risk has exactly ONE sample for that risk. A group whose statistics are unevenly supported reports `basis: "partially_measured"` and names them under `under_sampled_statistics`; `min_samples_basis` states that the threshold is applied per statistic. A statistic nobody predicted is **absent** (no verdict), not "insufficient evidence" — "nobody asked" is not "too little data".
 
 ## 6. Retention: three separate scopes
 
@@ -145,9 +162,11 @@ One "retention" number cannot honestly bound the online database, decide which e
 
 An episode whose executions all carry a verdict is NOT held by the grace period: it leaves the online set as soon as it drops out of the window. Only episodes genuinely awaiting a verdict are kept — there is no blanket extra retention.
 
-**Only DETAIL is archived** (evaluation, prediction and frozen-context payloads) into `{home}/archive/calibration/calibration-NNNN.jsonl`. The **close-out registry tombstone stays online permanently**: it is what keeps a repeated close idempotent and the window locatable after the payloads are gone, so archiving can never cause a duplicate close or a double count. Re-running the archive pass is idempotent (an id already on disk is skipped). Restoring an archived payload is possible for AUDIT, but a restored payload never re-enters the calibration automatically — the window is decided by the registry's `closed_at` ordering.
+**Only DETAIL is archived** (evaluation, prediction and frozen-context payloads) into `{home}/archive/calibration/calibration-NNNN.jsonl`. The **close-out registry tombstone stays online permanently**: it is what keeps a repeated close idempotent and the window locatable after the payloads are gone, so archiving can never cause a duplicate close or a double count. Re-running the archive pass is idempotent AND resumable: a record already on disk is not written again, but its ONLINE copy is still removed and its episode still marked — so an interrupted pass ("file written, delete not done") can finish its cleanup on the next run. Restoring an archived payload is possible for AUDIT, but a restored payload never re-enters the calibration automatically — the window is decided by the registry's `closed_at` ordering.
 
 **Automatic maintenance.** Every close-out runs a LIGHT check (one indexed count of registry rows outside the window and not yet archived). Only when that count crosses `OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD` (default 200) does an archive pass run, so retention is maintained without archiving on every close.
+
+**Old stores are backfilled.** A store written before the registry existed has `episode_closeout|…` records but no rows. `calibration_window` backfills them once, idempotently, using each close-out's OWN `created_at` as `closed_at` — so the window ordering is historical, not "whenever the migration ran", and an old database's episodes are not silently invisible.
 
 ## 7. Window rounds (the identity extension)
 
@@ -159,7 +178,7 @@ An episode whose executions all carry a verdict is NOT held by the grace period:
 - **Scoring rules are decision rules, not measurements (open)**: "unknown cost charged the peak share / unknown risk the full weight" are DECISION RULES, not measured facts. The calibration summary reports measured errors only; it never presents those rules as observations.
 - **No framework channel can adjudicate a MODELLING error (open)**: a task check reports whether its DECLARED bases held, not whether the model was wrong — the cause (misread task, implementation bug, unmet requirement, wrong reference) is the agent's diagnosis. That is why `model_invalid` is retired rather than derived, and why a risk the framework cannot observe keeps label `unknown`.
 - **Budget risk is episode-scoped only (open)**: this round keeps the episode-level over-budget FACT and marks narrower-scope predictions `scope_mismatch`. A per-attempt budget system is deliberately out of scope.
-- Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE: it is written onto the fact (statistics pick it up on the next read), a calibration sample whose in-scope execution was confirmed failed by a check stored AFTER the evaluation was written is reported under `exclusions.validity_corrected` and leaves the means, and the published summary is REPUBLISHED so later predictions see it. Rewriting the stored evaluation itself remains refused.
+- Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE, and the correction is FIELD-SCOPED: the benefit observation is re-derived (to `0.0` for a confirmed-wrong answer) while the measured cost is preserved, the correction is applied only to the execution it names, and the published summary is republished when the episode is still in the window. Rewriting the stored evaluation itself remains refused.
 - **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
 - **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
 - **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction this layer exists to preserve.
@@ -171,9 +190,12 @@ An episode whose executions all carry a verdict is NOT held by the grace period:
 - [ ] Am I reading the close-out as a certification of the answer? It is not: read `task_checks` — `unchecked` executions have UNKNOWN validity, and a `failed` one was confirmed not to satisfy the task. A task check passing is also not a knowledge claim passing (`induce --verify` is a separate gate).
 - [ ] Am I reading a failed task check as "the model was wrong"? It is not: `task_check_failed` reports the CHECK RESULT, and the cause is your diagnosis. The framework deliberately has no `model_invalid` label.
 - [ ] Am I reading `solver_reported_infeasible` as a failure? It is a verdict — correctly identifying an infeasible ORIGINAL problem is a valid outcome.
-- [ ] Am I reading an `excluded` evaluation as a miss? Excluded is neither hit nor miss — check `exclusion_reasons` (including `validity_corrected`, a late task-check correction). Its observations still count in `occurrence`.
+- [ ] Am I reading an `excluded` evaluation as a miss? Excluded is neither hit nor miss — check `exclusion_reasons`. A withdrawn fact still counts as an OBSERVATION (it really ran); it leaves the prediction-comparison statistics only.
+- [ ] Am I reading a late correction as "the sample was dropped"? A failed check RE-DERIVES the benefit (to 0.0) and keeps the measured cost; only a withdrawn execution removes the sample.
 - [ ] Am I subtracting `unit_occurrence_rate` from `mean_predicted_probability`? Do NOT: they have different denominators. Compare `scored_occurrence_rate` with `mean_predicted_probability` instead — those share a sample set.
-- [ ] Am I reading `insufficient_evidence` as a bad reliability? It is the honest unknown: too few samples, no figure claimed.
+- [ ] Is one execution being counted as several occurrences? Labels are per execution: a scope with one timeout and one success is ONE occurrence, rate 50%. Check `n_observation_units` against the real execution count.
+- [ ] Am I reading a group of many episodes as "every statistic is measured"? Check the per-statistic verdicts (`benefit_evidence`, `cost_evidence`, `interval_evidence`, `brier_evidence_by_event`) and `under_sampled_statistics`: a risk only one episode predicted has ONE sample whatever the group size.
+- [ ] Am I reading `insufficient_evidence` as a bad reliability? It is the honest unknown: too few samples, no figure claimed. A statistic nobody predicted is ABSENT, not under-sampled.
 - [ ] Am I reading the calibration as the CURRENT candidate's conditional bias? It is not: `applicability` says `global_diagnostic` — there is no per-strategy breakdown.
 - [ ] Am I comparing another model's error statistics to this model? The context filters by model identity; a withheld group is named under `withheld_groups`.
 - [ ] Did a later episode's context change? It should not: stored contexts are frozen; only NEW contexts read the published summary.
