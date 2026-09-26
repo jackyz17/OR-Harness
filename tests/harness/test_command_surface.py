@@ -26,6 +26,7 @@ Nothing here claims real-LLM behaviour: every provider is a labelled stub.
 """
 import io
 import json
+import re
 import os
 import sys
 import unittest
@@ -522,6 +523,156 @@ class TestRemovedCommandsAreGone(Base):
         self.run_cli(["predict-cost", "--task", json.dumps(TASK),
                       "--strategy", "S01"])
         self.assertEqual(provider.requests, [])
+
+
+
+
+# ---------------------------------------------------------------------------
+# 9  the reviewed round: the CLI must name the RIGHT candidate and read the
+#    binding from where the API writes it
+# ---------------------------------------------------------------------------
+
+
+class SolverAwareProvider(WorldModelProvider):
+    """A declared rule: the ``gurobi`` candidate scores BETTER than
+    ``highs``, so listing ``highs`` FIRST still yields the ``gurobi``
+    suggestion. Nothing here claims real model behaviour."""
+
+    name = "solver-aware"
+
+    def __init__(self):
+        self.requests = []
+
+    def predict(self, request, timeout_s=None):
+        self.requests.append(request)
+        solver = (request.get("candidate") or {}).get("solver")
+        quality = 0.95 if solver == "gurobi" else 0.30
+        return {"payload": {
+                    "benefit": {"kind": "solution_quality",
+                                "metric": "normalized_objective_gap",
+                                "unit": "1-gap", "value": quality,
+                                "baseline": {"kind": "conditional_stats",
+                                             "value": 0.0}},
+                    "uncertainty": {"execution_randomness": 0.2}},
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50},
+                "error": None, "latency_s": 0.01}
+
+
+class TestPlanSummaryNamesTheRightCandidate(Base):
+    """A suggestion is only useful if the prediction handed over with it
+    belongs to the SAME candidate. Matching on strategy_id alone named the
+    first candidate with that strategy, so "one strategy, two solvers"
+    bound the wrong solver's prediction and the later identity check
+    (correctly) rejected it — a real sample lost to a display bug."""
+
+    def _plan_with_two_solvers(self, provider):
+        h = self.make_harness(provider)
+        from or_harness import cli as cli_module
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        code, out = self.run_cli([
+            "plan-next", "--task", json.dumps(TASK), "--episode", "ep1",
+            "--candidates", json.dumps([
+                {"action_type": "execute_strategy", "strategy_id": "S01",
+                 "solver": "highs"},
+                {"action_type": "execute_strategy", "strategy_id": "S01",
+                 "solver": "gurobi"}])])
+        self.assertEqual(code, 0)
+        return json.loads(out)
+
+    def test_the_handed_over_id_belongs_to_the_suggested_solver(self):
+        payload = self._plan_with_two_solvers(SolverAwareProvider())
+        plan = payload["result"]["plan"]
+        suggested = plan["suggested"]
+        self.assertEqual(suggested["solver"], "gurobi",
+                         "the declared rule makes the SECOND candidate win")
+        # The id the summary tells the agent to bind.
+        match = re.search(r"--prediction (\S+?)[`.\s]", payload["summary"])
+        self.assertIsNotNone(match, payload["summary"])
+        handed_over = match.group(1).rstrip(".")
+        # The id that really belongs to the suggested candidate.
+        truth = next(c["prediction_id"] for c in plan["candidates"]
+                     if c["action_spec"]["solver"] == "gurobi")
+        self.assertEqual(handed_over, truth,
+                         "the summary must name the SUGGESTED candidate's "
+                         "prediction, not the first one with that strategy")
+        # ... and the two solvers really have different predictions.
+        ids = {c["action_spec"]["solver"]: c["prediction_id"]
+               for c in plan["candidates"]}
+        self.assertNotEqual(ids["highs"], ids["gurobi"])
+
+    def test_the_bound_action_matches_the_suggestion(self):
+        """End to end: hand the summary's id to `execute` and the binding
+        is COMPARABLE — which is what the old behaviour broke."""
+        provider = SolverAwareProvider()
+        payload = self._plan_with_two_solvers(provider)
+        plan = payload["result"]["plan"]
+        handed_over = re.search(
+            r"--prediction (\S+?)[`.\s]", payload["summary"]).group(1).rstrip(".")
+        h = self.make_harness(provider)
+        record = h.execute(
+            TASK, "S01", str(self.script), str(self._work), solver="gurobi",
+            episode_id="ep1", prediction_id=handed_over)
+        binding = record.execution_features["prediction_binding"]
+        self.assertTrue(binding["bound"])
+        self.assertIsNone(binding["trace"]["binding_mismatch"],
+                          "the suggested solver's own prediction must bind "
+                          "cleanly")
+        self.assertTrue(binding["comparable"])
+
+
+class TestExecuteSummaryReportsTheRealBinding(Base):
+    """The API writes the binding into ``execution_features``; a CLI that
+    read a different (nonexistent) attribute reported failure for every
+    successful automatic binding, which sent the agent to bind again by
+    hand — and buried the REAL failure reason when one occurred."""
+
+    def test_a_successful_binding_is_reported_as_success(self):
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        from or_harness import cli as cli_module
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        code, out = self.run_cli([
+            "execute", "--task", json.dumps(TASK), "--strategy", "S01",
+            "--code", str(self.script), "--workspace", str(self._work),
+            "--solver", "highs", "--episode", "ep1",
+            "--prediction", prediction.prediction_id])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        # The CLI's own report and the stored fact must AGREE.
+        reported = payload["result"]["prediction_binding"]
+        stored = payload["result"]["execution"]["execution_features"][
+            "prediction_binding"]
+        self.assertTrue(reported["bound"])
+        self.assertTrue(stored["bound"])
+        self.assertNotIn("WARNING", payload["summary"],
+                         "a successful binding must not be reported as a "
+                         "failure")
+
+    def test_a_failed_binding_says_why(self):
+        h = self.make_harness(CountingProvider())
+        from or_harness import cli as cli_module
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        code, out = self.run_cli([
+            "execute", "--task", json.dumps(TASK), "--strategy", "S01",
+            "--code", str(self.script), "--workspace", str(self._work),
+            "--solver", "highs", "--episode", "ep1",
+            "--prediction", "sp_does_not_exist"])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        reported = payload["result"]["prediction_binding"]
+        self.assertFalse(reported["bound"])
+        self.assertIn("bind-strategy", reported["reason"],
+                      "a real failure must carry its reason and the way out")
+        self.assertIn("WARNING", payload["summary"])
 
 
 if __name__ == "__main__":

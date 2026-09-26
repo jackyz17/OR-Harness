@@ -22,6 +22,7 @@ future change that re-breaks a correction fails here first:
    statistics are labelled a global diagnostic rather than a conditional
    claim about the current candidate.
 """
+import io
 import json
 import os
 import sys
@@ -1394,6 +1395,239 @@ class TestPromptVocabulary(CalibrationV2Case):
         self.assertIn("Do NOT invent names", prompt)
         self.assertIn("model_invalid", prompt)
         self.assertIn("no_feasible_solution", prompt)
+
+
+
+
+# ---------------------------------------------------------------------------
+# 8. the reviewed round: identity filtering, bounded reads, preview purity
+# ---------------------------------------------------------------------------
+
+
+class TestModelIdentityFiltering(CalibrationV2Case):
+    """The identity used for FILTERING must be the identity used for
+    GROUPING, and an unknown identity must still filter."""
+
+    def test_own_groups_survive_the_filter(self):
+        """A model's OWN calibration must reach its own context: passing the
+        bare model name (``model-a``) instead of the grouping label
+        (``model-a@v1``) matched nothing and withheld the attached model's
+        own evidence."""
+        task = _task("t1")
+        provider = StubProvider(model="model-a", version="v1")
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        h.close_episode("t1", "ep1")
+        # The SAME provider builds a new context: its own group is present.
+        context = h.build_prediction_context(_task("t1"), "ep2")
+        calibration = context.strategy_calibration
+        self.assertIn(
+            "strategy_outcome|model-a@v1|normalized_objective_gap|1-gap"
+            "|attempt", calibration["groups"])
+        self.assertTrue(calibration.get("filtered"))
+        self.assertFalse(calibration.get("withheld_groups"))
+
+    def test_an_unknown_identity_still_filters(self):
+        """``(unknown)`` is a real identity value: an attached provider with
+        no reported identity must NOT be handed every other model's
+        statistics."""
+        from or_harness.world_model.episode_closeout import (
+            calibration_summary_for_context, publish_calibration_summary,
+        )
+        h = self.h
+        own = ("strategy_outcome|model-a@v1|normalized_objective_gap"
+               "|1-gap|attempt")
+        legacy = ("strategy_outcome|(unknown)|normalized_objective_gap"
+                  "|1-gap|attempt")
+        publish_calibration_summary(
+            h, {"groups": {own: {"n_samples": 3},
+                           legacy: {"n_samples": 2}},
+                "occurrence": {}, "exclusions": {}}, [])
+        block = calibration_summary_for_context(h, model_identity="(unknown)")
+        self.assertEqual(sorted(block["groups"]), [legacy])
+        self.assertIn(own, block["withheld_groups"])
+
+    def test_no_identity_means_no_filter_and_says_so(self):
+        """A caller that states NO identity gets the summary whole — and the
+        block records that no filter ran, so it is never mistaken for this
+        predictor's own statistics."""
+        from or_harness.world_model.episode_closeout import (
+            calibration_summary_for_context, publish_calibration_summary,
+        )
+        h = self.h
+        publish_calibration_summary(
+            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt":
+                           {"n_samples": 1}},
+                "occurrence": {}, "exclusions": {}}, [])
+        block = calibration_summary_for_context(h, model_identity=None)
+        self.assertFalse(block["filtered"])
+        self.assertIn("no model identity was supplied", block["filter_note"])
+        self.assertEqual(len(block["groups"]), 1)
+
+
+class TestBoundedWindowReads(CalibrationV2Case):
+    """The window bounds the SAMPLE, so it must bound the READ."""
+
+    def _close(self, task_id, index):
+        task = _task(task_id)
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04", tag=f"w{index}")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode(task_id, "ep1")
+
+    def test_the_read_is_bounded_by_the_window_not_the_history(self):
+        from or_harness.world_model.episode_closeout import (
+            CalibrationPolicy, build_calibration_summary,
+        )
+        for index in range(3):
+            self._close(f"t{index}", index)
+        calls = {"all": 0, "query": 0}
+        original_all = self.h.bank.all
+        original_query = self.h.bank.query
+
+        def counting_all():
+            calls["all"] += 1
+            return original_all()
+
+        def counting_query(**kwargs):
+            calls["query"] += 1
+            return original_query(**kwargs)
+
+        self.h.bank.all = counting_all
+        self.h.bank.query = counting_query
+        policy = CalibrationPolicy(window=2, late_check_grace_days=0.0)
+        summary = build_calibration_summary(self.h, min_samples=1,
+                                            policy=policy)
+        # A full-bank scan per window episode was the defect.
+        self.assertEqual(calls["all"], 0,
+                         "the window tally must not scan the whole bank")
+        # The facts really were read — through the filtered query.
+        self.assertGreater(calls["query"], 0)
+        # `occurrence` is keyed by EVENT NAME; each event carries its own
+        # unit count, so the proof the facts were read is that at least
+        # one event bucket holds units.
+        self.assertTrue(summary["occurrence"],
+                        "the window tally really read the facts")
+        self.assertGreater(
+            sum(bucket["n_observation_units"]
+                for bucket in summary["occurrence"].values()), 0)
+
+    def test_the_window_is_still_the_whole_sample(self):
+        """Bounding the read must not shrink the sample: both window
+        episodes' executions still contribute their observations."""
+        from or_harness.world_model.episode_closeout import (
+            CalibrationPolicy, build_calibration_summary,
+        )
+        for index in range(3):
+            self._close(f"t{index}", index)
+        policy = CalibrationPolicy(window=2, late_check_grace_days=0.0)
+        summary = build_calibration_summary(self.h, min_samples=1,
+                                            policy=policy)
+        self.assertEqual(summary["n_window_episodes"], 2)
+
+
+class TestPreviewNeverWrites(CalibrationV2Case):
+    """A read-only preview must not perform the registry migration."""
+
+    def test_archive_dry_run_leaves_a_legacy_store_untouched(self):
+        for index in range(3):
+            task = _task(f"t{index}")
+            prediction = self.h.predict_strategy_outcome(
+                task, {"action_type": "execute_strategy",
+                       "strategy_id": "S04"}, "ep1")
+            record = self.solve(task, strategy="S04", tag=f"d{index}")
+            self.h.bind_strategy_outcome(prediction.prediction_id,
+                                         record.action_id)
+            self.h.close_episode(f"t{index}", "ep1")
+        # A legacy store: records exist, registry rows do not.
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM episode_closeouts")
+        before = len(self.h.store.closeout_registry())
+        result = self.h.archive_calibration(dry_run=True)
+        after = len(self.h.store.closeout_registry())
+        self.assertEqual(before, 0)
+        self.assertEqual(after, 0, "a dry run must not migrate the store")
+        # The preview EXPLAINS the empty window rather than pretending.
+        self.assertIn("pending_migration", result)
+        self.assertIn("never writes", result["note"])
+
+    def test_retention_read_does_not_migrate_either(self):
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM episode_closeouts")
+        self.h.calibration_retention()
+        self.assertEqual(len(self.h.store.closeout_registry()), 0)
+
+    def test_an_explicit_rebuild_still_migrates(self):
+        """The migration is still reachable — it just is not a side effect
+        of a read."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        with self.h.store.transaction() as conn:
+            conn.execute("DELETE FROM episode_closeouts")
+        self.assertEqual(len(self.h.store.closeout_registry()), 0)
+        summary = self.h.calibration_summary(rebuild=True)
+        self.assertEqual(summary["n_window_episodes"], 1)
+        self.assertEqual(len(self.h.store.closeout_registry()), 1)
+
+
+class TestSinglePredictionLookup(CalibrationV2Case):
+    """A key lookup answers with the key's record, not the whole log."""
+
+    def _run(self, argv):
+        from or_harness import cli
+        buffer = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buffer
+        try:
+            code = cli.main(["--home", self.home] + argv)
+        finally:
+            sys.stdout = old
+        return code, json.loads(buffer.getvalue())
+
+    def test_key_lookup_returns_only_the_key(self):
+        ids = []
+        for index in range(3):
+            prediction = self.h.predict_strategy_outcome(
+                _task("t1"), {"action_type": "execute_strategy",
+                              "strategy_id": "S04"}, f"ep{index}")
+            ids.append(prediction.prediction_id)
+        code, payload = self._run([
+            "inspect", "--bank", "predictions", "--prediction", ids[0]])
+        self.assertEqual(code, 0)
+        result = payload["result"]
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["prediction"]["prediction"]["prediction_id"],
+                         ids[0])
+        # No log listing is attached to a key lookup.
+        for key in ("legacy_predictions", "strategy_predictions",
+                    "capability_predictions"):
+            self.assertNotIn(key, result)
+
+    def test_listing_mode_still_lists_every_generation(self):
+        for index in range(3):
+            self.h.predict_strategy_outcome(
+                _task("t1"), {"action_type": "execute_strategy",
+                              "strategy_id": "S04"}, f"ep{index}")
+        code, payload = self._run(["inspect", "--bank", "predictions"])
+        self.assertEqual(code, 0)
+        result = payload["result"]
+        self.assertEqual(result["count"], 3)
+        self.assertEqual(len(result["strategy_predictions"]), 3)
 
 
 if __name__ == "__main__":

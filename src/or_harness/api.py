@@ -839,10 +839,19 @@ class ORHarness:
             # model identity: another model's error statistics are not
             # evidence about this one, so they are withheld (and the
             # withholding is reported on the block).
+            #
+            # The identity passed here MUST be the same STRING the grouping
+            # used, so it comes from the one shared label function rather
+            # than from the raw `provider_model` field: groups are keyed
+            # `...|<model>@<version>|...`, and passing the bare model name
+            # matched NOTHING — the attached model's own calibration was
+            # withheld, while an UNKNOWN identity (None) skipped the filter
+            # entirely and let every other model's statistics through.
+            # "Unknown" is a real identity value, never a reason to stop
+            # filtering.
             strategy_calibration = calibration_summary_for_context(
                 self,
-                model_identity=self.strategy_predictions.model_identity
-                .get("provider_model"))
+                model_identity=self.strategy_predictions.model_identity_label)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -1622,7 +1631,11 @@ class ORHarness:
             calibration_window,
         )
         policy = CalibrationPolicy.from_env()
-        window = calibration_window(self, policy)
+        # READ-ONLY: reporting the retention state must not migrate a
+        # legacy store. A never-migrated store reports 0 window episodes
+        # here and the note says the window is derived; the migration
+        # happens at `calibration --rebuild` / `close_episode`.
+        window = calibration_window(self, policy, readonly=True)
         total_closeouts = len(self.store.closeout_registry())
         archived = len(self.store.closeout_registry(archived=True))
         directory = archive_dir(self)
@@ -4345,8 +4358,9 @@ class ORHarness:
         action ends, through the SAME identity-checked, idempotent
         :meth:`bind_strategy_outcome` the explicit path uses (no name
         guessing, no second count). A binding failure never discards the
-        execution: the outcome is reported on ``record.prediction_binding``
-        and ``bind-strategy`` can bind later.
+        execution: the outcome is reported on
+        ``record.execution_features["prediction_binding"]`` and
+        ``bind-strategy`` can bind later.
         """
         if not str(strategy_id or "").strip():
             raise ValueError(
@@ -5006,10 +5020,21 @@ class ORHarness:
             return {"bank": "snapshots", "count": len(snaps),
                     "snapshots": [s.to_dict() for s in snaps]}
         if bank == "predictions":
-            # EVERY prediction generation, each under its own key: the
-            # legacy M2 OutcomePrediction log, the wm-so/1 strategy-outcome
-            # channel that calibration aggregates, and the wm-ce/1
-            # capability-evolution predictions. They are different
+            # Asking for ONE prediction is a KEY LOOKUP, so it is answered
+            # as one: listing every prediction in three logs and then
+            # appending the target made a single read cost the whole
+            # history, and buried the answer in unrelated output.
+            if prediction_id is not None:
+                single = self.read_prediction(prediction_id)
+                if single is None:
+                    raise ValueError(
+                        f"unknown prediction_id {prediction_id!r}")
+                return {"bank": "predictions", "count": 1,
+                        "prediction": single}
+            # Listing mode: EVERY prediction generation, each under its own
+            # key: the legacy M2 OutcomePrediction log, the wm-so/1
+            # strategy-outcome channel that calibration aggregates, and the
+            # wm-ce/1 capability-evolution predictions. They are different
             # questions and different logs — one list would conflate them.
             legacy = self.predictions_query(task_id=task_id,
                                             episode_id=episode_id)
@@ -5017,20 +5042,13 @@ class ORHarness:
                 task_id=task_id, episode_id=episode_id)
             capability = self.capability_predictions.query(
                 task_id=task_id, episode_id=episode_id)
-            result: Dict[str, Any] = {
+            return {
                 "bank": "predictions",
                 "count": (len(legacy) + len(strategy) + len(capability)),
                 "legacy_predictions": [p.to_dict() for p in legacy],
                 "strategy_predictions": [p.to_dict() for p in strategy],
                 "capability_predictions": [p.to_dict() for p in capability],
             }
-            if prediction_id is not None:
-                single = self.read_prediction(prediction_id)
-                if single is None:
-                    raise ValueError(
-                        f"unknown prediction_id {prediction_id!r}")
-                result["prediction"] = single
-            return result
         if bank == "evaluations":
             if evaluation_id is not None:
                 single = self.get_strategy_evaluation(evaluation_id)

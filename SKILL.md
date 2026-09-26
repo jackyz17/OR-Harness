@@ -56,23 +56,32 @@ Problem P
   → profile                     CIR validated + modeling guidance + profile
   → recall                      what memory REALLY holds (structural + text)
   → YOU propose the candidates  no built-in menu exists
-  → predict-strategy            MANDATORY: one prediction per candidate
-  → (optional) plan-next        compares candidates, returns their ids
-  → choose-next                 record your EXPLICIT selection
+  → EITHER predict-strategy per candidate   (you compare and pick)
+    OR     plan-next                        (it predicts for you and suggests)
+  → choose-next                 ONLY after plan-next: record your selection
   → model the problem           the GAMS-style representation
-  → write solve.py  → execute   staged automatically (success AND failure)
+  → write solve.py  → execute   pass --prediction <id>; staged automatically
   → check-task                  does the ANSWER satisfy the TASK?
   → record                      persist the fact + cost backfill
   → replan / retry / finish
   → close-episode               evaluate the predictions, publish calibration
 ```
 
+**Step 3 is a fork, not a sequence.** Both branches predict each candidate exactly once; doing both predicts the same candidate twice and produces two competing samples for one decision.
+
+| | **Branch A — compare it yourself** | **Branch B — let the planner compare** |
+|---|---|---|
+| Predict | `predict-strategy` once per candidate | `plan-next` predicts them all internally |
+| Decide | you weigh quality/cost/risk; no framework record is written | `plan-next` suggests; `choose-next` records your explicit choice |
+| Prediction id to hand over | the id `predict-strategy` printed | the chosen entry's `result.plan.candidates[].prediction_id` |
+| Cost | one call per candidate, charged where you like | one call per candidate, charged to the decision action |
+
 1. **Understand (one step).** `orx profile --task t.json`. Put your coupling understanding in the task JSON's `coupling` field (a CIR). One call returns the validated CIR with `modeling_guidance`, the problem profile, and a per-dimension derivation report. A task with no `model` field is normal: strategy selection needs the task text, the CIR and the profile — never a finished formulation.
 2. **Recall.** `orx recall --task t.json --top 3`. This is a REPORT on real memory, **not a menu**. An empty result with `recommendations_basis.reason` is a valid, expected answer (a cold bank says so). Two independent channels: `recommendations` (structural) and `vector_recall` (text). Neither substitutes for the other; a `different_cell` hit is context to READ, never a statistic to apply.
-3. **Propose, predict, choose.** **You name the candidates** — there is no directory to enumerate and the framework will not invent one. Then `orx predict-strategy --task t.json --candidate c.json [--episode ep1]` for each. Weigh quality vs cost vs risk yourself; when quality ties, prefer the cheaper. Use `plan-next` instead when you want the comparison done for you: it freezes ONE context, predicts every candidate, and returns each candidate's `prediction_id`. Record your decision with `choose-next` (it is the only writer of `X.selected_plan`).
+3. **Propose, then predict — pick ONE branch (see above).** **You name the candidates** — there is no directory to enumerate and the framework will not invent one. Branch A: `orx predict-strategy --task t.json --candidate c.json [--episode ep1]` for each, and keep each printed `prediction_id`. Branch B: `orx plan-next --task t.json --episode ep1 --candidates candidates.json`, then `orx choose-next --decision <the action id plan-next returned> --chosen chosen.json`. **`choose-next` belongs to branch B**: it records a choice against a planning decision action, and branch A has no such action to name.
 4. **Model the problem** (AFTER the strategy is chosen). Write the GAMS-style representation into the task's `model` field; the framework verifies L1 shape and L2 symbol cross-reference and reports `derivation.model_coupling` as a DIAGNOSTIC. The model is a post-strategy artifact — the profile you retrieved with stays the structural key, and re-running `profile` will not move it.
 5. **Write `solve.py`.** The framework never generates code and never supplies a method's action list (there is none to supply — if memory recorded one, `recall` shows it under `recommendation.knowledge.actions`). `result.json` must carry `status`, `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds` — and `variables` whenever a task check will need the answer.
-6. **Execute, with the prediction.** `orx execute ... --prediction <id>`. The executed action is BOUND to that prediction automatically once it ends (identity checked: task/episode/strategy/solver/config; a mismatch is recorded, never scored). Omit `--prediction` only when you never predicted the candidate; `orx bind-strategy` can bind later. Every attempt is staged automatically, success or failure.
+6. **Execute, with the prediction.** `orx execute ... --prediction <id>`. The executed action is BOUND to that prediction automatically once it ends (identity checked: task/episode/strategy/**solver/config**; a mismatch is recorded, never scored). Omit `--prediction` only when you never predicted the candidate; `orx bind-strategy` can bind later. Every attempt is staged automatically, success or failure.
 7. **Check the ANSWER.** `orx check-task <execution_id> --check '{...}'`. `execute`'s verdict covers the solver's own MODEL; this covers the TASK. Declare the bases that apply (`reference_objective`, `reference_status`, `integer`, `recompute_objective`, `semantic_probe`, `intent`).
    - `passed` covers the DECLARED bases only — not proof the model is right.
    - `failed` → diagnose (misread task? mis-specified model? implementation bug? wrong reference?) and re-solve in the SAME episode. The attempt stays recorded with its real cost.
@@ -83,7 +92,7 @@ Problem P
 ## When something goes wrong
 
 - **`status=error`, security policy** — the script used a blocked construct (network/shell/pathlib/dynamic `open()`). Use only stdlib and a literal `open('result.json', 'w')`. Subprocess solvers (PuLP's CBC) cannot run in the sandbox — switch to an in-process solver (ortools, highspy). Record the failure with `--from-staged`.
-- **`status=error`, traceback** — fix the model or the script and re-execute. Each attempt is its own record: a first failure is `retries=0` (an observed zero); a retry declares `--override retries=N`.
+- **`status=error`, traceback** — fix the model or the script and re-execute. Each attempt is its own record, and its `retries` counts only the NEW retries THAT attempt represents: a first failure is `retries=0` (an observed zero, written by the framework); the attempt that RETRIED it declares `--override retries=N`. Never write the retry count onto the attempt that failed.
 - **`status=timeout`** — the strategy may be too heavy at this scale. Re-`recall` with `--exclude <strategy>`, try the next candidate, record it.
 - **`quality.problems` non-empty** — fix the script and re-execute; the record waits for the check.
 - **`check-task` `failed`** — see step 7. Never change the task to match a reference value, and do not assume every mismatch is a modelling error.
@@ -98,7 +107,7 @@ Problem P
 | Stages every execution (success and failure) | Propose the candidate methods (no menu exists) |
 | Binds `execute --prediction` to the real action | Declare the check bases for `check-task` |
 | Evaluates bound predictions at close-out | Record the fact (`orx record`) and the terminal state |
-| Maintains the retrieval index on `record`/`induce`/`retire` | Make the selection (`choose-next`) |
+| Maintains the retrieval index on `record`/`induce`/`retire` | Make the selection (`choose-next`, when you used the planner) |
 | Binds the maintenance fact on `accept-capability` | Diagnose a failed check and re-solve |
 | Publishes/republishes the calibration summary | Decide when to consolidate offline |
 | Reports `unknown` instead of guessing | Never write a prediction off as a fact |
@@ -125,20 +134,35 @@ completed episodes
 
 **A. Online solve with a failure and a retry**
 
+Branch B (planner) is shown; branch A replaces the first three lines with one `predict-strategy` per candidate and keeps each printed id instead.
+
 ```bash
 orx profile --task t.json                     # CIR + profile + guidance
 orx recall --task t.json --top 3              # real memory, maybe empty
 orx plan-next --task t.json --episode ep1 \
     --candidates candidates.json              # → result.plan.candidates[].prediction_id
-orx choose-next --decision pl_action_... --chosen chosen.json
+orx choose-next --decision <action_id from plan-next> --chosen chosen.json
+
+# attempt 1: a prediction exists, so hand it over
 orx execute --task t.json --strategy S01 --code solve.py \
     --workspace . --solver highs --episode ep1 --prediction sp_...
-                                              # bound automatically
-orx check-task ex_... --check '{"integer": {"variables": ["x1","x2"]}}'
-#   -> failed: diagnose, fix solve.py, re-execute in the SAME episode
-orx record --from-staged ex_... --override llm_tokens=1840,retries=1
-orx execute ... --prediction sp_retry_...     # the corrected attempt
-orx record --execution ex2.json --override llm_tokens=1810
+orx check-task ex_1 --check '{"reference_objective": 10755}'
+#   -> failed: diagnose, fix solve.py, re-solve in the SAME episode
+orx record --from-staged ex_1 --override llm_tokens=1840
+#   attempt 1 is retries=0 — the FIRST failure is an observed zero, not a
+#   retry. Do not write retries=1 here: ex_1 never retried anything.
+
+# attempt 2: predict the CORRECTED candidate, then execute it with that id
+orx predict-strategy --task t.json --episode ep1 \
+    --candidate corrected.json                 # → sp_retry_...
+orx execute --task t.json --strategy S01 --code solve.py \
+    --workspace . --solver highs --episode ep1 --prediction sp_retry_...
+orx check-task ex_2 --check '{"reference_objective": 10755, "integer": {"variables": ["x1","x2"]}}'
+#   -> passed: the retry needs ITS OWN verdict; attempt 1's failure does not
+#      carry over, and an unchecked retry is not a confirmed success.
+orx record --from-staged ex_2 --override llm_tokens=1810,retries=1
+#   retries=1 belongs to the ATTEMPT THAT RETRIED (ex_2), and it is the
+#   absolute number of NEW retries this attempt represents.
 orx close-episode --task t1 --episode ep1 --terminal completed
 ```
 
@@ -165,6 +189,7 @@ orx evaluate-capability --prediction hp_1     # needs qualified LATER tasks
 | No `--world-model` configured | STOP — `not_configured` blocks both loops. Configure a provider first |
 | Any task, before executing | `predict-strategy` per candidate (or `plan-next` once for all of them), then `execute --prediction`. One prediction per candidate — never two for the same decision |
 | After a `plan-next` suggestion | `choose-next`, then `execute --prediction <that candidate's id>` — do NOT call `predict-strategy` again |
+| After predicting candidates yourself (no planner) | Execute the candidate you chose with `--prediction <its id>`. There is no planning decision, so there is no `choose-next` to call |
 | High-stakes or tied candidates | Plan instead of predicting one at a time; that is the only reason `plan-next` exists |
 | Before treating an answer as a success | `check-task`. A relaxed LP is `optimal` with `gap=0` and still wrong |
 | Facing an induction decision | `induction-candidates` → `predict-capability` → `compare-capability`, then accept or reject explicitly |
@@ -215,7 +240,3 @@ Read on demand — one hop, no chains. You do NOT need to read them all before s
 | You want the wm-so/1 protocol in detail (yardstick, binding identity, comparison rules) | [references/strategy_outcome.md](references/strategy_outcome.md) |
 | You are closing an episode, reading the calibration, or handling a late task-result verdict | [references/episode_closeout.md](references/episode_closeout.md) |
 | You are unsure how the pieces fit together and want a runnable script to read | [references/examples/task_check.py](references/examples/task_check.py) (check → diagnose → repair → record → close) and [references/examples/episode_closeout.py](references/examples/episode_closeout.py) (predict → execute → bind → close → calibrate) |
-
-## Reporting to the user
-
-State: the chosen strategy and solver with the evidence that drove the choice; the objective value and key decisions with the status stated explicitly; the assumptions you made and the data you had to interpret; the REAL cost you paid, including the `llm_tokens` backfill; and any failed attempt that is part of the story. A plan suggestion is a recommendation — say which candidate you chose and whether you deviated.

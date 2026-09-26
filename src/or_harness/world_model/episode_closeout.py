@@ -1838,7 +1838,8 @@ def episode_closeout_record(harness, task_id: str,
 PUBLISHED_SUMMARY_KEY = "calibration_summary|published"
 
 
-def calibration_window(harness, policy: Optional[CalibrationPolicy] = None
+def calibration_window(harness, policy: Optional[CalibrationPolicy] = None,
+                       *, readonly: bool = False
                        ) -> List[Dict[str, Any]]:
     """The CLOSED task-episodes that participate in the current calibration.
 
@@ -1848,13 +1849,23 @@ def calibration_window(harness, policy: Optional[CalibrationPolicy] = None
     so a prediction read never scans or deserialises the evaluation history
     to discover which samples are recent.
 
-    A store written BEFORE the registry existed has ``episode_closeout|...``
-    meta records but no rows. Backfilling them here (once, idempotently)
+    ``readonly=True`` skips the legacy-store backfill, so a caller that
+    must not WRITE — a `--dry-run` preview, or any pure read — never
+    leaves a migration behind. The trade-off is explicit: a pre-registry
+    store reports an EMPTY window under ``readonly``, because registering
+    its historical close-outs is a migration and a preview must not perform
+    one. :func:`backfill_closeout_registry` is the explicit entry point for
+    that migration.
+
+    The default (``readonly=False``) keeps the historical behaviour: a
+    store written BEFORE the registry existed has ``episode_closeout|...``
+    meta records but no rows, and backfilling them here (once, idempotently)
     means an old database's episodes are not silently invisible to the
     window — ``orx calibration --rebuild`` on an unchanged legacy store used
     to report 0 window episodes and 0 evaluations.
     """
-    backfill_closeout_registry(harness)
+    if not readonly:
+        backfill_closeout_registry(harness)
     policy = policy or CalibrationPolicy.from_env()
     return harness.store.closeout_registry(limit=policy.window)
 
@@ -1950,7 +1961,8 @@ def _iter_closed_evaluations(harness, policy: Optional[CalibrationPolicy]
     """
     policy = policy or CalibrationPolicy.from_env()
     return _evaluations_for_window(harness,
-                                   calibration_window(harness, policy))
+                                   calibration_window(harness, policy,
+                                                     readonly=True))
 
 
 def _collect_observation_units(evaluation, unit_observations
@@ -2018,7 +2030,14 @@ def _observation_summary(harness, window: Sequence[Dict[str, Any]]
     Counting is per OBSERVATION UNIT: every execution of every window
     episode contributes exactly one unit per event, whatever the number of
     predictions bound to it.
+
+    **Bounded read.** The facts are read ONCE for the whole window, using
+    the window's own ``evaluation_ids`` (the registry is the index), rather
+    than rescanning the whole bank once per episode. The sliding window is
+    what bounds the read; a per-episode full-bank scan made the read cost
+    grow with TOTAL history even though the sample is window-limited.
     """
+    facts = _window_executions(harness, window)
     unit_observations: Dict[str, Dict[str, Any]] = {}
     n_executions = 0
     n_episodes = 0
@@ -2026,7 +2045,7 @@ def _observation_summary(harness, window: Sequence[Dict[str, Any]]
         task_id = str(row["task_id"])
         episode_id = row.get("episode_id")
         n_episodes += 1
-        records = _episode_executions(harness, task_id, episode_id)
+        records = facts.get((task_id, str(episode_id or "")), [])
         n_executions += len(records)
         if not records:
             continue
@@ -2087,35 +2106,64 @@ def _observation_summary(harness, window: Sequence[Dict[str, Any]]
     }
 
 
+def _window_executions(harness, window: Sequence[Dict[str, Any]]
+                       ) -> Dict[Tuple[str, str], List[Any]]:
+    """The executions of every window episode, keyed ``(task, episode)``.
+
+    **Bounded by construction.** Facts are read per TASK through the
+    SQL-filtered ``bank.query(task_id=...)`` and the actions are read once
+    per task and indexed by execution id — so neither the bank nor the
+    action log is ever fully scanned, and the work is proportional to the
+    window, not to the total history.
+
+    Matching rules are exactly the ones the single-episode reader used:
+
+    - an execution whose action records a DIFFERENT episode is another
+      truth and is excluded;
+    - an execution whose action cannot be resolved is KEPT when the
+      episode filter is empty, because dropping it would silently shrink
+      the occurrence denominator;
+    - EXCLUDED facts are KEPT: ``exclude_execution`` withdraws a fact from
+      the PREDICTION-comparison set, it does not claim the execution never
+      ran, and the occurrence tally describes what was OBSERVED.
+    """
+    facts: Dict[Tuple[str, str], List[Any]] = {}
+    for row in window:
+        facts.setdefault(
+            (str(row["task_id"]), str(row.get("episode_id") or "")), [])
+    by_task: Dict[str, List[Any]] = {}
+    actions_by_task: Dict[str, List[Any]] = {}
+    for task_id, episode_id in facts:
+        if task_id not in by_task:
+            records = harness.bank.query(task_id=task_id)
+            by_task[task_id] = records
+            actions_by_task[task_id] = harness.actions.query(task_id=task_id)
+        actions = actions_by_task[task_id]
+        for record in by_task[task_id]:
+            action = next(
+                (a for a in actions
+                 if a.linked_execution_id == record.execution_id), None)
+            if action is None:
+                if episode_id == "":
+                    facts[(task_id, episode_id)].append(record)
+                continue
+            if str(action.episode_id or "") == episode_id:
+                facts[(task_id, episode_id)].append(record)
+    return facts
+
+
 def _episode_executions(harness, task_id: str,
                         episode_id: Optional[str]) -> List[Any]:
     """The executions that belong to ONE closed episode.
 
-    Matched through the action log (the episode is an ACTION property): an
-    execution whose action records a different episode is a different
-    truth and is excluded. An execution whose action cannot be resolved is
-    KEPT when no episode filter applies, because dropping it would silently
-    shrink the occurrence denominator.
-
-    EXCLUDED facts are KEPT here on purpose. ``exclude_execution`` withdraws
-    a fact from the PREDICTION-comparison evidence set; it does not
-    retroactively claim the execution never ran. The occurrence statistics
-    describe what the framework OBSERVED, so a withdrawn fact still counts
-    as one observation — dropping it would let "I withdrew this run" rewrite
-    the history of what happened.
+    Delegates to the same bounded, per-task read the window tally uses, so
+    there is ONE matching rule in this module rather than two that can
+    drift apart. Callers that already hold a window should use
+    :func:`_window_executions` and read the facts once for the whole set.
     """
-    out: List[Any] = []
-    for record in harness.bank.all():
-        if str(record.task_id) != task_id:
-            continue
-        action = harness.actions.by_execution(record.execution_id)
-        if action is None:
-            if episode_id is None:
-                out.append(record)
-            continue
-        if (action.episode_id or None) == (episode_id or None):
-            out.append(record)
-    return out
+    window = [{"task_id": task_id, "episode_id": episode_id}]
+    return _window_executions(harness, window)[
+        (str(task_id), str(episode_id or ""))]
 
 
 def build_calibration_summary(harness, *,
@@ -2519,7 +2567,11 @@ def window_contains(harness, task_id: str, episode_id: Optional[str],
     the statistics, so no rebuild is needed.
     """
     policy = policy or CalibrationPolicy.from_env()
-    for row in calibration_window(harness, policy):
+    # A pure READ: the legacy-store migration is not this call's job. A
+    # store that has never been migrated reports an empty window here, and
+    # the explicit entry points (`close_episode`, `calibration --rebuild`,
+    # `archive-calibration`) perform the migration.
+    for row in calibration_window(harness, policy, readonly=True):
         if str(row["task_id"]) == str(task_id) \
                 and str(row["episode_id"] or "") == str(episode_id or ""):
             return True
@@ -2716,10 +2768,14 @@ def calibration_summary_for_context(harness, *,
     would make a read path write, and would let a prediction scan the whole
     history after all).
 
-    ``model_identity`` (the ATTACHED provider's identity, not a caller
-    guess) FILTERS the groups: only the groups produced by the SAME model
-    are sent. Another model's error statistics are not evidence about this
-    one, so they are withheld and the withholding is reported.
+    ``model_identity`` is the ATTACHED provider's identity LABEL — the same
+    string :func:`~or_harness.world_model.strategy_prediction
+    .model_identity_label` produces for the grouping, never a caller guess
+    and never the bare model name. ``None`` means the caller did not state
+    an identity, and then NOTHING is filtered (the block is returned whole,
+    marked ``filtered=False``). An identity that IS known — including the
+    literal ``(unknown)`` — always filters, because "I do not know which
+    model I am" must not be answered with every model's error statistics.
     """
     summary = published_calibration_summary(harness)
     if summary is None:
@@ -2746,9 +2802,17 @@ def calibration_summary_for_context(harness, *,
                      "records the gap rather than scanning history to fill "
                      "it"),
         }
-    if model_identity is not None:
-        summary = _filter_calibration_by_model(summary, model_identity)
-    return summary
+    if model_identity is None:
+        # No identity stated: the summary travels whole and says so, so a
+        # reader is never left assuming a filter ran.
+        summary = copy.deepcopy(summary)
+        summary["filtered"] = False
+        summary["filter_note"] = (
+            "no model identity was supplied, so no filtering was applied: "
+            "these groups may come from DIFFERENT models and must not be "
+            "read as this predictor's own error statistics")
+        return summary
+    return _filter_calibration_by_model(summary, model_identity)
 
 
 def _filter_calibration_by_model(summary: Dict[str, Any],
@@ -2756,11 +2820,14 @@ def _filter_calibration_by_model(summary: Dict[str, Any],
                                  ) -> Dict[str, Any]:
     """Keep only the groups produced by the SAME model identity.
 
-    A different model is a different predictor, so its error statistics are
-    not evidence about the attached one. ``(unknown)`` groups (legacy
-    predictions with no recorded identity) are kept ONLY when the current
-    identity is itself unknown — otherwise a legacy group would silently
-    stand in for a model it may not describe.
+    ``model_identity`` is the LABEL form (``model@version``), which is what
+    the group keys carry. A different model is a different predictor, so its
+    error statistics are not evidence about the attached one.
+
+    ``(unknown)`` groups (predictions that recorded no identity) are kept
+    ONLY when the current identity is itself ``(unknown)`` — otherwise a
+    legacy group would silently stand in for a model it may not describe.
+    The comparison is therefore exact on the LABEL, in both directions.
     """
     filtered = copy.deepcopy(summary)
     kept: Dict[str, Any] = {}
@@ -2773,13 +2840,18 @@ def _filter_calibration_by_model(summary: Dict[str, Any],
         else:
             withheld.append(str(key))
     filtered["groups"] = kept
+    filtered["filtered"] = True
+    filtered["model_identity"] = str(model_identity)
     if withheld:
         filtered["withheld_groups"] = withheld
-        filtered["model_identity"] = str(model_identity)
         filtered["filter_note"] = (
             f"{len(withheld)} group(s) from a different model identity were "
             f"withheld: they describe another model's errors and are not "
             f"evidence about {model_identity!r}")
+    else:
+        filtered["filter_note"] = (
+            f"every group kept belongs to model identity "
+            f"{model_identity!r}")
     return filtered
 
 
@@ -2800,6 +2872,35 @@ def _archive_files(harness) -> List["os.PathLike[str]"]:
     return sorted(p for p in directory.iterdir()
                   if p.is_file() and p.name.startswith("calibration-")
                   and p.name.endswith(".jsonl"))
+
+
+def _archive_limits(harness, policy: CalibrationPolicy) -> Dict[str, Any]:
+    """The archive's current size against its three caps (read-only)."""
+    files = _archive_files(harness)
+    total = sum(p.stat().st_size for p in files)
+    return {
+        "max_file_bytes": policy.archive_max_file_bytes,
+        "max_total_bytes": policy.archive_max_total_bytes,
+        "retention_days": policy.archive_retention_days,
+        "n_files": len(files),
+        "total_bytes": total,
+    }
+
+
+def _unregistered_closeouts_exist(harness) -> bool:
+    """Whether the store has close-out records the registry does not know.
+
+    Used ONLY to explain an empty preview on a pre-registry store. It is a
+    COUNT against the meta table, not a migration: nothing is written, so a
+    read path can report the state without changing it.
+    """
+    store = harness.store
+    row = store.conn.execute(
+        "SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'episode_closeout|%'"
+    ).fetchone()
+    if not row or not int(row["n"]):
+        return False
+    return len(harness.store.closeout_registry()) < int(row["n"])
 
 
 def _archived_ids(harness) -> set:
@@ -2951,7 +3052,30 @@ def archive_calibration_detail(harness, *,
     """
     policy = policy or CalibrationPolicy.from_env()
     store = harness.store
-    window = calibration_window(harness, policy)
+    # A dry run is a PREVIEW: it must not perform the legacy-store
+    # migration, or "show me what would move" would silently register every
+    # historical close-out. On a pre-registry store that means the preview
+    # reports an empty window and SAYS SO, rather than writing rows.
+    window = calibration_window(harness, policy, readonly=dry_run)
+    if dry_run and not window and _unregistered_closeouts_exist(harness):
+        return {
+            "dry_run": True,
+            "removed": {},
+            "n_records": 0,
+            "held_for_late_check": [],
+            "archive_limits": _archive_limits(harness, policy),
+            "pending_migration": {
+                "reason": (
+                    "this store has close-out records but no registry rows, "
+                    "and a dry run does not perform the migration that would "
+                    "register them"),
+                "next": ("run `orx calibration --rebuild` (or one real "
+                         "`orx archive-calibration`) once to register the "
+                         "historical close-outs, then re-run the preview"),
+            },
+            "note": ("a preview reports; it never writes. The registry "
+                     "migration is an explicit step"),
+        }
     window_ids = {(str(r["task_id"]), str(r["episode_id"] or ""))
                   for r in window}
     already_archived = _archived_ids(harness)

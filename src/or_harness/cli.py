@@ -115,6 +115,43 @@ def _harness(args) -> ORHarness:
                      world_model=provider)
 
 
+#: Candidate identity fields that must ALL match before a plan entry is read
+#: as "the entry the suggestion is about". ``strategy_id`` alone is not an
+#: identity: the same strategy run with a different solver or config is a
+#: DIFFERENT candidate with its own prediction, and handing over the wrong
+#: id loses the sample to a binding mismatch.
+_CANDIDATE_IDENTITY_FIELDS = ("action_type", "strategy_id", "solver")
+
+
+def _candidate_identity(spec: Dict[str, Any]) -> tuple:
+    """The tuple that makes one planned candidate distinguishable.
+
+    ``params`` is normalised to sorted items so two dicts with the same
+    content but a different insertion order compare equal.
+    """
+    params = spec.get("params") or {}
+    return tuple(
+        [spec.get(field) for field in _CANDIDATE_IDENTITY_FIELDS]
+        + [json.dumps(params, sort_keys=True, default=str)])
+
+
+def _matching_candidate_prediction_id(compared: Sequence[Dict[str, Any]],
+                                      suggested: Dict[str, Any]
+                                      ) -> Optional[str]:
+    """The prediction id of the candidate the suggestion NAMES.
+
+    Matched on the full candidate identity. Returns ``None`` when no entry
+    matches — a caller must never be handed a plausible-looking id for a
+    different candidate, because the subsequent bind would reject it and the
+    real prediction would go unevaluated.
+    """
+    wanted = _candidate_identity(suggested)
+    for entry in compared:
+        if _candidate_identity(entry.get("action_spec") or {}) == wanted:
+            return entry.get("prediction_id")
+    return None
+
+
 def _summarize_recall(result: Dict[str, Any]) -> str:
     recs = result["recommendations"]
     parts: List[str] = []
@@ -402,7 +439,7 @@ def cmd_execute(args) -> int:
                    f"gap={q['gap']}). Cost so far: {record.cost.to_dict()}. "
                    "Nothing is recorded yet — call `orx record` to persist, "
                    "or discard.")
-        binding = getattr(record, "prediction_binding", None)
+        binding = record.execution_features.get("prediction_binding")
         if prediction_id is not None:
             if binding and binding.get("bound"):
                 info = binding.get("trace") or {}
@@ -774,6 +811,15 @@ def cmd_inspect(args) -> int:
                 f"Archive: {len(archive['files'])} file(s), "
                 f"{archive['total_bytes']} bytes. Three separate scopes — "
                 "see `policy`.")
+        if args.bank == "predictions" and getattr(args, "prediction", None):
+            # A KEY lookup is reported as one, so the caller sees the
+            # generation it actually resolved instead of a log summary.
+            found = result.get("prediction") or {}
+            return _emit(
+                result,
+                f"Prediction {args.prediction}: generation "
+                f"{found.get('kind')}. A single prediction is read directly "
+                "by key — no listing of the prediction logs.")
         if args.bank == "capability":
             if getattr(args, "prediction", None):
                 single = result["prediction"]
@@ -824,14 +870,21 @@ def cmd_inspect(args) -> int:
                       "not ended) and, for induce, a business result "
                       "separate from the lifecycle status.")
         elif args.bank == "predictions":
-            detail = (f" Legacy M2: "
-                      f"{len(result['legacy_predictions'])}, "
-                      f"strategy-outcome (wm-so/1): "
-                      f"{len(result['strategy_predictions'])}, "
-                      f"capability-evolution (wm-ce/1): "
-                      f"{len(result['capability_predictions'])}. Separate "
-                      "logs, separate questions — only the wm-so/1 channel "
-                      "feeds `orx calibration`.")
+            if getattr(args, "prediction", None):
+                # A KEY lookup: report the one record and its generation.
+                found = result.get("prediction") or {}
+                detail = (f" generation={found.get('kind')}. "
+                          "A single prediction is read directly, not by "
+                          "listing the logs.")
+            else:
+                detail = (f" Legacy M2: "
+                          f"{len(result['legacy_predictions'])}, "
+                          f"strategy-outcome (wm-so/1): "
+                          f"{len(result['strategy_predictions'])}, "
+                          f"capability-evolution (wm-ce/1): "
+                          f"{len(result['capability_predictions'])}. Separate "
+                          "logs, separate questions — only the wm-so/1 channel "
+                          "feeds `orx calibration`.")
         elif args.bank == "texts":
             detail = (" These are the retrieval SOURCE documents, not a "
                       "knowledge bank: they feed the embedding index and "
@@ -1454,14 +1507,15 @@ def cmd_plan_next(args) -> int:
                     + (f" {suggested.get('strategy_id')}"
                        if suggested.get("strategy_id") else "")
                     + f" — {plan.get('suggestion_basis')}")
-            suggested_id = None
-            for c in compared:
-                spec = c.get("action_spec") or {}
-                if (spec.get("strategy_id") == suggested.get("strategy_id")
-                        and spec.get("action_type")
-                        == suggested.get("action_type")):
-                    suggested_id = c.get("prediction_id")
-                    break
+            # The prediction id comes from the SUGGESTED candidate itself,
+            # matched on the FULL candidate identity — including solver and
+            # config. Matching on strategy_id + action_type alone named the
+            # FIRST candidate with that strategy, so "same strategy, HiGHS
+            # vs Gurobi" bound the wrong solver's prediction and the later
+            # identity check (correctly) rejected it as a mismatch: a real
+            # sample lost to a display bug.
+            suggested_id = _matching_candidate_prediction_id(
+                compared, suggested)
             if suggested_id:
                 step += (f". Accept with `orx choose-next --decision "
                          f"{plan.get('decision_action_id')} --chosen ...`, "

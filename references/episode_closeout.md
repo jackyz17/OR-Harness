@@ -133,6 +133,12 @@ An event the model never predicted still counts in `occurrence` and can never pr
 
 **When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT under `strategy_outcome_calibration` — a SINGLE-ROW read, no history scan. The block is filtered twice: by the ATTACHED provider's model identity (another model's errors are not evidence about this one, and the withheld keys are named under `withheld_groups`) and, in the request, by the candidate's scope. Stored contexts never change: episode 1's context keeps what it froze.
 
+**The identity used for FILTERING is the identity used for GROUPING.** Groups are keyed `...|<model>@<version>|...`, so the filter compares the SAME label string (`model_identity_label`) — filtering on the bare model name would match nothing and withhold the attached model's own evidence. An identity of `(unknown)` is a real value and **still filters**: a provider that reports no identity is not handed every other model's statistics. Only a caller that states NO identity at all gets the summary whole, and that block is marked `filtered: false` with a note saying so, so an unfiltered block is never mistaken for this predictor's own record.
+
+**The window bounds the READ, not just the sample.** The occurrence tally reads the facts ONCE for the whole window (per-task, SQL-filtered) rather than rescanning the bank per episode, so closing or rebuilding costs what the window holds rather than what the history holds. The published-summary read was already a single-row lookup.
+
+**A preview never writes.** `archive-calibration --dry-run` and `inspect --bank retention` are pure reads: neither performs the legacy-store registry migration. A pre-registry store therefore previews as an empty window plus a `pending_migration` note naming the explicit step (`orx calibration --rebuild`, or one real archive pass) that performs it.
+
 **Corrections republish, and correct the RIGHT field.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary. The stored evaluation is never rewritten; the summary uses a LIVE re-derivation instead:
 - a check that now FAILS re-derives the benefit observation to `0.0` **and keeps the measured cost** — a wrong answer still cost what it cost, so the correction must not take a valid measurement with it;
 - a check that was WITHDRAWN restores the un-gated observation;
