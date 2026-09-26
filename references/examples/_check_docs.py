@@ -25,7 +25,7 @@ AGENT_FACING_DOCS = [
     "SKILL.md", "README.md", "README_zh.md",
     "references/commands.md", "references/concepts.md",
     "references/induction.md", "references/modeling.md",
-    "references/examples.md", "references/world_model_contract.md",
+    "references/world_model_contract.md",
     "references/prediction_context.md", "references/strategy_outcome.md",
     "references/episode_closeout.md",
 ]
@@ -37,6 +37,9 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/task_check.py",
     "references/examples/episode_closeout.py",
     "references/examples/strategy_outcome.py",
+    "references/examples/capability_evolution.py",
+    "references/examples/prediction_context.py",
+    "references/examples/contract_roundtrip.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.

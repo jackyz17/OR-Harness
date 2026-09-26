@@ -1209,7 +1209,7 @@ class TestDocumentationMatchesCode(unittest.TestCase):
             os.path.dirname(__file__), "..", "..")))
         contract_doc = (root / "references" / "world_model_contract.md"
                         ).read_text(encoding="utf-8")
-        self.assertIn("## 9. What is NOT in this phase", contract_doc)
+        self.assertIn("## 8. Not implemented in this build", contract_doc)
         for absent in ("no task-closing scheduler",
                        "no H evaluation system",
                        "no multi-step latent rollouts"):

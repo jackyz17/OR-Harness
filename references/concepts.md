@@ -1,5 +1,7 @@
 # Concepts: why OR-Harness is built this way
 
+Read this page when you want the reasoning behind a mechanism rather than its syntax: why coupling is derived structurally, why memory is two layers, why cost is never folded at rest, and how the world model relates to the loop. For the calls themselves see [commands.md](commands.md), for formats see [modeling.md](modeling.md), and for the contract fields see [world_model_contract.md](world_model_contract.md).
+
 For agents that need the "why" behind the mechanisms. Everyone else: SKILL.md is sufficient.
 
 ## The research question
@@ -204,19 +206,7 @@ Three consequences that are easy to get wrong:
 - **There is no `E_hist` capability term.** Historical experience is not a sixth component — it is the substrate the sources are evidenced from. The H-evolution predictor's own quality is assessed separately; it is not part of its own claim to have got stronger.
 - **B is not a predicted world-state object.** Budget declarations, execution limits and the real ledger stay in `BudgetLedger`. Cost appears twice in the contracts and the two are never summed: the *predicted* cost of the candidate, and the *measured* spend of the prediction call itself.
 
-Three facts about a prediction service that are routinely collapsed into one, and must not be:
-
-| Fact | What it means |
-|---|---|
-| `provider_configured` | a provider object is attached to this instance |
-| `service_available` | this build **implements** that kind **and** a provider is configured |
-| `prediction_made` | a prediction really was produced and passed validation |
-
-Only the third makes a contract `valid`. **Merely building a contract makes no model call**, so it returns `contract_only` even when a provider is configured — a configured provider with zero calls and empty benefit/cost/risk is not a forecast. And `capability_evolution` has a *contract* **and** a *service* (`wm-ce/1`): with a provider configured it is `service_available`, but a forecast still needs the real call, so `prediction_made` stays the only thing that makes it `valid`.
-
-**A scope must be finished and matching before it is comparable.** A strategy execution window is `comparable` only when every in-scope attempt has ended, has a linked execution, and the window's task / episode / strategy really matches the candidate. A window still running has no final numbers; another task's window is a different scope. Only a comparable window may be scored, and a `valid` window-scope prediction must be comparable.
-
-**Adapting a legacy candidate must not change it.** Mapping a legacy `ActionSpec` carries its execution configuration (a time limit, a MIP gap target, a seed) and its budget hint through verbatim, and **refuses** an unmappable legacy `measurement_scope` such as `"task"` instead of silently shrinking a whole-task measurement into one solve attempt. A contract that describes a different candidate than the one proposed is worse than no contract.
+Three facts about a prediction service that are routinely collapsed into one, and must not be: `provider_configured` (a provider object is attached), `service_available` (this build IMPLEMENTS that kind and a provider is configured) and `prediction_made` (a prediction really was produced and validated). Only the third makes a contract `valid`, and building a contract makes no model call at all — so a configured provider with zero calls and empty benefit/cost/risk is not a forecast. The field-level rules (status values, the attempt-vs-window scope rule, the legacy migration table) are in [world_model_contract.md](world_model_contract.md).
 
 A knowledge change is predicted against a target that is either an existing entry (it must really exist — a model cannot invent knowledge) or a hypothesis (allowed, but it must state what would be observed and how that observation would be judged). Each item names a change, a horizon, and any standing preconditions, because the timescales genuinely differ: evidence lands when the execution is recorded, while a claim only forms, moves or narrows after an offline induction.
 
@@ -236,33 +226,21 @@ The state, candidates and predictions are expressed in one place; what a predict
 
 **A model is not a precondition for a prediction input.** A task with no `model` field, no CIR and no solve.py still builds a context; the absent parts are listed with what they mean. This is the same principle as the snapshot's "unknown ≠ zero", applied to input assembly.
 
-**"Retrieved" is not "verified".** Every retrieved item carries an evidence CLASS — an execution fact was observed, verified knowledge was admitted, an unverified candidate was neither, a structural recommendation may be backed by nothing at all. Retrieval never upgrades one class into another, and a candidate does not become knowledge by being surfaced. Unverified items are hidden unless the inspection view is explicitly requested.
+**"Retrieved" is not "verified".** Every retrieved item carries an evidence CLASS — an execution fact was observed, verified knowledge was admitted, an unverified candidate was neither, a structural recommendation may be backed by nothing at all. Retrieval never upgrades one class into another, and a candidate does not become knowledge by being surfaced.
 
-**Two channels, never one number.** The structural channel answers "what may I reuse?" (applicability) and the text channel answers "what should I look at?" (discovery). They are reported side by side with their own statuses; blending them into a single score would hide which question was answered. A near-identical problem in a different structural cell stays VISIBLE and labelled `different_cell`, and its numbers never join the target cell's statistics.
-
-**One memory hit by two channels is one piece of evidence.** Evidence is identified as `layer:id`, so the two channels collapse onto one item that carries both channel names. Counting channels would inflate apparent support, exactly as counting repeat runs of one `task_id` would inflate the task count. When the two channels report *different versions* of one id, that disagreement is recorded rather than silently resolved.
+**Two channels, never one number.** The structural channel answers "what may I reuse?" (applicability) and the text channel answers "what should I look at?" (discovery). They are reported side by side with their own statuses; blending them into a single score would hide which question was answered. A near-identical problem in a different structural cell stays VISIBLE and labelled `different_cell`, and its numbers never join the target cell's statistics. One hit found by both channels is ONE piece of evidence, identified as `layer:id`, and when the two channels report different versions of one id that disagreement is recorded rather than silently resolved.
 
 **Reuse must be provable.** A supplied recall result or context carries the task VERSION it was produced for; a mismatch is refused with a named reason, and a result with no recorded version cannot be confirmed either way and is also refused. An external result of unknown provenance must not masquerade as aligned frozen evidence — the same rule as "an unmeasured condition is not a satisfied one".
 
-**Freezing is content, not a pointer.** A built context is stored WITH the content it was built from, so replaying it reads nothing from today's banks. A stored id alone would not reproduce the input, because the bank it points at may have moved. A genuinely different input gets a new context, never a silent patch of an old one.
+**Freezing is content, not a pointer.** A built context is stored WITH the content it was built from, so replaying it reads nothing from today's banks, and reuse replays its frozen X/B, its frozen knowledge targets and its frozen reliability. A stored id alone would not reproduce the input, because the bank it points at may have moved. The BUDGET is deliberately the exception — an external limit on whether a call may be made, not a prediction condition — and when it has moved the difference is REPORTED rather than silently substituted.
+
+**One CIR per request.** An explicit CIR must drive the joint representation, the profile (hence the snapshot's cell) and the retrieval alike; otherwise a single request carries two structural judgments and may retrieve knowledge from the wrong cell. A supplied CIR replaces the task's own rather than being quietly overridden by it. The structural consistency check therefore runs against the EFFECTIVE input, with a conflict refused rather than carried — an unmeasured dimension is not a conflict.
+
+**A historical input must not read today's memory.** Building from a frozen snapshot bounds the retrieval to that moment: evidence created afterwards is excluded and reported, and an item whose creation time cannot be established is kept but counted unbounded — neither silently dropped nor silently trusted. Creation-time filtering is NOT historical reconstruction, because it cannot tell that an entry which already existed was later REVISED; reconstruction therefore reads what the snapshot SAVED and reports everything it did not save (reliability, cell evidence, the retrieval) as missing. The snapshot itself is the saved history, so no separate historical database is needed.
 
 **Degradation is per part, and "did not run" ≠ "found nothing".** No backend, no task text, a missing index and a failed backend call are four different facts with four different reasons, and all four differ from a healthy channel that ran and matched nothing. Collapsing them would make an unavailable channel look like an empty memory.
 
-**Capability evidence is evidence, not a level.** Which retrieval channels ran, which strategies were recorded, what a prediction track record measured — all of these are `indirect_evidence`, and a source nothing observed stays `no_evidence` rather than being filled in to complete a set of five. The capability VERSION block (config / model / prompt / tools / memory content) is an identity: a content digest says which memories were read, never how capable the harness is.
-
-**Building an input is not predicting.** Context assembly may read the embedding index, and it does nothing else: no prediction-model call, no solver execution, no induction. Only an explicit prediction call reaches the provider, and that call records which frozen input it used.
-
-**Freezing must cover the whole request, not just one field.** It is not enough for a context to carry a frozen problem representation while the request still takes a live snapshot, re-derives the knowledge targets and re-reads the reliability table: that mixes a frozen input with current conditions. Reusing a context therefore replays its frozen X/B (from its own snapshot id), its frozen target proposal set and its frozen reliability. The BUDGET is deliberately the exception — it is an external limit on whether a call may be made, not a prediction condition — and when it has moved the difference is REPORTED rather than silently substituted.
-
-**One CIR per request.** An explicit CIR must drive the joint representation, the profile (hence the snapshot's cell) and the retrieval alike; otherwise a single request carries two structural judgments and may retrieve knowledge from the wrong cell. A supplied CIR replaces the task's own rather than being quietly overridden by it.
-
-**A historical input must not read today's memory.** Building from a frozen snapshot means the retrieval is bounded to that moment: evidence created afterwards is excluded and reported, not absorbed into a description of an earlier state. An item whose creation time cannot be established is kept but counted as unbounded — neither silently dropped nor silently trusted.
-
-**Creation-time filtering is not historical reconstruction.** It cannot tell that an entry which already existed was later REVISED, so the old entry would still be read at its new value. Reconstruction therefore reads what the snapshot SAVED — its frozen knowledge view — and reports everything it did not save (reliability, cell evidence, the retrieval) as missing. Filling a historical gap from today's bank is the same error as reading today's bank directly: it puts after-the-fact information into an earlier prediction input. The snapshot itself is the saved history; no separate historical database is needed.
-
-**Structural consistency is checked against the EFFECTIVE input.** A snapshot or a reused context taken under one structure may not be combined with a different one — the joint representation would describe one problem while the state and the retrieval described another, and knowledge could be pulled from the wrong cell. So the effective input (explicit CIR included) is resolved FIRST and the artifacts are checked against it, with a conflict refused rather than carried. An unmeasured dimension is not a conflict.
-
-**A memory version must digest content, not counts.** A digest built from `len(...)` cannot tell a knowledge revision from an unchanged entry, so editing a claim's expected quality, interval, predicates, applicability notes or actions would leave the version identical. The digest covers the decision-relevant content of what was actually consulted, with read timestamps excluded — a revision moves it, a re-read does not.
+**Capability evidence is evidence, not a level.** Which retrieval channels ran, which strategies were recorded, what a prediction track record measured — all of these are `indirect_evidence`, and a source nothing observed stays `no_evidence` rather than being filled in to complete a set of five. The capability VERSION block (config / model / prompt / tools / memory content) is an identity whose digest covers the decision-relevant CONTENT of what was consulted, with read timestamps excluded — so a revision moves it, a re-read does not — and it says which memories were read, never how capable the harness is. Building an input is not predicting: context assembly may read the embedding index and does nothing else.
 
 ## Applicability: the structural cell, not a declared ladder
 

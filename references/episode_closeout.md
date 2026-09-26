@@ -1,5 +1,7 @@
 # Episode close-out and experience calibration
 
+Read this page when you are ending a task episode, reading the published calibration summary, or handling a verdict that arrives after the fact. It covers the close-out record, the per-prediction evaluation, the calibration statistics, retention and archiving, and the known limits of all four.
+
 **Status: implemented.** This is the fourth phase of the reconstruction: after the unified contract (phase 1), the frozen prediction input context (phase 2) and the strategy-outcome prediction service (phase 3, wm-so/1), this phase closes the loop — a real episode ends, its bound predictions are evaluated against their real outcomes field by field, and the aggregate becomes experience calibration that later episodes read.
 
 - Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/2`; risk-event vocabulary: `wm-events/2`
@@ -188,24 +190,3 @@ An episode whose executions all carry a verdict is NOT held by the grace period:
 - **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
 - **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
 - **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction this layer exists to preserve.
-
-## 9. Verification checklist for a consuming agent
-
-- [ ] Did the episode really end? `close-episode` on an episode with running actions is REFUSED (`state="pending"`, `closeout: null`): end them first, then close — their results could never enter a frozen record.
-- [ ] Is the terminal state honest? `failed`/`aborted`/`budget_exhausted` are endings, not failures of the close-out.
-- [ ] Am I reading the close-out as a certification of the answer? It is not: read `task_checks` — `unchecked` executions have UNKNOWN validity, and a `failed` one was confirmed not to satisfy the task. A task check passing is also not a knowledge claim passing (`induce --verify` is a separate gate).
-- [ ] Am I reading a failed task check as "the model was wrong"? It is not: `task_check_failed` reports the CHECK RESULT, and the cause is your diagnosis. The framework deliberately has no `model_invalid` label.
-- [ ] Am I reading `solver_reported_infeasible` as a failure? It is a verdict — correctly identifying an infeasible ORIGINAL problem is a valid outcome.
-- [ ] Am I reading an `excluded` evaluation as a miss? Excluded is neither hit nor miss — check `exclusion_reasons`. A withdrawn fact still counts as an OBSERVATION (it really ran); it leaves the prediction-comparison statistics only.
-- [ ] Am I reading a late correction as "the sample was dropped"? A failed check RE-DERIVES the benefit (to 0.0) and keeps the measured cost; only a withdrawn execution removes the sample.
-- [ ] Am I subtracting `unit_occurrence_rate` from `mean_predicted_probability`? Do NOT: they have different denominators. Compare `scored_occurrence_rate` with `mean_predicted_probability` instead — those share a sample set.
-- [ ] Is one execution being counted as several occurrences? Labels are per execution: a scope with one timeout and one success is ONE occurrence, rate 50%. Check `n_observation_units` against the real execution count.
-- [ ] Am I reading a group of many episodes as "every statistic is measured"? Check the per-statistic verdicts (`benefit_evidence`, `cost_evidence`, `interval_evidence`, `brier_evidence_by_event`) and `under_sampled_statistics`: a risk only one episode predicted has ONE sample whatever the group size.
-- [ ] Am I reading `insufficient_evidence` as a bad reliability? It is the honest unknown: too few samples, no figure claimed. A statistic nobody predicted is ABSENT, not under-sampled.
-- [ ] Am I reading the calibration as the CURRENT candidate's conditional bias? It is not: `applicability` says `global_diagnostic` — there is no per-strategy breakdown.
-- [ ] Am I comparing another model's error statistics to this model? The context filters by model identity; a withheld group is named under `withheld_groups`.
-- [ ] Did a later episode's context change? It should not: stored contexts are frozen; only NEW contexts read the published summary.
-- [ ] Am I counting one truth twice? Re-planning predictions bound to the same outcome are marked correlated; the DISTINCT-EPISODE count is the sample base and the threshold counts episodes, never predictions. Occurrence rates are counted by observation unit, so several predictions over one execution are ONE event.
-- [ ] Am I treating the calibration as a capability gain? It is a record of past errors. H evidence about the world model comes only from these real evaluations — never from the model's self-assessment.
-- [ ] Did a correction reach later predictions? A late check/exclusion/restore on a WINDOW episode republishes the summary; `orx calibration --rebuild` is the explicit repair path.
-- [ ] Is the archive bounded? Check `orx inspect --bank retention`: the per-file, total and age caps are all enforced — a total cap is what makes "bounded" true.

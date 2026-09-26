@@ -1,5 +1,7 @@
 # Strategy-outcome prediction service (wm-so/1)
 
+Read this page when you are predicting one candidate, comparing several, or binding a real execution to a prediction — the wm-so/1 loop in detail: the yardstick, the comparison rules and the binding identity. For the frozen input a prediction is conditioned on, see [prediction_context.md](prediction_context.md); for every field and status, [world_model_contract.md](world_model_contract.md).
+
 **Status: the service is implemented and wired into planning.** This is the third phase of the reconstruction: the unified contract (phase 1) and the frozen prediction input context (phase 2) now carry a real, training-free OR strategy-consequence prediction service.
 
 - Protocol version: `wm-so/1`
@@ -124,13 +126,3 @@ Unexecuted candidates keep `unexecuted`/`unbound` semantics: no counterfactual t
 - Old `OutcomePrediction` records remain readable; the new predictions live in their own `contract_predictions` log table (created idempotently, no schema-version move).
 - The `capability_evolution` kind has its own contract AND service (`wm-ce/1`): `predict-capability` / `compare-capability` / `accept-capability` / `bind-capability` / `evaluate-capability`. Its records live in a SEPARATE table, so neither generation is ever read as the other.
 - `HttpChatProvider` selects the system prompt by the REQUEST's protocol: a `wm-so/1` request gets the strategy-outcome prompt; everything else keeps the legacy prompts. The wire format stays the OpenAI chat shape.
-
-## 6. Verification checklist for a consuming agent
-
-- [ ] Did the prediction come back `valid`? Only then is it a forecast. `contract_only` means nothing was predicted — check `provider_configured` and the notes for which failure state it is.
-- [ ] Is `benefit.value` present? Then a `baseline` must be too, and a `solution_quality` value must be normalized — a raw objective value was refused, not clamped.
-- [ ] Am I about to read `uncertainty` as a probability? A model self-report is UNCALIBRATED; the numbers live in its notes and are never used as measured probabilities.
-- [ ] Am I comparing candidates? Unknown cost is charged the peak share, unknown risk the full weight, unknown benefit nothing — unknown never auto-wins, and that is a DECISION RULE, not a measured probability.
-- [ ] Did the suggestion change the selection? No — only `choose-next` writes `X.selected_plan`.
-- [ ] Am I binding an execution to a prediction of a DIFFERENT config? The mismatch is recorded and the prediction is not comparable. An UNKNOWN identity field (no episode on the action, a config key the log never carries) is recorded separately and never counts as a match either.
-- [ ] Do I want window-level error numbers? Run `orx close-episode` when the episode ends: every bound prediction is evaluated field by field and the experience calibration is published.

@@ -1,5 +1,32 @@
 # Induction: patterns, scope, and validation
 
+Read this page when you are deciding whether to induce, working out why a candidate was skipped, or submitting a structured relation claim.
+
+## The offline flow
+
+```text
+completed episodes
+  induction-candidates            freeze the evidence packages (no model call)
+        |
+        v   nothing reported = the evidence is below the bar
+  predict-capability              what would this operation change?
+  compare-capability              one recommendation, or defer
+  accept-capability               EXPLICIT accept — runs the operation
+        |                         and binds the maintenance fact itself
+        v
+  induce                          the only place knowledge changes:
+        |                         creates/refreshes the claim, replays the
+        |                         frozen checks, publishes what was verified
+        v
+  later real tasks accumulate
+        v
+  evaluate-capability             did it help? (TASK-EPISODES, work after it)
+```
+
+**Entry conditions.** Creating an entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. `induction-candidates` reports only what clears the bar, so an empty answer means "keep solving and recording" — there is nothing to decide yet. Use `--relation` for a lesson that is not one strategy's statistics.
+
+**What `record` tells you.** After every `record`, cheap detectors may return an `induction_hint`. A hint is a reason to LOOK, never an induction: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all.
+
 Induction is the part of OR-Harness most worth understanding correctly. It answers: "given the facts accumulated so far, which generalizations am I entitled to commit to?"
 
 ## Induction-worthy patterns

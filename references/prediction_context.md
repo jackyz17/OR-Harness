@@ -1,5 +1,7 @@
 # Prediction input context (`wm-context/1`)
 
+Read this page when a prediction surprised you and you need to know what it was conditioned on: the frozen joint problem representation, the retrieval evidence it carried, the capability evidence behind `H`, and how a context is reused. For the protocol a prediction is written in, see [strategy_outcome.md](strategy_outcome.md); for the field definitions of every prediction, [world_model_contract.md](world_model_contract.md).
+
 **The strategy-outcome prediction service consumes this input** (see [`references/strategy_outcome.md`](strategy_outcome.md)) — it is what `predict-strategy` and `plan-next` use. The legacy `predict_outcome` payload reader is kept so OLD records stay readable, but no agent-facing prediction flow uses that path.
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
@@ -273,21 +275,3 @@ This is the phase's most important engineering boundary.
 - **No new semantic extractor, no retrieval rework**: the two existing channels are wired in, not replaced, and no composite retrieval score is introduced.
 - **No change** to the structural bins, the unknown-matching rule, the selector's scoring, the induction-pattern detectors or the induction publication gate.
 - **No new autonomous agent and no background loop.**
-
----
-
-## 9. Verification checklist for a consuming agent
-
-- [ ] Do I need a mathematical model to build a context? **No.** Check `joint.has_model` and read `joint.missing` to see what was absent.
-- [ ] Is `retrieval.semantic.status` `degraded`? Then the text channel did not run — read the reason. An empty hit list is **not** evidence that no similar memory exists.
-- [ ] Am I about to treat a `similarity` as a quality/cost estimate? It is a discovery signal. Read `evidence_class` and the applicability label.
-- [ ] Is a hit `unverified_knowledge`? Then it is not knowledge yet; it never becomes publishable by being retrieved.
-- [ ] Am I reusing a recall result or a context? Check `task_digest` matches. A mismatch is refused for a reason.
-- [ ] Am I reusing a context and expecting the CURRENT state? A reused context replays its frozen X/B, its frozen knowledge targets and its frozen reliability. The budget is the only condition re-checked live, and a difference is reported rather than substituted.
-- [ ] Did I pass `--cir`? Then check `joint.sources["cir"]` is `caller_supplied` and that the snapshot/retrieval agreed with it — one request must not carry two structural judgments.
-- [ ] Built from a historical snapshot? Read `execution_constraints.retrieval_bounding` to see what was excluded as postdating it, and `unbounded_kept` for items whose creation time could not be established.
-- [ ] Does `capability_version.knowledge_content_digest` look unchanged after a knowledge revision? It should have moved. It digests content, and read timestamps are excluded on purpose.
-- [ ] Does a capability source read `direct_evidence`? In this phase it should not. `no_evidence` is the honest state when nothing observed a source.
-- [ ] Am I reading `capability_version.knowledge_content_digest` as a capability measure? It is a content identity.
-- [ ] Am I expecting several candidates to have different contexts? They share one — that is deliberate.
-- [ ] Am I expecting the new context to change what the model PREDICTS? Not in this phase: it changes what the model is GIVEN.

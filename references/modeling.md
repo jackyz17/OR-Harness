@@ -1,5 +1,7 @@
 # The model representation
 
+Read this page when you are writing your first model or CIR: the five-block syntax, the constraint-label rules, what the framework derives, and what it refuses.
+
 The model representation is the intermediate artifact between **choosing a strategy** and **writing solver code**: once the strategy is decided, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field, then translate it into solve.py. The framework verifies it deterministically (no LLM) and reports what its declared constraints say about structural coupling as a DIAGNOSTIC (`derivation.model_coupling`). It is NOT a prerequisite for strategy selection: choosing a strategy relies on the task text, the CIR, the profile, and the evidence's expected quality/cost/risk. Because the model is a POST-strategy artifact, it never moves the structural key — the profile you retrieved with stays the profile the execution is filed under.
 
 ## Why before code

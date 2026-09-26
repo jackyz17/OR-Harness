@@ -1,8 +1,6 @@
 # World-model contract
 
-**Status: the CONTRACT is implemented. The prediction SERVICE is not attached.** Read that sentence twice before using anything on this page.
-
-This document is the single authority for the unified world-model contract. Everything else (SKILL.md, `references/commands.md`, README) links here rather than restating it.
+Read this page when you need an exact field definition, a status value, or the mapping of a legacy shape — it is the single authority for the unified contract. For what a prediction is conditioned on see [prediction_context.md](prediction_context.md), for the wm-so/1 loop see [strategy_outcome.md](strategy_outcome.md), and for how outcomes are scored see [episode_closeout.md](episode_closeout.md).
 
 - Contract version: `wm-contract/1`
 - Legacy version label: `legacy/unversioned` (read, never upgraded)
@@ -165,6 +163,8 @@ Three things that are routinely confused, and are kept apart:
 
 Only (3) supports a claim that the harness got stronger. Adding knowledge entries, accumulating evidence, or a model asserting an improvement is none of the three. `VerificationCondition` records all three flags separately.
 
+When you read a status, check the adjacent fields rather than the word alone: `contract_only` with a configured provider still means no forecast; `service_available` for `capability_evolution` means the service exists — `prediction_made` is what says a call really happened; and a `scope="strategy_window"` prediction must carry `trace.comparable=True` (with a window that really belongs to this task/episode/strategy) before it may be scored.
+
 ---
 
 ## 6. Runnable example
@@ -199,74 +199,20 @@ How old shapes are preserved or interpreted. **Nothing is auto-migrated, no tabl
 | `evidence_basis` / `unsupported_fields` | `trace.*` | preserved verbatim |
 | `action_spec` | `CandidateRef` | mechanical mapping; the spec's execution `params` and `budget_hint` are carried through **verbatim**. `measurement_scope="attempt"` → `scope="attempt"` (recorded as `scope_basis="legacy_attempt"`); a legacy `"task"` scope is **refused**, never silently shrunk — pass `scope=` to declare the narrowing yourself |
 | `OutcomePrediction`, snapshots, config, logs | unchanged | still readable; the old path returns `not_configured` with no provider — a BLOCKER, since the world model is mandatory |
+| Experiment ablation modes (`x-b-only`, `h-x-b`, `h-x-b-value`) | unchanged names | they select contract kinds, not behaviour: `strategy_outcome` only / both kinds with the knowledge term forced off / both kinds with the knowledge term live at `--delta` (default `0.0`). Use `prediction_kinds_for_mode(mode)` to resolve one programmatically |
 
-**Not convertible, on purpose** (the full list is `LEGACY_UNMAPPABLE` in `contracts.py`, and it is returned by every legacy read): knowledge references into a capability level, experience counts into capability, tool availability into a `T` level, `budget_state` into a predicted state, and fine-grained `state_changes` into per-field predictions. No capability increment, risk severity or measurement is derived from any of them.
-
----
-
-## 8. Legacy prediction modes
-
-The experiment ablation switches keep their names — they are NOT renamed. This is what they mean in the new vocabulary:
-
-| Legacy mode | Contract kinds covered | Knowledge term |
-|---|---|---|
-| `x-b-only` | `strategy_outcome` | off |
-| `h-x-b` | `strategy_outcome` + `capability_evolution` | forced off |
-| `h-x-b-value` (default) | `strategy_outcome` + `capability_evolution` | live at `--delta` (default **0.0**) |
-
-Use `prediction_kinds_for_mode(mode)` to get this mapping programmatically.
+**Not convertible, on purpose** (the full list is `LEGACY_UNMAPPABLE` in `contracts.py`, and it is returned by every legacy read): knowledge references into a capability level, experience counts into capability, tool availability into a `T` level, `budget_state` into a predicted state, and fine-grained `state_changes` into per-field predictions. No capability increment, risk severity or measurement is derived from any of them. A legacy payload's own report names what was NOT derived under `legacy_view.gaps` and `legacy_view.unmappable`.
 
 ---
 
-## 9. What is NOT in this phase
+Use `prediction_kinds_for_mode(mode)` to get the contract kinds for a mode programmatically.
 
-The contract is one phase of a larger reconstruction. **Not implemented here**, and not to be described as done:
+---
 
-- no new semantic extractor and no retrieval rework;
-- the legacy `predict_outcome` payload reader is kept for OLD records (the wm-so/1 service is the path every agent-facing flow now uses — see [strategy_outcome.md](strategy_outcome.md));
-- no task-closing scheduler, no automatic offline learning schedule;
-- no H evaluation system;
-- no multi-step latent rollouts;
-- no model fine-tuning or training.
+## 8. Not implemented in this build
 
-Also deliberately out of scope: a universal H score, renaming the existing action vocabulary (the six action types stay), reviving the retired `understand` action, and replacing `BudgetLedger`.
+The contract is one phase of a larger reconstruction. These are deliberately absent, and none of them may be described as done: no semantic extractor and no retrieval rework; no task-closing scheduler and no automatic offline learning schedule; no H evaluation system and no universal H score; no multi-step latent rollouts; no model fine-tuning or training; no renaming of the existing action vocabulary (the six action types stay); no revival of the retired `understand` action; no replacement of `BudgetLedger`.
 
-> **The prediction input.** A prediction is conditioned on a frozen
-> `PredictionContext` (joint problem representation, X/B, retrieval evidence,
-> capability evidence, execution constraints): see
-> [references/prediction_context.md](prediction_context.md).
->
-> **The strategy-outcome service.** Implemented under the `wm-so/1`
-> protocol: see [references/strategy_outcome.md](strategy_outcome.md).
-> `predict-strategy` fills a `StrategyOutcomePrediction` from a frozen
-> context and one candidate; `plan-next`
-> compares candidates on it; `bind-strategy` links the real execution (or
-> `execute --prediction` does it automatically). The legacy `predict_outcome`
-> payload reader is kept for OLD records only — no agent-facing flow uses it.
->
-> **Episode close-out.** Real-outcome summaries and per-field post-hoc
-> evaluation: see [references/episode_closeout.md](episode_closeout.md).
->
-> **The capability-evolution service.** Implemented under the `wm-ce/1`
-> protocol: `predict-capability` fills a `CapabilityEvolutionPrediction` from
-> frozen evidence, a candidate operation, the exact experience scope, the
-> task targeting, a framework-frozen per-metric baseline and a horizon.
-> `compare-capability` applies ONE bounded rule (largest net saving over the
-> declared window, in the SAME unit: the cumulative saving minus the one-time
-> predicted maintenance cost, under a quality-non-degradation constraint);
-> `accept-capability` runs the EXISTING operation on the prediction's OWN
-> frozen scope and REFUSES any operation type this build cannot carry out;
-> `bind-capability` records the maintenance FACT; `evaluate-capability`
-> judges the EFFECT against real later-task results or a paired reference,
-> counting the sample in TASK-EPISODES and admitting only tasks whose WORK
-> really ran after the operation, under the knowledge it produced.
-> See [references/commands.md](commands.md).
+One legacy path survives read-only: the `predict_outcome` payload reader serves OLD records, while `wm-so/1` ([strategy_outcome.md](strategy_outcome.md)) is the path every agent-facing flow uses.
 
-## 10. Verification checklist for a consuming agent
-
-- [ ] Did I get `status="contract_only"`? Then **no prediction was made** — do not read the object as a forecast. Check `prediction_made` and `provider_configured` separately: a configured provider is not a prediction.
-- [ ] Is `service_available` true for `capability_evolution`? That means the service is implemented AND a provider is configured — but NOT that a forecast exists. Check `prediction_made` for that, and never read a knowledge entry as a capability gain.
-- [ ] Is `benefit.value` present? Then a `baseline` must be present too.
-- [ ] Is `scope="strategy_window"`? Then check `trace.comparable` — if it is `False`, the prediction may not be scored. Also confirm the window really belongs to this task / episode / strategy.
-- [ ] Am I about to treat a knowledge entry appearing as a capability gain? That is `prediction_made`, not `effect_verified`.
-- [ ] Am I reading a legacy payload? Check `legacy_view.gaps` and `legacy_view.unmappable` for what was **not** derived.
+Related pages: the frozen input context is [prediction_context.md](prediction_context.md), the strategy-outcome service is [strategy_outcome.md](strategy_outcome.md), the close-out and calibration rules are [episode_closeout.md](episode_closeout.md), and every command is in [commands.md](commands.md).
