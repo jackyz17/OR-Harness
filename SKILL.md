@@ -86,7 +86,7 @@ Two settings are worth setting EXPLICITLY, because their defaults are conservati
   | Setting | Precedence | Default |
   |---|---|---|
   | Output budget | `--wm-max-tokens` > `$OR_WM_MAX_TOKENS` > adapter default | 2048 |
-  | Call timeout | `--wm-timeout` > adapter default | 30s |
+  | Call timeout | `--wm-timeout` > `$OR_WM_TIMEOUT` > adapter default | 300s |
 
   ```bash
   # a request of ~10k input tokens; the default 2048 output budget cut it short

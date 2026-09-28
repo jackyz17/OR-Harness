@@ -812,5 +812,310 @@ class TestTheCandidateCarriesItsMethod(Base):
         self.assertEqual(ref.method, {})
 
 
+# ---------------------------------------------------------------------------
+# 9  world-model call configuration is reachable AND reported
+# ---------------------------------------------------------------------------
+
+
+class _EnvGuard:
+    """Set environment variables for one test and restore them after.
+
+    A leaked variable would make a later test's default look like a
+    configured value, so restoration is unconditional and covers the
+    unset-as-None case.
+    """
+
+    def __init__(self, **values):
+        self.values = values
+        self.saved = {}
+
+    def __enter__(self):
+        for name, value in self.values.items():
+            self.saved[name] = os.environ.get(name)
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        return self
+
+    def __exit__(self, *exc):
+        for name, value in self.saved.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+        return False
+
+
+def _posted_body(provider):
+    """The JSON body ``provider`` would POST, with the socket stubbed out."""
+    import urllib.request
+    captured = {}
+
+    class Resp:
+        def read(self):
+            return json.dumps({
+                "choices": [{"message": {"content": "{}"},
+                             "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+            }).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    original = urllib.request.urlopen
+    urllib.request.urlopen = lambda req, *a, **k: (
+        captured.update(json.loads(req.data.decode())), Resp())[1]
+    try:
+        provider.predict({"prediction_protocol": "wm-so/1"})
+    finally:
+        urllib.request.urlopen = original
+    return captured
+
+
+class TestTheJsonModeHintIsRemovable(unittest.TestCase):
+    """Some endpoints reject ``response_format``. The opt-out must remove
+    the KEY — sending ``null`` in its place would be a different request
+    that the same endpoint may also reject — and an unconfigured
+    environment must keep the previous wire format byte for byte."""
+
+    def _provider(self):
+        from or_harness.world_model.provider import HttpChatProvider
+        return HttpChatProvider("https://x/v1", "M", "k")
+
+    def test_the_switch_is_off_unless_explicitly_opted_in(self):
+        from or_harness.world_model.provider import _truthy_env
+        for value in ("1", "true", "TRUE", "Yes", "on", " on "):
+            with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT=value):
+                self.assertTrue(_truthy_env("OR_WM_NO_RESPONSE_FORMAT"), value)
+        for value in (None, "", "0", "false", "no", "off", "maybe", "2"):
+            with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT=value):
+                self.assertFalse(_truthy_env("OR_WM_NO_RESPONSE_FORMAT"),
+                                 repr(value))
+
+    def test_unset_sends_the_json_mode_hint(self):
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT=None):
+            provider = self._provider()
+            body = _posted_body(provider)
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertTrue(provider.describe()["send_response_format"])
+
+    def test_enabled_omits_the_key_entirely(self):
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT="1"):
+            provider = self._provider()
+            body = _posted_body(provider)
+        self.assertNotIn("response_format", body)
+        # Explicitly: absent, NOT present-and-null.
+        self.assertIsNone(body.get("response_format"))
+        self.assertFalse(provider.describe()["send_response_format"])
+
+    def test_the_environment_is_read_once_at_construction(self):
+        """The value reported by ``describe()`` must be the value that the
+        body was built with, so it cannot be re-read per call."""
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT="1"):
+            provider = self._provider()
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT=None):
+            body = _posted_body(provider)
+        self.assertNotIn("response_format", body)
+        self.assertFalse(provider.describe()["send_response_format"])
+
+    def test_only_the_hint_changes(self):
+        """The rest of the request is untouched by the switch: exactly one
+        key differs, every other key is byte-identical, and the key ORDER
+        of the enabled request is the one this build sent before."""
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT="1"):
+            without = _posted_body(self._provider())
+        with _EnvGuard(OR_WM_NO_RESPONSE_FORMAT=None):
+            with_hint = _posted_body(self._provider())
+        self.assertEqual(set(with_hint) - set(without), {"response_format"})
+        self.assertEqual(set(without) - set(with_hint), set())
+        self.assertEqual({k: v for k, v in with_hint.items()
+                          if k != "response_format"}, without)
+        self.assertEqual(list(with_hint),
+                         ["model", "messages", "response_format",
+                          "max_tokens", "temperature", "enable_thinking"])
+        self.assertEqual(list(without),
+                         ["model", "messages", "max_tokens", "temperature",
+                          "enable_thinking"])
+        self.assertEqual(with_hint["temperature"], 0.2)
+        self.assertEqual(with_hint["max_tokens"], 2048)
+
+
+class TestThinkingIsOffUnlessAskedFor(Base):
+    """Thinking is charged INSIDE ``completion_tokens``, so it competes with
+    the answer for the output budget and dominates the wall clock. The
+    default arm asks the endpoint not to reason; the opt-in omits the key so
+    the endpoint's own default governs — we never assert ``true``, because
+    guessing that default is the same mistake in the other direction."""
+
+    def _provider(self):
+        from or_harness.world_model.provider import HttpChatProvider
+        return HttpChatProvider("https://x/v1", "Qwen3.8-27B", "k")
+
+    def test_the_default_request_turns_thinking_off(self):
+        with _EnvGuard(OR_WM_ENABLE_THINKING=None):
+            provider = self._provider()
+            body = _posted_body(provider)
+        self.assertIs(body["enable_thinking"], False)
+        self.assertFalse(provider.describe()["enable_thinking"])
+
+    def test_the_opt_in_omits_the_key_rather_than_asserting_true(self):
+        with _EnvGuard(OR_WM_ENABLE_THINKING="1"):
+            provider = self._provider()
+            body = _posted_body(provider)
+        self.assertNotIn("enable_thinking", body)
+        self.assertIsNone(body.get("enable_thinking"))
+        self.assertTrue(provider.describe()["enable_thinking"])
+
+    def test_it_is_a_second_switch_not_a_coupled_one(self):
+        """Turning thinking on must not change the JSON-mode arm or any
+        other field: the two switches are independent."""
+        with _EnvGuard(OR_WM_ENABLE_THINKING="1",
+                       OR_WM_NO_RESPONSE_FORMAT=None):
+            body = _posted_body(self._provider())
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertEqual(body["max_tokens"], 2048)
+        self.assertEqual(body["temperature"], 0.2)
+        self.assertEqual(sorted(body), sorted(
+            ["model", "messages", "response_format", "max_tokens",
+             "temperature"]))
+
+    def test_the_flag_is_read_once_at_construction(self):
+        with _EnvGuard(OR_WM_ENABLE_THINKING="1"):
+            provider = self._provider()
+        with _EnvGuard(OR_WM_ENABLE_THINKING=None):
+            body = _posted_body(provider)
+        self.assertNotIn("enable_thinking", body)
+        self.assertTrue(provider.describe()["enable_thinking"])
+
+    def test_the_two_arms_are_distinguishable_after_the_fact(self):
+        """``describe()`` feeds ``capability_version``: a prediction made
+        with thinking must not silently group with one made without it."""
+        with _EnvGuard(OR_WM_ENABLE_THINKING=None):
+            off = self._provider().describe()
+        with _EnvGuard(OR_WM_ENABLE_THINKING="1"):
+            on = self._provider().describe()
+        self.assertNotEqual(off, on)
+        self.assertEqual(set(off) ^ set(on), set())
+        self.assertNotEqual(off["enable_thinking"], on["enable_thinking"])
+
+
+class TestTheWorldModelTimeoutHasAChain(unittest.TestCase):
+    """``$OR_WM_TIMEOUT`` must actually be reachable. With a numeric
+    argparse default it never could be: "not given" and "given as 300"
+    would be indistinguishable."""
+
+    def _args(self, argv=None):
+        from or_harness.cli import build_parser
+        # Global flags precede the subcommand; argv never includes the
+        # program name.
+        return build_parser().parse_args(list(argv or []) + ["doctor"])
+
+    def test_the_flag_default_is_none_so_the_env_can_win(self):
+        self.assertIsNone(self._args().wm_timeout)
+
+    def test_precedence_flag_over_env_over_default(self):
+        from or_harness import cli as cli_module
+        with _EnvGuard(OR_WM_TIMEOUT=None):
+            self.assertEqual(cli_module._wm_timeout(self._args()), 300.0)
+            with _EnvGuard(OR_WM_TIMEOUT="120"):
+                self.assertEqual(cli_module._wm_timeout(self._args()), 120.0)
+                args = self._args(["--wm-timeout", "45"])
+                self.assertEqual(cli_module._wm_timeout(args), 45.0)
+
+    def test_a_bad_env_value_is_reported_not_ignored(self):
+        from or_harness import cli as cli_module
+        with _EnvGuard(OR_WM_TIMEOUT="30s"):
+            with self.assertRaises(ValueError):
+                cli_module._wm_timeout(self._args())
+
+    def test_an_explicit_zero_is_respected(self):
+        """``--wm-timeout 0`` must not be swallowed into the default by a
+        falsy-value ``or`` fallback."""
+        from or_harness import cli as cli_module
+        with _EnvGuard(OR_WM_TIMEOUT=None):
+            args = self._args(["--wm-timeout", "0"])
+            self.assertEqual(cli_module._wm_timeout(args), 0.0)
+
+    def test_the_default_is_read_from_the_adapter_not_duplicated(self):
+        import inspect
+        from or_harness import cli as cli_module
+        from or_harness.world_model.provider import HttpChatProvider
+        default = inspect.signature(HttpChatProvider.__init__).parameters[
+            "timeout_s"].default
+        with _EnvGuard(OR_WM_TIMEOUT=None):
+            self.assertEqual(cli_module._wm_timeout(self._args()),
+                             float(default))
+        self.assertEqual(float(default), 300.0)
+
+
+class TestTheTimeoutReachesTheProvider(Base):
+    def _built(self, argv):
+        from or_harness.cli import _harness, build_parser
+        args = build_parser().parse_args(
+            ["--home", self.home, "--world-model", "https://x/v1::M"]
+            + list(argv) + ["doctor"])
+        h = _harness(args)
+        self.addCleanup(h.close)
+        return h.world_model
+
+    def test_the_default_is_a_long_timeout_and_is_reported(self):
+        with _EnvGuard(OR_WM_TIMEOUT=None):
+            provider = self._built([])
+        self.assertEqual(provider.timeout_s, 300.0)
+        self.assertEqual(provider.describe()["timeout_s"], 300.0)
+
+    def test_the_env_var_reaches_the_provider(self):
+        with _EnvGuard(OR_WM_TIMEOUT="450"):
+            provider = self._built([])
+        self.assertEqual(provider.timeout_s, 450.0)
+
+    def test_the_flag_still_wins(self):
+        with _EnvGuard(OR_WM_TIMEOUT="450"):
+            provider = self._built(["--wm-timeout", "60"])
+        self.assertEqual(provider.timeout_s, 60.0)
+
+    def test_the_callers_budget_still_bounds_the_call(self):
+        """``min(timeout_s, self.timeout_s)`` is unchanged: a long default
+        must not let one call outlive the caller's remaining budget."""
+        provider = self._built(["--wm-timeout", "300"])
+        _posted_body_with = {}
+
+        class Recorder:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def read(self):
+                return self.inner
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        import urllib.request
+        original = urllib.request.urlopen
+
+        def fake(req, *a, **k):
+            _posted_body_with.update(k)
+            return Recorder(json.dumps({
+                "choices": [{"message": {"content": "{}"},
+                             "finish_reason": "stop"}]}).encode())
+
+        urllib.request.urlopen = fake
+        try:
+            result = provider.predict({"x": 1}, timeout_s=7.0)
+        finally:
+            urllib.request.urlopen = original
+        self.assertEqual(_posted_body_with.get("timeout"), 7.0)
+        effective = result["diagnostics"]["effective"]
+        self.assertEqual(effective["timeout_s"], 7.0)
+        self.assertEqual(effective["provider_timeout_s"], 300.0)
+
+
 if __name__ == "__main__":
     unittest.main()

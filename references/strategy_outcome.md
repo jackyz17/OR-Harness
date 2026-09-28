@@ -125,7 +125,20 @@ Only `solution_quality` is on a single comparable yardstick, because candidates 
 
 A MISSING `finish_reason` is recorded as `null` with a note saying how the answer ended is UNKNOWN — it is never read as a clean stop. An OLD record written under the retired `provider_error` word still READS: it is normalized to `invalid` and its original status and error are preserved under `trace.model_info["legacy_status"]` / `["error"]`, so no failure is lost and no corrupt record is silently accepted either.
 
-**Call parameters.** The output budget is `--wm-max-tokens` > `$OR_WM_MAX_TOKENS` > the adapter default (2048), and the values actually in force come back under `result.effective_parameters` / `trace.model_info["effective_parameters"]`. A socket timeout bounds ONE blocking operation, not the whole request, so the caller's own clock check is what bounds the call in aggregate.
+**Call parameters.** Four knobs, each with a flag and an environment variable, and the values actually in force come back under `result.effective_parameters` / `trace.model_info["effective_parameters"]`:
+
+| Knob | Precedence | Default |
+|---|---|---|
+| Output budget | `--wm-max-tokens` > `$OR_WM_MAX_TOKENS` > adapter default | 2048 |
+| Socket timeout | `--wm-timeout` > `$OR_WM_TIMEOUT` > adapter default | 300 |
+| JSON-mode hint | `$OR_WM_NO_RESPONSE_FORMAT=1` removes it | sent |
+| Thinking | `$OR_WM_ENABLE_THINKING=1` | OFF |
+
+A socket timeout bounds ONE blocking operation, not the whole request, so the caller's own clock check is what bounds the call in aggregate.
+
+**The two wire-format knobs exist because an endpoint's defaults are not ours.** `OR_WM_NO_RESPONSE_FORMAT=1` omits `response_format` from the body (never sends `null`), for endpoints that reject JSON mode. `OR_WM_ENABLE_THINKING=1` omits `enable_thinking`, letting the endpoint's own default apply; unset, the request carries `"enable_thinking": false`. Both are read ONCE at provider construction, so the body and `describe()` cannot disagree about the same call. Measured on one endpoint (Qwen3.8-27B via `llmapi.paratera.com/v1`, same request): thinking ON cost 36.3 s and 1291 reasoning tokens against 4.5 s and 0, and `reasoning_tokens` is counted INSIDE `completion_tokens` (325 total, 291 of them reasoning) — so thinking draws on the SAME output budget as the answer. Which arm a call used is reported in `describe()` and folded into `capability_version.provider`; it is NOT in `trace.model_info`, whose keys stay a fixed identity set.
+
+**Do not mix the two arms in one store.** Calibration groups by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>`, and the model identity is the NAME, not the call configuration — so predictions made with thinking ON and OFF are the SAME group and would be pooled. Keep them in separate `--home` directories (or give them different `--world-model` model names) to compare them.
 
 **Cost accounting.** The model calls are REAL spend: charged once to the decision action as own cost (failed calls included), reported in `planning_cost`, never part of any candidate's utility. Candidate execution costs are PREDICTED values. Missing usage stays unknown — never free.
 

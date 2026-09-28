@@ -349,11 +349,11 @@ The two are different measurements and are never interchanged. `valid_progress` 
 
 | `failure.kind` | What happened | What to do |
 |---|---|---|
-| `truncated` | the endpoint stopped for length (`finish_reason` is `length`/`max_tokens`) | raise the output budget (`--wm-max-tokens` / `$OR_WM_MAX_TOKENS`) and predict again |
+| `truncated` | the endpoint stopped for length (`finish_reason` is `length`/`max_tokens`) | raise the output budget (`--wm-max-tokens` / `$OR_WM_MAX_TOKENS`) and predict again; if thinking is ON it is spending the same budget, so also consider `OR_WM_ENABLE_THINKING` |
 | `wrong_top_level` | valid JSON that is not an object — the field case of `[]` | fix the request or the prompt; a bigger budget will not help |
 | `empty_response` | the endpoint returned `""` or `null` | check the endpoint; the answer was never produced |
 | `unparsable` | the content is not JSON | inspect the endpoint's output format |
-| `timeout` / `network_error` | the call did not complete | retry, or raise `--wm-timeout` (and the plan's `--time-budget`) |
+| `timeout` / `network_error` | the call did not complete | retry, or raise `--wm-timeout` / `$OR_WM_TIMEOUT` (and the plan's `--time-budget`) |
 | `unusable_payload` | a JSON object that failed contract validation | the payload's own notes name the offending field |
 
 `finish_reason: null` means the endpoint reported nothing: how the answer ended is UNKNOWN, and it is never read as a clean stop. A failed prediction is RECORDED under its own id with its real call cost, and it stays READABLE — a provider outage never blocks reading the log or closing the episode.

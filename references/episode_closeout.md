@@ -88,7 +88,7 @@ orx calibration [--min-samples N] [--rebuild]
 
 Aggregated from the **WINDOW** — the newest N closed task-episodes (default 50, `OR_CALIBRATION_WINDOW`). The window is the sample set: it bounds both the statistics and the work a close-out does, so a prediction reads a small published summary instead of scanning history. An open episode never calibrates anything, least of all itself.
 
-Grouped by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>` — a different metric, unit, scope **or predicting model** is a DIFFERENT group, never pooled. Each group reports:
+Grouped by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>` — a different metric, unit, scope **or predicting model** is a DIFFERENT group, never pooled. The model identity is the NAME (`provider_model` / `provider_version` / `provider_name`), NOT the call configuration: a prediction made with thinking on and one made with it off land in the SAME group. Run the two arms against separate `--home` directories, or give them different model names, when the difference is what you are measuring. Each group reports:
 
 | Statistic | Meaning |
 |---|---|

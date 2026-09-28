@@ -177,6 +177,21 @@ def _strip_code_fence(content: str) -> str:
     return content.strip()
 
 
+def _truthy_env(name: str) -> bool:
+    """True only for an explicit opt-in value of ``name``.
+
+    Accepted spellings are ``1``, ``true``, ``yes`` and ``on``
+    (case-insensitive); unset, empty, ``0``, ``false``, ``no``, ``off`` and
+    anything else are False. There is no "maybe": an unrecognised value
+    leaves the default in force rather than half-enabling a behaviour, so a
+    typo cannot silently change the wire format."""
+    import os
+    raw = os.environ.get(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 class WorldModelProvider:
     """The provider contract. ``predict`` receives the assembled request
     (input view + action spec + output guidance) and returns a dict:
@@ -229,12 +244,32 @@ class HttpChatProvider(WorldModelProvider):
     Configuration comes entirely from the constructor — the deployment
     environment owns the model name, endpoint, credentials, and limits.
     The API key lives only in the request header; it is never persisted,
-    logged, or included in ``describe()``."""
+    logged, or included in ``describe()``.
+
+    Two settings are read from the environment here, both because an
+    endpoint's own defaults are not ours to assume.
+
+    ``OR_WM_NO_RESPONSE_FORMAT``: some endpoints reject
+    ``response_format`` outright, and an unsupported field must be
+    removable without editing code in the field. It is a subtractive
+    opt-out — the key is sent unless the variable is set truthy — so an
+    unconfigured environment keeps the previous behaviour exactly.
+
+    ``OR_WM_ENABLE_THINKING``: thinking is OFF by default. Measured on
+    one endpoint (Qwen3.8-27B via llmapi.paratera.com/v1, same request):
+    36.3s / 1291 reasoning tokens by default vs 4.5s / 0 with the key
+    sent, and ``reasoning_tokens`` is counted INSIDE
+    ``completion_tokens`` (325 total of which 291 were reasoning), so
+    thinking competes with the answer for ``max_tokens``. A truthy value
+    OMITS the key and lets the endpoint's native default apply;
+    ``true`` is never sent, because asserting the opposite default would
+    be as much of a guess as assuming it. ``describe()`` records which
+    way this instance ran, so the two arms stay distinguishable."""
 
     name = "http-chat"
 
     def __init__(self, base_url: str, model: str, api_key: str, *,
-                 timeout_s: float = 30.0, max_output_tokens: int = 2048,
+                 timeout_s: float = 300.0, max_output_tokens: int = 2048,
                  temperature: float = 0.2):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -242,6 +277,16 @@ class HttpChatProvider(WorldModelProvider):
         self.timeout_s = float(timeout_s)
         self.max_output_tokens = int(max_output_tokens)
         self.temperature = float(temperature)
+        # Whether the JSON-mode hint is sent. Read ONCE at construction so
+        # the body built for a call cannot disagree with what ``describe()``
+        # reports about that same call.
+        self.send_response_format = not _truthy_env(
+            "OR_WM_NO_RESPONSE_FORMAT")
+        # Whether the model is asked to reason before answering. OFF by
+        # default: thinking is charged inside the SAME output budget and
+        # was measured to dominate both the token spend and the wall
+        # clock. Read once, for the same reason as the field above.
+        self.enable_thinking = _truthy_env("OR_WM_ENABLE_THINKING")
 
     def describe(self) -> Dict[str, Any]:
         return {
@@ -252,6 +297,8 @@ class HttpChatProvider(WorldModelProvider):
             "timeout_s": self.timeout_s,
             "max_output_tokens": self.max_output_tokens,
             "temperature": self.temperature,
+            "send_response_format": self.send_response_format,
+            "enable_thinking": self.enable_thinking,
             # No credentials here, ever.
         }
 
@@ -311,10 +358,20 @@ class HttpChatProvider(WorldModelProvider):
                 {"role": "user", "content": json.dumps(
                     request, ensure_ascii=False, default=str)},
             ],
-            "response_format": {"type": "json_object"},
+            # JSON mode is ON by default and OMITTED (never null) when the
+            # deployment disables it: an endpoint that rejects the field
+            # must not receive ``"response_format": null`` in its place.
+            **({"response_format": {"type": "json_object"}}
+               if self.send_response_format else {}),
             "max_tokens": self.max_output_tokens,
             "temperature": self.temperature,
         }
+        if not self.enable_thinking:
+            # Ask the endpoint NOT to reason before answering. Sent as an
+            # explicit ``false`` (the default arm); with the switch on the
+            # key is ABSENT, so the endpoint's own default governs and no
+            # vendor default is hard-coded on our side.
+            body["enable_thinking"] = False
         req = urllib.request.Request(
             self.base_url + "/chat/completions",
             data=json.dumps(body).encode("utf-8"),

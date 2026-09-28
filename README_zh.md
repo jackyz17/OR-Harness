@@ -43,7 +43,7 @@ orx inspect   --bank strategic
 
 记忆存放在显式目录（`--home` 或 `$OR_HARNESS_HOME`），底层为单个 SQLite 文件。
 
-配置刻意保持显式——没有配置文件；全部配置面 = CLI 参数加环境变量：`$OR_HARNESS_HOME`（记忆位置）、`$OR_WM_API_KEY`（世界模型端点密钥；URL 与模型经 `--world-model URL::MODEL` 传入）、`$OR_EMBEDDING_BACKEND` / `$OR_EMBEDDING_BASE_URL` / `$OR_EMBEDDING_MODEL` / `$OR_EMBEDDING_API_KEY`（向量召回的嵌入后端）。其余都是单次调用参数——见 [references/commands.md](references/commands.md)（英文）。
+配置刻意保持显式——没有配置文件；全部配置面 = CLI 参数加环境变量：`$OR_HARNESS_HOME`（记忆位置）、`$OR_WM_API_KEY`（世界模型端点密钥；URL 与模型经 `--world-model URL::MODEL` 传入）、`$OR_WM_TIMEOUT` / `$OR_WM_MAX_TOKENS`（世界模型调用超时与输出预算，可被 `--wm-timeout` / `--wm-max-tokens` 覆盖）、`$OR_WM_NO_RESPONSE_FORMAT`（端点拒绝 JSON 模式时设为 `1`）、`$OR_WM_ENABLE_THINKING`（设为 `1` 时允许模型先思考再作答，默认关闭）、`$OR_EMBEDDING_BACKEND` / `$OR_EMBEDDING_BASE_URL` / `$OR_EMBEDDING_MODEL` / `$OR_EMBEDDING_API_KEY`（向量召回的嵌入后端）。其余都是单次调用参数——见 [references/commands.md](references/commands.md)（英文）。
 
 ## 文档
 

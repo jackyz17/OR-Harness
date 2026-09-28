@@ -11,7 +11,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.api import ORHarness, PREDICTION_MODES
 from or_harness.core.coupling import CIRFormatError
@@ -126,6 +126,28 @@ def _wm_max_tokens(args) -> int:
         "max_output_tokens"].default)
 
 
+def _wm_timeout(args) -> float:
+    """The world-model socket timeout actually used: flag > env > default.
+
+    The ``--wm-timeout`` default is ``None`` rather than a number so that
+    "not given" is DISTINGUISHABLE from "given as 300": with a numeric
+    default, ``$OR_WM_TIMEOUT`` could never win, and an operator who sets
+    the environment variable would be silently ignored. The fallback is
+    the adapter's own default (read from the signature, not duplicated),
+    so this layer and the provider cannot disagree about it.
+    """
+    explicit = getattr(args, "wm_timeout", None)
+    if explicit is not None:
+        return float(explicit)
+    env = _wm_env_float("OR_WM_TIMEOUT")
+    if env is not None:
+        return float(env)
+    from or_harness.world_model.provider import HttpChatProvider as _P
+    import inspect
+    return float(inspect.signature(_P.__init__).parameters[
+        "timeout_s"].default)
+
+
 def _harness(args) -> ORHarness:
     weights = None
     if getattr(args, "cost_weights", None):
@@ -143,7 +165,7 @@ def _harness(args) -> ORHarness:
         api_key = os.environ.get("OR_WM_API_KEY", "")
         provider = HttpChatProvider(
             parts[0], parts[1], api_key,
-            timeout_s=getattr(args, "wm_timeout", 30) or 30.0,
+            timeout_s=_wm_timeout(args),
             max_output_tokens=_wm_max_tokens(args))
     return ORHarness(home=args.home, alpha=args.alpha, beta=args.beta,
                      gamma=args.gamma, cost_weights=weights,
@@ -2010,9 +2032,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "(api key from $OR_WM_API_KEY). Omitted = "
                              "predictions return not_configured; no other "
                              "command is affected")
-    parser.add_argument("--wm-timeout", type=float, default=30.0,
-                        help="world-model call timeout in seconds. This is "
-                             "the maximum time ONE blocking socket operation "
+    parser.add_argument("--wm-timeout", type=float, default=None,
+                        metavar="S",
+                        help="world-model call timeout in seconds "
+                             "(precedence: this flag > $OR_WM_TIMEOUT > "
+                             "the adapter default 300). This is the "
+                             "maximum time ONE blocking socket operation "
                              "may stall, not a hard deadline on the whole "
                              "request; the caller's own budget check bounds "
                              "the call in aggregate")
