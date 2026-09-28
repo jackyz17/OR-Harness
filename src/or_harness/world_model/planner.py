@@ -758,8 +758,41 @@ class StrategyOutcomeScore:
 
 #: The benefit kinds this comparison can compare on one yardstick. A
 #: candidate whose benefit is a different currency is NOT silently
-#: converted — it reports incomparable instead.
+#: converted — it is reported incomparable and does NOT enter the full
+#: utility ranking (see ``score_strategy_outcome_predictions``).
 COMPARABLE_BENEFIT_KINDS = ("solution_quality",)
+
+#: The benefit METRICS on that same yardstick. The kind alone is not enough:
+#: two ``solution_quality`` predictions that measure different things (a
+#: solver-side normalized gap vs some other normalized score) are not one
+#: currency, so the metric must match too. The comparison and the close-out
+#: share this definition, so the ranking and the evaluation can never
+#: disagree about what "the same benefit" means.
+COMPARABLE_BENEFIT_METRIC = "normalized_objective_gap"
+
+#: Declared-metric spellings that resolve to the comparable metric. These
+#: are the same aliases the close-out's observation channel uses, so a
+#: prediction that will be EVALUATED as normalized quality is also RANKED on
+#: it — one currency, one list.
+COMPARABLE_BENEFIT_METRIC_ALIASES = {
+    "normalized_objective_gap": "normalized_objective_gap",
+    "solution_quality": "normalized_objective_gap",
+    "normalized_quality": "normalized_objective_gap",
+    "normalized_gap": "normalized_objective_gap",
+}
+
+
+def comparable_benefit_metric(metric: Any) -> Optional[str]:
+    """The canonical comparable metric a declared metric maps to, or None.
+
+    ``None`` means this build has no common currency for that metric: the
+    benefit is reported, and it does NOT enter the utility ranking — an
+    incomparable upside is not silently scored as zero (which would let it
+    be ranked as if it were a real, worthless benefit).
+    """
+    name = str(metric or "").strip().lower()
+    name = name.replace(" ", "_").replace("-", "_")
+    return COMPARABLE_BENEFIT_METRIC_ALIASES.get(name)
 
 
 def score_strategy_outcome_predictions(
@@ -778,9 +811,13 @@ def score_strategy_outcome_predictions(
       dimension's peak normalized share;
     - risk is the MAXIMUM event probability (no independence assumption);
       an event with no probability is a full-weight deficit;
-    - a benefit whose kind is not in :data:`COMPARABLE_BENEFIT_KINDS` is
-      incomparable and contributes NOTHING (unknown upside is never
-      rewarded — the mirror of charging unknown risk in full);
+    - a benefit whose kind is not in :data:`COMPARABLE_BENEFIT_KINDS`, or
+      whose metric is not :data:`COMPARABLE_BENEFIT_METRIC`, is INCOMPARABLE
+      and does not enter the full utility ranking: ``benefit_value`` stays
+      None and no ``utility`` is produced. Cost and risk are still reported
+      (and still charged), so the candidate's cost/risk picture is visible —
+      but a candidate whose upside is in a currency this comparison cannot
+      read is NOT ranked as if that upside were zero;
     - the knowledge term is OFF (delta=0) for this protocol.
     """
     valid = [p for p in predictions if p.status == "valid"]
@@ -813,8 +850,13 @@ def score_strategy_outcome_predictions(
                 "possible for this candidate")
             scores.append(score)
             continue
-        # Benefit: comparable currency only.
+        # Benefit: comparable currency only. The KIND and the METRIC must
+        # both be on this comparison's yardstick — the same requirement the
+        # close-out applies, so a candidate that can be RANKED here can also
+        # be EVALUATED there, and vice versa. A benefit in another currency
+        # is reported and does NOT enter the utility ranking.
         benefit = prediction.benefit
+        benefit_comparable = False
         if benefit is None or benefit.value is None:
             score.incomparable["benefit"] = (
                 "no benefit value was predicted; an unpredicted upside "
@@ -825,8 +867,15 @@ def score_strategy_outcome_predictions(
                 f"benefit kind {benefit.kind!r} is not on this comparison's "
                 "yardstick (normalized solution quality); it is reported, "
                 "never silently converted")
+        elif comparable_benefit_metric(benefit.metric) is None:
+            score.incomparable["benefit"] = (
+                f"benefit metric {benefit.metric!r} is not on this "
+                f"comparison's yardstick ({COMPARABLE_BENEFIT_METRIC}): a "
+                "different measurement is a different currency, and it is "
+                "reported rather than scored as zero")
         else:
             score.benefit_value = float(benefit.value)
+            benefit_comparable = True
         # Cost: over the common basis, missing dimensions charged at the
         # peak normalized share.
         cost_value = 0.0
@@ -875,16 +924,29 @@ def score_strategy_outcome_predictions(
                 "no risk was predicted; charged the full gamma weight "
                 "(unknown risk is a deficit, never free)")
         score.risk_effective = round(risk_effective, 6)
+        if not benefit_comparable:
+            # NO full-ranking utility. A candidate whose upside is in a
+            # currency this comparison cannot read must not be ranked as if
+            # that upside were a real zero: the cost and risk picture below
+            # stays VISIBLE (and charged) for the reader, but `utility` is
+            # left None so it can never silently win or lose the full
+            # ranking on an unread benefit.
+            score.notes.append(
+                "cost/risk are reported for inspection but NO utility is "
+                "produced: the benefit is not on this comparison's "
+                "yardstick, so the candidate does not enter the full "
+                "ranking (an unread upside is never scored as zero)")
+            scores.append(score)
+            continue
         score.utility = round(
-            alpha * (score.benefit_value
-                     if score.benefit_value is not None else 0.0)
+            alpha * score.benefit_value
             - beta * cost_value
             - gamma * risk_effective, 6)
         if score.incomparable:
             score.notes.append(
                 "incomparable fields are charged conservatively (unknown "
                 "risk => full gamma weight; unknown cost dimension => the "
-                "peak normalized share; unknown benefit => nothing) and "
-                "reported explicitly — unknown never auto-wins")
+                "peak normalized share) and reported explicitly — unknown "
+                "never auto-wins")
         scores.append(score)
     return scores

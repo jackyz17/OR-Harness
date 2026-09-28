@@ -720,6 +720,77 @@ class TestScopeAndHonesty(StrategyCase):
             self.assertTrue(set(prediction.cost.expected.measured_dims())
                             <= set(COST_DIMENSIONS))
 
+    def test_an_off_yardstick_benefit_does_not_enter_the_ranking(self):
+        """Requirement 6: a benefit in a currency the comparison cannot read
+        is reported, NOT scored as zero. The candidate keeps its cost/risk
+        picture but produces no utility, so it can never silently win or
+        lose the full ranking on an upside nobody could read."""
+        from or_harness.world_model.planner import (
+            PlanLimits,
+            score_strategy_outcome_predictions,
+        )
+        provider = StubProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        # Candidate 1: a completion claim (a DIFFERENT currency from the
+        # solution-quality yardstick).
+        provider.payload = {
+            "benefit": {"kind": "effective_completion",
+                        "metric": "task_result_check_passed",
+                        "unit": "boolean", "value": 0.9,
+                        "baseline": {"kind": "declared", "value": 0.5}},
+            "cost": {"llm_tokens": 100},
+        }
+        p_completion = h.predict_strategy_outcome(
+            _task("t1"), {"action_type": "execute_strategy",
+                          "strategy_id": "S01"}, "ep1")
+        # Candidate 2: the comparison's own yardstick.
+        provider.payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        p_quality = h.predict_strategy_outcome(
+            _task("t1"), {"action_type": "execute_strategy",
+                          "strategy_id": "S02"}, "ep1")
+        limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
+                            cost_weights={"llm_tokens": 1.0})
+        scores = score_strategy_outcome_predictions(
+            [p_completion, p_quality], limits)
+        completion_score = scores[0]
+        # Reported as incomparable on the benefit...
+        self.assertIn("benefit", completion_score.incomparable)
+        # ...and NO full-ranking utility was produced.
+        self.assertIsNone(completion_score.utility,
+                          "an off-yardstick benefit must not be ranked as "
+                          "a zero benefit")
+        # The on-yardstick candidate still gets a utility.
+        self.assertIsNotNone(scores[1].utility)
+
+    def test_a_quality_kind_with_a_different_metric_is_off_yardstick(self):
+        """The KIND alone is not enough: two solution_quality predictions
+        measuring DIFFERENT metrics are not one currency."""
+        from or_harness.world_model.planner import (
+            PlanLimits,
+            score_strategy_outcome_predictions,
+        )
+        provider = StubProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        provider.payload = {
+            "benefit": {"kind": "solution_quality",
+                        "metric": "business_cost_saving_ratio",
+                        "unit": "ratio", "value": 0.8,
+                        "baseline": {"kind": "conditional_stats",
+                                     "value": 0.5}},
+            "cost": {"llm_tokens": 100},
+        }
+        prediction = h.predict_strategy_outcome(
+            _task("t1"), {"action_type": "execute_strategy",
+                          "strategy_id": "S01"}, "ep1")
+        scores = score_strategy_outcome_predictions(
+            [prediction], PlanLimits(alpha=1.0, beta=1.0, gamma=1.0))
+        self.assertIn("benefit", scores[0].incomparable)
+        self.assertIsNone(scores[0].utility)
+
     def test_model_self_report_is_never_relabelled(self):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),

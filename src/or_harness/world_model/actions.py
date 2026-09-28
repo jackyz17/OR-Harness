@@ -366,6 +366,30 @@ class ActionLog:
         record.post_snapshot_id = snapshot_id
         self._update(record)
 
+    def amend_action_params(self, action_id: str,
+                            **fields: Any) -> ActionRecord:
+        """Add/overwrite named ``params`` entries on a running action.
+
+        The narrow channel the API layer uses to attach what only becomes
+        known WHILE an action runs — the real execution configuration the
+        executor reported back — so a later bind can compare the predicted
+        candidate's config against what really took effect. Only the named
+        keys change; existing params are preserved (the strategy id and
+        solver recorded at begin time must survive). Pass ``None`` as a value
+        to REMOVE a key explicitly."""
+        record = self.get(action_id)
+        if record is None:
+            raise StorageError(f"unknown action_id {action_id!r}")
+        params = dict(record.params or {})
+        for key, value in fields.items():
+            if value is None:
+                params.pop(key, None)
+            else:
+                params[key] = copy.deepcopy(value)
+        record.params = params
+        self._update(record)
+        return record
+
     # -- queries ----------------------------------------------------------------
 
     def get(self, action_id: str) -> Optional[ActionRecord]:

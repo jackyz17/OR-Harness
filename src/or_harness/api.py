@@ -10,6 +10,7 @@ the memory location is always explicit (``home`` / ``OR_HARNESS_HOME``).
 from __future__ import annotations
 
 import copy
+import json
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
@@ -152,6 +153,29 @@ PREDICTION_HIT_SLACK = 0.15
 CAPABILITY_EXECUTABLE_OPERATIONS = ("induce", "revise", "retire")
 #: M6 experiment modes (see ORHarness.__init__).
 PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
+
+
+def _candidate_reference(spec: Dict[str, Any]) -> tuple:
+    """The identity tuple that makes one candidate distinguishable.
+
+    Used to decide whether a choice DEVIATES from a suggestion and whether
+    two names refer to the same candidate. It covers action type, strategy,
+    solver, scope and the EXECUTION CONFIG — the fields that make two
+    candidates genuinely different. It deliberately excludes cosmetic keys
+    (a note, a description, insertion order), so an unchanged candidate
+    never reads as a deviation, and it deliberately includes ``config``, so
+    the same strategy under a different time limit / seed is NOT treated as
+    "the same candidate" (which would hide a real deviation).
+    """
+    spec = spec or {}
+    config = spec.get("config", spec.get("params")) or {}
+    return (
+        spec.get("action_type"),
+        spec.get("strategy_id"),
+        spec.get("solver"),
+        spec.get("scope"),
+        json.dumps(config, sort_keys=True, default=str),
+    )
 
 
 class ORHarness:
@@ -1766,12 +1790,26 @@ class ORHarness:
             mismatch["solver"] = {"predicted": candidate.solver,
                                   "actual": params.get("solver")}
         # Execution-config identity: the candidate's own config (time_limit,
-        # mip_gap, seed, ...) is what was predicted. A key the action
-        # actually recorded with a DIFFERENT value is a mismatch; a key the
-        # action log never carries is an UNKNOWN — the predicted config is
-        # never copied onto the action to manufacture a match.
+        # mip_gap, seed, ...) is what was predicted. The right-hand side is
+        # the config that REALLY TOOK EFFECT — read from the action's
+        # ``execution_config`` (the executor's own report plus the solve
+        # script's config receipt) — never copied from the candidate. Three
+        # outcomes per key:
+        #   * the real value is present and EQUAL: observed match;
+        #   * present and DIFFERENT: a mismatch (a different configuration
+        #     is not this prediction's truth);
+        #   * absent: an UNKNOWN — the run did not report that key, so the
+        #     predicted value cannot be confirmed. It is never manufactured
+        #     into a match by copying the prediction over.
+        observed_config = params.get("execution_config") or {}
+        observed_values = dict(observed_config.get("values") or {})
         for key, value in (candidate.config or {}).items():
-            actual = params.get(key)
+            # Legacy actions recorded a few keys flat in params; keep
+            # reading those so an old record still binds the way it did.
+            if key in observed_values:
+                actual = observed_values[key]
+            else:
+                actual = params.get(key)
             if actual is None:
                 unknown.setdefault("config", {})[key] = {
                     "predicted": value,
@@ -1784,6 +1822,15 @@ class ORHarness:
                 mismatch.setdefault(
                     "config", {})[key] = {"predicted": value,
                                           "actual": actual}
+        # The observations travel with the binding so the caller (and the
+        # close-out) can see the difference between "predicted and
+        # confirmed", "predicted and contradicted" and "never observed".
+        model_info["config_observed"] = {
+            key: {"predicted": (candidate.config or {}).get(key),
+                  "actual": observed_values.get(key)}
+            for key in observed_values if key in (candidate.config or {})}
+        model_info["config_unknown"] = sorted(
+            (unknown.get("config") or {}).keys()) or None
         # Timing: the prediction must predate the action.
         if prediction.trace.created_at > action.started_at:
             mismatch["timing"] = {
@@ -3849,16 +3896,29 @@ class ORHarness:
 
     def choose_next(self, decision_action_id: str, *,
                     chosen: Optional[ActionSpec] = None,
+                    prediction_id: Optional[str] = None,
                     rejected: bool = False,
                     deviation_note: Optional[str] = None) -> Dict[str, Any]:
         """Record the agent's EXPLICIT choice after a plan.
 
         ``chosen`` is the ActionSpec the agent decided to take (the
-        suggested one or another — a deviation); ``rejected=True`` records
-        that no suggestion was taken. Only this call writes
-        X.selected_plan (via a completed select_strategy report linked to
-        the decision action): a generated suggestion alone never counts as
-        a selection, and a selection record produces no execution quality.
+        suggested one or another — a deviation); ``prediction_id`` names a
+        candidate by the prediction the plan already made for it, which is
+        the ordinary path: the agent does NOT re-type the candidate JSON.
+        ``rejected=True`` records that no suggestion was taken.
+
+        When ``prediction_id`` is given the chosen candidate is resolved
+        from the DECISION's own recorded candidate list — checked to belong
+        to this decision — and the deviation test compares the candidate
+        REFERENCE (action type, strategy, solver and configuration), never
+        the whole plan JSON (a cosmetic key such as a note must not read as
+        a deviation) and never ``strategy_id + solver`` alone (the same pair
+        under a different config is a different candidate).
+
+        Only this call writes X.selected_plan (via a completed
+        select_strategy report linked to the decision action): a generated
+        suggestion alone never counts as a selection, and a selection record
+        produces no execution quality.
         """
         from or_harness.world_model.actions import PROGRESS_UPDATES
         decision = self.actions.get(decision_action_id)
@@ -3869,11 +3929,30 @@ class ORHarness:
             raise StorageError(
                 f"action {decision_action_id!r} is a "
                 f"{decision.action_type}, not a select_strategy decision")
+        if prediction_id is not None:
+            if rejected:
+                raise ValueError(
+                    "choose-next takes --prediction to name the candidate "
+                    "you CHOSE; it cannot be combined with --rejected")
+            resolved = self._candidate_from_decision_prediction(
+                decision, prediction_id)
+            if chosen is not None:
+                # Both given: they must name the same candidate, or the
+                # recorded choice would be ambiguous.
+                if _candidate_reference(chosen.to_dict()) \
+                        != _candidate_reference(resolved):
+                    raise ValueError(
+                        "the --chosen candidate and --prediction "
+                        f"{prediction_id!r} name different candidates: "
+                        "pass one of them, or make them agree")
+            chosen = ActionSpec.from_dict(resolved)
         outcome: Dict[str, Any] = {
             "kind": "plan_next_choice",
             "decision_action_id": decision_action_id,
             "decision_plan_id": (decision.outcome or {}).get("plan_id"),
         }
+        if prediction_id is not None:
+            outcome["prediction_id"] = str(prediction_id)
         if rejected:
             outcome["rejected"] = True
             if deviation_note:
@@ -3881,7 +3960,13 @@ class ORHarness:
         elif chosen is not None:
             outcome["selected"] = chosen.to_dict()
             suggested = (decision.outcome or {}).get("suggested")
-            if suggested and suggested != chosen.to_dict():
+            if suggested and _candidate_reference(suggested) \
+                    != _candidate_reference(chosen.to_dict()):
+                # A deviation is judged on the candidate REFERENCE (action
+                # type, strategy, solver, config) — not on the whole plan
+                # JSON (a cosmetic key must not read as a deviation) and not
+                # on `strategy_id + solver` alone (the same pair under a
+                # different config is a DIFFERENT candidate).
                 outcome["deviation"] = {
                     "suggested": suggested,
                     "chosen": chosen.to_dict(),
@@ -3944,6 +4029,32 @@ class ORHarness:
         plus its outcome payload)."""
         record = self.actions.get(decision_action_id)
         return record.to_dict() if record is not None else None
+
+    def _candidate_from_decision_prediction(
+            self, decision: Any, prediction_id: str) -> Dict[str, Any]:
+        """The candidate a decision's own candidate list holds for a
+        prediction id.
+
+        This is what makes ``choose-next --prediction`` trustworthy: the
+        candidate is read from the DECISION's recorded comparison, so a
+        prediction id that belongs to a DIFFERENT decision is refused
+        instead of silently choosing a candidate this decision never
+        compared.
+        """
+        compared = ((decision.outcome or {}).get("candidates") or [])
+        for entry in compared:
+            if str(entry.get("prediction_id") or "") == str(prediction_id):
+                spec = entry.get("action_spec")
+                if isinstance(spec, dict):
+                    return spec
+        known = [str(e.get("prediction_id")) for e in compared
+                 if e.get("prediction_id")]
+        raise ValueError(
+            f"prediction {prediction_id!r} is not among the candidates "
+            f"compared by decision {decision.action_id!r} "
+            f"(known: {known or 'none'}): the choice would name a candidate "
+            "this decision never evaluated. Use the prediction id "
+            "`plan-next` returned for THIS decision, or pass --chosen")
 
     # -- world-model M4: offline maintenance assessment ----------------------
 
@@ -4357,8 +4468,147 @@ class ORHarness:
                              f"[{lo}, {hi}]")
         return "; ".join(notes) if notes else None
 
-    def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
-                workspace: str, *, solver: str,
+    def _resolve_execution_candidate(
+            self, prediction_id: str, task: Dict[str, Any],
+            episode_id: Optional[str], *,
+            strategy_id: Optional[str], solver: Optional[str],
+            code_path: str, workspace: str) -> CandidateRef:
+        """Check a prediction-driven execution BEFORE anything runs.
+
+        Everything here is STATIC (no solver, no model call, no action):
+        the goal is that a path error, an identity conflict or a claim on a
+        prediction already consumed by another attempt is reported to the
+        caller before the prediction is spent and before a single second of
+        sandbox time is used.
+
+        Returns the candidate whose identity the execution will run under.
+        Raises ValueError with the specific reason otherwise — a refusal is
+        never a silent substitution.
+        """
+        prediction = self.strategy_predictions.get(prediction_id)
+        if prediction is None:
+            raise ValueError(
+                f"unknown prediction_id {prediction_id!r}: pass the id "
+                "`predict-strategy` / `plan-next` returned, or omit "
+                "--prediction to run an unpredicted attempt")
+        candidate = prediction.candidate
+        info = prediction.trace.model_info or {}
+        # (a) The prediction must be USABLE. A failed/invalid prediction has
+        # no candidate content to test, and a non-execute candidate is not
+        # something this command can run.
+        if prediction.status != "valid":
+            raise ValueError(
+                f"prediction {prediction_id!r} has status "
+                f"{prediction.status!r}: a non-valid prediction is not a "
+                "candidate to execute. Re-predict the candidate (and read "
+                "`failure.kind` if it failed) before running it")
+        if candidate.action_type != "execute_strategy":
+            raise ValueError(
+                f"prediction {prediction_id!r} is about a "
+                f"{candidate.action_type!r} action: `execute` runs an "
+                "execute_strategy candidate only")
+        # (b) Problem identity: the prediction was made for a specific
+        # problem. Writing the model afterwards is NOT a change (the
+        # identity excludes post-strategy artifacts), but a different task
+        # text, data or CIR is — reusing the prediction across a changed
+        # problem would score an unrelated result against it. Both sides
+        # come from frozen records: the prediction recorded the digest it
+        # was made under, and the task in hand is digests the same way.
+        predicted_digest = info.get("problem_identity_digest")
+        if predicted_digest:
+            current_digest = problem_identity_version(task)
+            if current_digest != predicted_digest:
+                raise ValueError(
+                    "the problem changed since this prediction was made "
+                    f"(problem identity {current_digest} != "
+                    f"{predicted_digest}): this is a different problem "
+                    "input, so the prediction is not about it. Post-strategy "
+                    "artifacts such as the `model` field do NOT count as a "
+                    "change — a real change (task text, data, parameters or "
+                    "CIR) does. Predict the candidate again for the current "
+                    "problem")
+        # (c) One attempt per candidate: a prediction already claimed by a
+        # real execution must not be silently re-used — that would put two
+        # executions under one forecast and double-count the sample.
+        bound = info.get("bound_action_id")
+        if bound:
+            raise ValueError(
+                f"prediction {prediction_id!r} is already bound to action "
+                f"{bound!r}: a prediction corresponds to ONE real attempt. "
+                "Predict the corrected candidate again if you re-solve")
+        # (d) Explicit arguments must AGREE with the candidate. A caller
+        # that re-types strategy/solver and gets it wrong is told now, not
+        # after the run (where it would be a binding mismatch and a wasted
+        # attempt).
+        conflicts: List[str] = []
+        if strategy_id is not None and str(strategy_id) != "" \
+                and candidate.strategy_id is not None \
+                and str(strategy_id) != candidate.strategy_id:
+            conflicts.append(
+                f"strategy_id: argument {strategy_id!r} != candidate "
+                f"{candidate.strategy_id!r}")
+        if solver is not None and str(solver) != "" \
+                and candidate.solver is not None \
+                and str(solver) != candidate.solver:
+            conflicts.append(
+                f"solver: argument {solver!r} != candidate {candidate.solver!r}")
+        if episode_id is not None and candidate.episode_id is not None \
+                and str(episode_id) != candidate.episode_id:
+            conflicts.append(
+                f"episode_id: argument {episode_id!r} != candidate "
+                f"{candidate.episode_id!r}")
+        if conflicts:
+            raise ValueError(
+                "the explicit arguments contradict the prediction's "
+                "candidate: " + "; ".join(conflicts)
+                + ". Omit them (they are taken from the candidate) or pass "
+                "the candidate's own values")
+        # (e) Static path/scope error: the solve script must live inside the
+        # workspace (the executor's own policy), checked here so a mistyped
+        # path does not first consume the prediction.
+        if not str(code_path or "").strip():
+            raise ValueError("code_path is required (a solve.py inside the "
+                             "workspace)")
+        if not str(workspace or "").strip():
+            raise ValueError("workspace is required")
+        code = Path(code_path).resolve()
+        work = Path(workspace).resolve()
+        if work not in code.parents and code != work:
+            raise ValueError(
+                f"solve script {str(code)!r} is outside its workspace "
+                f"{str(work)!r}: the executor refuses a script that could "
+                "read or write outside it, and the prediction is not spent "
+                "on a run that would be rejected")
+        return candidate
+
+    def _link_prediction_to_action(self, prediction_id: str,
+                                   action_id: str) -> None:
+        """Persist the FORWARD link (prediction → action) before the run.
+
+        Written the moment the action exists so an interrupted execution
+        still shows which attempt a prediction was testing. Idempotent: a
+        re-run with the same pair writes the same values. It deliberately
+        does NOT compute comparability or scores — that is the job of
+        :meth:`bind_strategy_outcome` after the action ends (the real,
+        identity-checked, idempotent bind).
+        """
+        try:
+            prediction = self.strategy_predictions.get(prediction_id)
+        except Exception:  # a read failure must never block the execution
+            return
+        if prediction is None:
+            return
+        info = prediction.trace.model_info
+        info.setdefault("bound_action_id", action_id)
+        info["bound_action_id_before_execution"] = action_id
+        info["association_phase"] = "linked_before_execution"
+        try:
+            self.strategy_predictions._save(prediction)
+        except Exception:  # noqa: BLE001 - bookkeeping must not break a run
+            pass
+
+    def execute(self, task: Dict[str, Any], strategy_id: Optional[str] = None,
+                code_path: str = "", workspace: str = "", *, solver: Optional[str] = None,
                 episode_id: Optional[str] = None,
                 prediction_id: Optional[str] = None) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
@@ -4371,26 +4621,56 @@ class ORHarness:
         context. The record makes no generalization claim.
 
         ``strategy_id`` is whatever the outer agent actually did — it is not
-        validated against a directory (there is none). What IS still checked:
-        the strategy id must be non-empty, the solver must be named, and
-        ``code_path`` must live inside ``workspace`` (the executor's own
-        policy). Sandbox, timeout, rlimits and budget checks are unchanged.
+        validated against a directory (there is none). When ``prediction_id``
+        names a FROZEN candidate, ``strategy_id``/``solver``/``episode_id``
+        may be OMITTED: they are taken from the candidate (the caller does
+        not re-type what the prediction already fixed). When they ARE given
+        and disagree with the candidate, the conflict is reported BEFORE the
+        execution starts (a contradiction discovered afterwards would waste
+        the run and could mis-attribute its result). What is still checked:
+        the resolved strategy id must be non-empty, the solver must be
+        named, and ``code_path`` must live inside ``workspace`` (the
+        executor's own policy). Sandbox, timeout, rlimits and budget checks
+        are unchanged.
 
-        ``prediction_id`` (optional): the strategy-outcome prediction this
-        attempt is testing — the way ``plan-next`` hands over the prediction
-        it already made, so the candidate is not predicted twice. When
-        given, the real action is BOUND to that prediction as soon as the
-        action ends, through the SAME identity-checked, idempotent
-        :meth:`bind_strategy_outcome` the explicit path uses (no name
-        guessing, no second count). A binding failure never discards the
-        execution: the outcome is reported on
-        ``record.execution_features["prediction_binding"]`` and
-        ``bind-strategy`` can bind later.
+        ``prediction_id``: the strategy-outcome prediction this attempt is
+        testing. The association is established BEFORE the run — the frozen
+        candidate is read, the prediction's status/task identity/scope are
+        checked, an explicit argument that contradicts the candidate is
+        refused, and a prediction already claimed by another execution is
+        refused (one attempt per candidate). The action and its link are
+        persisted before the executor starts, so the association is
+        consistent and recoverable; after the run only the RESULT and the
+        real configuration observations are ADDED. A real failure, a timeout
+        or an exception keeps the association and the cost incurred — it
+        never overwrites a previous attempt. ``bind-strategy`` remains the
+        manual/recovery path.
         """
+        # ---- (1) RESOLVE THE CANDIDATE BEFORE ANYTHING RUNS ----------------
+        # Static errors (an unknown prediction, a wrong task identity, a
+        # conflict with an explicit argument, a candidate already claimed)
+        # are refused HERE, before an action exists and before the sandbox
+        # is touched — they must not consume the prediction or any budget.
+        candidate = None
+        if prediction_id:
+            candidate = self._resolve_execution_candidate(
+                prediction_id, task, episode_id,
+                strategy_id=strategy_id, solver=solver,
+                code_path=code_path, workspace=workspace)
+            strategy_id = candidate.strategy_id
+            solver = candidate.solver or solver
+            episode_id = candidate.episode_id
         if not str(strategy_id or "").strip():
             raise ValueError(
                 "strategy_id is required: the record must name the method "
-                "that actually ran (there is no default strategy)")
+                "that actually ran (there is no default strategy). Pass it "
+                "explicitly, or pass --prediction to take it from the "
+                "candidate")
+        if not str(solver or "").strip():
+            raise ValueError(
+                "solver is required: the record must name the solver that "
+                "actually ran. Pass it explicitly, or pass --prediction to "
+                "take it from the candidate")
         # Frozen pre-strategy signature: profile is derived from the task's
         # coupling (CIR) / spec / annotations / model fields ONLY — never
         # from solve.py.  The generated solve script is a post-strategy
@@ -4408,24 +4688,34 @@ class ORHarness:
         # of the harness's later record decision — execute/record
         # separation is unchanged).
         pre = self.snapshot(task, episode_id)
-        # The execution config ACTUALLY used, recorded on the action so a
-        # later binding can compare the predicted candidate's config
-        # against what really ran — never the other way round (copying the
-        # PREDICTED config onto the action would fabricate the proof it is
-        # supposed to provide). Only what this call really knows: the
-        # strategy, the solver, the verification level. Anything else
-        # (a time limit the outer agent applied inside solve.py, a seed)
-        # is NOT observable here and stays unknown.
+        # The execution config the FRAMEWORK knows before the run: the
+        # strategy and solver it is about to use. Everything else (a time
+        # limit applied inside solve.py, a seed) is NOT observable here and
+        # is filled in AFTER the run from the executor's own report — never
+        # copied from the candidate.
         exec_params: Dict[str, Any] = {
             "strategy_id": strategy_id, "solver": solver}
+        if prediction_id:
+            # The PRE-EXECUTION association: persisted with the action the
+            # moment it exists, so the prediction→action link survives an
+            # interruption. ``prediction_bound_at`` distinguishes "bound
+            # before the run" (the target case) from a later bind.
+            exec_params["prediction_id"] = str(prediction_id)
+            exec_params["prediction_bound_at"] = time.time()
         action = self.actions.begin_action(
             "execute_strategy", str(task["task_id"]), episode_id,
             pre_snapshot=pre, params=exec_params)
+        if prediction_id and candidate is not None:
+            # Persist the FORWARD link on the prediction as well (a
+            # recoverable, idempotent write): the prediction names the
+            # action before the action ends, so a crash mid-run still shows
+            # which attempt this prediction was testing.
+            self._link_prediction_to_action(prediction_id, action.action_id)
         try:
-            record = self.executor.execute(
-                Path(code_path), Path(workspace), solver=solver,
-                task_id=str(task["task_id"]), strategy_id=strategy_id,
-                profile=profile)
+            record = self._run_executor(
+                Path(code_path), Path(workspace), solver=str(solver),
+                task_id=str(task["task_id"]), strategy_id=str(strategy_id),
+                profile=profile, action_id=action.action_id)
         except BaseException as exc:
             # The PRE snapshot is already bound and the action is already
             # persisted as ``running``. An exception between here and
@@ -4523,15 +4813,25 @@ class ORHarness:
         post = self.snapshot(task, episode_id, task_progress=progress)
         self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
-        # AUTOMATIC BINDING: when the caller named the prediction this
-        # attempt tests (the way ``plan-next`` hands over the candidate it
-        # already scored), bind it now — the action exists, its identity is
-        # recorded, and the binding is idempotent and identity-checked, so
-        # a re-run of the same call cannot double-count or silently match a
-        # different candidate. A failure is REPORTED on the record, never
-        # raised: the execution really happened and its evidence must
-        # survive a bookkeeping problem. ``bind-strategy`` remains the
-        # recovery and manual path.
+        # The configuration that REALLY took effect is now known (the
+        # executor reported it, and the solve script may have read back its
+        # own effective values). Attach it to the ACTION so the binding can
+        # compare the candidate's prediction against reality rather than
+        # against itself. A rejected script (never ran) reports no config —
+        # it stays absent, never fabricated.
+        observed_config = record.execution_features.get("execution_config")
+        if observed_config:
+            self.actions.amend_action_params(
+                action.action_id, execution_config=observed_config)
+        # The association ALREADY exists (it was persisted before the run).
+        # What happens now is the SECOND HALF: the real RESULT and the real
+        # configuration OBSERVATION are added to it, through the SAME
+        # identity-checked, idempotent binding the explicit path uses — no
+        # name guessing, no second count, no re-interpretation of the
+        # candidate from scratch. A binding failure is REPORTED on the
+        # record, never raised: the execution really happened and its
+        # evidence must survive a bookkeeping problem. ``bind-strategy``
+        # remains the recovery and manual path.
         if prediction_id:
             binding: Dict[str, Any] = {"prediction_id": str(prediction_id),
                                        "bound": False}
@@ -4544,6 +4844,14 @@ class ORHarness:
                     "bound": bool(info.get("bound_action_id")
                                   == action.action_id),
                     "comparable": bound.trace.comparable,
+                    # The config the candidate ASKED FOR vs the config that
+                    # really took effect, now that the run reported it. This
+                    # is the point of the two-phase shape: the prediction is
+                    # linked before the run, and the OBSERVATION is attached
+                    # after it — the predicted config is never copied in as
+                    # if it had been observed.
+                    "config_observed": info.get("config_observed"),
+                    "config_unknown": info.get("config_unknown"),
                     "trace": {
                         "bound_action_id": info.get("bound_action_id"),
                         "binding_mismatch": info.get("binding_mismatch"),
@@ -4555,6 +4863,38 @@ class ORHarness:
                                      "explicitly with `orx bind-strategy`")
             record.execution_features["prediction_binding"] = binding
         return record
+
+    def _run_executor(self, code_path: Path, workspace: Path, *, solver: str,
+                      task_id: str, strategy_id: str, profile: ProblemProfile,
+                      action_id: Optional[str],
+                      ) -> ExecutionRecord:
+        """Call the executor, passing ``action_id`` only when it accepts it.
+
+        The action id is the config receipt's stamp (see
+        ``execution/executor.py``). An injected executor — a test double, or
+        a custom one written against the earlier signature — may not take
+        it; in that case the executor simply receives no stamp and its
+        scripts cannot report an attributable configuration. That is
+        reported as UNKNOWN by the binding, never silently accepted, and it
+        must not stop an unrelated execution from running.
+        """
+        import inspect
+        try:
+            parameters = inspect.signature(
+                self.executor.execute).parameters
+            accepts = ("action_id" in parameters
+                       or any(p.kind == inspect.Parameter.VAR_KEYWORD
+                              for p in parameters.values()))
+        except (TypeError, ValueError):
+            accepts = False
+        if accepts:
+            return self.executor.execute(
+                code_path, workspace, solver=solver, task_id=task_id,
+                strategy_id=strategy_id, profile=profile,
+                action_id=action_id)
+        return self.executor.execute(
+            code_path, workspace, solver=solver, task_id=task_id,
+            strategy_id=strategy_id, profile=profile)
 
     def record(self, record: ExecutionRecord,
                override: Optional[Dict[str, float]] = None,

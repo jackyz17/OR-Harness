@@ -485,10 +485,21 @@ def cmd_execute(args) -> int:
     try:
         task = _load_json_arg(args.task)
         prediction_id = getattr(args, "prediction", None)
-        record = h.execute(task, args.strategy, args.code, args.workspace,
-                           solver=args.solver,
-                           episode_id=getattr(args, "episode", None),
-                           prediction_id=prediction_id)
+        try:
+            record = h.execute(task, args.strategy, args.code, args.workspace,
+                               solver=args.solver,
+                               episode_id=getattr(args, "episode", None),
+                               prediction_id=prediction_id)
+        except ValueError as exc:
+            # A prediction-driven precondition failure (unknown prediction,
+            # a changed problem, a contradictory explicit argument, a
+            # candidate already claimed, a solve script outside the
+            # workspace): refused BEFORE anything ran, so the prediction is
+            # not spent and no cost was incurred. Reported as a usage error
+            # with the reason, never a crash.
+            if prediction_id:
+                return _fail(f"{exc}")
+            raise
         out = {"execution": record.to_dict(),
                "execution_id": record.execution_id,
                "action_id": record.action_id}
@@ -504,16 +515,21 @@ def cmd_execute(args) -> int:
                 info = binding.get("trace") or {}
                 mismatch = info.get("binding_mismatch")
                 unknown = info.get("binding_unknown")
+                real_config = binding.get("config_observed") or {}
                 if mismatch:
                     out["prediction_binding"] = binding
-                    summary += (f" Prediction {prediction_id} was bound WITH "
-                                f"MISMATCH ({mismatch}): the comparison "
-                                "covers only matching parts; mismatched "
-                                "fields are recorded, never scored.")
+                    summary += (f" Prediction {prediction_id} was associated "
+                                f"before the run and scored WITH MISMATCH "
+                                f"({mismatch}): the comparison covers only "
+                                "matching parts; mismatched fields are "
+                                "recorded, never scored.")
                 else:
                     out["prediction_binding"] = binding
-                    summary += (f" Prediction {prediction_id} bound "
-                                f"automatically"
+                    summary += (f" Prediction {prediction_id} associated "
+                                "before the run"
+                                + (f" (predicted config confirmed: "
+                                   f"{sorted(real_config)})"
+                                   if real_config else "")
                                 + (f" (unconfirmed fields: {unknown})"
                                    if unknown else "")
                                 + "; the close-out will evaluate it.")
@@ -522,7 +538,7 @@ def cmd_execute(args) -> int:
                     "bound": False,
                     "reason": "the prediction was not bound"}
                 summary += (f" WARNING: prediction {prediction_id} could NOT "
-                            "be bound automatically ("
+                            "be bound after the run ("
                             f"{(binding or {}).get('reason') or 'unknown'}); "
                             "bind it explicitly with `orx bind-strategy` "
                             "once the action is on record.")
@@ -1599,11 +1615,13 @@ def cmd_plan_next(args) -> int:
             suggested_id = _matching_candidate_prediction_id(
                 compared, suggested)
             if suggested_id:
-                step += (f". Accept with `orx choose-next --decision "
-                         f"{plan.get('decision_action_id')} --chosen ...`, "
-                         "then execute the step WITH that prediction (do "
-                         "NOT call predict-strategy again): `orx execute ... "
-                         f"--prediction {suggested_id}`.")
+                step += (f". Accept by ID: `orx choose-next --decision "
+                         f"{plan.get('decision_action_id')} --prediction "
+                         f"{suggested_id}` — then run the step with the SAME "
+                         "prediction (do NOT call predict-strategy again): "
+                         f"`orx execute --task ... --prediction "
+                         f"{suggested_id} --code solve.py --workspace ws` "
+                         "(the strategy and solver come from the candidate).")
             else:
                 step += (f". Accept with `orx choose-next --decision "
                          f"{plan.get('decision_action_id')} --chosen ...`.")
@@ -1623,9 +1641,17 @@ def cmd_choose_next(args) -> int:
         chosen = None
         if args.chosen:
             chosen = ActionSpec.from_dict(_load_json_arg(args.chosen))
-        result = h.choose_next(args.decision, chosen=chosen,
-                               rejected=args.rejected,
-                               deviation_note=args.note)
+        try:
+            result = h.choose_next(args.decision, chosen=chosen,
+                                   prediction_id=getattr(args, "prediction",
+                                                         None),
+                                   rejected=args.rejected,
+                                   deviation_note=args.note)
+        except ValueError as exc:
+            # A precondition failure (a prediction that is not part of this
+            # decision, or --chosen and --prediction disagreeing): refused
+            # with the reason, before any selection is written.
+            return _fail(str(exc))
         if result.get("rejected"):
             summary = (f"Decision {args.decision} recorded as REJECTED. "
                        "X.selected_plan is NOT written.")
@@ -1636,8 +1662,8 @@ def cmd_choose_next(args) -> int:
                           if (result.get('selected') or {}).get('strategy_id')
                           else "")
                        + ". X.selected_plan updated; execute the step with "
-                         "`orx execute`, then record and bind the "
-                         "prediction.")
+                         "`orx execute --prediction <the chosen prediction>`, "
+                         "then record and close the episode.")
         if result.get("deviation"):
             summary += " (deviation from the suggestion recorded)"
         return _emit(result, summary)
@@ -2102,24 +2128,41 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strategy", required=True)
     p.set_defaults(func=cmd_predict)
 
-    p = sub.add_parser("execute", help="sandbox-execute a solve script")
+    p = sub.add_parser(
+        "execute",
+        help="sandbox-execute a solve script. Pass --prediction to run a "
+             "FROZEN candidate: the strategy/solver/episode are taken from "
+             "it and the association is established before the run")
     p.add_argument("--task", required=True)
-    p.add_argument("--strategy", required=True)
+    p.add_argument("--strategy", default=None,
+                   help="the strategy that runs. Required for an unpredicted "
+                        "attempt; when --prediction is given it is taken from "
+                        "the candidate (pass it only to state the same value "
+                        "— a conflicting value is refused BEFORE the run)")
     p.add_argument("--code", required=True, help="path to solve.py")
     p.add_argument("--workspace", required=True)
-    p.add_argument("--solver", required=True)
+    p.add_argument("--solver", default=None,
+                   help="the concrete solver. Required for an unpredicted "
+                        "attempt; when --prediction is given it is taken from "
+                        "the candidate (a conflicting value is refused before "
+                        "the run)")
     p.add_argument("--episode", default=None,
                    help="episode id for the unified action record "
-                        "(budget/progress scoping)")
+                        "(budget/progress scoping); taken from the candidate "
+                        "when --prediction is given")
     p.add_argument("--prediction", default=None, metavar="PREDICTION_ID",
                    help="the strategy-outcome prediction (wm-so/1) this "
                         "attempt is testing, e.g. the id `plan-next` scored "
-                        "the candidate with. When given, the executed action "
-                        "is BOUND to it automatically once the action ends "
-                        "(identity checked: task/episode/strategy/solver/"
-                        "config; a mismatch is recorded, never scored). "
-                        "Omit it only when you did not predict this "
-                        "candidate; `orx bind-strategy` can bind later")
+                        "the candidate with. The association is established "
+                        "BEFORE the run: the frozen candidate supplies "
+                        "strategy/solver/episode (do not re-type them), the "
+                        "problem identity and the claim on the prediction are "
+                        "checked, and a conflicting explicit argument is "
+                        "refused before anything executes. After the run the "
+                        "real result and the observed configuration are "
+                        "added to the same association. Omit it for an "
+                        "unpredicted attempt; `orx bind-strategy` can bind a "
+                        "manual action later")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")
@@ -2575,12 +2618,23 @@ def build_parser() -> argparse.ArgumentParser:
                        help="record your explicit choice after a plan: "
                             "accept the suggestion, pick another candidate "
                             "(deviation), or reject. Only this writes "
-                            "X.selected_plan")
+                            "X.selected_plan. Name the candidate by its "
+                            "PREDICTION id instead of re-typing its JSON")
     p.add_argument("--decision", required=True, metavar="ACTION_ID",
                    help="the select_strategy decision action id from "
                         "plan-next")
+    p.add_argument("--prediction", default=None, metavar="PREDICTION_ID",
+                   help="the prediction id of the candidate you CHOSE, from "
+                        "this decision's own `result.plan.candidates[]`. The "
+                        "candidate is read from the decision's recorded "
+                        "comparison, so it must belong to THIS decision; the "
+                        "deviation test compares the candidate reference "
+                        "(action type/strategy/solver/config), not the whole "
+                        "JSON")
     p.add_argument("--chosen", default=None,
-                   help="ActionSpec JSON of the action you will execute")
+                   help="ActionSpec JSON of the action you will execute "
+                        "(an alternative to --prediction; if both are given "
+                        "they must name the same candidate)")
     p.add_argument("--rejected", action="store_true",
                    help="record that no suggestion/candidate was taken")
     p.add_argument("--note", default=None,

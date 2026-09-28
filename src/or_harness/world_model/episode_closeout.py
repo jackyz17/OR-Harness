@@ -1268,6 +1268,19 @@ class StrategyPredictionEvaluation:
     state: str = "evaluated"
     exclusion_reasons: List[str] = field(default_factory=list)
     notes: List[str] = field(default_factory=list)
+    #: Per-field eligibility summary: ``{field: {eligibility, reason}}`` for
+    #: benefit, cost (per dimension) and risk (per event). It answers the
+    #: question "which parts of this prediction may be calibrated on?" ONE
+    #: field at a time, so a reader never has to read a blanket verdict as
+    #: "the whole prediction is scoreable". The individual blocks above
+    #: remain the authority; this is the index over them.
+    eligibility_summary: Dict[str, Any] = field(default_factory=dict)
+    #: Whether ANY part of this prediction may enter the calibration sample
+    #: (``state == "evaluated"``). Deliberately narrow: being BOUND (the
+    #: prediction is linked to a real action) is a different, weaker fact
+    #: and is NOT a promise that anything can be calibrated. ``False`` here
+    #: is not a failure — it says which fields were unobservable.
+    calibratable: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1284,9 +1297,60 @@ class StrategyPredictionEvaluation:
             "cost": copy.deepcopy(self.cost),
             "risk": copy.deepcopy(self.risk),
             "interval": copy.deepcopy(self.interval),
+            # The per-field index. Derived on read for a legacy record that
+            # never wrote it, so an old evaluation stays readable and never
+            # gains a SECOND, drifting copy of the same state.
+            "eligibility": (copy.deepcopy(self.eligibility_summary)
+                            or self._derive_eligibility()),
+            "calibratable": bool(self.calibratable or self._derive_calibratable()),
             "exclusion_reasons": list(self.exclusion_reasons),
             "notes": list(self.notes),
         }
+
+    def _derive_eligibility(self) -> Dict[str, Any]:
+        """The per-field index rebuilt from the blocks (legacy fallback).
+
+        Used when an evaluation was written before the index existed: the
+        field blocks are the authority, so deriving the index from them can
+        never disagree with them — and it avoids storing two copies of the
+        same verdict that could later drift apart.
+        """
+        out: Dict[str, Any] = {}
+        benefit = self.benefit or {}
+        if benefit:
+            out["benefit"] = {
+                "eligibility": benefit.get("eligibility"),
+                "reason": benefit.get("reason"),
+            }
+        cost = self.cost or {}
+        per_dim = {}
+        for dim, entry in (cost.get("per_dim") or {}).items():
+            per_dim[dim] = {"eligibility": "evaluable"}
+        for dim, reason in (cost.get("excluded") or {}).items():
+            per_dim[dim] = {"eligibility": "unobserved", "reason": reason}
+        if per_dim:
+            out["cost"] = {"dimensions": per_dim,
+                           "eligibility": cost.get("eligibility")}
+        risk = self.risk or {}
+        events = {}
+        for entry in risk.get("scored") or []:
+            events[str(entry.get("event"))] = {"eligibility": "evaluable"}
+        for entry in risk.get("unscored") or []:
+            events.setdefault(str(entry.get("event")), {})["eligibility"] = (
+                "unobserved")
+            events[str(entry.get("event"))].setdefault(
+                "reason", entry.get("reason"))
+        if events:
+            out["risk"] = {"events": events,
+                           "eligibility": risk.get("eligibility")}
+        interval = self.interval or {}
+        if interval:
+            out["interval"] = {"eligibility": interval.get("eligibility"),
+                               "reason": interval.get("reason")}
+        return out
+
+    def _derive_calibratable(self) -> bool:
+        return self.state == "evaluated"
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "StrategyPredictionEvaluation":
@@ -1305,6 +1369,9 @@ class StrategyPredictionEvaluation:
             cost=copy.deepcopy(dict(data.get("cost") or {})),
             risk=copy.deepcopy(dict(data.get("risk") or {})),
             interval=copy.deepcopy(dict(data.get("interval") or {})),
+            eligibility_summary=copy.deepcopy(
+                dict(data.get("eligibility") or {})),
+            calibratable=bool(data.get("calibratable", False)),
             exclusion_reasons=[str(r) for r in
                                (data.get("exclusion_reasons") or [])],
             notes=[str(n) for n in (data.get("notes") or [])],
@@ -1634,7 +1701,62 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "enters a denominator")
     else:
         evaluation.state = "evaluated"
+    # The PER-FIELD index, built from the blocks so it can never disagree
+    # with them. It answers "which parts may be calibrated?" one field at a
+    # time, next to the single ``calibratable`` flag — being BOUND is the
+    # weaker fact and is never read as a promise that all of this is
+    # scoreable.
+    evaluation.eligibility_summary = _evaluation_eligibility_index(evaluation)
+    evaluation.calibratable = evaluation.state == "evaluated"
     return evaluation
+
+
+def _evaluation_eligibility_index(evaluation
+                                  ) -> Dict[str, Any]:
+    """The per-field eligibility index of ONE evaluation.
+
+    A convenience index over the blocks (benefit, each cost dimension, each
+    risk event, the interval), each carrying its own eligibility and the
+    reason when it is not ``evaluable``. It is DERIVED, never a second
+    source of truth: the blocks remain the authority, so the two cannot
+    drift.
+    """
+    out: Dict[str, Any] = {}
+    benefit = evaluation.benefit or {}
+    if benefit:
+        entry: Dict[str, Any] = {"eligibility": benefit.get("eligibility")}
+        if benefit.get("reason"):
+            entry["reason"] = benefit["reason"]
+        if benefit.get("metric"):
+            entry["metric"] = benefit["metric"]
+        out["benefit"] = entry
+    cost = evaluation.cost or {}
+    per_dim: Dict[str, Any] = {}
+    for dim in (cost.get("per_dim") or {}):
+        per_dim[dim] = {"eligibility": "evaluable"}
+    for dim, reason in (cost.get("excluded") or {}).items():
+        per_dim[dim] = {"eligibility": "unobserved", "reason": reason}
+    if per_dim:
+        out["cost"] = {"dimensions": per_dim,
+                       "eligibility": cost.get("eligibility")}
+    risk = evaluation.risk or {}
+    events: Dict[str, Any] = {}
+    for entry in (risk.get("scored") or []):
+        events[str(entry.get("event"))] = {"eligibility": "evaluable"}
+    for entry in (risk.get("unscored") or []):
+        name = str(entry.get("event"))
+        events[name] = {"eligibility": "unobserved"}
+        if entry.get("reason"):
+            events[name]["reason"] = entry["reason"]
+    if events:
+        out["risk"] = {"events": events,
+                       "eligibility": risk.get("eligibility")}
+    interval = evaluation.interval or {}
+    if interval:
+        out["interval"] = {"eligibility": interval.get("eligibility")}
+        if interval.get("reason"):
+            out["interval"]["reason"] = interval["reason"]
+    return out
 
 
 # ---------------------------------------------------------------------------

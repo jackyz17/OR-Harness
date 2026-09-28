@@ -199,6 +199,16 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "no_knowledge|conditional_stats|current_entry|current_solution|"
     "declared|unknown, \"value\": number, \"note\": text}, \"feasible\": "
     "boolean, \"notes\": [text]}. A value with no baseline is invalid.\n"
+    "  BENEFIT CONVENTION: the request carries a `benefit_convention` "
+    "block naming the ONE yardstick this decision uses. Predict under it — "
+    "`kind=solution_quality` with `metric=normalized_objective_gap` measures "
+    "how well the SOLVER solved the model; use `kind=effective_completion` "
+    "with `metric=task_result_check_passed` ONLY when the question is "
+    "whether the ANSWER satisfies the TASK. These measure different things "
+    "and are never interchanged. If you declare a different kind or metric, "
+    "your prediction is kept and reported, but it is NOT ranked on the "
+    "comparison's single yardstick: an upside in a currency the comparison "
+    "cannot read is never scored as zero.\n"
     "- cost: object of the resource dimensions you have evidence for, each "
     "a non-negative number: {llm_tokens, tool_calls, solver_runtime_s, "
     "retries, latency_s}. Include ONLY dimensions you actually predict; an "
@@ -273,6 +283,64 @@ MAX_RISK_EVENTS = 20
 #: The maximum number of evidence-basis entries accepted.
 MAX_EVIDENCE_BASIS = 40
 
+#: The SHARED benefit convention every candidate of one decision predicts
+#: under. It travels in the request so the model is told the ONE yardstick
+#: the comparison and the close-out will use — not left to pick a kind and a
+#: metric per candidate and hope they line up. The comparison
+#: (``planner.COMPARABLE_BENEFIT_METRIC``) and the close-out
+#: (``episode_closeout.OBSERVABLE_BENEFIT_METRIC``) read the SAME
+#: definition, so a benefit that can be ranked here can also be evaluated
+#: there.
+BENEFIT_CONVENTION: Dict[str, Any] = {
+    "default": {
+        "kind": "solution_quality",
+        "metric": "normalized_objective_gap",
+        "unit": "1-gap",
+        "scope": "the prediction's own candidate scope",
+        "observed_from": ("the solver's own normalized gap (an `optimal` "
+                          "status is a gap of 0; otherwise 1-gap)"),
+        "note": ("how well the solver solved the model it was given. Use "
+                 "this unless the question is whether the ANSWER satisfies "
+                 "the TASK"),
+    },
+    "completion": {
+        "kind": "effective_completion",
+        "metric": "task_result_check_passed",
+        "unit": "boolean",
+        "scope": "the prediction's own candidate scope",
+        "observed_from": ("the execution's own task-result check "
+                          "(`check-task`): 1.0 passed, 0.0 confirmed failed, "
+                          "UNKNOWN when unchecked or insufficient"),
+        "note": ("whether the ANSWER satisfies the TASK — a different "
+                 "measurement that lands in [0,1] as well and is NEVER "
+                 "interchanged with the solver's gap"),
+    },
+    "comparison_yardstick": {
+        "kind": "solution_quality",
+        "metric": "normalized_objective_gap",
+        "note": ("only this pair is on the planner's single comparable "
+                 "yardstick. A benefit in another kind or metric is "
+                 "reported and observed, but it does NOT enter the full "
+                 "utility ranking (an unread upside is never scored as "
+                 "zero)"),
+    },
+    "requirements": {
+        "declare_before_the_run": ("choose the kind/metric from the TASK "
+                                   "before executing: the close-out "
+                                   "observes the metric you declared, and "
+                                   "it never re-labels another measurement "
+                                   "into it"),
+        "value_and_baseline": ("a benefit VALUE requires a baseline; a "
+                               "`solution_quality` value is NORMALIZED in "
+                               "[0,1] (a raw objective value is refused, "
+                               "never clamped)"),
+        "same_convention_per_decision": ("every candidate of one decision "
+                                         "is predicted under the SAME "
+                                         "convention, so the comparison "
+                                         "reads one currency"),
+    },
+}
+
 
 def build_strategy_outcome_request(
         context: Any, candidate: CandidateRef,
@@ -296,14 +364,21 @@ def build_strategy_outcome_request(
         "request_kind": "strategy_outcome_prediction",
         "prediction_context": context.provider_view(),
         "candidate": candidate.to_dict(),
+        # The SHARED benefit convention: the framework fixes the yardstick
+        # so every candidate of one decision is predicted on the SAME
+        # currency, and the comparison and the close-out read the same
+        # definition. A model that deviates is reported (its prediction is
+        # kept, but the benefit does not enter the full utility ranking).
+        "benefit_convention": copy.deepcopy(BENEFIT_CONVENTION),
         "output_contract": {
             "allowed_fields": ["benefit", "cost", "risk", "uncertainty",
                                "evidence_basis", "unsupported_fields"],
             "fixed_by_framework": ["task", "candidate", "scope",
-                                   "evidence sources"],
+                                   "evidence sources", "benefit convention"],
             "note": ("the model fills prediction content only; it may not "
                      "rewrite the task, the candidate, the scope or the "
-                     "evidence"),
+                     "evidence. Use the `benefit_convention` kind/metric "
+                     "unless the question is task completion"),
         },
     }
     # Scope filtering of the calibration block (the model identity was

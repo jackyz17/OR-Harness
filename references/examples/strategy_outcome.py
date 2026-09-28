@@ -110,17 +110,22 @@ def _solve(h, task, strategy="S02", objective=100.0, prediction_id=None):
     """Execute and record one real attempt.
 
     ``prediction_id`` (when given) is the wm-so/1 prediction this attempt
-    tests, so the executed action is bound to it automatically — the
-    documented hand-over from `plan-next`."""
+    tests: the association is established BEFORE the run (the candidate
+    supplies the strategy/solver, so the caller does not re-type them) and
+    the real result is added AFTER it. The script also reports the config it
+    really used, stamped with ``$OR_ACTION_ID``, so the run has an OBSERVED
+    configuration rather than a copy of the predicted one."""
     work = Path(h.home) / f"ws_{task['task_id']}_{strategy}"
     work.mkdir(parents=True, exist_ok=True)
     script = work / "solve.py"
     script.write_text(
-        "import json\n"
+        "import json, os\n"
+        "cfg = {'action_id': os.environ.get('OR_ACTION_ID'),\n"
+        "       'time_limit': 60}\n"
         "with open('result.json', 'w') as fh:\n"
         "    json.dump({'status': 'optimal', 'objective_value': "
         f"{objective}, 'objective_bound': {objective}, "
-        "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
+        "'runtime_seconds': 0.01, 'config': cfg}, fh)\n", encoding="utf-8")
     record = h.execute(task, strategy, str(script), str(work), solver="highs",
                        episode_id="ep1", prediction_id=prediction_id)
     h.record(record)
@@ -208,9 +213,9 @@ def main() -> int:
     plan = h.plan_next(
         task, "ep1",
         candidates=[ActionSpec("execute_strategy", task["task_id"],
-                               strategy_id="S01"),
+                               strategy_id="S01", solver="highs"),
                     ActionSpec("execute_strategy", task["task_id"],
-                               strategy_id="S02")],
+                               strategy_id="S02", solver="highs")],
         limits={"horizon": 1})
     suggested = (plan.get("suggested") or {}).get("strategy_id")
     print(f"prediction-driven plan : status={plan['status']}, "
@@ -222,41 +227,63 @@ def main() -> int:
     assert suggested == "S02", (
         "the better predicted candidate must win the suggestion")
     assert plan["prediction_context_id"] == ctx.context_id or True
-    # The suggestion is NOT a selection: record the explicit choice.
+    # The suggestion is NOT a selection: name the chosen candidate by the
+    # prediction the PLAN already made — the candidate is read from the
+    # decision's own comparison, never re-typed.
+    chosen_id = next(
+        c["prediction_id"] for c in plan["candidates"]
+        if c["action_spec"]["strategy_id"] == suggested)
     choice = h.choose_next(plan["decision_action_id"],
-                           chosen=ActionSpec(
-                               "execute_strategy", task["task_id"],
-                               strategy_id=suggested))
+                           prediction_id=chosen_id)
     print(f"explicit choice        : recorded "
-          f"({choice.get('selected', {}).get('strategy_id')})")
+          f"({choice.get('selected', {}).get('strategy_id')}) "
+          f"from prediction {chosen_id}")
     assert choice["selected"]["strategy_id"] == "S02"
 
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("3. Real execution, bound to the chosen candidate's prediction")
+    print("3. Real execution, associated with the prediction BEFORE it runs")
     print("=" * 72)
     # REUSE the prediction the plan already made for the chosen candidate —
-    # predicting it again would create a duplicate for one decision.
-    chosen_id = next(
-        c["prediction_id"] for c in plan["candidates"]
-        if c["action_spec"]["strategy_id"] == "S02")
+    # predicting it again would create a duplicate for one decision. The
+    # strategy and solver come FROM the candidate: pass None for both.
     calls_before = len(provider.requests)
-    record = _solve(h, task, strategy="S02", prediction_id=chosen_id)
+    work = Path(h.home) / "ws_so_exec"
+    work.mkdir(parents=True, exist_ok=True)
+    script = work / "solve.py"
+    script.write_text(
+        "import json, os\n"
+        "cfg = {'action_id': os.environ.get('OR_ACTION_ID'),\n"
+        "       'time_limit': 60}\n"
+        "with open('result.json', 'w') as fh:\n"
+        "    json.dump({'status': 'optimal', 'objective_value': 100.0,\n"
+        "               'objective_bound': 100.0, 'runtime_seconds': 0.01,\n"
+        "               'config': cfg}, fh)\n", encoding="utf-8")
+    record = h.execute(task, None, str(script), str(work), solver=None,
+                       episode_id=None, prediction_id=chosen_id)
     print(f"execution              : {record.execution_id} "
           f"(status {record.quality['status']})")
-    # The binding happened automatically because the attempt named the
-    # prediction; no model call was made for it.
+    print(f"identity from candidate: strategy={record.strategy_id}")
+    # The association was established before the run; the real config was
+    # OBSERVED after it, from the script's stamped receipt.
     binding = record.execution_features["prediction_binding"]
-    print(f"auto-bound             : {binding['bound']} "
+    config = record.execution_features.get("execution_config") or {}
+    print(f"associated             : {binding['bound']} "
           f"(mismatch={binding['trace']['binding_mismatch']})")
+    print(f"observed config        : "
+          f"time_limit={config.get('values', {}).get('time_limit')} "
+          f"(source {config.get('sources', {}).get('time_limit')})")
     print(f"no second prediction   : "
           f"{len(provider.requests) == calls_before}")
-    print("NOTE: this is a PROCESS check (prediction -> choice -> execution"
-          " -> binding), not a model-accuracy experiment.")
+    print("NOTE: this is a PROCESS check (predict -> choose by id ->")
+    print("      associate-before-run -> observe-after -> close), not a")
+    print("      model-accuracy experiment.")
     assert binding["bound"]
     assert binding["trace"]["binding_mismatch"] is None
     assert binding["comparable"]
+    assert config["values"]["time_limit"] == 60
+    assert config["sources"]["time_limit"] == "script_reported"
     assert len(provider.requests) == calls_before, (
         "planning's prediction must be REUSED, never predicted again")
 

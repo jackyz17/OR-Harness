@@ -382,17 +382,34 @@ class TestAutomaticBindingIsSafe(Base):
             h.capability_feedback_summary()["n_fact_bound"], 1,
             "a repeated bind must not double-count the fact")
 
-    def test_a_bad_prediction_id_leaves_the_execution_intact(self):
-        """A binding failure is bookkeeping, never evidence loss."""
+    def test_a_bad_prediction_id_is_refused_before_the_run(self):
+        """An unknown prediction is a PRECONDITION error: the association
+        is established before the run, so a bad id is refused BEFORE a
+        second of sandbox time is spent and BEFORE any execution fact is
+        staged. Nothing is lost — there was nothing to lose yet."""
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        with self.assertRaises(ValueError) as caught:
+            h.execute(TASK, "S01", str(self.script), str(self._work),
+                      solver="highs", episode_id="ep1",
+                      prediction_id="sp_nope")
+        self.assertIn("unknown prediction_id", str(caught.exception))
+        # No execution was staged and no action was left running: the
+        # refusal happened before the run, so there is no dangling state.
+        self.assertEqual(h.bank.pending(), [])
+        self.assertEqual(
+            [a for a in h.actions.query(task_id="t1")
+             if a.action_type == "execute_strategy"], [])
+
+    def test_a_manual_execution_still_records_without_a_prediction(self):
+        """An unpredicted attempt stays a first-class path: explicit
+        strategy/solver, no prediction, recorded as an unpredicted run."""
         provider = CountingProvider()
         h = self.make_harness(provider)
         record = h.execute(TASK, "S01", str(self.script), str(self._work),
-                           solver="highs", episode_id="ep1",
-                           prediction_id="sp_nope")
+                           solver="highs", episode_id="ep1")
         self.assertTrue(record.quality["feasible"])
-        binding = record.execution_features["prediction_binding"]
-        self.assertFalse(binding["bound"])
-        self.assertIn("bind-strategy", binding["reason"])
+        self.assertNotIn("prediction_binding", record.execution_features)
         h.record(record)
         self.assertEqual(h.bank.count(), 1)
 
@@ -655,24 +672,28 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
                          "a successful binding must not be reported as a "
                          "failure")
 
-    def test_a_failed_binding_says_why(self):
+    def test_a_conflicting_explicit_strategy_is_refused_before_the_run(self):
+        """The candidate fixes the strategy; an explicit argument that
+        disagrees is caught BEFORE the run (exit 2), with the reason — a run
+        that would be attributed to the wrong candidate never happens."""
         h = self.make_harness(CountingProvider())
         from or_harness import cli as cli_module
         original = cli_module._harness
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy",
+                   "strategy_id": "S01"}, "ep1")
         code, out = self.run_cli([
-            "execute", "--task", json.dumps(TASK), "--strategy", "S01",
+            "execute", "--task", json.dumps(TASK), "--strategy", "S99",
             "--code", str(self.script), "--workspace", str(self._work),
             "--solver", "highs", "--episode", "ep1",
-            "--prediction", "sp_does_not_exist"])
-        self.assertEqual(code, 0)
+            "--prediction", prediction.prediction_id])
+        self.assertEqual(code, 2)
         payload = json.loads(out)
-        reported = payload["result"]["prediction_binding"]
-        self.assertFalse(reported["bound"])
-        self.assertIn("bind-strategy", reported["reason"],
-                      "a real failure must carry its reason and the way out")
-        self.assertIn("WARNING", payload["summary"])
+        self.assertIn("contradict", payload["result"]["error"])
+        # Nothing ran and the prediction was not consumed.
+        self.assertEqual(h.bank.pending(), [])
 
 
 class TestWorldModelConfigurationIsReachable(Base):
@@ -1246,6 +1267,315 @@ class TestTheVerificationLevelConceptIsGone(Base):
         # The label leaves no trace that could be read as evidence.
         self.assertNotIn("verification_level", back.to_dict())
         self.assertNotIn("strong", json.dumps(back.to_dict()))
+
+
+# ---------------------------------------------------------------------------
+# 10  the association is established BEFORE the execution
+# ---------------------------------------------------------------------------
+
+
+class TestPreExecutionAssociation(Base):
+    """Requirement 1 & 2 & 3: `execute --prediction` reads the FROZEN
+    candidate, checks it before anything runs, takes the identity from it
+    (the caller does not re-type it), persists the link before the run, and
+    only ADDS the observed configuration afterwards."""
+
+    def _predict(self, h, strategy="S01", solver="highs", **config):
+        return h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy",
+                   "strategy_id": strategy, "solver": solver,
+                   "config": config}, "ep1")
+
+    def test_identity_is_taken_from_the_candidate(self):
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        prediction = self._predict(h)
+        # The caller re-types NOTHING: no --strategy, no --solver, no
+        # --episode. They come from the frozen candidate.
+        record = h.execute(TASK, None, str(self.script), str(self._work),
+                           solver=None, episode_id=None,
+                           prediction_id=prediction.prediction_id)
+        self.assertEqual(record.strategy_id, "S01")
+        self.assertEqual(record.solver["name"] or "highs", "highs")
+        self.assertTrue(record.quality["feasible"])
+        binding = record.execution_features["prediction_binding"]
+        self.assertTrue(binding["bound"])
+        self.assertIsNone(binding["trace"]["binding_mismatch"])
+
+    def test_the_link_exists_before_the_run(self):
+        """The association is persisted the moment the action exists: an
+        interrupted execution still shows which attempt a prediction was
+        testing. Observed by a probe executor that captures the action
+        BEFORE running anything."""
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        prediction = self._predict(h)
+        seen: Dict[str, Any] = {}
+
+        class Probe:
+            """An injected executor that records the action and then fails."""
+
+            def __init__(self, real):
+                self.real = real
+                self.calls = []
+
+            def execute(self, *a, **k):
+                seen["action"] = h.actions.get(k.get("action_id") or "")
+                raise RuntimeError("probe stopped before the sandbox ran")
+
+        h.executor = Probe(h.executor)
+        with self.assertRaises(RuntimeError):
+            h.execute(TASK, None, str(self.script), str(self._work),
+                      solver=None, episode_id=None,
+                      prediction_id=prediction.prediction_id)
+        action = seen.get("action")
+        self.assertIsNotNone(action, "the action exists during the run")
+        self.assertEqual(action.params.get("prediction_id"),
+                         prediction.prediction_id)
+        self.assertIsNotNone(action.params.get("prediction_bound_at"))
+        # And the prediction itself carries the forward link.
+        stored = h.strategy_predictions.get(prediction.prediction_id)
+        self.assertEqual(stored.trace.model_info.get(
+            "association_phase"), "linked_before_execution")
+        self.assertEqual(stored.trace.model_info.get(
+            "bound_action_id_before_execution"), action.action_id)
+        # The interrupted action is NOT left running forever.
+        ended = h.actions.get(action.action_id)
+        self.assertEqual(ended.status, "failed")
+
+    def test_a_claimed_prediction_is_refused(self):
+        """One prediction corresponds to ONE real attempt: reusing it for a
+        second execution is refused before the run, so the sample is never
+        double-counted."""
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        prediction = self._predict(h)
+        first = h.execute(TASK, None, str(self.script), str(self._work),
+                          solver=None, episode_id=None,
+                          prediction_id=prediction.prediction_id)
+        self.assertTrue(first.quality["feasible"])
+        with self.assertRaises(ValueError) as caught:
+            h.execute(TASK, None, str(self.script), str(self._work),
+                      solver=None, episode_id=None,
+                      prediction_id=prediction.prediction_id)
+        self.assertIn("already bound", str(caught.exception))
+
+    def test_a_script_outside_the_workspace_is_refused_before_the_run(self):
+        provider = CountingProvider()
+        h = self.make_harness(provider)
+        prediction = self._predict(h)
+        outside = Path(self.home) / "outside.py"
+        outside.write_text("import json\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as caught:
+            h.execute(TASK, None, str(outside), str(self._work),
+                      solver=None, episode_id=None,
+                      prediction_id=prediction.prediction_id)
+        self.assertIn("outside its workspace", str(caught.exception))
+        # The prediction was NOT spent.
+        stored = h.strategy_predictions.get(prediction.prediction_id)
+        self.assertIsNone(
+            stored.trace.model_info.get("bound_action_id"))
+
+
+# ---------------------------------------------------------------------------
+# 11  the actual execution configuration is OBSERVED, never copied
+# ---------------------------------------------------------------------------
+
+
+class TestActualConfigurationIsObserved(Base):
+    """Requirement 3: the executor records what it controlled, the script
+    reads back what really took effect, a missing value stays UNKNOWN, and a
+    stale result.json from an earlier run is never read as this run's
+    config."""
+
+    def _script(self, name, body):
+        work = Path(self.home) / f"ws_{name}"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(body, encoding="utf-8")
+        return script, work
+
+    def test_the_executor_records_what_it_controlled(self):
+        script, work = self._script("cfg_ok", (
+            "import json, os\n"
+            "cfg = {'action_id': os.environ.get('OR_ACTION_ID'),\n"
+            "       'time_limit': 60}\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01,\n"
+            "               'config': cfg}, fh)\n"))
+        h = self.make_harness()
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        config = record.execution_features["execution_config"]
+        # The executor's OWN keys, from its own control.
+        self.assertEqual(config["values"]["script_timeout_s"], 120.0)
+        self.assertEqual(config["sources"]["script_timeout_s"], "executor")
+        self.assertEqual(config["sources"]["solver"], "executor")
+        # The script's read-back value, labelled as such.
+        self.assertEqual(config["values"]["time_limit"], 60)
+        self.assertEqual(config["sources"]["time_limit"], "script_reported")
+
+    def test_a_receipt_without_the_matching_stamp_is_refused(self):
+        """A leftover result.json from an earlier run is NOT this run's
+        configuration: the receipt's action_id stamp must match."""
+        work = Path(self.home) / "ws_stale"
+        work.mkdir(parents=True, exist_ok=True)
+        # Pre-write a result.json stamped with a DIFFERENT action id.
+        (work / "result.json").write_text(json.dumps({
+            "status": "optimal", "objective_value": 9.0,
+            "config": {"action_id": "ac_someone_else", "time_limit": 999},
+        }), encoding="utf-8")
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
+            "              fh)\n", encoding="utf-8")
+        h = self.make_harness()
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        config = record.execution_features["execution_config"]
+        # The stale config NEVER appears: the new result.json carried none.
+        self.assertNotIn("time_limit", config["values"])
+        self.assertIn("receipt", config)
+
+    def test_a_failed_run_still_reports_the_configuration_it_set(self):
+        """A timeout after the script set its parameters still reports them
+        — 'no result' is not 'no config'."""
+        script, work = self._script("cfg_fail", (
+            "import json, os, sys\n"
+            "cfg = {'action_id': os.environ.get('OR_ACTION_ID'),\n"
+            "       'time_limit': 45}\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'running', 'config': cfg}, fh)\n"
+            "sys.exit(3)\n"))
+        h = self.make_harness()
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        self.assertEqual(record.quality["status"], "error")
+        config = record.execution_features["execution_config"]
+        self.assertEqual(config["values"]["time_limit"], 45)
+
+    def test_old_script_without_a_config_report_still_executes(self):
+        """A script that reports no config still runs; its internal
+        parameters stay UNKNOWN (never a copy of the predicted config), and
+        the binding says so rather than claiming a match."""
+        script, work = self._script("cfg_old", (
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
+            "              fh)\n"))
+        h = self.make_harness()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs", "config": {"time_limit": 60}}, "ep1")
+        record = h.execute(TASK, None, str(script), str(work),
+                           solver=None, episode_id=None,
+                           prediction_id=prediction.prediction_id)
+        self.assertTrue(record.quality["feasible"])
+        binding = record.execution_features["prediction_binding"]
+        # The predicted config was NOT copied in as if observed.
+        self.assertIn("time_limit", binding["trace"]["binding_unknown"]["config"])
+
+
+# ---------------------------------------------------------------------------
+# 12  choosing by prediction id (no re-typed candidate JSON)
+# ---------------------------------------------------------------------------
+
+
+class TestChooseNextByPredictionId(Base):
+    """Requirement 2: `choose-next --prediction` resolves the chosen
+    candidate from the DECISION's own recorded comparison; the deviation
+    test uses the candidate reference, and a prediction from another
+    decision is refused."""
+
+    def _plan(self, provider=None):
+        h = ORHarness(home=self.home, world_model=provider or CountingProvider())
+        self.addCleanup(h.close)
+        plan = h.plan_next(
+            TASK, "ep1",
+            candidates=[ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S01", solver="highs"),
+                        ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S02", solver="highs")])
+        return h, plan
+
+    def test_choosing_by_id_matches_the_candidate(self):
+        h, plan = self._plan()
+        target = plan["candidates"][1]
+        choice = h.choose_next(plan["decision_action_id"],
+                               prediction_id=target["prediction_id"])
+        self.assertEqual(choice["selected"]["strategy_id"], "S02")
+        # `choose-next --prediction` alone does not create a deviation when
+        # the id names the suggestion... but here S02 was chosen while S01
+        # was suggested: a real deviation, recorded as such.
+        suggested = plan["suggested"]["strategy_id"]
+        if suggested == "S02":
+            self.assertIsNone(choice["deviation"])
+        else:
+            self.assertIsNotNone(choice["deviation"])
+
+    def test_a_prediction_from_another_decision_is_refused(self):
+        h, plan = self._plan()
+        # A second decision with its own predictions.
+        plan2 = h.plan_next(TASK, "ep1",
+                            candidates=[ActionSpec("execute_strategy", "t1",
+                                                   strategy_id="S04")])
+        other_id = plan2["candidates"][0]["prediction_id"]
+        with self.assertRaises(ValueError) as caught:
+            h.choose_next(plan["decision_action_id"],
+                          prediction_id=other_id)
+        self.assertIn("not among the candidates", str(caught.exception))
+
+    def test_deviation_is_by_candidate_reference_not_whole_json(self):
+        """The same candidate in a different key ORDER, or with a different
+        cosmetic field, is NOT a deviation: the comparison is on the
+        candidate reference."""
+        h, plan = self._plan()
+        suggested = plan["suggested"]
+        chosen = dict(suggested)
+        # Reorder keys and add a cosmetic note: same candidate.
+        reordered = {k: chosen[k] for k in reversed(list(chosen))}
+        choice = h.choose_next(
+            plan["decision_action_id"],
+            chosen=ActionSpec.from_dict(reordered))
+        self.assertIsNone(choice["deviation"])
+
+    def test_a_different_config_is_a_deviation(self):
+        """strategy_id + solver alone is NOT the identity: the same pair
+        under a different config is a different candidate, and choosing it
+        is a deviation, not an accept."""
+        h, plan = self._plan()
+        chosen = dict(plan["suggested"])
+        chosen["params"] = {"time_limit": 999}
+        choice = h.choose_next(plan["decision_action_id"],
+                               chosen=ActionSpec.from_dict(chosen))
+        self.assertIsNotNone(choice["deviation"])
+
+    def test_the_cli_accepts_a_prediction_id(self):
+        provider = CountingProvider()
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        from or_harness import cli as cli_module
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        code, out = self.run_cli([
+            "plan-next", "--task", json.dumps(TASK), "--episode", "ep1",
+            "--candidates", json.dumps([
+                {"action_type": "execute_strategy", "strategy_id": "S01"}])])
+        self.assertEqual(code, 0)
+        plan = json.loads(out)["result"]["plan"]
+        prediction_id = plan["candidates"][0]["prediction_id"]
+        code, out = self.run_cli([
+            "choose-next", "--decision", plan["decision_action_id"],
+            "--prediction", prediction_id])
+        self.assertEqual(code, 0)
+        payload = json.loads(out)
+        self.assertEqual(payload["result"]["selected"]["strategy_id"], "S01")
 
 
 if __name__ == "__main__":

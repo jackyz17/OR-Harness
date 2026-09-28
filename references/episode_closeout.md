@@ -19,11 +19,12 @@ Related: the prediction service in [`references/strategy_outcome.md`](strategy_o
 
 ```
 profile / recall -> freeze ONE context
-    -> predict candidates (wm-so/1) -> compare -> EXPLICIT choice
+    -> predict candidates (wm-so/1) -> compare -> EXPLICIT choice (--prediction)
     -> model / execute / repair / verify (the agent's work)
-    -> bind the real action to the chosen candidate's prediction
+    -> execute --prediction associates the run BEFORE it starts; the result
+       and the observed configuration are added AFTER it
     -> finish_task / close-episode            <-- THIS PHASE
-    -> per-field evaluation of every bound prediction
+    -> per-field evaluation of every associated prediction
     -> experience calibration published (closed episodes only)
     -> LATER episodes' contexts read the published summary
 ```
@@ -44,7 +45,7 @@ orx close-episode --task t1 --episode ep1 [--terminal completed|failed|aborted|b
 What it does (in order):
 
 1. **refuses while actions are still running**: an episode with a `running` action returns `state="pending"` with the `unfinished_actions` listed — a running scope has no final numbers, and closing anyway would freeze a record their results could never enter (a re-close just returns the stored record). End the running actions (or let them finish), then close;
-2. **summarizes and evaluates** every BOUND strategy-outcome prediction of the episode against its real outcome (see §3–4);
+2. **summarizes and evaluates** every ASSOCIATED strategy-outcome prediction of the episode against its real outcome (see §3–4) — associated means the prediction is linked to a real action; whether any of it is CALIBRATABLE is decided here, field by field;
 3. **records the close-out once** — idempotent: re-closing (after a restart, or by mistake) returns the stored record and counts nothing twice;
 4. **publishes the calibration summary** (see §5) — built AFTER the evaluations and the close-out record are persisted, so the first close-out's own return already includes this round's samples.
 
@@ -78,7 +79,14 @@ Each field is judged on its own eligibility — never a blanket verdict:
 
 Excluded fields are **neither hits nor misses**: they never enter a denominator. An evaluation with nothing comparable is `excluded` with the per-field reasons; a scope still running is `pending`. The FROZEN prediction is read, never rewritten — no post-hoc "better" prediction is regenerated closer to the result.
 
-**Unknown identity is not a match.** The binding records `binding_mismatch` (a KNOWN disagreement) and `binding_unknown` (a field the executed action could not observe — no episode recorded, a config key the action log never carries) separately. A mismatch blocks the evaluation outright; an unknown makes the fields that depend on it unevaluable. Re-binding the same action re-evaluates the comparability (an action still running at first bind may have completed since).
+**Unknown identity is not a match.** The association records `binding_mismatch` (a KNOWN disagreement) and `binding_unknown` (a field the executed action could not observe — no episode recorded, a config key the action log or the script's config receipt never reported) separately. A mismatch blocks the evaluation outright; an unknown makes the fields that depend on it unevaluable. The config comparison reads the action's own `execution_config` (the executor's report plus the script's stamped receipt), so the predicted config is never copied in to manufacture a match. Re-binding the same action re-evaluates the comparability (an action still running at first bind may have completed since).
+
+**`bound` is not `calibratable`.** Being associated with a real action (`bound_action_id` set) is the weaker fact: it says the prediction is linked to a real attempt. Whether ANY of it may be calibrated is a SEPARATE question answered here, FIELD BY FIELD. Each evaluation reports:
+
+- `eligibility` — a per-field index: `benefit` (with its metric), `cost.dimensions[<dim>]`, `risk.events[<event>]`, and `interval`, each with its own `eligibility` and the reason when it is not `evaluable`. A missing observation of ONE field never erases the others: `benefit` can be `evaluable` while `cost.dimensions.llm_tokens` is `unobserved`;
+- `calibratable` — whether ANY part may enter the sample (`state == "evaluated"`). `false` is not a failure; it names which fields were unobservable via `exclusion_reasons`.
+
+The index is DERIVED from the field blocks (the authority), so a legacy evaluation written before it existed stays readable and no second copy of the state can drift.
 
 ## 5. The experience calibration summary
 

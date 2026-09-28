@@ -50,3 +50,4 @@ OR_Agent_Cross_Memory_Induction_本轮讨论总结.md
 *.bak
 *.log
 or_harness_home/
+.tmptest/

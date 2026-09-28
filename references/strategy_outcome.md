@@ -7,7 +7,7 @@ Read this page when you are predicting one candidate, comparing several, or bind
 - Protocol version: `wm-so/1`
 - Python module: `or_harness.world_model.strategy_prediction`
 - API: `ORHarness.predict_strategy_outcome` / `bind_strategy_outcome`
-- CLI: `orx predict-strategy` / `orx execute --prediction` (auto-binds) / `orx bind-strategy` (manual recovery) / `orx plan-next` (the only planning protocol)
+- CLI: `orx predict-strategy` / `orx plan-next` (the only planning protocol) / `orx choose-next --prediction` / `orx execute --prediction` (associates BEFORE the run) / `orx bind-strategy` (manual recovery)
 - Tests: `tests/harness/test_strategy_outcome.py`
 - Runnable example: [`references/examples/strategy_outcome.py`](examples/strategy_outcome.py)
 
@@ -23,9 +23,10 @@ problem understanding / profile + memory retrieval
         -> a few candidate strategies
         -> predicted benefit / cost / risk / uncertainty per candidate
         -> compared, one suggested
-        -> the outer agent EXPLICITLY chooses
+        -> the outer agent EXPLICITLY chooses (choose-next --prediction <id>)
         -> modelling, solving, verification (the agent's work)
-        -> the real execution is BOUND to the chosen candidate's prediction
+        -> execute --prediction: the association is established BEFORE the run,
+           and the real result + observed config are added AFTER it
         -> re-plan from the real observation if warranted
 ```
 
@@ -53,9 +54,9 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
 
 **Candidates.** A candidate is a `CandidateRef` (or a legacy `ActionSpec`, whose execution params and budget hint are preserved verbatim and whose unmappable scopes are refused). A candidate may cover modelling / decomposition / solving / repair — it is not just one solver call. The service does NOT generate candidates — they come from YOU (there is no built-in strategy directory to enumerate, and `recall` is a report on real memory rather than a menu) — and it never generates solve.py.
 
-**Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the choice and the execution binding, so a result is never bound to a configuration that was not the one predicted.
+**Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the choice (a different config is a deviation) and the execution association, so a result is never attributed to a configuration that was not the one predicted.
 
-**What the provider receives.** The full frozen context content — the joint problem representation (text, CIR relations, math attributes with origins), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate and an explicit output contract. The framework fixes the task, the candidate, the scope and the evidence sources; the model fills prediction content only.
+**What the provider receives.** The full frozen context content — the joint problem representation (text, CIR relations, math attributes with origins), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate, an explicit output contract AND a `benefit_convention` block. The framework fixes the task, the candidate, the scope, the evidence sources AND the benefit convention; the model fills prediction content only.
 
 **Output semantics.**
 
@@ -89,19 +90,19 @@ orx plan-next --task t.json --episode ep1 \
 `plan-next` (horizon fixed at 1):
 
 1. freezes ONE context for the whole decision (every candidate is conditioned on the same problem representation, X/B, retrieval evidence, capability evidence and constraints — one embedding call, one snapshot);
-2. predicts each candidate under wm-so/1 (a failed prediction does not drag the others down; the model-call count, wall clock and the REAL budget are checked before every call);
+2. predicts each candidate under wm-so/1 — under ONE shared `benefit_convention`, so every candidate is predicted on the SAME currency (a failed prediction does not drag the others down; the model-call count, wall clock and the REAL budget are checked before every call);
 3. scores each candidate on ONE conservative yardstick: `U = alpha*G - beta*C - gamma*R` with the SAME weights the harness scores everything else with:
-   - **G**: the candidate's own benefit value, when its kind is on the comparison's yardstick (normalized solution quality). A benefit of a different currency, or none, contributes NOTHING — unknown upside is never rewarded;
+   - **G**: the candidate's own benefit value, only when BOTH its kind AND its metric are on the comparison's yardstick (`solution_quality` / `normalized_objective_gap` — the SAME pair the close-out observes). A benefit of another kind or metric is reported, and the candidate produces **no utility at all** — an upside in a currency the comparison cannot read is never scored as zero (which would let it be ranked as if it were a real, worthless benefit);
    - **C**: the predicted cost over the common basis (the union of the dimensions any candidate predicted). A candidate missing a basis dimension is charged that dimension's PEAK normalized share — unknown cost is never free;
    - **R**: the MAXIMUM event probability (one explicit risk-evaluation rule; events are never assumed independent, so probabilities are neither summed nor multiplied). An event with no probability basis — or no risk prediction at all — charges the full gamma weight as a deficit;
    - the knowledge term is OFF (delta=0) for this protocol: an old knowledge-gain score is not an H improvement and does not leak into the new comparison;
-4. suggests the best candidate's first step. **A suggestion is not a selection**: only `choose-next` writes `X.selected_plan`, and it records accept / deviate / reject explicitly.
+4. suggests the best candidate's first step. **A suggestion is not a selection**: only `choose-next` writes `X.selected_plan`, and it records accept / deviate / reject explicitly. Accept by ID (`choose-next --decision <id> --prediction <the chosen candidate's id>`): the candidate is read from this decision's own recorded comparison, and the deviation test compares the candidate REFERENCE (action type/strategy/solver/config), never the whole plan JSON.
 
 **Fallback.** When NO candidate carries a usable prediction (provider down, every payload invalid), the plan reports `status="no_valid_predictions"` with the reasons and NO suggestion — fall back to `recall`/Selector ordering or choose yourself. The fallback is reported as what it is; it is never dressed up as a completed world-model comparison, and the calls that did happen keep their recorded cost.
 
-**A benefit that is not on the yardstick contributes NOTHING — it does not make the candidate incomparable.** Cost and risk still score, so the candidate's `utility` is a real number computed with a benefit term of 0.0 (the mirror of charging unknown risk in full: unknown upside is never rewarded). The incomparable field is named in `score.incomparable["benefit"]` so a reader can see that Q was not compared, rather than reading the utility as a complete Q/C/R judgement. This is why the metric must be declared BEFORE the result is seen: a prediction in a currency this comparison cannot use is reported, never converted.
+**A benefit that is not on the yardstick does not enter the full ranking.** The comparison needs BOTH the kind AND the metric to match: two `solution_quality` predictions measuring different things are not one currency, so `normalized_objective_gap` (the close-out's own observable metric, including its aliases) is what the ranking reads. A candidate whose benefit is off the yardstick keeps its COST and RISK picture (still reported, still charged) but produces no `utility` — so it can never silently win or lose the full ranking on an upside nobody could read. It is named in `score.incomparable["benefit"]`. This is why the convention must be declared BEFORE the result is seen: a prediction in a currency this comparison cannot use is reported, never converted, and never scored as a zero.
 
-**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one:
+**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one (the shared `benefit_convention` in the request says so):
 
 | You are predicting | Declare | Observed from |
 |---|---|---|
@@ -142,24 +143,32 @@ A socket timeout bounds ONE blocking operation, not the whole request, so the ca
 
 **Cost accounting.** The model calls are REAL spend: charged once to the decision action as own cost (failed calls included), reported in `planning_cost`, never part of any candidate's utility. Candidate execution costs are PREDICTED values. Missing usage stays unknown — never free.
 
-## 4. Binding the real execution
+## 4. Associating the real execution (before it runs)
 
 ```bash
-orx execute ... --strategy S02 ...      # your modelling + solving + verify
-orx record --from-staged <id>
+# the ordinary flow: the association is established BEFORE the run
+orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace ws
+
+# the manual/recovery path, for an action that already ran
 orx bind-strategy --prediction PREDICTION_ID --action ACTION_ID
 ```
 
-`bind-strategy` checks request identity — task, episode, strategy, solver and the candidate's execution config — and records a mismatch rather than silently comparing: a result produced under another configuration is not this prediction's truth. The prediction's `trace.comparable` becomes true only when the bound action is a completed real scope (an attempt-scope prediction needs a completed linked execution; a window-scope prediction needs the window itself complete). Re-binding the same action is idempotent and re-bills nothing.
+**The association is established before the execution, and the observation is added after it.** `execute --prediction` reads the FROZEN candidate, checks it, and takes the strategy/solver/episode FROM it — the caller does not re-type what the prediction already fixed: the**problem identity** must match (a changed task/data/CIR is a different problem; writing the `model` after predicting is NOT a change), the prediction's status must be usable, and a prediction already claimed by another attempt is refused (one attempt per candidate). A path error, a contradictory explicit argument or a claimed prediction is reported BEFORE anything runs, so the prediction is not spent and no cost is incurred; the action and its link are persisted before the sandbox starts, so an interrupted execution still shows which attempt the prediction was testing. What the run then adds is the RESULT and the OBSERVED configuration — never a re-interpretation of the candidate.
+
+**Unknown is not a match.** The config comparison reads the configuration that really took effect, from the action's own `execution_config` (the executor's report plus the solve script's `config` receipt, accepted only when stamped with this attempt's action id so a leftover `result.json` is never read as this run's config). A key the run never reported is recorded under `binding_unknown` — separately from a known `binding_mismatch` — and the fields that depend on it stay unevaluable at close-out. A mismatch makes the prediction not comparable; an unknown makes only the fields that depend on it unevaluable (the close-out decides field by field).
+
+**`bound` is not `calibratable`.** Being associated (`bound_action_id` set) says the prediction is linked to a real action. Whether ANYTHING may be calibrated is a separate question the CLOSE-OUT answers, field by field; the two are never conflated. `trace.comparable` becomes true only when the associated action is a completed real scope AND no mismatch exists (an attempt-scope prediction needs a completed linked execution; a window-scope prediction needs the window itself complete).
+
+`bind-strategy` is the MANUAL/recovery path: it applies the SAME identity rules to an action that already ran, so a manual bind behaves exactly like an automatic one. Re-binding the same action is idempotent and re-bills nothing.
 
 **What is deliberately out of scope here:**
 
 - capability-evolution prediction, offline learning decisions and their effect verification — see [`references/world_model_contract.md`](world_model_contract.md) and the `*-capability` commands in [`references/commands.md`](commands.md);
 - closing the two known planner gaps (a candidate with no comparable benefit can still be suggested; the unknown-cost/unknown-risk charges are decision rules, not measurements). The close-out's evaluation does NOT depend on the planner's utility or its suggestion: eligibility is decided by the prediction–outcome match and the measurement basis only.
 
-The window-level error aggregation and the episode close-out are **implemented**: after the real execution, `orx close-episode` evaluates every bound prediction field by field and publishes the experience calibration — see [`references/episode_closeout.md`](episode_closeout.md).
+The window-level error aggregation and the episode close-out are **implemented**: after the real execution, `orx close-episode` evaluates every ASSOCIATED prediction field by field and publishes the experience calibration — see [`references/episode_closeout.md`](episode_closeout.md).
 
-Unexecuted candidates keep `unexecuted`/`unbound` semantics: no counterfactual truth is fabricated from the winner's result. After the real execution you may build a NEW current context and re-plan — that updates facts and decision inputs; it is not in-task parameter learning, calibration or knowledge induction.
+Unexecuted candidates keep `unexecuted`/`unassociated` semantics: no counterfactual truth is fabricated from the winner's result. After the real execution you may build a NEW current context and re-plan — that updates facts and decision inputs; it is not in-task parameter learning, calibration or knowledge induction.
 
 ## 5. Compatibility
 

@@ -37,7 +37,7 @@ If you already know the problem, jump straight there:
 |---|---|---|
 | `task_id` / `--episode` | **yours to choose.** One logical problem keeps ONE `task_id` however often you solve it; an episode label groups the attempts of one solving effort | every command that takes `--task` / `--episode` |
 | Planning decision action id | `plan-next` → `result.decision_action_id` | `choose-next --decision` |
-| The chosen candidate's prediction id | `plan-next` → `result.plan.candidates[].prediction_id`, or `predict-strategy` → `result.prediction_id` | `execute --prediction`, `bind-strategy --prediction` |
+| The chosen candidate's prediction id | `plan-next` → `result.plan.candidates[].prediction_id`, or `predict-strategy` → `result.prediction_id` | `choose-next --prediction`, `execute --prediction`, `bind-strategy --prediction` |
 | Execution id | `execute` → `result.execution_id` | `check-task`, `record --from-staged`, `exclude-execution` |
 | Action id | `execute` → `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
 | Frozen evidence package | `induction-candidates` → `result.bundles[]` | `predict-capability --bundle` |
@@ -332,7 +332,7 @@ Pre-execution **cost** expectation for one (task, strategy), with explicit prove
 
 - **Input**: `--context CTX_ID` reuses a frozen context (identity verified against the task/version/episode AND the effective input version — pass the SAME `--cir` you built the context with); the default builds one fresh context for this call. The provider receives the full context CONTENT (joint problem representation, retrieval evidence, capability evidence, constraints), not ids.
 - **Output**: a `StrategyOutcomePrediction` — benefit with metric/unit/baseline (`solution_quality` must be NORMALIZED in [0,1]; a raw objective value is refused, never clamped), cost as a CostVector with a predicted-dimension mask, risk as named events separate from cost, uncertainty with the model's self-report recorded as explicitly UNCALIBRATED. Every failure state (not configured, provider error, empty payload, invalid JSON, NaN, out-of-range probability) is distinguishable and persisted with whatever usage the call consumed. One call, no retries, no defaults.
-- **Binding**: after you execute the candidate, `orx bind-strategy --prediction ID --action ACTION_ID` records the prediction–execution linkage (identity checked: task/episode/strategy/solver/config; a mismatch is recorded, never scored). Full spec: [strategy_outcome.md](strategy_outcome.md).
+- **Binding**: the ordinary flow establishes the association at `execute --prediction` time, BEFORE the run. `orx bind-strategy --prediction ID --action ACTION_ID` is the MANUAL/recovery path for an action that was already run without it: it applies the SAME identity rules (action type/task/episode/strategy/solver and the candidate's execution config), so a manual bind behaves exactly like an automatic one. Full spec: [strategy_outcome.md](strategy_outcome.md).
 
 **Describe the candidate's METHOD.** A candidate carries a `method` object — `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` — and the model predicts from it. A bare `strategy_id` (or a solver name) tells the model nothing about what would happen, so an undescribed method is an unanswerable request. Supply it when you propose the candidate, in the caller's own words; an empty value means YOU did not describe it, never that there is nothing to describe. This matters most at a cold start, where there is no memory to read a description from. The solver and `config` stay their own fields: those are what the execution runs with, not what the approach is.
 
@@ -372,7 +372,7 @@ The two are different measurements and are never interchanged. `valid_progress` 
 **Horizon is FIXED at 1.** There is no imagined multi-step rollout: one macro comparison, then you re-plan from the REAL observation of the chosen step. `--horizon` accepts only 1; any other value is refused with the replacement path named rather than silently ignored.
 
 - **Candidates**: `--candidates` (your own ActionSpec list) is REQUIRED. The framework does not generate a candidate menu — there is no directory to enumerate. You propose the methods you want compared (with their configuration), and the world model predicts their consequences; `orx recall` shows what memory already holds for this problem.
-- **Reuse the prediction — do not predict again.** Every compared candidate's prediction id is returned under `result.plan.candidates[]`. After `choose-next`, pass the CHOSEN candidate's id straight to `orx execute --prediction <id>`: the attempt is bound to that prediction automatically. Calling `predict-strategy` for the same candidate a second time would create a DUPLICATE prediction of one decision.
+- **Reuse the prediction — do not predict again.** Every compared candidate's prediction id is returned under `result.plan.candidates[]`. Accept with `orx choose-next --decision <id> --prediction <the chosen candidate's id>`, then pass the SAME id straight to `orx execute --prediction <id>`: the association to that prediction is established before the run. Calling `predict-strategy` for the same candidate a second time would create a DUPLICATE prediction of one decision.
 - **Bounds**: candidate count, `--max-calls`, and a wall-clock budget. Exhaustion truncates with an explicit reason — never a silent partial answer. The real planning spend is charged ONCE to the decision action and reported in `planning_cost` — sunk, never part of any candidate's score.
 - **A suggestion is not a selection**: `plan-next` never writes `X.selected_plan` and never executes. Only `choose-next` does.
 - **Unknowns are reported, not hidden**: missing cost/benefit/risk predictions appear per candidate under `score.incomparable`; with an undeclared or partially-unknown budget, `budget_confirmation` is `unknown`/`unconfirmed` — never claimed "within budget". An already-exceeded real budget stops planning before any model call (`status=fallback`).
@@ -381,21 +381,44 @@ The two are different measurements and are never interchanged. `valid_progress` 
 
 **Next.** Pass `result.decision_action_id` to `choose-next`, then execute the chosen candidate with its `result.plan.candidates[].prediction_id`. **Time budget.** `--time-budget S` (default 120) bounds the WHOLE decision: before each call the remaining budget is passed down as that call's timeout, and after the last call the elapsed time is re-checked. The result reports the values that were in force under `result.effective_parameters`. Failures: `--horizon` other than 1 exits 2 by design; `no_valid_predictions` means no candidate carried a usable prediction — fall back to `recall` ordering or choose yourself; a per-candidate prediction that failed is reported under that candidate with its own `failure.kind` (see `predict-strategy`), and the OTHER candidates still get scored.
 
-### `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
+### `orx choose-next --decision ACTION_ID (--prediction PREDICTION_ID | --chosen spec.json | --rejected) [--note "..."]`
 
-Record YOUR explicit choice after a plan: accept the suggestion, pick another candidate (a deviation, recorded with its reason), or reject all. Only this call writes `X.selected_plan`; the choice itself produces no execution quality. Then execute the step with `orx execute --prediction <the chosen candidate's prediction_id>`, which binds the attempt to the prediction the plan already made — do NOT call `predict-strategy` again. Record the result with `orx record` and re-plan from the new real state afterwards; the old plan stays as the suggestion of its time.
+Record YOUR explicit choice after a plan: accept the suggestion, pick another candidate (a deviation, recorded with its reason), or reject all. Only this call writes `X.selected_plan`; the choice itself produces no execution quality.
 
-**Next.** `execute --prediction <the chosen candidate's id>`. Failures: an unknown or non-`select_strategy` decision action is refused; a rejected suggestion is recorded as `last_rejected_suggestion` and never overwrites `selected_plan`.
+**Name the candidate by its prediction id** (the ordinary path): `--prediction` is the id `plan-next` returned for the candidate you chose, under `result.plan.candidates[].prediction_id`. The candidate is read from the DECISION's own recorded comparison, so a prediction that belongs to another decision (or was never compared here) is refused rather than silently chosen — you never have to re-type the candidate JSON, and the tool cannot pick a candidate the decision never evaluated. `--chosen` (the full ActionSpec) remains available; if both are given they must name the same candidate. The deviation test compares the candidate REFERENCE — action type, strategy, solver and configuration — never the whole plan JSON (a cosmetic key is not a deviation) and never `strategy_id + solver` alone (the same pair under a different config is a different candidate).
+
+Then execute the step with `orx execute --prediction <that same prediction_id>`, which establishes the association to the prediction the plan already made — do NOT call `predict-strategy` again. Record the result with `orx record` and re-plan from the new real state afterwards; the old plan stays as the suggestion of its time.
+
+**Next.** `execute --prediction <the chosen candidate's id>`. Failures: an unknown or non-`select_strategy` decision action is refused; a prediction id that is not among the decision's compared candidates is refused; a rejected suggestion is recorded as `last_rejected_suggestion` and never overwrites `selected_plan`.
 
 ## Stage 4 — Execute and verify
 
-### `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME`
+### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1]`
 
 Run this for the strategy you CHOSE. Predicting several candidates is how the choice is made; executing one is what the loop does. A further attempt is your decision after a real failure or an unresolved uncertainty — nothing here starts a second solve on its own, and every attempt that does run is charged its own real cost.
+
+**Two ways in, and they differ in what is established when.**
+
+- **With `--prediction`** the association is established BEFORE the run. The FROZEN candidate supplies the strategy, the solver and the episode (do not re-type them — an explicit argument that contradicts the candidate is refused before anything executes); the prediction's status, the problem identity and the claim on the prediction are all checked up front. A prediction already consumed by another attempt is refused (one attempt per candidate); a prediction made for a DIFFERENT problem is refused (note that writing the `model` field after predicting is NOT a change — the problem identity excludes post-strategy artifacts). The action and its link are persisted before the executor starts, so an interrupted execution still shows which attempt the prediction was testing; after the run only the RESULT and the observed configuration are added. Precondition failures exit 2 with the reason and spend NOTHING.
+- **Without `--prediction`** you supply `--strategy` and `--solver` explicitly: a legitimate unpredicted attempt, recorded as such. `bind-strategy` can associate a prediction with it later.
 
 You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox and its **static policy** is precise, so read it before debugging a rejected script: `subprocess`, `socket`, `urllib`, `http`, `requests` and `shutil` are blocked imports, `pathlib` is blocked, and only `os` / `os.path` are allowed from `os` (calls such as `os.chdir`, `os.walk`, `os.remove` are refused). **Importing a solver library is allowed** — `ortools`, `highspy` and other in-process solvers are how you are expected to solve; only a subprocess-based solver (PuLP's CBC) cannot run here. Every constraint label must be `C1`, `C2`, `C3`, … so the L2 symbol cross-reference can resolve it. POSIX rlimits + a wall-clock timeout apply.
 
 Your script writes its answer with a literal `open('result.json', 'w')`. The script is executed with `--workspace` as its working directory, and it must live inside that workspace, so the relative path resolves to `<workspace>/result.json` and no other path is accepted. Your script must write `result.json` with at least `status` (optimal|feasible|infeasible|unbounded|timeout|error), `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`, and — whenever a task-level check will need to read the answer — `variables`, an object of variable name → value (e.g. `{"x1": 2, "x2": 3}`). The solution vector is what makes `orx check-task` possible: integrality and objective recomputation can only be checked against actual values. It is stored on the record as `execution_features.solution_variables` (truncated past 2000 entries, with `solution_variables_truncated` naming what was dropped — a check needing a dropped variable reports it as unchecked rather than passing).
+
+**Report the configuration that really took effect (optional but recommended).** To let the framework tell a predicted configuration from an observed one, have `solve.py` write the parameters it really used back into `result.json` under a `config` object, stamped with the action id the executor passes through `$OR_ACTION_ID`:
+
+```python
+import json, os
+cfg = {"action_id": os.environ.get("OR_ACTION_ID"),
+       "time_limit": 60,          # the limit the SOLVER actually applied
+       "seed": 42}
+json.dump({"status": "optimal", "objective_value": 10755,
+           "objective_bound": 10755, "runtime_seconds": 4.1,
+           "config": cfg}, open("result.json", "w"))
+```
+
+The receipt is accepted ONLY when its `action_id` matches this attempt's action, so a leftover `result.json` from an earlier run in the same workspace is never read as this run's configuration. It is read on the FAILURE paths too (a timeout after the parameters were set still reports them). The result appears under `execution_features.execution_config = {values, sources, action_id}`: `sources` splits what the EXECUTOR controlled (`script_timeout_s` = the wall clock over the WHOLE script, `solver_timeout_s` = the limit handed to the solver) from what the SCRIPT read back (`script_reported`). A key that is absent is UNKNOWN — the binding never copies the predicted config in to manufacture a match.
 
 The profile used in `execute` is the same frozen pre-strategy signature from `recall` — derived from `coupling` (CIR) / `spec` / `annotations` / `model` only.
 
@@ -405,7 +428,7 @@ The executor measures only what it can observe: `latency_s` and `solver_runtime_
 
 `execute` also persists the task text (`task_texts`, keyed by `(task_id, text_digest)`) — that is where the retrieval document comes from. Solving the SAME `task_id` with different content creates separate versions, so each execution stays linked to the text actually in force, and the two can never be confused later.
 
-**Next.** `check-task <result.execution_id>` before treating the answer as a success, then `record --from-staged <result.execution_id>`. Failures: a sandbox-policy rejection measures nothing and still stages the attempt; a `prediction_binding` with `bound: false` names the mismatch and can be rebuilt with `bind-strategy`.
+**Next.** `check-task <result.execution_id>` before treating the answer as a success, then `record --from-staged <result.execution_id>`. Failures: a sandbox-policy rejection measures nothing and still stages the attempt; with `--prediction`, a precondition failure (unknown prediction, changed problem, contradictory argument, an already-claimed prediction, a script outside the workspace) exits 2 BEFORE the run and spends nothing; `result.prediction_binding` reports `bound`, `config_observed` and `config_unknown`, and a `bound: false` names the reason and can be rebuilt with `bind-strategy`.
 
 ### `orx check-task <execution_id> [--check JSON] [--episode ep1]`
 
@@ -440,9 +463,9 @@ The framework does **not** parse natural-language constraints: a constraint is c
 
 ### `orx bind-strategy --prediction ID --action ACTION_ID`
 
-Bind a strategy-outcome prediction to the real action that ran. The binding checks request identity (action type/task/episode/strategy/solver and the candidate's execution config) and sets `trace.comparable` only when the bound action is a completed real scope. **Unknown is not a match**: a field the executed action could not observe (no episode recorded, a config key the action log never carries) is recorded under `binding_unknown` — separately from a known `binding_mismatch` — and the fields that depend on it stay unevaluable at close-out. Idempotent (a re-bind re-evaluates the comparability); no model call; nothing re-billed. The per-field evaluation itself happens at episode close-out (`orx close-episode`); see [episode_closeout.md](episode_closeout.md).
+Bind a strategy-outcome prediction to an action that ALREADY ran. This is the manual/recovery path — the ordinary flow associates the prediction at `execute --prediction` time, before the run — and it applies the SAME rules, so a manual bind is indistinguishable from an automatic one. It checks request identity (action type/task/episode/strategy/solver and the candidate's execution config) and sets `trace.comparable` only when the bound action is a completed real scope. **Unknown is not a match**: a field the executed action could not observe (no episode recorded, a config key the action log or the script's config receipt never reported) is recorded under `binding_unknown` — separately from a known `binding_mismatch` — and the fields that depend on it stay unevaluable at close-out. The config comparison reads the action's own `execution_config` (the executor's report plus the script's stamped receipt) and reports `config_observed` / `config_unknown`, so the predicted config is never copied in to manufacture a match. Idempotent (a re-bind re-evaluates the comparability); no model call; nothing re-billed. The per-field evaluation itself happens at episode close-out (`orx close-episode`); see [episode_closeout.md](episode_closeout.md).
 
-**Next.** Close the episode when the scope ends, so the bound prediction is evaluated. Failures: a mismatch or unknown identity field is recorded and makes the prediction non-comparable rather than silently matching it.
+**Next.** Close the episode when the scope ends, so the associated prediction is evaluated. Failures: a mismatch or unknown identity field is recorded and makes the prediction non-comparable rather than silently matching it.
 
 ## Stage 5 — Record facts and cost
 

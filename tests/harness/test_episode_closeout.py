@@ -1114,6 +1114,81 @@ class TestCalibrationGrouping(M4Case):
         self.assertEqual(group["basis"], "insufficient_evidence")
 
 
+class TestEligibilityIsPerField(M4Case):
+    """Requirement 4: ``bound`` (the association) and ``calibratable`` (the
+    evaluation) are separate facts. Field-by-field eligibility is reported;
+    a missing observation of ONE field never erases the others."""
+
+    def test_a_bound_prediction_reports_its_field_eligibility(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        # The association exists; the prediction is NOT yet calibrated.
+        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+                                             record.action_id)
+        self.assertTrue(bound.trace.comparable)
+        self.assertEqual(bound.trace.model_info.get("bound_action_id"),
+                         record.action_id)
+        # Only the close-out decides what may be calibrated, field by field.
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        self.assertEqual(evaluation["state"], "evaluated")
+        self.assertTrue(evaluation["calibratable"])
+        eligibility = evaluation["eligibility"]
+        self.assertEqual(eligibility["benefit"]["eligibility"], "evaluable")
+        # The unmeasured cost dimension is excluded, and the BENEFIT is not
+        # erased by that: cost and benefit have SEPARATE eligibilities.
+        self.assertIn("llm_tokens", eligibility["cost"]["dimensions"])
+        self.assertEqual(
+            eligibility["cost"]["dimensions"]["llm_tokens"]["eligibility"],
+            "unobserved")
+        self.assertEqual(eligibility["benefit"]["eligibility"], "evaluable")
+
+    def test_an_excluded_prediction_is_not_calibratable(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S01"}, "ep1")
+        record = self.solve(task, strategy="S04")   # a different strategy
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        # BOUND but NOT calibratable: the two are different facts.
+        self.assertEqual(evaluation["state"], "excluded")
+        self.assertFalse(evaluation["calibratable"])
+        self.assertTrue(evaluation["exclusion_reasons"])
+
+    def test_a_legacy_evaluation_derives_its_eligibility_index(self):
+        """An evaluation written before the index existed still READS: the
+        index is derived from the blocks, so old records never break and no
+        second copy of the state can drift."""
+        from or_harness.world_model.episode_closeout import (
+            StrategyPredictionEvaluation,
+        )
+        legacy = StrategyPredictionEvaluation(
+            prediction_id="sp_legacy", task_id="t1", episode_id="ep1",
+            state="excluded",
+            benefit={"eligibility": "scope_mismatch", "reason": "different"},
+            cost={"eligibility": "unobserved",
+                  "excluded": {"llm_tokens": "not measured"}},
+        )
+        payload = legacy.to_dict()
+        self.assertIn("eligibility", payload)
+        self.assertEqual(payload["eligibility"]["benefit"]["eligibility"],
+                         "scope_mismatch")
+        self.assertEqual(
+            payload["eligibility"]["cost"]["dimensions"]["llm_tokens"]
+            ["eligibility"], "unobserved")
+        self.assertFalse(payload["calibratable"])
+        # Round-trips without change.
+        again = StrategyPredictionEvaluation.from_dict(payload)
+        self.assertEqual(again.to_dict()["eligibility"],
+                         payload["eligibility"])
+
+
 # ---------------------------------------------------------------------------
 # 7. CLI surface
 # ---------------------------------------------------------------------------

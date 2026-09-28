@@ -87,6 +87,48 @@ def _solution_variables(raw: Any) -> Optional[Dict[str, Any]]:
     return {str(key): value for key, value in raw.items()}
 
 
+def _config_receipt(workspace: Path,
+                    action_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Read the script's CONFIG RECEIPT out of ``result.json``, or None.
+
+    The receipt is the ``config`` object a script reports for the
+    parameters that really took effect (a time limit it applied, a gap
+    target it used, a seed it fixed). Two rules keep it from lying:
+
+    * it must be stamped with THIS attempt's ``action_id`` under
+      ``config.action_id``. The executor passes the id through
+      ``OR_ACTION_ID``; a receipt whose stamp does not match is a
+      leftover from an earlier run in the same workspace and is refused.
+      A receipt with NO stamp is refused too — an unattributable config is
+      not this attempt's configuration;
+    * it is read on the FAILURE paths as well (timeout, error, invalid
+      result.json) by the same function, so a run that set its parameters
+      and then failed still reports them — "no result" is not "no config".
+
+    Returns ``{"values": {...}, "source": {key: origin}}`` or None. The
+    ``action_id`` stamp itself is removed from ``values`` (it is the
+    receipt's identity, not a script parameter).
+    """
+    if not action_id:
+        return None
+    path = Path(workspace) / "result.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    config = payload.get("config")
+    if not isinstance(config, dict) or not config:
+        return None
+    if str(config.get("action_id") or "") != str(action_id):
+        return None
+    values = {str(k): v for k, v in config.items() if k != "action_id"}
+    if not values:
+        return None
+    return {"values": values}
+
+
 def _resource_limits(cpu_seconds: int, memory_bytes: int, file_bytes: int):
     def apply_limits() -> None:
         try:
@@ -129,7 +171,7 @@ class ExecutionOutcome:
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     stdout: str = ""
     stderr: str = ""
-    #: The solution vector the script reported (``result.json``'s optional
+    #: Solution variables the script reported (``result.json``'s optional
     #: ``variables`` map), or None when it reported none. This is what makes
     #: a TASK-level check possible (integer domains, objective
     #: recomputation): the solver's own feasibility verdict cannot answer
@@ -137,6 +179,15 @@ class ExecutionOutcome:
     #: can. Absent is reported as absent — never fabricated, never treated
     #: as an empty solution.
     variables: Optional[Dict[str, Any]] = None
+    #: The script's CONFIG RECEIPT: the parameters that actually took
+    #: effect, read back from ``result.json``'s optional ``config`` object
+    #: when it is stamped with THIS attempt's ``action_id`` (the executor
+    #: passes the id through the ``OR_ACTION_ID`` environment variable).
+    #: None when the script reported no config, or the receipt's stamp does
+    #: not match — a leftover ``result.json`` from an earlier run in the
+    #: same workspace is stale and is never read as this attempt's
+    #: configuration. Absent means UNKNOWN, never a copied prediction.
+    config_report: Optional[Dict[str, Any]] = None
 
 
 class SafePythonExecutor:
@@ -151,7 +202,8 @@ class SafePythonExecutor:
 
     # -- execution ------------------------------------------------------------
 
-    def run(self, code_path: Path, workspace: Path, solver: str) -> ExecutionOutcome:
+    def run(self, code_path: Path, workspace: Path, solver: str,
+            *, action_id: Optional[str] = None) -> ExecutionOutcome:
         code_path = Path(code_path).resolve()
         workspace = Path(workspace).resolve()
         if workspace not in code_path.parents and code_path != workspace:
@@ -172,6 +224,13 @@ class SafePythonExecutor:
             "PYTHONDONTWRITEBYTECODE": "1",
             "OR_SOLVER_TIMEOUT_SECONDS": str(self.solver_timeout_seconds),
         }
+        # The action id travels to the script so its config receipt can be
+        # stamped with it: a receipt is only THIS attempt's configuration
+        # when the stamp matches. Without a stamp a leftover result.json
+        # from an earlier run in the same workspace would be read as the
+        # current attempt's configuration.
+        if action_id:
+            env["OR_ACTION_ID"] = str(action_id)
         start = time.monotonic()
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
@@ -191,11 +250,16 @@ class SafePythonExecutor:
                 cwd=str(workspace), env=env, capture_output=True,
                 timeout=self.timeout_seconds, **kwargs)
         except subprocess.TimeoutExpired:
+            # A timeout still leaves whatever the script managed to write:
+            # the config receipt is read back on the failure path too, so
+            # a run that set its key parameters before hitting the wall
+            # clock can still report the configuration that was in force.
             return ExecutionOutcome(
                 status="timeout", solver=solver,
                 wall_seconds=time.monotonic() - start,
                 normalized_error="execution timeout",
-                message="Solve script exceeded the wall-clock timeout")
+                message="Solve script exceeded the wall-clock timeout",
+                config_report=_config_receipt(workspace, action_id))
         wall = time.monotonic() - start
         stdout = _clip(proc.stdout.decode("utf-8", "replace"), self.max_stdout_chars)
         stderr = _clip(proc.stderr.decode("utf-8", "replace"), self.max_stderr_chars)
@@ -206,7 +270,8 @@ class SafePythonExecutor:
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
                 normalized_error=_normalize_error(
                     stderr or stdout or _exit_note(proc.returncode)),
-                message="Process failed or did not write result.json")
+                message="Process failed or did not write result.json",
+                config_report=_config_receipt(workspace, action_id))
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -214,7 +279,8 @@ class SafePythonExecutor:
                 status="error", solver=solver, exit_code=proc.returncode,
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
                 normalized_error="invalid result.json: " + type(exc).__name__,
-                message="result.json is invalid")
+                message="result.json is invalid",
+                config_report=_config_receipt(workspace, action_id))
         # Solver runtime: prefer the script-reported value; otherwise fall
         # back to wall-clock as an EXPLICIT proxy (never silently zero,
         # never masquerading as a precise solver runtime). A reported value
@@ -255,6 +321,7 @@ class SafePythonExecutor:
             message=str(payload.get("message", "")),
             diagnostics=dict(payload.get("diagnostics") or {}),
             variables=_solution_variables(payload.get("variables")),
+            config_report=_config_receipt(workspace, action_id),
             stdout=stdout, stderr=stderr)
 
     # -- verification (infrastructure, not a research contribution) -----------
@@ -318,7 +385,8 @@ class SafePythonExecutor:
 
     def execute(self, code_path: Path, workspace: Path, *, solver: str,
                 task_id: str, strategy_id: str, profile: ProblemProfile,
-                code_hash: Optional[str] = None) -> ExecutionRecord:
+                code_hash: Optional[str] = None,
+                action_id: Optional[str] = None) -> ExecutionRecord:
         """Run once, verify, meter cost, and assemble an ExecutionRecord.
 
         The record is returned, not persisted — recording is the harness's
@@ -337,9 +405,15 @@ class SafePythonExecutor:
           retry is not observable here — see ``api.ORHarness.execute`` for
           the provable-zero case);
         - ``llm_tokens`` stays unmeasured until ``record --override``.
+
+        ``action_id`` (optional) is the unified action record this attempt
+        belongs to. It is passed to the script through ``OR_ACTION_ID`` and
+        used to accept ONLY a config receipt stamped with the same id, so a
+        leftover ``result.json`` from an earlier run in the same workspace
+        is never read as this attempt's configuration.
         """
         started = time.monotonic()
-        outcome = self.run(code_path, workspace, solver)
+        outcome = self.run(code_path, workspace, solver, action_id=action_id)
         check = self.verify(outcome)
         # monotonic, not time.time(): a wall clock can jump backwards (NTP),
         # which would record a negative latency for a perfectly normal run.
@@ -404,6 +478,50 @@ class SafePythonExecutor:
             # ``tool_calls`` (all tool invocations in the declared scope) is
             # the harness's to declare, and must never be below this floor.
             execution_features["tool_calls_lower_bound"] = 1
+        # The configuration that ACTUALLY took effect, split by WHO could
+        # observe it. This is a REPORT of the run, never a copy of the
+        # candidate's predicted config: a key the executor did not control
+        # and the script did not read back stays ABSENT (unknown), so the
+        # binding can tell "the prediction matched" from "nothing confirmed
+        # it". Two timeout notions are kept apart on purpose:
+        #   * ``script_timeout_s`` — the wall clock over the WHOLE script
+        #     (sandbox policy), which the executor really set;
+        #   * ``solver_timeout_s`` — the limit handed to the solver (via
+        #     ``OR_SOLVER_TIMEOUT_SECONDS``), a DIFFERENT limit that a
+        #     script-reported ``time_limit`` may or may not honour.
+        config_values: Dict[str, Any] = {}
+        config_sources: Dict[str, str] = {}
+        if outcome.executed:
+            config_values["solver"] = outcome.solver or solver
+            config_sources["solver"] = "executor"
+            if self.timeout_seconds is not None:
+                config_values["script_timeout_s"] = float(self.timeout_seconds)
+                config_sources["script_timeout_s"] = "executor"
+            if self.solver_timeout_seconds is not None:
+                config_values["solver_timeout_s"] = float(
+                    self.solver_timeout_seconds)
+                config_sources["solver_timeout_s"] = "executor"
+        receipt = outcome.config_report or {}
+        for key, value in dict(receipt.get("values") or {}).items():
+            config_values[key] = value
+            config_sources[key] = "script_reported"
+        if config_values:
+            execution_features["execution_config"] = {
+                "values": config_values,
+                "sources": config_sources,
+                "action_id": str(action_id) if action_id else None,
+                "note": ("the configuration that actually took effect, split "
+                         "by observer: 'executor' keys are the ones the "
+                         "sandbox set, 'script_reported' keys are the values "
+                         "the solve script read back from the solver. A key "
+                         "absent here is UNKNOWN — never a copy of the "
+                         "predicted config"),
+            }
+            if not receipt.get("values"):
+                execution_features["execution_config"]["receipt"] = (
+                    "the solve script reported no config (or its receipt "
+                    "carried no matching action_id stamp): script-internal "
+                    "parameters stay unknown")
         cost_notes: List[str] = []
         if outcome.runtime_note:
             cost_notes.append(outcome.runtime_note)

@@ -505,10 +505,11 @@ class TestExecutionReplan(HarnessTestCase):
         self.assertEqual(root.task_progress["current_solution"]
                          ["epistemic"], "fact")
 
-    def test_a_mismatched_prediction_is_recorded_not_scored(self):
-        """Automatic binding is IDENTITY-CHECKED, never name-guessed: an
-        attempt that names another strategy's prediction binds with a
-        mismatch, and the execution is still recorded."""
+    def test_a_conflicting_strategy_is_refused_before_the_run(self):
+        """The association is established BEFORE the run: an attempt whose
+        explicit strategy contradicts the prediction's candidate is refused
+        up front (the prediction fixes the candidate), rather than executing
+        an unrelated attempt and recording a mismatch afterwards."""
         provider = ScriptableProvider(per_strategy={
             "S01": {"quality": 0.5}, "S02": {"quality": 0.6}})
         h = ORHarness(home=self.home, world_model=provider)
@@ -523,22 +524,26 @@ class TestExecutionReplan(HarnessTestCase):
             "import json\n"
             "json.dump({'status': 'feasible', 'objective_value': 120.0},\n"
             "          open('result.json', 'w'))\n")
-        record = h.execute(TASK, "S01",   # a DIFFERENT strategy ran
-                           str(script), str(workspace), solver="highs",
-                           episode_id="ep1",
-                           prediction_id=prediction.prediction_id)
-        binding = record.execution_features["prediction_binding"]
-        self.assertTrue(binding["bound"])
-        self.assertIn("strategy_id", binding["trace"]["binding_mismatch"])
-        self.assertFalse(binding["comparable"])
+        with self.assertRaises(ValueError) as caught:
+            h.execute(TASK, "S01",   # contradicts the predicted S02
+                      str(script), str(workspace), solver="highs",
+                      episode_id="ep1",
+                      prediction_id=prediction.prediction_id)
+        self.assertIn("contradict", str(caught.exception))
+        # Nothing ran, nothing staged, no action left behind.
+        self.assertEqual(h.bank.pending(), [])
 
-    def test_a_bad_prediction_id_never_loses_the_execution(self):
-        """A binding problem is BOOKKEEPING: the execution really happened
-        and its evidence must survive. The failure is reported on the
-        record and `bind-strategy` can bind later."""
+    def test_a_prediction_of_a_changed_problem_is_refused(self):
+        """A prediction made for a DIFFERENT problem must not be reused:
+        the problem identity is checked before the run. Writing the model is
+        NOT a change (post-strategy artifacts are excluded), but a real
+        change to the task is."""
         provider = ScriptableProvider(per_strategy={"S01": {"quality": 0.5}})
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
         workspace = Path(self.home) / "ws3"
         workspace.mkdir()
         script = workspace / "solve.py"
@@ -546,16 +551,26 @@ class TestExecutionReplan(HarnessTestCase):
             "import json\n"
             "json.dump({'status': 'feasible', 'objective_value': 120.0},\n"
             "          open('result.json', 'w'))\n")
-        record = h.execute(TASK, "S01", str(script), str(workspace),
-                           solver="highs", episode_id="ep1",
-                           prediction_id="wp_does_not_exist")
+        # The ordinary sequence — writing the model AFTER predicting — is
+        # NOT a change and must still execute. The candidate supplies the
+        # solver, so the caller does not re-type it.
+        same = dict(TASK, model="maximize x subject to C1: x <= 1")
+        record = h.execute(same, None, str(script), str(workspace),
+                           solver=None, episode_id="ep1",
+                           prediction_id=prediction.prediction_id)
         self.assertTrue(record.quality["feasible"])
-        binding = record.execution_features["prediction_binding"]
-        self.assertFalse(binding["bound"])
-        self.assertIn("bind-strategy", binding["reason"])
-        # The execution is still recordable.
-        h.record(record)
-        self.assertEqual(h.bank.count(), 1)
+        self.assertEqual(record.strategy_id, "S01")
+        self.assertEqual(record.solver["name"] or "highs", "highs")
+        # A REAL change to the task IS a different problem: refused.
+        prediction2 = h.predict_strategy_outcome(
+            dict(TASK), {"action_type": "execute_strategy",
+                         "strategy_id": "S01", "solver": "highs"}, "ep2")
+        changed = dict(TASK, description="an entirely different problem")
+        with self.assertRaises(ValueError) as caught:
+            h.execute(changed, None, str(script), str(workspace),
+                      solver=None, episode_id="ep2",
+                      prediction_id=prediction2.prediction_id)
+        self.assertIn("problem changed", str(caught.exception))
 
 
 class TestReviewFixes(HarnessTestCase):
