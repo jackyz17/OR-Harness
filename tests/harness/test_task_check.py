@@ -116,7 +116,7 @@ class TaskCheckCase(HarnessTestCase):
 
     def solve(self, task, *, variables, objective, status="optimal",
               gap=0.0, strategy="S01", episode_id="ep1", tag=None,
-              runtime_seconds=0.01):
+              runtime_seconds=0.01, prediction_id=None):
         """Execute and record one attempt with an explicit solution vector."""
         from pathlib import Path
         label = tag or f"{task['task_id']}_{strategy}_{episode_id}"
@@ -135,7 +135,8 @@ class TaskCheckCase(HarnessTestCase):
             "    json.dump(" + json.dumps(payload) + ", fh)\n",
             encoding="utf-8")
         record = self.h.execute(task, strategy, str(script), str(work),
-                                solver="highs", episode_id=episode_id)
+                                solver="highs", episode_id=episode_id,
+                                prediction_id=prediction_id)
         self.h.record(record)
         return record
 
@@ -826,6 +827,123 @@ class TestTaskCheckChannel(HarnessTestCase):
     def test_state_vocabulary_is_closed(self):
         self.assertEqual(TASK_CHECK_STATES,
                          ("passed", "failed", "insufficient"))
+
+
+class TestCompletionIsObservable(TaskCheckCase):
+    """A prediction that declares COMPLETION must be scored against the
+    task check — a different measurement from the solver's gap, and never
+    silently replaced by it.
+
+    The reviewer's rule: ``passed`` -> 1, a confirmed ``failed`` -> 0, and
+    an unchecked/``insufficient`` execution stays UNKNOWN and does not
+    enter the error statistics.
+    """
+
+    def _predict_completion(self, value=0.9):
+        payload = {
+            "benefit": {"kind": "effective_completion",
+                        "metric": "task_result_check_passed",
+                        "unit": "boolean", "value": value,
+                        "baseline": {"kind": "declared", "value": 0.5}},
+            "cost": {"llm_tokens": 10},
+        }
+        self.h = ORHarness(home=self.home, embedding=None,
+                           world_model=StubProvider(payload=payload))
+        self.addCleanup(self.h.close)
+        task = _task("t1")
+        self.h.snapshot(task, episode_id="ep1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        self.assertEqual(prediction.benefit.kind, "effective_completion")
+        self._prediction_id = prediction.prediction_id
+        return task, prediction
+
+    def _solve_bound(self, task, objective=10755.0):
+        """Execute the candidate and BIND the prediction to the attempt.
+
+        Without a binding there is no evaluation at all, so the observation
+        could not be read — the same reason the real flow hands the
+        prediction id to ``execute``.
+        """
+        return self.solve(task, variables={"x1": 2.0, "x2": 1.0},
+                          objective=objective,
+                          prediction_id=self._prediction_id)
+
+    def _benefit_of_close(self):
+        out = self.h.close_episode("t1", episode_id="ep1",
+                                   terminal_state="completed")
+        closeout = out.get("closeout") or {}
+        ids = closeout.get("evaluation_ids") or []
+        self.assertTrue(ids, "the close-out produced no evaluation")
+        evaluation = self.h.get_strategy_evaluation(ids[0])
+        self.assertIsNotNone(evaluation)
+        return (evaluation.get("benefit")
+                if isinstance(evaluation, dict) else evaluation.benefit)
+
+    def test_a_passed_check_observes_one(self):
+        task, prediction = self._predict_completion()
+        record = self._solve_bound(task)
+        report = self.h.check_task_result(
+            record.execution_id, {"reference_objective": 10755.0},
+            episode_id="ep1")
+        self.assertEqual(report["state"], "passed")
+        benefit = self._benefit_of_close()
+        self.assertEqual(benefit["eligibility"], "evaluable")
+        self.assertEqual(benefit["observed"], 1.0)
+        self.assertEqual(benefit["metric"], "task_result_check_passed")
+        self.assertAlmostEqual(benefit["signed_error"], 0.1, places=6)
+
+    def test_a_failed_check_observes_zero(self):
+        task, prediction = self._predict_completion()
+        record = self._solve_bound(task)
+        self.h.check_task_result(record.execution_id,
+                                 {"reference_objective": 99999.0},
+                                 episode_id="ep1")
+        benefit = self._benefit_of_close()
+        self.assertEqual(benefit["observed"], 0.0)
+        self.assertAlmostEqual(benefit["signed_error"], -0.9, places=6)
+
+    def test_no_check_leaves_completion_unknown(self):
+        task, prediction = self._predict_completion()
+        self._solve_bound(task)
+        benefit = self._benefit_of_close()
+        self.assertEqual(benefit["eligibility"], "unobserved")
+        self.assertNotIn("observed", benefit,
+                         "an unchecked answer is UNKNOWN, never 0.0")
+
+    def test_insufficient_does_not_enter_the_sample(self):
+        task, prediction = self._predict_completion()
+        record = self._solve_bound(task)
+        report = self.h.check_task_result(
+            record.execution_id, {"integer": {"variables": ["nope"]}},
+            episode_id="ep1")
+        self.assertEqual(report["state"], "insufficient")
+        benefit = self._benefit_of_close()
+        self.assertEqual(benefit["eligibility"], "unobserved")
+        self.assertNotIn("observed", benefit)
+
+    def test_progress_is_reported_never_scored_as_completion(self):
+        """'Made progress' is not 'passed the task check'."""
+        payload = {
+            "benefit": {"kind": "valid_progress",
+                        "metric": "task_result_check_passed",
+                        "unit": "boolean", "value": 0.5,
+                        "baseline": {"kind": "declared", "value": 0.5}},
+        }
+        self.h = ORHarness(home=self.home, embedding=None,
+                           world_model=StubProvider(payload=payload))
+        self.addCleanup(self.h.close)
+        task = _task("t1")
+        self.h.snapshot(task, episode_id="ep1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        self._prediction_id = prediction.prediction_id
+        self._solve_bound(task)
+        benefit = self._benefit_of_close()
+        self.assertEqual(benefit["eligibility"], "scope_mismatch")
+        self.assertIn("valid_progress", benefit["reason"])
 
 
 if __name__ == "__main__":

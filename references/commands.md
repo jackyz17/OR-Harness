@@ -334,7 +334,31 @@ Pre-execution **cost** expectation for one (task, strategy), with explicit prove
 - **Output**: a `StrategyOutcomePrediction` — benefit with metric/unit/baseline (`solution_quality` must be NORMALIZED in [0,1]; a raw objective value is refused, never clamped), cost as a CostVector with a predicted-dimension mask, risk as named events separate from cost, uncertainty with the model's self-report recorded as explicitly UNCALIBRATED. Every failure state (not configured, provider error, empty payload, invalid JSON, NaN, out-of-range probability) is distinguishable and persisted with whatever usage the call consumed. One call, no retries, no defaults.
 - **Binding**: after you execute the candidate, `orx bind-strategy --prediction ID --action ACTION_ID` records the prediction–execution linkage (identity checked: task/episode/strategy/solver/config; a mismatch is recorded, never scored). Full spec: [strategy_outcome.md](strategy_outcome.md).
 
-**Next.** Keep the chosen candidate's `result.prediction_id` and pass it to `execute --prediction`. Branch A of the workflow: do not also run `plan-next` for the same decision. Failures: a `contract_only` status means no forecast was made, so there is nothing to bind.
+**Describe the candidate's METHOD.** A candidate carries a `method` object — `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` — and the model predicts from it. A bare `strategy_id` (or a solver name) tells the model nothing about what would happen, so an undescribed method is an unanswerable request. Supply it when you propose the candidate, in the caller's own words; an empty value means YOU did not describe it, never that there is nothing to describe. This matters most at a cold start, where there is no memory to read a description from. The solver and `config` stay their own fields: those are what the execution runs with, not what the approach is.
+
+**Benefit metric: declare ONE meaning, BEFORE the result is seen.** The prediction's `kind`/`metric` decides how it is later compared and observed:
+
+| You are predicting | Declare | Observed from |
+|---|---|---|
+| how well the solver solved the model | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
+| whether the ANSWER satisfies the TASK | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict (1.0 passed, 0.0 confirmed failed, UNKNOWN when unchecked) |
+
+The two are different measurements and are never interchanged. `valid_progress` has no observation channel in this build: it is reported, never scored, and is never quietly replaced by a completion rate.
+
+**Failure is one state with a structured reason.** A call that produced no usable prediction is `status="invalid"` and carries `result.failure`:
+
+| `failure.kind` | What happened | What to do |
+|---|---|---|
+| `truncated` | the endpoint stopped for length (`finish_reason` is `length`/`max_tokens`) | raise the output budget (`--wm-max-tokens` / `$OR_WM_MAX_TOKENS`) and predict again |
+| `wrong_top_level` | valid JSON that is not an object — the field case of `[]` | fix the request or the prompt; a bigger budget will not help |
+| `empty_response` | the endpoint returned `""` or `null` | check the endpoint; the answer was never produced |
+| `unparsable` | the content is not JSON | inspect the endpoint's output format |
+| `timeout` / `network_error` | the call did not complete | retry, or raise `--wm-timeout` (and the plan's `--time-budget`) |
+| `unusable_payload` | a JSON object that failed contract validation | the payload's own notes name the offending field |
+
+`finish_reason: null` means the endpoint reported nothing: how the answer ended is UNKNOWN, and it is never read as a clean stop. A failed prediction is RECORDED under its own id with its real call cost, and it stays READABLE — a provider outage never blocks reading the log or closing the episode.
+
+**Next.** Keep the chosen candidate's `result.prediction_id` and pass it to `execute --prediction`. Branch A of the workflow: do not also run `plan-next` for the same decision.
 
 ### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] [--candidates specs.json] [--horizon 1] [--max-calls N] [--delta W] [--prediction-mode M]`
 
@@ -355,7 +379,7 @@ Pre-execution **cost** expectation for one (task, strategy), with explicit prove
 - **No usable prediction at all** → `status=no_valid_predictions` with the real statuses and NO suggestion. Fall back to `recall`/Selector ordering or choose yourself; the calls that happened and their cost are recorded.
 - **Requirements**: a configured `--world-model` provider (mandatory). Planning supports `execute_strategy` candidates; other action types are reported as not plannable. `plan-next` is an OPTIONAL planning aid — it does not affect the mandatory predict/bind duty, and it REPLACES a separate `predict-strategy` when you use it. Full spec: [strategy_outcome.md](strategy_outcome.md).
 
-**Next.** Pass `result.decision_action_id` to `choose-next`, then execute the chosen candidate with its `result.plan.candidates[].prediction_id`. Failures: `--horizon` other than 1 exits 2 by design; `no_valid_predictions` means no candidate carried a usable prediction — fall back to `recall` ordering or choose yourself.
+**Next.** Pass `result.decision_action_id` to `choose-next`, then execute the chosen candidate with its `result.plan.candidates[].prediction_id`. **Time budget.** `--time-budget S` (default 120) bounds the WHOLE decision: before each call the remaining budget is passed down as that call's timeout, and after the last call the elapsed time is re-checked. The result reports the values that were in force under `result.effective_parameters`. Failures: `--horizon` other than 1 exits 2 by design; `no_valid_predictions` means no candidate carried a usable prediction — fall back to `recall` ordering or choose yourself; a per-candidate prediction that failed is reported under that candidate with its own `failure.kind` (see `predict-strategy`), and the OTHER candidates still get scored.
 
 ### `orx choose-next --decision ACTION_ID [--chosen spec.json | --rejected] [--note "..."]`
 

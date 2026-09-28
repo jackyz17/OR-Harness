@@ -106,6 +106,7 @@ from or_harness.world_model.context import (
     frozen_knowledge_view,
     knowledge_targets_from_context,
     memory_content_digest,
+    problem_identity_version,
     resolve_effective_cir,
     retrieval_reuse_problems,
     snapshot_from_context,
@@ -336,7 +337,15 @@ class ORHarness:
         snap = BeliefSnapshot.build(
             task, episode_id,
             harness_state=harness_state,
-            problem_state={"profile": profile.to_dict()},
+            problem_state={
+                "profile": profile.to_dict(),
+                # The PROBLEM's identity at freeze time, excluding the
+                # post-strategy model artifact. The binding check compares
+                # the prediction's value against this one, so writing the
+                # model after choosing the strategy is not reported as a
+                # change of problem while a real change still is.
+                "problem_identity_digest": problem_identity_version(task),
+            },
             task_progress=progress,
             budget_state=budget_state,
             coverage=self._coverage_view(profile, knowledge),
@@ -1452,6 +1461,13 @@ class ORHarness:
             context.task_digest
         prediction.trace.model_info["effective_input_digest"] = \
             context.effective_input_digest
+        # The PROBLEM's identity, which excludes post-strategy artifacts
+        # (the ``model`` written after the strategy is chosen). The binding
+        # check compares THIS, so the ordinary sequence "predict, write the
+        # model, execute" is not reported as a content change, while a real
+        # change to the task, its data, the CIR or the candidate still is.
+        prediction.trace.model_info["problem_identity_digest"] = (
+            problem_identity_version(task, cir))
         service._save(prediction)
         return prediction
 
@@ -1777,28 +1793,38 @@ class ORHarness:
         # Effective problem version: the prediction's frozen input digest
         # against the action's own pre-snapshot digest. Both sides come
         # from frozen records; an unestablishable side is an unknown.
-        predicted_input = model_info.get("effective_input_digest")
+        #
+        # The comparison is on the PROBLEM IDENTITY, which excludes the
+        # post-strategy artifacts (``model``). Comparing the raw task digest
+        # would flag the ordinary "predict, then write the model, then
+        # execute" sequence as a content change, because the model is
+        # written AFTER the strategy is selected — the false mismatch the
+        # field run hit. A real change (task text, data, CIR, candidate
+        # config) still differs.
+        predicted_input = model_info.get("problem_identity_digest")
         actual_digest = None
         if action.pre_snapshot_id:
             pre_snap = self.get_snapshot(action.pre_snapshot_id)
             if pre_snap is not None:
                 actual_digest = (pre_snap.problem_state or {}).get(
-                    "task_digest")
+                    "problem_identity_digest")
         if predicted_input and actual_digest:
             if predicted_input != actual_digest:
                 mismatch["effective_input"] = {
                     "predicted": predicted_input,
                     "actual": actual_digest,
-                    "reason": ("the task's content changed between the "
-                               "prediction and the execution: this is a "
-                               "different problem input"),
+                    "reason": ("the problem changed between the prediction "
+                               "and the execution: this is a different "
+                               "problem input (the post-strategy model "
+                               "artifact is excluded from this identity, so "
+                               "writing the model is not a change)"),
                 }
         elif predicted_input and not actual_digest:
             unknown["effective_input"] = {
                 "predicted": predicted_input,
                 "actual": None,
                 "reason": ("the executed action's pre snapshot records no "
-                           "task version, so the problem input the "
+                           "problem identity, so the problem input the "
                            "execution ran under cannot be established"),
             }
         model_info["bound_action_id"] = action_id

@@ -66,6 +66,9 @@ from or_harness.world_model.contracts import (
     VerificationCondition,
     validate_capability_evolution,
 )
+from or_harness.world_model.strategy_prediction import (
+    diagnose_provider_failure,
+)
 
 #: Version of this prediction protocol (request schema + output schema).
 CAPABILITY_EVOLUTION_PROTOCOL_VERSION = "wm-ce/1"
@@ -837,9 +840,14 @@ class CapabilityEvolutionService:
             except TypeError:
                 result = self.provider.predict(request)
         except Exception as exc:
+            # Same normalization as wm-so/1: the contract vocabulary has one
+            # word for "a prediction was attempted and did not happen"
+            # (``invalid``), and the REASON is structured diagnostics rather
+            # than a second status vocabulary the validator would reject.
             prediction = self._failed(
-                evidence, operation, "provider_error",
+                evidence, operation, "invalid",
                 f"{type(exc).__name__}: {exc}",
+                failure=diagnose_provider_failure(None, exc),
                 experience_scope=experience_scope,
                 task_targeting=task_targeting, baseline=baseline,
                 horizon=horizon, horizon_tasks=horizon_tasks)
@@ -850,6 +858,7 @@ class CapabilityEvolutionService:
                 evidence, operation, "contract_only",
                 str(result.get("error") or "provider not configured"),
                 provider_configured=False, service_available=False,
+                failure=diagnose_provider_failure(result, None),
                 experience_scope=experience_scope,
                 task_targeting=task_targeting, baseline=baseline,
                 horizon=horizon, horizon_tasks=horizon_tasks)
@@ -861,6 +870,20 @@ class CapabilityEvolutionService:
                 evidence, operation, "invalid",
                 str(result.get("error") or "no payload"),
                 provider_result=result,
+                failure=diagnose_provider_failure(result, None),
+                experience_scope=experience_scope,
+                task_targeting=task_targeting, baseline=baseline,
+                horizon=horizon, horizon_tasks=horizon_tasks)
+            self._save(prediction, task_id=task_id, episode_id=episode_id)
+            return prediction
+        if not isinstance(payload, dict):
+            prediction = self._failed(
+                evidence, operation, "invalid",
+                f"model returned a JSON {type(payload).__name__}, not a "
+                "prediction object",
+                provider_result=result,
+                failure=diagnose_provider_failure(result, None,
+                                                  top_level=payload),
                 experience_scope=experience_scope,
                 task_targeting=task_targeting, baseline=baseline,
                 horizon=horizon, horizon_tasks=horizon_tasks)
@@ -882,6 +905,8 @@ class CapabilityEvolutionService:
                 evidence, operation, "invalid",
                 f"payload could not be parsed: {type(exc).__name__}: {exc}",
                 provider_result=result,
+                failure=diagnose_provider_failure(result, None,
+                                                  top_level=payload),
                 experience_scope=experience_scope,
                 task_targeting=task_targeting, baseline=baseline,
                 horizon=horizon, horizon_tasks=horizon_tasks)
@@ -899,6 +924,7 @@ class CapabilityEvolutionService:
                 *, provider_configured: bool = True,
                 service_available: bool = True,
                 provider_result: Optional[Dict[str, Any]] = None,
+                failure: Optional[Dict[str, Any]] = None,
                 experience_scope: Optional[ExperienceScope] = None,
                 task_targeting: Optional[TaskTargeting] = None,
                 baseline: Optional[BaselineStatement] = None,
@@ -914,7 +940,10 @@ class CapabilityEvolutionService:
             not_comparable_reasons=["no prediction content was produced"],
         )
         trace.model_info["error"] = error
+        if failure:
+            trace.model_info["failure"] = failure
         if provider_result is not None:
+            diagnostics = provider_result.get("diagnostics") or {}
             usage = provider_result.get("usage") or {}
             tokens = usage.get("completion_tokens")
             latency = provider_result.get("latency_s")
@@ -927,6 +956,9 @@ class CapabilityEvolutionService:
                 vector.mark_measured("latency_s")
             if vector.measured_dims():
                 trace.call_cost = vector
+            if diagnostics.get("effective"):
+                trace.model_info["effective_parameters"] = (
+                    dict(diagnostics["effective"]))
         return CapabilityEvolutionPrediction(
             current_evidence=evidence,
             candidate_operation=operation,

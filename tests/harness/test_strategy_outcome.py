@@ -383,8 +383,242 @@ class TestProtocolReachesProvider(StrategyCase):
             {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1")
         self.assertEqual(prediction.status, "invalid")
-        self.assertTrue(any("not a JSON object" in n
-                            for n in prediction.notes))
+        # A non-object payload is classified by its TOP-LEVEL TYPE, so the
+        # diagnosis says what the endpoint actually returned.
+        self.assertEqual(
+            prediction.trace.model_info["failure"]["kind"],
+            "wrong_top_level")
+        self.assertIn("not a prediction object",
+                      prediction.trace.model_info["error"])
+
+    def test_array_payload_is_wrong_top_level_not_truncation(self):
+        """The field case: the endpoint answers ``[]``.
+
+        ``[]`` is VALID JSON, so a plain "not an object" message would
+        hide whether the answer was the wrong shape or was cut off. The
+        diagnosis names the top-level type, which is what decides whether
+        to fix the request or raise the output budget.
+        """
+        provider = StubProvider(payload=[])
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            _task("t1"),
+            {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        self.assertEqual(prediction.status, "invalid")
+        failure = prediction.trace.model_info["failure"]
+        self.assertEqual(failure["kind"], "wrong_top_level")
+        self.assertEqual(failure["top_level"], "list")
+
+    def test_truncation_empty_and_array_are_distinguished(self):
+        import json as _json
+
+        class Raw(WorldModelProvider):
+            name = "raw"
+
+            def __init__(self, envelope):
+                self.envelope = envelope
+
+            def predict(self, request, timeout_s=None):
+                body = _json.dumps(self.envelope).encode()
+                import urllib.request
+                original = urllib.request.urlopen
+
+                class Resp:
+                    def read(self_inner):
+                        return body
+
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *a):
+                        return False
+
+                urllib.request.urlopen = lambda *a, **k: Resp()
+                try:
+                    from or_harness.world_model.provider import (
+                        HttpChatProvider,
+                    )
+                    return HttpChatProvider(
+                        "https://x/v1", "M", "k",
+                        max_output_tokens=2048).predict(request)
+                finally:
+                    urllib.request.urlopen = original
+
+        cases = {
+            "[]": ("wrong_top_level", "length"),
+            "```json\n[]\n```": ("wrong_top_level", "length"),
+            '{"benefit": {"kind":': ("truncated", "length"),
+            "": ("empty_response", "stop"),
+        }
+        kinds = {}
+        for content, (expected, finish) in cases.items():
+            envelope = {"choices": [{"message": {"content": content},
+                                    "finish_reason": finish}],
+                        "usage": {"prompt_tokens": 1,
+                                  "completion_tokens": 2}}
+            h = ORHarness(home=self.home, world_model=Raw(envelope),
+                          embedding=self.backend)
+            self.addCleanup(h.close)
+            prediction = h.predict_strategy_outcome(
+                _task("t1"),
+                {"action_type": "execute_strategy", "strategy_id": "S01"},
+                "ep1")
+            self.assertEqual(prediction.status, "invalid", content)
+            kinds[content] = prediction.trace.model_info["failure"]["kind"]
+        self.assertEqual(kinds["[]"], "wrong_top_level")
+        self.assertEqual(kinds["```json\n[]\n```"], "wrong_top_level")
+        self.assertEqual(kinds['{"benefit": {"kind":'], "truncated")
+        self.assertEqual(kinds[""], "empty_response")
+
+    def test_stop_by_length_wins_over_an_empty_body(self):
+        """A cut-off answer is TRUNCATION even when nothing was produced.
+
+        ``finish_reason == "length"`` is the authoritative evidence of a
+        cut-off, so an empty body under it is reported as truncation (with
+        the content shape kept as a separate fact), not as "the model
+        chose to answer nothing".
+        """
+        import json as _json
+
+        class Raw(WorldModelProvider):
+            name = "raw"
+
+            def predict(self, request, timeout_s=None):
+                body = _json.dumps({
+                    "choices": [{"message": {"content": ""},
+                                 "finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 10875,
+                              "completion_tokens": 6388}}).encode()
+                import urllib.request
+                original = urllib.request.urlopen
+
+                class Resp:
+                    def read(self_inner):
+                        return body
+
+                    def __enter__(self_inner):
+                        return self_inner
+
+                    def __exit__(self_inner, *a):
+                        return False
+
+                urllib.request.urlopen = lambda *a, **k: Resp()
+                try:
+                    from or_harness.world_model.provider import (
+                        HttpChatProvider,
+                    )
+                    return HttpChatProvider("https://x/v1", "M", "k",
+                                            max_output_tokens=2048).predict(
+                                                request)
+                finally:
+                    urllib.request.urlopen = original
+
+        h = ORHarness(home=self.home, world_model=Raw(),
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            _task("t1"),
+            {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        failure = prediction.trace.model_info["failure"]
+        self.assertEqual(failure["kind"], "truncated")
+        self.assertEqual(failure["content_kind"], "empty")
+        self.assertEqual(failure["finish_reason"], "length")
+        # The effective parameters that were actually sent are recorded.
+        self.assertEqual(
+            prediction.trace.model_info["effective_parameters"]["max_tokens"],
+            2048)
+
+    def test_missing_finish_reason_is_unknown_not_normal(self):
+        """An absent ``finish_reason`` is not evidence of a clean ending."""
+        class Raw(WorldModelProvider):
+            name = "raw"
+
+            def predict(self, request, timeout_s=None):
+                return {"payload": None, "usage": None,
+                        "error": "model content is not valid JSON: x",
+                        "latency_s": 0.1,
+                        "diagnostics": {"finish_reason": None,
+                                        "content_kind": "text"}}
+
+        h = ORHarness(home=self.home, world_model=Raw(),
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            _task("t1"),
+            {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        failure = prediction.trace.model_info["failure"]
+        self.assertIsNone(failure["finish_reason"])
+        self.assertIn("UNKNOWN", failure["note"])
+
+    def test_failure_record_reads_back_and_closes_an_episode(self):
+        """A recorded provider failure must not block the read paths.
+
+        This is the defect the field run hit: the failure was WRITTEN
+        under a status the contract could not READ, so ``get``, ``query``,
+        ``read_prediction`` and ``close-episode`` all raised.
+        """
+        class Boom(WorldModelProvider):
+            name = "boom"
+
+            def predict(self, request, timeout_s=None):
+                raise TimeoutError("request timed out after 30s")
+
+        h = ORHarness(home=self.home, world_model=Boom(),
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            _task("t1"),
+            {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        self.assertEqual(prediction.status, "invalid")
+        self.assertEqual(
+            prediction.trace.model_info["failure"]["kind"], "timeout")
+        stored = h.strategy_predictions.get(prediction.prediction_id)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.status, "invalid")
+        self.assertEqual(
+            h.strategy_predictions.query(episode_id="ep1")[0].status,
+            "invalid")
+        record = h.read_prediction(prediction.prediction_id)
+        self.assertEqual(record["prediction"]["status"], "invalid")
+        h.snapshot(_task("t1"), episode_id="ep1")
+        out = h.close_episode("t1", episode_id="ep1",
+                              terminal_state="failed")
+        self.assertIsNotNone(out)
+
+    def test_legacy_provider_error_record_still_reads(self):
+        """A record written BEFORE the vocabularies were unified."""
+        from or_harness.world_model.contracts import (
+            StrategyOutcomePrediction,
+            normalize_stored_status,
+        )
+        self.assertEqual(normalize_stored_status("provider_error"),
+                         ("invalid", "provider_error"))
+        self.assertEqual(normalize_stored_status("bogus"),
+                         ("bogus", None))
+        payload = {
+            "contract_version": "wm-contract/1",
+            "prediction_type": "strategy_outcome",
+            "prediction_id": "sp_legacy",
+            "status": "provider_error",
+            "candidate": {"action_type": "execute_strategy",
+                          "strategy_id": "S01", "task_id": "t1"},
+            "trace": {"prediction_kind": "strategy_outcome",
+                      "model_info": {}},
+            "error": "ProviderError: timed out after 129932 ms",
+        }
+        restored = StrategyOutcomePrediction.from_dict(payload)
+        self.assertEqual(restored.status, "invalid")
+        self.assertEqual(restored.trace.model_info["legacy_status"],
+                         "provider_error")
+        self.assertIn("timed out", restored.trace.model_info["error"])
+        again = StrategyOutcomePrediction.from_dict(restored.to_dict())
+        self.assertEqual(again.status, "invalid")
 
     def test_nan_and_out_of_range_values_are_rejected(self):
         payload = {

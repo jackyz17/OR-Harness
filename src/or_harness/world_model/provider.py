@@ -266,8 +266,16 @@ class HttpChatProvider(WorldModelProvider):
 
         ``timeout_s``: the caller's remaining time budget for this call.
         The effective socket timeout is ``min(timeout_s, self.timeout_s)``
-        — the provider never waits longer than the caller's budget
-        allows."""
+        — the provider never waits longer than the caller's budget allows.
+
+        NOTE on what that bounds: a socket timeout is the maximum time a
+        SINGLE blocking socket operation may stall, not a hard deadline on
+        the whole request. A response that trickles bytes for longer than
+        the timeout is not interrupted by it, so this bounds the wait per
+        operation and the caller's post-call clock check is what bounds
+        the call in aggregate. ``describe()`` and the returned
+        ``diagnostics.effective`` report the value actually in force.
+        """
         effective_timeout = self.timeout_s
         if timeout_s is not None:
             effective_timeout = max(0.001, min(float(timeout_s),
@@ -335,24 +343,64 @@ class HttpChatProvider(WorldModelProvider):
         choices = envelope.get("choices") or []
         if not choices:
             raise ProviderError("response has no choices")
-        content = choices[0].get("message", {}).get("content")
+        first = choices[0]
+        content = first.get("message", {}).get("content")
+        # ``finish_reason`` is the AUTHORITATIVE evidence of how the answer
+        # ended. A MISSING field is recorded as ``None`` — never assumed to
+        # mean the model stopped on purpose.
+        finish_reason = first.get("finish_reason")
         usage = envelope.get("usage") or {}
+        details = usage.get("completion_tokens_details") or {}
+        reasoning_tokens = details.get("reasoning_tokens")
         payload = None
         parse_error = None
-        if isinstance(content, str) and content.strip():
-            cleaned = _strip_code_fence(content)
-            try:
-                payload = json.loads(cleaned)
-            except json.JSONDecodeError as exc:
-                parse_error = f"model content is not valid JSON: {exc}"
+        if isinstance(content, str):
+            if content.strip():
+                cleaned = _strip_code_fence(content)
+                try:
+                    payload = json.loads(cleaned)
+                except json.JSONDecodeError as exc:
+                    parse_error = f"model content is not valid JSON: {exc}"
+            else:
+                parse_error = ("model content is empty: the endpoint "
+                               "returned no answer text")
         elif content is None:
             parse_error = "model returned no content"
+        else:
+            # Some endpoints return a structured content list rather than a
+            # string. Reported honestly instead of being coerced.
+            parse_error = (f"model content has unexpected type "
+                           f"{type(content).__name__}")
+        raw_content_chars = len(content) if isinstance(content, str) else None
+        if content is None:
+            content_kind = "null"
+        elif isinstance(content, str):
+            content_kind = "empty" if not content.strip() else "text"
+        else:
+            content_kind = type(content).__name__
         return {
             "payload": payload,
             "usage": {
                 "prompt_tokens": usage.get("prompt_tokens"),
                 "completion_tokens": usage.get("completion_tokens"),
+                "reasoning_tokens": reasoning_tokens,
             } if usage else None,
             "error": parse_error,
             "latency_s": latency,
+            # Everything a reader needs to tell WHY a call produced no
+            # usable answer, without re-running it or reading today's
+            # config. Counts only — the reasoning TEXT is never retained.
+            "diagnostics": {
+                "finish_reason": finish_reason,
+                "content_kind": content_kind,
+                "raw_content_chars": raw_content_chars,
+                "reasoning_tokens": reasoning_tokens,
+                "effective": {
+                    "max_tokens": self.max_output_tokens,
+                    "temperature": self.temperature,
+                    "timeout_s": effective_timeout,
+                    "provider_timeout_s": self.timeout_s,
+                    "model": self.model,
+                },
+            },
         }

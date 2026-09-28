@@ -24,6 +24,7 @@ What this file asserts, one behaviour per test class:
    nothing; only an explicit prediction call reaches the provider; and the
    phase-1 fixes do not regress.
 """
+import json
 import os
 import sys
 import unittest
@@ -1274,6 +1275,93 @@ class TestOneCirForTheWholeRequest(ContextCase):
                          task_text_digest(task))
 
 
+class TestProblemIdentityExcludesModelingArtifacts(ContextCase):
+    """P7: the ordinary sequence "predict, then write the model, then
+    execute" must not be reported as a change of problem.
+
+    The ``model`` is written AFTER the strategy is chosen, so it lives in
+    the task while nothing about the problem changed. Comparing the raw
+    task digest flagged every such binding as a mismatch (the field run:
+    ``predicted 7f29cf75... / actual bc898cd2...``). The fix compares a
+    PROBLEM identity that excludes the post-strategy artifacts, and it must
+    still catch a real change.
+    """
+
+    def test_writing_the_model_does_not_move_the_problem_identity(self):
+        from or_harness.world_model.context import (
+            problem_identity_version, effective_input_version,
+        )
+        task = {"task_id": "t", "family": "set_cover",
+                "text": "Cover every area."}
+        modeled = {**task, "model": "minimize x; C1: x >= 1"}
+        self.assertEqual(problem_identity_version(task),
+                         problem_identity_version(modeled))
+        # The EFFECTIVE input identity is a different question and still
+        # moves: what the prediction was conditioned on did change.
+        self.assertNotEqual(effective_input_version(task),
+                            effective_input_version(modeled))
+
+    def test_a_real_change_still_moves_the_identity(self):
+        from or_harness.world_model.context import problem_identity_version
+        base = {"task_id": "t", "family": "f", "text": "cover all areas"}
+        for label, changed in (
+                ("text", {**base, "text": "cover all areas, weighted"}),
+                ("data", {**base, "spec": {"n": 5}}),
+                ("cir", {**base, "coupling": {"decisions": [
+                    {"name": "x", "kind": "cover"}]}})):
+            self.assertNotEqual(
+                problem_identity_version(base),
+                problem_identity_version(changed),
+                f"a {label} change must still be detected")
+
+    def test_binding_survives_the_model_write_but_catches_real_change(self):
+        """The end-to-end property, not just the digest arithmetic."""
+        from or_harness.world_model.provider import WorldModelProvider
+
+        class Stub(WorldModelProvider):
+            name = "stub"
+
+            def predict(self, request, timeout_s=None):
+                return {"payload": {"cost": {"llm_tokens": 10}},
+                        "usage": {"completion_tokens": 10}, "error": None,
+                        "latency_s": 0.01}
+
+        self.h = ORHarness(home=self.home, world_model=Stub(),
+                           embedding=self.backend)
+        self.addCleanup(self.h.close)
+        task = {"task_id": "t1", "family": "set_cover",
+                "text": "cover every area"}
+        self.h.snapshot(task, episode_id="ep1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+
+        # The post-strategy step: the model is written now.
+        self.h.snapshot({**task, "model": "minimize x; C1: x >= 1"},
+                        episode_id="ep1")
+        action = self.h.begin_action(
+            "execute_strategy", {**task, "model": "minimize x; C1: x >= 1"},
+            "ep1", params={"strategy_id": "S01", "solver": "highs"})
+        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+                                             action["action_id"])
+        info = bound.trace.model_info
+        self.assertIsNone(info.get("binding_mismatch"),
+                          "writing the model is not a change of problem")
+
+        # A genuinely different problem must still be caught.
+        other = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S02",
+                   "solver": "highs"}, "ep1")
+        action2 = self.h.begin_action(
+            "execute_strategy", {**task, "text": "cover every area, weighted"},
+            "ep1", params={"strategy_id": "S02", "solver": "highs"})
+        bound2 = self.h.bind_strategy_outcome(other.prediction_id,
+                                              action2["action_id"])
+        self.assertTrue(
+            bound2.trace.model_info.get("binding_mismatch"),
+            "a real content change is still a mismatch")
+
+
 class TestMemoryContentVersion(ContextCase):
     """P3: the memory version must digest CONTENT, not just entry counts.
 
@@ -1487,6 +1575,90 @@ class TestPhaseOneFixesSurvive(ContextCase):
         self.assertFalse(window.comparable)
         self.assertEqual(window.n_unfinished, 1)
         self.assertTrue(begun.get("action_id"))
+
+
+class TestProviderViewIsDedupedAndBounded(ContextCase):
+    """The field observation was a ~15k-character request. Sending the
+    problem's text twice buys nothing, and an unbounded request is what
+    turns into a truncated answer."""
+
+    def test_the_task_text_is_sent_once(self):
+        # The excerpt window is 4000 characters, so the payload text is
+        # fully covered and therefore a genuine duplicate.
+        task = {"task_id": "t1", "family": "production_planning",
+                "text": "multi-period inventory with shared capacity ",
+                "objective": "minimise cost"}
+        ctx = self.h.build_prediction_context(task, "ep1")
+        view = ctx.provider_view()
+        joint = view["joint_problem"]
+        self.assertIn("text", joint)
+        payload = joint.get("task_payload") or {}
+        self.assertNotIn("text", payload,
+                         "the excerpt already carries the text")
+        self.assertNotIn("task_id", payload,
+                         "the joint block already carries the id")
+        # The other payload fields are NOT duplicates and must survive.
+        self.assertIn("objective", payload)
+        omitted = " ".join(view.get("omitted") or [])
+        self.assertIn("task_payload.text", omitted,
+                      "a dropped field must be NAMED, not silently gone")
+
+    def test_a_payload_field_the_excerpt_misses_is_kept(self):
+        """A payload text LONGER than the excerpt window is not a
+        duplicate: only what the excerpt actually covers may be dropped."""
+        from or_harness.world_model import context as ctx_module
+        long_text = "A" * (ctx_module.MAX_TEXT_CHARS + 500)
+        task = {"task_id": "t1", "family": "f", "text": long_text,
+                "objective": "minimise cost"}
+        ctx = self.h.build_prediction_context(task, "ep1")
+        payload = ctx.provider_view()["joint_problem"].get(
+            "task_payload") or {}
+        # The objective is not repeated anywhere else, so it must survive.
+        self.assertIn("objective", payload)
+
+    def test_the_request_reports_its_own_size(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        size = ctx.provider_view()["request_size"]
+        self.assertGreater(size["chars"], 0)
+        self.assertIn("not tokens", size["estimator"])
+        self.assertTrue(size["within_bound"])
+
+    def test_an_oversized_request_is_trimmed_and_says_what_it_dropped(self):
+        from or_harness.world_model import context as ctx_module
+        task = {"task_id": "t1", "family": "f",
+                "text": "x" * 4000, "objective": "minimise cost"}
+        ctx = self.h.build_prediction_context(task, "ep1")
+        original = ctx_module.MAX_REQUEST_CHARS
+        ctx_module.MAX_REQUEST_CHARS = 3000
+        try:
+            view = ctx.provider_view()
+        finally:
+            ctx_module.MAX_REQUEST_CHARS = original
+        self.assertIn("omissions", view)
+        blocks = {o["block"] for o in view["omissions"]}
+        self.assertTrue(blocks,
+                        "an oversized request must name what was dropped")
+        # The problem statement and the calibration are never trimmed.
+        self.assertIn("joint_problem", view)
+        self.assertNotIn("joint_problem", blocks)
+        self.assertNotIn("strategy_outcome_calibration", blocks)
+
+    def test_compaction_keeps_each_capability_status(self):
+        ctx = self.h.build_prediction_context(_task("t1"), "ep1")
+        view = ctx.provider_view()
+        capability = view["harness_capability"]
+        # Whatever form it takes, the five ordinal statuses survive: they
+        # are findings about the harness, not padding.
+        text = json.dumps(capability)
+        for source in ("m", "w_or", "pi", "r", "t"):
+            self.assertIn(f'"{source}"', text)
+
+    def test_the_stored_context_keeps_the_full_payload(self):
+        task = {"task_id": "t1", "family": "f", "text": "the problem " * 10}
+        ctx = self.h.build_prediction_context(task, "ep1")
+        # Dedup is a VIEW concern: the record still carries everything, so
+        # traceability is unaffected.
+        self.assertIn("text", ctx.joint.task_payload)
 
 
 if __name__ == "__main__":  # pragma: no cover

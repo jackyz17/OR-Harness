@@ -199,6 +199,46 @@ def effective_input_version(task: Dict[str, Any],
     return _stable_digest(task_with_effective_cir(task, cir))
 
 
+#: Fields that are PRODUCED BY the strategy loop rather than describing the
+#: original problem. ``model`` is written AFTER the strategy is chosen, so
+#: the same problem gains a ``model`` field partway through an episode
+#: while nothing about the problem changed.
+#:
+#: Identity must not move when a post-strategy artifact is added, or the
+#: binding check reports "the task's content changed" for the ordinary
+#: sequence "predict, then write the model, then execute" — which is
+#: exactly the false mismatch the field run hit.
+MODELING_ARTIFACTS = ("model",)
+
+
+def problem_identity_version(task: Dict[str, Any],
+                             cir: Optional[Any] = None) -> str:
+    """The identity of the ORIGINAL problem, excluding modelling artifacts.
+
+    This is the identity the binding check compares, and it answers ONE
+    question: *is this still the same problem?* It therefore digests the
+    effective input — the task with the resolved CIR merged in — MINUS the
+    fields the strategy loop produces (see :data:`MODELING_ARTIFACTS`).
+
+    It is deliberately not the same thing as
+    :func:`effective_input_version`:
+
+    * ``effective_input_version`` identifies the exact input a prediction
+      was conditioned on, so a ``model`` written later DOES move it — that
+      is the correct behaviour for "what did the model see".
+    * ``problem_identity_version`` identifies the problem itself, so adding
+      the model must NOT move it.
+
+    Real changes still register: the task text, its data/parameters, the
+    CIR and the strategy/config are all part of the digest. Only the
+    post-strategy artifacts are excluded.
+    """
+    resolved = task_with_effective_cir(task, cir)
+    trimmed = {k: v for k, v in resolved.items()
+               if k not in MODELING_ARTIFACTS}
+    return _stable_digest(trimmed)
+
+
 #: The dimensions that define a structural CELL. Two descriptions that
 #: disagree on any of these are describing different structures, so a
 #: snapshot (or a reused retrieval result) may not be combined with the
@@ -1335,8 +1375,26 @@ class PredictionContext:
         Kept as its own method so the test that asserts "the new joint
         evidence really reached the provider" has ONE place to look, and so
         a stored context can be inspected without re-deriving anything.
+
+        TWO rules this view enforces, both about the REQUEST COST:
+
+        - **No content is sent twice.** The problem's text is carried by
+          ``joint_problem.text``; the ``task_payload`` copy repeats it
+          verbatim, so the view drops the fields the joint block already
+          carries and states which ones under ``omitted``. The stored
+          context keeps the full payload for traceability — the trimming is
+          confined to this view.
+        - **The request has a bounded size.** Everything that enters here
+          (the joint block, the retrieval evidence, the capability evidence,
+          the calibration block) is measured, and the view reports its own
+          size so an oversized request is VISIBLE rather than discovered as
+          a truncated answer. ``max_chars`` trims the OPTIONAL diagnostic
+          blocks (never the problem statement, the candidate or the
+          calibration) and names what it dropped.
         """
-        return {
+        joint = self.joint.to_dict()
+        joint, omitted = _dedupe_joint(joint)
+        view = {
             "context_id": self.context_id,
             "context_version": self.version,
             "created_at": self.created_at,
@@ -1345,7 +1403,7 @@ class PredictionContext:
             "effective_input_digest": self.effective_input_digest,
             "episode_id": self.episode_id,
             "snapshot_id": self.snapshot_id,
-            "joint_problem": self.joint.to_dict(),
+            "joint_problem": joint,
             "solving_context": copy.deepcopy(self.solving_context),
             "retrieval_evidence": self.retrieval.to_dict(),
             "harness_capability": copy.deepcopy(self.capability),
@@ -1355,9 +1413,13 @@ class PredictionContext:
                 self.strategy_calibration),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
-            "missing": list(self.missing),
-            "notes": list(self.notes),
+            "missing": _dedupe_lines(self.missing),
+            "notes": _dedupe_lines(self.notes),
         }
+        if omitted:
+            view["omitted"] = omitted
+        return _bound_request(view)
+
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1870,3 +1932,157 @@ def knowledge_targets_from_context(context: "PredictionContext",
         if note not in context.missing:
             context.missing.append(note)
     return targets
+
+
+#: Fields of ``joint_problem`` that merely repeat what the joint block
+#: already carries, in the order they are considered for removal. Each entry
+#: is (container, key, pointer to the copy that is kept).
+_JOINT_DUPLICATE_KEYS = (
+    ("task_payload", "text", "joint_problem.text"),
+    ("task_payload", "task_id", "joint_problem.task_id"),
+)
+
+
+def _dedupe_joint(joint: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+    """Drop the joint-block fields the problem's own text already carries.
+
+    Only EXACT re-statements are removed (the same ``task_id``; a ``text``
+    the block's own excerpt already contains). A payload field with content
+    the excerpt does NOT cover is kept — the excerpt is a bounded window, so
+    "already present" has to be checked, not assumed.
+
+    The comparison is over WHITESPACE-NORMALIZED text on both sides: the
+    excerpt is collapsed when it is built, so a raw payload text with
+    newlines or a trailing space would otherwise never compare equal and the
+    duplicate would be sent anyway.
+    """
+    omitted: List[str] = []
+    payload = joint.get("task_payload")
+    if not isinstance(payload, dict):
+        return joint, omitted
+    for _container, key, kept_at in _JOINT_DUPLICATE_KEYS:
+        if key not in payload:
+            continue
+        value = payload[key]
+        duplicate = False
+        if key == "task_id":
+            duplicate = str(value) == str(joint.get("task_id", ""))
+        elif key == "text":
+            excerpt = " ".join(str(joint.get("text") or "").split())
+            candidate = " ".join(str(value or "").split())
+            duplicate = bool(candidate) and candidate in excerpt
+        if duplicate:
+            omitted.append(f"joint_problem.task_payload.{key} "
+                           f"(identical to {kept_at})")
+            payload.pop(key, None)
+    if not payload:
+        omitted.append("joint_problem.task_payload (empty after dedup; the "
+                       "problem text travels in joint_problem.text)")
+        joint.pop("task_payload", None)
+    return joint, omitted
+
+
+def _dedupe_lines(lines: List[str]) -> List[str]:
+    """The same statement repeated (e.g. one note per capability source) is
+    reported ONCE. Order is preserved so the first occurrence keeps its
+    place."""
+    seen: set = set()
+    out: List[str] = []
+    for line in lines:
+        key = str(line)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(key)
+    return out
+
+
+#: Absolute ceiling for the provider view, in characters. The FIELD
+#: observation was ~15k characters (~3.7k tokens estimated at 4 chars per
+#: token); this leaves room for a much larger task while still catching a
+#: request that has grown out of hand. A character count is an ESTIMATE and
+#: is labelled as such — it is never reported as a token count.
+MAX_REQUEST_CHARS = 120_000
+
+#: Blocks that may be TRIMMED when the request is oversized, in order. The
+#: problem statement, the candidate and the calibration are never in this
+#: list: they are what the prediction is FOR, and dropping them would make
+#: the answer meaningless rather than cheaper.
+_TRIMMABLE_BLOCKS = (
+    "harness_capability",
+    "capability_version",
+    "retrieval_evidence",
+    "solving_context",
+)
+
+
+def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
+    """Report the request size and, when oversized, trim the optional blocks.
+
+    The trim is DESCENDING and NAMED: each dropped or shortened block is
+    recorded under ``omissions`` with its reason and the source, so an
+    agent can tell "the model was not given this" from "this did not
+    exist". Nothing is removed silently, and the problem, the candidate and
+    the calibration block are never touched.
+    """
+    size = len(json.dumps(view, ensure_ascii=False, default=str))
+    omissions: List[Dict[str, Any]] = []
+    for block in _TRIMMABLE_BLOCKS:
+        if size <= MAX_REQUEST_CHARS:
+            break
+        if block not in view:
+            continue
+        before = len(json.dumps(view[block], ensure_ascii=False,
+                                default=str))
+        if block == "harness_capability":
+            # Keep the ORDINAL status of every source; drop only the bulky
+            # per-source detail. ``no_evidence`` is a finding about the
+            # harness, not noise, so the statuses survive.
+            trimmed = _compact_capability(view[block])
+        else:
+            trimmed = {"omitted_for_size": True,
+                       "note": ("this block was dropped to keep the request "
+                                "within its size bound; the full value is in "
+                                "the stored context")}
+        view[block] = trimmed
+        after = len(json.dumps(trimmed, ensure_ascii=False, default=str))
+        omissions.append({
+            "block": block,
+            "reason": f"request exceeded {MAX_REQUEST_CHARS} characters "
+                      "(a character ESTIMATE of size, not a token count)",
+            "chars_removed": max(0, before - after),
+        })
+        size = len(json.dumps(view, ensure_ascii=False, default=str))
+    view["request_size"] = {
+        "chars": size,
+        "estimator": "characters (not tokens; a token count needs the "
+                     "endpoint's own tokenizer)",
+        "bound_chars": MAX_REQUEST_CHARS,
+        "within_bound": size <= MAX_REQUEST_CHARS,
+    }
+    if omissions:
+        view["omissions"] = omissions
+    return view
+
+
+def _compact_capability(capability: Dict[str, Any]) -> Dict[str, Any]:
+    """The capability block with its per-source STATUSES kept and detail cut.
+
+    ``no_evidence`` says "nothing observed this source" — a finding, not
+    padding. The notes and evidence lists are the bulky part, so they go;
+    the status, the score scheme and the version stay.
+    """
+    compact: Dict[str, Any] = {}
+    for key, value in capability.items():
+        if key == "sources" and isinstance(value, dict):
+            compact["sources"] = {
+                name: {"status": (src or {}).get("status"),
+                       "n_evidence": len((src or {}).get("evidence") or []),
+                       "note": ((src or {}).get("notes") or [None])[0]}
+                for name, src in value.items()}
+        elif key in ("notes", "evidence"):
+            compact[key] = [f"{len(value)} entr(ies) omitted for size"]
+        else:
+            compact[key] = value
+    compact["compacted_for_size"] = True
+    return compact

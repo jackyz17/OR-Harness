@@ -426,7 +426,18 @@ class TestPlanning(HarnessTestCase):
         decision = h.actions.get(plan["decision_action_id"])
         self.assertNotEqual(decision.status, "running")
         statuses = sorted(c["prediction_status"] for c in plan["candidates"])
-        self.assertEqual(statuses, ["provider_error", "valid"])
+        # ONE failure vocabulary: a crashed call is ``invalid``, and the
+        # reason is the structured diagnosis (not a second status word).
+        self.assertEqual(statuses, ["invalid", "valid"])
+        failed = [c for c in plan["candidates"]
+                  if c["prediction_status"] == "invalid"][0]
+        prediction_id = failed["prediction_id"]
+        # The recorded failure must be READABLE — this is what the field
+        # run could not do.
+        stored = h.strategy_predictions.get(prediction_id)
+        self.assertIsNotNone(stored)
+        self.assertEqual(
+            stored.trace.model_info["failure"]["kind"], "network_error")
 
     def test_shadow_mode_withholds_suggestion(self):
         provider = ScriptableProvider(per_strategy={"S01": {"quality": 0.8}})

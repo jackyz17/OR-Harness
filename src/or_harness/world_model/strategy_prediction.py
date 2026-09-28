@@ -60,6 +60,101 @@ from or_harness.world_model.contracts import (
 #: Version of this prediction protocol (request schema + output schema).
 STRATEGY_OUTCOME_PROTOCOL_VERSION = "wm-so/1"
 
+#: Why a finished call produced no usable prediction. The set is deliberately
+#: small and DECIDABLE from what the adapter observed — never a guess about
+#: the endpoint:
+#:
+#: - ``network_error``: the HTTP call itself failed (connect/read/TLS/HTTP
+#:   status). The transport never delivered a response body.
+#: - ``timeout``: the failure is specifically a timeout.
+#: - ``truncated``: a response arrived but the provider said it stopped for
+#:   length, OR the content is not parsable — a cut-off answer, not a
+#:   different shape. ``finish_reason == "length"`` is the authoritative
+#:   signal; an ABSENT ``finish_reason`` is UNKNOWN and is NOT read as a
+#:   normal ending.
+#: - ``empty_response``: usable content was empty (``""`` or ``null``).
+#: - ``wrong_top_level``: valid JSON whose top level is not an object — the
+#:   field case of ``[]``.
+#: - ``unparsable``: non-JSON content, or JSON that is not an object.
+#: - ``unusable_payload``: a JSON object that failed contract validation.
+FAILURE_KINDS = (
+    "network_error", "timeout", "truncated", "empty_response",
+    "wrong_top_level", "unparsable", "unusable_payload",
+)
+
+#: ``finish_reason`` values meaning "the model was cut off", not "it chose
+#: to stop". Anything else — including a MISSING field — is not an ending
+#: claim: the field's absence is recorded as unknown rather than assumed OK.
+_STOP_BY_LENGTH = ("length", "max_tokens", "max_output_tokens",
+                   "token_limit")
+
+
+def diagnose_provider_failure(
+        result: Optional[Dict[str, Any]],
+        exc: Optional[BaseException],
+        *, top_level: Any = None,
+        validation_error: Optional[str] = None) -> Dict[str, Any]:
+    """Classify WHY a call produced no usable prediction.
+
+    Reads only what the adapter actually observed. A field the endpoint did
+    not send stays absent from the diagnosis (``finish_reason`` missing is
+    reported as ``None``, never as ``"stop"``): an unobserved value must not
+    be turned into an observed one.
+    """
+    diagnostics = dict((result or {}).get("diagnostics") or {})
+    message = ""
+    if exc is not None:
+        message = f"{type(exc).__name__}: {exc}"
+    elif result is not None:
+        message = str(result.get("error") or "")
+    lowered = message.lower()
+
+    finish_reason = diagnostics.get("finish_reason")
+    content_kind = diagnostics.get("content_kind")
+
+    if exc is not None and "timed out" not in lowered \
+            and "timeout" not in lowered:
+        kind = "network_error"
+    elif "timed out" in lowered or "timeout" in lowered:
+        kind = "timeout"
+    elif validation_error is not None:
+        kind = "unusable_payload"
+    elif top_level is not None and not isinstance(top_level, dict):
+        kind = "wrong_top_level"
+    elif finish_reason in _STOP_BY_LENGTH:
+        kind = "truncated"
+    elif content_kind in ("empty", "null") or not message and result is not None \
+            and (result.get("payload") is None):
+        kind = ("empty_response" if content_kind in ("empty", "null")
+                else "unparsable")
+    else:
+        kind = "unparsable"
+
+    diagnosis: Dict[str, Any] = {"kind": kind}
+    if message:
+        diagnosis["detail"] = message[:500]
+    if validation_error:
+        diagnosis["validation_error"] = str(validation_error)[:300]
+    if top_level is not None and not isinstance(top_level, dict):
+        diagnosis["top_level"] = type(top_level).__name__
+    # Only fields the adapter really reported are echoed back.
+    for key in ("finish_reason", "content_kind", "raw_content_chars",
+                "effective", "reasoning_tokens"):
+        if key in diagnostics and diagnostics[key] is not None:
+            diagnosis[key] = diagnostics[key]
+    if finish_reason is None:
+        diagnosis["finish_reason"] = None
+        diagnosis["note"] = (
+            "the endpoint reported no finish_reason, so how the answer "
+            "ended is UNKNOWN — not evidence that it ended normally")
+    # A count, never the reasoning TEXT: the diagnosis must stay bounded.
+    if diagnostics.get("reasoning_tokens") is not None \
+            and diagnostics.get("completion_tokens") is not None:
+        diagnosis["reasoning_tokens_included_in_completion"] = (
+            "reported separately by the endpoint; not added again")
+    return diagnosis
+
+
 #: Which request key selects the new protocol on the provider call.
 PROTOCOL_REQUEST_KEY = "prediction_protocol"
 
@@ -87,6 +182,12 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "5. You may NOT change the task, the candidate, the scope or the "
     "evidence: they are fixed in the request. Your output is prediction "
     "content only.\n"
+    "6. The candidate carries a \"method\" object describing what the method "
+    "IS: its \"name\" and its \"steps\" (plus optional \"why\"/\"fallback\"). "
+    "Base your prediction on those steps. When \"method\" is empty the "
+    "caller did not describe it — report the fields you cannot judge under "
+    "unsupported_fields rather than guessing from the id or the solver "
+    "name, and never treat the solver/config as the method.\n"
     "Fields (all optional):\n"
     "- benefit: object. {\"kind\": one of effective_completion|"
     "solution_quality|valid_progress|correct_infeasibility_diagnosis, "
@@ -645,16 +746,24 @@ class StrategyOutcomeService:
             except TypeError:
                 result = self.provider.predict(request)
         except Exception as exc:  # provider adapter failure
+            # The contract vocabulary has ONE honest word for "a prediction
+            # was attempted and did not produce one": ``invalid``. The
+            # REASON (a network failure, a timeout, a truncated answer) is
+            # structured diagnostics, not a status — otherwise every reader
+            # would have to learn a second status vocabulary that the
+            # validator does not recognize.
             prediction = self._failed(
-                context, candidate, "provider_error",
-                f"{type(exc).__name__}: {exc}")
+                context, candidate, "invalid",
+                f"{type(exc).__name__}: {exc}",
+                failure=diagnose_provider_failure(None, exc))
             self._save(prediction)
             return prediction
         if result.get("not_configured"):
             prediction = self._failed(
                 context, candidate, "contract_only",
                 str(result.get("error") or "provider not configured"),
-                provider_configured=False, service_available=False)
+                provider_configured=False, service_available=False,
+                failure=diagnose_provider_failure(result, None))
             self._save(prediction)
             return prediction
         payload = result.get("payload")
@@ -662,7 +771,23 @@ class StrategyOutcomeService:
             prediction = self._failed(
                 context, candidate, "invalid",
                 str(result.get("error") or "no payload"),
-                provider_result=result)
+                provider_result=result,
+                failure=diagnose_provider_failure(result, None))
+            self._save(prediction)
+            return prediction
+        if not isinstance(payload, dict):
+            # A JSON ARRAY (the field case: the endpoint returned ``[]``) is
+            # valid JSON but not a prediction object. It is reported as its
+            # own failure kind — "not a JSON object" alone would hide
+            # whether the answer was truncated, fenced, or simply the wrong
+            # top-level type.
+            prediction = self._failed(
+                context, candidate, "invalid",
+                f"model returned a JSON {type(payload).__name__}, not a "
+                "prediction object",
+                provider_result=result,
+                failure=diagnose_provider_failure(result, None,
+                                                  top_level=payload))
             self._save(prediction)
             return prediction
         try:
@@ -677,7 +802,9 @@ class StrategyOutcomeService:
             prediction = self._failed(
                 context, candidate, "invalid",
                 f"payload could not be parsed: {type(exc).__name__}: {exc}",
-                provider_result=result)
+                provider_result=result,
+                failure=diagnose_provider_failure(result, None,
+                                                  top_level=payload))
             self._save(prediction)
             return prediction
         if prediction.status == "invalid" \
@@ -692,7 +819,8 @@ class StrategyOutcomeService:
                 status: str, error: str,
                 *, provider_configured: bool = True,
                 service_available: bool = True,
-                provider_result: Optional[Dict[str, Any]] = None
+                provider_result: Optional[Dict[str, Any]] = None,
+                failure: Optional[Dict[str, Any]] = None
                 ) -> StrategyOutcomePrediction:
         trace = PredictionTrace(
             prediction_kind="strategy_outcome",
@@ -705,7 +833,14 @@ class StrategyOutcomeService:
             not_comparable_reasons=["the candidate has not been executed"],
         )
         trace.model_info["error"] = error
+        # The structured WHY lives on the trace beside the identity: a
+        # reader must be able to tell a network failure from a truncated
+        # answer without parsing an English sentence, and the diagnosis is
+        # what survives into the stored record.
+        if failure:
+            trace.model_info["failure"] = failure
         if provider_result is not None:
+            diagnostics = provider_result.get("diagnostics") or {}
             usage = provider_result.get("usage") or {}
             tokens = usage.get("completion_tokens")
             latency = provider_result.get("latency_s")
@@ -718,6 +853,11 @@ class StrategyOutcomeService:
                 vector.mark_measured("latency_s")
             if vector.measured_dims():
                 trace.call_cost = vector
+            # Effective parameters really used for this call, so a stored
+            # failure explains itself without re-reading today's config.
+            if diagnostics.get("effective"):
+                trace.model_info["effective_parameters"] = copy.deepcopy(
+                    diagnostics["effective"])
         # A FAILED call was still made by THIS model: its identity is
         # recorded too, so an evaluation of a failed prediction can tell
         # which model produced it.

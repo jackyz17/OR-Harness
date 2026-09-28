@@ -99,6 +99,34 @@ orx plan-next --task t.json --episode ep1 \
 
 **Fallback.** When NO candidate carries a usable prediction (provider down, every payload invalid), the plan reports `status="no_valid_predictions"` with the reasons and NO suggestion — fall back to `recall`/Selector ordering or choose yourself. The fallback is reported as what it is; it is never dressed up as a completed world-model comparison, and the calls that did happen keep their recorded cost.
 
+**A benefit that is not on the yardstick contributes NOTHING — it does not make the candidate incomparable.** Cost and risk still score, so the candidate's `utility` is a real number computed with a benefit term of 0.0 (the mirror of charging unknown risk in full: unknown upside is never rewarded). The incomparable field is named in `score.incomparable["benefit"]` so a reader can see that Q was not compared, rather than reading the utility as a complete Q/C/R judgement. This is why the metric must be declared BEFORE the result is seen: a prediction in a currency this comparison cannot use is reported, never converted.
+
+**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one:
+
+| You are predicting | Declare | Observed from |
+|---|---|---|
+| how well the solver solved the model | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
+| whether the ANSWER satisfies the TASK | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
+
+Only `solution_quality` is on a single comparable yardstick, because candidates are compared on how well they solve what they were given. A completion claim is a different measurement: it is reported, observed against the real task check, and never interchanged with the solver's gap even though both land in [0,1]. A `passed` check is not a quality level, and `1 - mip_gap` is not a completion rate. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
+
+**Describe the candidate's `method`.** A candidate carries `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` and the model predicts FROM it: a bare strategy id or solver name describes nothing about what would happen. The caller supplies it (a cold start has no memory to read it from), the solver/config stay separate fields, and an empty value means the caller did not describe it — not that there is nothing to describe.
+
+**Failure has ONE status and a structured reason.** A call that produced no usable prediction is `status="invalid"` (there is no separate `provider_error` status), with `trace.model_info["failure"]`:
+
+| `failure.kind` | Evidence |
+|---|---|
+| `truncated` | `finish_reason` is `length`/`max_tokens` — the endpoint stopped for length |
+| `wrong_top_level` | valid JSON whose top level is not an object (the field case of `[]`) |
+| `empty_response` | content was `""` or `null` |
+| `unparsable` | content is not JSON |
+| `timeout` / `network_error` | the call did not complete |
+| `unusable_payload` | a JSON object that failed contract validation |
+
+A MISSING `finish_reason` is recorded as `null` with a note saying how the answer ended is UNKNOWN — it is never read as a clean stop. An OLD record written under the retired `provider_error` word still READS: it is normalized to `invalid` and its original status and error are preserved under `trace.model_info["legacy_status"]` / `["error"]`, so no failure is lost and no corrupt record is silently accepted either.
+
+**Call parameters.** The output budget is `--wm-max-tokens` > `$OR_WM_MAX_TOKENS` > the adapter default (2048), and the values actually in force come back under `result.effective_parameters` / `trace.model_info["effective_parameters"]`. A socket timeout bounds ONE blocking operation, not the whole request, so the caller's own clock check is what bounds the call in aggregate.
+
 **Cost accounting.** The model calls are REAL spend: charged once to the decision action as own cost (failed calls included), reported in `planning_cost`, never part of any candidate's utility. Candidate execution costs are PREDICTED values. Missing usage stays unknown — never free.
 
 ## 4. Binding the real execution

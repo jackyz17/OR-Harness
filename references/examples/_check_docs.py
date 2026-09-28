@@ -76,7 +76,8 @@ DOCUMENTED_FLAGS = [
                 "--note", "--verify", "--family", "--cell", "--peer-strategy",
                 "--peer-cell", "--relation"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
-                   "--max-calls", "--delta", "--prediction-mode"]),
+                   "--max-calls", "--time-budget", "--delta",
+                   "--prediction-mode"]),
     ("induction-candidates", []),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),
     ("snapshot", ["--task", "--episode"]),
@@ -93,9 +94,10 @@ DOCUMENTED_FLAGS = [
 ]
 
 #: Global flags the docs promise.
-DOCUMENTED_GLOBAL_FLAGS = ["--home", "--world-model", "--prediction-mode",
-                           "--delta", "--alpha", "--beta", "--gamma",
-                           "--cost-weights"]
+DOCUMENTED_GLOBAL_FLAGS = ["--home", "--world-model", "--wm-timeout",
+                           "--wm-max-tokens",
+                           "--prediction-mode", "--delta", "--alpha",
+                           "--beta", "--gamma", "--cost-weights"]
 
 #: Python imports the docs use.
 DOCUMENTED_IMPORTS = [

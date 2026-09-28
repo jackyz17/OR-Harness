@@ -478,9 +478,19 @@ class TestHonestFailures(M5Case):
         prediction = h.predict_capability_evolution(
             {"operation_type": "induce", "strategy_id": "S04"},
             bundle=_bundle(), horizon="next 10 tasks")
-        self.assertEqual(prediction.status, "provider_error")
+        self.assertEqual(prediction.status, "invalid")
         self.assertFalse(prediction.prediction_made)
         self.assertIn("RuntimeError", prediction.trace.model_info["error"])
+        # ONE failure vocabulary: a provider failure is ``invalid``, and WHY
+        # lives in the structured diagnosis beside it.
+        self.assertEqual(
+            prediction.trace.model_info["failure"]["kind"],
+            "network_error")
+        # And the stored failure must be READABLE, not just writable.
+        stored = h.get_capability_evolution_prediction(
+            prediction.prediction_id)
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored.status, "invalid")
 
     def test_failure_is_persisted_with_its_call_cost(self):
         payload = {"expected_changes": [{"metric": "", "direction": "x"}]}

@@ -107,19 +107,38 @@ FIELD_ELIGIBILITY = ("evaluable", "missing", "unverified", "scope_mismatch",
                      "identity_mismatch", "not_predicted", "unobserved",
                      "unreliable_label")
 
-#: The ONE benefit metric this build can actually OBSERVE from an
-#: execution: the solver's normalized gap (``1 - mip_gap``; an ``optimal``
-#: status is a gap of 0). A prediction declaring any other metric is
-#: reported ``scope_mismatch`` — the observed number is never re-labelled
-#: as a business ratio it did not measure.
+#: The benefit metrics this build can actually OBSERVE from an execution.
+#:
+#: - ``normalized_objective_gap``: the solver's normalized gap (``1 -
+#:   mip_gap``; an ``optimal`` status is a gap of 0).
+#: - ``task_result_check_passed``: whether the ANSWER satisfied the TASK,
+#:   taken from the execution's own ``check-task`` verdict (1.0 for
+#:   ``passed``, 0.0 for a confirmed ``failed``, UNKNOWN for unchecked or
+#:   ``insufficient``).
+#:
+#: They are DIFFERENT measurements of different things, so a prediction
+#: declaring one is never scored against the other: "made progress" and
+#: "passed the task check" are not the same claim, and the fact that both
+#: land in [0,1] does not make them interchangeable.
 OBSERVABLE_BENEFIT_METRIC = "normalized_objective_gap"
+OBSERVABLE_COMPLETION_METRIC = "task_result_check_passed"
 
-#: Declared-metric spellings that map onto the observable metric.
+OBSERVABLE_BENEFIT_METRICS = (
+    OBSERVABLE_BENEFIT_METRIC, OBSERVABLE_COMPLETION_METRIC)
+
+#: Declared-metric spellings that map onto an observable metric. The
+#: completion spellings are listed EXPLICITLY rather than folded into the
+#: quality aliases: a caller that declares a completion rate must get the
+#: completion observation, never the solver's gap silently relabelled.
 _BENEFIT_METRIC_ALIASES = {
     "normalized_objective_gap": "normalized_objective_gap",
     "solution_quality": "normalized_objective_gap",
     "normalized_quality": "normalized_objective_gap",
     "normalized_gap": "normalized_objective_gap",
+    "task_result_check_passed": "task_result_check_passed",
+    "task_check_passed": "task_result_check_passed",
+    "effective_completion": "task_result_check_passed",
+    "completion_rate": "task_result_check_passed",
 }
 
 #: Risk-event names this build can actually OBSERVE, with the observation
@@ -232,6 +251,71 @@ def _observable_benefit_metric(metric: Any) -> Optional[str]:
     name = str(metric or "").strip().lower()
     name = name.replace(" ", "_").replace("-", "_")
     return _BENEFIT_METRIC_ALIASES.get(name)
+
+
+def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
+    """Observe ``task_result_check_passed`` from the executions themselves.
+
+    The observation is the execution's OWN task-check verdict — the check
+    the agent already ran. **No check is run here**, and no check is
+    invented: a build that ran no check cannot report a completion, so an
+    unchecked (or ``insufficient``) execution contributes NOTHING rather
+    than a default zero.
+
+    Mapping, and why it is this narrow:
+
+    * ``passed`` -> 1.0 — a declared basis held on the recorded values.
+    * ``failed`` -> 0.0 — the answer was CONFIRMED not to satisfy the task.
+    * ``insufficient`` / no check -> UNKNOWN, excluded from the sample.
+      "The check could not decide" is not a failure and not a success; the
+      reviewer's rule is explicitly that it must not enter the error
+      statistics.
+
+    The window rule matches the quality channel: the LAST in-scope attempt
+    that carries a verdict is the observation, declared before evaluation
+    rather than chosen per result.
+    """
+    observed: List[float] = []
+    unknown = 0
+    for record in records:
+        state = task_check_state(record)
+        if state == "passed":
+            observed.append(1.0)
+        elif state == "failed":
+            observed.append(0.0)
+        else:
+            unknown += 1
+    if not observed:
+        summary.eligibility["benefit"] = {
+            "eligibility": "unobserved",
+            "reason": ("no in-scope execution carries a task-check verdict: "
+                       "completion is UNKNOWN (not 0.0) — run `check-task` "
+                       "and it becomes observable"),
+        }
+        return
+    summary.benefit = {
+        "kind": "effective_completion",
+        "metric": OBSERVABLE_COMPLETION_METRIC,
+        "unit": "boolean",
+        "observed": observed[-1],
+        "rule": "last in-scope attempt carrying a task-check verdict",
+        "n_observations": len(observed),
+        "all_observations": observed,
+        "source": ("the execution's own check-task verdict; no check is run "
+                   "by the close-out"),
+    }
+    if unknown:
+        summary.benefit["unknown_checks"] = unknown
+        summary.benefit["unknown_note"] = (
+            f"{unknown} in-scope execution(s) had no usable task-check "
+            "verdict and contributed NOTHING to the sample: unchecked or "
+            "insufficient validity is unknown, never a failure")
+    if "benefit" not in summary.eligibility:
+        summary.eligibility["benefit"] = {
+            "eligibility": "evaluable",
+            "reason": ("task-check verdict observed on the in-scope "
+                       "execution(s)"),
+        }
 
 
 #: The scope the BUDGET LEDGER actually measures. ``budget.view`` aggregates
@@ -624,12 +708,16 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
 
     # -- benefit observations -------------------------------------------
     # The yardstick is the PREDICTION's own declared metric/unit/baseline:
-    # the comparison must not invent a more convenient one afterwards.
-    # Only ONE metric has an observation adapter in this build — the
-    # solver's normalized gap. A prediction declaring anything else (a
-    # business cost-saving ratio, a completion rate) is reported
-    # scope_mismatch: the solver's 1-gap number is never re-labelled as
-    # that metric, because it did not measure it.
+    # the comparison must not invent a more convenient one afterwards, and
+    # the declared metric decides WHICH observation channel applies.
+    #
+    # Two channels exist and they measure DIFFERENT things:
+    #   * normalized_objective_gap — the solver's own gap (a QUALITY claim);
+    #   * task_result_check_passed — the task-level check's verdict (a
+    #     COMPLETION claim, taken from the check the execution already
+    #     carries; no new check is run here).
+    # A prediction declaring one is never scored against the other, even
+    # though both land in [0,1].
     benefit = prediction.benefit
     if benefit is not None and benefit.kind == "solution_quality":
         observable = _observable_benefit_metric(benefit.metric)
@@ -638,11 +726,12 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                 "eligibility": "scope_mismatch",
                 "reason": (f"no observation adapter exists for the declared "
                            f"metric {benefit.metric!r}: this build observes "
-                           f"only {OBSERVABLE_BENEFIT_METRIC!r} "
-                           "(the solver's normalized gap). The observed "
-                           "gap is never re-labelled as a metric it did "
-                           "not measure"),
+                           f"only {OBSERVABLE_BENEFIT_METRICS}. The "
+                           "observed gap is never re-labelled as a metric "
+                           "it did not measure"),
             }
+        elif observable == OBSERVABLE_COMPLETION_METRIC:
+            _observe_completion(summary, records)
         else:
             observed: List[float] = []
             task_check_gated = 0
@@ -709,14 +798,48 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     "reason": "no in-scope execution produced a qualified "
                               "solution quality",
                 }
+    elif benefit is not None and benefit.kind == "effective_completion":
+        observable = _observable_benefit_metric(benefit.metric)
+        if observable == OBSERVABLE_COMPLETION_METRIC or observable is None \
+                and str(benefit.metric or "") in (
+                    "task_result_check_passed", "task_check_passed"):
+            _observe_completion(summary, records)
+        elif observable == OBSERVABLE_BENEFIT_METRIC:
+            # Declared as a completion claim but measured by a QUALITY
+            # metric: the two do not mean the same thing, so this is a
+            # mismatch rather than a silent substitution.
+            summary.eligibility["benefit"] = {
+                "eligibility": "scope_mismatch",
+                "reason": (f"benefit kind 'effective_completion' was "
+                           f"declared with the quality metric "
+                           f"{benefit.metric!r}: a solver-side gap is not a "
+                           "task-completion observation, and the two are "
+                           "never interchanged"),
+            }
+        else:
+            _observe_completion(summary, records)
     elif benefit is not None:
-        summary.eligibility["benefit"] = {
-            "eligibility": "scope_mismatch",
-            "reason": (f"no observation adapter exists for benefit kind "
-                       f"{benefit.kind!r}: the benefit is reported, not "
-                       "evaluated — this build evaluates normalized "
-                       "solution quality only"),
-        }
+        if benefit.kind == "valid_progress":
+            # Progress is a claim about intermediate movement, which this
+            # build has NO observation channel for. It is reported, never
+            # scored — and never quietly replaced by a completion rate.
+            summary.eligibility["benefit"] = {
+                "eligibility": "scope_mismatch",
+                "reason": ("no observation channel exists for benefit kind "
+                           "'valid_progress': progress is not the task "
+                           "check's outcome and not the solver's gap. "
+                           "Declare kind='effective_completion' with "
+                           "metric='task_result_check_passed' to have the "
+                           "task check evaluate it"),
+            }
+        else:
+            summary.eligibility["benefit"] = {
+                "eligibility": "scope_mismatch",
+                "reason": (f"no observation adapter exists for benefit kind "
+                           f"{benefit.kind!r}: the benefit is reported, not "
+                           "evaluated — this build evaluates normalized "
+                           "solution quality and task-check completion"),
+            }
     else:
         summary.eligibility["benefit"] = {
             "eligibility": "not_predicted",

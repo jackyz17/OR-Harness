@@ -72,6 +72,13 @@ class ActionSpec:
     params: Dict[str, Any] = field(default_factory=dict)
     measurement_scope: str = "attempt"
     budget_hint: Optional[Dict[str, float]] = None
+    #: What the METHOD is, in the caller's words: ``{"name": str,
+    #: "steps": [str, ...], "why": str?, "fallback": str?}``. Supplied by
+    #: the caller — never looked up in memory, because a cold start has no
+    #: history and the agent must be free to propose a method the framework
+    #: has never seen. The solver/params stay their own fields: a method
+    #: description is about the approach, not the tooling.
+    method: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.action_type not in ACTION_TYPES:
@@ -89,6 +96,7 @@ class ActionSpec:
             "measurement_scope": self.measurement_scope,
             "budget_hint": (dict(self.budget_hint)
                             if self.budget_hint is not None else None),
+            "method": copy.deepcopy(self.method),
         }
 
     @classmethod
@@ -107,6 +115,7 @@ class ActionSpec:
             measurement_scope=str(data.get("measurement_scope", "attempt")),
             budget_hint=(dict(data["budget_hint"])
                          if data.get("budget_hint") else None),
+            method=copy.deepcopy(dict(data.get("method") or {})),
         )
 
 

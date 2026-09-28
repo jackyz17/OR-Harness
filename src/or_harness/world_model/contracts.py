@@ -472,6 +472,61 @@ def contract_status_from_legacy_status(legacy_status: str) -> str:
         str(legacy_status), "invalid")
 
 
+#: Service-side failure statuses that older records may carry as their
+#: ``status``. They are NOT a second vocabulary: a stored record is
+#: NORMALIZED to a contract status on read (see :func:`normalize_stored_status`)
+#: and the original string is preserved under ``legacy_status`` so nothing is
+#: lost. Writing new records always uses a contract status, so a reader never
+#: has to accept an unknown word.
+STORED_STATUS_ALIASES: Dict[str, str] = {
+    "provider_error": "invalid",
+    "invalid_output": "invalid",
+    "not_configured": "contract_only",
+    "unsupported_action": "unsupported",
+}
+
+
+def normalize_stored_status(status: Any) -> Tuple[str, Optional[str]]:
+    """``(contract_status, legacy_alias_or_None)`` for a STORED status.
+
+    A record written before the vocabularies were unified may carry a
+    service-side failure word (``provider_error`` and friends). Reading it
+    must not fail — the failure really happened and its cost is real — but
+    it must also not be laundered into a different meaning. So the word is
+    mapped onto the contract status that says the same thing and the
+    ORIGINAL is returned for the caller to keep.
+
+    An unknown word is NOT swallowed: it is returned with ``None`` so the
+    schema still rejects a genuinely corrupt record.
+    """
+    text = str(status)
+    if text in CONTRACT_STATUSES:
+        return text, None
+    alias = STORED_STATUS_ALIASES.get(text)
+    if alias is None:
+        return text, None
+    return alias, text
+
+
+def _trace_with_legacy_status(data: Dict[str, Any],
+                              legacy_status: Optional[str]) -> PredictionTrace:
+    """Rebuild a trace, keeping the ORIGINAL status/error of an old record.
+
+    The contract status is normalized on read, so without this the reason
+    an old prediction failed would survive only in its notes. The alias and
+    the error string are put back into ``model_info`` — where every
+    diagnostic already lives — so a reader can still tell a provider
+    timeout from a malformed payload.
+    """
+    trace = PredictionTrace.from_dict(data.get("trace") or {})
+    if legacy_status is not None:
+        trace.model_info.setdefault("legacy_status", legacy_status)
+        error = data.get("error")
+        if error:
+            trace.model_info.setdefault("error", str(error))
+    return trace
+
+
 @dataclass
 class CapabilitySourceEvidence:
     """Evidence about ONE capability source, with an explicit status.
@@ -837,6 +892,18 @@ class CandidateRef:
     action_type: str
     strategy_id: Optional[str] = None
     solver: Optional[str] = None
+    #: What the METHOD IS, in the caller's own words: a short name and the
+    #: steps it takes. Supplied BY THE CALLER, never looked up in memory —
+    #: a cold-start run has no history to read, and the whole point is that
+    #: the agent may propose a method the framework has never seen. The
+    #: solver/config stay OUT of this (they are their own fields): a method
+    #: description is about the approach, not the tooling.
+    #:
+    #: Shape: ``{"name": str, "steps": [str, ...], "why": str?, 
+    #: "fallback": str?}``. Every part is optional, and an empty value
+    #: means the caller did not describe it — never that there is nothing
+    #: to describe.
+    method: Dict[str, Any] = field(default_factory=dict)
     config: Dict[str, Any] = field(default_factory=dict)
     preconditions: List[str] = field(default_factory=list)
     expected_scope: List[str] = field(default_factory=list)
@@ -864,6 +931,7 @@ class CandidateRef:
             "action_type": self.action_type,
             "strategy_id": self.strategy_id,
             "solver": self.solver,
+            "method": copy.deepcopy(self.method),
             "config": copy.deepcopy(self.config),
             "preconditions": list(self.preconditions),
             "expected_scope": list(self.expected_scope),
@@ -884,6 +952,7 @@ class CandidateRef:
             strategy_id=(str(data["strategy_id"])
                          if data.get("strategy_id") else None),
             solver=(str(data["solver"]) if data.get("solver") else None),
+            method=copy.deepcopy(dict(data.get("method") or {})),
             config=copy.deepcopy(dict(data.get("config") or {})),
             preconditions=[str(p) for p in (data.get("preconditions") or [])],
             expected_scope=[str(s) for s in (data.get("expected_scope")
@@ -948,6 +1017,13 @@ class CandidateRef:
             action_type=str(getattr(spec, "action_type", "")),
             strategy_id=getattr(spec, "strategy_id", None),
             solver=getattr(spec, "solver", None),
+            # The METHOD travels as its own field. It is deliberately NOT
+            # folded into ``config``: ``config`` is what the execution runs
+            # with (a time limit, a gap target), while the method is what
+            # the approach IS. Merging them would send solver settings as
+            # prose and lose the method in the execution parameters.
+            method=copy.deepcopy(dict(
+                getattr(spec, "method", None) or {})),
             config=params,
             task_id=str(getattr(spec, "task_id", "")),
             episode_id=getattr(spec, "episode_id", None),
@@ -1477,7 +1553,12 @@ class StrategyOutcomePrediction:
             raise UnsupportedContractVersion(version)
         if not data.get("prediction_id"):
             raise ValueError("prediction_id is required")
-        status = str(data.get("status", "draft"))
+        # A record written before the vocabularies were unified may carry a
+        # service-side failure word. It is NORMALIZED (never rejected) and
+        # the original is kept, so an old failure reads back with the reason
+        # it actually had.
+        status, legacy_status = normalize_stored_status(
+            data.get("status", "draft"))
         if status not in CONTRACT_STATUSES:
             raise ValueError(f"status must be one of {CONTRACT_STATUSES}")
         raw_benefit = data.get("benefit")
@@ -1485,6 +1566,12 @@ class StrategyOutcomePrediction:
         raw_risk = data.get("risk")
         raw_unc = data.get("uncertainty")
         raw_trace = data.get("trace")
+        trace = PredictionTrace.from_dict(raw_trace or {})
+        if legacy_status is not None:
+            trace.model_info.setdefault("legacy_status", legacy_status)
+            error = data.get("error")
+            if error:
+                trace.model_info.setdefault("error", str(error))
         return cls(
             candidate=CandidateRef.from_dict(data.get("candidate") or {}),
             prediction_id=str(data["prediction_id"]),
@@ -1500,7 +1587,7 @@ class StrategyOutcomePrediction:
                   if isinstance(raw_risk, dict) else None),
             uncertainty=(UncertaintyStatement.from_dict(raw_unc)
                          if isinstance(raw_unc, dict) else None),
-            trace=PredictionTrace.from_dict(raw_trace or {}),
+            trace=trace,
             service_available=bool(data.get("service_available", False)),
             provider_configured=bool(data.get("provider_configured", False)),
             service_implemented=bool(data.get("service_implemented", False)),
@@ -1668,7 +1755,12 @@ class CapabilityEvolutionPrediction:
             raise UnsupportedContractVersion(version)
         if not data.get("prediction_id"):
             raise ValueError("prediction_id is required")
-        status = str(data.get("status", "draft"))
+        # Same read-time normalization as contract 1: an old service-side
+        # failure word is mapped onto its contract status and the original
+        # is preserved, never rejected and never silently relabelled as a
+        # success.
+        status, legacy_status = normalize_stored_status(
+            data.get("status", "draft"))
         if status not in CONTRACT_STATUSES:
             raise ValueError(f"status must be one of {CONTRACT_STATUSES}")
         raw_scope = data.get("experience_scope")
@@ -1713,7 +1805,7 @@ class CapabilityEvolutionPrediction:
                 str(k): BaselineStatement.from_dict(v)
                 for k, v in (data.get("baselines_by_metric") or {}).items()
                 if isinstance(v, dict)},
-            trace=PredictionTrace.from_dict(data.get("trace") or {}),
+            trace=_trace_with_legacy_status(data, legacy_status),
             service_available=bool(data.get("service_available", False)),
             provider_configured=bool(data.get("provider_configured", False)),
             service_implemented=bool(data.get("service_implemented", False)),

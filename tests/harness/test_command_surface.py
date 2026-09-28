@@ -675,5 +675,142 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
         self.assertIn("WARNING", payload["summary"])
 
 
+class TestWorldModelConfigurationIsReachable(Base):
+    """The output budget must be settable, and the value that won must be
+    the value that is REPORTED. A silent fallback would make a truncated
+    answer look like a model failure."""
+
+    def _args(self, **kwargs):
+        # Global flags must precede the subcommand; ``argv`` never includes
+        # the program name.
+        from or_harness.cli import build_parser
+        argv = list(kwargs.get("extra", [])) + ["doctor"]
+        return build_parser().parse_args(argv)
+
+    def test_precedence_flag_over_env_over_default(self):
+        from or_harness import cli as cli_module
+        saved = os.environ.pop("OR_WM_MAX_TOKENS", None)
+        try:
+            # 1. adapter default when nothing is set
+            self.assertEqual(cli_module._wm_max_tokens(self._args()), 2048)
+            # 2. environment variable wins over the default
+            os.environ["OR_WM_MAX_TOKENS"] = "8192"
+            self.assertEqual(cli_module._wm_max_tokens(self._args()), 8192)
+            # 3. the explicit flag wins over the environment
+            args = self._args(extra=["--wm-max-tokens", "4096"])
+            self.assertEqual(cli_module._wm_max_tokens(args), 4096)
+        finally:
+            if saved is None:
+                os.environ.pop("OR_WM_MAX_TOKENS", None)
+            else:
+                os.environ["OR_WM_MAX_TOKENS"] = saved
+
+    def test_a_bad_env_value_is_reported_not_ignored(self):
+        from or_harness import cli as cli_module
+        saved = os.environ.get("OR_WM_MAX_TOKENS")
+        os.environ["OR_WM_MAX_TOKENS"] = "8k192"
+        try:
+            with self.assertRaises(ValueError):
+                cli_module._wm_max_tokens(self._args())
+        finally:
+            if saved is None:
+                os.environ.pop("OR_WM_MAX_TOKENS", None)
+            else:
+                os.environ["OR_WM_MAX_TOKENS"] = saved
+
+    def test_the_budget_reaches_the_http_body(self):
+        from or_harness.world_model.provider import HttpChatProvider
+        import urllib.request
+
+        captured = {}
+
+        class Resp:
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {"content": "{}"},
+                                 "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        original = urllib.request.urlopen
+        urllib.request.urlopen = lambda req, *a, **k: (
+            captured.update(json.loads(req.data.decode())), Resp())[1]
+        try:
+            provider = HttpChatProvider("https://x/v1", "M", "k",
+                                        max_output_tokens=8192)
+            provider.predict({"prediction_protocol": "wm-so/1"})
+        finally:
+            urllib.request.urlopen = original
+        self.assertEqual(captured["max_tokens"], 8192,
+                         "the configured budget must be what is SENT")
+
+    def test_plan_next_exposes_the_time_budget(self):
+        from or_harness.cli import build_parser
+        args = build_parser().parse_args(
+            ["plan-next", "--task", "t.json", "--time-budget", "45"])
+        self.assertEqual(args.time_budget, 45.0)
+
+
+class TestTheCandidateCarriesItsMethod(Base):
+    """A candidate the model cannot understand is a candidate it cannot
+    predict. The CALLER supplies the method description — a cold start has
+    no memory to read it from — and it must survive into the request."""
+
+    def test_action_spec_method_reaches_the_request(self):
+        from or_harness.world_model.prediction import ActionSpec
+
+        class Capture(WorldModelProvider):
+            name = "capture"
+
+            def __init__(self):
+                self.request = None
+
+            def predict(self, request, timeout_s=None):
+                self.request = request
+                return {"payload": None, "usage": None, "error": "captured",
+                        "latency_s": 0.0}
+
+        provider = Capture()
+        h = self.make_harness(provider=provider)
+        spec = ActionSpec(
+            action_type="execute_strategy", task_id="t1", strategy_id="S01",
+            solver="highs", params={"time_limit": 60},
+            method={"name": "rolling-horizon decomposition",
+                    "steps": ["split into 3-period blocks",
+                              "solve each block with the previous ending "
+                              "inventory fixed"]})
+        h.snapshot(TASK, episode_id="ep1")
+        h.predict_strategy_outcome(TASK, spec, "ep1")
+        candidate = provider.request["candidate"]
+        self.assertEqual(candidate["method"]["name"],
+                         "rolling-horizon decomposition")
+        self.assertEqual(len(candidate["method"]["steps"]), 2)
+        # The method and the execution parameters are SEPARATE: a solver
+        # setting must never be sent as if it were the approach.
+        self.assertNotIn("time_limit", json.dumps(candidate["method"]))
+        self.assertEqual(candidate["config"]["time_limit"], 60)
+
+    def test_candidate_ref_method_round_trips(self):
+        from or_harness.world_model.contracts import CandidateRef
+        ref = CandidateRef(
+            action_type="execute_strategy", strategy_id="S01",
+            method={"name": "Benders", "steps": ["master", "subproblem"]})
+        again = CandidateRef.from_dict(ref.to_dict())
+        self.assertEqual(again.method["name"], "Benders")
+        self.assertEqual(again.method["steps"], ["master", "subproblem"])
+
+    def test_an_undescribed_method_is_empty_not_invented(self):
+        from or_harness.world_model.contracts import CandidateRef
+        ref = CandidateRef.from_dict(
+            {"action_type": "execute_strategy", "strategy_id": "S01"})
+        self.assertEqual(ref.method, {})
+
+
 if __name__ == "__main__":
     unittest.main()

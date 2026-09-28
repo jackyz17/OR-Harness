@@ -89,6 +89,43 @@ def _parse_dimension_pairs(text: str) -> Dict[str, float]:
             f"expected 'name=value,name=value', got {text!r}: {exc}") from exc
 
 
+def _wm_env_float(name: str) -> Optional[float]:
+    """Read a float from the environment, or None when unset/invalid.
+
+    An unparsable value is reported rather than silently ignored: a typo in
+    ``OR_WM_MAX_TOKENS=8k192`` must not look like "not configured".
+    """
+    import os
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return None
+    try:
+        return float(str(raw).strip())
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number")
+
+
+def _wm_max_tokens(args) -> int:
+    """The output budget actually used: CLI flag > env var > class default.
+
+    The precedence is explicit and reported, because the value changes what
+    the endpoint is ASKED for and a silent fallback would make a truncated
+    answer look like a model failure. The default is deliberately left at
+    the adapter's own default (2048): a larger budget is a deployment
+    decision, not something this build should assume for every model.
+    """
+    explicit = getattr(args, "wm_max_tokens", None)
+    if explicit is not None:
+        return int(explicit)
+    from or_harness.world_model.provider import HttpChatProvider as _P
+    env = _wm_env_float("OR_WM_MAX_TOKENS")
+    if env is not None:
+        return int(env)
+    import inspect
+    return int(inspect.signature(_P.__init__).parameters[
+        "max_output_tokens"].default)
+
+
 def _harness(args) -> ORHarness:
     weights = None
     if getattr(args, "cost_weights", None):
@@ -104,9 +141,10 @@ def _harness(args) -> ORHarness:
                 "the OR_WM_API_KEY environment variable)")
         import os
         api_key = os.environ.get("OR_WM_API_KEY", "")
-        provider = HttpChatProvider(parts[0], parts[1], api_key,
-                                    timeout_s=getattr(args, "wm_timeout", 30)
-                                    or 30.0)
+        provider = HttpChatProvider(
+            parts[0], parts[1], api_key,
+            timeout_s=getattr(args, "wm_timeout", 30) or 30.0,
+            max_output_tokens=_wm_max_tokens(args))
     return ORHarness(home=args.home, alpha=args.alpha, beta=args.beta,
                      gamma=args.gamma, cost_weights=weights,
                      delta=getattr(args, "delta", 0.0),
@@ -993,6 +1031,16 @@ def cmd_predict_strategy(args) -> int:
             task, candidate, args.episode, context=context, cir=cir)
         result = {"prediction": prediction.to_dict(),
                   "prediction_id": prediction.prediction_id}
+        info = prediction.trace.model_info
+        failure = info.get("failure")
+        if failure:
+            # A failed prediction must SAY WHY in its own output: the
+            # difference between "the model was truncated" and "the model
+            # answered with the wrong shape" decides whether to raise the
+            # output budget or fix the request.
+            result["failure"] = failure
+        if info.get("effective_parameters"):
+            result["effective_parameters"] = info["effective_parameters"]
         if prediction.status == "contract_only" \
                 and not prediction.provider_configured:
             return _fail(f"prediction not enabled: "
@@ -1000,6 +1048,11 @@ def cmd_predict_strategy(args) -> int:
         parts = [f"Strategy-outcome prediction {prediction.prediction_id} "
                  f"({prediction.status}) for "
                  f"{prediction.candidate.strategy_id or '(unnamed)'}: "]
+        if failure:
+            parts.append(f"FAILED [{failure.get('kind')}] "
+                         f"{failure.get('detail') or ''} "
+                         f"(finish_reason="
+                         f"{failure.get('finish_reason')!r}); ")
         if prediction.benefit is not None:
             b = prediction.benefit
             parts.append(f"G={b.value} ({b.kind}/{b.metric}"
@@ -1472,13 +1525,21 @@ def cmd_plan_next(args) -> int:
                              "ActionSpec objects")
             candidates = [ActionSpec.from_dict(c) for c in raw]
         limits = {"horizon": args.horizon,
-                  "max_model_calls": args.max_calls}
+                  "max_model_calls": args.max_calls,
+                  "time_budget_s": getattr(args, "time_budget", None)}
+        limits = {k: v for k, v in limits.items() if v is not None}
         if getattr(args, "delta", None) is not None:
             limits["delta"] = args.delta
         plan = h.plan_next(task, episode_id=args.episode,
                            candidates=candidates, limits=limits)
         result = {"plan": plan, "decision_action_id": plan.get(
             "decision_action_id")}
+        # The parameters that were REALLY in force, so a caller never has to
+        # infer them from today's configuration.
+        result["effective_parameters"] = {
+            "max_model_calls": plan.get("max_model_calls"),
+            "time_budget_s": plan.get("time_budget_s"),
+        }
         if plan.get("protocol"):
             result["protocol"] = plan["protocol"]
         status = plan.get("status")
@@ -1950,7 +2011,19 @@ def build_parser() -> argparse.ArgumentParser:
                              "predictions return not_configured; no other "
                              "command is affected")
     parser.add_argument("--wm-timeout", type=float, default=30.0,
-                        help="world-model call timeout in seconds")
+                        help="world-model call timeout in seconds. This is "
+                             "the maximum time ONE blocking socket operation "
+                             "may stall, not a hard deadline on the whole "
+                             "request; the caller's own budget check bounds "
+                             "the call in aggregate")
+    parser.add_argument("--wm-max-tokens", type=int, default=None,
+                        metavar="N",
+                        help="output token budget for a world-model call "
+                             "(precedence: this flag > $OR_WM_MAX_TOKENS > "
+                             "the adapter default 2048). A larger budget "
+                             "costs more and is a deployment decision: set "
+                             "it explicitly rather than assuming every model "
+                             "needs it")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("profile",
@@ -2450,6 +2523,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "observation. Any other value is refused")
     p.add_argument("--max-calls", type=int, default=6,
                    help="max world-model calls for the whole decision")
+    p.add_argument("--time-budget", type=float, default=120.0,
+                   dest="time_budget", metavar="S",
+                   help="wall-clock budget for the WHOLE planning decision, "
+                        "in seconds (default 120). Before each call the "
+                        "remaining budget is passed down as that call's "
+                        "timeout, and after the last call the elapsed time "
+                        "is re-checked. Exhaustion returns a truncation "
+                        "reason and KEEPS the calls already paid for")
     p.add_argument("--delta", type=float, default=argparse.SUPPRESS,
                    help="weight of the predicted knowledge term in the path "
                         "utility (U = alpha*Q - beta*C - gamma*R + delta*K). "
