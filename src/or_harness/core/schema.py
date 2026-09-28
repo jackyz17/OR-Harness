@@ -906,7 +906,6 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
 # Execution record (Execution Evidence storage unit)
 # ---------------------------------------------------------------------------
 
-VERIFICATION_LEVELS = ("basic", "strong")
 #: How an evidence row stands relative to the statistics. ``executed`` =
 #: a real observation that counts; ``compacted`` = a lossy summary (kept
 #: out of statistics by design); ``excluded`` = a fact that WAS observed
@@ -994,7 +993,6 @@ class ExecutionRecord:
     #: diagnostics, and other execution-time observations. Never modifies
     #: task identity; available to offline induction but not online retrieval.
     execution_features: Dict[str, Any] = field(default_factory=dict)
-    verification_level: str = "basic"
     created_at: float = field(default_factory=time.time)
     source: str = "executed"
     #: Coupling-aware representation snapshot (the CIR that was actually
@@ -1079,7 +1077,6 @@ class ExecutionRecord:
             "failures": [f.to_dict() for f in self.failures],
             "solver": self.solver,
             "execution_features": dict(self.execution_features),
-            "verification_level": self.verification_level,
             "created_at": self.created_at,
             "source": self.source,
             "cir_snapshot": (dict(self.cir_snapshot)
@@ -1102,9 +1099,6 @@ class ExecutionRecord:
         for key in ("execution_id", "task_id", "strategy_id", "profile_snapshot"):
             if key not in data:
                 raise ValueError(f"ExecutionRecord.{key} is required")
-        verification = data.get("verification_level", "basic")
-        if verification not in VERIFICATION_LEVELS:
-            raise ValueError(f"verification_level must be one of {VERIFICATION_LEVELS}")
         source = str(data.get("source", "executed"))
         if source not in EXECUTION_SOURCES:
             raise ValueError(f"source must be one of {EXECUTION_SOURCES}")
@@ -1126,7 +1120,6 @@ class ExecutionRecord:
             failures=[FailureRecord.from_dict(f) for f in (data.get("failures") or [])],
             solver=dict(data.get("solver") or {}),
             execution_features=dict(data.get("execution_features") or {}),
-            verification_level=verification,
             created_at=float(data.get("created_at", time.time())),
             source=source,
             cir_snapshot=(dict(data["cir_snapshot"])

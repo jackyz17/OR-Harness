@@ -487,7 +487,6 @@ def cmd_execute(args) -> int:
         prediction_id = getattr(args, "prediction", None)
         record = h.execute(task, args.strategy, args.code, args.workspace,
                            solver=args.solver,
-                           verification_level=args.verification,
                            episode_id=getattr(args, "episode", None),
                            prediction_id=prediction_id)
         out = {"execution": record.to_dict(),
@@ -2109,7 +2108,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--code", required=True, help="path to solve.py")
     p.add_argument("--workspace", required=True)
     p.add_argument("--solver", required=True)
-    p.add_argument("--verification", default="basic", choices=["basic", "strong"])
     p.add_argument("--episode", default=None,
                    help="episode id for the unified action record "
                         "(budget/progress scoping)")

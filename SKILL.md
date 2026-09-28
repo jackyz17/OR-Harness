@@ -64,7 +64,7 @@ Stage responsibilities:
 | Understand + recall | validate the CIR, fix the structural key, report real memory | `result.coupling`, `result.profile`, `result.recommendations` |
 | Propose | name the candidate methods | a candidate list you write yourself |
 | Predict + choose | one prediction per candidate, then one explicit decision | `prediction_id` |
-| Model + execute | strategy first, then the formulation and `solve.py` | `execution_id` |
+| Model + execute | the CHOSEN strategy only: strategy first, then the formulation and `solve.py` | `execution_id` |
 | Check + record | did the ANSWER satisfy the TASK; the fact and its real cost | a verdict, a recorded row |
 | Finish + feedback | calibration (automatic); induction (optional, offline) | a published summary; knowledge |
 
@@ -97,7 +97,7 @@ Two settings are worth setting EXPLICITLY, because their defaults are conservati
 The BUDGET is what the endpoint is asked to generate; the TIMEOUT bounds one blocking socket operation (not a hard deadline on the whole request). `plan-next` additionally takes `--time-budget` (whole decision, default 120s) and passes what remains to each call. The values actually in force come back on the result (`effective_parameters`), so read them rather than assuming.
 - **Solver.** Name the concrete solver on `execute` (`--solver`); `recall` returns `available_solver_families` and `solver_advisories`. Subprocess solvers (PuLP's CBC) cannot run in the sandbox — use an in-process solver (ortools, highspy).
 - **Embedding (optional).** The text channel is OFF unless a real embedding model is configured; with none, `recall` returns `degraded` plus the structural channel alone, which is a different fact from "ran and matched nothing". After configuring one, run `orx rebuild-index` once; `record`/`induce`/`retire` keep it current.
-- **Cold start.** An empty `recall` is the normal state, not an error: propose the methods you want and run them.
+- **Cold start.** An empty `recall` is the normal state, not an error: no memory matched, so YOU propose and describe the candidate methods yourself. Predicting compares them; you then execute the ONE you chose. Several candidates being predicted never means several are executed — a second attempt is triggered by a real failure, by an explicit uncertainty you cannot resolve, or by your own decision, and it is not automatic.
 
 ## 4. Online operations
 

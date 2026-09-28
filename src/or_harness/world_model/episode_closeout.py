@@ -894,13 +894,11 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         "execution produce ONE observation, not several")
 
     # -- verification -----------------------------------------------------
-    verification_level = (action.params or {}).get("verification_level")
     verified_actions = [
         a for a in harness.actions.query(task_id=candidate.task_id,
                                          episode_id=candidate.episode_id)
         if a.action_type == "verify"]
     summary.verification = {
-        "execution_verification_level": verification_level,
         "n_verify_actions": len(verified_actions),
         "solver_reported_status": (records[0].quality.get("status")
                                    if records else None),

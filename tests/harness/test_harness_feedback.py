@@ -283,7 +283,7 @@ class _StubExecutor:
         self._record = record
 
     def execute(self, code_path, workspace, *, solver, task_id, strategy_id,
-                profile, verification_level="basic", code_hash=None):
+                profile, code_hash=None):
         return self._record
 
 

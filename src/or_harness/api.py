@@ -4359,7 +4359,6 @@ class ORHarness:
 
     def execute(self, task: Dict[str, Any], strategy_id: str, code_path: str,
                 workspace: str, *, solver: str,
-                verification_level: str = "basic",
                 episode_id: Optional[str] = None,
                 prediction_id: Optional[str] = None) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
@@ -4418,8 +4417,7 @@ class ORHarness:
         # (a time limit the outer agent applied inside solve.py, a seed)
         # is NOT observable here and stays unknown.
         exec_params: Dict[str, Any] = {
-            "strategy_id": strategy_id, "solver": solver,
-            "verification_level": verification_level}
+            "strategy_id": strategy_id, "solver": solver}
         action = self.actions.begin_action(
             "execute_strategy", str(task["task_id"]), episode_id,
             pre_snapshot=pre, params=exec_params)
@@ -4427,7 +4425,7 @@ class ORHarness:
             record = self.executor.execute(
                 Path(code_path), Path(workspace), solver=solver,
                 task_id=str(task["task_id"]), strategy_id=strategy_id,
-                profile=profile, verification_level=verification_level)
+                profile=profile)
         except BaseException as exc:
             # The PRE snapshot is already bound and the action is already
             # persisted as ``running``. An exception between here and

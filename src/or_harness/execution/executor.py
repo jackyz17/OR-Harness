@@ -262,8 +262,8 @@ class SafePythonExecutor:
     @staticmethod
     def verify(outcome: ExecutionOutcome) -> Dict[str, Any]:
         """Basic, cheap verification: legal status, finite objective when
-        claimed, gap recorded when a bound exists. ``verification=strong`` is
-        an optional outer-layer upgrade; this layer stays cheap by default.
+        claimed, gap recorded when a bound exists. This is the only depth
+        this build performs — there is no second, stronger tier to select.
 
         ``runtime_checks`` is reported SEPARATELY from ``problems`` on
         purpose: ``problems`` feeds ``quality.feasible``, and a suspicious
@@ -318,7 +318,6 @@ class SafePythonExecutor:
 
     def execute(self, code_path: Path, workspace: Path, *, solver: str,
                 task_id: str, strategy_id: str, profile: ProblemProfile,
-                verification_level: str = "basic",
                 code_hash: Optional[str] = None) -> ExecutionRecord:
         """Run once, verify, meter cost, and assemble an ExecutionRecord.
 
@@ -427,7 +426,6 @@ class SafePythonExecutor:
             cost=cost, failures=failures,
             solver={"name": outcome.solver, "code_hash": digest},
             execution_features=execution_features,
-            verification_level=verification_level,
             measurement_scope="attempt",
             solver_runtime_provenance=runtime_provenance)
 

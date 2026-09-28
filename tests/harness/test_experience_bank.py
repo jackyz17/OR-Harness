@@ -27,7 +27,7 @@ class TestExperienceBank(HarnessTestCase):
 
     def test_append_rejects_malformed(self):
         rec = self.make_record(execution_id="ex_bad")
-        rec.verification_level = "gold-plated"  # not a legal level
+        rec.source = "gold-plated"  # not a legal source
         with self.assertRaises(ValueError):
             self.bank.append(rec)
         self.assertEqual(self.bank.count(), 0)

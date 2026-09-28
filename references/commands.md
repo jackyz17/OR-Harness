@@ -389,7 +389,9 @@ Record YOUR explicit choice after a plan: accept the suggestion, pick another ca
 
 ## Stage 4 — Execute and verify
 
-### `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME [--verification basic]`
+### `orx execute --task t.json --strategy S04 --code solve.py --workspace DIR --solver NAME`
+
+Run this for the strategy you CHOSE. Predicting several candidates is how the choice is made; executing one is what the loop does. A further attempt is your decision after a real failure or an unresolved uncertainty — nothing here starts a second solve on its own, and every attempt that does run is charged its own real cost.
 
 You write `solve.py` following the strategy's actions (the framework never generates code). It runs in a sandbox and its **static policy** is precise, so read it before debugging a rejected script: `subprocess`, `socket`, `urllib`, `http`, `requests` and `shutil` are blocked imports, `pathlib` is blocked, and only `os` / `os.path` are allowed from `os` (calls such as `os.chdir`, `os.walk`, `os.remove` are refused). **Importing a solver library is allowed** — `ortools`, `highspy` and other in-process solvers are how you are expected to solve; only a subprocess-based solver (PuLP's CBC) cannot run here. Every constraint label must be `C1`, `C2`, `C3`, … so the L2 symbol cross-reference can resolve it. POSIX rlimits + a wall-clock timeout apply.
 

@@ -1117,5 +1117,136 @@ class TestTheTimeoutReachesTheProvider(Base):
         self.assertEqual(effective["provider_timeout_s"], 300.0)
 
 
+# ---------------------------------------------------------------------------
+# 10  one solve per decision; the retired "strong" label is refused
+# ---------------------------------------------------------------------------
+
+
+class TestOneSolvePerDecision(Base):
+    """Predicting several candidates is how a choice is made; EXECUTING
+    one is what the loop does. A second solve must come from a real failure
+    or an explicit decision, never from the framework. These tests count
+    solves, because that is the only way to tell the two stories apart."""
+
+    def setUp(self):
+        super().setUp()
+        self.solver_calls = 0
+        # Count real solver invocations by wrapping the executor.
+        original = ORHarness.__init__
+
+        def counting_init(harness_self, *a, **k):
+            original(harness_self, *a, **k)
+            inner = harness_self.executor.execute
+
+            def counted(*ea, **ek):
+                self.solver_calls += 1
+                return inner(*ea, **ek)
+
+            harness_self.executor.execute = counted
+
+        ORHarness.__init__ = counting_init
+        self.addCleanup(setattr, ORHarness, "__init__", original)
+
+    def _solve(self, task, tag, objective=1.0):
+        work = Path(self.home) / f"ws_{tag}"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': "
+            f"{objective}, 'objective_bound': {objective}, "
+            f"'mip_gap': 0.0, 'runtime_seconds': 0.01, "
+            "'variables': {'x1': 1}}, fh)\n", encoding="utf-8")
+        return self.make_harness(), script, work
+
+    def test_check_and_close_do_not_solve_again(self):
+        h, script, work = self._solve(TASK, "one")
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        self.assertEqual(self.solver_calls, 1)
+        # Checking the answer is a check, not another solve.
+        checked = h.check_task_result(record.execution_id,
+                                      {"reference_status": "optimal"})
+        self.assertEqual(checked["state"], "passed")
+        self.assertEqual(self.solver_calls, 1,
+                         "check-task must not run the solver again")
+        h.record(record)
+        # Closing the episode reuses the recorded verdict.
+        closed = h.close_episode(TASK["task_id"], "ep1",
+                                 terminal_state="completed")
+        self.assertIsNotNone(closed)
+        self.assertEqual(self.solver_calls, 1,
+                         "close-episode must not re-verify or re-solve")
+
+    def test_a_failed_check_does_not_auto_retry(self):
+        h, script, work = self._solve(TASK, "bad", objective=1.0)
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        failed = h.check_task_result(
+            record.execution_id, {"reference_objective": 999.0})
+        self.assertEqual(failed["state"], "failed")
+        # The response tells the AGENT what to do next; it does not do it.
+        self.assertIn("next", failed)
+        self.assertEqual(self.solver_calls, 1,
+                         "a failed check must not start a second solve")
+
+
+class TestTheVerificationLevelConceptIsGone(Base):
+    """There is ONE verification depth, so a level selector is a lever that
+    moves nothing. ``strong`` was never more than a label (the executor's
+    checks inspect no level), and a record carrying it would have claimed an
+    enhanced verification that never ran. The whole concept is removed
+    rather than accepted-and-ignored."""
+
+    def test_the_execute_command_has_no_level_flag(self):
+        from or_harness.cli import build_parser
+        subcommands = [a for a in build_parser()._actions
+                       if getattr(a, "choices", None)
+                       and "execute" in (a.choices or ())]
+        self.assertTrue(subcommands)
+        execute = subcommands[0].choices["execute"]
+        flags = {o for action in execute._actions
+                 for o in action.option_strings}
+        self.assertNotIn("--verification", flags)
+
+    def test_the_api_takes_no_level_argument(self):
+        import inspect
+        parameters = inspect.signature(ORHarness.execute).parameters
+        self.assertNotIn("verification_level", parameters)
+
+    def test_a_record_has_no_level_field(self):
+        from or_harness.core.schema import ExecutionRecord
+        self.assertFalse(hasattr(ExecutionRecord, "verification_level"))
+        # Neither on the dataclass FIELDS nor on a built instance.
+        import dataclasses
+        names = {f.name for f in dataclasses.fields(ExecutionRecord)}
+        self.assertNotIn("verification_level", names)
+
+    def test_an_old_record_payload_with_the_field_still_loads(self):
+        """Dropping a field must be backward TOLERANT on read: an older
+        payload carrying the key is loaded and the key is ignored, never
+        turned into a load failure."""
+        from or_harness.core.schema import ExecutionRecord
+        h = self.make_harness()
+        work = Path(self.home) / "ws_hist"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 5.0, "
+            "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
+        record = h.execute(TASK, "S01", str(script), str(work),
+                           solver="highs", episode_id="ep1")
+        stored = record.to_dict()
+        stored["verification_level"] = "strong"
+        back = ExecutionRecord.from_dict(stored)
+        self.assertFalse(hasattr(back, "verification_level"))
+        # The label leaves no trace that could be read as evidence.
+        self.assertNotIn("verification_level", back.to_dict())
+        self.assertNotIn("strong", json.dumps(back.to_dict()))
+
+
 if __name__ == "__main__":
     unittest.main()
