@@ -84,7 +84,8 @@ One provider call per prediction. No retries, no default success values.
 
 ```bash
 orx plan-next --task t.json --episode ep1 \
-  [--candidates specs.json] [--max-calls N]
+  [--candidates specs.json] [--max-calls N] \
+  [--benefit-kind KIND --benefit-metric METRIC]
 ```
 
 `plan-next` (horizon fixed at 1):
@@ -100,16 +101,22 @@ orx plan-next --task t.json --episode ep1 \
 
 **Fallback.** When NO candidate carries a usable prediction (provider down, every payload invalid), the plan reports `status="no_valid_predictions"` with the reasons and NO suggestion — fall back to `recall`/Selector ordering or choose yourself. The fallback is reported as what it is; it is never dressed up as a completed world-model comparison, and the calls that did happen keep their recorded cost.
 
-**A benefit that is not on the yardstick does not enter the full ranking.** The comparison needs BOTH the kind AND the metric to match: two `solution_quality` predictions measuring different things are not one currency, so `normalized_objective_gap` (the close-out's own observable metric, including its aliases) is what the ranking reads. A candidate whose benefit is off the yardstick keeps its COST and RISK picture (still reported, still charged) but produces no `utility` — so it can never silently win or lose the full ranking on an upside nobody could read. It is named in `score.incomparable["benefit"]`. This is why the convention must be declared BEFORE the result is seen: a prediction in a currency this comparison cannot use is reported, never converted, and never scored as a zero.
+**One convention per decision, resolved and reported.** The comparison reads ONE benefit currency, and where it came from is recorded in `result.plan.benefit_convention` (`kind`/`metric`/`unit`/`source`/`reason`). Three sources, in order:
 
-**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one (the shared `benefit_convention` in the request says so):
+1. **declared** — the caller names it for this decision: `--benefit-kind` / `--benefit-metric` (optionally `--benefit-unit`). It is then pushed into EVERY candidate's request as a REQUIRED convention, so the candidates are PREDICTED in that currency, not merely compared in it. Use it to compare completion: `--benefit-kind effective_completion --benefit-metric task_result_check_passed`.
+2. **agreed** — nothing declared, and every candidate carrying a benefit declared the SAME `kind`/`metric`. This is what makes two completion candidates comparable without ceremony.
+3. **default** — otherwise the build's own yardstick (`solution_quality` / `normalized_objective_gap`); the disagreement is named in `reason`.
+
+A declaration this build has no scale for (`valid_progress`, or an unknown pair) resolves to `source="unknown_declaration"` with `comparable=false`: **no ranking is produced at all**, because ranking by an invented scale is worse than saying there is none. A candidate whose own `kind`/`metric` differs from the decision's convention is reported in `score.incomparable["benefit"]` and produces **no utility** — so it can never silently win or lose the ranking on an upside the comparison could not read. It keeps its cost and risk picture (still reported, still charged).
+
+**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one (the convention in the request says so):
 
 | You are predicting | Declare | Observed from |
 |---|---|---|
 | how well the solver solved the model | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
 | whether the ANSWER satisfies the TASK | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
 
-Only `solution_quality` is on a single comparable yardstick, because candidates are compared on how well they solve what they were given. A completion claim is a different measurement: it is reported, observed against the real task check, and never interchanged with the solver's gap even though both land in [0,1]. A `passed` check is not a quality level, and `1 - mip_gap` is not a completion rate. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
+Candidates compared on completion are compared **with each other**, never against a quality candidate (and the reverse): the convention has to match before two numbers are ranked, because `1 - mip_gap` is not a completion rate and a `passed` check is not a quality level, even though both land in [0,1]. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
 
 **Describe the candidate's `method`.** A candidate carries `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` and the model predicts FROM it: a bare strategy id or solver name describes nothing about what would happen. The caller supplies it (a cold start has no memory to read it from), the solver/config stay separate fields, and an empty value means the caller did not describe it — not that there is nothing to describe.
 

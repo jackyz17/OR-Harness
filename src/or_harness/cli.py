@@ -1567,6 +1567,12 @@ def cmd_plan_next(args) -> int:
         limits = {k: v for k, v in limits.items() if v is not None}
         if getattr(args, "delta", None) is not None:
             limits["delta"] = args.delta
+        if getattr(args, "benefit_kind", None):
+            limits["benefit_kind"] = args.benefit_kind
+        if getattr(args, "benefit_metric", None):
+            limits["benefit_metric"] = args.benefit_metric
+        if getattr(args, "benefit_unit", None):
+            limits["benefit_unit"] = args.benefit_unit
         plan = h.plan_next(task, episode_id=args.episode,
                            candidates=candidates, limits=limits)
         result = {"plan": plan, "decision_action_id": plan.get(
@@ -2612,6 +2618,21 @@ def build_parser() -> argparse.ArgumentParser:
                         "off), 'h-x-b' predicts H as well but keeps the "
                         "knowledge value out of the decision, "
                         "'h-x-b-value' lets it influence the choice")
+    p.add_argument("--benefit-kind", default=None, metavar="KIND",
+                   help="the benefit CONVENTION this decision compares under: "
+                        "'solution_quality' (how well the solver solved the "
+                        "model) or 'effective_completion' (whether the "
+                        "ANSWER satisfies the TASK). Declaring it makes every "
+                        "candidate be predicted AND compared in that "
+                        "currency; without it the candidates' own agreement "
+                        "is used, else solution_quality")
+    p.add_argument("--benefit-metric", default=None, metavar="METRIC",
+                   help="the metric of --benefit-kind (required with it): "
+                        "'normalized_objective_gap' for solution_quality, "
+                        "'task_result_check_passed' for effective_completion")
+    p.add_argument("--benefit-unit", default=None, metavar="UNIT",
+                   help="the unit of the declared metric (optional; the "
+                        "convention's own unit is used when omitted)")
     p.set_defaults(func=cmd_plan_next)
 
     p = sub.add_parser("choose-next",

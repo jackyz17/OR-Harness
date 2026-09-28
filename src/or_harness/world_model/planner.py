@@ -60,7 +60,7 @@ import copy
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.world_model.prediction import ActionSpec, OutcomePrediction
@@ -99,6 +99,15 @@ class PlanLimits:
     #: unmodified call scores EXACTLY as it did before this term existed).
     #: A positive value must be chosen explicitly.
     delta: Optional[float] = None
+    #: The benefit CONVENTION this ONE decision compares under. ``None`` on
+    #: both = the candidates' own agreement is used when they share one, else
+    #: the build's default. Declaring it lets a decision compare completion
+    #: (``effective_completion`` / ``task_result_check_passed``) instead of
+    #: quality — the same convention every candidate is then predicted and
+    #: evaluated under.
+    benefit_kind: Optional[str] = None
+    benefit_metric: Optional[str] = None
+    benefit_unit: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -110,6 +119,9 @@ class PlanLimits:
             "beta": self.beta,
             "gamma": self.gamma,
             "delta": self.delta,
+            "benefit_kind": self.benefit_kind,
+            "benefit_metric": self.benefit_metric,
+            "benefit_unit": self.benefit_unit,
             "cost_weights": (dict(self.cost_weights)
                              if self.cost_weights is not None else None),
         }
@@ -131,6 +143,12 @@ class PlanLimits:
                    else float(data["gamma"])),
             delta=(None if data.get("delta") is None
                    else float(data["delta"])),
+            benefit_kind=(str(data["benefit_kind"])
+                          if data.get("benefit_kind") else None),
+            benefit_metric=(str(data["benefit_metric"])
+                            if data.get("benefit_metric") else None),
+            benefit_unit=(str(data["benefit_unit"])
+                          if data.get("benefit_unit") else None),
             cost_weights=(None if data.get("cost_weights") is None
                           else dict(data["cost_weights"])),
         )
@@ -250,6 +268,10 @@ class PlanResult:
     #: Budget honesty: with a declared budget whose consumption has unknown
     #: dimensions, the plan never claims to be within budget.
     budget_confirmation: str = "unknown"  # ok | unconfirmed | exceeded | unknown
+    #: The ONE benefit convention this decision compared under (kind,
+    #: metric, unit, source). Recorded so a reader can see WHICH currency
+    #: the ranking used, and whether it was declared, agreed or defaulted.
+    benefit_convention: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
 
     @staticmethod
@@ -273,6 +295,7 @@ class PlanResult:
             "model_calls_made": int(self.model_calls_made),
             "planning_cost": copy.deepcopy(self.planning_cost),
             "budget_confirmation": self.budget_confirmation,
+            "benefit_convention": copy.deepcopy(self.benefit_convention),
             "created_at": self.created_at,
         }
 
@@ -296,6 +319,7 @@ class PlanResult:
             planning_cost=copy.deepcopy(data.get("planning_cost")),
             budget_confirmation=str(data.get("budget_confirmation",
                                              "unknown")),
+            benefit_convention=copy.deepcopy(data.get("benefit_convention")),
             created_at=float(data.get("created_at", time.time())),
         )
 
@@ -756,24 +780,19 @@ class StrategyOutcomeScore:
         }
 
 
-#: The benefit kinds this comparison can compare on one yardstick. A
-#: candidate whose benefit is a different currency is NOT silently
-#: converted — it is reported incomparable and does NOT enter the full
-#: utility ranking (see ``score_strategy_outcome_predictions``).
+#: The DEFAULT benefit kind. Kept as a named constant because it appears in
+#: documentation and in the default convention; the comparison no longer
+#: gates on the KIND alone (see ``resolve_benefit_convention``), so this is
+#: the default's kind, not the only acceptable one.
 COMPARABLE_BENEFIT_KINDS = ("solution_quality",)
 
-#: The benefit METRICS on that same yardstick. The kind alone is not enough:
-#: two ``solution_quality`` predictions that measure different things (a
-#: solver-side normalized gap vs some other normalized score) are not one
-#: currency, so the metric must match too. The comparison and the close-out
-#: share this definition, so the ranking and the evaluation can never
-#: disagree about what "the same benefit" means.
+#: The benefit METRICS on that same default yardstick. The kind alone is not
+#: enough: two ``solution_quality`` predictions that measure different things
+#: (a solver-side normalized gap vs some other normalized score) are not one
+#: currency, so the metric must match too.
 COMPARABLE_BENEFIT_METRIC = "normalized_objective_gap"
 
-#: Declared-metric spellings that resolve to the comparable metric. These
-#: are the same aliases the close-out's observation channel uses, so a
-#: prediction that will be EVALUATED as normalized quality is also RANKED on
-#: it — one currency, one list.
+#: Declared-metric spellings that resolve to the default comparable metric.
 COMPARABLE_BENEFIT_METRIC_ALIASES = {
     "normalized_objective_gap": "normalized_objective_gap",
     "solution_quality": "normalized_objective_gap",
@@ -781,9 +800,40 @@ COMPARABLE_BENEFIT_METRIC_ALIASES = {
     "normalized_gap": "normalized_objective_gap",
 }
 
+#: The ONE completion convention this comparison ALSO understands. It is not
+#: a synonym for quality: it measures whether the ANSWER satisfies the TASK,
+#: and candidates predicted under it are compared against EACH OTHER (never
+#: against a quality candidate). A decision that wants to compare completion
+#: probabilities declares this convention explicitly.
+COMPLETION_BENEFIT_KIND = "effective_completion"
+COMPLETION_BENEFIT_METRIC = "task_result_check_passed"
+COMPLETION_BENEFIT_UNIT = "boolean"
+
+#: The conventions a decision may DECLARE, keyed by ``(kind, metric)`` after
+#: normalisation. Anything outside this table cannot be compared: an unknown
+#: currency has no shared scale, and inventing one would rank numbers that
+#: do not mean the same thing.
+KNOWN_BENEFIT_CONVENTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("solution_quality", COMPARABLE_BENEFIT_METRIC): {
+        "unit": "1-gap",
+        "observed_from": ("the solver's own normalized gap (an `optimal` "
+                          "status is a gap of 0; otherwise 1-gap)"),
+    },
+    (COMPLETION_BENEFIT_KIND, COMPLETION_BENEFIT_METRIC): {
+        "unit": COMPLETION_BENEFIT_UNIT,
+        "observed_from": ("the execution's own task-result check: 1.0 "
+                          "passed, 0.0 confirmed failed, UNKNOWN when "
+                          "unchecked or insufficient"),
+    },
+}
+
+#: The default convention when a decision declares none and the candidates
+#: do not agree on one.
+DEFAULT_BENEFIT_CONVENTION = ("solution_quality", COMPARABLE_BENEFIT_METRIC)
+
 
 def comparable_benefit_metric(metric: Any) -> Optional[str]:
-    """The canonical comparable metric a declared metric maps to, or None.
+    """The canonical DEFAULT metric a declared metric maps to, or None.
 
     ``None`` means this build has no common currency for that metric: the
     benefit is reported, and it does NOT enter the utility ranking — an
@@ -793,6 +843,122 @@ def comparable_benefit_metric(metric: Any) -> Optional[str]:
     name = str(metric or "").strip().lower()
     name = name.replace(" ", "_").replace("-", "_")
     return COMPARABLE_BENEFIT_METRIC_ALIASES.get(name)
+
+
+def normalize_benefit_convention(kind: Any, metric: Any
+                                 ) -> Optional[Tuple[str, str]]:
+    """The canonical ``(kind, metric)`` a declaration names, or None.
+
+    ``None`` = this build has no comparable convention for that pair, so the
+    decision cannot rank benefits by it (the caller reports that rather than
+    fabricating a scale).
+    """
+    k = str(kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+    m = str(metric or "").strip().lower().replace(" ", "_").replace("-", "_")
+    if not k or not m:
+        return None
+    if k == "solution_quality":
+        canonical = comparable_benefit_metric(m)
+        if canonical:
+            return ("solution_quality", canonical)
+        return None
+    if k == COMPLETION_BENEFIT_KIND:
+        if m in (COMPLETION_BENEFIT_METRIC, "task_check_passed",
+                 "completion_rate"):
+            return (COMPLETION_BENEFIT_KIND, COMPLETION_BENEFIT_METRIC)
+        return None
+    return None
+
+
+def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
+                               metric: Any = None
+                               ) -> Dict[str, Any]:
+    """The ONE convention a decision compares under, and where it came from.
+
+    Precedence, and it is reported rather than implied:
+
+    1. **declared** — the caller named ``kind``/``metric`` for this decision.
+       Every valid candidate must then be predicted under it; a mismatch is
+       reported per candidate and never coerced.
+    2. **agreed** — no declaration, and every valid prediction that CARRIES a
+       benefit declares the SAME ``(kind, metric)``. This is the case that
+       makes same-convention comparison work without ceremony: two candidates
+       both predicting ``effective_completion`` are compared on completion,
+       not rejected for not being quality.
+    3. **default** — otherwise the build's default yardstick
+       (``solution_quality`` / ``normalized_objective_gap``) is used, and the
+       disagreement is reported so a reader sees that some candidates were
+       not on it.
+
+    Returns ``{"kind", "metric", "unit", "source", "reason",
+    "observed_from"}``. An unrecognised DECLARATION is reported as
+    ``source="unknown_declaration"`` with ``comparable=False``: no ranking is
+    produced, because ranking by an invented scale would be worse than
+    saying there is none.
+    """
+    if kind is not None or metric is not None:
+        resolved = normalize_benefit_convention(kind, metric)
+        if resolved is None:
+            return {
+                "kind": (str(kind) if kind else None),
+                "metric": (str(metric) if metric else None),
+                "unit": None,
+                "source": "unknown_declaration",
+                "comparable": False,
+                "reason": (f"this build has no comparable benefit convention "
+                           f"for kind={kind!r} metric={metric!r}; the "
+                           f"declared currencies are "
+                           f"{sorted(KNOWN_BENEFIT_CONVENTIONS)}. Ranking by "
+                           "an invented scale would be worse than reporting "
+                           "that nothing is comparable"),
+            }
+        k, m = resolved
+        return {
+            "kind": k, "metric": m,
+            "unit": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["unit"],
+            "source": "declared",
+            "comparable": True,
+            "reason": ("declared by the caller for this decision, so every "
+                       "candidate is compared on the SAME currency"),
+            "observed_from": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["observed_from"],
+        }
+    declared: Dict[Tuple[str, str], int] = {}
+    for prediction in predictions:
+        if getattr(prediction, "status", None) != "valid":
+            continue
+        benefit = getattr(prediction, "benefit", None)
+        if benefit is None or benefit.value is None:
+            continue
+        resolved = normalize_benefit_convention(benefit.kind, benefit.metric)
+        if resolved is None:
+            continue
+        declared[resolved] = declared.get(resolved, 0) + 1
+    if len(declared) == 1:
+        k, m = next(iter(declared))
+        return {
+            "kind": k, "metric": m,
+            "unit": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["unit"],
+            "source": "agreed",
+            "comparable": True,
+            "reason": (f"every candidate carrying a benefit declared the "
+                       f"same convention ({k}/{m}), so it was used for the "
+                       "comparison without being declared"),
+            "observed_from": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["observed_from"],
+        }
+    k, m = DEFAULT_BENEFIT_CONVENTION
+    detail = (f"the candidates did not agree on one convention "
+              f"({ {f'{a}/{b}': n for (a, b), n in declared.items()} })"
+              if len(declared) > 1 else "no candidate declared a benefit")
+    return {
+        "kind": k, "metric": m,
+        "unit": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["unit"],
+        "source": "default",
+        "comparable": True,
+        "reason": (f"{detail}; the build's default yardstick ({k}/{m}) was "
+                   "used. Declare the convention for this decision to "
+                   "compare a different currency (e.g. completion)"),
+        "observed_from": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["observed_from"],
+    }
 
 
 def score_strategy_outcome_predictions(
@@ -811,13 +977,14 @@ def score_strategy_outcome_predictions(
       dimension's peak normalized share;
     - risk is the MAXIMUM event probability (no independence assumption);
       an event with no probability is a full-weight deficit;
-    - a benefit whose kind is not in :data:`COMPARABLE_BENEFIT_KINDS`, or
-      whose metric is not :data:`COMPARABLE_BENEFIT_METRIC`, is INCOMPARABLE
-      and does not enter the full utility ranking: ``benefit_value`` stays
-      None and no ``utility`` is produced. Cost and risk are still reported
-      (and still charged), so the candidate's cost/risk picture is visible —
-      but a candidate whose upside is in a currency this comparison cannot
-      read is NOT ranked as if that upside were zero;
+    - a benefit whose declared (kind, metric) is not the ONE convention this
+      decision compares under — or is a pair this build has no comparable
+      scale for at all — is INCOMPARABLE and does not enter the full utility
+      ranking: ``benefit_value`` stays None and no ``utility`` is produced.
+      Cost and risk are still reported (and still charged), so the
+      candidate's cost/risk picture is visible — but a candidate whose
+      upside is in a currency this comparison cannot read is NOT ranked as
+      if that upside were zero;
     - the knowledge term is OFF (delta=0) for this protocol.
     """
     valid = [p for p in predictions if p.status == "valid"]
@@ -840,6 +1007,10 @@ def score_strategy_outcome_predictions(
     gamma = limits.gamma if limits.gamma is not None else 1.0
 
     scores: List[StrategyOutcomeScore] = []
+    convention = resolve_benefit_convention(
+        predictions,
+        kind=getattr(limits, "benefit_kind", None),
+        metric=getattr(limits, "benefit_metric", None))
     for prediction in predictions:
         score = StrategyOutcomeScore(
             prediction_id=prediction.prediction_id)
@@ -850,29 +1021,35 @@ def score_strategy_outcome_predictions(
                 "possible for this candidate")
             scores.append(score)
             continue
-        # Benefit: comparable currency only. The KIND and the METRIC must
-        # both be on this comparison's yardstick — the same requirement the
-        # close-out applies, so a candidate that can be RANKED here can also
-        # be EVALUATED there, and vice versa. A benefit in another currency
-        # is reported and does NOT enter the utility ranking.
+        # Benefit: comparable currency only. The candidate's declared
+        # (kind, metric) must match the ONE convention this decision
+        # compares under (declared by the caller, agreed by the candidates,
+        # or the build's default). An unrecognised DECLARATION means there
+        # is no shared scale at all: reported, never ranked.
         benefit = prediction.benefit
         benefit_comparable = False
-        if benefit is None or benefit.value is None:
+        declared_convention = (
+            normalize_benefit_convention(benefit.kind, benefit.metric)
+            if benefit is not None else None)
+        if not convention["comparable"]:
+            score.incomparable["benefit"] = convention["reason"]
+        elif benefit is None or benefit.value is None:
             score.incomparable["benefit"] = (
                 "no benefit value was predicted; an unpredicted upside "
                 "contributes NOTHING (the mirror of charging unknown risk "
                 "in full)")
-        elif benefit.kind not in COMPARABLE_BENEFIT_KINDS:
+        elif declared_convention is None:
             score.incomparable["benefit"] = (
-                f"benefit kind {benefit.kind!r} is not on this comparison's "
-                "yardstick (normalized solution quality); it is reported, "
-                "never silently converted")
-        elif comparable_benefit_metric(benefit.metric) is None:
+                f"benefit kind/metric {benefit.kind!r}/{benefit.metric!r} is "
+                "not a convention this build can compare: it is reported, "
+                "never silently converted, and it is NOT scored as zero")
+        elif declared_convention != (convention["kind"], convention["metric"]):
             score.incomparable["benefit"] = (
-                f"benefit metric {benefit.metric!r} is not on this "
-                f"comparison's yardstick ({COMPARABLE_BENEFIT_METRIC}): a "
-                "different measurement is a different currency, and it is "
-                "reported rather than scored as zero")
+                f"benefit convention {declared_convention[0]}/"
+                f"{declared_convention[1]} differs from this decision's "
+                f"({convention['kind']}/{convention['metric']}, "
+                f"source={convention['source']}): different measurements are "
+                "different currencies and are never ranked together")
         else:
             score.benefit_value = float(benefit.value)
             benefit_comparable = True

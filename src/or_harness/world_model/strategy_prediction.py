@@ -344,7 +344,8 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
 
 def build_strategy_outcome_request(
         context: Any, candidate: CandidateRef,
-        *, benefit_baseline_hint: Optional[Dict[str, Any]] = None
+        *, benefit_baseline_hint: Optional[Dict[str, Any]] = None,
+        benefit_convention: Optional[Dict[str, Any]] = None
         ) -> Dict[str, Any]:
     """Assemble the provider request for one candidate under one context.
 
@@ -353,12 +354,38 @@ def build_strategy_outcome_request(
     evidence, capability evidence, constraints). The model fills only the
     prediction content — the request says so explicitly.
 
+    ``benefit_convention`` is the ONE convention THIS DECISION compares
+    under. When the caller declared one (e.g. completion rather than
+    quality) it is sent as the REQUIRED convention rather than offered as
+    the default, so the candidates are predicted under the currency the
+    comparison will use. Without a declaration the general block travels,
+    and the candidates' own agreement decides.
+
     The context's calibration block is FILTERED before it is sent: only the
     groups whose SCOPE matches this candidate's scope are kept, because a
     window-scope error statistic is not evidence about a single attempt (and
     the reverse). The filtering is reported on the request, so a reader can
     see that a group was withheld rather than absent.
     """
+    declared = dict(benefit_convention or {})
+    declared_kind = declared.get("kind")
+    declared_metric = declared.get("metric")
+    fixed_convention: Optional[Dict[str, Any]] = None
+    if declared_kind and declared_metric:
+        fixed_convention = {
+            "kind": str(declared_kind),
+            "metric": str(declared_metric),
+            "unit": declared.get("unit"),
+            "scope": "the prediction's own candidate scope",
+            "observed_from": declared.get("observed_from"),
+            "source": declared.get("source", "declared"),
+            "required": True,
+            "note": ("THIS DECISION compares benefit under this convention. "
+                     "Predict this candidate's benefit with EXACTLY this "
+                     "kind and metric: a different kind or metric cannot be "
+                     "ranked against the other candidates, and it is NOT "
+                     "silently converted"),
+        }
     request: Dict[str, Any] = {
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
         "request_kind": "strategy_outcome_prediction",
@@ -369,7 +396,9 @@ def build_strategy_outcome_request(
         # currency, and the comparison and the close-out read the same
         # definition. A model that deviates is reported (its prediction is
         # kept, but the benefit does not enter the full utility ranking).
-        "benefit_convention": copy.deepcopy(BENEFIT_CONVENTION),
+        "benefit_convention": (fixed_convention
+                               if fixed_convention is not None
+                               else copy.deepcopy(BENEFIT_CONVENTION)),
         "output_contract": {
             "allowed_fields": ["benefit", "cost", "risk", "uncertainty",
                                "evidence_basis", "unsupported_fields"],
@@ -806,15 +835,22 @@ class StrategyOutcomeService:
     def predict(self, context: Any, candidate: CandidateRef,
                 *, timeout_s: Optional[float] = None,
                 benefit_baseline_hint: Optional[Dict[str, Any]] = None,
+                benefit_convention: Optional[Dict[str, Any]] = None,
                 ) -> StrategyOutcomePrediction:
         """One provider call, parsed and persisted (failures included).
+
+        ``benefit_convention`` (when given) is the ONE convention the
+        decision compares under; it travels in the request as a REQUIRED
+        instruction so the candidate is predicted in that currency rather
+        than merely compared in it afterwards.
 
         The result is ALWAYS a persisted prediction object: a failed call is
         a recorded failure with whatever usage it consumed, never an
         exception the caller must catch to learn the model is down.
         """
         request = build_strategy_outcome_request(
-            context, candidate, benefit_baseline_hint=benefit_baseline_hint)
+            context, candidate, benefit_baseline_hint=benefit_baseline_hint,
+            benefit_convention=benefit_convention)
         try:
             try:
                 result = self.provider.predict(request, timeout_s=timeout_s)

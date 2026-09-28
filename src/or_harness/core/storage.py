@@ -252,15 +252,33 @@ class Store:
 
     @contextlib.contextmanager
     def locked(self) -> Iterator[None]:
-        """Thread lock + cross-process flock around a write transaction."""
+        """Thread + cross-process write lock, RE-ENTRANT within a thread.
+
+        The lock is held twice whenever a caller deliberately groups several
+        writes into one atomic unit (``with store.locked(): ...`` around
+        helper calls that each open their own transaction). ``flock`` is NOT
+        re-entrant across separate file descriptors, so naively taking it
+        twice would deadlock the process against itself; the depth counter
+        keeps the OUTER acquisition as the only real one.
+        """
         with self._thread_lock:
+            depth = getattr(self._local, "lock_depth", 0)
+            if depth > 0:
+                self._local.lock_depth = depth + 1
+                try:
+                    yield
+                finally:
+                    self._local.lock_depth -= 1
+                return
             lock_fd: Optional[int] = None
             try:
                 lock_fd = os.open(str(self._lock_path), os.O_CREAT | os.O_RDWR, 0o644)
                 if fcntl is not None:
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                self._local.lock_depth = 1
                 yield
             finally:
+                self._local.lock_depth = 0
                 if lock_fd is not None:
                     try:
                         if fcntl is not None:

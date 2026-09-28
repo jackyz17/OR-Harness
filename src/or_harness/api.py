@@ -1405,6 +1405,7 @@ class ORHarness:
             cir: Optional[Any] = None,
             timeout_s: Optional[float] = None,
             benefit_baseline_hint: Optional[Dict[str, Any]] = None,
+            benefit_convention: Optional[Dict[str, Any]] = None,
             ) -> "StrategyOutcomePrediction":
         """Predict ONE candidate's consequences under the wm-so/1 protocol.
 
@@ -1474,7 +1475,8 @@ class ORHarness:
         service: StrategyOutcomeService = self.strategy_predictions
         prediction = service.predict(
             context, candidate_ref, timeout_s=timeout_s,
-            benefit_baseline_hint=benefit_baseline_hint)
+            benefit_baseline_hint=benefit_baseline_hint,
+            benefit_convention=benefit_convention)
         # The frozen input reference, on every outcome (failures included):
         # a failed call was still made against this input.
         prediction.trace.model_info["prediction_context_id"] = \
@@ -1803,6 +1805,19 @@ class ORHarness:
         #     into a match by copying the prediction over.
         observed_config = params.get("execution_config") or {}
         observed_values = dict(observed_config.get("values") or {})
+        # A key the SCRIPT reported that contradicts an executor-controlled
+        # field is not an observation: the executor's own value stands and
+        # the run carries a ``conflicts`` record. Using the script's number
+        # here would let a solve script make itself match a prediction (e.g.
+        # report ``script_timeout_s=1`` while the sandbox really allowed
+        # 120), which is exactly how a wrong sample reaches the calibration.
+        # An executor-INSTRUCTED value (``executor_configured``:
+        # ``solver_timeout_s``) is not an observation either — the framework
+        # cannot see whether the solver honoured it, so it is not used as
+        # evidence of what the solver did.
+        config_conflicts = dict(observed_config.get("conflicts") or {})
+        executor_configured = dict(
+            observed_config.get("executor_configured") or {})
         for key, value in (candidate.config or {}).items():
             # Legacy actions recorded a few keys flat in params; keep
             # reading those so an old record still binds the way it did.
@@ -1810,6 +1825,41 @@ class ORHarness:
                 actual = observed_values[key]
             else:
                 actual = params.get(key)
+            if key in config_conflicts:
+                # The run's OWN record for this key is the executor's value;
+                # the script's contradicting number is reported, never used.
+                entry = {
+                    "predicted": value,
+                    "actual": config_conflicts[key].get("executor"),
+                    "reason": ("the solve script reported a value for a key "
+                               "the executor controls and the two disagree; "
+                               "the executor's own value is kept and the "
+                               "script's report is not used as an "
+                               "observation"),
+                    "script_reported": config_conflicts[key].get(
+                        "script_reported"),
+                }
+                if value == config_conflicts[key].get("executor"):
+                    # The prediction matches the EXECUTOR's truth; the script
+                    # merely wrote a wrong number of its own.
+                    observed_values[key] = config_conflicts[key].get("executor")
+                    continue
+                mismatch.setdefault("config", {})[key] = entry
+                continue
+            if key in executor_configured and key not in observed_values:
+                # An instruction, not a measurement: unknown, with the
+                # reason. It must not count as a confirmed match.
+                unknown.setdefault("config", {})[key] = {
+                    "predicted": value,
+                    "actual": None,
+                    "reason": ("the executor INSTRUCTED the script with this "
+                               "value, but the framework cannot observe "
+                               "whether the solver honoured it: it is not "
+                               "evidence of what the solver used. Have the "
+                               "script read the effective value back to "
+                               "confirm it"),
+                }
+                continue
             if actual is None:
                 unknown.setdefault("config", {})[key] = {
                     "predicted": value,
@@ -3688,11 +3738,40 @@ class ORHarness:
             "select_strategy", task_id, episode_id, pre_snapshot=root,
             params={"kind": "plan_next", "protocol": "strategy-outcome",
                     "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
+                    "benefit_convention": {
+                        "kind": getattr(limits, "benefit_kind", None),
+                        "metric": getattr(limits, "benefit_metric", None),
+                        "unit": getattr(limits, "benefit_unit", None),
+                    },
                     "limits": limits.to_dict()})
         plan.decision_action_id = decision.action_id
         started = time.monotonic()
         calls_made = 0
         stop_reason: Optional[str] = None
+        # The convention DECLARED for this decision (if any) is pushed into
+        # every candidate's request, so the candidates are PREDICTED under
+        # the currency the comparison will use. A convention the caller did
+        # not declare is left to the candidates' agreement and is resolved
+        # after the calls (see below).
+        declared_kind = getattr(limits, "benefit_kind", None)
+        declared_metric = getattr(limits, "benefit_metric", None)
+        declared_convention: Optional[Dict[str, Any]] = None
+        if declared_kind and declared_metric:
+            from or_harness.world_model.planner import (
+                normalize_benefit_convention,
+                KNOWN_BENEFIT_CONVENTIONS,
+            )
+            resolved = normalize_benefit_convention(declared_kind,
+                                                    declared_metric)
+            if resolved is not None:
+                known = KNOWN_BENEFIT_CONVENTIONS[resolved]
+                declared_convention = {
+                    "kind": resolved[0], "metric": resolved[1],
+                    "unit": getattr(limits, "benefit_unit", None)
+                    or known["unit"],
+                    "observed_from": known["observed_from"],
+                    "source": "declared",
+                }
         # ONE frozen context for the whole decision: every candidate is
         # conditioned on the SAME problem representation, X/B, retrieval
         # evidence, capability evidence and constraints.
@@ -3749,7 +3828,8 @@ class ORHarness:
                 break
             prediction = self.predict_strategy_outcome(
                 task, spec, episode_id, context=plan_context,
-                timeout_s=max(0.001, remaining))
+                timeout_s=max(0.001, remaining),
+                benefit_convention=declared_convention)
             calls_made += 1
             # Charge THIS call's known spend immediately (failed calls
             # included: their tokens are real) so the loop's own budget
@@ -3768,6 +3848,19 @@ class ORHarness:
                            "the completed calls are kept and their cost "
                            "is recorded")
         plan.model_calls_made = calls_made
+        # The ONE benefit convention this decision compares under: declared
+        # by the caller, agreed by the candidates, or the build's default.
+        # Resolved BEFORE scoring so every candidate is judged against the
+        # SAME currency, and recorded so a reader (and the prompt sent to
+        # the model) can see which one was in force. A declared convention
+        # is also pushed into the prediction requests, so the candidates are
+        # PREDICTED under it rather than merely compared under it.
+        from or_harness.world_model.planner import resolve_benefit_convention
+        convention = resolve_benefit_convention(
+            [p for _spec, p in predictions],
+            kind=getattr(limits, "benefit_kind", None),
+            metric=getattr(limits, "benefit_metric", None))
+        plan.benefit_convention = convention
         # Conservative comparison on ONE yardstick.
         only_predictions = [p for _spec, p in predictions]
         scores = score_strategy_outcome_predictions(only_predictions, limits)
@@ -3786,9 +3879,11 @@ class ORHarness:
                 f"{limits.gamma}*R({best.risk_effective}); "
                 f"{len(scores)} candidate(s) compared under protocol "
                 f"{STRATEGY_OUTCOME_PROTOCOL_VERSION} from context "
-                f"{plan_context.context_id}; conservative yardstick "
+                f"{plan_context.context_id}; benefit convention "
+                f"{convention['kind']}/{convention['metric']} "
+                f"(source={convention['source']}); conservative yardstick "
                 "(unknown cost => peak share, unknown risk => full weight, "
-                "unknown benefit => nothing)")
+                "benefit off the convention => not ranked)")
         elif comparable:
             suggestion_basis = ("shadow mode: candidates evaluated and "
                                 "recorded; suggestion withheld")
@@ -3824,6 +3919,8 @@ class ORHarness:
                              "n_candidates": len(predictions),
                              "suggested": None,
                              "suggestion_withheld": True,
+                             "benefit_convention": copy.deepcopy(
+                                 plan.benefit_convention),
                              "status": plan.status,
                              "truncation_reason": plan.truncation_reason})
                 result = plan.to_dict()
@@ -3831,6 +3928,8 @@ class ORHarness:
                 result["prediction_context_version"] = \
                     plan_context.version
                 result["protocol"] = "strategy-outcome"
+                result["benefit_convention"] = copy.deepcopy(
+                    plan.benefit_convention)
                 result["candidates"] = [
                     {"action_spec": spec.to_dict(),
                      "prediction_id": prediction.prediction_id,
@@ -3880,11 +3979,15 @@ class ORHarness:
                      "model_calls_made": int(plan.model_calls_made),
                      "planning_cost": copy.deepcopy(plan.planning_cost),
                      "budget_confirmation": plan.budget_confirmation,
+                     "benefit_convention": copy.deepcopy(
+                         plan.benefit_convention),
                      "prediction_context_id": plan_context.context_id,
                      "prediction_context_version": plan_context.version})
         result = plan.to_dict()
         result["prediction_context_id"] = plan_context.context_id
         result["prediction_context_version"] = plan_context.version
+        result["protocol"] = "strategy-outcome"
+        result["benefit_convention"] = copy.deepcopy(plan.benefit_convention)
         result["protocol"] = "strategy-outcome"
         result["candidates"] = [
             {"action_spec": spec.to_dict(),
@@ -4529,13 +4632,26 @@ class ORHarness:
                     "problem")
         # (c) One attempt per candidate: a prediction already claimed by a
         # real execution must not be silently re-used — that would put two
-        # executions under one forecast and double-count the sample.
+        # executions under one forecast and double-count the sample. Two
+        # sources are consulted, because the claim is written to BOTH sides:
+        # the prediction carries the forward link, and the action carries the
+        # prediction id. Reading only the prediction would miss a claim whose
+        # prediction write had not landed, and reading only the action would
+        # miss a legacy bind. The check is repeated inside the claim
+        # transaction, which is what actually prevents a race.
         bound = info.get("bound_action_id")
         if bound:
             raise ValueError(
                 f"prediction {prediction_id!r} is already bound to action "
                 f"{bound!r}: a prediction corresponds to ONE real attempt. "
                 "Predict the corrected candidate again if you re-solve")
+        claiming_action = self._prediction_claimed_by_action(prediction_id)
+        if claiming_action:
+            raise ValueError(
+                f"prediction {prediction_id!r} is already claimed by action "
+                f"{claiming_action!r}: a prediction corresponds to ONE real "
+                "attempt. Predict the corrected candidate again if you "
+                "re-solve")
         # (d) Explicit arguments must AGREE with the candidate. A caller
         # that re-types strategy/solver and gets it wrong is told now, not
         # after the run (where it would be a binding mismatch and a wasted
@@ -4581,31 +4697,89 @@ class ORHarness:
                 "on a run that would be rejected")
         return candidate
 
+    def _claim_prediction_for_action(self, prediction_id: str,
+                                     action_id: str) -> None:
+        """Claim a prediction for an action, ATOMICALLY or not at all.
+
+        Runs in ONE locked transaction (``store.locked()`` is re-entrant on
+        the thread lock, so the nested ``_save``/``_update`` calls cannot
+        deadlock): the prediction's forward link and the action's
+        ``prediction_id`` parameter are written together. Ordering is chose
+        so that a failure can never leave a HALF association that a later
+        call would read as a free prediction:
+
+        1. the ACTION is stamped first — the claim that blocks a second
+           execution lives on the action, and every reader scans actions;
+        2. the prediction's forward link is written second.
+
+        Any exception rolls the whole transaction back and is PROPAGATED:
+        the caller must not start the execution, because an unrecorded
+        association means the attempt could not be attributed. The check
+        that the prediction is unclaimed happens inside the same lock, so
+        two writers cannot both see it free.
+
+        The action is stamped in its CURRENT status. If it is already
+        ``running`` (two threads racing the same call), the second writer's
+        own action ends up claiming the prediction too — so the reader-side
+        check in :meth:`_prediction_claimed_by_action` still rejects a
+        prediction claimed by a DIFFERENT action, and the second execution
+        is refused before it starts.
+        """
+        store = self.strategy_predictions.store
+        with store.locked():
+            action = self.actions.get(action_id)
+            if action is None:
+                raise StorageError(f"unknown action_id {action_id!r}")
+            existing = (action.params or {}).get("prediction_id")
+            if existing not in (None, str(prediction_id)):
+                raise StorageError(
+                    f"action {action_id!r} already claims prediction "
+                    f"{existing!r}: an action corresponds to one prediction")
+            prediction = self.strategy_predictions.get(prediction_id)
+            if prediction is None:
+                raise StorageError(
+                    f"prediction {prediction_id!r} disappeared while claiming "
+                    "it for this action")
+            info = prediction.trace.model_info
+            bound = info.get("bound_action_id")
+            if bound not in (None, str(action_id)):
+                raise StorageError(
+                    f"prediction {prediction_id!r} is already claimed by "
+                    f"action {bound!r}: a prediction corresponds to ONE real "
+                    "attempt")
+            # (1) the action's claim, then (2) the prediction's forward link.
+            self.actions._update(action)  # re-stamp under the lock
+            info.setdefault("bound_action_id", str(action_id))
+            info["bound_action_id_before_execution"] = str(action_id)
+            info["association_phase"] = "linked_before_execution"
+            self.strategy_predictions._save(prediction)
+
+    def _prediction_claimed_by_action(self, prediction_id: str
+                                      ) -> Optional[str]:
+        """The OTHER action that already claims a prediction, or None.
+
+        Scans the action log for any action carrying this prediction id in
+        its params (the pre-execution link), EXCLUDING nothing — the caller
+        passes its own new action id separately and compares. Used as the
+        reader-side check that makes the claim survive a race: the writer
+        stamps its own action first, so a loser of the race sees the
+        winner's stamp here even though the prediction payload may still
+        read as free.
+        """
+        wanted = str(prediction_id)
+        for action in self.actions.query():
+            if (action.params or {}).get("prediction_id") == wanted:
+                return action.action_id
+        return None
+
     def _link_prediction_to_action(self, prediction_id: str,
                                    action_id: str) -> None:
-        """Persist the FORWARD link (prediction → action) before the run.
+        """Deprecated shim: use :meth:`_claim_prediction_for_action`.
 
-        Written the moment the action exists so an interrupted execution
-        still shows which attempt a prediction was testing. Idempotent: a
-        re-run with the same pair writes the same values. It deliberately
-        does NOT compute comparability or scores — that is the job of
-        :meth:`bind_strategy_outcome` after the action ends (the real,
-        identity-checked, idempotent bind).
-        """
-        try:
-            prediction = self.strategy_predictions.get(prediction_id)
-        except Exception:  # a read failure must never block the execution
-            return
-        if prediction is None:
-            return
-        info = prediction.trace.model_info
-        info.setdefault("bound_action_id", action_id)
-        info["bound_action_id_before_execution"] = action_id
-        info["association_phase"] = "linked_before_execution"
-        try:
-            self.strategy_predictions._save(prediction)
-        except Exception:  # noqa: BLE001 - bookkeeping must not break a run
-            pass
+        Kept so an external caller written against the earlier name does not
+        silently lose the atomicity the claim provides — it delegates rather
+        than re-implementing the tolerant write."""
+        self._claim_prediction_for_action(prediction_id, action_id)
 
     def execute(self, task: Dict[str, Any], strategy_id: Optional[str] = None,
                 code_path: str = "", workspace: str = "", *, solver: Optional[str] = None,
@@ -4706,11 +4880,29 @@ class ORHarness:
             "execute_strategy", str(task["task_id"]), episode_id,
             pre_snapshot=pre, params=exec_params)
         if prediction_id and candidate is not None:
-            # Persist the FORWARD link on the prediction as well (a
-            # recoverable, idempotent write): the prediction names the
-            # action before the action ends, so a crash mid-run still shows
-            # which attempt this prediction was testing.
-            self._link_prediction_to_action(prediction_id, action.action_id)
+            # ATOMIC PRE-EXECUTION ASSOCIATION. The claim is written in ONE
+            # transaction BEFORE the executor starts, so it is consistent
+            # and recoverable. If ANY part fails the exception propagates
+            # and the execution is REFUSED — an attempt whose association
+            # could not be recorded must not run, or its result would be
+            # unattributable (and a second run of the same prediction could
+            # slip through). The action is ended first so no action is left
+            # ``running`` (which would block the episode close-out).
+            try:
+                self._claim_prediction_for_action(prediction_id,
+                                                 action.action_id)
+            except Exception as exc:
+                try:
+                    self.actions.end_action(
+                        action.action_id, status="failed",
+                        outcome={"error": f"{type(exc).__name__}: {exc}",
+                                 "phase": "association",
+                                 "note": ("the prediction could not be "
+                                          "associated with this action, so "
+                                          "the execution was NOT started")})
+                except Exception:  # noqa: BLE001
+                    pass
+                raise
         try:
             record = self._run_executor(
                 Path(code_path), Path(workspace), solver=str(solver),

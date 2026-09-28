@@ -188,6 +188,11 @@ class ExecutionOutcome:
     #: same workspace is stale and is never read as this attempt's
     #: configuration. Absent means UNKNOWN, never a copied prediction.
     config_report: Optional[Dict[str, Any]] = None
+    #: True when a ``result.json`` left by an earlier run was removed before
+    #: this attempt started. Recorded so a reader can see that the workspace
+    #: was cleared (an old result could otherwise have been read as this
+    #: run's body).
+    stale_result_cleared: bool = False
 
 
 class SafePythonExecutor:
@@ -232,6 +237,35 @@ class SafePythonExecutor:
         if action_id:
             env["OR_ACTION_ID"] = str(action_id)
         start = time.monotonic()
+        # ATTRIBUTION OF THE RESULT BODY. The workspace may still hold a
+        # ``result.json`` from an earlier run (a re-run in the same
+        # directory, an abandoned attempt). Verifying the CONFIG receipt's
+        # action_id is not enough: a script that writes nothing at all would
+        # leave the old file in place, and the framework would report the
+        # PREVIOUS run's status/objective as this attempt's result — the
+        # exact way an old sample enters the calibration. Two guards, in
+        # order:
+        #   1. remove any existing ``result.json`` BEFORE the script starts,
+        #      so the only file that can be read afterwards is one this run
+        #      actually wrote;
+        #   2. refuse a file whose mtime predates this run (belt and braces
+        #      against a script that restores a copy).
+        result_path = workspace / "result.json"
+        run_wall_start = time.time()
+        stale_cleared = False
+        try:
+            if result_path.exists():
+                result_path.unlink()
+                stale_cleared = True
+        except OSError as exc:
+            return ExecutionOutcome(
+                status="error", solver=solver, executed=False,
+                normalized_error=(
+                    f"execution workspace is not writable: could not clear a "
+                    f"stale result.json ({type(exc).__name__}: {exc})"),
+                message=("the workspace held a result.json this attempt could "
+                         "not clear; refusing to run rather than risk reading "
+                         "another run's result"))
         kwargs: Dict[str, Any] = {}
         if os.name == "posix":
             # RLIMIT_CPU is set ABOVE the wall-clock timeout on purpose. When
@@ -259,11 +293,11 @@ class SafePythonExecutor:
                 wall_seconds=time.monotonic() - start,
                 normalized_error="execution timeout",
                 message="Solve script exceeded the wall-clock timeout",
-                config_report=_config_receipt(workspace, action_id))
+                config_report=_config_receipt(workspace, action_id),
+                stale_result_cleared=stale_cleared)
         wall = time.monotonic() - start
         stdout = _clip(proc.stdout.decode("utf-8", "replace"), self.max_stdout_chars)
         stderr = _clip(proc.stderr.decode("utf-8", "replace"), self.max_stderr_chars)
-        result_path = workspace / "result.json"
         if proc.returncode != 0 or not result_path.exists():
             return ExecutionOutcome(
                 status="error", solver=solver, exit_code=proc.returncode,
@@ -271,7 +305,25 @@ class SafePythonExecutor:
                 normalized_error=_normalize_error(
                     stderr or stdout or _exit_note(proc.returncode)),
                 message="Process failed or did not write result.json",
-                config_report=_config_receipt(workspace, action_id))
+                config_report=_config_receipt(workspace, action_id),
+                stale_result_cleared=stale_cleared)
+        # Guard 2: the file must have been written AFTER this run started. A
+        # script that restores a pre-existing copy would otherwise hand back
+        # an older attempt's body.
+        try:
+            if result_path.stat().st_mtime < run_wall_start - 1e-6:
+                return ExecutionOutcome(
+                    status="error", solver=solver, exit_code=proc.returncode,
+                    wall_seconds=wall, stdout=stdout, stderr=stderr,
+                    normalized_error=(
+                        "result.json is older than this run: a stale result "
+                        "cannot be attributed to this attempt"),
+                    message=("result.json predates this attempt: refusing to "
+                             "read another run's result as this one's"),
+                    config_report=_config_receipt(workspace, action_id),
+                    stale_result_cleared=stale_cleared)
+        except OSError:
+            pass
         try:
             payload = json.loads(result_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -280,7 +332,8 @@ class SafePythonExecutor:
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
                 normalized_error="invalid result.json: " + type(exc).__name__,
                 message="result.json is invalid",
-                config_report=_config_receipt(workspace, action_id))
+                config_report=_config_receipt(workspace, action_id),
+                stale_result_cleared=stale_cleared)
         # Solver runtime: prefer the script-reported value; otherwise fall
         # back to wall-clock as an EXPLICIT proxy (never silently zero,
         # never masquerading as a precise solver runtime). A reported value
@@ -322,6 +375,7 @@ class SafePythonExecutor:
             diagnostics=dict(payload.get("diagnostics") or {}),
             variables=_solution_variables(payload.get("variables")),
             config_report=_config_receipt(workspace, action_id),
+            stale_result_cleared=stale_cleared,
             stdout=stdout, stderr=stderr)
 
     # -- verification (infrastructure, not a research contribution) -----------
@@ -479,49 +533,112 @@ class SafePythonExecutor:
             # the harness's to declare, and must never be below this floor.
             execution_features["tool_calls_lower_bound"] = 1
         # The configuration that ACTUALLY took effect, split by WHO could
-        # observe it. This is a REPORT of the run, never a copy of the
-        # candidate's predicted config: a key the executor did not control
-        # and the script did not read back stays ABSENT (unknown), so the
-        # binding can tell "the prediction matched" from "nothing confirmed
-        # it". Two timeout notions are kept apart on purpose:
-        #   * ``script_timeout_s`` — the wall clock over the WHOLE script
-        #     (sandbox policy), which the executor really set;
-        #   * ``solver_timeout_s`` — the limit handed to the solver (via
-        #     ``OR_SOLVER_TIMEOUT_SECONDS``), a DIFFERENT limit that a
-        #     script-reported ``time_limit`` may or may not honour.
-        config_values: Dict[str, Any] = {}
-        config_sources: Dict[str, str] = {}
+        # observe it, and by HOW WELL the executor knows it. A key the
+        # executor did not control and the script did not read back stays
+        # ABSENT (unknown), so the binding can tell "the prediction matched"
+        # from "nothing confirmed it". Three classes are kept apart:
+        #   * ``executor`` — the sandbox's OWN policy (``script_timeout_s``
+        #     is the wall clock over the whole script; ``solver`` is the
+        #     solver the executor was told to use). These are FACTS about
+        #     this run and a script may NOT overwrite them: a solve script
+        #     that reports ``script_timeout_s=1`` while the sandbox really
+        #     allowed 120s is either mistaken or trying to make itself match
+        #     a prediction, and either way recording 1 would let a wrong
+        #     sample into the calibration. The conflict is reported under
+        #     ``conflicts`` instead.
+        #   * ``executor_configured`` — the limit the executor HANDS to the
+        #     script through the environment (``solver_timeout_s``). It is
+        #     an instruction, not an observation: the framework cannot see
+        #     whether the solver honoured it, so it is reported separately
+        #     and is NEVER used as evidence that the solver used that value.
+        #     What the solver really applied must be READ BACK by the script
+        #     (``script_reported``).
+        #   * ``script_reported`` — values the solve script read back from
+        #     the solver. These are observations the executor could not make
+        #     itself, and they fill in the keys the executor does not own.
+        executor_values: Dict[str, Any] = {}
+        executor_configured: Dict[str, Any] = {}
         if outcome.executed:
-            config_values["solver"] = outcome.solver or solver
-            config_sources["solver"] = "executor"
+            executor_values["solver"] = outcome.solver or solver
             if self.timeout_seconds is not None:
-                config_values["script_timeout_s"] = float(self.timeout_seconds)
-                config_sources["script_timeout_s"] = "executor"
+                executor_values["script_timeout_s"] = float(self.timeout_seconds)
             if self.solver_timeout_seconds is not None:
-                config_values["solver_timeout_s"] = float(
+                executor_configured["solver_timeout_s"] = float(
                     self.solver_timeout_seconds)
-                config_sources["solver_timeout_s"] = "executor"
         receipt = outcome.config_report or {}
-        for key, value in dict(receipt.get("values") or {}).items():
+        reported_values = dict(receipt.get("values") or {})
+        stale_cleared = bool(outcome.stale_result_cleared)
+        conflicts: Dict[str, Any] = {}
+        script_values: Dict[str, Any] = {}
+        for key, value in reported_values.items():
+            if key in executor_values:
+                if value != executor_values[key]:
+                    # The script CONTRADICTS something the executor really
+                    # did. The executor's value stands; the disagreement is
+                    # recorded, and the calibration reads the conflict rather
+                    # than a script-overwritten "match".
+                    conflicts[key] = {
+                        "executor": executor_values[key],
+                        "script_reported": value,
+                        "note": ("the solve script reported a value for a "
+                                 "key the executor controls; the executor's "
+                                 "own value is kept and the disagreement is "
+                                 "recorded — a script cannot overwrite what "
+                                 "the sandbox actually did"),
+                    }
+                continue
+            if key in executor_configured:
+                # Not an observation either way: the executor INSTRUCTED the
+                # script. Recorded as reported (what the script says it used)
+                # with the instruction alongside, never merged.
+                script_values[key] = value
+                continue
+            script_values[key] = value
+        config_values: Dict[str, Any] = dict(executor_values)
+        config_sources: Dict[str, str] = {k: "executor"
+                                          for k in executor_values}
+        for key, value in script_values.items():
             config_values[key] = value
             config_sources[key] = "script_reported"
-        if config_values:
-            execution_features["execution_config"] = {
+        for key, value in executor_configured.items():
+            # Kept in the block but NOT in ``values``: an instruction is not
+            # an observation, and putting it in ``values`` is exactly how it
+            # would be read as "the solver used this".
+            config_sources.setdefault(key, "executor_configured")
+        if config_values or executor_configured:
+            block: Dict[str, Any] = {
                 "values": config_values,
                 "sources": config_sources,
                 "action_id": str(action_id) if action_id else None,
                 "note": ("the configuration that actually took effect, split "
                          "by observer: 'executor' keys are the ones the "
-                         "sandbox set, 'script_reported' keys are the values "
-                         "the solve script read back from the solver. A key "
-                         "absent here is UNKNOWN — never a copy of the "
-                         "predicted config"),
+                         "sandbox set (a script may not overwrite them), "
+                         "'script_reported' keys are the values the solve "
+                         "script read back from the solver. A key absent "
+                         "here is UNKNOWN — never a copy of the predicted "
+                         "config"),
             }
-            if not receipt.get("values"):
-                execution_features["execution_config"]["receipt"] = (
+            if executor_configured:
+                block["executor_configured"] = executor_configured
+                block["executor_configured_note"] = (
+                    "these values were HANDED to the script by the executor "
+                    "(through the environment). The framework cannot observe "
+                    "whether the solver honoured them, so they are not "
+                    "evidence that the solver used them: only a value the "
+                    "script READ BACK appears under 'script_reported'")
+            if conflicts:
+                block["conflicts"] = conflicts
+                block["conflicts_note"] = (
+                    "the script reported a value for a key the executor "
+                    "controls; the executor's own value was kept")
+            if stale_cleared:
+                block["stale_result_cleared"] = True
+            if not reported_values:
+                block["receipt"] = (
                     "the solve script reported no config (or its receipt "
                     "carried no matching action_id stamp): script-internal "
                     "parameters stay unknown")
+            execution_features["execution_config"] = block
         cost_notes: List[str] = []
         if outcome.runtime_note:
             cost_notes.append(outcome.runtime_note)

@@ -1578,5 +1578,322 @@ class TestChooseNextByPredictionId(Base):
         self.assertEqual(payload["result"]["selected"]["strategy_id"], "S01")
 
 
+# ---------------------------------------------------------------------------
+# 13  the four review findings on the association round
+# ---------------------------------------------------------------------------
+
+
+class TestTheScriptCannotOverwriteExecutorConfig(Base):
+    """Finding 1: the solve script may not overwrite a field the executor
+    really controlled (its 1-second claim must not replace the 120-second
+    truth and make the run look like it matched a prediction), and a value
+    the executor only INSTRUCTED the script with is not an observation."""
+
+    def _run(self, body, prediction_config):
+        work = Path(self.home) / f"ws_{abs(hash(body)) % 10000}"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(body, encoding="utf-8")
+        h = self.make_harness()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S99",
+                   "solver": "highs", "config": prediction_config}, "ep1")
+        record = h.execute(TASK, None, str(work / "solve.py"), str(work),
+                           solver=None, episode_id=None,
+                           prediction_id=prediction.prediction_id)
+        return record
+
+    def test_a_script_timeout_claim_does_not_overwrite_the_executor(self):
+        record = self._run(
+            "import json, os\n"
+            "cfg = {'action_id': os.environ.get('OR_ACTION_ID'),\n"
+            "       'script_timeout_s': 1}\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01,\n"
+            "               'config': cfg}, fh)\n",
+            {"script_timeout_s": 120})
+        config = record.execution_features["execution_config"]
+        # The executor's own value stands; the contradiction is recorded.
+        self.assertEqual(config["values"]["script_timeout_s"], 120.0)
+        self.assertEqual(config["sources"]["script_timeout_s"], "executor")
+        self.assertIn("script_timeout_s", config["conflicts"])
+        self.assertEqual(
+            config["conflicts"]["script_timeout_s"]["script_reported"], 1)
+        # And the honest prediction still binds cleanly: the script's bogus
+        # number must not manufacture a mismatch either.
+        binding = record.execution_features["prediction_binding"]
+        self.assertIsNone(binding["trace"]["binding_mismatch"])
+
+    def test_an_instructed_value_is_not_an_observation(self):
+        record = self._run(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
+            "              fh)\n",
+            {"solver_timeout_s": 60})
+        config = record.execution_features["execution_config"]
+        # Handed to the script, never recorded as something the solver used.
+        self.assertNotIn("solver_timeout_s", config["values"])
+        self.assertIn("solver_timeout_s", config["executor_configured"])
+        binding = record.execution_features["prediction_binding"]
+        unknown = (binding["trace"]["binding_unknown"] or {}).get("config", {})
+        self.assertIn("solver_timeout_s", unknown)
+
+
+class TestAStaleResultIsNeverThisRun(Base):
+    """Finding 2: a leftover result.json must not become this attempt's
+    body — verified at the executor level AND end to end."""
+
+    def test_the_executor_refuses_a_stale_result_body(self):
+        from or_harness.execution.executor import SafePythonExecutor
+        work = Path(self.home) / "ws_stale_body"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "result.json").write_text(json.dumps(
+            {"status": "optimal", "objective_value": 999.0,
+             "objective_bound": 999.0, "runtime_seconds": 0.01}))
+        (work / "solve.py").write_text("pass\n")
+        executor = SafePythonExecutor(timeout_seconds=30)
+        outcome = executor.run(work / "solve.py", work, "highs",
+                               action_id="ac_test")
+        self.assertEqual(outcome.status, "error")
+        self.assertIsNone(outcome.objective_value)
+
+    def test_no_phantom_sample_reaches_the_calibration(self):
+        work = Path(self.home) / "ws_phantom"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "result.json").write_text(json.dumps(
+            {"status": "optimal", "objective_value": 999.0,
+             "objective_bound": 999.0, "runtime_seconds": 0.01}))
+        (work / "solve.py").write_text("pass\n")
+        h = self.make_harness()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        record = h.execute(TASK, None, str(work / "solve.py"), str(work),
+                           solver=None, episode_id=None,
+                           prediction_id=prediction.prediction_id)
+        self.assertEqual(record.quality["status"], "error")
+        self.assertNotEqual(record.quality.get("objective"), 999.0)
+        h.record(record)
+        closed = h.close_episode("t1", "ep1", terminal_state="failed")
+        evaluation = (closed.get("evaluations") or [{}])[0]
+        benefit = evaluation.get("benefit") or {}
+        # No quality observation exists for a run that produced no result.
+        self.assertNotEqual(benefit.get("eligibility"), "evaluable")
+
+
+class TestAssociationIsAtomic(Base):
+    """Finding 3: the claim is written in one transaction BEFORE the run;
+    a failure refuses the execution instead of running unassociated, and a
+    second execution of the same prediction is refused pre-run."""
+
+    def _solve_script(self, tag):
+        work = Path(self.home) / f"ws_atomic_{tag}"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
+            "              fh)\n", encoding="utf-8")
+        return work
+
+    def test_a_failed_claim_refuses_the_execution(self):
+        h = self.make_harness()
+        work = self._solve_script("fail")
+        calls = {"n": 0}
+        real = h.executor
+
+        class Counting:
+            def execute(self, *a, **k):
+                calls["n"] += 1
+                return real.execute(*a, **k)
+
+        h.executor = Counting()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+
+        def failing_claim(prediction_id, action_id):
+            raise RuntimeError("synthetic association failure")
+
+        h._claim_prediction_for_action = failing_claim
+        with self.assertRaises(RuntimeError):
+            h.execute(TASK, None, str(work / "solve.py"), str(work),
+                      solver=None, episode_id=None,
+                      prediction_id=prediction.prediction_id)
+        # Nothing ran, and no action was left running.
+        self.assertEqual(calls["n"], 0)
+        self.assertEqual(
+            [a.action_id for a in h.actions.query(task_id="t1",
+                                                  status="running")], [])
+
+    def test_a_second_execution_of_one_prediction_is_refused_pre_run(self):
+        h = self.make_harness()
+        work = self._solve_script("twice")
+        calls = {"n": 0}
+        real = h.executor
+
+        class Counting:
+            def execute(self, *a, **k):
+                calls["n"] += 1
+                return real.execute(*a, **k)
+
+        h.executor = Counting()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        first = h.execute(TASK, None, str(work / "solve.py"), str(work),
+                          solver=None, episode_id=None,
+                          prediction_id=prediction.prediction_id)
+        self.assertEqual(calls["n"], 1)
+        with self.assertRaises(ValueError) as caught:
+            h.execute(TASK, None, str(work / "solve.py"), str(work),
+                      solver=None, episode_id=None,
+                      prediction_id=prediction.prediction_id)
+        self.assertIn("already", str(caught.exception))
+        # The second attempt never reached the solver.
+        self.assertEqual(calls["n"], 1)
+        # The claim is readable from the ACTION side (race-proof).
+        self.assertEqual(
+            h._prediction_claimed_by_action(prediction.prediction_id),
+            first.action_id)
+
+    def test_the_claim_is_written_before_the_executor_starts(self):
+        h = self.make_harness()
+        work = self._solve_script("before")
+        seen = {}
+        real = h.executor
+
+        class Probe:
+            def execute(self, *a, **k):
+                view = h.strategy_predictions.get(pred_id)
+                seen["linked"] = view.trace.model_info.get(
+                    "bound_action_id_before_execution")
+                seen["phase"] = view.trace.model_info.get(
+                    "association_phase")
+                seen["action_param"] = (
+                    h.actions.get(k.get("action_id")).params or {}
+                ).get("prediction_id")
+                return real.execute(*a, **k)
+
+        pred_id = None
+        h.executor = Probe()
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        pred_id = prediction.prediction_id
+        h.execute(TASK, None, str(work / "solve.py"), str(work),
+                  solver=None, episode_id=None, prediction_id=pred_id)
+        self.assertEqual(seen["phase"], "linked_before_execution")
+        self.assertEqual(seen["action_param"], pred_id)
+        self.assertIsNotNone(seen["linked"])
+
+
+class TestSameConventionCompletionCompares(Base):
+    """Finding 4: two COMPLETION candidates are compared on completion
+    (instead of being rejected as off-yardstick), and a declared convention
+    is a real per-decision choice that reaches the provider."""
+
+    def _completion(self, value):
+        return {
+            "benefit": {"kind": "effective_completion",
+                        "metric": "task_result_check_passed",
+                        "unit": "boolean", "value": value,
+                        "baseline": {"kind": "declared", "value": 0.5}},
+            "cost": {"llm_tokens": 100},
+        }
+
+    def _provider(self, values_by_strategy):
+        from or_harness.world_model.provider import WorldModelProvider
+
+        class PerStrategy(WorldModelProvider):
+            name = "per-strategy-convention"
+
+            def __init__(inner):
+                inner.requests = []
+
+            def predict(inner, request, timeout_s=None):
+                inner.requests.append(request)
+                sid = (request.get("candidate") or {}).get("strategy_id")
+                return {"payload": self._completion(
+                    values_by_strategy.get(sid, 0.5)),
+                    "usage": {"completion_tokens": 5}, "error": None,
+                    "latency_s": 0.01}
+
+            def describe(inner):
+                return {"provider": inner.name, "model": "per-strategy"}
+
+        return PerStrategy()
+
+    def test_agreed_completion_convention_is_compared(self):
+        provider = self._provider({"S01": 0.9, "S02": 0.4})
+        h = self.make_harness(provider)
+        plan = h.plan_next(
+            TASK, "epc",
+            candidates=[ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S01", solver="highs"),
+                        ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S02", solver="highs")],
+            limits={"horizon": 1})
+        self.assertEqual(plan["status"], "ok")
+        self.assertEqual(plan["suggested"]["strategy_id"], "S01")
+        convention = plan["benefit_convention"]
+        self.assertEqual(convention["kind"], "effective_completion")
+        self.assertEqual(convention["metric"], "task_result_check_passed")
+        self.assertEqual(convention["source"], "agreed")
+
+    def test_a_declared_convention_reaches_every_request(self):
+        provider = self._provider({"S01": 0.9})
+        h = self.make_harness(provider)
+        plan = h.plan_next(
+            TASK, "epd",
+            candidates=[ActionSpec("execute_strategy", "t1",
+                                   strategy_id="S01", solver="highs")],
+            limits={"horizon": 1,
+                    "benefit_kind": "effective_completion",
+                    "benefit_metric": "task_result_check_passed"})
+        self.assertEqual(plan["benefit_convention"]["source"], "declared")
+        sent = provider.requests[0]["benefit_convention"]
+        self.assertEqual(sent["kind"], "effective_completion")
+        self.assertTrue(sent["required"])
+
+    def test_an_unrecognised_declaration_ranks_nothing(self):
+        from or_harness.world_model.planner import (
+            PlanLimits, resolve_benefit_convention,
+            score_strategy_outcome_predictions)
+        convention = resolve_benefit_convention(
+            [], kind="valid_progress", metric="progress")
+        self.assertFalse(convention["comparable"])
+        self.assertEqual(convention["source"], "unknown_declaration")
+        provider = self._provider({"S01": 0.9})
+        h = self.make_harness(provider)
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "epe")
+        scores = score_strategy_outcome_predictions(
+            [prediction],
+            PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
+                       benefit_kind="effective_completion",
+                       benefit_metric="task_result_check_passed"))
+        # The candidate IS on the declared convention: it ranks.
+        self.assertIsNotNone(scores[0].utility)
+        # A DIFFERENT convention on the same decision does not.
+        provider.payload = self._completion(0.5)
+        quality = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
+                   "solver": "highs"}, "epe")
+        quality.benefit.kind = "solution_quality"
+        quality.benefit.metric = "normalized_objective_gap"
+        scores2 = score_strategy_outcome_predictions(
+            [quality],
+            PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
+                       benefit_kind="effective_completion",
+                       benefit_metric="task_result_check_passed"))
+        self.assertIsNone(scores2[0].utility)
+        self.assertIn("benefit", scores2[0].incomparable)
+
+
 if __name__ == "__main__":
     unittest.main()
