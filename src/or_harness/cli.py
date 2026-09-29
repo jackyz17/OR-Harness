@@ -503,6 +503,27 @@ def cmd_execute(args) -> int:
             if prediction_id:
                 return _fail(f"{exc}")
             raise
+        except Exception as exc:
+            # The executor raised AFTER the attempt started (a filesystem
+            # error, an interruption). The attempt really ran and really
+            # failed: its failure fact is staged with its cost and failure
+            # class, and (for a prediction-driven run) the prediction is
+            # freed so it can be tested against a real attempt. Report an
+            # actionable line instead of a bare traceback, and point at the
+            # staged failure so it is not mistaken for "nothing happened".
+            staged = h.bank.pending(task_id=str(task.get("task_id", "")))
+            staged_ids = [r.execution_id for r in staged]
+            note = (f"the attempt started and FAILED before producing a "
+                    f"record ({type(exc).__name__}: {exc}). Its failure fact "
+                    "is staged (with its measured cost and failure class) "
+                    "and will be counted at close-out"
+                    + (f"; staged executions: {staged_ids}" if staged_ids
+                       else "")
+                    + ". Retry with a NEW attempt"
+                    + (" (the prediction was freed for it)" if prediction_id
+                       else "") + "; record the failure with `orx record "
+                    "--from-staged <execution_id>` to keep it as a fact.")
+            return _fail(note)
         out = {"execution": record.to_dict(),
                "execution_id": record.execution_id,
                "action_id": record.action_id}

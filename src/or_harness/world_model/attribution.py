@@ -417,3 +417,19 @@ def check_candidate_config(config: Any, method: Any = None
             "notes": notes, "errors": errors}
 
 
+def normalize_config_method(config: Any) -> Dict[str, Any]:
+    """Fold a METHOD out of ``config`` using the SAME rule as
+    :func:`check_candidate_config`, WITHOUT needing the candidate's existing
+    method.
+
+    :meth:`CandidateRef.from_dict` uses this so a stored candidate whose
+    payload carried ``config.method`` as a bare string (a legacy/foreign
+    shape) is normalized on the way IN, rather than crashing later when its
+    ``config`` mapping is read. It is deliberately a thin wrapper so the two
+    entry points can never apply different rules.
+    """
+    result = check_candidate_config(config, method=None)
+    return {"config": result["config"], "method": result["method"],
+            "errors": result["errors"]}
+
+

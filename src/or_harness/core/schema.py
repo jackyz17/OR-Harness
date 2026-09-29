@@ -905,9 +905,13 @@ def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
     and can be compared honestly.
 
     Rules: an absent/empty/blank input is ``None`` (UNKNOWN, never an empty
-    method that reads as "ran nothing"); ``steps`` is coerced to a list of
-    non-empty strings (a bare string becomes a one-element list); a step
-    list with no substance (name AND steps both empty) is still ``None``.
+    method that reads as "ran nothing"); a BARE STRING is read as the method
+    NAME (``"assignment MILP"`` -> ``{"name": "assignment MILP", "steps":
+    []}``) — a hand-written candidate commonly names its approach as a
+    string, and rejecting it silently dropped a real method description;
+    ``steps`` is coerced to a list of non-empty strings (a bare string
+    becomes a one-element list); a step list with no substance (name AND
+    steps both empty) is still ``None``.
     Unrecognized keys are kept under ``extra``, never dropped.
 
     IDEMPOTENT: normalizing an already-normalized method returns it
@@ -917,6 +921,11 @@ def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
     ``extra.extra.extra.artifact_ref``), moving the path of an artifact
     reference each time the record was read and written.
     """
+    if isinstance(raw, str):
+        # A bare string is the method NAME. Reading it is strictly better
+        # than dropping it: the predicate below then decides whether it has
+        # any substance (a blank string still yields None).
+        raw = {"name": raw}
     if not isinstance(raw, dict) or not raw:
         return None
     name = raw.get("name")

@@ -79,6 +79,7 @@ from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import (
     is_finite_number as _finite,
     is_probability as _prob,
+    normalize_method,
 )
 
 #: The current contract version. Bumped when the shape changes; a stored
@@ -925,6 +926,16 @@ class CandidateRef:
         if self.scope not in PREDICTION_SCOPES:
             raise ValueError(f"candidate scope must be one of "
                              f"{PREDICTION_SCOPES}")
+        # ONE shape for a method, at EVERY entry point. ``method`` is the
+        # outer agent's own description of how the strategy is carried out
+        # (``{"name": ..., "steps": [...]}``); a bare string is a common
+        # shape from a hand-written candidate, and leaving it un-normalized
+        # made a SAVED prediction crash on read (``dict("assignment MILP")``).
+        # Normalizing HERE covers a constructed candidate, a stored one and
+        # one read back from JSON alike. ``config.method`` is re-homed at
+        # the prediction ENTRY point (``api.predict_strategy_outcome``),
+        # which also records the normalization as a note.
+        self.method = normalize_method(self.method) or {}
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -952,7 +963,7 @@ class CandidateRef:
             strategy_id=(str(data["strategy_id"])
                          if data.get("strategy_id") else None),
             solver=(str(data["solver"]) if data.get("solver") else None),
-            method=copy.deepcopy(dict(data.get("method") or {})),
+            method=copy.deepcopy(data.get("method")),
             config=copy.deepcopy(dict(data.get("config") or {})),
             preconditions=[str(p) for p in (data.get("preconditions") or [])],
             expected_scope=[str(s) for s in (data.get("expected_scope")
@@ -1022,8 +1033,7 @@ class CandidateRef:
             # with (a time limit, a gap target), while the method is what
             # the approach IS. Merging them would send solver settings as
             # prose and lose the method in the execution parameters.
-            method=copy.deepcopy(dict(
-                getattr(spec, "method", None) or {})),
+            method=copy.deepcopy(getattr(spec, "method", None) or {}),
             config=params,
             task_id=str(getattr(spec, "task_id", "")),
             episode_id=getattr(spec, "episode_id", None),

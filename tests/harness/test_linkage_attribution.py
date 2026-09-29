@@ -485,10 +485,164 @@ class TestEntryRefusalReachesTheApi(Base):
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "config": {"method": "benders", "time_limit": 60}}, "ep1")
         self.assertEqual(prediction.candidate.config, {"time_limit": 60})
-        self.assertEqual(prediction.candidate.method, "benders")
+        # The bare string is normalized to the ONE method shape, never left
+        # as a string (which crashed ``dict()`` on read).
+        self.assertEqual(prediction.candidate.method,
+                         {"name": "benders", "steps": []})
         notes = prediction.trace.model_info.get("config_normalized")
         self.assertTrue(notes)
         self.assertTrue(any("APPROACH" in n for n in notes))
+
+
+# ---------------------------------------------------------------------------
+# 8a. a string method survives the full save/read/execute round trip
+# ---------------------------------------------------------------------------
+
+
+class TestMethodRoundTrip(Base):
+    """The reported regression: a string ``config.method`` saved fine but
+    crashed ``CandidateRef.from_dict`` on the next read (``dict("...")``)."""
+
+    def test_config_method_string_round_trips_and_executes(self):
+        prediction = self.h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs",
+                   "config": {"method": "assignment MILP"}}, "ep1")
+        self.assertEqual(prediction.candidate.method,
+                         {"name": "assignment MILP", "steps": []})
+        # Reading it back must not raise, and must carry the SAME shape.
+        reloaded = self.h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        self.assertIsNotNone(reloaded)
+        self.assertEqual(reloaded.candidate.method,
+                         {"name": "assignment MILP", "steps": []})
+        self.assertEqual(reloaded.candidate.config, {})
+        # And the full predict -> save -> read -> execute chain runs.
+        script, work = self._plain_script("method_rt")
+        record = self.h.execute(TASK, None, str(script), str(work),
+                                solver=None, episode_id="ep1",
+                                prediction_id=prediction.prediction_id)
+        self.h.record(record)
+        result = self.h.close_episode("t1", "ep1")
+        self.assertEqual(result["evaluations"][0]["state"], "evaluated")
+
+    def test_a_bare_string_method_is_read_as_the_name(self):
+        prediction = self.h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
+                   "solver": "highs", "method": "assignment MILP"}, "ep1")
+        self.assertEqual(prediction.candidate.method,
+                         {"name": "assignment MILP", "steps": []})
+        reloaded = self.h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        self.assertEqual(reloaded.candidate.method,
+                         {"name": "assignment MILP", "steps": []})
+
+
+# ---------------------------------------------------------------------------
+# 8b. an interrupted attempt is preserved as its own failure fact
+# ---------------------------------------------------------------------------
+
+
+class TestInterruptedAttemptIsPreserved(Base):
+    """The reported regression: an executor exception left no execution
+    fact, so the first failure vanished from calibration and the retry was
+    labelled ``not_occurred`` with ``retries=0``."""
+
+    def setUp(self):
+        super().setUp()
+        self.script, self.work = self._plain_script("interrupted")
+
+    def _interrupt_once(self, prediction_id):
+        """A probe executor that raises on the FIRST call only."""
+        real = self.h.executor
+
+        class Probe:
+            def __init__(self):
+                self.n = 0
+
+            def execute(self, *a, **k):
+                self.n += 1
+                if self.n == 1:
+                    raise FileExistsError(
+                        "[Errno 17] File exists: 'result.json'")
+                return real.execute(*a, **k)
+
+        self.h.executor = Probe()
+
+    def test_the_failed_attempt_keeps_its_cost_and_failure_class(self):
+        prediction = self.h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        self._interrupt_once(prediction.prediction_id)
+        with self.assertRaises(FileExistsError):
+            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+                           solver="highs", episode_id="ep1",
+                           prediction_id=prediction.prediction_id)
+        # A REAL failure fact exists, staged, with a classification.
+        staged = self.h.bank.pending(task_id="t1")
+        self.assertEqual(len(staged), 1)
+        failure = staged[0]
+        self.assertEqual(failure.quality["status"], "error")
+        self.assertFalse(failure.quality["feasible"])
+        self.assertTrue(failure.failures)
+        self.assertIsNotNone(failure.failures[0].error_class)
+        self.assertIn("interrupted_before_record", failure.execution_features)
+        # And it is LINKED to the failed action, so the close-out can see it.
+        action = [a for a in self.h.actions.query(
+            task_id="t1", episode_id="ep1", action_type="execute_strategy")
+            if a.status == "failed"][0]
+        self.assertEqual(action.linked_execution_id, failure.execution_id)
+
+    def test_the_failure_is_an_observation_and_the_retry_is_not_a_zero(self):
+        prediction = self.h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        self._interrupt_once(prediction.prediction_id)
+        with self.assertRaises(FileExistsError):
+            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+                           solver="highs", episode_id="ep1",
+                           prediction_id=prediction.prediction_id)
+        # The retry is a SEPARATE attempt: it cannot claim a proven zero.
+        retry = self.h.execute(TASK, "S01", str(self.script), str(self.work),
+                               solver="highs", episode_id="ep1",
+                               prediction_id=prediction.prediction_id)
+        self.assertNotIn("retries", retry.cost.measured_dims())
+        self.assertNotIn("retries_proof", retry.execution_features)
+        self.h.record(retry)
+        result = self.h.close_episode("t1", "ep1")
+        # The EPISODE occurrence counts BOTH attempts: the failed one really
+        # happened and is now an observation, so the failure cannot be
+        # erased by the retry.
+        occurrence = (result["calibration_summary"]["occurrence"]
+                      ["implementation_failure"])
+        self.assertEqual(occurrence["n_observation_units"], 2)
+        self.assertEqual(occurrence["n_occurred"], 1)
+        self.assertEqual(occurrence["unit_occurrence_rate"], 0.5)
+
+    def test_a_failed_attempt_is_charged_to_the_episode_budget(self):
+        """The failure really spent what it spent: the episode budget counts
+        the interrupted attempt once, alongside the retry."""
+        prediction = self.h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        self._interrupt_once(prediction.prediction_id)
+        with self.assertRaises(FileExistsError):
+            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+                           solver="highs", episode_id="ep1",
+                           prediction_id=prediction.prediction_id)
+        retry = self.h.execute(TASK, "S01", str(self.script), str(self.work),
+                               solver="highs", episode_id="ep1",
+                               prediction_id=prediction.prediction_id)
+        self.h.record(retry)
+        view = self.h.budget.view("t1", "ep1")
+        # Two attempts, one of them the abandoned failure.
+        self.assertEqual(view["consumption"]["n_attempts"], 2)
+        staged_ids = [r.execution_id
+                      for r in self.h.bank.pending(task_id="t1")]
+        # The failed attempt is counted (either recorded or staged), and the
+        # retry is recorded — never double-counted.
+        self.assertEqual(len(set(staged_ids)), len(staged_ids))
+        self.assertEqual(retry.execution_id in staged_ids, False)
 
 
 # ---------------------------------------------------------------------------

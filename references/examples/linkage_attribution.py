@@ -106,6 +106,13 @@ def _script(h, tag, *, config=None, method=None, status="optimal"):
     return script, work
 
 
+def _occurrence_units(h, event: str) -> int:
+    """The window's observation-unit count for one event (framework facts)."""
+    summary = h.calibration_summary()
+    return ((summary.get("occurrence") or {}).get(event) or {}).get(
+        "n_observation_units", 0)
+
+
 def _evaluate(h, prediction_id, script, work, *, solver="highs",
               run_strategy="S01"):
     """Run, record, bind explicitly, close, and return the evaluation.
@@ -232,7 +239,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("5. Entry-point discipline: a METHOD in `config` is re-homed")
+    print("5. Entry-point discipline: a string METHOD is normalized")
     print("=" * 72)
     prediction5 = h.predict_strategy_outcome(
         TASK, {"action_type": "execute_strategy", "strategy_id": "S05",
@@ -242,7 +249,11 @@ def main() -> int:
     print(f"recorded normalization : "
           f"{prediction5.trace.model_info.get('config_normalized')}")
     assert prediction5.candidate.config == {"time_limit": 60}
-    assert prediction5.candidate.method == "benders"
+    # A bare STRING is read as the method NAME — never dropped, and never
+    # left as a string that crashes ``dict()`` on the next read.
+    assert prediction5.candidate.method == {"name": "benders", "steps": []}
+    reloaded5 = h.get_strategy_outcome_prediction(prediction5.prediction_id)
+    assert reloaded5.candidate.method == {"name": "benders", "steps": []}
     # A key that names no execution parameter is refused BEFORE an attempt.
     try:
         h.predict_strategy_outcome(
@@ -252,6 +263,69 @@ def main() -> int:
     except ValueError as exc:
         print(f"refused                : {exc}")
         assert "not an execution parameter" in str(exc)
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("6. An interrupted attempt is preserved as its own failure fact")
+    print("=" * 72)
+    prediction6 = h.predict_strategy_outcome(
+        TASK, {"action_type": "execute_strategy", "strategy_id": "S07",
+               "solver": "highs"}, "ep6")
+    script6, work6 = _script(h, "interrupt")
+    real = h.executor
+
+    class Interrupt:
+        """A probe that raises on the FIRST call only."""
+
+        def __init__(self):
+            self.n = 0
+
+        def execute(self, *a, **k):
+            self.n += 1
+            if self.n == 1:
+                raise FileExistsError("[Errno 17] File exists: 'result.json'")
+            return real.execute(*a, **k)
+
+    h.executor = Interrupt()
+    try:
+        h.execute(TASK, "S07", str(script6), str(work6), solver="highs",
+                  episode_id="ep6", prediction_id=prediction6.prediction_id)
+    except FileExistsError as exc:
+        print(f"attempt 1 raised        : {type(exc).__name__}")
+    staged = h.bank.pending(task_id=TASK["task_id"])
+    if staged:
+        first = staged[0]
+        print(f"staged failure fact     : ({first.execution_id}, "
+              f"{first.quality['status']}, "
+              f"{first.failures[0].error_class})")
+    else:
+        print("staged failure fact     : None")
+    # The attempt is preserved (a real error fact, linked to the action the
+    # close-out will read) and the prediction was released for a retry.
+    assert len(staged) == 1
+    assert staged[0].quality["status"] == "error"
+    assert "interrupted_before_record" in staged[0].execution_features
+    assert h.strategy_predictions.get(
+        prediction6.prediction_id).trace.model_info.get(
+            "bound_action_id") is None
+    # The retry is a SEPARATE attempt and cannot claim a proven zero.
+    retry = h.execute(TASK, "S07", str(script6), str(work6),
+                      solver="highs", episode_id="ep6",
+                      prediction_id=prediction6.prediction_id)
+    print(f"retry retries measured  : "
+          f"{'retries' in retry.cost.measured_dims()} (should be False)")
+    assert "retries" not in retry.cost.measured_dims()
+    h.record(retry)
+    # The occurrence tally is WINDOW-wide, so compare the episode's own
+    # contribution: the failure adds ONE unit and the retry adds another.
+    before = _occurrence_units(h, "implementation_failure")
+    result6 = h.close_episode(TASK["task_id"], "ep6")
+    after = _occurrence_units(h, "implementation_failure")
+    print(f"episode occurrence      : +{after - before} unit(s) "
+          "(the failed attempt AND the retry)")
+    # BOTH attempts are observations: the failure was NOT erased by the retry.
+    assert after - before == 2
 
     h.close()
     tmp.cleanup()

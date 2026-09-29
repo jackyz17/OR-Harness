@@ -20,6 +20,7 @@ from or_harness.core.schema import (
     COST_DIMENSIONS,
     CostVector,
     ExecutionRecord,
+    FailureRecord,
     PredictionSnapshot,
     ProblemProfile,
     accumulate_measured_costs,
@@ -1458,7 +1459,11 @@ class ORHarness:
             raise ValueError(
                 "candidate.config is misused: " + "; ".join(entry["errors"]))
         candidate_ref.config = entry["config"]
-        candidate_ref.method = entry["method"]
+        # The method is normalized to ONE shape here (a bare string becomes
+        # ``{"name": ..., "steps": [...]}``), so a stored candidate can never
+        # carry a shape that crashes on read (``dict("assignment MILP")``).
+        normalized_method = normalize_method(entry["method"])
+        candidate_ref.method = normalized_method or {}
         config_notes = list(entry["notes"])
         task_id = str(task.get("task_id", ""))
         if candidate_ref.task_id and candidate_ref.task_id != task_id:
@@ -4957,6 +4962,10 @@ class ORHarness:
         action never produced a result, so nothing is unattributed and no
         sample is double-counted.
 
+        The interrupted attempt is NOT discarded: its execution fact is
+        staged FIRST by :meth:`_stage_interrupted_attempt`, so the spend and
+        the failure stay on record while the prediction itself is freed.
+
         Best-effort and idempotent: the action really failed, the reason is
         recorded on the action's params, and a bookkeeping failure must
         never mask the original exception.
@@ -4986,6 +4995,83 @@ class ORHarness:
             }
             self.strategy_predictions._save(prediction)
         except Exception:  # noqa: BLE001 - never mask the caller's error
+            return
+
+    def _stage_interrupted_attempt(self, action, exc: BaseException,
+                                   *, profile, strategy_id: str,
+                                   solver: Optional[str],
+                                   method_planned: Optional[Dict[str, Any]],
+                                   task_id: str, episode_id: Optional[str],
+                                   task_text_ver: Optional[str]) -> None:
+        """Stage a REAL execution fact for a run that raised before producing
+        one.
+
+        A started attempt is a real event even when the executor blew up: the
+        spend (the latency up to the exception) and the failure really
+        happened, and the user's rule is that "已经发生的尝试成本和实现失败仍应
+        尽可能保留". Recording an HONEST failure fact (``status="error"``,
+        ``feasible=False``, a ``FailureRecord``) keeps the failure visible to
+        the calibration: the retry is a SEPARATE attempt, the failure is its
+        own observation, and nothing is fabricated (no objective, no gap, no
+        solver runtime were observed).
+
+        Best-effort: a staging failure must never mask the original
+        exception.
+        """
+        try:
+            from or_harness.strategy.triggers import classify_failure
+            record = ExecutionRecord(
+                execution_id=ExecutionRecord.new_id(),
+                task_id=str(task_id),
+                strategy_id=str(strategy_id),
+                profile_snapshot=profile,
+                quality={"status": "error", "feasible": False},
+                cost=CostVector(measured=set()),
+                solver={"name": str(solver) if solver else None},
+                source="executed",
+            )
+            record.quality["error"] = f"{type(exc).__name__}: {exc}"
+            record.failures.append(FailureRecord(
+                attempt=1, error=f"{type(exc).__name__}: {exc}",
+                recovery_action=None))
+            record.failures[0].error_class = classify_failure(record)
+            record.execution_features["interrupted_before_record"] = (
+                "the executor raised before producing a record; this fact is "
+                "the attempt that really started and really failed (no "
+                "objective/gap/runtime were observed)")
+            record.execution_features["baseline_measurement"] = (
+                "staged before the run began: latency reflects the real time "
+                "the attempt consumed up to the exception")
+            if method_planned is not None:
+                record.method_planned = method_planned
+            if task_text_ver is not None:
+                record.task_text_digest = task_text_ver
+            record.action_id = action.action_id
+            # A first attempt of this (task, episode, strategy) is a PROVEN
+            # zero retries; a later one stays unknown, exactly as the normal
+            # path decides.
+            prior = [
+                act for act in self.actions.query(
+                    task_id=str(task_id), episode_id=episode_id,
+                    action_type="execute_strategy")
+                if act.action_id != action.action_id
+                and act.linked_execution_id is not None
+                and (act.params or {}).get("strategy_id") == strategy_id]
+            if not prior:
+                record.cost.retries = 0.0
+                record.cost.mark_measured("retries")
+                record.execution_features["retries_proof"] = (
+                    "no earlier execute_strategy attempt of this "
+                    "(task, episode, strategy) exists: retries=0 is observed")
+            self.bank.stage_pending(record)
+            self.actions.end_action(
+                action.action_id, status="failed",
+                outcome={"error": f"{type(exc).__name__}: {exc}",
+                         "phase": "executor",
+                         "execution_status": "error",
+                         "interrupted": True},
+                linked_execution_id=record.execution_id, rollup="reference")
+        except Exception:  # noqa: BLE001 - never mask the original error
             return
 
     def execute(self, task: Dict[str, Any], strategy_id: Optional[str] = None,
@@ -5144,23 +5230,22 @@ class ORHarness:
             # really did fail, and the reason is recorded. The exception
             # is re-raised unchanged (this is bookkeeping, not error
             # swallowing).
-            try:
-                self.actions.end_action(
-                    action.action_id, status="failed",
-                    outcome={"error": f"{type(exc).__name__}: {exc}",
-                             "phase": "executor",
-                             "note": ("the execution raised before producing "
-                                      "a record: no execution fact exists "
-                                      "for this action, and its cost is "
-                                      "whatever was already amended onto it")})
-            except Exception:  # noqa: BLE001 - never mask the original error
-                pass
-            # The claim was written BEFORE the run and the action produced
-            # NO execution fact. Leaving the claim would strand the
-            # prediction on a dead action forever (unbindable, and
-            # unscoreable). Release it so the SAME prediction can be tested
-            # against a real attempt; the interrupted action really failed,
-            # so nothing is left unattributed.
+            #
+            # The attempt itself is NOT discarded: a started attempt that
+            # raised before producing a record is a REAL failure with a real
+            # (if partial) cost, so an HONEST failure fact is staged and
+            # linked to the action. On its own that stage gives the action a
+            # ``linked_execution_id``, which is what makes the close-out see
+            # the failure as its own observation rather than a gap. When the
+            # attempt was tied to a prediction, the claim is then RELEASED
+            # (the prediction must stay testable on a real attempt, and must
+            # not be stranded on a dead action); the staged failure stays on
+            # record as the abandoned attempt.
+            self._stage_interrupted_attempt(
+                action, exc, profile=profile, strategy_id=str(strategy_id),
+                solver=solver, method_planned=method_planned,
+                task_id=str(task["task_id"]), episode_id=episode_id,
+                task_text_ver=task_text_ver)
             if prediction_id:
                 self._release_prediction_claim(
                     str(prediction_id), action.action_id,

@@ -2544,6 +2544,13 @@ def _window_executions(harness, window: Sequence[Dict[str, Any]]
     - EXCLUDED facts are KEPT: ``exclude_execution`` withdraws a fact from
       the PREDICTION-comparison set, it does not claim the execution never
       ran, and the occurrence tally describes what was OBSERVED.
+    - STAGED facts are KEPT too. An attempt that really ran but was never
+      explicitly recorded (the harness abandoned it after an executor
+      error, or has not yet called ``record``) is still an OBSERVATION:
+      omitting it deleted a real failure from the occurrence tally and let
+      a retry erase the attempt that preceded it. A staged fact that was
+      later recorded has left the staging area, so the union never
+      double-counts one attempt.
     """
     facts: Dict[Tuple[str, str], List[Any]] = {}
     for row in window:
@@ -2554,6 +2561,13 @@ def _window_executions(harness, window: Sequence[Dict[str, Any]]
     for task_id, episode_id in facts:
         if task_id not in by_task:
             records = harness.bank.query(task_id=task_id)
+            seen = {r.execution_id for r in records}
+            # Union in the STAGED facts (never-recorded attempts), deduped
+            # by id so an attempt is counted exactly once.
+            for staged in harness.bank.pending(task_id=task_id):
+                if staged.execution_id not in seen:
+                    records.append(staged)
+                    seen.add(staged.execution_id)
             by_task[task_id] = records
             actions_by_task[task_id] = harness.actions.query(task_id=task_id)
         actions = actions_by_task[task_id]
