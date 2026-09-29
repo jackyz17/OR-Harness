@@ -11,15 +11,20 @@ completed episodes
         |                         of a contrast, cell candidates carry the gate
   induction-material              read the METHODS, the change, what followed
         |                         and the verification state (no model call)
-        v   material=insufficient = record how the work was done, do not invent
+        v   material=insufficient or unavailable = record how the work was
+        |   done / re-check the evidence, do not invent
   (you form the claim: condition -> how -> consequence -> boundary)
         |
   induce --relation               submit it; the framework checks what you wrote
         |
   predict-capability              (optional) what would this operation change?
+        |                         declare the relations it forms in the
+        |                         operation's config — accept runs them
   compare-capability              one recommendation, or defer
-  accept-capability               EXPLICIT accept — runs the operation
-        |                         and binds the maintenance fact itself
+  accept-capability               EXPLICIT accept — runs the operation it
+        |                         DECLARED (relations, or a statistical
+        |                         refresh when none were declared) and binds
+        |                         the maintenance fact itself
         v
   induce                          the only place knowledge changes:
         |                         creates/refreshes the claim, replays the
@@ -47,7 +52,7 @@ Four patterns are worth generalizing. They are named for what they are — no hi
 | Pattern | Fires when | Key refusal condition |
 |---|---|---|
 | `strategy_contrast` | ≥2 strategies in the same structural cell differ significantly in quality **or** in cost, and the contrast is not already encoded | a difference existing entries already capture is not news (quality and cost are judged separately: an entry explaining the quality gap does not explain the cost gap) |
-| `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`), across executions under the SAME solver when a real change is visible (a differing reported method, or a declared `intervention`), or across executions when the solver changed | failures without an intervention; retrying the same solver with NO evidence of a change (a plain retry is not a demonstrated recovery) |
+| `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`), across executions under the SAME solver when the PERFORMED method changed (a differing `method_actual`, or a declared `intervention`), or across executions when the solver changed. A prior attempt counts as failed when the solver refused OR the answer failed its task check | failures without an intervention; retrying the same solver with NO evidence of a change (a plain retry is not a demonstrated recovery); only a PLAN differing while neither attempt reports what it ran |
 | `structural_reproduction` | the same strategy shows the same-direction behaviour in ≥2 families **at the same structure** (the reference dimensions must all be measured) | single-family evidence, mixed directions, or an unmeasured structure |
 | `advantage_reversal` | the same strategy performs high (≥0.75) in one structural cell and low (≤0.35) in another cell **of the same family**, each with n ≥ 2 | consistent advantage across cells, a single cell, a thin cell, or a cross-family difference |
 
@@ -150,7 +155,7 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 
 - **strategy_contrast / intervention_recovery / structural_reproduction** read the target's structural cell only — never the whole family, so a different region's behaviour cannot drive or dilute a relation. `structural_reproduction` is the one cross-family pattern, and it compares each family in the SAME cell. `advantage_reversal` is the one cross-cell pattern, and it stays inside one family.
 - **strategy_contrast** treats quality and cost contrasts independently: entries explaining the quality gap do not explain the cost gap.
-- **intervention_recovery** detects a recorded intervention within one execution, a same-solver fix when a real change is visible (a differing method receipt or a declared `intervention`), or a cross-execution chain when the solver changed. A plain retry of the same solver with no evidence of a change is not an intervention, and the hint names WHAT changed and links the two executions — it never claims causation.
+- **intervention_recovery** detects a recorded intervention within one execution, a same-solver fix when the PERFORMED method changed (a differing `method_actual` or a declared `intervention`), or a cross-execution chain when the solver changed. A prior attempt is a failure when the solver REFUSED **or** the answer FAILED its task check: a model written wrong and solved to a legal optimum is the main modeling error to summarize, so it counts even though `quality.feasible` was true. Only a PLAN differing (neither attempt reports what it ran) does NOT fire — a plan is intent, not an intervention. The hint names WHAT changed and links the two executions; it never claims causation.
 - **structural_reproduction** is a hint that reproduction happened at one structure across families. It never verifies knowledge and never widens applicability. One task's observation is not transferable knowledge.
 - **advantage_reversal** detects a boundary between two cells of one family. It does not claim WHY the advantage flips, and it never merges the cells into one applicability range.
 - All four patterns are hints: they never satisfy the admission gate, and they never decide how a submitted relation is verified.
@@ -164,9 +169,12 @@ Semantic induction is a division of labour: the framework ORGANS element the mat
 - `methods[]` — per execution, its `planned` method, the method it reports as actually `performed`, and the trajectory steps that really happened;
 - `comparisons[]` — the detector's own evidence blocks (both sides of a contrast, the failed/recovered pair), so a claim can cite both sides rather than one;
 - `outcome` / `task_check` / `failures` per execution — what followed, and what was actually checked;
-- `material_state` — `sufficient` (the evidence reports method content) or `insufficient`.
+- `material_state` — `sufficient` (at least one PERFORMED method — `method_actual` — is on record), `insufficient` (nothing to abstract: no method at all, or only PLANNED methods), or `unavailable` (the comparison lost a whole side to an exclusion).
+- `purpose` — what an induction from this candidate is FOR: `method_induction` (a detector candidate — a comparison or recovery worth abstracting into a technique) or `statistical_refresh` (a structural cell that cleared the sample-count gate, whose claim is its quality/cost/failure estimate). A cell clearing the count gate is NOT by itself a reason to abstract a method.
 
-**`insufficient` is the honest answer to "there is nothing to abstract from".** When the evidence holds a strategy name and a mean but no method, `induction-material` says so, and the right response is to record how the work was actually done (`execute --method`, or the script's `method_performed` receipt) — not to write a technique out of the numbers. The framework itself never derives a how-to from a mean: `induce`'s statistical path writes no method prose at all.
+**`insufficient` is the honest answer to "there is nothing to abstract from".** The evidence holding a strategy name and a mean, or ONLY a plan (a plan is intent, not a performed method), means there is nothing observed to abstract — so `induction-material` says so, and the right response is to record how the work was actually done (the script's `method_performed` receipt is the observation; `execute --method` is only the plan). The framework itself never derives a how-to from numbers: `induce`'s statistical path writes no method prose at all.
+
+**`unavailable` means the premise no longer holds.** A candidate is RE-CHECKED against the current evidence before it becomes a claim: an execution excluded since the hint fired drops out, and when that removes a whole side (a contrast's other strategy, a recovery's failed attempt) — or when a later `check-task` has REFUTED the side the hint called a success — the candidate is reported with the reason rather than presented carrying a half-excluded comparison. A hint that merely loses one of several records on a side stays, with the dead id pruned and the prune noted in `trigger_reasons`. The method material is read from the LIVE records, so a later method or cost correction is reflected.
 
 Submitting a relation whose evidence reports no method (and whose own claim declares none) still saves the claim — you may legitimately state the method in your own words — but the outcome carries a `material` warning saying the framework did not and will not derive a technique from the numbers, so the claim's basis is visible as numbers-based.
 

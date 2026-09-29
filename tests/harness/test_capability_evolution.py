@@ -1949,19 +1949,16 @@ class TestReviewRoundTwo(M5Case):
         self.seed_executions()
         bundle = {**_bundle(), "mean_cost": {"solver_runtime_s": 5.0,
                                              "llm_tokens": 1000.0}}
-        prediction = self.h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S04"},
-            bundle=bundle, horizon="next 10 tasks", horizon_tasks=10)[1] \
-            if False else self.predict(payload={
-                "expected_changes": [
-                    {"metric": "resource_cost", "unit": "s",
-                     "direction": "decrease", "value": -0.2,
-                     "value_kind": "relative",
-                     "beneficial_direction": "decrease"}],
-                "learning_cost": {"solver_runtime_s": 0.1},
-                "verification_conditions": [{"condition": "cost falls",
-                                             "evaluable": True}]},
-                bundle=bundle, horizon_tasks=10)[1]
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -0.2,
+                 "value_kind": "relative",
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 0.1},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]},
+            bundle=bundle, horizon_tasks=10)[1]
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=10)
         entry = result["comparisons"][0]
@@ -1985,18 +1982,15 @@ class TestReviewRoundTwo(M5Case):
         """A cost larger than ONE task's saving is still profitable when the
         window pays it back."""
         self.seed_executions()
-        prediction = self.h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S04"},
-            bundle=_bundle(), horizon="next 10 tasks", horizon_tasks=10,
-            baselines_by_metric=None) if False else self.predict(payload={
-                "expected_changes": [
-                    {"metric": "resource_cost", "unit": "s",
-                     "direction": "decrease", "value": -2.0,
-                     "beneficial_direction": "decrease"}],
-                "learning_cost": {"solver_runtime_s": 5.0},
-                "verification_conditions": [{"condition": "cost falls",
-                                             "evaluable": True}]},
-                horizon_tasks=10)[1]
+        prediction = self.predict(payload={
+            "expected_changes": [
+                {"metric": "resource_cost", "unit": "s",
+                 "direction": "decrease", "value": -2.0,
+                 "beneficial_direction": "decrease"}],
+            "learning_cost": {"solver_runtime_s": 5.0},
+            "verification_conditions": [{"condition": "cost falls",
+                                         "evaluable": True}]},
+            horizon_tasks=10)[1]
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=10)
         self.assertEqual(result["recommendation"], "accept")

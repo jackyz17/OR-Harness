@@ -164,6 +164,8 @@ class TestInterventionRecovery(TriggerCase):
         change = hints[0].evidence["change"]
         self.assertEqual(change["kind"], "method")
         self.assertEqual(change["from_execution_id"], "z1")
+        # The change must rest on what RAN, not on a plan someone wrote.
+        self.assertEqual(change["basis"], "performed_method")
 
     def test_same_solver_retry_with_identical_method_stays_silent(self):
         """A retry that reports the SAME method did not change anything, so

@@ -737,7 +737,11 @@ class TestApiContracts(HarnessTestCase):
         """Building a contract must not touch the banks."""
         h = self._harness()
         before_exec = h.bank.count()
-        before_entries = len(h.sbank.all()) if hasattr(h.sbank, "all") else None
+        # The claim "no knowledge was written" must be READ, not guarded on a
+        # method that does not exist (an earlier version tested `hasattr(
+        # sbank, 'all')`, which is always false, so the strategy half of this
+        # assertion never ran).
+        before_entries = h.sbank.count()
         h.build_strategy_outcome_contract(
             TASK, CandidateRef(action_type="execute_strategy",
                                strategy_id="S01"), "ep1")
@@ -746,8 +750,7 @@ class TestApiContracts(HarnessTestCase):
                                     strategy_id="S01"),
             horizon="next task")
         self.assertEqual(h.bank.count(), before_exec)
-        if before_entries is not None:
-            self.assertEqual(len(h.sbank.all()), before_entries)
+        self.assertEqual(h.sbank.count(), before_entries)
 
     def test_prediction_data_never_enters_execution_statistics(self):
         """A contract build leaves the conditional statistics untouched."""

@@ -326,7 +326,6 @@ class TestEventSemantics(CalibrationV2Case):
         # Simulate a legacy record: strip the class from the failure.
         for failure in record.failures:
             failure.error_class = None
-        h.bank._put(record) if hasattr(h.bank, "_put") else None
         h.bank.set_task_check(record.execution_id, None)
         # Rewrite the stored payload without the class.
         stored = h.bank.get(record.execution_id)

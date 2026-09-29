@@ -275,13 +275,6 @@ class TestNoCandidateMenu(NoCatalogCase):
         self.assertIn("does not generate a candidate menu",
                       plan["truncation_reason"])
 
-    def test_strategy_outcome_protocol_without_candidates_too(self):
-        h = self.harness()
-        plan = h.plan_next(TASK, "ep1")
-        self.assertEqual(plan["status"], "no_candidates")
-        self.assertIn("does not generate a candidate menu",
-                      plan["truncation_reason"])
-
     def test_supplied_candidates_are_used_as_given(self):
         h = self.harness()
         specs = [ActionSpec("execute_strategy", "t_outside",

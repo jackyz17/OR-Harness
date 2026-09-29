@@ -941,6 +941,13 @@ def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
     non-empty strings (a bare string becomes a one-element list); a step
     list with no substance (name AND steps both empty) is still ``None``.
     Unrecognized keys are kept under ``extra``, never dropped.
+
+    IDEMPOTENT: normalizing an already-normalized method returns it
+    unchanged. An EXISTING ``extra`` is carried over as-is rather than being
+    re-wrapped as an unknown key — otherwise every round trip nested it one
+    level deeper (``extra.artifact_ref`` becoming
+    ``extra.extra.extra.artifact_ref``), moving the path of an artifact
+    reference each time the record was read and written.
     """
     if not isinstance(raw, dict) or not raw:
         return None
@@ -958,7 +965,14 @@ def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
     source = raw.get("source")
     source = str(source).strip() if source is not None and str(source).strip() \
         else None
-    extra = {str(k): v for k, v in raw.items() if k not in METHOD_KEYS}
+    # An EXISTING ``extra`` is the container, not a key inside it: reuse it
+    # so a second pass is a no-op. Any OTHER unrecognized key is added to it.
+    existing_extra = raw.get("extra")
+    extra: Dict[str, Any] = (dict(existing_extra)
+                             if isinstance(existing_extra, dict) else {})
+    for key, value in raw.items():
+        if key not in METHOD_KEYS and key != "extra":
+            extra[str(key)] = value
     if not name and not steps:
         # A method with neither a name nor any step is not a method — it is
         # an empty claim, and treating it as "performed nothing" would let

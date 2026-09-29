@@ -259,7 +259,9 @@ class TestLegacyAndBackfill(HarnessTestCase):
         stored = self.bank.get("ex_leg")
         self.assertEqual(stored.cost.measured_dims()
                          & {"llm_tokens"}, {"llm_tokens"})
-        self.assertIsNone(stored.cost_measured if False else None)  # mask stays legacy
+        # The serialized mask stays absent (legacy payload): the dimension is
+        # measurable from the VALUE, not from a mask the old payload had none of.
+        self.assertIsNone(stored.to_dict()["cost_measured"])
         cell = __import__("or_harness.strategy.stats",
                           fromlist=["ConditionalStats"]).ConditionalStats(
             self.bank).cell(stored.group_l1, "S01")

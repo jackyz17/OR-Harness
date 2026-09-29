@@ -1509,14 +1509,11 @@ class TestChooseNextByPredictionId(Base):
         choice = h.choose_next(plan["decision_action_id"],
                                prediction_id=target["prediction_id"])
         self.assertEqual(choice["selected"]["strategy_id"], "S02")
-        # `choose-next --prediction` alone does not create a deviation when
-        # the id names the suggestion... but here S02 was chosen while S01
-        # was suggested: a real deviation, recorded as such.
-        suggested = plan["suggested"]["strategy_id"]
-        if suggested == "S02":
-            self.assertIsNone(choice["deviation"])
-        else:
-            self.assertIsNotNone(choice["deviation"])
+        # The provider scores S01 highest, so S02 is a DEVIATION from the
+        # suggestion. (The guard here used to branch on the suggestion, which
+        # made the assertion conditional on a value the fixture pins.)
+        self.assertEqual(plan["suggested"]["strategy_id"], "S01")
+        self.assertIsNotNone(choice["deviation"])
 
     def test_a_prediction_from_another_decision_is_refused(self):
         h, plan = self._plan()

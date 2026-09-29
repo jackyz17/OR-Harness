@@ -24,10 +24,7 @@ from or_harness.core.schema import (  # noqa: E402
     CostVector,
     FailureRecord,
 )
-from or_harness.strategy.triggers import (  # noqa: E402
-    InductionHint,
-    evidence_execution_ids,
-)
+from or_harness.strategy.triggers import InductionHint  # noqa: E402
 
 
 def _profile(problem_id="t1", family="routing", **coupling):
@@ -119,7 +116,10 @@ class TestDetectorCandidates(HarnessTestCase):
         self._seed_conflict(h)
         first = h.induction_candidates()
         second = h.induction_candidates()
+        self.assertTrue(first, "the seeded conflict must form a candidate")
         self.assertEqual(len(first), len(second))
+        self.assertEqual({b["bundle_id"] for b in first},
+                         {b["bundle_id"] for b in second})
 
     def test_a_candidate_carrying_no_method_is_insufficient(self):
         """No execution reports a method: the material is INSUFFICIENT, not
@@ -195,17 +195,10 @@ class TestDetectorCandidates(HarnessTestCase):
 
 
 class TestEvidenceExecutionIds(unittest.TestCase):
-    def test_flattens_every_evidence_shape(self):
-        self.assertEqual(
-            evidence_execution_ids({"execution_id": "e1"}), ["e1"])
-        self.assertEqual(
-            evidence_execution_ids({"execution_ids": {"a": ["e1", "e2"]}}),
-            ["e1", "e2"])
-        self.assertEqual(
-            evidence_execution_ids({"failed": {"execution_id": "f"},
-                                    "recovered_by": {"execution_id": "r"}}),
-            ["f", "r"])
-
+    # The four detector evidence shapes are covered in one place by
+    # test_method_repair.TestAdvantageReversalReachesOffline
+    # (`test_every_detector_shape_is_covered`), which includes this subset
+    # plus the advantage-reversal nested cells.
     def test_stored_hint_refuses_an_unknown_pattern(self):
         with self.assertRaises(ValueError):
             InductionHint.from_dict({"pattern": "invented", "group_key": "g"})

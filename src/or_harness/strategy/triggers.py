@@ -43,6 +43,7 @@ from or_harness.core.schema import (
     bin_label,
     group_key,
     normalize_method,
+    task_check_state,
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats
 
@@ -104,14 +105,37 @@ PATTERNS = ("strategy_contrast", "intervention_recovery",
             "structural_reproduction", "advantage_reversal")
 
 
+#: Evidence keys whose value is a LIST of execution ids (or a map of
+#: label -> [ids]) rather than a single id. The shapes differ per pattern:
+#: ``execution_ids`` (contrast/reproduction), the advantage reversal's two
+#: nested cells, and the flat ``execution_id`` a within-execution hint uses.
+_EVIDENCE_ID_LIST_KEYS = ("execution_ids",)
+#: Evidence keys whose value is a nested cell block carrying its own
+#: ``execution_ids`` (advantage_reversal: advantageous_cell / adverse_cell).
+_EVIDENCE_CELL_KEYS = ("advantageous_cell", "adverse_cell")
+#: Evidence keys whose value is a record block with a single ``execution_id``
+#: (intervention_recovery: failed / recovered_by).
+_EVIDENCE_RECORD_KEYS = ("failed", "recovered_by")
+
+
 def evidence_execution_ids(evidence: Dict[str, Any]) -> List[str]:
     """Every execution id a hint's ``evidence`` block refers to, flattened.
 
-    The shapes differ by pattern (a flat ``execution_id``, a
-    {strategy: [ids]} map, a {family: [ids]} map, a failed/recovered_by
-    pair). The candidate builder needs the SET, because a contrast's two
-    sides must travel into one candidate rather than being split into
-    unrelated statistical bins.
+    The candidate builder needs the SET, because a comparison's two sides must
+    travel into ONE candidate rather than being split into unrelated
+    statistical bins — and because an offline candidate is only valid while
+    the executions it cites still count (an excluded side must be visible).
+
+    Covers the real shape of EACH of the four detectors:
+
+    * ``strategy_contrast`` / ``structural_reproduction`` — ``execution_ids``
+      (a flat list) or a ``{label: [ids]}`` map;
+    * ``intervention_recovery`` — a flat ``execution_id``, plus the
+      ``failed`` / ``recovered_by`` record blocks;
+    * ``advantage_reversal`` — the two nested cells
+      ``advantageous_cell.execution_ids`` and ``adverse_cell.execution_ids``
+      (reading only the top level silently produced NO ids, so the pattern
+      never reached an offline candidate).
     """
     found: List[str] = []
 
@@ -127,13 +151,19 @@ def evidence_execution_ids(evidence: Dict[str, Any]) -> List[str]:
 
     if not isinstance(evidence, dict):
         return found
-    _collect(evidence.get("execution_ids"))
-    for key in ("execution_id", "failed", "recovered_by"):
-        value = evidence.get(key)
-        if isinstance(value, dict):
-            _collect(value.get("execution_id"))
-        elif isinstance(value, str):
-            found.append(value)
+    for key in _EVIDENCE_ID_LIST_KEYS:
+        _collect(evidence.get(key))
+    for key in _EVIDENCE_CELL_KEYS:
+        cell = evidence.get(key)
+        if isinstance(cell, dict):
+            _collect(cell.get("execution_ids"))
+    for key in _EVIDENCE_RECORD_KEYS:
+        block = evidence.get(key)
+        if isinstance(block, dict):
+            _collect(block.get("execution_id"))
+    flat = evidence.get("execution_id")
+    if isinstance(flat, str):
+        found.append(flat)
     seen: List[str] = []
     for eid in found:
         if eid and eid not in seen:
@@ -314,12 +344,12 @@ def _intervention_recovery(record: ExecutionRecord, group: str,
                       "failures": [f.to_dict() for f in triggered],
                       "final_status": record.quality.get("status")})
 
-    if not (prior_failures and record.quality.get("feasible")):
+    if not (prior_failures and _is_usable_success(record)):
         return None
     this_solver = str((record.solver or {}).get("name", ""))
     for failed in sorted(prior_failures, key=lambda r: r.created_at,
                          reverse=True):
-        if not failed.quality.get("feasible", False):
+        if _is_failed_attempt(failed):
             failed_solver = str((failed.solver or {}).get("name", ""))
             if failed_solver and failed_solver != this_solver:
                 return InductionHint(
@@ -364,6 +394,40 @@ def _intervention_recovery(record: ExecutionRecord, group: str,
         })
 
 
+def _is_failed_attempt(record: ExecutionRecord) -> bool:
+    """Whether an attempt did NOT produce a usable answer.
+
+    Two ways an attempt fails, and a modeling repair story needs both:
+
+    * the solver refused — ``quality.feasible`` is false (infeasible,
+      unbounded, timeout, error);
+    * the solver was happy but the ANSWER was wrong — ``task_check`` is
+      ``failed``. A wrong model solved to a legal optimum is the main
+      modeling error to summarize, so it is a failure here even though the
+      solver's own quality looked fine.
+
+    ``insufficient`` is NOT a failure: a check that could not decide says
+    nothing about whether the answer was usable.
+    """
+    if not record.quality.get("feasible", False):
+        return True
+    return task_check_state(record) == "failed"
+
+
+def _is_usable_success(record: ExecutionRecord) -> bool:
+    """Whether an attempt produced a usable answer.
+
+    ``quality.feasible`` alone is not enough: the solver can be happy with a
+    model that does not answer the task, so a ``failed`` task check means the
+    attempt is NOT a success and cannot evidence a recovery. An unchecked or
+    ``insufficient`` attempt keeps its historical meaning (unknown validity
+    is not a demonstrated failure).
+    """
+    if not record.quality.get("feasible", False):
+        return False
+    return task_check_state(record) != "failed"
+
+
 def _recorded_change(record: ExecutionRecord,
                      prior_failures: List[ExecutionRecord]
                      ) -> Optional[Dict[str, Any]]:
@@ -371,10 +435,15 @@ def _recorded_change(record: ExecutionRecord,
     this successful one — the fact that distinguishes a modeling fix from a
     plain retry.
 
-    Two kinds of provable change are accepted:
-    * ``method`` — this record's performed method (its script receipt, or a
-      harness declaration) differs from the failed attempt's; the difference
-      is described step-by-step;
+    Two kinds of PROVABLE change are accepted, and BOTH require evidence of
+    what actually happened:
+
+    * ``method`` — the PERFORMED method (``method_actual``: the script's own
+      receipt, or an explicit harness declaration) differs from the failed
+      attempt's PERFORMED method. A plan is not used: two attempts whose
+      plans differ while neither reports what it ran are not evidence that a
+      fix was carried out, and treating the plan as an intervention
+      manufactured "recoveries" out of intent alone.
     * ``declared`` — the record carries an explicit change delta (a
       recording-time declaration such as ``intervention``), which is the
       harness naming the change it made.
@@ -389,20 +458,20 @@ def _recorded_change(record: ExecutionRecord,
         return {"kind": "declared", "change": dict(declared),
                 "from_execution_id": latest.execution_id,
                 "failed_record": latest}
-    this_method = normalize_method(record.method_actual) or \
-        normalize_method(record.method_planned)
+    # PERFORMED methods only — a plan is intent, not an intervention.
+    this_method = normalize_method(record.method_actual)
     if this_method is None:
         return None
-    other = normalize_method(latest.method_actual) or \
-        normalize_method(latest.method_planned)
+    other = normalize_method(latest.method_actual)
     if other is None:
-        # The failed attempt recorded no method: a difference cannot be
-        # established from one side alone.
+        # One attempt reports nothing it actually ran: a difference cannot
+        # be established, so nothing is claimed.
         return None
     if _method_signature(this_method) == _method_signature(other):
         return None
     return {
         "kind": "method",
+        "basis": "performed_method",
         "from_execution_id": latest.execution_id,
         # Internal handle for the caller (stripped before the hint is
         # serialized); the RECORD itself is never part of the evidence.

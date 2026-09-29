@@ -2351,6 +2351,37 @@ class ORHarness:
                  f"{recommendation.recommendation_id}",
                  self.store.dumps(recommendation.to_dict())))
 
+    @staticmethod
+    def _declared_operation_relations(prediction) -> List[Dict[str, Any]]:
+        """The relation claims a maintenance operation DECLARES, if any.
+
+        A capability candidate may carry the relations its operation forms
+        in ``operation.config["relations"]`` — that is where the outer agent
+        puts the method it wants written. The prediction preserves the whole
+        candidate, so the declared claims travel with it. Reading them here
+        is what makes "accept the recommendation" run the operation it
+        actually declared instead of a generic statistical induction.
+
+        Each entry follows the ``induce --relation`` payload (``claim``,
+        ``evidence``, optional ``subject``/``conditions``/``kind``). An
+        evidence entry that names a ``bundle_id`` is left as written — the
+        relation path expands it — so a candidate formed from a displayed
+        bundle cites exactly the executions it was shown.
+        """
+        candidate = getattr(prediction, "candidate_operation", None)
+        if candidate is None:
+            return []
+        raw = (candidate.config or {}).get("relations")
+        if not isinstance(raw, list):
+            return []
+        declared: List[Dict[str, Any]] = []
+        for item in raw:
+            if not isinstance(item, dict) or not item.get("claim"):
+                continue
+            relation = dict(item)
+            declared.append(relation)
+        return declared
+
     def accept_capability_operation(
             self, recommendation: Dict[str, Any], *,
             prediction_id: Optional[str] = None,
@@ -2447,9 +2478,22 @@ class ORHarness:
                           },
                           "execution_ids": execution_ids}
             else:
-                result = self.induce(strategy_id=strategy_id, verify=verify,
-                                     notes=notes, force=force,
-                                     execution_ids=execution_ids)
+                # An operation may DECLARE the relations it forms: the
+                # candidate is where the agent put the method it wants
+                # written, and the prediction carries that candidate in
+                # full. Dropping it here (running a bare statistical
+                # induction instead) is exactly how an accepted maintenance
+                # recommendation produced a cell mean and no technique.
+                declared = self._declared_operation_relations(prediction)
+                if declared:
+                    result = self.induce(relations=declared, verify=verify,
+                                         notes=notes, force=force,
+                                         strategy_id=strategy_id)
+                else:
+                    result = self.induce(strategy_id=strategy_id,
+                                         verify=verify, notes=notes,
+                                         force=force,
+                                         execution_ids=execution_ids)
         except Exception:
             self.actions.end_action(
                 adoption.action_id, status="failed",
@@ -3354,6 +3398,48 @@ class ORHarness:
             "created": delta.get("entries_created") or [],
             "knowledge_after": after,
         }
+
+    @staticmethod
+    def _relation_change(before: Any, after: Any) -> Optional[Dict[str, Any]]:
+        """How an entry's RELATION claims changed, by relation id.
+
+        A relation is a knowledge object with its own verification, so a
+        rewrite is a knowledge change and must appear in the delta. Reported
+        per relation (added / removed / revised) with the FIELDS that moved,
+        so an added claim, a re-verified claim and an invalidated claim are
+        distinguishable — a single "relations differ" flag would hide which.
+
+        Returns None when the relation set is unchanged.
+        """
+        before_map = {r.get("relation_id"): r
+                      for r in (before or []) if isinstance(r, dict)}
+        after_map = {r.get("relation_id"): r
+                     for r in (after or []) if isinstance(r, dict)}
+        if before_map == after_map:
+            return None
+        added = sorted(set(after_map) - set(before_map))
+        removed = sorted(set(before_map) - set(after_map))
+        revised = []
+        for rid in sorted(set(before_map) & set(after_map)):
+            old, new = before_map[rid], after_map[rid]
+            if old == new:
+                continue
+            fields = {}
+            for field in ("claim", "conditions", "evidence", "kind",
+                          "verification", "epistemic"):
+                if old.get(field) != new.get(field):
+                    fields[field] = {"before": old.get(field),
+                                     "after": new.get(field)}
+            # A verification-state move is called out explicitly: it is the
+            # event an admission/effect judgement turns on.
+            old_state = (old.get("verification") or {}).get("state")
+            new_state = (new.get("verification") or {}).get("state")
+            change: Dict[str, Any] = {"fields": fields}
+            if old_state != new_state:
+                change["verification_state"] = {"before": old_state,
+                                                "after": new_state}
+            revised.append({"relation_id": rid, "change": change})
+        return {"added": added, "removed": removed, "revised": revised}
 
     def evaluate_knowledge_consolidation(self, result: Dict[str, Any],
                                          execution_ids: Sequence[str] = (),
@@ -5461,6 +5547,17 @@ class ORHarness:
                 raise
             if maintenance is not None:
                 result["action"] = self._end_induce_action(maintenance, result)
+                # Surface the transition at the TOP level too, so a caller
+                # (and ``accept_capability_operation``) reads the same
+                # ``business_result`` / ``knowledge_delta`` shape it reads
+                # from a statistical induction — one contract, whichever
+                # shape of knowledge was written.
+                result.setdefault("business_result",
+                                  result["action"]["business_result"])
+                result.setdefault("knowledge_delta",
+                                  result["action"]["knowledge_delta"])
+                result.setdefault("knowledge_after",
+                                  result["action"]["knowledge_after"])
             if not dry_run:
                 result["index_sync"] = self.index_sync.sync_entries()
                 try:
@@ -5587,13 +5684,18 @@ class ORHarness:
             index_sync = self.index_sync.sync_entries()
         saved = len([r for r in results
                      if r.get("saved") or r.get("created_entry")])
-        return {
+        out: Dict[str, Any] = {
             "relations": results,
             "saved": saved,
             "published": len([r for r in results
                               if (r.get("publication") or {}).get("published")]),
-            "index_sync": index_sync,
         }
+        # A dry run writes nothing, index included — and does not report an
+        # index result it never produced (the statistical path omits the key
+        # too, so the two shapes stay identical).
+        if not dry_run:
+            out["index_sync"] = index_sync
+        return out
 
     def _expand_relation_bundle_refs(self, relation: Dict[str, Any]
                                      ) -> Dict[str, Any]:
@@ -5637,8 +5739,7 @@ class ORHarness:
 
     def _begin_induce_action(self, strategy_id: Optional[str],
                              all_: bool, rebuild: bool) -> Dict[str, Any]:
-        """Begin the maintenance-scope induce action with a real PRE
-        snapshot: the knowledge state (entries + verification layers) as it
+        """Begin the maintenance-scope induce action with a real PRE        snapshot: the knowledge state (entries + verification layers) as it
         stood BEFORE induction."""
         episode_id = f"maint_{int(time.time())}"
         knowledge_before = {
@@ -5721,6 +5822,12 @@ class ORHarness:
         # A bare id list cannot reconstruct the transition — the modified
         # values (expected quality/cost, predicates, verification state)
         # are what future analysis needs to replay this knowledge change.
+        #
+        # RELATIONS are part of the entry's knowledge, so they are diffed
+        # too — and by RELATION, not as one opaque blob: adding, revising,
+        # re-verifying or invalidating a claim are different events, and a
+        # capability feedback that read "nothing changed" while a relation
+        # was rewritten would misjudge the induction entirely.
         entry_changes = []
         for entry_id in sorted(before_ids & after_ids):
             before, after = before_by_id[entry_id], after_by_id[entry_id]
@@ -5734,6 +5841,10 @@ class ORHarness:
                         "before": before.get(field),
                         "after": after.get(field),
                     }
+            relation_change = self._relation_change(before.get("relations"),
+                                                   after.get("relations"))
+            if relation_change:
+                changed_fields["relations"] = relation_change
             if changed_fields:
                 entry_changes.append({"entry_id": entry_id,
                                       "changed": changed_fields})
@@ -5951,9 +6062,15 @@ class ORHarness:
         card = self.sbank.retire(entry_id, reason=reason)
         # The entry left the hot store, so its vector must leave the index
         # too: a vector that outlives its record would surface a claim that
-        # no longer exists. ``sync_entries`` removes a vector whose entry can
-        # no longer be resolved — one path, not a second remove wrapper.
-        self.index_sync.sync_entries()
+        # no longer exists — and it would keep occupying a retrieval slot
+        # even though recall filters the entry out afterwards.
+        #
+        # A bare ``sync_entries()`` is NOT enough: it walks the entries still
+        # IN the bank, so a retired id never enters its removal list. The
+        # retired id is passed EXPLICITLY through the same existing
+        # interface, which removes a vector whose entry can no longer be
+        # resolved (no second wrapper function is needed).
+        self.index_sync.sync_entries([entry_id])
         return {"retired": entry_id, "cold_archive_card": card.to_dict()}
 
     def exclude_execution(self, execution_id: str, reason: str, *,
@@ -6248,13 +6365,31 @@ class ORHarness:
 
     def _prior_failures(self, record: ExecutionRecord) -> List[ExecutionRecord]:
         """Failed executions (bank + staged) for the same task, excluding
-        this record itself."""
+        this record itself.
+
+        "Failed" means the ATTEMPT did not produce a usable answer, which is
+        not the same as "the solver refused": a model can be written wrong,
+        solved to a legal optimal status, and still FAIL the task check —
+        two vehicles where the task needs the answer to cost 200. That case
+        is the main modeling-repair story, so it counts here too. A record
+        whose task check is ``failed`` is a prior failure even though its
+        solver quality looked fine; a record whose check ``passed`` or was
+        never run is not.
+
+        ``insufficient`` is deliberately NOT a failure: a check that could
+        not decide says nothing about whether the answer was usable, and
+        treating it as failure would manufacture repair chains out of
+        unverified attempts.
+        """
+        def _is_failed(rec: ExecutionRecord) -> bool:
+            if not rec.quality.get("feasible", False):
+                return True
+            return task_check_state(rec) == "failed"
+
         prior = [r for r in self.bank.query(task_id=record.task_id)
-                 if r.execution_id != record.execution_id
-                 and not r.quality.get("feasible", False)]
+                 if r.execution_id != record.execution_id and _is_failed(r)]
         prior += [p for p in self.bank.pending(task_id=record.task_id)
-                  if p.execution_id != record.execution_id
-                  and not p.quality.get("feasible", False)]
+                  if p.execution_id != record.execution_id and _is_failed(p)]
         return prior
 
     def _induction_targets(self, strategy_id: Optional[str], all_: bool,

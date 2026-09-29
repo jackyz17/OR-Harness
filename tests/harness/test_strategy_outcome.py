@@ -853,9 +853,12 @@ class TestPredictionDrivesDecision(StrategyCase):
         # The decision action's outcome is an EVALUATION, not a selection.
         self.assertEqual(action.outcome["kind"], "plan_next_evaluation")
         # X.selected_plan is NOT written by planning.
-        for snap in _h.snapshots(task_id="t1"):
-            if snap.episode_id == "ep1":
-                self.assertNotIn("selected_plan", snap.task_progress)
+        ep1_snapshots = [s for s in _h.snapshots(task_id="t1")
+                         if s.episode_id == "ep1"]
+        self.assertTrue(ep1_snapshots,
+                        "planning must snapshot the decision episode")
+        for snap in ep1_snapshots:
+            self.assertNotIn("selected_plan", snap.task_progress)
 
     def test_all_predictions_failed_reports_fallback(self):
         provider = StubProvider(payload=None)

@@ -846,19 +846,24 @@ class TestPublicationGateUntouched(Base):
 
     def test_legacy_entry_without_verification_remains_publishable(self):
         """A32: the pre-existing exception is preserved, not silently
-        changed into 'unverified means unpublishable'."""
+        changed into 'unverified means unpublishable'.
+
+        Note: creating an entry needs >=2 independent tasks, so the fixture
+        seeds TWO. An earlier version seeded one, `induce` created nothing,
+        and the assertion below was silently skipped by the `if entries:`
+        guard — a vacuous test that this one no longer is."""
         from or_harness.strategy.selector import is_publishable
-        entry = h = None
         harness = self.make_harness()
         self.seed(harness, "t1")
+        self.seed(harness, "t2")
         harness.induce(strategy_id="S01", all_=True)
         entries = harness.sbank.list()
-        if entries:
-            legacy = entries[0]
-            legacy.verification = {}
-            self.assertTrue(is_publishable(legacy),
-                            "an entry with no verification block is the "
-                            "documented legacy case and stays usable")
+        self.assertTrue(entries, "induce must have created an entry")
+        legacy = entries[0]
+        legacy.verification = {}
+        self.assertTrue(is_publishable(legacy),
+                        "an entry with no verification block is the "
+                        "documented legacy case and stays usable")
 
 
 # ---------------------------------------------------------------------------
