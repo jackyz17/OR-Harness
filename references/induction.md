@@ -1,6 +1,6 @@
 # Induction: patterns, scope, and validation
 
-Read this page when you are deciding whether to induce, working out why a candidate was skipped, or submitting a structured relation claim.
+Read this page when you are deciding whether to induce, working out why a candidate was skipped, or submitting a knowledge claim.
 
 ## The offline flow
 
@@ -180,9 +180,11 @@ Submitting a relation whose evidence reports no method (and whose own claim decl
 
 You may cite a candidate directly: an evidence entry `{"bundle_id": "cb_...", "role": "..."}` is expanded into that bundle's frozen execution set. Bundle ids are content-addressed, so the id `induction-candidates` printed still names the same candidate on the next call.
 
-## Structured relation claims (`induce --relation`)Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
+## Knowledge claims (`induce --relation`)
 
-`induce --relation '<json>'` submits such a claim. The JSON is:
+Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
+
+**The unit of knowledge is the ENTRY, and one entry is ONE claim.** A second independent claim is a second entry; there is no host lookup, no embedded claim list, and no shared verdict. `induce --relation '<json>'` submits one claim:
 
 ```json
 {"subject": "principle:cross_period_state",
@@ -198,12 +200,13 @@ You may cite a candidate directly: an evidence entry `{"bundle_id": "cb_...", "r
 
 An evidence entry may instead be `{"bundle_id": "cb_...", "role": "..."}` — see `induction-material`.
 
-A relation submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge delta (`entries_created` / `entry_changes`), the index result, and the same knowledge feedback. Re-submitting the same claim does not create a second entry.
+A claim submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge delta (`entries_created` / `entry_changes`), the index result, and the same knowledge feedback. Re-submitting the same claim revises that entry, not a duplicate.
 
 - **`evidence` + `role` is the anchor.** Every reference names a recorded execution and the part it plays in *this* claim. Roles are free strings (`dropped`/`preserved`, `before`/`after`, `strategy_a`, `violation`/`satisfying`, …) — they are not a taxonomy, and nothing forces your claim into one of the four trigger patterns. `kind` is an optional note about what prompted the claim.
 - **Identity is derived, never submitted.** Tasks, family, structural cell and strategy ids are read off the recorded facts. You supply ids and roles only, so the same evidence cannot acquire two contradictory identities.
-- **`subject` is optional** and matters only for knowledge that does not belong to one strategy. With no host entry, the claim creates a **relation-only entry** whose `strategy_id` is your subject and which carries no statistical claim (`support_n = 0`). With a strategy host (the evidence's own strategy, or a subject naming an existing entry), the relation is appended to that entry's `relations` — the peer evidence still never enters the host's statistics.
+- **`subject` is optional.** With no subject, the evidence's single strategy names the entry; with a subject, that free-form name is the entry's `strategy_id` (e.g. `principle:cross_period_state`). An entry that states a claim but has no statistical support (`support_n = 0`) is a **claim-only entry**: it makes no quality/cost/failure claim, and its publication is decided by its single `verification` block alone.
 - **`conditions`** are the applicability predicates; when omitted they are read off the evidence's own structural cell.
+- **One entry, one identity.** The entry a submission revises is found by `strategy_id` + structural cell + `kind`. Two independent claims under one subject (a different cell, or a different kind) are separate entries, and neither inherits the other's verification. A claim and a statistical claim under the same strategy id are also separate: the claim never attaches to the statistical entry.
 
 ### What the framework checks (`--verify` with `purpose: relation`)
 
@@ -221,48 +224,48 @@ The framework computes **only what your structured declaration makes computable*
 - `"all"` — every pair must meet the direction and gap. One comparable counterexample refutes the claim. Use it when you are asserting "on every such task".
 - `"mean"` — the batch mean must meet the direction and gap. A single negative pair does not refute it. Use it when you are asserting "on average across this batch".
 
-**Only the declared parts are covered.** "Quality is higher **and** tokens are lower" needs a `quality` assertion *and* a `cost:llm_tokens` assertion; declare only the first and the verification scope records the cost part as unchecked. The verdict is never extended to parts you did not declare.
+**Only the declared parts are covered, and the block says so.** "Quality is higher **and** tokens are lower" needs a `quality` assertion *and* a `cost:llm_tokens` assertion; declare only the first and the verification scope records the cost part as unchecked. The verdict is never extended to parts you did not declare.
 
-**What `verified` means.** Every declared assertion held over the referenced evidence — "no violation was found **within this scope**", not "true for every future task". The `verification.scope` block names the executions, tasks, roles, and which assertions were checked and unchecked. Verdicts: `verified` / `insufficient_evidence` (nothing computable declared, a metric unmeasured, no counterpart, evidence unusable — **not** a refutation) / `refuted` (an assertion ran on real evidence and failed).
+**What `verified` means — and what it does not.** Every declared assertion held over the referenced evidence: "no violation was found **within this scope**". It is NOT a proof that the natural-language claim is correct, causal, or broadly general. The verification block carries both `checked` (the assertions, executions and tasks the verdict covered) and `not_covered` (that explicit limitation), plus `scope` naming the executions, tasks, roles, and which assertions were checked and unchecked. Verdicts: `verified` / `insufficient_evidence` (nothing computable declared, a metric unmeasured, no counterpart, evidence unusable — **not** a refutation) / `refuted` (an assertion ran on real evidence and failed).
 
-### Publication is per relation, on two conditions
+### Publication: two conditions
 
-1. its **own** verdict is `verified` and not stale;
+1. the entry's verdict is `verified` and not stale;
 2. its verification scope covers **≥2 distinct tasks**.
 
-Condition 2 is the same independence rule the statistical gate uses: a single-task repair is a verified **fact about that task**; transferring it to future tasks is a knowledge claim and needs independent evidence. A single-task relation is still **saved** (and verifiable as that fact) — it is simply not published, and `publication.reasons` says exactly why.
-
-Neither condition touches the host entry's statistical claim, and the host's admission never grants the relation anything: **a verified relation does not publish the entry's statistics, and a stale or refuted relation does not invalidate another relation.**
+Condition 2 is the independence rule the statistical gate uses: a single-task repair is a verified **fact about that task**; transferring it to future tasks is a knowledge claim and needs independent evidence. A single-task claim is still **saved** (and verifiable as that fact) — it is simply not published, and `publication.reasons` says exactly why.
 
 ### Revision
 
-Re-submitting the same `subject`+`kind` **revises** that relation (the id is derived from the two, so a revision never appends a duplicate). Give distinct relations under one subject distinct `kind`s.
+Re-submitting the same identity (`strategy_id` + cell + `kind`) **revises** that entry.
 
-- A **substantive** change (claim text, conditions, evidence set, check) with no fresh verification marks the previous verdict `stale_after_revision` — the old check no longer covers the new claim.
+- A **substantive** change (claim text, conditions, evidence set, method) with no fresh verification marks the previous verdict `stale_after_revision` — the old check no longer covers the new claim.
 - A **fresh** verification wins outright: it was computed over the incoming evidence, so it is neither kept nor marked stale.
 - An **identical** re-submission keeps the verdict.
 
-`recall` reports `newer_evidence_since_verification` on each relation: matching executions recorded after the verdict. It is a visibility annotation, not a lifecycle state — a frozen batch remains a true historical fact, and this count simply tells you the world has moved on. Decide whether to re-verify.
+A claim must still be checked against CURRENT real evidence when it is created or substantively revised: an old source id expiring (the evidence window) never blocks a later update, and never by itself backs a revised claim.
 
-### Reading relations back
+### Reading claims back
 
-`orx recall` carries them in a **`knowledge` section**, separate from `recommendations`. That separation is deliberate: `recommendations` is keyed on the strategy ids memory holds and filtered by `is_publishable`, which speaks about the **statistical** claim — so a verified relation whose host statistics were never verified would otherwise be filtered out, and a relation-only entry names no strategy id at all. `knowledge[]` items carry the claim, conditions, evidence, verification state and scope, `published`, and the newer-evidence count. `--include-unverified` also returns refuted/stale relations, clearly labelled.
+A published claim reaches you through the **ordinary recommendation path** (`recall().recommendations[]`): its entry is an admitted entry, so it appears with its expected effect and, under `knowledge`, its verification state and stated claim. There is no separate knowledge section — one claim, one retrieval channel.
 
-In a world-model context the same content reaches `provider_view` through the structural hit, and the entry's boundary text (`risk_conditions`) travels with it — verified knowledge's conditions, edges and verification scope are part of what the knowledge *says*.
+Unpublished claims are the ones that would not survive that filter: `recall().held_claims[]` carries them (a claim-only entry whose `strategy_id` is a free-form subject, or an entry not yet verified), each with its verification state, plus `newer_evidence_since_verification` — matching executions recorded after the verdict, a visibility annotation rather than a lifecycle state. `--include-unverified` fills this section with refuted/stale claims too, clearly labelled.
 
-### Relation vs statistical admission (do not blur)
+> Legacy note: a store written before knowledge was unified may still carry per-entry `relations` lists. `orx migrate-relations` converts each relation into its OWN claim entry, with its verification copied verbatim; it is idempotent and a `--dry-run` writes nothing. `recall` reads migrated claims through the ordinary path.
 
-| | Statistical claim | Relation claim |
+## Relation vs statistical admission (do not blur)
+
+| | Statistical claim | Knowledge claim |
 |---|---|---|
-| Verification | entry's `verification` block | the relation's own `verification` |
+| Where it lives | the entry's interval fields + its `verification` block | the entry's `claim` block + the SAME `verification` block |
 | Checks | `rule` / `repair` / `cost_saving` over one strategy's executions | `relation` assertions over explicitly referenced evidence with roles |
-| Gate | ≥2 tasks + ≥2 executions in the cell | own verdict + ≥2 tasks in the relation's scope |
-| Publication | `is_publishable(entry)` | `relation_is_published(relation)`, per relation |
-| Failure scope | the entry | that one relation |
+| Gate | ≥2 tasks + ≥2 executions in the cell | own verdict + ≥2 tasks in the claim's verification scope |
+| Publication | `is_publishable(entry)` | the same single rule (verified + not stale + ≥2 tasks) |
+| Independence | one evidence set owns one entry | one claim owns one entry |
 
 ## Peer evidence as phrasing (`--peer-strategy` / `--peer-cell`)
 
-REMOVED. Naming another strategy or cell used to write one contrast line under the entry's `risk_conditions`. That was a sentence the framework could not check, and the observable form of the same observation is a relation claim — submit it with `--relation` (below), citing the executions on both sides. Existing entries that already carry such text keep it; nothing writes new ones.
+REMOVED. Naming another strategy or cell used to write one contrast line under the entry's `risk_conditions`. That was a sentence the framework could not check, and the observable form of the same observation is a knowledge claim — submit it with `--relation` (below), citing the executions on both sides. Existing entries that already carry such text keep it; nothing writes new ones.
 
 ## Applicability notes
 

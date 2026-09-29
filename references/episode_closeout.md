@@ -185,6 +185,27 @@ An episode whose executions all carry a verdict is NOT held by the grace period:
 
 **Old stores are backfilled.** A store written before the registry existed has `episode_closeout|…` records but no rows. `calibration_window` backfills them once, idempotently, using each close-out's OWN `created_at` as `closed_at` — so the window ordering is historical, not "whenever the migration ran", and an old database's episodes are not silently invisible.
 
+### The evidence window (bounding the RAW evidence bank)
+
+`window` / `grace` / `archive` bound the CALIBRATION detail. The raw Execution Evidence Bank has its OWN bound:
+
+```bash
+orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
+```
+
+| Scope | Question | Default | Env var |
+|---|---|---|---|
+| **evidence window** | How many COMPLETE episodes' raw executions are retained? | 800 | `OR_EVIDENCE_WINDOW_EPISODES` |
+| **open grace** | How long may an UNCLOSED episode's executions stay? | 30 days | `OR_EVIDENCE_OPEN_GRACE_DAYS` |
+
+- The eviction UNIT is the whole episode, oldest first by the registry's `closed_at` — a contrast/repair chain is never split.
+- NEVER evicted: episodes inside the calibration window, episodes awaiting a task verdict within the late-check grace period, and young unclosed episodes. An unclosed episode is exempt while its outcome is unknown, but `open_grace_days` bounds one that never closes (evicted whole, reported separately).
+- It runs LAST after a close-out — after the calibration publish and the archive pass — so every consolidation opportunity is taken first. It is also an explicit command. The close-out hook is guarded by one indexed count, so an ordinary close walks nothing.
+- It drops the evicted vectors and any task-text version no remaining execution references. Idempotent, crash-recoverable, and it never touches your solve sources.
+- **A count, not a byte cap.** Nothing promises a byte budget; the bound is expressed in episodes. This bounds the Evidence Bank — not the whole project directory.
+
+**Eviction is NOT a withdrawal.** An expired source is a historical reference EXPIRING; the stored evaluation of the expired episode stands as FINAL, and the knowledge entry keeps its own content, conditions, expected effect and verification scope. A present-but-non-counting fact (`exclude-execution`) is the withdrawal path, and the two are never conflated. A sample count going down never counts as a claim being refuted.
+
 ## 7. Window rounds (the identity extension)
 
 `ORHarness.strategy_execution_window(..., round_index=N)` (and the `win::task::episode::strategy::rN` window id) selects ONE selection round of a (task, episode, strategy): the actions from the Nth recorded choice of that strategy up to the next recorded choice of any strategy. The same strategy chosen twice — or switched away and back — is TWO windows with TWO ids; a round that does not exist is reported not-comparable with the reason. Legacy three-part window ids still parse (`round_index=None`).

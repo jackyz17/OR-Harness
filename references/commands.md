@@ -180,7 +180,9 @@ Recalls accumulated experience through **two independent channels**. They answer
 }
 ```
 
-**Relation channel — "what does the memory SAY about this condition?"** (`result.knowledge[]`). Structured relation claims whose conditions match this task, carried **separately** from `recommendations`. The separation is deliberate: `recommendations` is keyed on the strategy ids memory holds and filtered by `is_publishable`, which speaks about the **statistical** claim — so a verified relation whose host statistics were never verified would be filtered out, and a relation-only entry names no strategy id at all. Each item carries `relation_id`, `claim`, `kind`, `conditions`, `evidence`, `tasks`, `verification_state`, `verification_scope`, `published`, and `newer_evidence_since_verification` (matching executions recorded after the verdict — a visibility annotation, not a lifecycle state). Published relations may be used as strategic grounds; `unverified` / `refuted` / stale ones appear only with `--include-unverified`, clearly labelled, and are never dressed up as available knowledge.
+**Claim channel — "what does the memory SAY about this condition?"** A published knowledge claim reaches you through `result.recommendations[]` like any admitted entry: its `knowledge` block carries the stated claim, its verification state and scope, and `newer_evidence_since_verification` (matching executions recorded after the verdict — a visibility annotation, not a lifecycle state).
+
+`result.held_claims[]` carries the claims that would NOT survive that filter — a claim-only entry whose `strategy_id` is a free-form subject, or an entry not yet verified — each with its `verification_state` and `newer_evidence_since_verification`. Published claims may be used as strategic grounds; `unverified` / `refuted` / stale ones appear only here (and only with `--include-unverified`), clearly labelled, and are never dressed up as available knowledge.
 
 **Text channel — "what should I LOOK AT?"** (`result.vector_recall`). The task text is embedded and compared with every indexed memory, **with no structural pre-filter**, so a nearly identical problem from a different structural cell still surfaces. `similarity` is the raw text cosine: it is **never** a quality, cost, or risk estimate and never enters a score.
 
@@ -493,7 +495,7 @@ Bind a strategy-outcome prediction to an action that ALREADY ran. This is the ma
 
 ## Stage 5 — Record facts and cost
 
-### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment] [--prediction <json>] [--method JSON] [--method-actual JSON] [--retain-reason contrast] | --discard-staged <id>`
+### `orx record --execution <json|path> | --from-staged <id> [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment] [--prediction <json>] [--method JSON] [--method-actual JSON] | --discard-staged <id>`
 
 Appends the fact to the Execution Evidence Bank, then runs the automatic chain: cost backfill (replace by default — idempotent, never double-counts) → quality checks against matching entries, frozen ONTO THE FACT (`execution_features.quality_feedback`: the interval in force, the observed quality, hit/miss — only the strategy that actually ran is checked, attempt scope only) → cost feedback against the record's frozen pre-execution prediction snapshot (same strategy, same scope, both sides measured; written into `execution_features.cost_feedback`) → induction-pattern hint checks (the `intervention_recovery` pattern detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
 
@@ -501,7 +503,7 @@ Appends the fact to the Execution Evidence Bank, then runs the automatic chain: 
 
 **Method declarations for a record you assembled yourself.** `--method JSON` is the PLAN (`method_planned`); `--method-actual JSON` is what you DECLARE was actually performed. Use the latter only when you really observed the processing. A value the record already carries is never overwritten, so a script-reported performance stands over a later declaration, and the plan is never promoted to fact.
 
-`--retain-reason <free text>` explicitly marks this episode as representative evidence, reserved for future compaction policies. When omitted, any mark the record already carries is preserved — no automatic marking is performed.
+There is no retention mark to set: retention is decided by the evidence WINDOW (`orx enforce-window`), not by a per-record label. To reserve an episode as contrast evidence, set the explicit `contrast` marker in its `execution_features` (the channel knowledge evaluation reads).
 
 **Cost completeness.** `result.cost_completeness` appears when any dimension is still unmeasured: `missing` names them, `lower_bounds` carries the provable floor (the sandbox invocation), and `note` gives the exact `orx amend-cost` call that closes the gap. Recording is never blocked — the fact is honest as it stands, and an unmeasured dimension is recorded as UNKNOWN rather than fabricated — but an unmeasured dimension supports no cost claim and no cost prediction until every supporting record measures it. `--execution` accepts the bare record, the `orx execute` envelope, or the legacy one-level form.
 
@@ -575,6 +577,30 @@ Move OUT-OF-WINDOW episode detail to the archive (retention). Only DETAIL moves 
 
 **Next.** Re-run without `--dry-run` to apply it. Failures: `--dry-run` never writes, so a pre-registry store previews as an empty window plus a `pending_migration` note.
 
+### `orx enforce-window [--window-episodes N] [--open-grace-days D] [--dry-run]`
+
+Bound the Execution Evidence Bank to a recent window of COMPLETE episodes (default 800, `$OR_EVIDENCE_WINDOW_EPISODES`). The eviction UNIT is the whole episode: the oldest episodes leave at once, so a contrast/repair chain is never split. Order is by the close-out registry's `closed_at`, the same ordering the calibration uses.
+
+Three things are NEVER evicted: episodes inside the calibration window (they calibrate), episodes awaiting a task verdict within the late-check grace period (a late check must still land), and young UNCLOSED episodes. An unclosed episode is exempt from the count bound while its outcome is unknown, but it is not exempt forever: `--open-grace-days` (default 30, `$OR_EVIDENCE_OPEN_GRACE_DAYS`) bounds an episode that never closes, and it is evicted as a whole and reported separately (`evicted_unclosed`). A single episode larger than the budget is KEPT whole and reported, because the bound is a count of episodes and nothing promises a byte budget.
+
+The pass also drops the evicted vector items and any task-text version no remaining execution references, so the bank and its index shrink together. It is idempotent, crash-recoverable (re-running finishes an interrupted pass) and NEVER touches your solve sources.
+
+**An eviction is a source reference EXPIRING, never a refutation or a withdrawal.** A knowledge entry keeps its own content, conditions, expected effect and verification scope; the expired reference is simply historical. `exclude-execution` remains the explicit correction channel (a withdrawal), and the two are never conflated.
+
+In `close-episode` the same pass runs automatically, but LAST — after the calibration publish and the archive pass — and is guarded by one indexed COUNT, so an ordinary close walks nothing. Run the command directly to force it (e.g. after importing history).
+
+**`--dry-run` reports; it never writes** (no row, no vector, no text).
+
+**Next.** Nothing to chain; the bank is now bounded. Failures: none — a run that evicts nothing is a valid answer.
+
+### `orx migrate-relations [--dry-run]`
+
+One-way migration for a store written BEFORE knowledge was unified (when an entry could carry a `relations` list beside its own statistical claim). Each relation becomes its OWN claim entry, its verification block copied **verbatim** — a migration never widens what was verified. A host whose only content was its relations is removed (its knowledge now lives in those entries); a host with a statistical claim is kept. The mapping `old_entry_id -> [new_entry_id, ...]` is recorded in meta for audit.
+
+Idempotent: re-running creates nothing more (an already-migrated entry has no relations left, and the identity map is a second guard). **`--dry-run` reports and writes nothing.**
+
+**Next.** Nothing to chain. Failures: none — a no-op on a store with no legacy relations.
+
 ### `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts|evaluations|retention|capability [--task ID] [--strategy S] [--status candidate] [--episode EP] [--evaluation ID] [--prediction ID]`
 
 **The ONE read entry point** — every query lives here, so an agent has a single place to look and a single answer shape to parse.
@@ -584,7 +610,7 @@ Move OUT-OF-WINDOW episode detail to the archive (retention). Only DETAIL moves 
 
 With `--prediction ID` the command does a **KEY LOOKUP**: it returns that ONE record (plus the generation it resolved to, under `kind`) and nothing else — no log listing is attached. A key lookup costs the key, not the history.
 - `evaluations` — the stored post-hoc strategy-outcome evaluations (`--task` / `--episode` filter; `--evaluation ID` reads one). Excluded evaluations are neither hits nor misses; pending ones wait for their scope to end.
-- `retention` — the three retention scopes (window / late-check grace / archive caps) plus the online and archive counts. Online capacity is bounded; total disk is bounded by the archive's own caps, and the two are reported as separate numbers.
+- `retention` — the calibration retention scopes (window / late-check grace / archive caps) plus the online and archive counts. The CALIBRATION window is bounded here; the RAW evidence bank is bounded separately by the evidence window (`orx enforce-window`), and the two are reported as different scopes — the evidence bound covers the Evidence Bank, NOT the whole project directory.
 - `capability` — the two-stage capability feedback state (fact bound vs effect verified). With `--prediction ID`, one prediction's full state: the prediction, its maintenance binding and its effect evaluation.
 
 **Next.** Depends on the bank you read: `predictions --prediction ID` and `capability --prediction ID` are single-record lookups, while the listing banks answer "what does this memory hold". Failures: a key lookup returns that record only, with no log listing attached.
@@ -629,9 +655,9 @@ Each element of `result.results` reports `created` (entry id) / `updated` (entry
 
 `--note "TEXT"` (optional, repeatable, you phrase it): free-text applicability notes attached to the entries this call creates or refreshes. They are kept for the reader and shown by `inspect`; they never enter scoring — the framework does not pretend to verify a sentence. Because these notes are part of an entry's retrieval document, the knowledge index items are refreshed after this call (`result.index_sync`, best effort — same `synced`/`deferred`/`skipped` contract as `record`). `--dry-run` writes nothing, index included.
 
-**A comparison is submitted as a relation, not written as prose.** Induction no longer takes peer flags: a contrast against another strategy (same cell) or another cell (same strategy) is a STRUCTURED relation claim — read the material with `orx induction-material` and submit it with `--relation`, citing the executions on both sides. The statistical path records no free-text contrast: a sentence the framework cannot check is not knowledge. Entries that already carry such text keep it; nothing writes new lines.
+**A comparison is submitted as a claim, not written as prose.** Induction no longer takes peer flags: a contrast against another strategy (same cell) or another cell (same strategy) is a STRUCTURED knowledge claim — read the material with `orx induction-material` and submit it with `--relation`, citing the executions on both sides. The statistical path records no free-text contrast: a sentence the framework cannot check is not knowledge. Entries that already carry such text keep it; nothing writes new lines.
 
-**`--relation JSON` submits a STRUCTURED relation claim** (repeatable). This is the path for cross-task knowledge that is **not** one strategy's statistics — a modeling principle, a necessary condition, a repair pattern. Payload:
+**`--relation JSON` submits a STRUCTURED knowledge claim** (repeatable). This is the path for cross-task knowledge that is **not** one strategy's statistics — a modeling principle, a necessary condition, a repair pattern. Payload:
 
 ```json
 {"subject": "principle:cross_period_state",
@@ -644,7 +670,7 @@ Each element of `result.results` reports `created` (entry id) / `updated` (entry
  "kind": "intervention_recovery"}
 ```
 
-`claim` and `evidence` are required; every evidence entry needs either an `execution_id` for a **recorded** fact (or a `bundle_id` from `induction-candidates`, expanded into that bundle's frozen evidence set) and a `role` naming the part it plays in *this* claim (free strings — `dropped`/`preserved`, `before`/`after`, `strategy_a`, …). The framework DERIVES `tasks`, `family`, structural cell and `strategy_ids` from those facts, so a caller never submits a second, contradictory identity. `subject` is optional and matters for knowledge that names no strategy id: with no host entry the claim creates a **relation-only entry** (`support_n = 0`, no statistical claim) whose `strategy_id` is the subject; with a host it is appended to that entry's `relations`. `conditions` are the applicability predicates (omitted → read off the evidence's cell). `kind` is an optional note about what prompted the claim — never a verification template.
+`claim` and `evidence` are required; every evidence entry needs either an `execution_id` for a **recorded** fact (or a `bundle_id` from `induction-candidates`, expanded into that bundle's frozen evidence set) and a `role` naming the part it plays in *this* claim (free strings — `dropped`/`preserved`, `before`/`after`, `strategy_a`, …). The framework DERIVES `tasks`, `family`, structural cell and `strategy_ids` from those facts, so a caller never submits a second, contradictory identity. `subject` is optional and matters for knowledge that names no strategy id: the claim creates a **claim-only entry** (`support_n = 0`, no statistical claim) whose `strategy_id` is the subject. ONE entry is ONE claim — identity is `strategy_id` + structural cell + `kind`, so a second independent claim (a different cell or kind) is a SEPARATE entry and never inherits the first's verdict. `conditions` are the applicability predicates (omitted → read off the evidence's cell). `kind` is an optional note about what prompted the claim — never a verification template.
 
 A relation submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge `{entries_created, entry_changes}` delta, the index result, and the same knowledge feedback — so a relation is as auditable as a statistical induction, and re-submitting the same claim updates rather than duplicating. When the cited evidence reports NO method and the claim declares none, the outcome carries a non-blocking `material` warning: the claim is saved as written, but the framework did not (and will not) derive a technique from the numbers.
 
@@ -696,9 +722,9 @@ Explicitly decline or defer a recommendation: no operation runs and NO knowledge
 
 ### `orx exclude-execution --execution EXECUTION_ID --reason "..." [--superseded-by EXECUTION_ID]`
 
-Withdraw a **wrong execution fact** from the evidence set. The Evidence Bank is append-only, so a bad observation is never deleted — but it must stop counting. The row is preserved for audit, its `source` becomes `excluded`, and the reason is recorded on the fact under `execution_features.correction`. Every statistics / induction / trigger / retrieval path requires `source == "executed"`, so the fact drops out of **all** of them at once; its vector is removed from the execution index immediately. `--superseded-by` names the corrected re-run that replaces it (a link, never an inference — the correction is always your explicit statement). Derived layers pick the change up at the next `orx induce`. This is the ONLY way to un-count a fact: `record` never rewrites, and the fact's `execution_id` stays visible in `inspect --bank experience`.
+Withdraw a **wrong execution fact** from the evidence set. A retained fact is never rewritten and a withdrawn one is never deleted — it must stop counting. The row is preserved for audit, its `source` becomes `excluded`, and the reason is recorded on the fact under `execution_features.correction`. Every statistics / induction / trigger / retrieval path requires `source == "executed"`, so the fact drops out of **all** of them at once; its vector is removed from the execution index immediately. `--superseded-by` names the corrected re-run that replaces it (a link, never an inference — the correction is always your explicit statement). Derived layers pick the change up at the next `orx induce`. This is the ONLY way to un-count a fact: `record` never rewrites, and the fact's `execution_id` stays visible in `inspect --bank experience`.
 
-**Next.** `calibration --rebuild` if the episode has left the window, or rely on the automatic republish while it is still in it. The row is append-only: it survives and stops counting, and `restore-execution` reverses it.
+**Next.** `calibration --rebuild` if the episode has left the window, or rely on the automatic republish while it is still in it. The row survives and stops counting, and `restore-execution` reverses it. (This is a WITHDRAWAL — distinct from the evidence window's eviction, which merely lets a source reference expire and never revokes knowledge.)
 
 ### `orx restore-execution --execution EXECUTION_ID --reason "..."`
 

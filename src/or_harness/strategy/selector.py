@@ -428,6 +428,9 @@ class Selector:
             "verification": copy.deepcopy(entry.verification or {}),
             "claim": (copy.deepcopy(entry.claim)
                       if entry.claim is not None else None),
+            # The entry's own applicability predicates: part of what the
+            # knowledge SAYS (which conditions it claims to apply under).
+            "predicates": copy.deepcopy(entry.predicates or {}),
             "applicability": [str(n) for n in (entry.applicability or [])],
             "actions": [str(a) for a in (entry.actions or [])],
             "fallback_strategy_id": entry.fallback_strategy_id,

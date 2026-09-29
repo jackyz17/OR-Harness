@@ -1,4 +1,4 @@
-"""Runnable example: method evidence -> material -> relation -> recall.
+"""Runnable example: method evidence -> material -> claim -> recall.
 
 The gap this example demonstrates: two layers of memory need different kinds
 of content. Execution Evidence must record what a single attempt ACTUALLY
@@ -18,13 +18,13 @@ The chain it walks:
 3. **material, then a claim** — ``induction_material`` shows the methods, the
    change and what followed; the outer agent (here, a scripted stand-in)
    reads it and writes the "condition -> how -> consequence -> boundary"
-   claim, submitting it as a structured relation.
+   claim, submitting it as a knowledge claim.
 4. **an honest refusal to invent** — a second candidate whose evidence
    reports NO method is reported ``insufficient``, and submitting a claim
    from it carries a `material` warning: the framework will not turn a mean
    into a technique.
-5. **the write is auditable and reachable** — the relation submission records
-   a maintenance action with a knowledge delta, and the published relation
+5. **the write is auditable and reachable** — the claim submission records
+   a maintenance action with a knowledge delta, and the published claim
    reaches recall from an INDEPENDENT task.
 
 It runs with no model, no network and no API key — the deterministic offline
@@ -120,7 +120,7 @@ def main() -> int:
             t1 = dict(TASK_BASE, task_id="T1")
             failed = _run(h, t1, FAILED_METHOD, feasible=False, slot="f")
             fixed = _run(h, t1, FIXED_METHOD, feasible=True, slot="s")
-            # A second independent task so the relation can be published
+            # A second independent task so the claim can be published
             # (the publication gate needs >=2 distinct tasks).
             t2 = dict(TASK_BASE, task_id="T2")
             fixed2 = _run(h, t2, FIXED_METHOD, feasible=True, slot="t")
@@ -162,7 +162,7 @@ def main() -> int:
             # The evidence spans TWO independent tasks (the failed attempt on
             # T1 and the fixed method on T2), which is what the publication
             # gate needs; the framework DERIVES the identity from the facts.
-            relation = {
+            claim_payload = {
                 "subject": "principle:cross_period_state",
                 "claim": ("when temporal coupling is high, the cross-period "
                           "state must be carried across the decomposition; "
@@ -192,7 +192,7 @@ def main() -> int:
                      "mode": "group", "aggregation": "mean"},
                 ]},
             }
-            result = h.induce(relations=[relation], verify=verify)
+            result = h.induce(relations=[claim_payload], verify=verify)
             outcome = result["relations"][0]
             print(f"saved     : {outcome.get('saved')}")
             print(f"publication: {outcome['publication']}")
@@ -239,23 +239,24 @@ def main() -> int:
             print()
 
             print("=" * 72)
-            print("5. the verified relation reaches recall from a NEW task")
+            print("5. the verified claim reaches recall from a NEW task")
             print("=" * 72)
             recall = h.recall(dict(TASK_BASE, task_id="T4"))
-            knowledge = recall.get("knowledge") or []
-            print(f"knowledge entries returned: {len(knowledge)}")
-            for item in knowledge:
-                print(f"  entry     : {item.get('entry_id')} "
-                      f"(relation_only={item.get('relation_only')})")
-                print(f"  claim     : {str(item.get('claim'))[:66]}...")
-                print(f"  state     : {item.get('verification_state')}  "
-                      f"|  published: {item.get('published')}")
-                print(f"  tasks     : {item.get('tasks')}")
+            hits = [r for r in recall.get("recommendations", [])
+                    if (r.get("knowledge") or {}).get("claim")]
+            print(f"recommendations carrying a claim: {len(hits)}")
+            for item in hits:
+                knowledge = item["knowledge"]
+                claim = knowledge.get("claim") or {}
+                print(f"  entry     : {knowledge.get('entry_id')}")
+                print(f"  claim     : {str(claim.get('text'))[:66]}...")
+                print(f"  state     : {knowledge.get('verification_state')}")
+                print(f"  tasks     : {claim.get('tasks')}")
                 print(f"  evidence  : "
-                      f"{[e['execution_id'] for e in item.get('evidence', [])]}")
+                      f"{[e['execution_id'] for e in claim.get('evidence', [])]}")
             print("\nThe claim is quoted from accumulated evidence on OTHER "
-                  "tasks, with its own verification state and a citable "
-                  "evidence list — not from a mean.")
+                  "tasks, with the entry's own verification state and a "
+                  "citable evidence list — not from a mean.")
             return 0
         finally:
             h.close()
