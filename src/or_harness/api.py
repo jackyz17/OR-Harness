@@ -5434,6 +5434,9 @@ class ORHarness:
                override: Optional[Dict[str, float]] = None,
                *,
                override_mode: str = "replace",
+               override_source: str = "agent_estimate",
+               override_force: bool = False,
+               host_usage: Optional[Dict[str, Any]] = None,
                prediction: Optional[PredictionSnapshot] = None,
                method: Optional[Dict[str, Any]] = None,
                method_actual: Optional[Dict[str, Any]] = None
@@ -5522,9 +5525,42 @@ class ORHarness:
         if prediction_checks:
             record.execution_features["quality_feedback"] = prediction_checks
         self.bank.append(record)
+        # HOST usage first (the REAL attempt spend the outer framework
+        # measured), then any explicit override. A host report is recorded
+        # with the full口径 and marked ``provider_usage`` provenance (the
+        # host really measured it), so it is distinguishable from a declared
+        # estimate and protected from a later silent overwrite.
+        if host_usage:
+            from or_harness.world_model.usage import host_usage_cost_vector
+            vector, breakdown = host_usage_cost_vector(host_usage)
+            if vector is not None and "llm_tokens" in vector.measured_dims():
+                self.bank.update_cost(
+                    record.execution_id, source="provider_usage",
+                    llm_tokens=float(vector.llm_tokens))
+                # Record the口径 basis beside the value, so a legacy
+                # completion-only record and a full-口径 total are never
+                # pooled as if they were the same unit.
+                self.bank.annotate_features(
+                    record.execution_id,
+                    {"host_usage": breakdown} if breakdown else
+                    {"host_usage": {"note": "host reported no token usage"}})
+                stored = self.bank.get(record.execution_id)
+                prov = dict(stored.execution_features.get("cost_provenance")
+                            or {})
+                if isinstance(prov.get("llm_tokens"), dict) \
+                        and breakdown and breakdown.get("basis"):
+                    prov["llm_tokens"]["basis"] = breakdown["basis"]
+                    self.bank.annotate_features(
+                        record.execution_id, {"cost_provenance": prov})
+            record = self.bank.get(record.execution_id)
         if override:
-            self.bank.update_cost(record.execution_id,
-                                  mode=override_mode, **override)
+            # Backfilled dimensions are DECLARATIONS by default (the harness
+            # reports its own spend): provenance says so, and the amend
+            # refuses to clobber a framework-measured dimension without an
+            # explicit force.
+            self.bank.update_cost(record.execution_id, mode=override_mode,
+                                  source=override_source, force=override_force,
+                                  **override)
             record = self.bank.get(record.execution_id)
         self.bank.clear_pending(record.execution_id)
 

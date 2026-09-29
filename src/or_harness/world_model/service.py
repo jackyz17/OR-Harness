@@ -317,20 +317,17 @@ class PredictionService:
     @staticmethod
     def _call_cost(result: Dict[str, Any]) -> Optional[CostVector]:
         """The model call's OWN cost from provider usage (measured when the
-        provider reports it; unknown otherwise — never zero-as-cheap)."""
-        usage = result.get("usage")
-        latency = result.get("latency_s")
-        if not usage and latency is None:
-            return None
-        vector = CostVector(measured=set())
-        if usage:
-            tokens = usage.get("completion_tokens")
-            if isinstance(tokens, (int, float)) and tokens >= 0:
-                vector.llm_tokens = float(tokens)
-                vector.mark_measured("llm_tokens")
-        if latency is not None:
-            vector.latency_s = float(latency)
-            vector.mark_measured("latency_s")
+        provider reports it; unknown otherwise — never zero-as-cheap).
+
+        Delegates to the ONE token-accounting rule
+        (:func:`or_harness.world_model.usage.usage_cost_vector`): the token
+        figure is the provider's FULL口径 total (prompt + completion), with
+        reasoning/cached tokens kept as reported sub-facts and never added
+        again.
+        """
+        from or_harness.world_model.usage import usage_cost_vector
+        vector, _ = usage_cost_vector(result.get("usage"),
+                                      result.get("latency_s"))
         return vector
 
     # -- bind -------------------------------------------------------------------

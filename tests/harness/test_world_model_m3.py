@@ -214,8 +214,8 @@ class TestPlanning(HarnessTestCase):
         self.assertTrue(all(i and i.startswith("sp_") for i in ids))
         # Real planning spend charged ONCE to the decision action.
         decision = h.actions.get(plan["decision_action_id"])
-        self.assertEqual(decision.cost.llm_tokens, 100.0)  # 2 x 50
-        self.assertEqual(plan["planning_cost"]["cost"]["llm_tokens"], 100.0)
+        self.assertEqual(decision.cost.llm_tokens, 300.0)  # 2 x 150
+        self.assertEqual(plan["planning_cost"]["cost"]["llm_tokens"], 300.0)
         # Planning spend is NOT part of any candidate's utility.
         for candidate in plan["candidates"]:
             self.assertNotIn("llm_tokens",
@@ -354,9 +354,8 @@ class TestPlanning(HarnessTestCase):
         self.assertIn("prediction", scores["S02"]["incomparable"])
         self.assertEqual(plan["suggested"]["strategy_id"], "S01")
         decision = h.actions.get(plan["decision_action_id"])
-        # 50 (S01) + 10 (failed S02) = 60 tokens of REAL spend.
-        self.assertEqual(decision.cost.llm_tokens, 60.0)
-
+        # 150 (S01) + 10 (failed S02) = 160 tokens of REAL spend.
+        self.assertEqual(decision.cost.llm_tokens, 160.0)
     def test_all_predictions_invalid_reports_honestly(self):
         """When EVERY candidate's prediction is unusable, status must NOT
         be "ok" — the caller would mistake "model output unusable" for a
@@ -394,7 +393,7 @@ class TestPlanning(HarnessTestCase):
         decision = h.actions.get(plan["decision_action_id"])
         self.assertNotEqual(decision.status, "running")
         self.assertEqual(decision.status, "completed")
-        self.assertEqual(decision.cost.llm_tokens, 80.0)  # 50 + 30
+        self.assertEqual(decision.cost.llm_tokens, 180.0)  # 150 + 30
         # The valid candidate is still suggested.
         self.assertEqual(plan["suggested"]["strategy_id"], "S01")
 
@@ -756,7 +755,7 @@ class TestReviewFixes(HarnessTestCase):
         self.assertIn("time budget", plan["truncation_reason"])
         self.assertEqual(plan["model_calls_made"], 1)
         decision = h.actions.get(plan["decision_action_id"])
-        self.assertEqual(decision.cost.llm_tokens, 50.0)
+        self.assertEqual(decision.cost.llm_tokens, 150.0)
 
     def test_last_candidate_timeout_reports_truncated(self):
         """The LAST candidate's call exceeding the budget is caught by the

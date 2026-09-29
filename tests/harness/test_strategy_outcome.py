@@ -989,11 +989,11 @@ class TestExecutionBinding(StrategyCase):
         self.assertEqual(plan["model_calls_made"], 2)
         cost = plan["planning_cost"]
         self.assertTrue(cost, "failed calls' spend is real and recorded")
-        self.assertEqual(cost["cost"]["llm_tokens"], 100.0,
-                         "two failed calls of 50 tokens each, counted once")
+        self.assertEqual(cost["cost"]["llm_tokens"], 300.0,
+                         "two failed calls of 150 tokens each, counted once")
         # And charged ONCE to the decision action.
         decision = h.actions.get(plan["decision_action_id"])
-        self.assertEqual(decision.cost.llm_tokens, 100.0)
+        self.assertEqual(decision.cost.llm_tokens, 300.0)
 
 
 class TestCliStrategyCommands(StrategyCase):

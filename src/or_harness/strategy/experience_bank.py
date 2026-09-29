@@ -53,6 +53,19 @@ from or_harness.core.schema import (
 )
 from or_harness.core.storage import Store, StorageError
 
+#: Where a amended cost dimension's number CAME FROM. Kept per dimension so
+#: a real measurement is never indistinguishable from a declared estimate:
+#: - ``provider_usage``: a model provider reported it (a real observation);
+#: - ``agent_observed``: the harness really counted it (e.g. shell commands);
+#: - ``agent_estimate``: the harness DECLARED it (the ``--override`` default).
+#: Only ``provider_usage`` and ``agent_observed`` are measurements; an
+#: estimate is usable evidence but never treated as a measured truth.
+COST_SOURCES: tuple = ("provider_usage", "agent_observed", "agent_estimate")
+
+#: Dimensions the FRAMEWORK itself measures during a run. Backfilling one of
+#: these overwrites a real observation, so it takes an explicit ``force``.
+FRAMEWORK_MEASURED_DIMS: tuple = ("latency_s", "solver_runtime_s")
+
 
 class ExperienceBank:
     """Append-only store of :class:`ExecutionRecord` facts (the Execution
@@ -62,6 +75,23 @@ class ExperienceBank:
 
     def __init__(self, store: Store):
         self.store = store
+
+    @staticmethod
+    def _framework_measured_dims(rec: ExecutionRecord) -> set:
+        """The dimensions of one record the FRAMEWORK measured, not declared.
+
+        ``latency_s`` / ``solver_runtime_s`` are measured by the executor;
+        any dimension whose recorded provenance says ``provider_usage`` was
+        measured by a provider. Everything else is a declaration (or
+        unknown), so an amend may replace it freely.
+        """
+        dims = set(FRAMEWORK_MEASURED_DIMS)
+        provenance = rec.execution_features.get("cost_provenance") or {}
+        for dim, entry in provenance.items():
+            if isinstance(entry, dict) \
+                    and entry.get("source") == "provider_usage":
+                dims.add(str(dim))
+        return dims
 
     # -- writes -----------------------------------------------------------------
 
@@ -95,7 +125,9 @@ class ExperienceBank:
         return payload.execution_id
 
     def update_cost(self, execution_id: str, *,
-                    mode: str = "replace", **dimensions: float) -> ExecutionRecord:
+                    mode: str = "replace", source: str = "agent_estimate",
+                    force: bool = False,
+                    **dimensions: float) -> ExecutionRecord:
         """Backfill cost dimensions (harness-owned llm_tokens via --override).
 
         Appends nothing: this amends the fact's measured fields in place, which
@@ -108,6 +140,20 @@ class ExperienceBank:
         - ``increment``: the value is an additional measured amount within
           the record's declared scope.
 
+        ``source`` records WHERE the number came from (:data:`COST_SOURCES`):
+        ``provider_usage`` (the provider reported it), ``agent_estimate``
+        (a value the harness declared — the default for ``--override``), or
+        ``agent_observed`` (something the agent really counted). It is kept
+        per dimension in ``execution_features.cost_provenance`` so a reader
+        can tell a real measurement from a declaration — the two must never
+        be indistinguishable in the stored fact.
+
+        ``force`` guards the ONE dangerous case: overwriting a dimension the
+        FRAMEWORK itself measured (``latency_s`` / ``solver_runtime_s``, and
+        any dimension recorded with ``source="provider_usage"``). A plain
+        amend of such a dimension is refused (named) rather than silently
+        rewriting a real observation.
+
         Backfilled dimensions are marked measured. Cost feedback is
         re-computed against the frozen prediction snapshot whenever a
         snapshot exists: the stored summary never disagrees with the stored
@@ -117,12 +163,28 @@ class ExperienceBank:
         if mode not in ("replace", "increment"):
             raise StorageError(f"unknown backfill mode {mode!r} "
                                "(expected 'replace' or 'increment')")
+        if source not in COST_SOURCES:
+            raise StorageError(f"unknown cost source {source!r} "
+                               f"(expected one of {list(COST_SOURCES)})")
         unknown = set(dimensions) - set(COST_DIMENSIONS)
         if unknown:
             raise StorageError(f"unknown cost dimensions: {sorted(unknown)}")
         rec = self.get(execution_id)
         if rec is None:
             raise StorageError(f"unknown execution_id {execution_id!r}")
+        # Overwrite guard: a framework-measured dimension is a real
+        # observation. Rewriting it silently would destroy measured truth
+        # (and re-derive feedback against a number that never happened), so
+        # it takes an explicit ``force``.
+        framework_measured = self._framework_measured_dims(rec)
+        clobbered = sorted((set(dimensions) & framework_measured)
+                           & (set(rec.cost.measured_dims())
+                              | {"latency_s", "solver_runtime_s"}))
+        if clobbered and not force:
+            raise StorageError(
+                f"refusing to overwrite framework-measured dimension(s) "
+                f"{clobbered}: this record really measured them. Pass "
+                "force=True (or --force) to replace them deliberately")
         # A declared tool_calls below the sandbox's provable floor is not a
         # measurement, it is a contradiction: the executor demonstrably made
         # at least that many calls. Refuse it rather than store a number the
@@ -143,6 +205,15 @@ class ExperienceBank:
             else:
                 setattr(rec.cost, d, float(v))
         rec.cost.mark_measured(*dimensions)
+        # Provenance, per dimension: which dimensions were amended THIS
+        # call and where the number came from. Kept on the fact so a reader
+        # never has to guess whether ``llm_tokens`` is a real measurement or
+        # a declared estimate.
+        provenance = dict(rec.execution_features.get("cost_provenance") or {})
+        for d in dimensions:
+            provenance[d] = {"source": source, "mode": mode,
+                             "amended_at": time.time()}
+        rec.execution_features["cost_provenance"] = provenance
         # Recompute feedback whenever a prediction snapshot exists — not
         # only when feedback was already stored. A dimension that was
         # UNKNOWN at record time (so no feedback could be computed then)

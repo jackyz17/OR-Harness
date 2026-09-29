@@ -34,7 +34,7 @@ orx profile   --task t.json
 orx recall    --task t.json --top 3 --candidate my-method --candidate alt-method
 orx execute   --task t.json --strategy my-method --code solve.py --workspace ws --solver highs
 orx check-task exec_... --check '{"reference_objective": 10755, "integer": {"variables": ["x1", "x2"]}}'
-orx record    --execution exec.json --override llm_tokens=1840
+orx record    --execution exec.json --usage-file usage.json
 orx induce    --strategy my-method
 orx inspect   --bank strategic
 ```

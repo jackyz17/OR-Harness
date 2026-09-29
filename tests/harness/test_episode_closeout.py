@@ -193,7 +193,8 @@ class TestPreFixesHold(M4Case):
                    "strategy_id": "S01"}, "ep1")
         view = self.h.budget.view("t1", "ep1")
         consumption = view["consumption"]
-        self.assertEqual(consumption["total_cost"]["llm_tokens"], 50.0)
+        # FULL口径: 100 prompt + 50 completion = 150.
+        self.assertEqual(consumption["total_cost"]["llm_tokens"], 150.0)
         self.assertEqual(len(consumption["prediction_call_costs"]), 1)
 
     def test_planning_loop_stops_mid_decision_on_budget(self):
@@ -220,7 +221,7 @@ class TestPreFixesHold(M4Case):
         self.assertIn("budget exceeded", plan["truncation_reason"])
         # The one call's cost is charged ONCE to the decision action.
         decision = self.h.actions.get(plan["decision_action_id"])
-        self.assertEqual(decision.cost.llm_tokens, 50.0)
+        self.assertEqual(decision.cost.llm_tokens, 150.0)
 
     def test_malformed_baseline_is_isolated_to_one_candidate(self):
         # An illegal baseline kind used to raise out of

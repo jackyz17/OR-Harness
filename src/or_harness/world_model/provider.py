@@ -437,11 +437,12 @@ class HttpChatProvider(WorldModelProvider):
             content_kind = type(content).__name__
         return {
             "payload": payload,
-            "usage": {
-                "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": usage.get("completion_tokens"),
-                "reasoning_tokens": reasoning_tokens,
-            } if usage else None,
+            # The FULL usage object is passed through: the token口径
+            # (prompt + completion, with reasoning/cached as sub-facts) is
+            # decided ONCE in ``world_model.usage``, not here. Keeping
+            # ``prompt_tokens`` in the block is what closed the "completion
+            # only" gap — it was parsed and then discarded before.
+            "usage": dict(usage) if usage else None,
             "error": parse_error,
             "latency_s": latency,
             # Everything a reader needs to tell WHY a call produced no

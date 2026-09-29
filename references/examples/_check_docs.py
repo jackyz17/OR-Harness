@@ -42,6 +42,7 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/contract_roundtrip.py",
     "references/examples/method_evidence.py",
     "references/examples/linkage_attribution.py",
+    "references/examples/usage_accounting.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.
@@ -93,7 +94,12 @@ DOCUMENTED_FLAGS = [
     ("snapshot", ["--task", "--episode"]),
     ("action", ["--report", "--task", "--amend-cost", "--cost"]),
     ("budget", ["--task", "--episode", "--declare"]),
-    ("amend-cost", ["--override", "--mode"]),
+    ("record", ["--execution", "--from-staged", "--discard-staged",
+                "--record-file", "--override", "--override-mode",
+                "--override-source", "--force", "--usage-file",
+                "--usage-source", "--prediction", "--method",
+                "--method-actual"]),
+    ("amend-cost", ["--override", "--mode", "--source", "--force"]),
     ("retire", ["--entry", "--reason"]),
     ("exclude-execution", ["--execution", "--reason", "--superseded-by"]),
     ("restore-execution", ["--execution", "--reason"]),

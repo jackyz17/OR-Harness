@@ -257,6 +257,19 @@ class BudgetLedger:
                          "(pre-M1 or directly recorded): reported for "
                          "visibility, NOT charged to this episode"),
             }
+        # TOKEN口径: an episode-level ``llm_tokens`` total is only a
+        # meaningful number when every contributing record used the SAME
+        # token口径. A legacy completion-only figure and a full-口径 total
+        # are different units; summing them is a silent unit error. The
+        # ledger never SPLITS an episode total into per-attempt measured
+        # values (that would fabricate attempt-level truth); it reports the
+        # mixed-basis fact instead so a reader is warned.
+        try:
+            from or_harness.world_model.usage import token_basis_of
+            bases = sorted({b for b in (token_basis_of(r)
+                                        for r in recorded + staged) if b})
+        except Exception:  # noqa: BLE001 - the tally must never break
+            bases = []
         return {
             "task_id": task_id,
             "episode_id": episode_id,
@@ -274,6 +287,13 @@ class BudgetLedger:
                            for d in COST_DIMENSIONS if d != "latency_s"},
             "n_measured": n_measured,
             "unknown_dims": unknown_dims,
+            "token_basis": bases or None,
+            "token_basis_mixed": len(bases) > 1,
+            "token_basis_note": (
+                "the token figures in this total were recorded under "
+                f"different口径 {bases}: they are NOT the same unit and were "
+                "summed only for visibility. Compare or calibrate them "
+                "within one basis" if len(bases) > 1 else None),
             "aggregation_note": (
                 "cumulative dimensions summed over measured recorded AND "
                 "staged executions (deduplicated by execution_id) plus "

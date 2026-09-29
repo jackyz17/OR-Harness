@@ -735,20 +735,18 @@ def parse_capability_evolution_payload(
         trace.model_info["attempted_field_overrides"] = copy.deepcopy(
             overrides)
     if provider_result is not None:
-        usage = provider_result.get("usage") or {}
-        tokens = usage.get("completion_tokens")
-        latency = provider_result.get("latency_s")
-        vector = CostVector(measured=set())
-        if isinstance(tokens, (int, float)) and tokens >= 0:
-            vector.llm_tokens = float(tokens)
-            vector.mark_measured("llm_tokens")
-        if latency is not None:
-            vector.latency_s = float(latency)
-            vector.mark_measured("latency_s")
-        if vector.measured_dims():
+        # ONE token-accounting rule: the FULL口径 total (prompt +
+        # completion), reasoning/cached kept as reported sub-facts.
+        from or_harness.world_model.usage import usage_cost_vector
+        vector, breakdown = usage_cost_vector(
+            provider_result.get("usage"), provider_result.get("latency_s"))
+        if vector is not None:
             trace.call_cost = vector
-        if latency is not None:
-            trace.model_info["call_latency_s"] = round(float(latency), 4)
+        if breakdown is not None:
+            trace.model_info["call_usage"] = breakdown
+        if provider_result.get("latency_s") is not None:
+            trace.model_info["call_latency_s"] = round(
+                float(provider_result["latency_s"]), 4)
 
     if problems:
         status = "invalid"
@@ -944,18 +942,14 @@ class CapabilityEvolutionService:
             trace.model_info["failure"] = failure
         if provider_result is not None:
             diagnostics = provider_result.get("diagnostics") or {}
-            usage = provider_result.get("usage") or {}
-            tokens = usage.get("completion_tokens")
-            latency = provider_result.get("latency_s")
-            vector = CostVector(measured=set())
-            if isinstance(tokens, (int, float)) and tokens >= 0:
-                vector.llm_tokens = float(tokens)
-                vector.mark_measured("llm_tokens")
-            if latency is not None:
-                vector.latency_s = float(latency)
-                vector.mark_measured("latency_s")
-            if vector.measured_dims():
+            from or_harness.world_model.usage import usage_cost_vector
+            vector, breakdown = usage_cost_vector(
+                provider_result.get("usage"),
+                provider_result.get("latency_s"))
+            if vector is not None:
                 trace.call_cost = vector
+            if breakdown is not None:
+                trace.model_info["call_usage"] = breakdown
             if diagnostics.get("effective"):
                 trace.model_info["effective_parameters"] = (
                     dict(diagnostics["effective"]))

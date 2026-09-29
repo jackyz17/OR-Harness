@@ -329,7 +329,7 @@ class TestShadowLoop(HarnessTestCase):
         self.assertEqual(prediction.predicted["quality"], 0.8)
         self.assertIn("llm_tokens", prediction.predicted["cost"])
         # Call cost is the MODEL's own spend, measured from usage.
-        self.assertEqual(prediction.call_cost.llm_tokens, 50.0)
+        self.assertEqual(prediction.call_cost.llm_tokens, 150.0)
         self.assertIn("llm_tokens", prediction.call_cost.measured_dims())
         # 2. The real action runs (existing path, unchanged).
         record = h.execute(task, "S01", str(self._solve_script()),
@@ -436,7 +436,7 @@ class TestShadowLoop(HarnessTestCase):
         prediction = service.predict_outcome(_task(), _spec(), snap)
         self.assertEqual(prediction.status, "invalid_output")
         self.assertIsNotNone(prediction.call_cost)
-        self.assertEqual(prediction.call_cost.llm_tokens, 50.0)
+        self.assertEqual(prediction.call_cost.llm_tokens, 150.0)
 
     def test_unsupported_action_type(self):
         provider = _ScriptedProvider(_GOOD_PAYLOAD)
@@ -459,11 +459,11 @@ class TestShadowLoop(HarnessTestCase):
                           parent_action_id=begin["action_id"])
         action = h.actions.get(begin["action_id"])
         self.assertIn("llm_tokens", action.cost.measured_dims())
-        self.assertEqual(action.cost.llm_tokens, 50.0)
+        self.assertEqual(action.cost.llm_tokens, 150.0)
         # And it shows in the episode budget as the selection's own cost.
         view = h.budget_view("t1", episode_id="ep1")
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
-                         50.0)
+                         150.0)
 
     def test_predicted_state_changes_stay_hypothetical(self):
         """Requirement 6: predicted successor states never enter the real
@@ -581,7 +581,7 @@ class TestBugfixRegressions(HarnessTestCase):
         h.predict_outcome(task, _spec(), "ep1",
                           parent_action_id=begin["action_id"])
         action = h.actions.get(begin["action_id"])
-        self.assertEqual(action.cost.llm_tokens, 100.0)
+        self.assertEqual(action.cost.llm_tokens, 300.0)
 
     def test_ending_parent_without_cost_keeps_amended_spend(self):
         """P2: ending the parent action with no cost argument preserves
@@ -596,11 +596,11 @@ class TestBugfixRegressions(HarnessTestCase):
                      outcome={"strategy_id": "S01"})
         action = h.actions.get(begin["action_id"])
         self.assertIsNotNone(action.cost)
-        self.assertEqual(action.cost.llm_tokens, 50.0)
+        self.assertEqual(action.cost.llm_tokens, 150.0)
         # And the budget view still sees it.
         view = h.budget_view("t1", episode_id="ep1")
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
-                         50.0)
+                         150.0)
 
     def test_unparented_call_cost_enters_budget(self):
         """P2: a prediction with no parent action still counts in the
@@ -610,7 +610,7 @@ class TestBugfixRegressions(HarnessTestCase):
         h.predict_outcome(_task(), _spec(), "ep1")  # no parent action
         view = h.budget_view("t1", episode_id="ep1")
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
-                         50.0)
+                         150.0)
         self.assertEqual(
             len(view["consumption"]["prediction_call_costs"]), 1)
 
@@ -625,7 +625,7 @@ class TestBugfixRegressions(HarnessTestCase):
                           parent_action_id=begin["action_id"])
         view = h.budget_view("t1", episode_id="ep1")
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
-                         50.0)  # once, not twice
+                         150.0)  # once, not twice
         self.assertEqual(
             view["consumption"]["prediction_call_costs"], [])
 

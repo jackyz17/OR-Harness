@@ -500,7 +500,7 @@ class TestHonestFailures(M5Case):
             prediction.prediction_id)
         self.assertIsNotNone(stored, "a failed call is still a record")
         self.assertIsNotNone(stored.trace.call_cost)
-        self.assertEqual(stored.trace.call_cost.llm_tokens, 50.0)
+        self.assertEqual(stored.trace.call_cost.llm_tokens, 150.0)
 
 
 # ---------------------------------------------------------------------------
@@ -677,7 +677,7 @@ class TestComparison(M5Case):
         result = self.h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=10)
         cost = result["comparison_cost"]
-        self.assertEqual(cost["per_dim"]["llm_tokens"], 50.0)
+        self.assertEqual(cost["per_dim"]["llm_tokens"], 150.0)
         self.assertIn("separate from the predicted learning cost",
                       cost["note"])
 
@@ -1613,7 +1613,7 @@ class TestReviewRoundFixes(M5Case):
         view = h.budget_view("t_only")
         self.assertEqual(view["status"], "exceeded")
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
-                         150.0)
+                         180.0)
         self.assertEqual(
             len(view["consumption"]["prediction_call_costs"]), 3)
 
@@ -2067,7 +2067,7 @@ class TestReviewRoundTwo(M5Case):
         self.assertEqual(len(consumption["prediction_call_costs"]), 3)
         self.assertIsNone(consumption["unattributed_prediction_costs"],
                           "an episode-attributed call is not unattributed")
-        self.assertEqual(consumption["total_cost"]["llm_tokens"], 150.0)
+        self.assertEqual(consumption["total_cost"]["llm_tokens"], 180.0)
 
     def test_a_call_with_no_episode_stays_unattributed(self):
         h = ORHarness(home=self.home, world_model=StubProvider(

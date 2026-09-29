@@ -612,6 +612,16 @@ def cmd_record(args) -> int:
         override = None
         if args.override:
             override = _parse_dimension_pairs(args.override)
+        # HOST USAGE: an attempt-level usage report the outer framework
+        # captured (its hook / log / storage). The framework never guesses
+        # tokens; a supplied report is the REAL spend, recorded with the
+        # full口径 (prompt + completion) and marked as a host observation.
+        host_usage = None
+        if getattr(args, "usage_file", None):
+            raw = _load_json_arg(args.usage_file)
+            from or_harness.world_model.usage import normalize_host_usage
+            host_usage = normalize_host_usage(
+                raw, source=getattr(args, "usage_source", None))
         prediction = None
         if args.prediction:
             from or_harness.core.schema import PredictionSnapshot
@@ -625,6 +635,12 @@ def cmd_record(args) -> int:
             prediction = PredictionSnapshot.from_dict(raw)
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
+                          override_source=getattr(args, "override_source",
+                                                 "agent_estimate"),
+                          override_force=bool(getattr(args,
+                                                      "override_force",
+                                                      False)),
+                          host_usage=host_usage,
                           prediction=prediction,
                           method=(_load_json_arg(args.method)
                                   if getattr(args, "method", None) else None),
@@ -725,7 +741,12 @@ def cmd_amend_cost(args) -> int:
                          f"expected any of {list(COST_DIMENSIONS)}")
         try:
             record = h.bank.update_cost(args.execution_id,
-                                        mode=args.mode, **dimensions)
+                                        mode=args.mode,
+                                        source=getattr(args, "source",
+                                                       "agent_estimate"),
+                                        force=bool(getattr(args, "amend_force",
+                                                          False)),
+                                        **dimensions)
         except StorageError as exc:
             return _fail(str(exc))
         measured = sorted(record.cost.measured_dims())
@@ -2339,6 +2360,30 @@ def build_parser() -> argparse.ArgumentParser:
                         "the value IS the measurement, re-applying never "
                         "double-counts) or 'increment' (an additional measured "
                         "amount within the record's scope)")
+    p.add_argument("--override-source", dest="override_source",
+                   default="agent_estimate",
+                   choices=["provider_usage", "agent_observed",
+                            "agent_estimate"],
+                   help="where the backfilled number came from (recorded per "
+                        "dimension): 'provider_usage' (the provider reported "
+                        "it), 'agent_observed' (you really counted it) or "
+                        "'agent_estimate' (default — you DECLARED it)")
+    p.add_argument("--force", action="store_true", dest="override_force",
+                   help="allow an override to overwrite a dimension the "
+                        "FRAMEWORK measured (latency_s / solver_runtime_s); "
+                        "refused by default so a real observation is never "
+                        "silently rewritten")
+    p.add_argument("--usage-file", dest="usage_file", default=None,
+                   metavar="JSON|PATH",
+                   help="the outer framework's ATTEMPT-level usage report "
+                        "(its hook/log/storage output: prompt_tokens, "
+                        "completion_tokens, reasoning_tokens, cached_tokens, "
+                        "model, and optionally a per-call 'calls' list). "
+                        "Recorded with the full token口径 and marked as a "
+                        "host observation — the REAL spend, not an estimate")
+    p.add_argument("--usage-source", dest="usage_source", default=None,
+                   help="which host produced --usage-file (e.g. 'openclaw' "
+                        "'hermes'); recorded so the figure is traceable")
     p.add_argument("--prediction", default=None,
                    help="pre-execution cost prediction snapshot (the JSON "
                         "printed by `orx predict`) actually used for this "
@@ -2405,6 +2450,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="'replace' (default, idempotent — the value IS the "
                         "measurement) or 'increment' (an additional measured "
                         "amount)")
+    p.add_argument("--source", default="agent_estimate",
+                   choices=["provider_usage", "agent_observed",
+                            "agent_estimate"],
+                   help="where the number came from: 'provider_usage' (the "
+                        "provider reported it), 'agent_observed' (you "
+                        "really counted it) or 'agent_estimate' (default — "
+                        "you DECLARED it). Recorded per dimension so a real "
+                        "measurement is never indistinguishable from an "
+                        "estimate")
+    p.add_argument("--force", action="store_true",
+                   dest="amend_force",
+                   help="allow overwriting a dimension the FRAMEWORK measured "
+                        "(latency_s / solver_runtime_s / a provider-reported "
+                        "dimension); refused by default so a real observation "
+                        "is never silently rewritten")
     p.set_defaults(func=cmd_amend_cost)
 
     p = sub.add_parser(
