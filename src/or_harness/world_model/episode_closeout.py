@@ -71,6 +71,13 @@ from or_harness.core.schema import (
     task_check_state,
     task_effective_quality,
 )
+from or_harness.world_model.attribution import (
+    EVALUATION_DIMENSIONS,
+    binding_attribution,
+    blocked_dimensions,
+    eligibility_for,
+    method_deviation_note,
+)
 
 #: Version of the close-out record schema.
 EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
@@ -102,10 +109,14 @@ EPISODE_TERMINAL_STATES = ("completed", "failed", "aborted",
 DEFAULT_MIN_CALIBRATION_SAMPLES = 5
 
 #: Field eligibility values. ``evaluable`` is the only one that enters
-#: statistics; every other value says WHY it does not.
+#: statistics; every other value says WHY it does not. ``identity_mismatch``
+#: is a KNOWN disagreement (the run was not the predicted run);
+#: ``identity_unknown`` is an UNCONFIRMED field that still blocks the
+#: dimension (the approach could not be confirmed). The two are different
+#: facts and never share a label.
 FIELD_ELIGIBILITY = ("evaluable", "missing", "unverified", "scope_mismatch",
-                     "identity_mismatch", "not_predicted", "unobserved",
-                     "unreliable_label")
+                     "identity_mismatch", "identity_unknown",
+                     "not_predicted", "unobserved", "unreliable_label")
 
 #: The benefit metrics this build can actually OBSERVE from an execution.
 #:
@@ -596,6 +607,12 @@ class RealOutcomeSummary:
     verification: Dict[str, Any] = field(default_factory=dict)
     #: Per-field eligibility: field -> (eligibility, reason).
     eligibility: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    #: Per-DIMENSION attribution of the binding's identity problems
+    #: (``binding_attribution``): which comparison blocks are blocked and
+    #: why. A known disagreement on the execution CONDITIONS blocks the
+    #: outcome dimensions and preserves cost; an unconfirmed config key
+    #: blocks nothing. The close-out reads THIS, never a blanket verdict.
+    attribution: Dict[str, Any] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -615,6 +632,7 @@ class RealOutcomeSummary:
             "observed_events": copy.deepcopy(self.observed_events),
             "verification": copy.deepcopy(self.verification),
             "eligibility": copy.deepcopy(self.eligibility),
+            "attribution": copy.deepcopy(self.attribution),
             "notes": list(self.notes),
         }
 
@@ -667,20 +685,30 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     )
     mismatch = info.get("binding_mismatch") or {}
     unknown = info.get("binding_unknown") or {}
-    if mismatch:
-        for key in mismatch:
-            summary.eligibility[f"identity.{key}"] = {
-                "eligibility": "identity_mismatch",
-                "reason": "the executed action differs from the predicted "
-                          "candidate on this field",
-            }
-    if unknown:
-        for key in unknown:
-            summary.eligibility[f"identity.{key}"] = {
-                "eligibility": "identity_mismatch",
-                "reason": "the executed action could not confirm this "
-                          "identity field (unknown, never a match)",
-            }
+    # Per-DIMENSION attribution. A binding problem blocks only the
+    # comparison it really invalidates: a known disagreement on the
+    # execution CONDITIONS (solver, strategy, effective input, a config
+    # value) blocks the outcome dimensions and PRESERVES cost — a different
+    # condition really did run and really did cost what it cost. An
+    # unconfirmed (unknown) field blocks only the approach dimension it
+    # names; an unreported ``time_limit`` blocks nothing at all. A
+    # PERFORMED method that differs from the plan blocks the BENEFIT only.
+    summary.attribution = binding_attribution(
+        mismatch, unknown, info.get("method_observed"))
+    blocked = summary.attribution.get("blocked") or {}
+    for dim in EVALUATION_DIMENSIONS:
+        entries = blocked.get(dim) or []
+        if not entries:
+            continue
+        fields = ", ".join(sorted({str(e.get("field")) for e in entries}))
+        summary.eligibility[f"identity.{dim}"] = {
+            "eligibility": eligibility_for(entries),
+            "reason": (f"the binding could not establish {fields} for this "
+                       "comparison: this part of the sample is not scored "
+                       "(the real spend is still kept wherever the "
+                       "comparison does not depend on that field)"),
+        }
+    summary.notes.extend(summary.attribution.get("notes") or [])
     if action_id is None:
         summary.eligibility["scope"] = {
             "eligibility": "missing",
@@ -1359,6 +1387,18 @@ class StrategyPredictionEvaluation:
     #: "the whole prediction is scoreable". The individual blocks above
     #: remain the authority; this is the index over them.
     eligibility_summary: Dict[str, Any] = field(default_factory=dict)
+    #: Which comparison blocks the binding's identity problems blocked, and
+    #: by which fields: ``{dimension: [{field, kind}, ...]}``. Only the
+    #: dimensions that really depend on an unresolved field appear; a
+    #: dimension absent from it was evaluated normally. This is what makes
+    #: a missing execution receipt a caveat instead of a discarded sample.
+    attribution: Dict[str, Any] = field(default_factory=dict)
+    #: A performed method that differs from the planned method
+    #: (``compare_methods`` verdict ``mismatch``), or None. Reported
+    #: separately so "the plan was not carried out" is visible without
+    #: reading the identity bookkeeping. It is NOT an identity problem: the
+    #: attempt really happened, it simply is not the planned method's answer.
+    method_deviation: Optional[Dict[str, Any]] = None
     #: Whether ANY part of this prediction may enter the calibration sample
     #: (``state == "evaluated"``). Deliberately narrow: being BOUND (the
     #: prediction is linked to a real action) is a different, weaker fact
@@ -1386,6 +1426,8 @@ class StrategyPredictionEvaluation:
             # gains a SECOND, drifting copy of the same state.
             "eligibility": (copy.deepcopy(self.eligibility_summary)
                             or self._derive_eligibility()),
+            "attribution": copy.deepcopy(self.attribution),
+            "method_deviation": copy.deepcopy(self.method_deviation),
             "calibratable": bool(self.calibratable or self._derive_calibratable()),
             "exclusion_reasons": list(self.exclusion_reasons),
             "notes": list(self.notes),
@@ -1455,6 +1497,9 @@ class StrategyPredictionEvaluation:
             interval=copy.deepcopy(dict(data.get("interval") or {})),
             eligibility_summary=copy.deepcopy(
                 dict(data.get("eligibility") or {})),
+            attribution=copy.deepcopy(dict(data.get("attribution") or {})),
+            method_deviation=(copy.deepcopy(data.get("method_deviation"))
+                              if data.get("method_deviation") else None),
             calibratable=bool(data.get("calibratable", False)),
             exclusion_reasons=[str(r) for r in
                                (data.get("exclusion_reasons") or [])],
@@ -1509,8 +1554,39 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         scope=prediction.candidate.scope,
         model_identity=_prediction_model_identity(prediction),
     )
-    identity_problems = {k: v for k, v in summary.eligibility.items()
-                         if k.startswith("identity.")}
+    # Per-DIMENSION attribution, not a blanket verdict. ``blocked`` names
+    # only the comparisons an identity problem really invalidates; a
+    # dimension absent from it is free to be evaluated. This is what keeps
+    # a missing execution receipt (an unconfirmed ``time_limit``) from
+    # discarding a real, unambiguous observation.
+    attribution = (summary.attribution
+                   or binding_attribution(
+                       (prediction.trace.model_info or {}).get(
+                           "binding_mismatch") or {},
+                       (prediction.trace.model_info or {}).get(
+                           "binding_unknown") or {},
+                       (prediction.trace.model_info or {}).get(
+                           "method_observed")))
+    blocked = blocked_dimensions(attribution)
+    evaluation.attribution = copy.deepcopy(blocked)
+    # A method deviation is REPORTED on the evaluation in two places: the
+    # dimension map above (which blocks the benefit), and the flat
+    # ``method_deviation`` block below, so a reader does not have to read
+    # the identity bookkeeping to learn that the plan was not carried out.
+    evaluation.method_deviation = copy.deepcopy(
+        attribution.get("deviation"))
+    if evaluation.method_deviation is not None:
+        evaluation.notes.append(method_deviation_note(
+            evaluation.method_deviation))
+
+    def _blocked(dim: str) -> bool:
+        return bool(blocked.get(dim))
+
+    def _block_reason(dim: str) -> str:
+        entries = blocked.get(dim) or []
+        fields = ", ".join(sorted({str(e.get("field")) for e in entries}))
+        return (f"the binding could not establish {fields} for this "
+                "comparison")
     n_compared = 0
 
     # -- benefit -----------------------------------------------------------
@@ -1537,11 +1613,13 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "reason": entry.get("reason", "no benefit observation"),
             **declared_yardstick,
         }
-    elif identity_problems:
+    elif _blocked("benefit"):
         evaluation.benefit = {
-            "eligibility": "identity_mismatch",
-            "reason": "the binding identity is not established: the real "
-                      "outcome may not be this prediction's truth",
+            "eligibility": eligibility_for(blocked["benefit"]),
+            "reason": _block_reason("benefit") + ": the real outcome may "
+                      "not be this prediction's truth",
+            "identity_fields": sorted({str(e.get("field"))
+                                       for e in blocked["benefit"]}),
             **declared_yardstick,
         }
     else:
@@ -1584,10 +1662,13 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "eligibility": "not_predicted",
             "reason": "the prediction carried no cost",
         }
-    elif identity_problems:
+    elif _blocked("cost"):
         evaluation.cost = {
-            "eligibility": "identity_mismatch",
-            "reason": "the binding identity is not established",
+            "eligibility": eligibility_for(blocked["cost"]),
+            "reason": _block_reason("cost") + ": the real spend is not "
+                      "this prediction's cost",
+            "identity_fields": sorted({str(e.get("field"))
+                                       for e in blocked["cost"]}),
         }
     else:
         per_dim: Dict[str, Any] = {}
@@ -1671,11 +1752,13 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "unscored": [],
             "observed_units": observed_units,
         }
-    elif identity_problems:
+    elif _blocked("risk"):
         evaluation.risk = {
-            "eligibility": "identity_mismatch",
-            "reason": "the binding identity is not established: the real "
-                      "outcome may not be this prediction's truth",
+            "eligibility": eligibility_for(blocked["risk"]),
+            "reason": _block_reason("risk") + ": the real outcome may "
+                      "not be this prediction's truth",
+            "identity_fields": sorted({str(e.get("field"))
+                                       for e in blocked["risk"]}),
             "scored": [],
             "unscored": [],
             "observed_units": observed_units,
@@ -1740,7 +1823,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
 
     # -- interval ------------------------------------------------------------
     if benefit is not None and benefit.interval is not None:
-        if "observed" in summary.benefit and not identity_problems:
+        if "observed" in summary.benefit and not _blocked("interval"):
             lo, hi = benefit.interval
             observed = summary.benefit["observed"]
             evaluation.interval = {
@@ -2562,9 +2645,11 @@ def build_calibration_summary(harness, *,
         # one is only the fallback when re-derivation is impossible.
         evaluation, live_changed = _live_evaluation(harness, stored_evaluation)
         if live_changed is not None \
-                and live_changed.get("kind") == "live_rederivation":
-            # A field moved but the sample still counts: reported, not
-            # excluded. The corrected benefit is what enters the mean.
+                and live_changed.get("kind") in ("live_rederivation",
+                                                 "rule_rebuild"):
+            # A field moved (or the corrected rules re-scored a stored
+            # `excluded` sample) but the sample still counts: reported, not
+            # excluded. The corrected evaluation is what enters the means.
             corrected.append({**live_changed,
                               "counted": True,
                               "evaluation_id": stored_evaluation.evaluation_id})
@@ -3033,20 +3118,52 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
         }
     if (stored.risk or {}).get("scored") != (derived.risk or {}).get("scored"):
         changed["risk"] = {"note": "risk labels moved with the live facts"}
+    # A RULE REBUILD: the corrected attribution rules can move a stored
+    # evaluation's STATE without any new fact arriving — an evaluation that
+    # was `excluded` because a single unconfirmed config key used to
+    # discard the whole sample now scores the cost dimension instead. This
+    # is the "rebuild from retained facts and corrected rules" path: it is
+    # reported with its BASIS, the prediction is never rewritten, and
+    # repeated reads never add a second sample (the derivation is read-time
+    # and keyed by evaluation id).
+    stored_state = str(stored.state)
+    derived_state = str(derived.state)
+    if stored_state != derived_state:
+        changed["state"] = {
+            "stored_state": stored_state,
+            "derived_state": derived_state,
+            "stored_eligibility": copy.deepcopy(
+                stored.eligibility_summary
+                or stored._derive_eligibility()),
+            "derived_eligibility": copy.deepcopy(
+                derived.eligibility_summary
+                or derived._derive_eligibility()),
+            "basis": ("the identity-attribution rules changed: a field that "
+                      "used to discard the WHOLE sample now blocks only the "
+                      "dimension it really invalidates (an unconfirmed "
+                      "config key no longer erases an unambiguous "
+                      "observation)"),
+        }
     if not changed:
         return derived, None
     return derived, {
         "evaluation_id": stored.evaluation_id,
-        "kind": "live_rederivation",
+        "kind": ("rule_rebuild" if "state" in changed
+                 else "live_rederivation"),
         "fields": sorted(changed),
         "detail": changed,
-        "reason": ("the sample was re-derived from the current facts: a "
-                   "task-result verdict changed after the evaluation was "
-                   "written. The stored evaluation is kept as history; the "
-                   "changed field is used for calibration, and the measured "
-                   "cost is preserved"),
-        "stored_state": stored.state,
-        "derived_state": derived.state,
+        "reason": (
+            "the sample was re-derived from the current facts and the "
+            "corrected rules: the stored evaluation is kept as history, the "
+            "derived record is what calibration counts, and the measured "
+            "cost is preserved"
+            + ("; the stored STATE changed because the attribution rules "
+               "now block only the dimensions a problem really invalidates"
+               if "state" in changed else
+               ". A task-result verdict changed after the evaluation was "
+               "written")),
+        "stored_state": stored_state,
+        "derived_state": derived_state,
     }
 
 

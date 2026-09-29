@@ -523,9 +523,11 @@ def cmd_execute(args) -> int:
                     out["prediction_binding"] = binding
                     summary += (f" Prediction {prediction_id} was associated "
                                 f"before the run and scored WITH MISMATCH "
-                                f"({mismatch}): the comparison covers only "
-                                "matching parts; mismatched fields are "
-                                "recorded, never scored.")
+                                f"({mismatch}): "
+                                + (_attribution_summary(info)
+                                   or "the comparison covers only matching "
+                                      "parts; mismatched fields are "
+                                      "recorded, never scored."))
                 else:
                     out["prediction_binding"] = binding
                     summary += (f" Prediction {prediction_id} associated "
@@ -533,7 +535,9 @@ def cmd_execute(args) -> int:
                                 + (f" (predicted config confirmed: "
                                    f"{sorted(real_config)})"
                                    if real_config else "")
-                                + (f" (unconfirmed fields: {unknown})"
+                                + (f" (unconfirmed fields: {unknown}; a "
+                                   "missing receipt is a caveat, not a "
+                                   "discard)"
                                    if unknown else "")
                                 + "; the close-out will evaluate it.")
             else:
@@ -1148,6 +1152,33 @@ def cmd_predict_strategy(args) -> int:
         h.close()
 
 
+def _attribution_summary(info: Dict[str, Any]) -> str:
+    """A short, honest sentence about which comparisons a binding's
+    unconfirmed/mismatched fields actually block.
+
+    Reuses the SAME attribution table the close-out uses, so the CLI never
+    tells the agent something the evaluation layer will contradict.
+    """
+    from or_harness.world_model.attribution import (
+        binding_attribution,
+        blocked_dimensions,
+    )
+    attribution = binding_attribution(
+        info.get("binding_mismatch") or {},
+        info.get("binding_unknown") or {},
+        info.get("method_observed"))
+    blocked = blocked_dimensions(attribution)
+    if not blocked:
+        return ""
+    parts = []
+    for dim, entries in sorted(blocked.items()):
+        fields = sorted({str(e.get("field")) for e in entries})
+        parts.append(f"{dim} (blocked by {', '.join(fields)})")
+    return ("this blocks only " + "; ".join(parts) +
+            " — the rest of the sample is still scored, and the real spend "
+            "is kept wherever the comparison does not need that field.")
+
+
 def cmd_bind_strategy(args) -> int:
     """Bind a strategy-outcome prediction to the real action that ran."""
     h = _harness(args)
@@ -1161,11 +1192,16 @@ def cmd_bind_strategy(args) -> int:
                        "comparable — the executed action differs from the "
                        "predicted candidate.")
         elif info.get("binding_unknown"):
+            unknown = info["binding_unknown"]
+            blocked = _attribution_summary(info)
             summary = (f"Prediction {args.prediction} bound to action "
-                       f"{args.action} with UNKNOWN identity fields: "
-                       f"{sorted(info['binding_unknown'])}. Unknown is not "
-                       "a match: the fields that depend on them stay "
-                       "unevaluable at close-out.")
+                       f"{args.action} with UNCONFIRMED identity fields: "
+                       f"{sorted(unknown)}. A missing receipt is a caveat, "
+                       "not a discard: "
+                       + (blocked if blocked else
+                          "nothing is blocked — the whole sample is scored, "
+                          "with the unconfirmed fields reported."))
+            summary += " (`orx close-episode` reports each part.)"
         elif prediction.trace.comparable:
             summary = (f"Prediction {args.prediction} bound to action "
                        f"{args.action} and COMPARABLE: the real execution "

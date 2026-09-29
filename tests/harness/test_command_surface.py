@@ -1306,7 +1306,12 @@ class TestPreExecutionAssociation(Base):
         """The association is persisted the moment the action exists: an
         interrupted execution still shows which attempt a prediction was
         testing. Observed by a probe executor that captures the action
-        BEFORE running anything."""
+        BEFORE running anything.
+
+        When the executor raises WITHOUT producing an execution fact, the
+        claim is RELEASED: the interrupted action really failed, so the
+        prediction is not stranded on it (it stays testable against a real
+        attempt, and nothing is double-counted)."""
         provider = CountingProvider()
         h = self.make_harness(provider)
         prediction = self._predict(h)
@@ -1330,18 +1335,24 @@ class TestPreExecutionAssociation(Base):
                       prediction_id=prediction.prediction_id)
         action = seen.get("action")
         self.assertIsNotNone(action, "the action exists during the run")
+        # The link really existed BEFORE the run — captured mid-flight.
         self.assertEqual(action.params.get("prediction_id"),
                          prediction.prediction_id)
         self.assertIsNotNone(action.params.get("prediction_bound_at"))
-        # And the prediction itself carries the forward link.
-        stored = h.strategy_predictions.get(prediction.prediction_id)
-        self.assertEqual(stored.trace.model_info.get(
-            "association_phase"), "linked_before_execution")
-        self.assertEqual(stored.trace.model_info.get(
-            "bound_action_id_before_execution"), action.action_id)
         # The interrupted action is NOT left running forever.
         ended = h.actions.get(action.action_id)
         self.assertEqual(ended.status, "failed")
+        # No execution fact was produced, so the claim was released: the
+        # prediction is NOT stranded on the dead action.
+        self.assertIsNone(ended.params.get("prediction_id"))
+        self.assertIsNotNone(ended.params.get("prediction_released_at"))
+        stored = h.strategy_predictions.get(prediction.prediction_id)
+        info = stored.trace.model_info
+        self.assertEqual(info.get("association_phase"),
+                         "released_no_execution")
+        self.assertIsNone(info.get("bound_action_id"))
+        self.assertEqual((info.get("claim_released") or {}).get("action_id"),
+                         action.action_id)
 
     def test_a_claimed_prediction_is_refused(self):
         """One prediction corresponds to ONE real attempt: reusing it for a

@@ -54,6 +54,7 @@ from or_harness.strategy.vector_recall import (
 from or_harness.world_model.actions import (
     ActionLog,
 )
+from or_harness.world_model.attribution import check_candidate_config
 from or_harness.world_model.budget import BudgetLedger
 from or_harness.world_model.contracts import (
     LEGACY_CONTRACT_VERSION,
@@ -1446,6 +1447,19 @@ class ORHarness:
             candidate_ref = CandidateRef.from_dict(candidate)
         else:
             candidate_ref = copy.deepcopy(candidate)
+        # ENTRY-POINT FIELD DISCIPLINE. A METHOD placed in ``config`` is
+        # folded into the candidate's ``method`` field (the framework has
+        # ONE field for the approach); a key that names no execution
+        # parameter at all is refused NOW — never after an attempt has been
+        # spent on a sample that could only ever read as an unknown.
+        entry = check_candidate_config(candidate_ref.config,
+                                       candidate_ref.method)
+        if entry["errors"]:
+            raise ValueError(
+                "candidate.config is misused: " + "; ".join(entry["errors"]))
+        candidate_ref.config = entry["config"]
+        candidate_ref.method = entry["method"]
+        config_notes = list(entry["notes"])
         task_id = str(task.get("task_id", ""))
         if candidate_ref.task_id and candidate_ref.task_id != task_id:
             raise ValueError(
@@ -1496,6 +1510,12 @@ class ORHarness:
         # change to the task, its data, the CIR or the candidate still is.
         prediction.trace.model_info["problem_identity_digest"] = (
             problem_identity_version(task, cir))
+        if config_notes:
+            # A normalization that was performed rather than refused is
+            # RECORDED on the prediction, so a reader can see the field was
+            # re-homed instead of silently changing the candidate.
+            prediction.trace.model_info["config_normalized"] = config_notes
+            prediction.notes.extend(config_notes)
         service._save(prediction)
         return prediction
 
@@ -4924,6 +4944,50 @@ class ORHarness:
                 return action.action_id
         return None
 
+    def _release_prediction_claim(self, prediction_id: str,
+                                  action_id: str, *, reason: str) -> None:
+        """Release a claim whose action produced NO execution fact.
+
+        An executor-level exception ends the action ``failed`` with no
+        linked execution. The prediction's claim would then point at a
+        dead action FOREVER: the close-out could only read it as "the bound
+        action has no linked execution", and no re-bind was possible (the
+        forward link blocked it). Releasing the claim lets the SAME
+        prediction be tested against a real attempt — the interrupted
+        action never produced a result, so nothing is unattributed and no
+        sample is double-counted.
+
+        Best-effort and idempotent: the action really failed, the reason is
+        recorded on the action's params, and a bookkeeping failure must
+        never mask the original exception.
+        """
+        try:
+            self.actions.amend_action_params(
+                action_id, prediction_id=None, prediction_released_at=None)
+            self.actions.amend_action_params(
+                action_id, prediction_released_at=time.time(),
+                prediction_release_reason=str(reason))
+        except Exception:  # noqa: BLE001 - never mask the caller's error
+            return
+        try:
+            prediction = self.strategy_predictions.get(prediction_id)
+            if prediction is None:
+                return
+            info = prediction.trace.model_info
+            if info.get("bound_action_id") != action_id:
+                return
+            info.pop("bound_action_id", None)
+            info.pop("bound_action_id_before_execution", None)
+            info["association_phase"] = "released_no_execution"
+            info["claim_released"] = {
+                "action_id": action_id,
+                "reason": str(reason),
+                "released_at": time.time(),
+            }
+            self.strategy_predictions._save(prediction)
+        except Exception:  # noqa: BLE001 - never mask the caller's error
+            return
+
     def execute(self, task: Dict[str, Any], strategy_id: Optional[str] = None,
                 code_path: str = "", workspace: str = "", *, solver: Optional[str] = None,
                 episode_id: Optional[str] = None,
@@ -5091,6 +5155,16 @@ class ORHarness:
                                       "whatever was already amended onto it")})
             except Exception:  # noqa: BLE001 - never mask the original error
                 pass
+            # The claim was written BEFORE the run and the action produced
+            # NO execution fact. Leaving the claim would strand the
+            # prediction on a dead action forever (unbindable, and
+            # unscoreable). Release it so the SAME prediction can be tested
+            # against a real attempt; the interrupted action really failed,
+            # so nothing is left unattributed.
+            if prediction_id:
+                self._release_prediction_claim(
+                    str(prediction_id), action.action_id,
+                    reason=f"{type(exc).__name__}: {exc}")
             raise
         # A legacy executor (one written before the method fields existed)
         # cannot accept ``method_planned``; attach it here so the plan is
