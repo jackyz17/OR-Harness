@@ -47,6 +47,7 @@ from or_harness.world_model.contracts import (
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
+    CapabilityGain,
     EvidenceRef,
     ExpectedCost,
     PredictionTrace,
@@ -250,6 +251,26 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "on (e.g. \"retrieval_evidence.hits[0]\", \"capability.sources.m\").\n"
     "- unsupported_fields: object {field: reason} for fields you cannot or "
     "will not predict.\n"
+    "- capability_gain: object — the POTENTIAL capability gain (H+) of this "
+    "candidate, predicted in THIS SAME answer. It is EXPLANATORY: it never "
+    "ranks the candidates by itself and it is NEVER a claim that the "
+    "harness got stronger. Omit it entirely when you see no credible gain "
+    "(an empty block means \"no gain claimed\", never a default positive). "
+    "Shape: {\"claim\": short text of WHAT capability could improve, "
+    "\"applies_to\": [text: which problems/structures the gain would apply "
+    "to], \"expected_changes\": [{\"metric\": text, \"direction\": "
+    "increase|decrease|unchanged|unknown, \"value\": number?, \"unit\": "
+    "text?, \"value_kind\": absolute|relative?, \"beneficial_direction\": "
+    "increase|decrease|either, \"baseline\": {...}?}] each in the metric's "
+    "OWN unit — do NOT compress them into a 0-1 score, "
+    "\"evidence_required\": [text: the REAL evidence / reuse / verification "
+    "that would confirm the gain], \"verification_conditions\": "
+    "[{\"condition\": text}], \"degradation_risk\": {\"events\": [{...}]} "
+    "(what could make it WORSE), \"uncertainty\": [text: what you are "
+    "unsure about and what might yield NO gain], \"basis\": [text]}. A new "
+    "method, one more experience entry, or having tried and failed once is "
+    "NOT by itself a capability gain: say what the improvement IS, on which "
+    "metric, and how it would be confirmed.\n"
     "CALIBRATION EVIDENCE: the context may carry a "
     "`strategy_outcome_calibration` block describing how THIS model's past "
     "predictions turned out. Use it to adjust your numbers, and read it "
@@ -401,7 +422,8 @@ def build_strategy_outcome_request(
                                else copy.deepcopy(BENEFIT_CONVENTION)),
         "output_contract": {
             "allowed_fields": ["benefit", "cost", "risk", "uncertainty",
-                               "evidence_basis", "unsupported_fields"],
+                               "capability_gain", "evidence_basis",
+                               "unsupported_fields"],
             "fixed_by_framework": ["task", "candidate", "scope",
                                    "evidence sources", "benefit convention"],
             "note": ("the model fills prediction content only; it may not "
@@ -690,6 +712,29 @@ def parse_strategy_outcome_payload(
         unsupported.update({str(k): str(v) for k, v in
                             raw_unsupported.items()})
 
+    # -- capability gain (H+) -------------------------------------------------
+    # EXPLANATORY only: it is parsed and recorded, NEVER scored and NEVER
+    # written into the harness capability evidence. A MISSING block is an
+    # honest "no gain claimed" and must not invalidate the rest of the
+    # prediction — an H+ the model omitted is not a wrong prediction about
+    # benefit/cost/risk.
+    capability_gain: Optional[CapabilityGain] = None
+    raw_gain = payload.get("capability_gain")
+    if raw_gain is not None:
+        if not isinstance(raw_gain, dict):
+            problems.append("capability_gain must be a JSON object")
+        else:
+            try:
+                capability_gain = CapabilityGain.from_dict(raw_gain)
+            except (ValueError, TypeError) as exc:
+                problems.append(f"capability_gain: {exc}")
+                capability_gain = None
+            else:
+                if not capability_gain.claimed:
+                    notes.append(
+                        "capability_gain was present but empty: recorded as "
+                        "'no gain claimed', never a default positive")
+
     has_content = any(value is not None for value in
                       (benefit, cost, risk, uncertainty))
     trace = PredictionTrace(
@@ -740,6 +785,7 @@ def parse_strategy_outcome_payload(
         cost=cost,
         risk=risk,
         uncertainty=uncertainty,
+        capability_gain=capability_gain,
         trace=trace,
         service_available=True,
         provider_configured=True,

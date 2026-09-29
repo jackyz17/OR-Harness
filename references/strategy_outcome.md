@@ -67,7 +67,10 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
 | cost c | `ExpectedCost` / `CostVector` | the five resource dimensions; the measured mask marks PREDICTED dimensions (a prediction, not a measurement); an omitted dimension is unknown, never zero |
 | risk L | `RiskStatement` / `RiskEvent` | named events with optional probability/severity; no basis → the fields stay absent; rework already in c is not repeated |
 | uncertainty | `UncertaintyStatement` | execution randomness vs knowledge gap; a model self-report is recorded as `model_self_report` with the numbers in its notes, explicitly UNCALIBRATED — never relabeled as measured |
+| capability gain H+ | `CapabilityGain` | the candidate's POTENTIAL gain, predicted in the SAME call. Explanatory only: it is never the utility, never a 0-1 composite, and never written into the capability evidence. Each `expected_change` names its own metric/unit/direction; `evidence_required` and `verification_conditions` say what would confirm it; `degradation_risk` and `uncertainty` say what could go wrong. An absent or empty block is "no gain claimed", never a positive default |
 | trace | `PredictionTrace` | context/candidate/task/episode binding, protocol and prompt version, evidence refs, unsupported fields, call cost, error reasons |
+
+**H+ is a prediction about what a candidate might TEACH.** It rides the same wm-so/1 answer as G/c/L, so no extra model round is spent per candidate. It is deliberately NOT the utility: the planner's score is benefit/cost/risk only, and a large gain does not change the ranking. It is surfaced read-only next to each candidate in `plan-next`'s `result.candidates[].capability_gain` with an explicit note. Only the OFFLINE capability path (`evaluate-capability`) can establish that a gain was realized — the online block carries no `effect_verified` state at all, and predicting a gain writes nothing into the harness capability evidence. A missing H+ never invalidates the benefit/cost/risk of the same prediction.
 
 **Honest failure states** — each distinguishable, each persisted with whatever usage the call consumed:
 

@@ -43,6 +43,7 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/method_evidence.py",
     "references/examples/linkage_attribution.py",
     "references/examples/usage_accounting.py",
+    "references/examples/capability_gain.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.

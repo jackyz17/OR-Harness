@@ -1461,6 +1461,115 @@ class VerificationCondition:
 
 
 @dataclass
+class CapabilityGain:
+    """A candidate's POTENTIAL capability gain (H+), predicted ONLINE.
+
+    This is the capability side of a strategy-outcome prediction, stated in
+    the SAME model call as the benefit/cost/risk of the current task — it is
+    EXPLANATORY information, not a scored quantity and not a claim that the
+    harness got stronger. It answers, for one candidate:
+
+    - WHAT capability it could strengthen, and on which tasks/structures it
+      would apply (``claim`` / ``applies_to``);
+    - what IMPROVEMENT is expected and on what basis (``expected_changes``,
+      reused from the capability-evolution contract so the two paths read
+      the same shape, plus ``basis``);
+    - what REAL evidence / verification / later reuse would be needed to
+      confirm it (``evidence_required``, ``verification_conditions``);
+    - what is uncertain, might yield nothing, or might degrade
+      (``uncertainty``, ``degradation_risk``).
+
+    Three separations this type keeps, matching the codebase's own rules:
+
+    - **a prediction is not a fact.** Nothing here is written into the
+      harness capability evidence: a predicted gain never becomes a
+      "verified" capability. The offline path
+      (:func:`evaluate_capability_effect`) is the ONLY place an observed
+      improvement is established.
+    - **a new method is not a gain.** ``expected_changes`` must name a
+      metric and a direction; an empty gain block is an honest "no gain
+      claimed", never a default positive.
+    - **no forced 0-1 score.** ``expected_changes`` carries each metric in
+      its OWN unit (like the capability-evolution contract); there is no
+      composite "H+ number" that would have to be invented.
+    """
+
+    claim: str = ""
+    #: Which problems/structures the gain would apply to (free text; a
+    #: structural target is a description, never a fabricated cell id).
+    applies_to: List[str] = field(default_factory=list)
+    expected_changes: List[ExpectedChange] = field(default_factory=list)
+    #: Real evidence / verification / reuse conditions that would confirm
+    #: the gain (e.g. "reuse on a task whose CIR has resource_coupling>0.5
+    #: and solve it at least as well").
+    evidence_required: List[str] = field(default_factory=list)
+    verification_conditions: List[VerificationCondition] = field(
+        default_factory=list)
+    degradation_risk: Optional[RiskStatement] = None
+    #: What the model is unsure about, and what might yield NO gain.
+    uncertainty: List[str] = field(default_factory=list)
+    basis: List[str] = field(default_factory=list)
+    notes: List[str] = field(default_factory=list)
+
+    @property
+    def claimed(self) -> bool:
+        """Whether any gain is actually claimed.
+
+        A block with no ``expected_changes`` and no ``claim`` says nothing:
+        it is EMPTY, not a positive default. The framework never reads an
+        empty gain as "this candidate improves capability".
+        """
+        return bool(self.claim or self.expected_changes
+                    or self.evidence_required)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "claim": self.claim,
+            "applies_to": list(self.applies_to),
+            "expected_changes": [c.to_dict() for c in self.expected_changes],
+            "evidence_required": list(self.evidence_required),
+            "verification_conditions": [v.to_dict() for v in
+                                        self.verification_conditions],
+            "degradation_risk": (self.degradation_risk.to_dict()
+                                 if self.degradation_risk is not None
+                                 else None),
+            "uncertainty": list(self.uncertainty),
+            "basis": list(self.basis),
+            "notes": list(self.notes),
+            "claimed": self.claimed,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CapabilityGain":
+        if not isinstance(data, dict):
+            raise ValueError("CapabilityGain must be a JSON object")
+        raw_changes = data.get("expected_changes")
+        changes: List[ExpectedChange] = []
+        for item in (raw_changes or []):
+            if isinstance(item, dict):
+                changes.append(ExpectedChange.from_dict(item))
+        raw_conditions = data.get("verification_conditions")
+        conditions: List[VerificationCondition] = []
+        for item in (raw_conditions or []):
+            if isinstance(item, dict):
+                conditions.append(VerificationCondition.from_dict(item))
+        raw_risk = data.get("degradation_risk")
+        return cls(
+            claim=str(data.get("claim") or ""),
+            applies_to=[str(a) for a in (data.get("applies_to") or [])],
+            expected_changes=changes,
+            evidence_required=[str(e) for e in
+                               (data.get("evidence_required") or [])],
+            verification_conditions=conditions,
+            degradation_risk=(RiskStatement.from_dict(raw_risk)
+                              if isinstance(raw_risk, dict) else None),
+            uncertainty=[str(u) for u in (data.get("uncertainty") or [])],
+            basis=[str(b) for b in (data.get("basis") or [])],
+            notes=[str(n) for n in (data.get("notes") or [])],
+        )
+
+
+@dataclass
 class StrategyOutcomePrediction:
     """Contract 1: what a candidate strategy's execution would produce.
 
@@ -1481,6 +1590,13 @@ class StrategyOutcomePrediction:
     cost: Optional[ExpectedCost] = None
     risk: Optional[RiskStatement] = None
     uncertainty: Optional[UncertaintyStatement] = None
+    #: The candidate's POTENTIAL capability gain (H+), predicted in the SAME
+    #: call as benefit/cost/risk. It is EXPLANATORY: it is never written
+    #: into the harness capability evidence, never scored as a composite
+    #: number, and never a claim that the harness got stronger. ``None``
+    #: means no gain block was produced — never "no gain" and never "a
+    #: gain". See :class:`CapabilityGain`.
+    capability_gain: Optional[CapabilityGain] = None
     trace: Optional[PredictionTrace] = None
     #: Whether a prediction SERVICE is deployed for this kind in this build.
     #: False is a first-class state: the contract is implemented, the
@@ -1531,6 +1647,18 @@ class StrategyOutcomePrediction:
         return any(value is not None for value in
                    (self.benefit, self.cost, self.risk, self.uncertainty))
 
+    @property
+    def claims_capability_gain(self) -> bool:
+        """Whether a NON-EMPTY capability-gain block was predicted.
+
+        Kept SEPARATE from:class:`has_predicted_content`: an H+ prediction
+        never by itself makes a prediction "content-ful" for the purpose of
+        the benefit/cost/risk contract, and its absence never invalidates
+        the rest of the prediction.
+        """
+        return self.capability_gain is not None \
+            and self.capability_gain.claimed
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "contract_version": self.contract_version,
@@ -1550,6 +1678,10 @@ class StrategyOutcomePrediction:
             "risk": self.risk.to_dict() if self.risk is not None else None,
             "uncertainty": (self.uncertainty.to_dict()
                             if self.uncertainty is not None else None),
+            "capability_gain": (self.capability_gain.to_dict()
+                                if self.capability_gain is not None
+                                else None),
+            "claims_capability_gain": self.claims_capability_gain,
             "trace": self.trace.to_dict(),
             "notes": list(self.notes),
         }
@@ -1575,6 +1707,7 @@ class StrategyOutcomePrediction:
         raw_cost = data.get("cost")
         raw_risk = data.get("risk")
         raw_unc = data.get("uncertainty")
+        raw_gain = data.get("capability_gain")
         raw_trace = data.get("trace")
         trace = PredictionTrace.from_dict(raw_trace or {})
         if legacy_status is not None:
@@ -1597,6 +1730,8 @@ class StrategyOutcomePrediction:
                   if isinstance(raw_risk, dict) else None),
             uncertainty=(UncertaintyStatement.from_dict(raw_unc)
                          if isinstance(raw_unc, dict) else None),
+            capability_gain=(CapabilityGain.from_dict(raw_gain)
+                             if isinstance(raw_gain, dict) else None),
             trace=trace,
             service_available=bool(data.get("service_available", False)),
             provider_configured=bool(data.get("provider_configured", False)),
@@ -1957,6 +2092,46 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
                 "components under an honest source "
                 "(framework_heuristic/measured). A self-report may not be "
                 "relabeled to pass validation")
+    capability_gain = prediction.capability_gain
+    if capability_gain is not None:
+        # H+ is EXPLANATORY content about a candidate's potential gain. It
+        # is validated for internal consistency only — its ABSENCE never
+        # invalidates the benefit/cost/risk, and its presence never makes
+        # the harness "stronger". A gain that names no metric, or a change
+        # value with no baseline to compare against, is a malformed claim
+        # rather than a weaker one.
+        for index, change in enumerate(capability_gain.expected_changes):
+            if not change.metric:
+                problems.append(
+                    f"capability_gain.expected_changes[{index}].metric is "
+                    "required: a gain with no metric is unfalsifiable")
+            if change.value is not None and change.baseline is None:
+                problems.append(
+                    f"capability_gain.expected_changes[{index}].value "
+                    "requires a baseline: a change with no reference is not "
+                    "a prediction")
+            if change.value is not None and not _finite(change.value):
+                problems.append(
+                    f"capability_gain.expected_changes[{index}].value is "
+                    "not a finite number")
+        for index, condition in enumerate(
+                capability_gain.verification_conditions):
+            if not condition.condition:
+                problems.append(
+                    f"capability_gain.verification_conditions[{index}]"
+                    ".condition is required")
+        gain_risk = capability_gain.degradation_risk
+        if gain_risk is not None:
+            for index, event in enumerate(gain_risk.events):
+                if not event.event:
+                    problems.append(
+                        f"capability_gain.degradation_risk.events[{index}]"
+                        ".event is required")
+                if event.probability is not None \
+                        and not _prob(event.probability):
+                    problems.append(
+                        f"capability_gain.degradation_risk.events[{index}]"
+                        ".probability must be in [0, 1]")
     if prediction.trace is None:
         problems.append("trace is required (version, input, evidence, "
                         "unsupported fields)")

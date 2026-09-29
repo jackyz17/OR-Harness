@@ -109,7 +109,7 @@ Run these in order. Steps 3a and 3b are alternatives — doing both predicts the
 | 2 | `orx recall --task t.json --top 3` | task | `result.recommendations[]`, `result.held_claims[]`, `result.vector_recall` | 3a or 3b |
 | — | `orx context --task t.json` (optional) | task, for a stored frozen input | `result.context_id` | pass it to 3a as `--context`; `predict-strategy` builds its own when omitted |
 | 3a | `orx predict-strategy --task t.json --candidate c.json [--episode ep1]` | task + one candidate, repeated per candidate | `result.prediction_id` | 4, keeping the chosen candidate's id |
-| 3b | `orx plan-next --task t.json --episode ep1 --candidates cs.json` | task + candidate list | `result.decision_action_id`, `result.plan.candidates[].prediction_id` | 3b′ |
+| 3b | `orx plan-next --task t.json --episode ep1 --candidates cs.json` | task + candidate list | `result.decision_action_id`, `result.plan.candidates[].prediction_id`, `...capability_gain` (explanatory H+) | 3b′ |
 | 3b′ | `orx choose-next --decision <decision_action_id> --prediction <prediction_id>` | the decision id + the chosen candidate's prediction id from 3b | `result.selected_plan` | 4, executing with that same prediction id |
 | 4 | Write the model, then `solve.py` | the chosen strategy | your script's `result.json` (`status`, `objective_value`, `objective_bound`, `mip_gap`, `runtime_seconds`, and `variables` if a check will need the answer) | 5 |
 | 5 | `orx execute --task t.json --prediction <prediction_id> --code solve.py --workspace ws` | task + the prediction id from 3a or 3b (strategy/solver come from the candidate) | `result.execution_id`, `result.prediction_binding` | 6 |

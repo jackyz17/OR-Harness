@@ -52,6 +52,7 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 | `cost` | `ExpectedCost` — the `CostVector` consequence of the candidate, with its measured mask |
 | `risk` | `RiskStatement` — named loss events, **separate from cost** |
 | `uncertainty` | `UncertaintyStatement` — execution randomness vs knowledge gap |
+| `capability_gain` | `CapabilityGain` — the candidate's POTENTIAL capability gain (H+), predicted in the same call: the claim, applicability, per-metric expected changes, the evidence that would confirm them, and the degradation risk. Explanatory only — never the utility, never a 0-1 composite, never written into the capability evidence; `None`/absent means "no gain claimed". See §5 |
 | `trace` | `PredictionTrace` — version, input, evidence, unsupported fields, call cost |
 
 **Benefit is not one arbitrary 0–1 score.** `benefit.kind` says which currency you are in:

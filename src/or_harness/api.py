@@ -159,6 +159,34 @@ CAPABILITY_EXECUTABLE_OPERATIONS = ("induce", "revise", "retire")
 PREDICTION_MODES = ("x-b-only", "h-x-b", "h-x-b-value")
 
 
+def _capability_gain_view(prediction: Any) -> Optional[Dict[str, Any]]:
+    """The prediction's capability-gain block as READ-ONLY explanatory info.
+
+    H+ is surfaced next to the candidate so a reader sees what the candidate
+    might TEACH, but it is deliberately NOT the utility: the planner's score
+    is benefit/cost/risk only, and a gain block never enters it. An absent
+    or empty block returns ``None`` — "no gain claimed", never a default
+    positive.
+
+    The view carries the claim, the applicability, the expected changes (in
+    their OWN metrics, never a compressed 0-1 score), what real evidence
+    would confirm them, and the degradation risk — plus an explicit note
+    that it is a prediction, verified only later by the offline capability
+    path.
+    """
+    gain = getattr(prediction, "capability_gain", None)
+    if gain is None or not getattr(gain, "claimed", False):
+        return None
+    view = gain.to_dict()
+    view["kind"] = "predicted_capability_gain"
+    view["note"] = ("a PREDICTION about what this candidate might teach. It "
+                    "is explanatory only: it is not the prediction's utility, "
+                    "it is never written into the harness capability "
+                    "evidence, and it becomes 'verified' only if a LATER task "
+                    "observes the improvement (the offline capability path)")
+    return view
+
+
 def _candidate_reference(spec: Dict[str, Any]) -> tuple:
     """The identity tuple that makes one candidate distinguishable.
 
@@ -4055,7 +4083,8 @@ class ORHarness:
                     {"action_spec": spec.to_dict(),
                      "prediction_id": prediction.prediction_id,
                      "prediction_status": prediction.status,
-                     "score": score.to_dict()}
+                     "score": score.to_dict(),
+                     "capability_gain": _capability_gain_view(prediction)}
                     for (spec, prediction), score
                     in zip(predictions, scores)]
                 return result
@@ -4114,7 +4143,8 @@ class ORHarness:
             {"action_spec": spec.to_dict(),
              "prediction_id": prediction.prediction_id,
              "prediction_status": prediction.status,
-             "score": score.to_dict()}
+             "score": score.to_dict(),
+             "capability_gain": _capability_gain_view(prediction)}
             for (spec, prediction), score in zip(predictions, scores)]
         return result
 
