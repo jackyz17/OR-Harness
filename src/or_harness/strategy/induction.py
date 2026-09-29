@@ -87,15 +87,6 @@ UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
                    "strategic knowledge — recall falls back to conditional "
                    "statistics until an admission check passes")
 
-#: Distinct tasks a transferable knowledge CLAIM needs before it may be
-#: published as knowledge. A single-task repair is a verified FACT about that
-#: task; transferring it to future tasks is a knowledge claim and needs
-#: independent evidence. (The rule itself lives in
-#: ``core.schema.CLAIM_MIN_TASKS`` — this alias keeps the induction module's
-#: public name stable.)
-RELATION_MIN_TASKS = CLAIM_MIN_TASKS
-
-
 #: A method description counts as substance when it names the steps actually
 #: taken. The gate below refuses a claim that rests on evidence which reports
 #: NO method content, because a strategy name plus a mean is a statistic, not
