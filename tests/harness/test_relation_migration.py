@@ -242,5 +242,81 @@ class TestMigrationThroughApi(HarnessTestCase):
         self.assertEqual(result["created_entries"], 1)
 
 
+class TestMigrationPathAfter(HarnessTestCase):
+    """Upstream audit: after migration, the ordinary paths must still work —
+    the migrated claim is recalled, can be revised, and a statistical
+    `induce` / `revise` must not disturb it."""
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+        self.addCleanup(self.h.close)
+
+    def _write_legacy(self, entry):
+        payload = entry.to_dict()
+        payload["relations"] = [dict(r) for r in entry.legacy_relations]
+        with self.h.store.transaction() as conn:
+            conn.execute(
+                "INSERT INTO strategic_entries "
+                "(entry_id, strategy_id, scope_level, status, payload) "
+                "VALUES (?,?,?,?,?)",
+                (entry.entry_id, entry.strategy_id, "*", "candidate",
+                 self.h.store.dumps(payload)))
+
+        return payload
+
+    def _task(self, task_id="T1"):
+        return {"task_id": task_id, "family": "routing",
+                "description": "a routing problem",
+                "annotations": {"coupling": {"resource_coupling": 0.3,
+                                             "temporal_coupling": 0.1,
+                                             "route_complexity": 0.2,
+                                             "semantic_coupling": 0.5}}}
+
+    def test_migrated_claim_is_recalled_and_revisable(self):
+        host = _legacy_entry("se_host", strategy="principle:keep_state",
+                             relations=[_legacy_relation(
+                                 "rel_a", "keep the cross-period state")])
+        self._write_legacy(host)
+        # The claim's evidence cites executions that were never recorded —
+        # the migration copies the reference verbatim (a historical
+        # reference), which is what "sources may expire" means.
+        self.h.migrate_relations()
+        entry = next(e for e in self.h.sbank.list() if e.claim is not None)
+        self.assertEqual(entry.verification_state, "verified")
+        # It is recalled as admitted knowledge.
+        recalled = self.h.recall(self._task())
+        hits = [r for r in recalled["recommendations"]
+                if (r.get("knowledge") or {}).get("claim")]
+        self.assertTrue(hits)
+        self.assertIn("keep the cross-period state",
+                      hits[0]["knowledge"]["claim"]["text"])
+        # A statistical induce / revise over the bank does not touch it.
+        before = self.h.sbank.get(entry.entry_id).to_dict()
+        self.h.induce(all_=True)
+        after = self.h.sbank.get(entry.entry_id).to_dict()
+        self.assertEqual(before["claim"], after["claim"])
+        self.assertEqual(before["verification"], after["verification"])
+
+    def test_evicted_source_does_not_revoke_a_migrated_claim(self):
+        """A migrated claim whose cited executions are later evicted by the
+        evidence window stays published: the reference expires, the claim
+        does not."""
+        rec = self.make_record(execution_id="ex1", task_id="T1")
+        self.h.bank.append(rec)
+        self.h.bank.append(self.make_record(execution_id="ex2", task_id="T2"))
+        host = _legacy_entry("se_host", strategy="S01",
+                             relations=[_legacy_relation(
+                                 "rel_a", "keep the state")])
+        self._write_legacy(host)
+        self.h.migrate_relations()
+        entry = next(e for e in self.h.sbank.list() if e.claim is not None)
+        self.h.bank.delete_episode_executions(["ex1", "ex2"])
+        survived = self.h.sbank.get(entry.entry_id)
+        self.assertIsNotNone(survived)
+        self.assertEqual(survived.verification_state, "verified")
+        self.assertTrue(survived.is_published)
+
+
 if __name__ == "__main__":
     unittest.main()
