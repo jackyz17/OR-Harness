@@ -292,13 +292,10 @@ def _preconditions_unmet(item: Dict[str, Any],
 def _is_contrast_evidence(record: Any) -> bool:
     """Whether the record's own labels mark it as contrast evidence.
 
-    The framework records contrast intent explicitly (``retention_reason``,
-    or a ``contrast`` marker in the execution features). Absent that, the
+    The framework records contrast intent explicitly as a
+    ``contrast`` marker in the execution features. Absent that, the
     execution is ordinary evidence and cannot satisfy a contrast condition.
     """
-    reason = str(getattr(record, "retention_reason", "") or "").lower()
-    if "contrast" in reason:
-        return True
     features = getattr(record, "execution_features", None) or {}
     return bool(features.get("contrast"))
 

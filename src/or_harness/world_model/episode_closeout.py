@@ -384,6 +384,90 @@ ENV_ARCHIVE_MAX_TOTAL_BYTES = "OR_CALIBRATION_ARCHIVE_MAX_TOTAL_BYTES"
 ENV_ARCHIVE_RETENTION_DAYS = "OR_CALIBRATION_ARCHIVE_RETENTION_DAYS"
 ENV_AUTO_ARCHIVE_THRESHOLD = "OR_CALIBRATION_AUTO_ARCHIVE_THRESHOLD"
 
+# ---------------------------------------------------------------------------
+# evidence-window defaults (the Execution Evidence Bank is BOUNDED)
+# ---------------------------------------------------------------------------
+#
+# The Evidence Bank keeps a bounded RECENT window of complete episodes. This
+# is NOT the calibration window (``policy.window``): the calibration window
+# decides which closed episodes CALIBRATE (statistics), while this decides
+# which raw execution rows are still retained. They are separate scopes for
+# the same reason the calibration policy keeps three: collapsing them would
+# make "how many samples calibrate" and "how much raw history is on disk" one
+# number, which cannot answer both honestly.
+#
+# The bound is expressed in COMPLETE EPISODES (not bytes). A count is what
+# can be enforced deterministically without measuring payload sizes on every
+# maintenance run; there is deliberately NO byte-cap promise, because the
+# only honest way to promise a byte bound would be to measure and enforce it,
+# and a count that silently means "a few megabytes" would be a false promise.
+# The eviction UNIT is the whole episode: contrast/repair chains are never
+# split. Oldest = smallest ``closed_at`` in the close-out registry, so the
+# ordering is the same one the calibration already uses.
+
+#: Complete (closed) episodes retained in the Execution Evidence Bank.
+DEFAULT_EVIDENCE_WINDOW_EPISODES = 800
+
+#: Days an UNCLOSED episode's executions may stay before they are evicted as
+#: a whole. Running / pending / abnormally-unclosed episodes are exempt from
+#: the count bound (their outcome is not known), but they must still be
+#: bounded — an episode that never closes cannot pin evidence forever.
+DEFAULT_EVIDENCE_OPEN_GRACE_DAYS = 30.0
+
+ENV_EVIDENCE_WINDOW_EPISODES = "OR_EVIDENCE_WINDOW_EPISODES"
+ENV_EVIDENCE_OPEN_GRACE_DAYS = "OR_EVIDENCE_OPEN_GRACE_DAYS"
+
+
+@dataclass
+class EvidenceWindowPolicy:
+    """The bound on retained Execution Evidence (a SEPARATE scope).
+
+    - ``window_episodes``: how many COMPLETE episodes' executions are
+      retained. Oldest first by the close-out registry's ``closed_at``.
+    - ``open_grace_days``: how long an unclosed episode's executions may
+      stay before the whole episode is evicted. It is a safeguard against an
+      episode that NEVER closes, not an ordinary retention path.
+
+    Three things are ALWAYS exempt, because deleting them would destroy an
+    in-flight or still-being-used fact:
+    - episodes inside the calibration window (they calibrate);
+    - episodes awaiting a task verdict within ``late_check_grace_days``
+      (a late check must still be able to land);
+    - unclosed episodes younger than ``open_grace_days``.
+    """
+
+    window_episodes: int = DEFAULT_EVIDENCE_WINDOW_EPISODES
+    open_grace_days: float = DEFAULT_EVIDENCE_OPEN_GRACE_DAYS
+
+    @classmethod
+    def from_env(cls, **overrides: Any) -> "EvidenceWindowPolicy":
+        """Defaults <- environment <- explicit overrides (later wins)."""
+        policy = cls(
+            window_episodes=_env_int(ENV_EVIDENCE_WINDOW_EPISODES,
+                                     DEFAULT_EVIDENCE_WINDOW_EPISODES),
+            open_grace_days=_env_float(ENV_EVIDENCE_OPEN_GRACE_DAYS,
+                                       DEFAULT_EVIDENCE_OPEN_GRACE_DAYS),
+        )
+        for key, value in overrides.items():
+            if value is not None and hasattr(policy, key):
+                setattr(policy, key, value)
+        return policy
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "window_episodes": int(self.window_episodes),
+            "open_grace_days": float(self.open_grace_days),
+            "unit": "complete episodes",
+            "note": ("a bounded RECENT window of complete episodes (record "
+                     "count, NOT a byte cap): episodes inside the calibration "
+                     "window, episodes awaiting a task verdict within the "
+                     "late-check grace period, and young unclosed episodes "
+                     "are never evicted; the whole episode is evicted at "
+                     "once so contrast/repair chains are never split. This "
+                     "bounds the Evidence Bank, NOT the whole project "
+                     "directory"),
+        }
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
@@ -1989,6 +2073,13 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
     # that count crosses the configured threshold does an archive pass run —
     # so retention is maintained without archiving on every single close.
     archive_result = maybe_auto_archive(harness, policy=policy)
+    # Then bound the RAW evidence. Order matters and is deliberate: the
+    # calibration publish above and the archive pass BEFORE it have already
+    # taken every consolidation opportunity, so evicting the oldest episodes
+    # now cannot race a step that still needs their raw facts. The pass is
+    # GUARDED by one indexed COUNT, so an ordinary close-out walks nothing.
+    window_result = maybe_enforce_evidence_window(harness,
+                                                  calibration_policy=policy)
     return {
         "closeout": closeout.to_dict(),
         "already_closed": False,
@@ -1997,6 +2088,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         "task_checks": _episode_task_check_summary(harness, task_id,
                                                    episode_id),
         "retention": archive_result,
+        "evidence_window": window_result,
     }
 
 
@@ -2893,14 +2985,24 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
         return stored, None
     if not prediction.trace.model_info.get("bound_action_id"):
         return stored, None
+    # A WINDOW-EVICTED fact is not a correction. When the raw executions a
+    # stored evaluation compared have left the Evidence Bank through the
+    # retention window (their source reference EXPIRED), the stored
+    # evaluation is FINAL: the retention window is the documented cut-off,
+    # and only genuinely PRESENT but non-counting facts (an ``exclude``)
+    # are withdrawals. Conflating the two would read a retention policy as
+    # a retraction of knowledge, which it is not.
+    if any(harness.bank.get(eid) is None
+           for eid in _evaluation_execution_ids(stored)):
+        return stored, None
     try:
         summary = summarize_real_outcome(harness, prediction)
         derived = evaluate_strategy_prediction(prediction, summary)
     except Exception:      # a live derivation that cannot run changes nothing
         return stored, None
 
-    # A WITHDRAWN fact: the executions this evaluation compared no longer
-    # count as evidence at all.
+    # A WITHDRAWN fact: the executions this evaluation compared still exist
+    # but no longer count as evidence at all (``exclude``).
     withdrawn = [eid for eid in _evaluation_execution_ids(stored)
                  if not _execution_counts_as_evidence(harness, eid)]
     if withdrawn:
@@ -2966,6 +3068,12 @@ def _live_validity_correction(harness, evaluation
     NOT this case — it re-derives the benefit observation to 0.0 and keeps
     the measured cost (see :func:`_live_evaluation`); excluding the whole
     evaluation would throw away a real measurement.
+
+    A record that is ABSENT (evicted by the retention window) is deliberately
+    NOT this case either: its source reference expired, the window is the
+    documented cut-off, and the stored evaluation stands as the FINAL value.
+    Only a fact still present but non-counting (``source != "executed"``) is
+    a withdrawal.
     """
     task_id = str(evaluation.task_id or "")
     if not task_id:
@@ -2975,7 +3083,11 @@ def _live_validity_correction(harness, evaluation
         return False, {}
     for execution_id in execution_ids:
         record = harness.bank.get(execution_id)
-        if record is None or str(record.source) == "executed":
+        if record is None:
+            # Window-evicted: the retention cut-off, not a withdrawal. The
+            # stored evaluation is final (see _live_evaluation).
+            continue
+        if str(record.source) == "executed":
             continue
         if str(record.task_id) != task_id:
             continue
@@ -3543,3 +3655,302 @@ def maybe_auto_archive(harness, *,
     result.update({"checked": True, "triggered": True,
                    "n_outside_window": len(outside)})
     return result
+
+
+# ---------------------------------------------------------------------------
+# the bounded evidence window
+# ---------------------------------------------------------------------------
+
+def _episode_execution_ids(harness, task_id: str,
+                           episode_id: Optional[str]) -> List[str]:
+    """Every execution id that belongs to ONE episode (closed or not).
+
+    Located the same way the rest of the module locates an episode's
+    executions: per-task ``bank.query`` (SQL-filtered) plus the action log's
+    ``linked_execution_id``. An execution whose action names a DIFFERENT
+    episode is excluded; one whose action cannot be resolved belongs to the
+    episode only when the episode filter is empty (the same rule
+    ``_window_executions`` uses, so the occurrence denominator and the
+    window's deletion set can never disagree)."""
+    out: List[str] = []
+    actions = harness.actions.query(task_id=task_id)
+    for record in harness.bank.query(task_id=task_id):
+        action = next((a for a in actions
+                       if a.linked_execution_id == record.execution_id), None)
+        if action is None:
+            if not episode_id:
+                out.append(record.execution_id)
+            continue
+        if str(action.episode_id or "") == str(episode_id or ""):
+            out.append(record.execution_id)
+    return out
+
+
+def _open_episode_execution_ids(harness) -> Dict[Tuple[str, str], List[str]]:
+    """Executions of every episode that has NO close-out registry row.
+
+    An unclosed episode (running, pending, or abnormally unclosed) is exempt
+    from the count bound — its outcome is not known, so evicting it would
+    destroy live work. It is bounded instead by ``open_grace_days``: the
+    whole episode is evicted once its newest execution is older than that.
+    """
+    registered = {(str(r["task_id"]), str(r["episode_id"] or ""))
+                  for r in harness.store.closeout_registry()}
+    by_task: Dict[str, List[str]] = {}
+    for record in harness.bank.all():
+        if record.task_id not in by_task:
+            by_task[record.task_id] = []
+        by_task[record.task_id].append(record.execution_id)
+    out: Dict[Tuple[str, str], List[str]] = {}
+    for task_id, exec_ids in by_task.items():
+        actions = harness.actions.query(task_id=task_id)
+        by_exec = {a.linked_execution_id: a for a in actions
+                   if a.linked_execution_id}
+        groups: Dict[str, List[str]] = {}
+        for execution_id in exec_ids:
+            action = by_exec.get(execution_id)
+            episode_id = str(action.episode_id) if action is not None \
+                and action.episode_id else ""
+            groups.setdefault(episode_id, []).append(execution_id)
+        for episode_id, ids in groups.items():
+            if (str(task_id), episode_id) in registered:
+                continue
+            out[(str(task_id), episode_id)] = ids
+    return out
+
+
+def enforce_evidence_window(harness, *,
+                            policy: Optional[EvidenceWindowPolicy] = None,
+                            calibration_policy: Optional[CalibrationPolicy]
+                            = None,
+                            dry_run: bool = False) -> Dict[str, Any]:
+    """Bound the Execution Evidence Bank to a recent window of complete episodes.
+
+    The RUN ORDER is the whole design and is what makes this safe: the
+    caller runs the existing offline maintenance FIRST (calibration publish /
+    archive, induction), and this pass runs LAST. Eviction therefore never
+    races a step that needs the raw facts; by the time it runs, every
+    opportunity to consolidate has already been taken.
+
+    Eviction is by COMPLETE EPISODE, oldest first (the close-out registry's
+    ``closed_at``), and three things are never evicted:
+
+    - episodes inside the calibration window (they calibrate);
+    - episodes awaiting a task verdict within ``late_check_grace_days`` (a
+      late check must still be able to land);
+    - unclosed episodes younger than ``open_grace_days``.
+
+    What the pass does NOT do is pretend the derivations depended on the raw
+    rows. A knowledge entry keeps its own method content, verification
+    range and evidence statement; a source execution id is a historical
+    reference that MAY expire. Eviction is therefore reported as
+    ``evicted`` — never as a refutation or a withdrawal (that is what
+    ``exclude`` means, and the two must not be confused).
+
+    ``dry_run`` writes NOTHING (no deletion, no vector removal, no text
+    cleanup) and reports exactly what would be evicted. Re-running is
+    idempotent. A crash mid-pass leaves some episodes evicted and some not;
+    re-running finishes the job. User solve source files are NEVER touched —
+    only rows in the banks' own store and derived index items.
+    """
+    policy = policy or EvidenceWindowPolicy.from_env()
+    calibration = calibration_policy or CalibrationPolicy.from_env()
+    window = calibration_window(harness, calibration, readonly=dry_run)
+    window_ids = {(str(r["task_id"]), str(r["episode_id"] or ""))
+                  for r in window}
+    latency_cutoff = time.time() - calibration.late_check_grace_days * 86400.0
+    open_cutoff = time.time() - policy.open_grace_days * 86400.0
+
+    registry = harness.store.closeout_registry()   # newest first
+    # Order oldest first for the "keep the newest N" selection. The window
+    # holds the newest ``window_episodes`` rows; everything older that is not
+    # protected is a candidate.
+    kept: List[Dict[str, Any]] = []
+    to_evict: List[Dict[str, Any]] = []
+    protected: List[Dict[str, Any]] = []
+    eligible: List[Dict[str, Any]] = []
+    for row in registry:
+        identity = (str(row["task_id"]), str(row["episode_id"] or ""))
+        if identity in window_ids:
+            protected.append({"task_id": identity[0],
+                              "episode_id": row["episode_id"],
+                              "reason": "inside the calibration window"})
+            continue
+        if _episode_awaits_check(harness, identity[0],
+                                 row["episode_id"]) \
+                and row["closed_at"] > latency_cutoff:
+            protected.append({"task_id": identity[0],
+                              "episode_id": row["episode_id"],
+                              "reason": ("an in-scope execution carries no "
+                                         "task verdict and the late-check "
+                                         "grace period has not expired")})
+            continue
+        # An episode whose executions are already gone has been evicted
+        # before (the registry tombstone stays online for close idempotence
+        # and window locatability). It is not a candidate again — otherwise
+        # every later pass would keep re-reporting it.
+        if not _episode_execution_ids(harness, identity[0],
+                                      row["episode_id"]):
+            continue
+        eligible.append(row)
+    # Newest eligible first: keep the first ``window_episodes``.
+    eligible_sorted = sorted(eligible, key=lambda r: float(r["closed_at"]),
+                             reverse=True)
+    for index, row in enumerate(eligible_sorted):
+        entry = {"task_id": str(row["task_id"]),
+                 "episode_id": row["episode_id"],
+                 "closed_at": float(row["closed_at"])}
+        if index < policy.window_episodes:
+            kept.append(entry)
+        else:
+            to_evict.append(entry)
+
+    # Each evicted episode is removed WHOLE: a single execution's count never
+    # splits a contrast/repair chain. Reported OLDEST FIRST (the order they
+    # leave).
+    to_evict.sort(key=lambda e: float(e["closed_at"]))
+    evicted: List[Dict[str, Any]] = []
+    for entry in to_evict:
+        execution_ids = _episode_execution_ids(
+            harness, entry["task_id"], entry["episode_id"])
+        evicted.append({**entry, "n_executions": len(execution_ids),
+                        "execution_ids": execution_ids})
+
+    # Unclosed, aged-out episodes: bounded separately, reported separately.
+    evicted_unclosed: List[Dict[str, Any]] = []
+    for (task_id, episode_id), execution_ids in \
+            _open_episode_execution_ids(harness).items():
+        newest = max((harness.bank.get(e).created_at
+                      for e in execution_ids if harness.bank.get(e) is not None),
+                     default=None)
+        if newest is None or newest > open_cutoff:
+            continue
+        evicted_unclosed.append({
+            "task_id": task_id, "episode_id": episode_id or None,
+            "newest_execution_at": newest,
+            "n_executions": len(execution_ids),
+            "execution_ids": execution_ids})
+
+    # A single episode that is larger than the whole budget is KEPT whole
+    # (never split) and reported: "bounded" is a count of episodes, and a
+    # count is not a byte bound.
+    total_retained_after = len(kept) + len(protected)
+    over_budget = []
+    if policy.window_episodes <= 0 and (evicted or evicted_unclosed):
+        over_budget.append({
+            "reason": ("window_episodes is 0: nothing may be retained, but a "
+                       "single execution cannot be split from its episode — "
+                       "the bound cannot be met without breaking a chain"),
+        })
+
+    result: Dict[str, Any] = {
+        "policy": policy.to_dict(),
+        "window_episodes": policy.window_episodes,
+        "retained_episodes": total_retained_after,
+        "protected": protected[:50],
+        "n_protected": len(protected),
+        "n_kept_recent": len(kept),
+        "n_evicted": len(evicted),
+        "evicted": evicted[:50],
+        "n_evicted_unclosed": len(evicted_unclosed),
+        "evicted_unclosed": evicted_unclosed[:50],
+        "over_budget": over_budget,
+        "dry_run": bool(dry_run),
+        "note": ("a bounded WINDOW of complete episodes: an eviction is a "
+                 "historical reference expiring, never a refutation or a "
+                 "withdrawal. This bounds the Evidence Bank, not the whole "
+                 "project directory"),
+    }
+    if dry_run:
+        result["note"] = ("dry run: nothing was evicted and no index item "
+                          "was touched. The episodes listed would leave the "
+                          "bank, oldest first")
+        return result
+
+    # Apply: delete whole episodes, then clean ONLY what nothing references
+    # any more (vectors; task-text versions no recorded/staged fact uses).
+    removed_ids: List[str] = []
+    removed_rows = 0
+    for entry in evicted + evicted_unclosed:
+        removed_rows += harness.bank.delete_episode_executions(
+            entry["execution_ids"])
+        removed_ids.extend(entry["execution_ids"])
+    index_removed = None
+    if removed_ids and harness.embedding_index is not None:
+        from or_harness.strategy.embedding_index import LAYER_EXECUTION
+        try:
+            index_removed = harness.embedding_index.remove(
+                LAYER_EXECUTION, sorted(set(removed_ids)))
+        except Exception as exc:  # noqa: BLE001 - never block the window pass
+            index_removed = {"removed": 0,
+                             "deferred": f"{type(exc).__name__}: {exc}"}
+    texts_removed = _cleanup_orphan_task_texts(harness)
+    result.update({
+        "removed_executions": removed_rows,
+        "removed_ids": sorted(set(removed_ids))[:100],
+        "index_removed": index_removed,
+        "task_texts_removed": texts_removed,
+        "note": ("whole episodes were evicted oldest first; derived vectors "
+                 "and unreferenced task-text versions were cleaned in the "
+                 "same pass. The knowledge entries those facts supported are "
+                 "untouched — their claims and verification ranges are "
+                 "self-contained"),
+    })
+    return result
+
+
+def maybe_enforce_evidence_window(harness, *,
+                                  policy: Optional[EvidenceWindowPolicy]
+                                  = None,
+                                  calibration_policy: Optional[CalibrationPolicy]
+                                  = None) -> Dict[str, Any]:
+    """Light check after a close-out; runs the full window pass only when
+    the registry holds more CLOSED episodes than the window keeps.
+
+    One indexed COUNT decides whether the expensive pass is worth running,
+    so an ordinary close-out does not walk the bank. Reported either way, so
+    the caller can see the check happened and what it decided."""
+    policy = policy or EvidenceWindowPolicy.from_env()
+    calibration = calibration_policy or CalibrationPolicy.from_env()
+    window = calibration_window(harness, calibration, readonly=True)
+    protected = {(str(r["task_id"]), str(r["episode_id"] or ""))
+                 for r in window}
+    total = harness.store.count_closeouts()
+    if total <= policy.window_episodes:
+        return {
+            "checked": True,
+            "triggered": False,
+            "n_closed_episodes": total,
+            "window_episodes": policy.window_episodes,
+            "note": ("the bank holds no more closed episodes than the window "
+                     "keeps: nothing was evicted"),
+        }
+    result = enforce_evidence_window(harness, policy=policy,
+                                     calibration_policy=calibration)
+    result.update({"checked": True, "triggered": True,
+                   "n_closed_episodes": total,
+                   "n_in_calibration_window": len(protected)})
+    return result
+
+
+def _cleanup_orphan_task_texts(harness) -> int:
+    """Remove task-text versions no recorded or staged execution references.
+
+    Idempotent and reference-counted: a version shared by several executions
+    (or still staged) is kept. Only genuinely unreferenced text is removed —
+    it exists to be a retrieval SOURCE DOCUMENT for executions, so a version
+    nothing references is dead weight, not knowledge."""
+    referenced = set()
+    for record in harness.bank.all():
+        if record.task_text_digest:
+            referenced.add((str(record.task_id), str(record.task_text_digest)))
+    for record in harness.bank.pending():
+        if record.task_text_digest:
+            referenced.add((str(record.task_id), str(record.task_text_digest)))
+    removed = 0
+    for key in harness.store.all_task_text_keys():
+        identity = (str(key["task_id"]), str(key["text_digest"]))
+        if identity in referenced:
+            continue
+        removed += harness.store.delete_task_text(*identity)
+    return removed

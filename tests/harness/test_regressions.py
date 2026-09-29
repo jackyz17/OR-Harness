@@ -97,21 +97,21 @@ class TestDryRunWritesNothing(_Case):
         self.h.induce(strategy_id="S01", dry_run=True)
         self.assertEqual(self.snapshot(), before)
 
-    def test_rebuild_dry_run_writes_nothing(self):
+    def test_all_dry_run_writes_nothing(self):
         self.add("ex_a", "ta")
         self.add("ex_b", "tb")
         self.h.induce(strategy_id="S01")
         before = self.snapshot()
-        out = self.h.induce(rebuild=True, dry_run=True)
-        self.assertIn("would_rebuild", out)
+        out = self.h.induce(all_=True, dry_run=True)
+        self.assertIn("results", out)
         self.assertEqual(self.snapshot(), before)
 
-    def test_rebuild_force_dry_run_writes_nothing(self):
+    def test_all_force_dry_run_writes_nothing(self):
         self._retired_entry()
         before = self.snapshot()
-        self.h.induct_rebuild_probe = self.h.induce(rebuild=True, dry_run=True,
-                                                    force=True)
-        self.assertIn("would_rebuild", self.h.induct_rebuild_probe)
+        self.h.induct_all_probe = self.h.induce(all_=True, dry_run=True,
+                                                force=True)
+        self.assertIn("results", self.h.induct_all_probe)
         self.assertEqual(self.snapshot(), before)
 
 

@@ -1,16 +1,11 @@
-"""Execution Evidence Bank: the append-only episodic fact layer.
+"""Execution Evidence Bank: the episodic fact layer, bounded by a window.
 
-Records what actually happened — never what will happen. Facts are permanently
-neutral: the disposal ladder (suspect/dormant/retired/cold archive) applies
-only to the derived Strategic Knowledge Bank. The Evidence Bank is the single
-source of truth. NOTE (target semantics, next Induction migration round):
-"Strategic Knowledge is induced AND validated against it at induction time"
-is the migration TARGET — today entries are born candidate and promoted
-online by forward quality checks; admission never depends on the survival of
-any particular evidence row (``induce --rebuild`` re-induces from whatever
-evidence is currently retained).
+Records what actually happened — never what will happen. Facts are neutral:
+the disposal ladder (suspect/dormant/retired/cold archive) applies only to
+the derived Strategic Knowledge Bank. The Evidence Bank is the single source
+of truth for what was observed.
 
-Mutability contract (fact-preserving, append-first):
+Mutability contract (fact-preserving while retained, bounded by a window):
   - ``append``: the only way a new fact enters. Duplicate ids are rejected.
   - ``update_cost``: the sole backfill channel (e.g. llm_tokens becomes known
     later). Only cost dimensions may change; nothing else is ever rewritten.
@@ -34,17 +29,21 @@ Mutability contract (fact-preserving, append-first):
     still the answer that was produced, and its cost is still real.
   - ``stage_pending`` / ``clear_pending``: a no-lost-facts safety net between
     execution and the harness's explicit recording decision.
-
-Lossy compaction is deferred until the summary consumption contract exists
-(statistics and induction ignore ``source="compacted"`` rows); when it
-arrives it will need its own replacement channel. No such channel is kept
-around unused today.
+  - ``delete_episode_executions``: the ONE deletion channel, and it removes a
+    WHOLE episode's executions — never a single row, so a contrast/repair
+    chain is never split. Retention is bounded by the evidence window (see
+    ``or_harness.world_model.episode_closeout.EvidenceWindowPolicy``): a
+    fact retained inside the window is immutable under every path above, and
+    outside it the whole episode leaves at once. What is NOT kept forever is
+    the raw row; the derivation it supported (a knowledge entry's verification
+    and range) is self-sufficient and survives. While a fact is retained it
+    is a fact: the window bounds retention, it never licenses rewriting.
 """
 
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import (
     COST_DIMENSIONS,
@@ -461,6 +460,38 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute("DELETE FROM pending_executions WHERE execution_id=?",
                          (execution_id,))
+
+    # -- bounded window (the ONLY deletion channel on facts) ----------------------
+
+    def delete_episode_executions(self, execution_ids: Sequence[str]) -> int:
+        """Remove a COMPLETE episode's executions (the evidence window).
+
+        The single deletion channel on the Evidence Bank, and it is
+        deliberately coarse: it takes a whole episode's execution ids, never
+        one row, so a contrast/repair chain can never be split. Callers
+        decide the window (see
+        ``or_harness.world_model.episode_closeout.enforce_evidence_window``)
+        and pass the episode's full execution set; the derived layers
+        (vectors, orphaned task texts) are cleaned by the caller in the same
+        maintenance step.
+
+        While a fact is RETAINED it stays a fact — the window is the
+        documented bound on retention, not a licence to rewrite. Idempotent:
+        re-running with ids already gone removes nothing and does not raise.
+        """
+        ids = [str(e) for e in execution_ids]
+        if not ids:
+            return 0
+        removed = 0
+        with self.store.transaction() as conn:
+            for start in range(0, len(ids), 400):
+                chunk = ids[start:start + 400]
+                placeholders = ",".join("?" for _ in chunk)
+                cur = conn.execute(
+                    f"DELETE FROM executions WHERE execution_id "
+                    f"IN ({placeholders})", chunk)
+                removed += cur.rowcount
+        return removed
 
     # -- internals -----------------------------------------------------------------
 

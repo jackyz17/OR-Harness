@@ -395,16 +395,16 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         finally:
             h.close()
 
-    def test_rebuild_does_not_invent_method_vocabulary(self):
+    def test_refresh_does_not_invent_method_vocabulary(self):
         h = ORHarness(home=self.home)
         try:
             for i in range(2):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_rb{i}", task_id=f"tr{i}",
                     strategy_id="S01", gap=0.05))
-            result = h.induce(rebuild=True)
-            self.assertEqual(result["rebuilt"], 1)
-            entry = h.sbank.get(result["entry_ids"][0])
+            result = h.induce(strategy_id="S01")
+            created = result["results"][0]["created"]
+            entry = h.sbank.get(created)
             self.assertIsNone(entry.strategy_type)
         finally:
             h.close()
@@ -562,8 +562,10 @@ class TestProvableRetries(HarnessTestCase):
 
 
 class TestRetentionMarking(HarnessTestCase):
-    """Explicit-only retention marks: an explicit param wins; otherwise the
-    record's existing mark is preserved. No automatic marking."""
+    """The retention mark is GONE. It was never read by any compaction
+    path; the evidence bound is the bounded window (`enforce-window`), and
+    an explicit correction is `exclude`. A legacy payload that still
+    carries the key loads with the field simply absent."""
 
     def setUp(self):
         super().setUp()
@@ -572,33 +574,31 @@ class TestRetentionMarking(HarnessTestCase):
     def tearDown(self):
         self.h.close()
 
-    def test_no_auto_marking(self):
+    def test_no_retention_field_on_a_fresh_record(self):
         rec = self.make_record(execution_id="ex_rt0", task_id="trt0",
                                feasible=False, status="error")
-        rec.failures = [FailureRecord(attempt=1, error="boom",
-                                      recovery_action="switch solver")]
         self.h.record(rec)
-        self.assertIsNone(self.h.bank.get("ex_rt0").retention_reason)
+        stored = self.h.bank.get("ex_rt0")
+        self.assertFalse(hasattr(stored, "retention_reason"))
+        self.assertNotIn("retention_reason", stored.to_dict())
 
-    def test_existing_mark_preserved_without_explicit_param(self):
+    def test_legacy_payload_with_the_mark_still_loads(self):
         rec = self.make_record(execution_id="ex_rt1", task_id="trt1")
-        rec.retention_reason = "contrast"
-        self.h.record(rec)
-        self.assertEqual(self.h.bank.get("ex_rt1").retention_reason,
-                         "contrast")
+        payload = rec.to_dict()
+        payload["retention_reason"] = "contrast"   # a legacy payload
+        from or_harness.core.schema import ExecutionRecord
+        loaded = ExecutionRecord.from_dict(payload)
+        self.assertNotIn("retention_reason", loaded.to_dict())
+        self.assertFalse(hasattr(loaded, "retention_reason"))
 
-    def test_explicit_param_wins_over_existing_mark(self):
+    def test_contrast_evidence_is_declared_in_features(self):
+        """Contrast intent is an explicit execution feature now (the
+        channel knowledge_track reads), not a retention mark."""
+        from or_harness.world_model.knowledge_track import _is_contrast_evidence
         rec = self.make_record(execution_id="ex_rt2", task_id="trt2")
-        rec.retention_reason = "old"
-        self.h.record(rec, retain_reason="new-reason")
-        self.assertEqual(self.h.bank.get("ex_rt2").retention_reason,
-                         "new-reason")
-
-    def test_blank_explicit_param_ignored(self):
-        rec = self.make_record(execution_id="ex_rt3", task_id="trt3")
-        rec.retention_reason = "keep"
-        self.h.record(rec, retain_reason="   ")
-        self.assertEqual(self.h.bank.get("ex_rt3").retention_reason, "keep")
+        self.assertFalse(_is_contrast_evidence(rec))
+        rec.execution_features["contrast"] = True
+        self.assertTrue(_is_contrast_evidence(rec))
 
 
 if __name__ == "__main__":

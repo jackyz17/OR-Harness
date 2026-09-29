@@ -357,20 +357,22 @@ class TestFrozenSnapshotAndBaseline(HarnessTestCase):
             feedback["per_dimension"]["llm_tokens"]["predicted"], 1000.0)
 
     def test_paused_compaction_and_retention_mark_intact(self):
-        """Acceptance 9: raw facts are never compacted, explicit
-        retention marks are preserved, and profiling works without a CIR
-        (the consolidated analysis entry).
+        """Acceptance 9: raw facts are never compacted, and profiling works
+        without a CIR (the consolidated analysis entry).
 
-        Compaction was PAUSED and the `gc` entry point is GONE rather than
-        left advertising a cleanup it cannot perform: retirement is an
-        explicit decision (`retire`), and the retirement CANDIDATES are a
-        query (`inspect --bank strategic --status suspect|dormant`).
-        Storage growth is bounded by the calibration archive's three
+        Compaction was REMOVED with the retention mark: the `gc` entry point
+        is GONE rather than left advertising a cleanup it cannot perform —
+        retirement is an explicit decision (`retire`), and the retirement
+        CANDIDATES are a query (`inspect --bank strategic --status
+        suspect|dormant`). Storage growth is bounded by the bounded evidence
+        WINDOW (`enforce-window`) plus the calibration archive's three
         scopes, not by a collector that defers."""
         rec = self.make_record(execution_id="ex_keep", task_id="tk")
-        outcome = self.h.record(rec, retain_reason="contrast")
+        outcome = self.h.record(rec)
         stored = self.h.bank.get(outcome["execution_id"])
-        self.assertEqual(stored.retention_reason, "contrast")
+        # The retention mark is gone: the field was never consumed by any
+        # compaction path, and the evidence bound is now the window.
+        self.assertFalse(hasattr(stored, "retention_reason"))
         n_before = self.h.bank.count()
         # The collector API is gone with the command: no entry point
         # pretends to free space it never frees.
@@ -475,27 +477,26 @@ class TestDelayedBackfillFeedback(HarnessTestCase):
 
 
 class TestRecordPositionalCompatibility(HarnessTestCase):
-    """The historical positional call
-    ``record(record, override, retain_reason)`` keeps its meaning; the new
-    keyword-only parameters never capture positional arguments."""
+    """The historical positional call ``record(record, override)`` keeps its
+    meaning; keyword-only parameters never capture positional arguments.
+    ``retain_reason`` was removed with the field it wrote."""
 
     def setUp(self):
         super().setUp()
         self.h = ORHarness(home=self.home)
 
-    def test_positional_retain_reason_still_works(self):
+    def test_positional_override_still_works(self):
         rec = self.make_record(task_id="tp1", strategy_id="S01",
                                cost_measured=MEASURED_ALL)
-        outcome = self.h.record(rec, None, "contrast")
+        outcome = self.h.record(rec, {"llm_tokens": 50.0})
         stored = self.h.bank.get(outcome["execution_id"])
-        self.assertEqual(stored.retention_reason, "contrast")
+        self.assertEqual(stored.cost.llm_tokens, 50.0)
 
-    def test_positional_override_and_retain_reason_together(self):
+    def test_keyword_override_mode_is_not_positional(self):
         rec = self.make_record(task_id="tp2", strategy_id="S01",
                                cost_measured=MEASURED_ALL)
-        outcome = self.h.record(rec, {"llm_tokens": 50.0}, "keep")
+        outcome = self.h.record(rec, {"llm_tokens": 50.0})
         stored = self.h.bank.get(outcome["execution_id"])
-        self.assertEqual(stored.retention_reason, "keep")
         self.assertEqual(stored.cost.llm_tokens, 50.0)
 
 

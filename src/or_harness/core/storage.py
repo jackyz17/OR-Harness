@@ -366,6 +366,29 @@ class Store:
             "SELECT COUNT(*) AS n FROM task_texts").fetchone()
         return int(row["n"])
 
+    def all_task_text_keys(self) -> List[Dict[str, Any]]:
+        """Every ``(task_id, text_digest)`` pair, for orphan detection.
+
+        Read-only: the evidence-window pass decides which texts no longer
+        back any execution (recorded or staged) and removes only those."""
+        rows = self.conn.execute(
+            "SELECT task_id, text_digest FROM task_texts").fetchall()
+        return [{"task_id": str(r["task_id"]),
+                 "text_digest": str(r["text_digest"])} for r in rows]
+
+    def delete_task_text(self, task_id: str, text_digest: str) -> int:
+        """Remove ONE task-text version (evidence-window orphan cleanup).
+
+        Called only when no recorded or staged execution references the
+        version any more — the text exists to be a retrieval SOURCE DOCUMENT
+        for executions, so a version nothing references is dead weight, not
+        knowledge. Idempotent."""
+        with self.transaction() as conn:
+            cur = conn.execute(
+                "DELETE FROM task_texts WHERE task_id=? AND text_digest=?",
+                (str(task_id), str(text_digest)))
+            return cur.rowcount
+
     def count_prediction_contexts(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM prediction_contexts").fetchone()

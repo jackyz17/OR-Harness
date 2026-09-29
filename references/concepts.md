@@ -63,7 +63,7 @@ See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, a
 | Artifacts | solver output, diagnostics — artifacts are evidence | none (only future abstracted patterns) |
 | Mutation | append-first, fact-preserving; only cost backfill | CRUD, lifecycle, disposal — beliefs may be revised |
 | Validation | it *is* the truth — the factual grounding layer | recorded, never rewritten: applicability and intervals are read off the supporting evidence at induction time, and the frozen checks on the facts are what promote, demote, or wake an entry |
-| Re-induction | delete it and the factual basis is gone | re-inducible from currently retained evidence (`induce --rebuild`) — exact reconstruction of past entries is NOT a requirement |
+| Re-induction | delete it and the factual basis is gone | refreshed in place from currently retained evidence (`induce` re-reads the predicates; `induce --all` covers every cell) — exact reconstruction of past entries is NOT a requirement, and a full-bank wipe is deliberately NOT offered |
 
 A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
 

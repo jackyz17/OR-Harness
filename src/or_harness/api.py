@@ -4944,15 +4944,6 @@ class ORHarness:
                 return action.action_id
         return None
 
-    def _link_prediction_to_action(self, prediction_id: str,
-                                   action_id: str) -> None:
-        """Deprecated shim: use :meth:`_claim_prediction_for_action`.
-
-        Kept so an external caller written against the earlier name does not
-        silently lose the atomicity the claim provides — it delegates rather
-        than re-implementing the tolerant write."""
-        self._claim_prediction_for_action(prediction_id, action_id)
-
     def execute(self, task: Dict[str, Any], strategy_id: Optional[str] = None,
                 code_path: str = "", workspace: str = "", *, solver: Optional[str] = None,
                 episode_id: Optional[str] = None,
@@ -5302,7 +5293,7 @@ class ORHarness:
 
     def record(self, record: ExecutionRecord,
                override: Optional[Dict[str, float]] = None,
-               retain_reason: Optional[str] = None, *,
+               *,
                override_mode: str = "replace",
                prediction: Optional[PredictionSnapshot] = None,
                method: Optional[Dict[str, Any]] = None,
@@ -5316,11 +5307,6 @@ class ORHarness:
         Strategic Knowledge entry. Quality checks are written onto the fact
         (``execution_features.quality_feedback``); the next explicit
         ``induce`` replays them offline (``InductionEngine.revise``).
-
-        ``retain_reason`` is an EXPLICIT, optional representative-evidence
-        mark (reserved for future compaction policies): a non-empty value
-        wins; otherwise the mark the record already carries is preserved.
-        No automatic retention marking is performed.
 
         ``prediction`` is the pre-execution cost prediction ACTUALLY used
         (from :meth:`predict_cost`); it is frozen onto the record as the
@@ -5372,9 +5358,6 @@ class ORHarness:
                 failure.error_class = classify_failure(record)
         if record.task_text_digest is None:
             record.task_text_digest = self._recover_task_text(record)
-        # Explicit retention mark wins; otherwise keep the record's value.
-        if retain_reason and retain_reason.strip():
-            record.retention_reason = retain_reason.strip()
         # Freeze the pre-execution prediction snapshot when the harness
         # supplies one and the record does not already carry it.
         if prediction is not None and record.prediction_snapshot is None:
@@ -5457,7 +5440,6 @@ class ORHarness:
         return result
 
     def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
-               rebuild: bool = False,
                dry_run: bool = False, force: bool = False,
                notes: Optional[List[str]] = None,
                verify: Optional[Dict[str, Any]] = None,
@@ -5531,8 +5513,7 @@ class ORHarness:
         if relations:
             maintenance = None
             if not dry_run:
-                maintenance = self._begin_induce_action(strategy_id, False,
-                                                        False)
+                maintenance = self._begin_induce_action(strategy_id, False)
                 self.actions.amend_action_params(
                     maintenance["action_id"], knowledge_shape="relations")
             try:
@@ -5575,29 +5556,23 @@ class ORHarness:
         # persists nothing (no action, no snapshots).
         maintenance = None
         if not dry_run:
-            maintenance = self._begin_induce_action(strategy_id, all_,
-                                                    rebuild)
+            maintenance = self._begin_induce_action(strategy_id, all_)
         try:
-            if rebuild:
-                result = self.induction.rebuild(dry_run=dry_run)
-                if not dry_run:
-                    result["revisions"] = self.induction.revise()
-            else:
-                targets = self._induction_targets(strategy_id, all_,
-                                                  family=family, cell=cell)
-                results = []
-                for profile, sid in targets:
-                    results.append(self.induction.induce(
-                        profile, sid, dry_run=dry_run, force=force,
-                        notes=notes, verify=verify,
-                        execution_ids=execution_ids))
-                result: Dict[str, Any] = {"results": results}
-                if targets:
-                    # Offline revision of the entries this call covers:
-                    # lifecycle state is re-derived from the frozen checks
-                    # on the facts.
-                    result["revisions"] = self.induction.revise(
-                        strategy_id=strategy_id, dry_run=dry_run)
+            targets = self._induction_targets(strategy_id, all_,
+                                              family=family, cell=cell)
+            results = []
+            for profile, sid in targets:
+                results.append(self.induction.induce(
+                    profile, sid, dry_run=dry_run, force=force,
+                    notes=notes, verify=verify,
+                    execution_ids=execution_ids))
+            result: Dict[str, Any] = {"results": results}
+            if targets:
+                # Offline revision of the entries this call covers:
+                # lifecycle state is re-derived from the frozen checks
+                # on the facts.
+                result["revisions"] = self.induction.revise(
+                    strategy_id=strategy_id, dry_run=dry_run)
         except Exception:
             # An induction that crashed still happened: end the action as
             # failed with the error, so the maintenance history keeps the
@@ -5738,7 +5713,7 @@ class ORHarness:
         return {"relation": relation, "problem": None}
 
     def _begin_induce_action(self, strategy_id: Optional[str],
-                             all_: bool, rebuild: bool) -> Dict[str, Any]:
+                             all_: bool) -> Dict[str, Any]:
         """Begin the maintenance-scope induce action with a real PRE        snapshot: the knowledge state (entries + verification layers) as it
         stood BEFORE induction."""
         episode_id = f"maint_{int(time.time())}"
@@ -5752,7 +5727,6 @@ class ORHarness:
             params={"scope": "maintenance",
                     "strategy_id": strategy_id,
                     "all": bool(all_),
-                    "rebuild": bool(rebuild),
                     "knowledge_before": knowledge_before})
         return {"action_id": action.action_id, "episode_id": episode_id,
                 "knowledge_before": knowledge_before}
@@ -6177,6 +6151,36 @@ class ORHarness:
         index data.
         """
         return self.index_sync.rebuild(layer=layer, dry_run=dry_run)
+
+    def enforce_window(self, *, window_episodes: Optional[int] = None,
+                       open_grace_days: Optional[float] = None,
+                       dry_run: bool = False) -> Dict[str, Any]:
+        """Bound the Execution Evidence Bank to a recent window of episodes.
+
+        The Evidence Bank keeps a bounded RECENT window of COMPLETE episodes
+        (default 800, ``OR_EVIDENCE_WINDOW_EPISODES``). Episodes inside the
+        calibration window, episodes awaiting a task verdict within the
+        late-check grace period, and young unclosed episodes are NEVER
+        evicted. The whole episode leaves at once, so a contrast/repair chain
+        is never split.
+
+        Run this LAST in a maintenance sequence: calibration publish/archive
+        and induction must have taken their opportunity first. ``dry_run``
+        reports the candidates and writes nothing (no row, no vector, no
+        text). Re-running is idempotent.
+
+        The returned ``timer`` semantics are the point: an eviction is a
+        historical source reference EXPIRING. It never refutes a claim and is
+        never confused with ``exclude`` (a withdrawal). The evidence bound
+        covers the Evidence Bank — it does NOT make the whole project
+        directory bounded.
+        """
+        from or_harness.world_model.episode_closeout import (
+            EvidenceWindowPolicy, enforce_evidence_window,
+        )
+        policy = EvidenceWindowPolicy.from_env(
+            window_episodes=window_episodes, open_grace_days=open_grace_days)
+        return enforce_evidence_window(self, policy=policy, dry_run=dry_run)
 
     def index_health(self) -> Dict[str, Any]:
         """Read-only index health (counts, model id, stale/missing items)."""

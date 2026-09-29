@@ -713,49 +713,6 @@ class InductionEngine:
                     "knowledge — " + str(report.get("conclusion", "")))
         return report, note
 
-    # -- rebuild ------------------------------------------------------------------
-
-    def rebuild(self, *, dry_run: bool = False) -> Dict[str, Any]:
-        """Re-induce the entire Strategic Knowledge Bank from the evidence
-        currently retained in the Evidence Bank (raw ``source="executed"``
-        attempt-scope rows).
-
-        This is re-induction, NOT exact reconstruction: the resulting bank
-        may legitimately differ from the previous one (induction logic,
-        evidence set, and validation criteria all evolve). Cold-archive cards
-        are preserved (they are disposal decisions, not derivations).
-
-        ``dry_run`` plans only — nothing is wiped, created or revived."""
-        bank = self.stats.bank
-        groups: Dict[Tuple[str, str], List[str]] = {}
-        for rec in bank.all():
-            if rec.source != "executed" or rec.measurement_scope != "attempt":
-                continue
-            # Group by the DERIVED key: a stale index column (pre-retirement
-            # format) must not decide which cells are rebuilt.
-            key = group_key(rec.profile_snapshot)
-            groups.setdefault((key, rec.strategy_id), []).append(rec.execution_id)
-        plan = []
-        for (group, sid), ids in sorted(groups.items()):
-            if len(ids) < 2:
-                continue
-            sample = bank.get(ids[0])
-            plan.append({"strategy_id": sid, "group": group, "n": len(ids),
-                         "profile": sample.profile_snapshot})
-        if dry_run:
-            return {"would_rebuild": len(plan),
-                    "cells": [{"strategy_id": p["strategy_id"], "group": p["group"],
-                               "n": p["n"]} for p in plan]}
-        # Wipe hot entries (archive kept), re-induct each cell.
-        with self.sbank.store.transaction() as conn:
-            conn.execute("DELETE FROM strategic_entries")
-        created = []
-        for p in plan:
-            result = self.induce(p["profile"], p["strategy_id"])
-            if result.get("created"):
-                created.append(result["created"])
-        return {"rebuilt": len(created), "entry_ids": created}
-
     # -- offline revalidation --------------------------------------------------
 
     def revise(self, strategy_id: Optional[str] = None, *,

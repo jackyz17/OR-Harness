@@ -77,7 +77,7 @@ DOCUMENTED_FLAGS = [
     ("evaluate-capability", ["--prediction", "--tasks", "--paired",
                              "--allow-descriptive"]),
     ("check-task", ["--check", "--episode"]),
-    ("induce", ["--strategy", "--all", "--rebuild", "--dry-run", "--force",
+    ("induce", ["--strategy", "--all", "--dry-run", "--force",
                 "--note", "--verify", "--family", "--cell", "--relation"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
                    "--max-calls", "--time-budget", "--delta",

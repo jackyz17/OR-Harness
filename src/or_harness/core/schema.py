@@ -908,13 +908,21 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
 # ---------------------------------------------------------------------------
 
 #: How an evidence row stands relative to the statistics. ``executed`` =
-#: a real observation that counts; ``compacted`` = a lossy summary (kept
-#: out of statistics by design); ``excluded`` = a fact that WAS observed
+#: a real observation that counts; ``excluded`` = a fact that WAS observed
 #: but has been withdrawn from the evidence set (an explicit correction:
 #: the row is preserved for audit, the reason is recorded, and every
 #: statistics/induction/retrieval path — all of which require
 #: ``source == "executed"`` — stops counting it).
-EXECUTION_SOURCES = ("executed", "compacted", "excluded")
+#:
+#: A retired ``compacted`` value is still READ (a lossy summary kept out of
+#: the statistics) but is never written: no code path produced it, so a
+#: legacy row is mapped to the same place it always was — out of the
+#: evidence set — instead of being revived as an ordinary fact.
+EXECUTION_SOURCES = ("executed", "excluded")
+
+#: Source values that older databases may carry but nothing writes today.
+#: A reader must not resurrect them as counting facts.
+LEGACY_EXECUTION_SOURCES = {"compacted": "excluded"}
 
 #: Keys a method description may carry. ``name`` and ``steps`` are the
 #: substance; ``why`` and ``fallback`` are optional context; ``source``
@@ -1129,10 +1137,6 @@ class ExecutionRecord:
         memory class.
       - ``cir_snapshot`` preserves the coupling-aware representation that
         was actually solved (optional; pre-CIR records omit it).
-      - ``retention_reason`` marks representative evidence (free-form
-        string, harness-supplied, e.g. "contrast"). Explicit only — no
-        automatic marking. Reserved for future compaction policies; lossy
-        GC compaction is currently deferred.
     """
 
     execution_id: str
@@ -1156,11 +1160,6 @@ class ExecutionRecord:
     #: Preserved so future induction can re-bin evidence by structural
     #: context beyond the four scalar coupling features.
     cir_snapshot: Optional[Dict[str, Any]] = None
-    #: Representative-evidence retention marker (free-form string, explicit
-    #: only — set via ``api.record(retain_reason=...)`` /
-    #: ``orx record --retain-reason``). Reserved for future compaction
-    #: policies; lossy GC compaction is currently deferred.
-    retention_reason: Optional[str] = None
     #: What ``cost`` covers: "attempt" (this single execution attempt) or a
     #: wider harness-declared scope (e.g. "task"). One record = one attempt
     #: by default; conditional statistics, predictions, task summaries and
@@ -1253,7 +1252,6 @@ class ExecutionRecord:
             "source": self.source,
             "cir_snapshot": (dict(self.cir_snapshot)
                              if self.cir_snapshot is not None else None),
-            "retention_reason": self.retention_reason,
             "cost_measured": (sorted(self.cost.measured)
                               if self.cost.measured is not None else None),
             "measurement_scope": self.measurement_scope,
@@ -1276,6 +1274,10 @@ class ExecutionRecord:
             if key not in data:
                 raise ValueError(f"ExecutionRecord.{key} is required")
         source = str(data.get("source", "executed"))
+        if source not in EXECUTION_SOURCES:
+            # A legacy ``compacted`` row is not revived as a counting fact:
+            # it maps to ``excluded``, which every read path already skips.
+            source = LEGACY_EXECUTION_SOURCES.get(source, source)
         if source not in EXECUTION_SOURCES:
             raise ValueError(f"source must be one of {EXECUTION_SOURCES}")
         cost = CostVector.from_dict(data.get("cost") or {})
@@ -1300,7 +1302,6 @@ class ExecutionRecord:
             source=source,
             cir_snapshot=(dict(data["cir_snapshot"])
                           if data.get("cir_snapshot") else None),
-            retention_reason=data.get("retention_reason"),
             measurement_scope=str(data.get("measurement_scope", "attempt")),
             solver_runtime_provenance=data.get("solver_runtime_provenance"),
             prediction_snapshot=snapshot,
@@ -1398,9 +1399,11 @@ class StrategicEntry:
     that evidence. The entry keeps lightweight origin metadata
     (``provenance`` = optional representative execution ids, ``support_n``);
     its continued validity does NOT depend on the survival of those evidence
-    rows, and exact reconstruction of past entries is never required
-    (``induce --rebuild`` re-induces from whatever evidence is currently
-    retained). Not a restatement of statistics — a claim about the future,
+    rows, and exact reconstruction of past entries is never required: an
+    existing entry is REFRESHED in place from whatever evidence is currently
+    retained (``induce`` re-reads the predicates on refresh), and a
+    full-bank wipe is not offered because it would replace long-term
+    knowledge with a recent-window restatement. Not a restatement of statistics — a claim about the future,
     with an interval, calibration tracking, and cross-group feature
     predicates.
 

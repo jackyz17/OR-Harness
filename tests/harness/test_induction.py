@@ -287,28 +287,6 @@ class TestApplicabilityNotes(InductionCase):
                          ["one", "two"])
 
 
-class TestRebuild(InductionCase):
-    """Re-induction from currently retained evidence. NOT exact
-    reconstruction: the re-induced bank may legitimately differ from the
-    previous one (induction logic and evidence sets evolve)."""
-
-    def test_rebuild_regenerates_entries(self):
-        self.seed("S01", [0.05, 0.10], task_prefix="a")
-        self.seed("S04", [0.02, 0.04], task_prefix="b")
-        plan = self.engine.rebuild(dry_run=True)
-        self.assertEqual(plan["would_rebuild"], 2)
-        result = self.engine.rebuild()
-        self.assertEqual(result["rebuilt"], 2)
-        self.assertEqual(self.sbank.count(), 2)
-
-    def test_rebuild_preserves_cold_archive(self):
-        self.seed("S01", [0.05, 0.10], task_prefix="a")
-        created = self.engine.induce(self.make_profile("q"), "S01")["created"]
-        self.sbank.retire(created, reason="x")
-        self.engine.rebuild()
-        self.assertEqual(len(self.sbank.cold_archive()), 1)
-
-
 class TestOfflineRevision(HarnessTestCase):
     """Online recording only accumulates evidence; every knowledge change
     (promotion, demotion, scope tightening, dormancy wakeup) happens in the

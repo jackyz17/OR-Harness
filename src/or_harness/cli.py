@@ -600,7 +600,6 @@ def cmd_record(args) -> int:
             prediction = PredictionSnapshot.from_dict(raw)
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
-                          retain_reason=args.retain_reason,
                           prediction=prediction,
                           method=(_load_json_arg(args.method)
                                   if getattr(args, "method", None) else None),
@@ -750,7 +749,7 @@ def cmd_induce(args) -> int:
                     return _fail("--relation must be a JSON object", 2)
                 relations.append(parsed)
         result = h.induce(strategy_id=args.strategy, all_=args.all,
-                          rebuild=args.rebuild, dry_run=args.dry_run,
+                          dry_run=args.dry_run,
                           force=args.force, notes=notes, verify=verify,
                           family=getattr(args, "family", None),
                           cell=getattr(args, "cell", None),
@@ -763,14 +762,6 @@ def cmd_induce(args) -> int:
 def _summarize_induce(result: Dict[str, Any], args) -> str:
     if getattr(args, "relation", None):
         return _summarize_relations(result)
-    if args.rebuild:
-        if result.get("dry_run") or "would_rebuild" in result:
-            return (f"Rebuild plan: {result.get('would_rebuild', 0)} cells would "
-                    "be re-induced from currently retained evidence. The cold "
-                    "archive is preserved. Run without --dry-run to apply.")
-        return (f"Re-induced {result.get('rebuilt', 0)} entries from retained "
-                "evidence. Exact reconstruction is not a requirement — the "
-                "re-induced bank may differ from the previous one.")
     created = [r for r in result.get("results", []) if r.get("created")]
     revised = [r for r in result.get("results", []) if r.get("updated")]
     skipped = [r for r in result.get("results", []) if r.get("skipped")]
@@ -1326,6 +1317,33 @@ def cmd_archive_calibration(args) -> int:
                 f"{len(result.get('held_for_late_check') or [])} episode(s) "
                 "held online for a possible late check. Registry rows stay "
                 "online, so a repeated close remains idempotent.")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
+def cmd_enforce_window(args) -> int:
+    """Bound the Execution Evidence Bank to a recent window of episodes."""
+    h = _harness(args)
+    try:
+        result = h.enforce_window(window_episodes=args.window_episodes,
+                                  open_grace_days=args.open_grace_days,
+                                  dry_run=bool(args.dry_run))
+        n_evicted = result.get("n_evicted", 0)
+        n_unclosed = result.get("n_evicted_unclosed", 0)
+        if result.get("dry_run"):
+            summary = (f"Dry run: {n_evicted} closed episode(s) and "
+                       f"{n_unclosed} aged-out unclosed episode(s) would be "
+                       "evicted; nothing was written.")
+        else:
+            summary = (
+                f"Evicted {n_evicted} closed episode(s) "
+                f"({result.get('removed_executions', 0)} execution(s)) and "
+                f"{n_unclosed} aged-out unclosed episode(s). "
+                f"{result.get('n_protected', 0)} episode(s) were protected "
+                "(calibration window / late-check grace / young unclosed). "
+                "An eviction is a source reference expiring, never a "
+                "refutation or a withdrawal.")
         return _emit(result, summary)
     finally:
         h.close()
@@ -2245,11 +2263,6 @@ def build_parser() -> argparse.ArgumentParser:
                         "printed by `orx predict`) actually used for this "
                         "attempt; feedback compares against it, never a "
                         "post-hoc estimate")
-    p.add_argument("--retain-reason", default=None,
-                   help="explicitly mark this episode as representative "
-                        "evidence (reserved for future compaction policies), "
-                        "e.g. 'contrast'; when omitted, any mark already on "
-                        "the record is preserved")
     p.add_argument("--method", default=None, metavar="JSON",
                    help="for a record assembled OUTSIDE `orx execute`: the "
                         "PLAN this attempt intended, '{\"name\": ..., "
@@ -2322,7 +2335,6 @@ def build_parser() -> argparse.ArgumentParser:
                 "only once --verify renders 'verified'."))
     p.add_argument("--strategy", default=None)
     p.add_argument("--all", action="store_true")
-    p.add_argument("--rebuild", action="store_true")
 
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--force", action="store_true",
@@ -2507,6 +2519,24 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would be archived without moving it")
     p.set_defaults(func=cmd_archive_calibration)
+
+    p = sub.add_parser(
+        "enforce-window",
+        help="bound the Execution Evidence Bank to a recent window of "
+             "COMPLETE episodes (oldest first; whole episodes only). "
+             "Calibration-window episodes, episodes awaiting a late check, "
+             "and young unclosed episodes are never evicted. An eviction is "
+             "a source reference expiring, never a refutation")
+    p.add_argument("--window-episodes", type=int, default=None,
+                   help="how many complete episodes to retain "
+                        "(default 800; $OR_EVIDENCE_WINDOW_EPISODES)")
+    p.add_argument("--open-grace-days", type=float, default=None,
+                   help="how long an UNCLOSED episode's executions may stay "
+                        "before the whole episode is evicted (default 30; "
+                        "$OR_EVIDENCE_OPEN_GRACE_DAYS)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be evicted without writing")
+    p.set_defaults(func=cmd_enforce_window)
 
     p = sub.add_parser(
         "predict-capability",
