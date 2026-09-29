@@ -118,19 +118,6 @@ class IndexSynchronizer:
         return {"layer": LAYER_STRATEGIC, "state": "synced",
                 "items": len(documents), "removed": len(stale_ids)}
 
-    def forget_entry(self, entry_id: str) -> Dict[str, Any]:
-        """Drop a retired entry's vector (delegates to ``sync_entries``)."""
-        if self.index is None:
-            return {"layer": LAYER_STRATEGIC, "state": "skipped",
-                    "reason": "no embedding backend configured"}
-        try:
-            out = self.index.remove(LAYER_STRATEGIC, [entry_id])
-        except Exception as exc:  # noqa: BLE001
-            return {"layer": LAYER_STRATEGIC, "state": "deferred",
-                    "reason": f"index write failed: {type(exc).__name__}: {exc}"}
-        return {"layer": LAYER_STRATEGIC, "state": "synced",
-                "removed": out.get("removed", 0)}
-
     # -- explicit rebuild ------------------------------------------------------------
 
     def rebuild(self, layer: str = "both", dry_run: bool = False) -> Dict[str, Any]:

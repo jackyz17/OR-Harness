@@ -163,6 +163,43 @@ class ExperienceBank:
                          (self.store.dumps(rec.to_dict()), execution_id))
         return rec
 
+    def annotate_features(self, execution_id: str,
+                          patch: Dict[str, Any], *,
+                          allow_staged: bool = True) -> ExecutionRecord:
+        """Write a narrow ANNOTATION onto a fact's ``execution_features``.
+
+        An annotation is a computed or observed ADDITION to a fact (frozen
+        prediction checks, induction hints, a correction link) — never a
+        rewrite of the observation itself: ``quality``, ``cost`` and
+        ``source`` are untouched. This is the SAME narrow channel as
+        :meth:`set_cost_feedback` / :meth:`set_task_check`, generalized so a
+        new annotation does not need its own copy of the read-modify-write.
+
+        ``patch`` maps feature keys to values; a value of ``None`` REMOVES
+        the key (an annotation withdrawn is unknown, never a default).
+        ``allow_staged`` also updates a staged-but-unrecorded execution in
+        place, so an annotation attached by ``execute`` survives
+        ``record --from-staged`` verbatim.
+        """
+        rec = self.get(execution_id)
+        staged = False
+        if rec is None and allow_staged:
+            rec = self.get_pending(execution_id)
+            staged = rec is not None
+        if rec is None:
+            raise StorageError(f"unknown execution_id {execution_id!r}")
+        for key, value in patch.items():
+            if value is None:
+                rec.execution_features.pop(key, None)
+            else:
+                rec.execution_features[key] = value
+        table = "pending_executions" if staged else "executions"
+        with self.store.transaction() as conn:
+            conn.execute(
+                f"UPDATE {table} SET payload=? WHERE execution_id=?",
+                (self.store.dumps(rec.to_dict()), execution_id))
+        return rec
+
     def set_cost_feedback(self, execution_id: str,
                           feedback: Optional[Dict[str, Any]]) -> ExecutionRecord:
         """Write (or remove) the record's cost feedback annotation.

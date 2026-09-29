@@ -270,7 +270,14 @@ def document_execution(record: ExecutionRecord, task_text: str) -> str:
     matched against), then the strategy that was used and the outcome
     summary (status / feasibility / failure count) so "which strategy was
     tried on comparable problems, and how did it go" lives in the same
-    vector space. Only fields already on the record are used.
+    vector space.
+
+    The METHOD the execution reports (its planned and/or actually-performed
+    steps) is included when the record carries one: "how was this actually
+    done" is the question a future task asks of past evidence, and leaving
+    it out made the method unsearchable. Records that report no method add
+    nothing here — the absent content stays absent, never paraphrased. Only
+    fields already on the record are used; no LLM summarization step.
     """
     status = record.quality.get("status")
     feasible = record.quality.get("feasible")
@@ -282,6 +289,19 @@ def document_execution(record: ExecutionRecord, task_text: str) -> str:
         ("feasible" if feasible else "not feasible") if feasible is not None else "",
         f"failures {len(record.failures)}" if record.failures else "",
     ]
+    for label, method in (("planned", record.method_planned),
+                          ("performed", record.method_actual)):
+        if not isinstance(method, dict):
+            continue
+        name = str(method.get("name") or "").strip()
+        steps = [str(s) for s in (method.get("steps") or []) if str(s).strip()]
+        if not name and not steps:
+            continue
+        text = f"{label} method: "
+        text += name
+        if steps:
+            text += (name and " — " or "") + "; ".join(steps)
+        parts.append(text)
     return " ".join(part for part in parts if part)
 
 

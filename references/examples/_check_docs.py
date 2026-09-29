@@ -40,6 +40,7 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/capability_evolution.py",
     "references/examples/prediction_context.py",
     "references/examples/contract_roundtrip.py",
+    "references/examples/method_evidence.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.
@@ -77,13 +78,13 @@ DOCUMENTED_FLAGS = [
                              "--allow-descriptive"]),
     ("check-task", ["--check", "--episode"]),
     ("induce", ["--strategy", "--all", "--rebuild", "--dry-run", "--force",
-                "--note", "--verify", "--family", "--cell", "--peer-strategy",
-                "--peer-cell", "--relation"]),
+                "--note", "--verify", "--family", "--cell", "--relation"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
                    "--max-calls", "--time-budget", "--delta",
                    "--prediction-mode", "--benefit-kind", "--benefit-metric",
                    "--benefit-unit"]),
     ("induction-candidates", []),
+    ("induction-material", ["--bundle", "--pattern", "--strategy"]),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),
     ("snapshot", ["--task", "--episode"]),
     ("action", ["--report", "--task", "--amend-cost", "--cost"]),

@@ -460,8 +460,6 @@ class Selector:
     def _from_stats(self, strategy_id: str, cell: GroupStats,
                     memory_mode: str,
                     norms: Optional[Dict[str, float]] = None,
-                    basis: Optional[str] = None,
-                    cross_family: bool = False,
                     cost_basis: Optional[List[str]] = None) -> Recommendation:
         """Recommendation from conditional statistics over the Evidence Bank.
 
@@ -488,11 +486,10 @@ class Selector:
             expected_quality=cell.mean_quality, expected_cost=cost,
             failure_prob=cell.fail_rate, evidence="conditional_stats",
             evidence_refs=list(cell.execution_ids),
-            confidence=(min(1.0, cell.n / PROMOTE_REFERENCE_N)
-                        * (CROSS_FAMILY_CONFIDENCE_DISCOUNT if cross_family else 1.0)),
-            cross_family=cross_family,
+            confidence=(min(1.0, cell.n / PROMOTE_REFERENCE_N)),
+            cross_family=False,
             risk_warnings=warnings,
-            basis=basis or f"conditional statistics over n={cell.n} executions in this group",
+            basis=(f"conditional statistics over n={cell.n} executions in this group"),
             cost_known_dims=sorted(cost.measured_dims()),
             cost_basis_dims=list(cost_basis or []))
 

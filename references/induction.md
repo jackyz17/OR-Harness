@@ -6,10 +6,17 @@ Read this page when you are deciding whether to induce, working out why a candid
 
 ```text
 completed episodes
-  induction-candidates            freeze the evidence packages (no model call)
+  induction-candidates            freeze the evidence packages (no model call);
+        |                         detector-derived candidates carry both sides
+        |                         of a contrast, cell candidates carry the gate
+  induction-material              read the METHODS, the change, what followed
+        |                         and the verification state (no model call)
+        v   material=insufficient = record how the work was done, do not invent
+  (you form the claim: condition -> how -> consequence -> boundary)
         |
-        v   nothing reported = the evidence is below the bar
-  predict-capability              what would this operation change?
+  induce --relation               submit it; the framework checks what you wrote
+        |
+  predict-capability              (optional) what would this operation change?
   compare-capability              one recommendation, or defer
   accept-capability               EXPLICIT accept — runs the operation
         |                         and binds the maintenance fact itself
@@ -23,9 +30,11 @@ completed episodes
   evaluate-capability             did it help? (TASK-EPISODES, work after it)
 ```
 
-**Entry conditions.** Creating an entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. `induction-candidates` reports only what clears the bar, so an empty answer means "keep solving and recording" — there is nothing to decide yet. Use `--relation` for a lesson that is not one strategy's statistics.
+**Entry conditions.** Creating a statistical entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. `induction-candidates` reports only what clears the bar, so an empty answer means "keep solving and recording" — there is nothing to decide yet. Use `--relation` for a lesson that is not one strategy's statistics.
 
-**What `record` tells you.** After every `record`, cheap detectors may return an `induction_hint`. A hint is a reason to LOOK, never an induction: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all.
+**What `record` tells you.** After every `record`, cheap detectors may return an `induction_hint`. A hint is a reason to LOOK, never an induction: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all. Each hint is also **persisted onto the fact that produced it** (`execution_features.induction_hints`), so `induction-candidates` can reuse the detector's own cross-execution evidence — both sides of a contrast, the failed/recovered pair — instead of re-deriving the pattern from bare counts.
+
+**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt (stamped with the attempt's `OR_ACTION_ID`) records what ACTUALLY ran, and the receipt's steps appear in the record's trajectory. Nothing promotes the plan to a fact: an unobserved performance stays `None`. `induction-material` is what you read before writing a claim.
 
 Induction is the part of OR-Harness most worth understanding correctly. It answers: "given the facts accumulated so far, which generalizations am I entitled to commit to?"
 
@@ -38,7 +47,7 @@ Four patterns are worth generalizing. They are named for what they are — no hi
 | Pattern | Fires when | Key refusal condition |
 |---|---|---|
 | `strategy_contrast` | ≥2 strategies in the same structural cell differ significantly in quality **or** in cost, and the contrast is not already encoded | a difference existing entries already capture is not news (quality and cost are judged separately: an entry explaining the quality gap does not explain the cost gap) |
-| `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`) or across executions (a same-task attempt failed under one solver, then succeeded under another) | failures without an intervention; retrying the same solver is not an intervention |
+| `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`), across executions under the SAME solver when a real change is visible (a differing reported method, or a declared `intervention`), or across executions when the solver changed | failures without an intervention; retrying the same solver with NO evidence of a change (a plain retry is not a demonstrated recovery) |
 | `structural_reproduction` | the same strategy shows the same-direction behaviour in ≥2 families **at the same structure** (the reference dimensions must all be measured) | single-family evidence, mixed directions, or an unmeasured structure |
 | `advantage_reversal` | the same strategy performs high (≥0.75) in one structural cell and low (≤0.35) in another cell **of the same family**, each with n ≥ 2 | consistent advantage across cells, a single cell, a thin cell, or a cross-family difference |
 
@@ -141,14 +150,29 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 
 - **strategy_contrast / intervention_recovery / structural_reproduction** read the target's structural cell only — never the whole family, so a different region's behaviour cannot drive or dilute a relation. `structural_reproduction` is the one cross-family pattern, and it compares each family in the SAME cell. `advantage_reversal` is the one cross-cell pattern, and it stays inside one family.
 - **strategy_contrast** treats quality and cost contrasts independently: entries explaining the quality gap do not explain the cost gap.
-- **intervention_recovery** detects a recorded intervention within one execution, or a cross-execution chain when the solver changed. Retrying the same solver is not an intervention, and other automatic detection is not attempted this round — if you fixed something, say so in the record.
+- **intervention_recovery** detects a recorded intervention within one execution, a same-solver fix when a real change is visible (a differing method receipt or a declared `intervention`), or a cross-execution chain when the solver changed. A plain retry of the same solver with no evidence of a change is not an intervention, and the hint names WHAT changed and links the two executions — it never claims causation.
 - **structural_reproduction** is a hint that reproduction happened at one structure across families. It never verifies knowledge and never widens applicability. One task's observation is not transferable knowledge.
 - **advantage_reversal** detects a boundary between two cells of one family. It does not claim WHY the advantage flips, and it never merges the cells into one applicability range.
 - All four patterns are hints: they never satisfy the admission gate, and they never decide how a submitted relation is verified.
 
-## Structured relation claims (`induce --relation`)
+## Reading the material (`induction-material`)
 
-Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
+Semantic induction is a division of labour: the framework ORGANS element the material and checks what you submit; YOU read the material and write the claim.
+
+`orx induction-material [--bundle BUNDLE_ID] [--pattern P] [--strategy S]` returns, for each candidate, the frozen evidence a claim can rest on:
+
+- `methods[]` — per execution, its `planned` method, the method it reports as actually `performed`, and the trajectory steps that really happened;
+- `comparisons[]` — the detector's own evidence blocks (both sides of a contrast, the failed/recovered pair), so a claim can cite both sides rather than one;
+- `outcome` / `task_check` / `failures` per execution — what followed, and what was actually checked;
+- `material_state` — `sufficient` (the evidence reports method content) or `insufficient`.
+
+**`insufficient` is the honest answer to "there is nothing to abstract from".** When the evidence holds a strategy name and a mean but no method, `induction-material` says so, and the right response is to record how the work was actually done (`execute --method`, or the script's `method_performed` receipt) — not to write a technique out of the numbers. The framework itself never derives a how-to from a mean: `induce`'s statistical path writes no method prose at all.
+
+Submitting a relation whose evidence reports no method (and whose own claim declares none) still saves the claim — you may legitimately state the method in your own words — but the outcome carries a `material` warning saying the framework did not and will not derive a technique from the numbers, so the claim's basis is visible as numbers-based.
+
+You may cite a candidate directly: an evidence entry `{"bundle_id": "cb_...", "role": "..."}` is expanded into that bundle's frozen execution set. Bundle ids are content-addressed, so the id `induction-candidates` printed still names the same candidate on the next call.
+
+## Structured relation claims (`induce --relation`)Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
 
 `induce --relation '<json>'` submits such a claim. The JSON is:
 
@@ -163,6 +187,10 @@ Not every lesson is one strategy's statistics. "When temporal coupling is high, 
  "check": {"assertions": [ ... ]},
  "kind": "intervention_recovery"}
 ```
+
+An evidence entry may instead be `{"bundle_id": "cb_...", "role": "..."}` — see `induction-material`.
+
+A relation submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge delta (`entries_created` / `entry_changes`), the index result, and the same knowledge feedback. Re-submitting the same claim does not create a second entry.
 
 - **`evidence` + `role` is the anchor.** Every reference names a recorded execution and the part it plays in *this* claim. Roles are free strings (`dropped`/`preserved`, `before`/`after`, `strategy_a`, `violation`/`satisfying`, …) — they are not a taxonomy, and nothing forces your claim into one of the four trigger patterns. `kind` is an optional note about what prompted the claim.
 - **Identity is derived, never submitted.** Tasks, family, structural cell and strategy ids are read off the recorded facts. You supply ids and roles only, so the same evidence cannot acquire two contradictory identities.
@@ -226,13 +254,11 @@ In a world-model context the same content reaches `provider_view` through the st
 
 ## Peer evidence as phrasing (`--peer-strategy` / `--peer-cell`)
 
-The older, narrower path: naming another strategy (same cell) or another cell (same strategy) writes one contrast line under the entry's `risk_conditions` and reports it under `peer_relations`. It remains a **phrasing** mechanism — read only to state what the claim was induced against, never a statistic, never satisfying the admission gate, never creating an entry.
-
-When the relation itself is the knowledge you want (verified, scoped, revisable, recallable), use `--relation` instead: it is the structured form of exactly this observation. A plain induction with no peer flags and no relations is unchanged.
+REMOVED. Naming another strategy or cell used to write one contrast line under the entry's `risk_conditions`. That was a sentence the framework could not check, and the observable form of the same observation is a relation claim — submit it with `--relation` (below), citing the executions on both sides. Existing entries that already carry such text keep it; nothing writes new ones.
 
 ## Applicability notes
 
-`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact. Peer relations use the same free-text discipline (`risk_conditions` rather than `applicability`, because a relation is a boundary the reader must respect).
+`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact.
 
 ## Cold archive (anti-resurrection)
 

@@ -1,0 +1,359 @@
+"""Offline induction: detector hints reach the candidate bundle, and a
+candidate's METHOD material is readable.
+
+The gap this closes: the four detectors fired ONLINE (at record time) and
+their evidence was returned to the caller and then thrown away, so the
+offline candidate builder re-derived candidates from bare counts and never
+saw the detector's cross-execution references. These tests pin the joined
+chain: detect -> persist the hint -> reuse it offline -> carry the method
+material -> refuse to abstract a technique from a name and a mean.
+"""
+import io
+import json
+import os
+import sys
+import unittest
+from pathlib import Path
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
+
+from tests.harness.helpers import HarnessTestCase  # noqa: E402
+
+from or_harness.api import ORHarness  # noqa: E402
+from or_harness.core.schema import (  # noqa: E402
+    CostVector,
+    FailureRecord,
+)
+from or_harness.strategy.triggers import (  # noqa: E402
+    InductionHint,
+    evidence_execution_ids,
+)
+
+
+def _profile(problem_id="t1", family="routing", **coupling):
+    from or_harness.core.schema import ProblemProfile
+    values = {"semantic_coupling": 0.8, "resource_coupling": 0.3,
+              "temporal_coupling": 0.2, "route_complexity": 0.8}
+    values.update(coupling)
+    return ProblemProfile(
+        problem_id=problem_id, family=family,
+        scale_features={"n_vars": 100.0, "n_constraints": 50.0,
+                        "n_int_vars": 100.0, "density": 0.01},
+        **values)
+
+
+class TestHintPersistence(HarnessTestCase):
+    """A hint produced online is PERSISTED onto the fact that produced it."""
+
+    def test_record_writes_its_hints_onto_the_fact(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        failed = self.make_record(execution_id="f1", task_id="ft",
+                                  feasible=False, status="error",
+                                  solver={"name": "pulp"},
+                                  profile=_profile("ft"))
+        h.record(failed)
+        success = self.make_record(execution_id="f2", task_id="ft",
+                                   solver={"name": "ortools"},
+                                   profile=_profile("ft"))
+        result = h.record(success)
+        # The hint is in the RETURN value (unchanged behaviour) ...
+        returned = [r["pattern"] for r in result["induction_hints"]]
+        self.assertIn("intervention_recovery", returned)
+        # ... AND on the stored fact, so it survives the call.
+        stored = h.bank.get("f2")
+        persisted = stored.execution_features.get("induction_hints")
+        self.assertTrue(persisted)
+        self.assertEqual(persisted[0]["pattern"], "intervention_recovery")
+
+    def test_a_record_with_no_hint_writes_none(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        record = self.make_record(profile=_profile())
+        h.record(record)
+        stored = h.bank.get(record.execution_id)
+        self.assertNotIn("induction_hints", stored.execution_features)
+
+
+class TestDetectorCandidates(HarnessTestCase):
+    """An offline candidate REUSES the detector's own evidence references."""
+
+    def _seed_conflict(self, h):
+        """S01 poor-quality in one cell, S04 good in the same cell."""
+        cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0,
+                           measured={"llm_tokens", "solver_runtime_s"})
+        ids = []
+        for prefix, sid, gap in (("a", "S01", 0.40), ("b", "S04", 0.02)):
+            for i in range(2):
+                rec = self.make_record(
+                    execution_id=f"{prefix}_{i}", task_id=f"{prefix}{i}",
+                    strategy_id=sid, gap=gap, cost=cheap,
+                    profile=_profile(f"{prefix}{i}", resource_coupling=0.30))
+                h.record(rec)
+                ids.append(rec.execution_id)
+        return ids
+
+    def test_a_contrast_becomes_one_bundle_with_both_sides(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed_conflict(h)
+        bundles = h.induction_candidates()
+        contrasts = [b for b in bundles if b["kind"] == "pattern"
+                     and b["pattern"] == "strategy_contrast"]
+        self.assertEqual(len(contrasts), 1)
+        bundle = contrasts[0]
+        # Both sides travel in ONE bundle: the execution ids cover BOTH
+        # strategies, rather than splitting into two unrelated bins.
+        strategies = {
+            h.bank.get(eid).strategy_id for eid in bundle["execution_ids"]}
+        self.assertEqual(strategies, {"S01", "S04"})
+        self.assertEqual(bundle["evidence_refs"][0]["kind"], "quality")
+        self.assertEqual(set(bundle["evidence_refs"][0]["n"]),
+                         {"S01", "S04"})
+
+    def test_the_same_candidate_is_not_multiplied(self):
+        """Re-reading the bank must not multiply one observation into many
+        candidates: the signature is (pattern, group, evidence set)."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed_conflict(h)
+        first = h.induction_candidates()
+        second = h.induction_candidates()
+        self.assertEqual(len(first), len(second))
+
+    def test_a_candidate_carrying_no_method_is_insufficient(self):
+        """No execution reports a method: the material is INSUFFICIENT, not
+        an invitation to invent a technique from a name and a mean."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        for i in range(2):
+            h.record(self.make_record(task_id=f"t{i}", strategy_id="S01",
+                                      profile=_profile(f"t{i}")))
+        bundles = h.induction_candidates()
+        self.assertTrue(bundles)
+        material = h.induction_material()
+        self.assertTrue(material["material"])
+        for item in material["material"]:
+            self.assertEqual(item["material_state"]["state"], "insufficient")
+        # And the CLI says so plainly rather than emitting a claim.
+        code, out = self._run_cli(h, ["induction-material"])
+        self.assertEqual(code, 0)
+        self.assertIn("material=insufficient", out)
+
+    def test_method_material_travels_when_it_exists(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        for i in range(2):
+            rec = self.make_record(task_id=f"t{i}", strategy_id="S01",
+                                   profile=_profile(f"t{i}"))
+            rec.method_planned = {"name": "rolling-horizon decomposition",
+                                  "steps": ["relax", "solve master",
+                                            "recombine"]}
+            rec.method_actual = {"name": "rolling-horizon decomposition",
+                                 "steps": ["relax", "solve master"]}
+            h.record(rec)
+        material = h.induction_material()
+        item = material["material"][0]
+        self.assertEqual(item["material_state"]["state"], "sufficient")
+        methods = item["methods"]
+        self.assertEqual(len(methods), 2)
+        self.assertEqual(methods[0]["planned"]["steps"],
+                         ["relax", "solve master", "recombine"])
+        self.assertEqual(methods[0]["actual"]["steps"],
+                         ["relax", "solve master"])
+        # Each cited execution carries its verified outcome, so a claim can
+        # rest on what was CHECKED, not just on what was intended.
+        self.assertIn("task_check", methods[0])
+
+    def _run_cli(self, h, argv):
+        from or_harness import cli
+        buffer = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buffer
+        try:
+            code = cli.main(["--home", self.home] + argv)
+        finally:
+            sys.stdout = old
+        return code, buffer.getvalue()
+
+    def test_material_can_be_selected_by_bundle(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed_conflict(h)
+        bundles = h.induction_candidates()
+        wanted = bundles[0]["bundle_id"]
+        material = h.induction_material(bundle_id=wanted)
+        self.assertEqual(material["count"], 1)
+        self.assertEqual(material["material"][0]["bundle_id"], wanted)
+
+    def test_unknown_bundle_is_refused(self):
+        from or_harness.core.storage import StorageError
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        with self.assertRaises(StorageError):
+            h.induction_material(bundle_id="cb_does_not_exist")
+
+
+class TestEvidenceExecutionIds(unittest.TestCase):
+    def test_flattens_every_evidence_shape(self):
+        self.assertEqual(
+            evidence_execution_ids({"execution_id": "e1"}), ["e1"])
+        self.assertEqual(
+            evidence_execution_ids({"execution_ids": {"a": ["e1", "e2"]}}),
+            ["e1", "e2"])
+        self.assertEqual(
+            evidence_execution_ids({"failed": {"execution_id": "f"},
+                                    "recovered_by": {"execution_id": "r"}}),
+            ["f", "r"])
+
+    def test_stored_hint_refuses_an_unknown_pattern(self):
+        with self.assertRaises(ValueError):
+            InductionHint.from_dict({"pattern": "invented", "group_key": "g"})
+
+
+class TestRelationWriteBookkeeping(HarnessTestCase):
+    """A relation submission is a knowledge WRITE, so it must be traceable
+    exactly like a statistical induction: a maintenance action with a PRE
+    state, a knowledge delta, and the index result. It must also not be
+    counted twice."""
+
+    def _seed(self, h, method=False):
+        ids = []
+        for i in range(3):
+            rec = self.make_record(execution_id=f"r{i}", task_id=f"T{i}",
+                                   strategy_id="S01", gap=0.02,
+                                   profile=_profile(f"T{i}",
+                                                    temporal_coupling=0.7,
+                                                    resource_coupling=0.2))
+            if method:
+                rec.method_actual = {"name": "keep cross-period state",
+                                     "steps": ["carry the state", "solve"]}
+            h.record(rec)
+            ids.append(rec.execution_id)
+        return ids
+
+    def test_a_relation_write_records_a_maintenance_action_and_delta(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        ids = self._seed(h)
+        before_actions = len(h.actions.query())
+        relation = {
+            "subject": "principle:cross_period_state",
+            "claim": "on temporally coupled tasks the cross-period state must "
+                     "be preserved; dropping it cost quality",
+            "conditions": {"predicates": {"family": "routing",
+                                          "temporal_coupling": [0.5, 1.0]}},
+            "evidence": [{"execution_id": eid, "role": "preserved"}
+                         for eid in ids],
+        }
+        result = h.induce(relations=[relation])
+        # A maintenance action was recorded with the relation shape.
+        self.assertIn("action", result)
+        action = h.actions.get(result["action"]["action_id"])
+        self.assertIsNotNone(action)
+        self.assertEqual(action.action_type, "induce")
+        self.assertEqual(action.params.get("knowledge_shape"), "relations")
+        self.assertEqual(action.status, "completed")
+        # The delta names the created entry and reports a real transition.
+        delta = result["action"]["knowledge_delta"]
+        self.assertTrue(delta["entries_created"])
+        self.assertEqual(delta["entry_count_before"], 0)
+        self.assertEqual(delta["entry_count_after"], 1)
+        self.assertEqual(len(h.actions.query()), before_actions + 1)
+        # The index result is REPORTED, not discarded.
+        self.assertIn("index_sync", result)
+
+    def test_the_relation_write_is_not_counted_twice(self):
+        """Two identical submissions produce two actions but ONE entry, and
+        the second reports 'updated', never a second creation."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        ids = self._seed(h)
+        relation = {
+            "subject": "principle:cross_period_state",
+            "claim": "preserve the cross-period state",
+            "evidence": [{"execution_id": eid, "role": "preserved"}
+                         for eid in ids],
+        }
+        first = h.induce(relations=[relation])
+        second = h.induce(relations=[relation])
+        self.assertTrue(first["action"]["knowledge_delta"]["entries_created"])
+        self.assertFalse(second["action"]["knowledge_delta"]["entries_created"])
+        self.assertEqual(second["action"]["business_result"],
+                         "relation_updated")
+        self.assertEqual(h.sbank.count(), 1)
+
+    def test_a_dry_run_relation_write_persists_nothing(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        ids = self._seed(h)
+        before_actions = len(h.actions.query())
+        before_entries = h.sbank.count()
+        result = h.induce(relations=[{
+            "subject": "principle:dry",
+            "claim": "x",
+            "evidence": [{"execution_id": eid, "role": "preserved"}
+                         for eid in ids]}], dry_run=True)
+        self.assertNotIn("action", result)
+        self.assertEqual(len(h.actions.query()), before_actions)
+        self.assertEqual(h.sbank.count(), before_entries)
+
+    def test_a_method_less_relation_is_reported_not_refused(self):
+        """The material report is a WARNING: the claim is saved, and the
+        outcome says the framework did not (and will not) derive a technique
+        from the numbers."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        ids = self._seed(h)
+        result = h.induce(relations=[{
+            "subject": "principle:no_method",
+            "claim": "S01 works better here",
+            "evidence": [{"execution_id": eid, "role": "preserved"}
+                         for eid in ids]}])
+        outcome = result["relations"][0]
+        self.assertIsNotNone(outcome["saved"])
+        self.assertIsNotNone(outcome["material"])
+        self.assertIn("derive a technique", outcome["material"]["reason"])
+
+    def test_a_relation_that_reports_a_method_carries_no_warning(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        ids = self._seed(h, method=True)
+        result = h.induce(relations=[{
+            "subject": "principle:with_method",
+            "claim": "preserve the cross-period state, then solve",
+            "evidence": [{"execution_id": eid, "role": "preserved"}
+                         for eid in ids]}])
+        self.assertIsNone(result["relations"][0]["material"])
+
+    def test_a_claim_may_cite_a_bundle_instead_of_execution_ids(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed(h)
+        bundles = h.induction_candidates()
+        self.assertTrue(bundles)
+        bundle_id = bundles[0]["bundle_id"]
+        result = h.induce(relations=[{
+            "subject": "principle:from_bundle",
+            "claim": "the bundle's evidence supports this",
+            "evidence": [{"bundle_id": bundle_id, "role": "preserved"}]}])
+        outcome = result["relations"][0]
+        self.assertIsNotNone(outcome.get("saved"))
+        # Every execution in the bundle was cited.
+        stored = h.sbank.get(outcome["saved"]).relations[0]
+        self.assertEqual(len(stored["evidence"]), 3)
+
+    def test_an_unknown_bundle_is_refused_with_a_reason(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed(h)
+        result = h.induce(relations=[{
+            "subject": "principle:bad_bundle",
+            "claim": "x",
+            "evidence": [{"bundle_id": "cb_missing", "role": "preserved"}]}])
+        self.assertIn("unknown induction bundle",
+                      result["relations"][0]["skipped"])
+
+
+if __name__ == "__main__":
+    unittest.main()

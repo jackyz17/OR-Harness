@@ -24,20 +24,30 @@ under one structural condition (``strategy_contrast``), what changed after an
 intervention (``intervention_recovery``), whether a relation recurs in an
 independent family (``structural_reproduction``), and where a strategy's
 advantage reverses (``advantage_reversal``). The detectors live in
-:mod:`or_harness.strategy.triggers`; this engine can also read PEER evidence
-(:meth:`InductionEngine.induce`'s ``peer_evidence``) so a claim it writes can
-record the contrast or the boundary it was induced from, not only its own
-cell's mean. Peer evidence is recorded as applicability/risk text on the
-entry — it never becomes a second statistic, and it never creates a claim by
-itself.
+:mod:`or_harness.strategy.triggers` and fire online; their persisted hints
+carry the cross-execution evidence into the offline candidates
+(``or_harness.world_model.maintenance``). A claim about such a relation is
+submitted as a STRUCTURED relation (``submit_relation``) with the evidence
+that established it — the statistical path below never phrases a contrast
+into free text.
 
 The only LLM injection point is phrasing: the harness may attach free-text
 applicability notes, which are kept for the reader and never scored.
+
+SEMANTIC INDUCTION is organized, not performed, here. The framework gathers
+the material (``ORHarness.induction_material``: the methods actually used, the
+two sides of a comparison, what followed, the outcome and check state), the
+outer agent reads it and forms the "condition -> how -> consequence ->
+boundary" claim in its own words, and
+:meth:`InductionEngine.submit_relation` + :func:`verify_relation` check what
+was submitted. Nothing invents a method: when the cited evidence reports no
+method at all (and the claim declares none),
+:func:`relation_material_gate` REPORTS that in the outcome — the claim is
+saved as written, and the framework never derives a technique from a mean.
 """
 
 from __future__ import annotations
 
-from statistics import mean
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
@@ -60,7 +70,7 @@ from or_harness.core.schema import (
     relation_state,
     validate_relation,
 )
-from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
+from or_harness.strategy.stats import ConditionalStats, GroupStats
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
 from or_harness.strategy.verification import (
     VERIFIED,
@@ -86,6 +96,62 @@ UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
 RELATION_MIN_TASKS = SCHEMA_RELATION_MIN_TASKS
 
 
+#: A method description counts as substance when it names the steps actually
+#: taken. The gate below refuses a claim that rests on evidence which reports
+#: NO method content, because a strategy name plus a mean is a statistic, not
+#: a technique.
+def _has_method_content(record: ExecutionRecord) -> bool:
+    """Whether a record reports anything about HOW the work was done.
+
+    A planned method alone counts: the agent stated the method it intended,
+    which is real (if partial) material for a claim. Neither side present
+    means the record holds a name and numbers only.
+    """
+    planned = record.method_planned
+    actual = record.method_actual
+    return bool((planned or {}).get("steps") or (planned or {}).get("name")
+                or (actual or {}).get("steps") or (actual or {}).get("name"))
+
+
+def relation_material_gate(relation: Dict[str, Any],
+                           records: Sequence[ExecutionRecord]
+                           ) -> Optional[Dict[str, Any]]:
+    """Report that a relation's supporting evidence carries no method.
+
+    The framework's rule for semantic induction: IT will not turn a strategy
+    name and a mean into a technique. The agent, however, may state the
+    method in its own claim text — that is precisely the abstraction the
+    semantic-induction step asks for, and refusing it would be the framework
+    second-guessing a better-informed author. So this is a WARNING, not a
+    veto: the outcome records it, and the reader can see that the claim rests
+    on numbers rather than on recorded processing.
+
+    It fires only when NO cited execution reports a method AND the relation
+    declares no ``method`` field of its own. The corresponding hard
+    guarantee is elsewhere: the framework's own (statistical) induction
+    writes no method prose at all, and ``induction_material`` marks such a
+    candidate ``insufficient`` so the agent is told what is missing.
+    """
+    if any(_has_method_content(rec) for rec in records):
+        return None
+    declared = relation.get("method")
+    if isinstance(declared, dict) and (declared.get("name")
+                                       or declared.get("steps")):
+        return None
+    return {
+        "reason": ("no supporting execution reports a method and the claim "
+                   "declares none: the evidence holds a strategy name and "
+                   "numbers only. The claim is saved as written, but the "
+                   "framework did not and will not derive a technique from "
+                   "those numbers — record how the work was actually done "
+                   "(`orx execute --method`, or the solve script's "
+                   "'method_performed' receipt) to make the claim's basis "
+                   "reviewable"),
+        "records_with_method": 0,
+        "records": len(records),
+    }
+
+
 class InductionEngine:
     def __init__(self, stats: ConditionalStats, sbank: StrategicBank):
         self.stats = stats
@@ -97,9 +163,7 @@ class InductionEngine:
                notes: Optional[List[str]] = None,
                dry_run: bool = False, force: bool = False,
                verify: Optional[Dict[str, Any]] = None,
-               execution_ids: Optional[Sequence[str]] = None,
-               peer_evidence: Optional[Dict[str, List[ExecutionRecord]]] = None,
-               relations: Optional[Sequence[Dict[str, Any]]] = None
+               execution_ids: Optional[Sequence[str]] = None
                ) -> Dict[str, Any]:
         """Create or refresh the entry for (strategy, evidence set).
 
@@ -122,18 +186,11 @@ class InductionEngine:
         widens (or narrows) its applicability.
 
         ``notes`` are harness-written applicability notes (free text): kept on
-        the entry for the reader, never scored.
-
-        ``peer_evidence`` is an optional ``{label: records}`` map of
-        STRUCTURALLY COMPARABLE evidence the claim was induced against — the
-        other strategies' executions in the same cell (``strategy_contrast``),
-        or the same strategy's executions in a neighbouring cell
-        (``advantage_reversal``). It is read ONLY to phrase the claim: each
-        entry gets one line per peer under ``risk_conditions`` naming the
-        observed difference (``label``, n, mean quality, complete cost dims).
-        Peer evidence never contributes to this entry's statistics, never
-        satisfies the admission gate, and never creates an entry on its own —
-        a contrast is a reason to look, not a claim by itself.
+        the entry for the reader, never scored. A CONTRAST against other
+        evidence is not written here as prose any more: it is a relation
+        claim, submitted through :meth:`submit_relation` with the evidence
+        that established it (see ``orx induction-material`` for the material
+        to read). The statistical path stays statistics.
 
         ``verify`` optionally carries the harness's offline admission check
         ``{"purpose", "claim", "check", "executions", "supporting"}``; the
@@ -212,12 +269,6 @@ class InductionEngine:
                    else 0.0) for d in COST_DIMENSIONS},
             measured=set(complete_dims))
         note_texts = [str(n).strip() for n in (notes or []) if str(n).strip()]
-        # Relations read off PEER evidence (contrast / reversal). These are
-        # applicability NOTES, never statistics: they describe what the claim
-        # was induced against, they are not scored, and they cannot create a
-        # claim. Only COMPLETE cost dimensions are quoted, for the same
-        # reason the entry withholds a partial mean.
-        relation_notes = self._peer_relations(cell, peer_evidence)
         verification, verification_note = self._run_verification(
             verify, dry_run, strategy_id=strategy_id, profile=profile)
 
@@ -230,7 +281,7 @@ class InductionEngine:
                        or self._cost_estimates_changed(existing, cost_hat,
                                                        measured_cost_interval,
                                                        cell.n_measured))
-            if not changed and not note_texts and not relation_notes:
+            if not changed and not note_texts:
                 return {"created": None,
                         "skipped": f"entry {existing.entry_id} already encodes this "
                                    "evidence (restatement-only entries are forbidden)",
@@ -239,8 +290,6 @@ class InductionEngine:
                 out = {"created": None, "would_update": existing.entry_id,
                        "cell": cell.to_dict()}
                 self._note_withheld(out, withheld, cell)
-                if relation_notes:
-                    out["peer_relations"] = relation_notes
                 if verification is not None:
                     out["verification"] = verification
                 return out
@@ -280,15 +329,11 @@ class InductionEngine:
                     "re-verify with induce --verify to re-publish")
             if note_texts:
                 existing.applicability.extend(note_texts)
-            if relation_notes:
-                existing.risk_conditions.extend(relation_notes)
             self.sbank.update(existing)
             out = {"updated": existing.entry_id, "cell": cell.to_dict(),
                    "predicates": predicates,
                    "notes_added": len(note_texts)}
             self._note_withheld(out, withheld, cell)
-            if relation_notes:
-                out["peer_relations"] = relation_notes
             if substantive and verification is None \
                     and existing.verification_state == "verified":
                 out["verification_stale"] = True
@@ -303,8 +348,6 @@ class InductionEngine:
                                                     "predicates": predicates},
                                    "cell": cell.to_dict()}
             self._note_withheld(out, withheld, cell)
-            if relation_notes:
-                out["peer_relations"] = relation_notes
             if verification is not None:
                 out["verification"] = verification
             return out
@@ -319,7 +362,6 @@ class InductionEngine:
             cost_support_n=dict(cell.n_measured),
             failure_prob=fail_prob,
             applicability=note_texts,
-            risk_conditions=list(relation_notes),
             fallback_strategy_id=None,
             provenance=cell.execution_ids[:50],
             support_n=cell.n,
@@ -330,8 +372,6 @@ class InductionEngine:
         out = {"created": entry.entry_id, "entry": entry.to_dict(),
                "predicates": predicates, "cell": cell.to_dict()}
         self._note_withheld(out, withheld, cell)
-        if relation_notes:
-            out["peer_relations"] = relation_notes
         if verification is not None:
             out["verification"] = verification
         if verification_note is not None:
@@ -386,6 +426,13 @@ class InductionEngine:
         relation["tasks"] = resolved["tasks"]
         relation["family"] = resolved["family"]
         relation["cell"] = resolved["cell"]
+        # MATERIAL REPORT (never a veto). A relation that restates a
+        # strategy name and a mean is not a technique; when the cited
+        # evidence reports no method at all, the outcome SAYS SO — and the
+        # claim the agent wrote is still saved, because it may legitimately
+        # name the method itself. What the framework refuses to do is derive
+        # a technique from numbers alone.
+        material_gate = relation_material_gate(relation, records)
         # Applicability: the relation's own conditions when declared,
         # otherwise the evidence's own structural cell.
         conditions = relation.get("conditions") or {}
@@ -423,6 +470,7 @@ class InductionEngine:
                         entry.entry_id if entry is not None else
                         (effective_subject or "relation"),
                     "relation": relation,
+                    "material": material_gate,
                     "publication": self._relation_publication(relation)}
         if entry is None:
             entry = self._new_relation_entry(
@@ -431,6 +479,7 @@ class InductionEngine:
             if veto is not None:
                 if not force:
                     return {"saved": None, "vetoed": veto,
+                            "material": material_gate,
                             "skipped": ("cold-archive veto (use --force to "
                                         "override)")}
                 self.sbank.revive(veto["pattern_hash"], force=True)
@@ -438,6 +487,7 @@ class InductionEngine:
             self.sbank.add(entry)
             return {"saved": entry.entry_id, "created_entry": entry.entry_id,
                     "entry": entry.to_dict(), "relation": relation,
+                    "material": material_gate,
                     "publication": self._relation_publication(relation)}
         # Existing host: merge the relation (dedup by relation_id) and, on a
         # SUBSTANTIVE change to an already-verified relation, mark it stale.
@@ -455,6 +505,7 @@ class InductionEngine:
         self.sbank.update(entry)
         return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
                 "relation": relation,
+                "material": material_gate,
                 "publication": self._relation_publication(relation)}
 
     def _resolve_relation_evidence(self, evidence: List[Dict[str, Any]]
@@ -606,59 +657,6 @@ class InductionEngine:
                 "distinct_tasks": len(scope_tasks),
                 "required_tasks": RELATION_MIN_TASKS,
                 "reasons": reasons}
-
-    @staticmethod
-    def _peer_relations(cell: GroupStats,
-                        peer_evidence: Optional[Dict[str, List[ExecutionRecord]]]
-                        ) -> List[str]:
-        """Phrase the CONTRAST a claim was induced against, one line per peer.
-
-        Induction is not only a restatement of one cell: a claim is often
-        worth committing precisely because another strategy performs
-        differently in the same cell, or because the SAME strategy performs
-        differently in a neighbouring cell. Those relations are the reason to
-        look, so they belong on the entry the reader will consult later.
-
-        They are written to ``risk_conditions`` (free text, never scored):
-        a relation is a boundary the reader must respect, and pretending the
-        framework can verify a sentence would be theatre. Each line quotes
-        the peer's label, supporting count, mean quality, and only its
-        COMPLETE cost dimensions — an incomplete mean is withheld here for
-        the same reason the entry withholds it. Nothing from the peer enters
-        this entry's statistics.
-
-        Returns an empty list when there is no peer evidence, so a plain
-        induction is byte-for-byte what it was before."""
-        if not peer_evidence:
-            return []
-        lines: List[str] = []
-        for label, records in peer_evidence.items():
-            if not records:
-                continue
-            n = len(records)
-            qualities = [quality_score(r) for r in records]
-            mean_q = mean(qualities) if qualities else 0.0
-            dq = mean_q - cell.mean_quality
-            parts = [f"{label}: meanQ={mean_q:.2f} (n={n}) vs "
-                     f"this cell meanQ={cell.mean_quality:.2f}"]
-            # Cost only where BOTH sides are complete: a partial mean on one
-            # side would make the ratio meaningless.
-            for dim in COST_DIMENSIONS:
-                peer_measured = [r for r in records
-                                 if dim in (r.cost.measured_dims()
-                                            if r.cost is not None else [])]
-                if len(peer_measured) != n:
-                    continue
-                if cell.n_measured.get(dim, 0) != cell.n:
-                    continue
-                peer_mean = mean(getattr(r.cost, dim) for r in records)
-                ours = getattr(cell.mean_cost, dim)
-                parts.append(f"{dim}: {peer_mean:.4g} vs {ours:.4g}")
-            direction = ("lower" if dq < 0 else "higher" if dq > 0
-                         else "equal")
-            lines.append("contrast vs " + "; ".join(parts)
-                         + f" — quality is {direction} by {abs(dq):.2f}")
-        return lines
 
     @staticmethod
     def _note_withheld(out: Dict[str, Any], withheld: Dict[str, Dict[str, int]],

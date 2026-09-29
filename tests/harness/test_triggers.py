@@ -140,6 +140,62 @@ class TestInterventionRecovery(TriggerCase):
                  if h.pattern == "intervention_recovery"]
         self.assertFalse(hints)
 
+    def test_same_solver_modeling_fix_fires(self):
+        """A real change under the SAME solver is a recovery: the failed
+        attempt's method and the successful one's differ, so the change is
+        visible in the evidence rather than narrated."""
+        failed = self.make_record(execution_id="z1", task_id="zt",
+                                  feasible=False, status="error",
+                                  solver={"name": "highs"})
+        failed.method_actual = {"name": "direct MIP",
+                                "steps": ["build the full model",
+                                          "solve in one shot"]}
+        self.bank.append(failed)
+        success = self.make_record(execution_id="z2", task_id="zt",
+                                   solver={"name": "highs"})
+        success.method_actual = {"name": "rolling-horizon decomposition",
+                                 "steps": ["relax the coupling constraint",
+                                           "solve the master",
+                                           "recombine"]}
+        hints = [h for h in self.check(success, prior_failures=[failed])
+                 if h.pattern == "intervention_recovery"]
+        self.assertTrue(hints)
+        self.assertEqual(hints[0].evidence["kind"], "same_solver_intervention")
+        change = hints[0].evidence["change"]
+        self.assertEqual(change["kind"], "method")
+        self.assertEqual(change["from_execution_id"], "z1")
+
+    def test_same_solver_retry_with_identical_method_stays_silent(self):
+        """A retry that reports the SAME method did not change anything, so
+        its success is not evidence of a recovery."""
+        failed = self.make_record(execution_id="w1", task_id="wt",
+                                  feasible=False, status="error",
+                                  solver={"name": "highs"})
+        failed.method_actual = {"name": "direct MIP", "steps": ["solve"]}
+        self.bank.append(failed)
+        success = self.make_record(execution_id="w2", task_id="wt",
+                                   solver={"name": "highs"})
+        success.method_actual = {"name": "direct MIP", "steps": ["solve"]}
+        hints = [h for h in self.check(success, prior_failures=[failed])
+                 if h.pattern == "intervention_recovery"]
+        self.assertFalse(hints)
+
+    def test_declared_intervention_fires_under_the_same_solver(self):
+        """The harness may NAME the change it made (a modeling fix); that
+        declaration is itself evidence, and it fires under one solver."""
+        failed = self.make_record(execution_id="d1", task_id="dt",
+                                  feasible=False, status="error",
+                                  solver={"name": "highs"})
+        self.bank.append(failed)
+        success = self.make_record(execution_id="d2", task_id="dt",
+                                   solver={"name": "highs"})
+        success.execution_features["intervention"] = {
+            "change": "tightened the big-M bound the failed attempt left loose"}
+        hints = [h for h in self.check(success, prior_failures=[failed])
+                 if h.pattern == "intervention_recovery"]
+        self.assertTrue(hints)
+        self.assertEqual(hints[0].evidence["change"]["kind"], "declared")
+
     def test_success_after_intervention_is_evidence_not_proof(self):
         """The hint names the change; it does not claim causation. The evidence
         carries both sides so the reader decides."""

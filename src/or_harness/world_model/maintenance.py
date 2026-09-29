@@ -1,25 +1,25 @@
 """M4 maintenance layer: traceable induction candidate bundles + offline
 consequence and value assessment.
 
-M4 connects experience accumulation to offline strategic induction via
-world-model prediction:
-1. Candidate bundling (:func:`build_induction_candidates`): scans the
-   induction-worthy patterns (strategy contrast, intervention recovery,
-   structural reproduction, advantage reversal) and cell statistics over
-   real executed evidence, producing frozen, traceable
-   :class:`InductionCandidateBundle` objects.
-2. Value assessment (:meth:`ORHarness.assess_induction`): asks the world
-   model to predict the consequence of inducting a bundle (candidate
-   formation, verification cost, expected reuse benefit, generalization
-   risk), returning an auditable :class:`InductionAssessment`.
-3. Explicit choice + adoption (:meth:`ORHarness.accept_induction` /
-   :meth:`reject_induction`): the outer agent explicitly accepts or
-   rejects the recommendation. Acceptance invokes the existing
-   ``induce`` machinery strictly on the chosen bundle's scope.
-4. Consequence binding (:meth:`ORHarness.bind_induction_outcome`):
-   compares the assessment's predictions against the actual induction
-   outcome (entries created/updated, verification verdict, business
-   result) and records the verdict on the assessment's feedback partition.
+M4 connects experience accumulation to offline strategic induction:
+1. Candidate bundling (:func:`build_induction_candidates`) produces frozen,
+   traceable :class:`InductionCandidateBundle` objects from REAL executed
+   evidence, from TWO sources: the online detectors' own persisted hints
+   (strategy_contrast, intervention_recovery, structural_reproduction,
+   advantage_reversal - each carrying its cross-execution evidence) and the
+   structural-cell statistics (with the sample-count evidence gate). Sample
+   count is an EVIDENCE THRESHOLD, never by itself a reason to abstract a
+   method.
+2. Every bundle also freezes per-execution METHOD material, so the outer
+   agent can read "condition -> how it was done -> what followed ->
+   boundary" and submit a relation claim; a bundle whose evidence reports no
+   method is marked ``insufficient`` and nothing is invented from a name and
+   a mean.
+3. Value assessment, explicit choice and consequence binding are NOT
+   duplicated here: they already live on the capability channel
+   (``predict_capability_evolution`` / ``accept_capability_operation`` /
+   ``reject_capability_operation`` / ``bind_capability_maintenance``), which
+   consumes a bundle directly.
 
 This is a MAINTENANCE-SCOPE facility — it does NOT modify the online M3
 search tree, does not run background loops, and does not create a third
@@ -29,6 +29,8 @@ knowledge bank.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -36,7 +38,11 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import ProblemProfile, group_key
 from or_harness.core.storage import StorageError
-from or_harness.strategy.triggers import InductionHint
+from or_harness.strategy.triggers import (
+    PATTERNS,
+    InductionHint,
+    evidence_execution_ids,
+)
 from or_harness.world_model.prediction import ActionSpec
 from or_harness.world_model.state import MAINTENANCE_TASK_ID
 
@@ -53,7 +59,7 @@ class InductionCandidateBundle:
     constructed, its content is fixed."""
 
     bundle_id: str
-    kind: str  # "new_claim" | "revision"
+    kind: str  # "new_claim" | "revision" | "pattern"
     strategy_id: str
     family: str
     cell_token: str
@@ -71,11 +77,49 @@ class InductionCandidateBundle:
     # at the time the bundle was formed.
     target_entry_id: Optional[str] = None
     entry_before: Optional[Dict[str, Any]] = None
+    #: For a PATTERN bundle: which detector produced it, and the detector's
+    #: OWN evidence blocks (both sides of a contrast, the failed/recovered
+    #: pair). The evidence references travel WITH the candidate so the two
+    #: sides of a contrast are never split into unrelated statistical packs.
+    pattern: Optional[str] = None
+    evidence_refs: List[Dict[str, Any]] = field(default_factory=list)
+    #: Per-execution METHOD evidence, frozen so an offline material read (and
+    #: therefore an honest induction) has the how-to content, not just a name
+    #: and a mean. Each entry: {"execution_id", "planned", "actual",
+    #: "trajectory"}. Empty when the evidence reports no method — material
+    #: insufficiency is then VISIBLE rather than papered over.
+    methods: List[Dict[str, Any]] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
 
     @staticmethod
     def new_id() -> str:
+        """A fresh random candidate id (used only where no address exists)."""
         return f"cb_{uuid.uuid4().hex[:12]}"
+
+    @staticmethod
+    def content_id(kind: str, group_key_: str, strategy_ids: Sequence[str],
+                   execution_ids: Sequence[str],
+                   pattern: Optional[str] = None) -> str:
+        """Deterministic id from what the candidate IS.
+
+        Bundles are rebuilt from current evidence on every scan (they are
+        not persisted), so a random id would make the id `orx
+        induction-candidates` printed useless one call later — the id the
+        user passes to `--bundle` must still name the same candidate. The
+        address covers the candidate's identity (kind, pattern, group,
+        strategies, evidence set) and nothing volatile (no timestamps, no
+        statistics), so regenerating candidates over unchanged evidence
+        yields the same ids.
+        """
+        address = {
+            "kind": kind,
+            "pattern": pattern or "",
+            "group": group_key_,
+            "strategies": sorted(strategy_ids),
+            "executions": sorted(execution_ids),
+        }
+        payload = json.dumps(address, sort_keys=True, separators=(",", ":"))
+        return "cb_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -95,6 +139,9 @@ class InductionCandidateBundle:
             "failure_rate": float(self.failure_rate),
             "target_entry_id": self.target_entry_id,
             "entry_before": copy.deepcopy(self.entry_before),
+            "pattern": self.pattern,
+            "evidence_refs": copy.deepcopy(self.evidence_refs),
+            "methods": copy.deepcopy(self.methods),
             "created_at": float(self.created_at),
         }
 
@@ -117,124 +164,77 @@ class InductionCandidateBundle:
             failure_rate=float(data.get("failure_rate", 0.0)),
             target_entry_id=data.get("target_entry_id"),
             entry_before=dict(data["entry_before"]) if data.get("entry_before") else None,
+            pattern=data.get("pattern"),
+            evidence_refs=list(data.get("evidence_refs") or []),
+            methods=list(data.get("methods") or []),
             created_at=float(data.get("created_at", time.time())),
         )
 
+    def material_state(self) -> Dict[str, Any]:
+        """Whether this bundle carries enough METHOD material to induce from.
 
-@dataclass
-class InductionAssessment:
-    """The auditable record of an offline induction value assessment.
-
-    Captures the bundle evaluated, the recommendation (induce_new /
-    revise / defer / insufficient_evidence), the value decomposition,
-    the predicted induction consequence, uncertainty, and budget."""
-
-    assessment_id: str
-    bundle_id: str
-    decision_action_id: Optional[str]
-    recommendation: str  # "induce_new" | "revise" | "defer" | "insufficient_evidence"
-    target_strategy_id: str
-    target_family: str
-    # Value decomposition: net_value = reuse_benefit - induction_cost - generalization_risk
-    expected_reuse_benefit: Optional[float] = None
-    predicted_induction_cost: Optional[Dict[str, float]] = None
-    predicted_generalization_risk: Optional[float] = None
-    net_value: Optional[float] = None
-    recommendation_basis: str = ""
-    # Consequence prediction.
-    candidate_formation_prob: float = 1.0
-    predicted_quality_claim: Optional[float] = None
-    predicted_cost_claim: Optional[Dict[str, float]] = None
-    # Uncertainty & evidence gaps.
-    confidence: Optional[float] = None
-    evidence_gaps: List[str] = field(default_factory=list)
-    unsupported_fields: Dict[str, str] = field(default_factory=dict)
-    # Workload forecast context (when supplied by caller).
-    workload_forecast: Optional[Dict[str, Any]] = None
-    #: The evidence scope this assessment speaks about: the exact execution
-    #: ids of its bundle. Carried so (a) acceptance can restrict the
-    #: induction to that scope instead of re-deriving it, and (b) the
-    #: delayed binding can verify which evidence it is judging against.
-    execution_ids: List[str] = field(default_factory=list)
-    # Audit trail.
-    prediction_id: Optional[str] = None
-    status: str = "ok"  # ok | truncated | fallback | not_configured
-    assessment_cost: Optional[Dict[str, Any]] = None
-    created_at: float = field(default_factory=time.time)
-
-    @staticmethod
-    def new_id() -> str:
-        return f"ia_{uuid.uuid4().hex[:12]}"
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "assessment_id": self.assessment_id,
-            "bundle_id": self.bundle_id,
-            "decision_action_id": self.decision_action_id,
-            "recommendation": self.recommendation,
-            "target_strategy_id": self.target_strategy_id,
-            "target_family": self.target_family,
-            "expected_reuse_benefit": self.expected_reuse_benefit,
-            "predicted_induction_cost": copy.deepcopy(self.predicted_induction_cost),
-            "predicted_generalization_risk": self.predicted_generalization_risk,
-            "net_value": self.net_value,
-            "recommendation_basis": self.recommendation_basis,
-            "candidate_formation_prob": float(self.candidate_formation_prob),
-            "predicted_quality_claim": self.predicted_quality_claim,
-            "predicted_cost_claim": copy.deepcopy(self.predicted_cost_claim),
-            "confidence": self.confidence,
-            "evidence_gaps": list(self.evidence_gaps),
-            "unsupported_fields": copy.deepcopy(self.unsupported_fields),
-            "workload_forecast": copy.deepcopy(self.workload_forecast),
-            "execution_ids": list(self.execution_ids),
-            "prediction_id": self.prediction_id,
-            "status": self.status,
-            "assessment_cost": copy.deepcopy(self.assessment_cost),
-            "created_at": float(self.created_at),
-        }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "InductionAssessment":
-        return cls(
-            assessment_id=str(data["assessment_id"]),
-            bundle_id=str(data.get("bundle_id", "")),
-            decision_action_id=data.get("decision_action_id"),
-            recommendation=str(data.get("recommendation", "defer")),
-            target_strategy_id=str(data.get("target_strategy_id", "")),
-            target_family=str(data.get("target_family", "")),
-            expected_reuse_benefit=data.get("expected_reuse_benefit"),
-            predicted_induction_cost=dict(data["predicted_induction_cost"])
-                if data.get("predicted_induction_cost") else None,
-            predicted_generalization_risk=data.get("predicted_generalization_risk"),
-            net_value=data.get("net_value"),
-            recommendation_basis=str(data.get("recommendation_basis", "")),
-            candidate_formation_prob=float(data.get("candidate_formation_prob", 1.0)),
-            predicted_quality_claim=data.get("predicted_quality_claim"),
-            predicted_cost_claim=dict(data["predicted_cost_claim"])
-                if data.get("predicted_cost_claim") else None,
-            confidence=data.get("confidence"),
-            evidence_gaps=list(data.get("evidence_gaps") or []),
-            unsupported_fields=dict(data.get("unsupported_fields") or {}),
-            workload_forecast=dict(data["workload_forecast"])
-                if data.get("workload_forecast") else None,
-            execution_ids=list(data.get("execution_ids") or []),
-            prediction_id=data.get("prediction_id"),
-            status=str(data.get("status", "ok")),
-            assessment_cost=dict(data["assessment_cost"])
-                if data.get("assessment_cost") else None,
-            created_at=float(data.get("created_at", time.time())),
-        )
+        A candidate whose evidence reports no method content (only a
+        strategy name and a mean) is ``insufficient``: the framework refuses
+        to turn a name plus a number into a technique. The state is derived
+        from the frozen evidence, never from a threshold the caller can
+        lower — an empty method list IS the insufficiency.
+        """
+        described = [m for m in self.methods
+                     if (m.get("planned") or m.get("actual"))]
+        if not self.methods:
+            return {"state": "insufficient",
+                    "reason": ("no supporting execution reports a method: a "
+                               "strategy name and a mean are not a "
+                               "technique, and none will be invented from "
+                               "them")}
+        if not described:
+            return {"state": "insufficient",
+                    "reason": ("the supporting executions report no method "
+                               "content: there is nothing to abstract")}
+        return {"state": "sufficient",
+                "n_with_method": len(described),
+                "n_supporting": len(self.methods)}
 
 
-def build_induction_candidates(harness) -> List[InductionCandidateBundle]:
+def _method_material(records: Sequence[Any]) -> List[Dict[str, Any]]:
+    """Freeze the METHOD evidence of a set of executions.
+
+    For each record: its planned method, the method it reports as actually
+    performed, and the trajectory steps that actually happened. A record
+    that reports no method contributes a placeholder with both sides None —
+    so ``len(methods) == len(executions)`` always holds and an insufficiency
+    is visible as missing content rather than as a silently shorter list.
+    """
+    material: List[Dict[str, Any]] = []
+    for rec in records:
+        material.append({
+            "execution_id": rec.execution_id,
+            "task_id": rec.task_id,
+            "planned": copy.deepcopy(rec.method_planned),
+            "actual": copy.deepcopy(rec.method_actual),
+            "trajectory": [t.to_dict() for t in (rec.trajectory or [])],
+        })
+    return material
+
+
+def build_induction_candidates(harness
+                               ) -> List[InductionCandidateBundle]:
     """Scan the Experience Bank and Strategic Bank for induction candidates.
 
-    Filters real executed evidence (attempt scope only, deduplicated by
-    execution_id). Identifies:
-    - NEW claims: cells with >=2 executions where no published entry covers
-      the predicates.
-    - REVISIONS: cells where existing entries have accumulated forward-check
-      misses or substantively changed evidence.
+    Two sources, both frozen into the same bundle shape:
+
+    * DETECTOR candidates (``kind="pattern"``): every persisted induction
+      hint on a real executed record becomes a bundle that carries the
+      detector's OWN evidence references. A contrast's two sides stay in
+      ONE bundle — they are one observation, not two statistical bins.
+    * CELL candidates (``kind="new_claim"`` / ``"revision"``): a structural
+      cell with >= 2 executions and >= 2 independent tasks, when no
+      published entry covers it (new claim) or an existing entry has
+      accumulated misses / divergence / new evidence (revision).
+
+    Every bundle freezes the METHOD material of its supporting executions so
+    an offline material read (and therefore an honest induction) has the
+    how-to content, not just a name and a mean.
 
     Returns a list of frozen :class:`InductionCandidateBundle` objects.
     Empty when no candidate has sufficient supporting evidence."""
@@ -244,7 +244,88 @@ def build_induction_candidates(harness) -> List[InductionCandidateBundle]:
                if r.source == "executed" and r.measurement_scope == "attempt"]
     if not records:
         return bundles
+    by_id = {r.execution_id: r for r in records}
 
+    bundles.extend(_detector_candidates(records, by_id))
+    bundles.extend(_cell_candidates(harness, records))
+    return bundles
+
+
+def _detector_candidates(records: Sequence[Any],
+                         by_id: Dict[str, Any]
+                         ) -> List[InductionCandidateBundle]:
+    """Turn every persisted detector hint into a frozen candidate bundle.
+
+    The hint was produced online, at record time, from the evidence that was
+    available then. Re-reading it here (instead of re-running the detectors
+    offline) keeps ONE implementation of each pattern and keeps the hint's
+    own cross-execution references intact. A hint whose referenced
+    executions are no longer in the evidence set (excluded, or a different
+    scope) is skipped — a claim must rest on evidence that still counts.
+    """
+    bundles: List[InductionCandidateBundle] = []
+    seen: set = set()
+    for rec in sorted(records, key=lambda r: r.created_at):
+        stored = (rec.execution_features or {}).get("induction_hints")
+        if not isinstance(stored, list):
+            continue
+        for raw in stored:
+            try:
+                hint = InductionHint.from_dict(raw)
+            except (ValueError, AttributeError, TypeError):
+                continue  # a stored hint no detector produced is not evidence
+            evidence_ids = [eid for eid in evidence_execution_ids(hint.evidence)
+                            if eid in by_id]
+            if not evidence_ids:
+                continue
+            # One bundle per (pattern, group, evidence set): re-recording an
+            # execution must not multiply the same candidate.
+            signature = (hint.pattern, hint.group_key,
+                         tuple(sorted(evidence_ids)))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            supporting = [by_id[eid] for eid in evidence_ids]
+            tasks = sorted({r.task_id for r in supporting})
+            profile = supporting[0].profile_snapshot
+            # Every strategy the hint names, so a contrast's two sides are
+            # both visible on the bundle.
+            strategies = list(hint.strategy_ids) or sorted(
+                {r.strategy_id for r in supporting})
+            bundles.append(InductionCandidateBundle(
+                bundle_id=InductionCandidateBundle.content_id(
+                    "pattern", hint.group_key, strategies, evidence_ids,
+                    pattern=hint.pattern),
+                kind="pattern",
+                strategy_id=strategies[0] if strategies else "",
+                family=(profile.family if profile is not None else ""),
+                cell_token=group_key(profile).split("|", 1)[-1]
+                if profile is not None else "",
+                group_key=hint.group_key,
+                execution_ids=sorted(evidence_ids),
+                tasks=tasks,
+                n_supporting=len(supporting),
+                trigger_reasons=[
+                    f"detector {hint.pattern}: {hint.reason}"],
+                pattern=hint.pattern,
+                evidence_refs=[copy.deepcopy(hint.evidence)],
+                methods=_method_material(supporting),
+            ))
+    return bundles
+
+
+def _cell_candidates(harness,
+                     records: Sequence[Any]
+                     ) -> List[InductionCandidateBundle]:
+    """Structural-cell candidates: the sample-count evidence gate.
+
+    This is the SAMPLE gate, not a method abstraction: it reports that a cell
+    has enough independent evidence to be worth an induction, or that an
+    existing entry no longer matches the evidence. The how-to content (if
+    any) travels in ``methods``; whether it is sufficient to abstract a
+    technique is decided by ``material_state()``.
+    """
+    bundles: List[InductionCandidateBundle] = []
     # Group by (family, strategy_id, cell_token).
     by_cell: Dict[tuple, List[Any]] = {}
     for r in records:
@@ -311,7 +392,9 @@ def build_induction_candidates(harness) -> List[InductionCandidateBundle]:
                      for d in measured_dims}
 
         bundle = InductionCandidateBundle(
-            bundle_id=InductionCandidateBundle.new_id(),
+            bundle_id=InductionCandidateBundle.content_id(
+                "revision" if existing is not None else "new_claim",
+                gkey, [sid], execution_ids),
             kind="revision" if existing is not None else "new_claim",
             strategy_id=sid,
             family=family,
@@ -327,6 +410,7 @@ def build_induction_candidates(harness) -> List[InductionCandidateBundle]:
             failure_rate=round(cell.fail_rate, 4),
             target_entry_id=existing.entry_id if existing else None,
             entry_before=existing.to_dict() if existing else None,
+            methods=_method_material(unique_recs),
         )
         bundles.append(bundle)
 

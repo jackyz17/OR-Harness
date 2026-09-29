@@ -25,22 +25,26 @@ no historical criterion numbers are used anywhere:
 
 Every detector requires n >= 2 supporting executions: a single observation
 never counts as a pattern — that restraint is by design.
+
+Hints are EVIDENCE, not orders, and they are persisted onto the record that
+produced them (``execution_features.induction_hints``) so the offline
+candidate builder can reuse the detector's own cross-execution evidence
+references instead of re-deriving them from bare counts.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from statistics import mean
 from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import (
     GROUPING_FEATURES,
-    CostVector,
     ExecutionRecord,
     bin_label,
     group_key,
+    normalize_method,
 )
-from or_harness.strategy.stats import ConditionalStats, GroupStats, quality_score
+from or_harness.strategy.stats import ConditionalStats, GroupStats
 
 #: Evidence below this count never forms a pattern: single observations are
 #: not patterns.
@@ -71,6 +75,70 @@ class InductionHint:
             "reason": self.reason,
             "evidence": self.evidence,
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "InductionHint":
+        """Rebuild a hint from its persisted form (``record``'s
+        ``execution_features.induction_hints``).
+
+        Used by the offline candidate builder, which consumes the hint's own
+        cross-execution evidence references instead of re-deriving them. An
+        unknown pattern is rejected rather than silently carried as a label:
+        a stored hint no detector produced is not evidence.
+        """
+        pattern = str(data.get("pattern", ""))
+        if pattern not in PATTERNS:
+            raise ValueError(f"unknown induction pattern {pattern!r}")
+        return cls(
+            pattern=pattern,
+            strategy_ids=[str(s) for s in (data.get("strategy_ids") or [])],
+            group_key=str(data.get("group_key", "")),
+            reason=str(data.get("reason", "")),
+            evidence=dict(data.get("evidence") or {}),
+        )
+
+
+#: The four detector names, in one place: the persisted-hint reader refuses
+#: anything else, so a label can never be invented on the storage boundary.
+PATTERNS = ("strategy_contrast", "intervention_recovery",
+            "structural_reproduction", "advantage_reversal")
+
+
+def evidence_execution_ids(evidence: Dict[str, Any]) -> List[str]:
+    """Every execution id a hint's ``evidence`` block refers to, flattened.
+
+    The shapes differ by pattern (a flat ``execution_id``, a
+    {strategy: [ids]} map, a {family: [ids]} map, a failed/recovered_by
+    pair). The candidate builder needs the SET, because a contrast's two
+    sides must travel into one candidate rather than being split into
+    unrelated statistical bins.
+    """
+    found: List[str] = []
+
+    def _collect(value: Any) -> None:
+        if isinstance(value, str):
+            found.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                _collect(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                _collect(item)
+
+    if not isinstance(evidence, dict):
+        return found
+    _collect(evidence.get("execution_ids"))
+    for key in ("execution_id", "failed", "recovered_by"):
+        value = evidence.get(key)
+        if isinstance(value, dict):
+            _collect(value.get("execution_id"))
+        elif isinstance(value, str):
+            found.append(value)
+    seen: List[str] = []
+    for eid in found:
+        if eid and eid not in seen:
+            seen.append(eid)
+    return seen
 
 
 def check_triggers(record: ExecutionRecord, stats: ConditionalStats,
@@ -215,18 +283,26 @@ def _intervention_recovery(record: ExecutionRecord, group: str,
     """intervention_recovery: a real result changed after an intervention.
 
     Failure evidence is the most valuable induction raw material. The
-    intervention may be a fallback, a repair, a modeling change or a solver
-    switch; what the detector reads is the CHANGE in real outcome, never a
-    narrative. A success after an intervention is evidence, not proof of
-    causation by itself.
+    intervention may be a fallback, a repair, a MODELING CHANGE or a solver
+    switch; what the detector reads is the CHANGE in real outcome plus a
+    concrete link to the change, never a narrative.
 
-    Two detection paths:
-    1. within-execution: ``failures[].recovery_action`` set on this record.
-    2. cross-execution: this record succeeded while a same-task earlier
-       execution failed under a DIFFERENT solver — the recovery chain
+    Three detection paths, in order of directness:
+    1. within-execution: ``failures[].recovery_action`` set on this record
+       (the harness itself names the intervention it applied).
+    2. cross-execution, SAME solver: this record succeeded while a same-task
+       earlier attempt failed AND this record carries evidence of a real
+       change — a method receipt whose performed steps differ from the
+       failed attempt's, or a recorded change delta. A plain retry of the
+       same solver with no evidence of a change does NOT trigger: a success
+       on the second try is not a demonstrated recovery.
+    3. cross-execution, solver SWITCHED: the recovery chain
        (failed -> switched solver -> succeeded) emerges from two independent
        facts, so the harness never needs to narrate it into a record.
-       Retrying the same solver is not a recovery chain.
+
+    The hint is evidence, never proof of causation: it names WHAT changed and
+    links the two executions, and the verification layer decides whether the
+    claim holds.
     """
     triggered = [f for f in record.failures if f.recovery_action]
     if triggered:
@@ -238,9 +314,12 @@ def _intervention_recovery(record: ExecutionRecord, group: str,
                       "failures": [f.to_dict() for f in triggered],
                       "final_status": record.quality.get("status")})
 
-    if prior_failures and record.quality.get("feasible"):
-        this_solver = str((record.solver or {}).get("name", ""))
-        for failed in prior_failures:
+    if not (prior_failures and record.quality.get("feasible")):
+        return None
+    this_solver = str((record.solver or {}).get("name", ""))
+    for failed in sorted(prior_failures, key=lambda r: r.created_at,
+                         reverse=True):
+        if not failed.quality.get("feasible", False):
             failed_solver = str((failed.solver or {}).get("name", ""))
             if failed_solver and failed_solver != this_solver:
                 return InductionHint(
@@ -258,7 +337,85 @@ def _intervention_recovery(record: ExecutionRecord, group: str,
                         "recovered_by": {"execution_id": record.execution_id,
                                          "solver": this_solver},
                     })
-    return None
+    # Same-solver modeling fix: a real CHANGE must be visible, otherwise a
+    # plain retry would masquerade as a recovery.
+    change = _recorded_change(record, prior_failures)
+    if change is None:
+        return None
+    failed_record = change.pop("failed_record", None)
+    return InductionHint(
+        pattern="intervention_recovery",
+        strategy_ids=[record.strategy_id],
+        group_key=group,
+        reason=("cross-execution recovery under the SAME solver "
+                f"({this_solver}): a recorded {change['kind']} changed the "
+                "result from failed to feasible"),
+        evidence={
+            "kind": "same_solver_intervention",
+            "change": change,
+            "failed": {"execution_id": change["from_execution_id"],
+                       "solver": this_solver,
+                       "error": _first_error(failed_record)
+                       if failed_record is not None else "",
+                       "error_class": classify_failure(failed_record)
+                       if failed_record is not None else None},
+            "recovered_by": {"execution_id": record.execution_id,
+                             "solver": this_solver},
+        })
+
+
+def _recorded_change(record: ExecutionRecord,
+                     prior_failures: List[ExecutionRecord]
+                     ) -> Optional[Dict[str, Any]]:
+    """Evidence that something really CHANGED between a failed attempt and
+    this successful one — the fact that distinguishes a modeling fix from a
+    plain retry.
+
+    Two kinds of provable change are accepted:
+    * ``method`` — this record's performed method (its script receipt, or a
+      harness declaration) differs from the failed attempt's; the difference
+      is described step-by-step;
+    * ``declared`` — the record carries an explicit change delta (a
+      recording-time declaration such as ``intervention``), which is the
+      harness naming the change it made.
+
+    Returns None when nothing observable changed. The DETECTOR then reports
+    nothing: a retry that happened to succeed is not evidence that a fix
+    caused it.
+    """
+    latest = max(prior_failures, key=lambda r: r.created_at)
+    declared = record.execution_features.get("intervention")
+    if isinstance(declared, dict) and declared.get("change"):
+        return {"kind": "declared", "change": dict(declared),
+                "from_execution_id": latest.execution_id,
+                "failed_record": latest}
+    this_method = normalize_method(record.method_actual) or \
+        normalize_method(record.method_planned)
+    if this_method is None:
+        return None
+    other = normalize_method(latest.method_actual) or \
+        normalize_method(latest.method_planned)
+    if other is None:
+        # The failed attempt recorded no method: a difference cannot be
+        # established from one side alone.
+        return None
+    if _method_signature(this_method) == _method_signature(other):
+        return None
+    return {
+        "kind": "method",
+        "from_execution_id": latest.execution_id,
+        # Internal handle for the caller (stripped before the hint is
+        # serialized); the RECORD itself is never part of the evidence.
+        "failed_record": latest,
+        "from_method": {k: other.get(k) for k in ("name", "steps")},
+        "to_method": {k: this_method.get(k) for k in ("name", "steps")},
+    }
+
+
+def _method_signature(method: Dict[str, Any]) -> List[str]:
+    steps = [" ".join(str(s).lower().split())
+             for s in (method.get("steps") or [])]
+    return [" ".join(str(method.get("name", "")).lower().split())] + steps
 
 
 def classify_failure(record: ExecutionRecord) -> str:

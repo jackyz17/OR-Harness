@@ -485,11 +485,14 @@ def cmd_execute(args) -> int:
     try:
         task = _load_json_arg(args.task)
         prediction_id = getattr(args, "prediction", None)
+        method = _load_json_arg(args.method) if getattr(args, "method", None) \
+            else None
         try:
             record = h.execute(task, args.strategy, args.code, args.workspace,
                                solver=args.solver,
                                episode_id=getattr(args, "episode", None),
-                               prediction_id=prediction_id)
+                               prediction_id=prediction_id,
+                               method=method)
         except ValueError as exc:
             # A prediction-driven precondition failure (unknown prediction,
             # a changed problem, a contradictory explicit argument, a
@@ -598,7 +601,12 @@ def cmd_record(args) -> int:
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
                           retain_reason=args.retain_reason,
-                          prediction=prediction)
+                          prediction=prediction,
+                          method=(_load_json_arg(args.method)
+                                  if getattr(args, "method", None) else None),
+                          method_actual=(_load_json_arg(args.method_actual)
+                                         if getattr(args, "method_actual", None)
+                                         else None))
         hints = result["induction_hints"]
         checks = result["prediction_checks"]
         summary = [f"Recorded {result['execution_id']}."]
@@ -746,8 +754,6 @@ def cmd_induce(args) -> int:
                           force=args.force, notes=notes, verify=verify,
                           family=getattr(args, "family", None),
                           cell=getattr(args, "cell", None),
-                          peer_strategy_ids=getattr(args, "peer_strategy", None),
-                          peer_cells=getattr(args, "peer_cell", None),
                           relations=relations)
         return _emit(result, _summarize_induce(result, args))
     finally:
@@ -784,11 +790,6 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
         scope.append(f"cell={args.cell}")
     if scope:
         parts.append("Scoped to " + ", ".join(scope) + ".")
-    relations = [rel for r in result.get("results", [])
-                 for rel in (r.get("peer_relations") or [])]
-    if relations:
-        parts.append(f"Recorded {len(relations)} peer relation(s) on the "
-                     "entry's risk_conditions: " + relations[0])
     transitions = [rev for rev in (result.get("revisions") or [])
                    if rev.get("transitions")]
     for rev in transitions:
@@ -862,6 +863,46 @@ def cmd_induction_candidates(args) -> int:
             "carries its own frozen evidence scope; pass one to "
             "`orx predict-capability --bundle` to price the operation "
             "before committing to it.")
+    finally:
+        h.close()
+
+
+def cmd_induction_material(args) -> int:
+    """Organize the READABLE material for an offline induction step.
+
+    This is the framework's half of semantic induction: gather the methods
+    that were actually used, what changed, the two sides of a comparison and
+    what followed, so YOU (the outer agent) can read it and form a claim in
+    your own words. It calls no model, writes nothing, and does not invent a
+    technique: a candidate whose evidence reports no method is reported as
+    ``insufficient``, and the honest response is to record how the work was
+    really done."""
+    h = _harness(args)
+    try:
+        result = h.induction_material(
+            bundle_id=args.bundle, pattern=args.pattern,
+            strategy_id=args.strategy)
+        if not result["count"]:
+            return _emit(result,
+                         "No induction material: no candidate currently has "
+                         "supporting evidence. (A claim needs >=2 executions "
+                         "from >=2 distinct tasks.)")
+        parts = []
+        for item in result["material"]:
+            state = item["material_state"]
+            label = item.get("pattern") or item["kind"]
+            line = (f"{item['bundle_id']} [{label}] "
+                    f"{item['strategy_id'] or '(unnamed)'} "
+                    f"n={item['n_supporting']} tasks={len(item['tasks'])} "
+                    f"material={state['state']}")
+            if state["state"] == "insufficient":
+                line += f" ({state['reason']})"
+            parts.append(line)
+        return _emit(result, " | ".join(parts)
+                     + ". Read the material, compare the evidence, and "
+                       "submit a claim with `orx induce --relation` — the "
+                       "framework checks what you submit, it does not "
+                       "write the technique for you.")
     finally:
         h.close()
 
@@ -2169,6 +2210,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "added to the same association. Omit it for an "
                         "unpredicted attempt; `orx bind-strategy` can bind a "
                         "manual action later")
+    p.add_argument("--method", default=None, metavar="JSON",
+                   help="the method THIS attempt intends to use, in your own "
+                        "words: '{\"name\": ..., \"steps\": [...]}'. When "
+                        "--prediction is given the candidate's method is "
+                        "used; pass --method only for an unpredicted "
+                        "attempt. It is recorded as the PLAN "
+                        "(method_planned) — the method that actually ran "
+                        "comes solely from the script's result.json "
+                        "'method_performed' receipt, never from this plan")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")
@@ -2200,6 +2250,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "evidence (reserved for future compaction policies), "
                         "e.g. 'contrast'; when omitted, any mark already on "
                         "the record is preserved")
+    p.add_argument("--method", default=None, metavar="JSON",
+                   help="for a record assembled OUTSIDE `orx execute`: the "
+                        "PLAN this attempt intended, '{\"name\": ..., "
+                        "\"steps\": [...]}'. Recorded as method_planned; it "
+                        "is never promoted to the performed method")
+    p.add_argument("--method-actual", default=None, metavar="JSON",
+                   help="for a record assembled OUTSIDE `orx execute`: the "
+                        "method the harness DECLARES was actually performed, "
+                        "'{\"name\": ..., \"steps\": [...]}'. Use it only "
+                        "when you really observed the processing; the "
+                        "integrity of the evidence depends on honesty here. "
+                        "A value the record already carries is never "
+                        "overwritten")
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser(
@@ -2291,20 +2354,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="restrict induction to ONE structural cell (the full "
                         "group_key token, e.g. 'family=routing|rc[..]|..'); "
                         "implies its family and --all scope")
-    p.add_argument("--peer-strategy", action="append", default=None,
-                   metavar="STRATEGY_ID",
-                   help="a strategy to COMPARE against inside each target's "
-                        "own structural cell (strategy_contrast). Read only "
-                        "to phrase the claim: each relation is written to "
-                        "the entry's risk_conditions and reported under "
-                        "peer_relations — it never enters the target's "
-                        "statistics and never creates an entry. Repeatable")
-    p.add_argument("--peer-cell", action="append", default=None,
-                   metavar="GROUP_KEY",
-                   help="a structural cell to compare the SAME strategy "
-                        "against (advantage_reversal: where does its "
-                        "advantage weaken or flip). Same read-only contract "
-                        "as --peer-strategy. Repeatable")
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
                    help="submit a STRUCTURED relation claim (repeatable). "
                         "{\"claim\": TEXT, \"evidence\": [{\"execution_id\": "
@@ -2668,6 +2717,24 @@ def build_parser() -> argparse.ArgumentParser:
              "(frozen evidence, no model call). The evidence package is "
              "what `predict-capability --bundle` consumes")
     p.set_defaults(func=cmd_induction_candidates)
+
+    p = sub.add_parser(
+        "induction-material",
+        help="organize the READABLE material for an offline induction step: "
+             "the methods actually used, what changed, both sides of a "
+             "comparison, what followed. Read it, then submit a claim with "
+             "`orx induce --relation`. No model call, no writes")
+    p.add_argument("--bundle", default=None, metavar="BUNDLE_ID",
+                   help="read the material of ONE candidate (default: every "
+                        "candidate). Pass the id `orx induction-candidates` "
+                        "printed")
+    p.add_argument("--pattern", default=None,
+                   choices=["strategy_contrast", "intervention_recovery",
+                            "structural_reproduction", "advantage_reversal"],
+                   help="restrict to candidates from one detector")
+    p.add_argument("--strategy", default=None,
+                   help="restrict to candidates about one strategy id")
+    p.set_defaults(func=cmd_induction_material)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)

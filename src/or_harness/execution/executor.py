@@ -59,6 +59,7 @@ from or_harness.core.schema import (
     FailureRecord,
     ProblemProfile,
     TrajectoryStep,
+    normalize_method,
 )
 
 ALLOWED_STATUSES = ("optimal", "feasible", "infeasible", "unbounded", "timeout", "error")
@@ -129,6 +130,50 @@ def _config_receipt(workspace: Path,
     return {"values": values}
 
 
+def _method_receipt(workspace: Path,
+                    action_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Read the script's METHOD RECEIPT out of ``result.json``, or None.
+
+    The receipt is the optional ``method_performed`` object: the method the
+    solve script says it ACTUALLY carried out — ``{"name", "steps": [...],
+    "why"?, "fallback"?}`` — which may differ from the candidate's plan (a
+    fallback taken, a step dropped). It obeys the same two rules as the
+    config receipt and for the same reason:
+
+    * it must be stamped with THIS attempt's ``action_id``
+      (``method_performed.action_id``); a receipt without the stamp, or
+      with a different one, is a leftover from an earlier run in the same
+      workspace and is REFUSED;
+    * it is read on the FAILURE paths too, so a run that started its method
+      and then failed still reports what it did — "no result" is not "no
+      method".
+
+    The method is normalized with :func:`normalize_method` so it shares the
+    planned method's shape. Returns ``{"method": {...}, "action_id": str}``
+    or None. An empty/blank method is reported as NO receipt (a method of
+    nothing is not evidence of anything).
+    """
+    if not action_id:
+        return None
+    path = Path(workspace) / "result.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("method_performed")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    if str(raw.get("action_id") or "") != str(action_id):
+        return None
+    method = normalize_method({k: v for k, v in raw.items()
+                               if k != "action_id"})
+    if method is None:
+        return None
+    return {"method": method, "action_id": str(action_id)}
+
+
 def _resource_limits(cpu_seconds: int, memory_bytes: int, file_bytes: int):
     def apply_limits() -> None:
         try:
@@ -193,6 +238,13 @@ class ExecutionOutcome:
     #: was cleared (an old result could otherwise have been read as this
     #: run's body).
     stale_result_cleared: bool = False
+    #: The script's METHOD RECEIPT: the method that was ACTUALLY carried
+    #: out, read back from ``result.json``'s optional ``method_performed``
+    #: object when it is stamped with THIS attempt's ``action_id``. None
+    #: when the script reported no method (or its receipt carries no
+    #: matching stamp) — an unobserved method stays UNKNOWN, never a copy of
+    #: the plan. Same attribution discipline as ``config_report``.
+    method_report: Optional[Dict[str, Any]] = None
 
 
 class SafePythonExecutor:
@@ -294,6 +346,7 @@ class SafePythonExecutor:
                 normalized_error="execution timeout",
                 message="Solve script exceeded the wall-clock timeout",
                 config_report=_config_receipt(workspace, action_id),
+                method_report=_method_receipt(workspace, action_id),
                 stale_result_cleared=stale_cleared)
         wall = time.monotonic() - start
         stdout = _clip(proc.stdout.decode("utf-8", "replace"), self.max_stdout_chars)
@@ -306,6 +359,7 @@ class SafePythonExecutor:
                     stderr or stdout or _exit_note(proc.returncode)),
                 message="Process failed or did not write result.json",
                 config_report=_config_receipt(workspace, action_id),
+                method_report=_method_receipt(workspace, action_id),
                 stale_result_cleared=stale_cleared)
         # Guard 2: the file must have been written AFTER this run started. A
         # script that restores a pre-existing copy would otherwise hand back
@@ -321,6 +375,7 @@ class SafePythonExecutor:
                     message=("result.json predates this attempt: refusing to "
                              "read another run's result as this one's"),
                     config_report=_config_receipt(workspace, action_id),
+                    method_report=_method_receipt(workspace, action_id),
                     stale_result_cleared=stale_cleared)
         except OSError:
             pass
@@ -333,6 +388,7 @@ class SafePythonExecutor:
                 normalized_error="invalid result.json: " + type(exc).__name__,
                 message="result.json is invalid",
                 config_report=_config_receipt(workspace, action_id),
+                method_report=_method_receipt(workspace, action_id),
                 stale_result_cleared=stale_cleared)
         # Solver runtime: prefer the script-reported value; otherwise fall
         # back to wall-clock as an EXPLICIT proxy (never silently zero,
@@ -375,6 +431,7 @@ class SafePythonExecutor:
             diagnostics=dict(payload.get("diagnostics") or {}),
             variables=_solution_variables(payload.get("variables")),
             config_report=_config_receipt(workspace, action_id),
+            method_report=_method_receipt(workspace, action_id),
             stale_result_cleared=stale_cleared,
             stdout=stdout, stderr=stderr)
 
@@ -440,7 +497,9 @@ class SafePythonExecutor:
     def execute(self, code_path: Path, workspace: Path, *, solver: str,
                 task_id: str, strategy_id: str, profile: ProblemProfile,
                 code_hash: Optional[str] = None,
-                action_id: Optional[str] = None) -> ExecutionRecord:
+                action_id: Optional[str] = None,
+                method_planned: Optional[Dict[str, Any]] = None
+                ) -> ExecutionRecord:
         """Run once, verify, meter cost, and assemble an ExecutionRecord.
 
         The record is returned, not persisted — recording is the harness's
@@ -464,7 +523,14 @@ class SafePythonExecutor:
         belongs to. It is passed to the script through ``OR_ACTION_ID`` and
         used to accept ONLY a config receipt stamped with the same id, so a
         leftover ``result.json`` from an earlier run in the same workspace
-        is never read as this attempt's configuration.
+        is never read as this attempt's configuration. The SAME stamp gates
+        the optional ``method_performed`` receipt, for the same reason.
+
+        ``method_planned`` (optional) is the outer agent's method for this
+        candidate, copied onto the record as a PLAN (``method_planned``).
+        The method that actually ran (``method_actual``) comes only from the
+        script's own ``method_performed`` receipt — never from this argument,
+        because a plan is not an observation.
         """
         started = time.monotonic()
         outcome = self.run(code_path, workspace, solver, action_id=action_id)
@@ -500,9 +566,25 @@ class SafePythonExecutor:
             failures.append(FailureRecord(
                 attempt=1, error=outcome.normalized_error or outcome.message,
                 recovery_action=None))
+        # The method ACTUALLY performed, from the script's own receipt (if it
+        # carried a matching stamp). An unobserved method stays None — the
+        # plan below is never copied in as if it had been carried out.
+        method_actual = None
+        if isinstance(outcome.method_report, dict):
+            method_actual = outcome.method_report.get("method")
+        method_planned_norm = normalize_method(method_planned)
         trajectory = [TrajectoryStep(
             action=f"execute:{strategy_id} via {solver}",
             outcome=outcome.status, duration_s=outcome.wall_seconds)]
+        # Real processing steps the script reported: each one is a step of
+        # the method that ACTUALLY ran, in order, attributed to this attempt.
+        # The literal 'execute:...' step above stays as the fallback so a
+        # script that reports no method still has an honest trajectory.
+        if method_actual:
+            for step in method_actual.get("steps") or []:
+                trajectory.append(TrajectoryStep(
+                    action=f"method:{step}", outcome=outcome.status,
+                    duration_s=0.0))
         if check["problems"]:
             trajectory.append(TrajectoryStep(
                 action="verify:basic", outcome="; ".join(check["problems"])))
@@ -651,6 +733,19 @@ class SafePythonExecutor:
                 "dimension was measured for this record")
         if cost_notes:
             execution_features["cost_notes"] = cost_notes
+        # The method that REALLY ran, as a normalizer observation record (not
+        # a copy of the plan). ``values`` is the performed method; a receipt
+        # with no matching action_id stamp is refused by ``_method_receipt``,
+        # so the block's presence means "this attempt reported this method".
+        if isinstance(outcome.method_report, dict):
+            execution_features["method_receipt"] = {
+                "method": method_actual,
+                "action_id": outcome.method_report.get("action_id"),
+                "note": ("the method the solve script reports it ACTUALLY "
+                         "performed, stamped with this attempt's action id. "
+                         "It is an observation, kept separate from the "
+                         "planned method — a plan is not a performed method"),
+            }
         return ExecutionRecord(
             execution_id=ExecutionRecord.new_id(),
             task_id=task_id, strategy_id=strategy_id,
@@ -662,7 +757,9 @@ class SafePythonExecutor:
             solver={"name": outcome.solver, "code_hash": digest},
             execution_features=execution_features,
             measurement_scope="attempt",
-            solver_runtime_provenance=runtime_provenance)
+            solver_runtime_provenance=runtime_provenance,
+            method_planned=method_planned_norm,
+            method_actual=normalize_method(method_actual))
 
     # -- static sandbox policy -------------------------------------------------------
 

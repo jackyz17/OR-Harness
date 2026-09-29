@@ -47,6 +47,7 @@ change; the aliases are API-level clarifications only.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -915,6 +916,147 @@ def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
 #: ``source == "executed"`` — stops counting it).
 EXECUTION_SOURCES = ("executed", "compacted", "excluded")
 
+#: Keys a method description may carry. ``name`` and ``steps`` are the
+#: substance; ``why`` and ``fallback`` are optional context; ``source``
+#: records WHERE the description came from (``candidate`` for a plan,
+#: ``executor_receipt`` / ``harness_declared`` for a performed method).
+#: Anything else is preserved under ``extra`` rather than dropped — an outer
+#: agent may record something the framework did not anticipate, and silently
+#: discarding it is how evidence goes missing.
+METHOD_KEYS = ("name", "steps", "why", "fallback", "source")
+
+
+def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalize a method description to ONE shape, or None.
+
+    A method is the outer agent's own description of HOW a strategy is
+    carried out: ``{"name": str, "steps": [str, ...], "why"?: str,
+    "fallback"?: str}``. The framework keeps no built-in method vocabulary
+    and never infers a method from a strategy id — it only normalizes the
+    shape so the planned and the actually-performed method share one form
+    and can be compared honestly.
+
+    Rules: an absent/empty/blank input is ``None`` (UNKNOWN, never an empty
+    method that reads as "ran nothing"); ``steps`` is coerced to a list of
+    non-empty strings (a bare string becomes a one-element list); a step
+    list with no substance (name AND steps both empty) is still ``None``.
+    Unrecognized keys are kept under ``extra``, never dropped.
+    """
+    if not isinstance(raw, dict) or not raw:
+        return None
+    name = raw.get("name")
+    name = str(name).strip() if name is not None else ""
+    raw_steps = raw.get("steps")
+    if isinstance(raw_steps, str):
+        raw_steps = [raw_steps]
+    steps = [str(s).strip() for s in (raw_steps or []) if str(s).strip()]
+    why = raw.get("why")
+    why = str(why).strip() if why is not None and str(why).strip() else None
+    fallback = raw.get("fallback")
+    fallback = (str(fallback).strip()
+                if fallback is not None and str(fallback).strip() else None)
+    source = raw.get("source")
+    source = str(source).strip() if source is not None and str(source).strip() \
+        else None
+    extra = {str(k): v for k, v in raw.items() if k not in METHOD_KEYS}
+    if not name and not steps:
+        # A method with neither a name nor any step is not a method — it is
+        # an empty claim, and treating it as "performed nothing" would let
+        # it masquerade as evidence.
+        return None
+    out: Dict[str, Any] = {"name": name, "steps": steps}
+    if why is not None:
+        out["why"] = why
+    if fallback is not None:
+        out["fallback"] = fallback
+    if source is not None:
+        out["source"] = source
+    if extra:
+        out["extra"] = extra
+    return out
+
+
+def compare_methods(planned: Any,
+                    actual: Any) -> Optional[Dict[str, Any]]:
+    """Compare a planned method against the method actually performed.
+
+    Returns ``None`` when EITHER side is unknown (an absent plan or an
+    unobserved performance is not a match, not a mismatch — it is simply
+    not comparable). Otherwise returns an observation record with a verdict:
+
+    * ``match`` — the performed step NAMES line up with the plan (same
+      normalized name, and the performed steps are a subsequence of the
+      planned steps, allowing an abbreviated run);
+    * ``mismatch`` — the performed method is substantively different
+      (different name, or steps that are not a subsequence of the plan);
+    * ``unknown`` — both sides are present but one carries no comparable
+      step content (names only for one side, steps only for the other).
+
+    The comparison never scores anything: it reports what was observed, and
+    the caller decides what it means. Step comparison is on normalized text
+    (lowercased, whitespace-collapsed), because the plan is prose from the
+    outer agent and the receipt is prose from the script — exact byte
+    equality would manufacture mismatches.
+    """
+    p = normalize_method(planned)
+    a = normalize_method(actual)
+    if p is None or a is None:
+        return None
+
+    def _norm(text: str) -> str:
+        return " ".join(str(text).lower().split())
+
+    p_name = _norm(p["name"])
+    a_name = _norm(a["name"])
+    p_steps = [_norm(s) for s in p["steps"]]
+    a_steps = [_norm(s) for s in a["steps"]]
+    name_known = bool(p_name) and bool(a_name)
+    steps_known = bool(p_steps) and bool(a_steps)
+    observation: Dict[str, Any] = {
+        "planned_name": p["name"], "actual_name": a["name"],
+        "planned_steps": list(p["steps"]), "actual_steps": list(a["steps"]),
+    }
+    if not steps_known:
+        # Without comparable steps there is nothing substantive to check —
+        # a name alone is a label, not a method.
+        observation["verdict"] = ("unknown" if not (p_name and a_name)
+                                  else "match" if p_name == a_name
+                                  else "mismatch")
+        observation["reason"] = (
+            "one side reports no steps: the comparison rests on the name "
+            "alone, which is a label and not a method"
+            if name_known else
+            "neither side reports a comparable name or step list")
+        return observation
+    # Subsequence check: every performed step must appear, IN ORDER, among
+    # the planned steps. An abbreviated run (the plan listed a fallback the
+    # script never needed) is still a match; a different sequence is not.
+    index = 0
+    for step in a_steps:
+        while index < len(p_steps) and p_steps[index] != step:
+            index += 1
+        if index >= len(p_steps):
+            break
+        index += 1
+    else:
+        # Loop completed without break: every actual step was found in order.
+        if not name_known or p_name == a_name:
+            observation["verdict"] = "match"
+            observation["reason"] = (
+                "the performed steps appear in order among the planned "
+                "steps (an abbreviated run is still the planned method)")
+        else:
+            observation["verdict"] = "mismatch"
+            observation["reason"] = (
+                "the performed steps follow the plan but the method name "
+                "differs: the label changed, which is not this plan's method")
+        return observation
+    observation["verdict"] = "mismatch"
+    observation["reason"] = (
+        "the performed steps are not a subsequence of the planned steps: a "
+        "different method really ran")
+    return observation
+
 
 @dataclass
 class TrajectoryStep:
@@ -1033,6 +1175,22 @@ class ExecutionRecord:
     #: recovered honestly, so the record is simply not vector-indexed and
     #: stays visible through profile-only retrieval and ``task_texts_for``).
     task_text_digest: Optional[str] = None
+    #: The method the candidate PROPOSED for this attempt — the outer agent's
+    #: own words (``{"name", "steps": [...], "why"?, "fallback"?}``). It is a
+    #: PLAN, not an observation: it is copied verbatim from the candidate, and
+    #: the record never promotes it to fact. ``None`` means the attempt was
+    #: NOT predicted (no candidate) or the candidate carried no method — an
+    #: absent plan is UNKNOWN, never fabricated.
+    method_planned: Optional[Dict[str, Any]] = None
+    #: The method ACTUALLY adopted in this attempt, as far as the run could
+    #: observe it: the solve script's ``method_performed`` receipt (optional
+    #: ``result.json`` key stamped with the attempt's ``action_id``), or a
+    #: declaration the harness makes at ``record`` time. ``None`` means the
+    #: method that really ran is UNKNOWN — the executor never copies the plan
+    #: in as if it had been performed. Normalized by
+    #: :func:`normalize_method` so both sides of a comparison share one shape
+    #: (``{"name", "steps", "why"?, "fallback"?, "source"}``).
+    method_actual: Optional[Dict[str, Any]] = None
     #: The unified action record this execution belongs to (world-model M1
     #: macro action). Not serialized into the fact payload — the linkage
     #: lives on the action side (``action_records.linked_execution_id``);
@@ -1090,6 +1248,10 @@ class ExecutionRecord:
                                     if self.prediction_snapshot is not None
                                     else None),
             "task_text_digest": self.task_text_digest,
+            "method_planned": (copy.deepcopy(self.method_planned)
+                               if self.method_planned is not None else None),
+            "method_actual": (copy.deepcopy(self.method_actual)
+                              if self.method_actual is not None else None),
         }
 
     @classmethod
@@ -1128,6 +1290,8 @@ class ExecutionRecord:
             measurement_scope=str(data.get("measurement_scope", "attempt")),
             solver_runtime_provenance=data.get("solver_runtime_provenance"),
             prediction_snapshot=snapshot,
+            method_planned=normalize_method(data.get("method_planned")),
+            method_actual=normalize_method(data.get("method_actual")),
             task_text_digest=(str(data["task_text_digest"])
                               if data.get("task_text_digest") else None),
         )
