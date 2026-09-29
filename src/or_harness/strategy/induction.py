@@ -19,17 +19,19 @@ tasks (three runs of one instance generalize about that instance), while an
 entry that already exists is refreshed by any new matching evidence.
 
 Induction is not limited to restating one cell's statistics. The patterns
-worth generalizing are relations ACROSS evidence — how strategies compare
+worth generalizing are claims ACROSS evidence — how strategies compare
 under one structural condition (``strategy_contrast``), what changed after an
-intervention (``intervention_recovery``), whether a relation recurs in an
+intervention (``intervention_recovery``), whether a pattern recurs in an
 independent family (``structural_reproduction``), and where a strategy's
 advantage reverses (``advantage_reversal``). The detectors live in
 :mod:`or_harness.strategy.triggers` and fire online; their persisted hints
 carry the cross-execution evidence into the offline candidates
-(``or_harness.world_model.maintenance``). A claim about such a relation is
-submitted as a STRUCTURED relation (``submit_relation``) with the evidence
-that established it — the statistical path below never phrases a contrast
-into free text.
+(``or_harness.world_model.maintenance``). A claim about such a pattern is
+submitted as a STRUCTURED CLAIM (:meth:`InductionEngine.submit_relation`)
+with the evidence that established it — the statistical path below never
+phrases a contrast into free text. ONE entry is ONE claim: it either creates
+a new entry or revises an existing one under the same identity, and two
+independent claims never share an entry.
 
 The only LLM injection point is phrasing: the harness may attach free-text
 applicability notes, which are kept for the reader and never scored.
@@ -51,24 +53,21 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
+    CLAIM_MIN_TASKS,
     COST_DIMENSIONS,
     CostVector,
     ExecutionRecord,
     GROUPING_FEATURES,
     PredictionTrack,
     ProblemProfile,
-    RELATION_MIN_TASKS as SCHEMA_RELATION_MIN_TASKS,
     StrategicEntry,
-    empty_relation_verification,
     empty_verification,
     evidence_predicates,
     group_key,
     min_interval_width,
+    normalize_claim,
     predicates_cover,
-    relation_is_published,
-    relation_scope_tasks,
-    relation_state,
-    validate_relation,
+    validate_claim,
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
@@ -88,12 +87,13 @@ UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
                    "strategic knowledge — recall falls back to conditional "
                    "statistics until an admission check passes")
 
-#: Distinct tasks a RELATION needs before it may be published as knowledge.
-#: A single-task repair is a verified FACT about that task; transferring it
-#: to future tasks is a knowledge claim and needs independent evidence.
-#: (The rule itself lives in ``core.schema.RELATION_MIN_TASKS`` — this alias
-#: keeps the induction module's public name stable.)
-RELATION_MIN_TASKS = SCHEMA_RELATION_MIN_TASKS
+#: Distinct tasks a transferable knowledge CLAIM needs before it may be
+#: published as knowledge. A single-task repair is a verified FACT about that
+#: task; transferring it to future tasks is a knowledge claim and needs
+#: independent evidence. (The rule itself lives in
+#: ``core.schema.CLAIM_MIN_TASKS`` — this alias keeps the induction module's
+#: public name stable.)
+RELATION_MIN_TASKS = CLAIM_MIN_TASKS
 
 
 #: A method description counts as substance when it names the steps actually
@@ -383,99 +383,103 @@ class InductionEngine:
             out["skipped"] = UNVERIFIED_NOTE
         return out
 
-    # -- relation claims -----------------------------------------------------------
+    # -- knowledge claims (ONE claim per entry) ---------------------------------
 
     def submit_relation(self, raw: Dict[str, Any], *,
                         dry_run: bool = False, force: bool = False,
                         verify: Optional[Dict[str, Any]] = None
                         ) -> Dict[str, Any]:
-        """Create or refresh a STRUCTURED relation claim on an entry.
+        """Create or refresh ONE knowledge CLAIM as a standalone entry.
 
-        Two host shapes, ONE knowledge object:
+        The unit of knowledge is the ENTRY, and one entry is one claim: a
+        structured assertion (condition -> how -> consequence -> boundary)
+        grounded in explicitly referenced evidence, with its OWN
+        verification. There is no separate relation structure and no host
+        lookup — a claim submitted here either creates a new entry or
+        revises an existing one under the same identity (its
+        ``strategy_id``), and two independent claims never share an entry.
 
-        - **strategy-anchored**: the evidence's own strategy (or the
-          relation's ``subject`` when it names an existing entry) resolves to
-          an entry, and the relation is appended to that entry's
-          ``relations``. Peer evidence never enters the host's statistics and
-          never satisfies its admission gate.
-        - **relation-only**: no host applies, so a knowledge entry is created
-          whose ``strategy_id`` is the relation's free-form ``subject`` (e.g.
-          ``principle:cross_period_state``) and which carries NO statistical
-          claim (``support_n = 0``). Its predicates come from the relation's
-          ``conditions``. Such an entry is published iff it holds at least one
-          published relation, so a claim that does not belong to a single
-          strategy still has a creation/save/verify/recall path.
-
-        The framework DERIVES everything the evidence implies (tasks, family,
-        measurement scope, strategy ids) — the caller submits only execution
-        ids and the role each plays. Verification reuses
+        ``raw`` carries ``claim`` text plus ``evidence`` (execution ids and
+        the role each plays). The framework DERIVES everything the evidence
+        implies (tasks, family, structural cell, strategy ids) — the caller
+        submits only ids and roles. Verification reuses
         :func:`verify_relation`; the cross-task independence requirement
-        (:data:`RELATION_MIN_TASKS`) is a PUBLICATION gate, not a save gate:
-        a single-task relation is saved and may be verified as a fact about
-        that task, but it is not published as transferable knowledge.
+        (:data:`CLAIM_MIN_TASKS`) is a PUBLICATION gate, not a save gate: a
+        single-task claim is saved and may be verified as a fact about that
+        task, but it is not published as transferable knowledge.
         """
-        relation = validate_relation(raw)
-        subject = relation.get("subject")
+        # The stored claim is built on the schema's validate_claim so the
+        # write path has ONE shape authority; ``claim`` text keeps the
+        # caller's own key for backward compatibility.
+        claim = validate_claim({
+            "text": raw.get("claim") or raw.get("text"),
+            "kind": raw.get("kind") or raw.get("source"),
+            "subject": raw.get("subject"),
+            "conditions": raw.get("conditions"),
+            "method": raw.get("method"),
+            "evidence": raw.get("evidence"),
+        })
+        subject = claim.get("subject")
         # Resolve the referenced executions and derive the evidence identity.
-        resolved = self._resolve_relation_evidence(relation["evidence"])
+        resolved = self._resolve_claim_evidence(claim["evidence"])
         if resolved.get("problem") is not None:
             return {"saved": None, "skipped": resolved["problem"]}
         records = resolved["records"]
-        relation["evidence"] = resolved["evidence"]
-        relation["strategy_ids"] = resolved["strategy_ids"]
-        relation["tasks"] = resolved["tasks"]
-        relation["family"] = resolved["family"]
-        relation["cell"] = resolved["cell"]
-        # MATERIAL REPORT (never a veto). A relation that restates a
-        # strategy name and a mean is not a technique; when the cited
-        # evidence reports no method at all, the outcome SAYS SO — and the
-        # claim the agent wrote is still saved, because it may legitimately
-        # name the method itself. What the framework refuses to do is derive
-        # a technique from numbers alone.
-        material_gate = relation_material_gate(relation, records)
-        # Applicability: the relation's own conditions when declared,
-        # otherwise the evidence's own structural cell.
-        conditions = relation.get("conditions") or {}
+        claim["evidence"] = resolved["evidence"]
+        claim["strategy_ids"] = resolved["strategy_ids"]
+        claim["tasks"] = resolved["tasks"]
+        claim["family"] = resolved["family"]
+        claim["cell"] = resolved["cell"]
+        # MATERIAL REPORT (never a veto). A claim that restates a strategy
+        # name and a mean is not a technique; when the cited evidence reports
+        # no method at all, the outcome SAYS SO — and the claim the agent
+        # wrote is still saved, because it may legitimately name the method
+        # itself. What the framework refuses to do is derive a technique from
+        # numbers alone.
+        material_gate = relation_material_gate(
+            {"claim": claim["text"], "method": claim.get("method")}, records)
+        # Applicability: the claim's own conditions when declared, otherwise
+        # the evidence's own structural cell.
+        conditions = claim.get("conditions") or {}
         predicates = dict(conditions.get("predicates") or {})
         if not predicates:
             predicates = evidence_predicates(
                 records, family=resolved["family"] or None)
-        # Verification (optional): the relation's OWN verdict.
+        # Verification (optional): the entry's OWN verdict, covering the
+        # declared checks over the cited evidence.
         if verify:
             report = verify_relation(
-                str(verify.get("claim") or relation["claim"]),
+                str(verify.get("claim") or claim["text"]),
                 evidence=verify.get("executions") or records,
-                roles=relation["evidence"],
+                roles=claim["evidence"],
                 assertions=(verify.get("check") or {}).get("assertions"))
-            relation["verification"] = report
+            verification = report
         else:
-            relation["verification"] = empty_relation_verification()
-        relation["verification"]["scope"] = dict(
-            relation["verification"].get("scope") or {})
-        relation["verification"]["scope"].setdefault(
-            "distinct_tasks", len(relation["tasks"]))
+            verification = empty_verification()
+        verification["scope"] = dict(verification.get("scope") or {})
+        verification["scope"].setdefault("distinct_tasks", len(claim["tasks"]))
 
-        # -- locate or create the host entry ----------------------------------
+        # Identity: the entry's ``strategy_id`` names the claim. A claim with
+        # an explicit free-form ``subject`` uses it; otherwise the evidence's
+        # single strategy names it. One entry === one claim.
         effective_subject = subject
         if not effective_subject and len(resolved["strategy_ids"]) == 1:
-            # Evidence from exactly one strategy: the knowledge entry is
-            # named after it, so the relation attaches to (or creates) that
-            # strategy's entry rather than an anonymous one.
             effective_subject = resolved["strategy_ids"][0]
-        entry = self._relation_host(subject, predicates,
-                                    resolved["strategy_ids"])
+        entry = self._find_claim_entry(effective_subject or "claim",
+                                       predicates, claim.get("kind"))
         if dry_run:
             return {"saved": None,
                     "would_" + ("update" if entry is not None else "create"):
                         entry.entry_id if entry is not None else
-                        (effective_subject or "relation"),
-                    "relation": relation,
+                        (effective_subject or "claim"),
+                    "claim": claim,
                     "material": material_gate,
-                    "publication": self._relation_publication(relation)}
+                    "publication": self._claim_publication_placeholder(claim,
+                                                                       verification)}
         if entry is None:
-            entry = self._new_relation_entry(
-                effective_subject or "relation", predicates)
-            veto = self._relation_veto(entry, relation)
+            entry = self._new_claim_entry(
+                effective_subject or "claim", predicates)
+            veto = self._claim_veto(entry)
             if veto is not None:
                 if not force:
                     return {"saved": None, "vetoed": veto,
@@ -483,33 +487,29 @@ class InductionEngine:
                             "skipped": ("cold-archive veto (use --force to "
                                         "override)")}
                 self.sbank.revive(veto["pattern_hash"], force=True)
-            entry.relations.append(relation)
+            entry.claim = claim
+            entry.verification = verification
             self.sbank.add(entry)
             return {"saved": entry.entry_id, "created_entry": entry.entry_id,
-                    "entry": entry.to_dict(), "relation": relation,
+                    "entry": entry.to_dict(), "claim": claim,
                     "material": material_gate,
-                    "publication": self._relation_publication(relation)}
-        # Existing host: merge the relation (dedup by relation_id) and, on a
-        # SUBSTANTIVE change to an already-verified relation, mark it stale.
-        replaced = False
-        for index, current in enumerate(entry.relations):
-            if current.get("relation_id") != relation["relation_id"]:
-                continue
-            merged = self._merge_relation(current, relation,
-                                          fresh_verdict=bool(verify))
-            entry.relations[index] = merged
-            replaced = True
-            break
-        if not replaced:
-            entry.relations.append(relation)
+                    "publication": self._claim_publication(entry)}
+        # Existing entry: revise the claim in place (dedup by content). A
+        # SUBSTANTIVE change to an already-verified claim invalidates the
+        # previous verdict: the old check no longer covers the new claim.
+        merged, stale = self._merge_claim(
+            entry.claim or {}, claim, entry.verification or {}, verification,
+            fresh_verdict=bool(verify))
+        entry.claim = merged
+        entry.verification = verification if verify else stale
         self.sbank.update(entry)
         return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
-                "relation": relation,
+                "claim": merged,
                 "material": material_gate,
-                "publication": self._relation_publication(relation)}
+                "publication": self._claim_publication(entry)}
 
-    def _resolve_relation_evidence(self, evidence: List[Dict[str, Any]]
-                                   ) -> Dict[str, Any]:
+    def _resolve_claim_evidence(self, evidence: List[Dict[str, Any]]
+                                ) -> Dict[str, Any]:
         """Resolve execution ids to records and derive the evidence identity.
 
         Nothing here is taken from the caller except the ids and roles: the
@@ -523,12 +523,12 @@ class InductionEngine:
             record = bank.get(item["execution_id"])
             if record is None:
                 return {"problem": (f"unknown execution {item['execution_id']!r}: "
-                                    "a relation may only reference recorded "
+                                    "a claim may only reference recorded "
                                     "facts")}
             if record.source != "executed":
                 return {"problem": (f"execution {item['execution_id']!r} is "
                                     f"{record.source!r}, not 'executed': only "
-                                    "real facts may support a relation")}
+                                    "real facts may support a claim")}
             records.append(record)
             resolved.append({
                 "execution_id": record.execution_id,
@@ -548,34 +548,12 @@ class InductionEngine:
                 "family": family, "cell": cell, "strategy_ids": strategy_ids,
                 "problem": None}
 
-    def _relation_host(self, subject: Optional[str],
-                       predicates: Dict[str, Any],
-                       strategy_ids: Sequence[str] = ()
-                       ) -> Optional[StrategicEntry]:
-        """The entry a relation should attach to, when one exists.
-
-        Resolution order: an entry under the relation's free-form subject;
-        otherwise the strategy entry of the evidence's own cell (so a
-        relation about S04's executions naturally attaches to S04's existing
-        claim rather than spawning a second entry for the same knowledge
-        object)."""
-        if subject:
-            for entry in self.sbank.list(strategy_id=subject,
-                                         include_dormant=True):
-                return entry
-            return None
-        for sid in strategy_ids or ():
-            found = self._find_existing(sid, predicates, include_dormant=True)
-            if found is not None:
-                return found
-        return None
-
-    def _new_relation_entry(self, subject: Optional[str],
-                            predicates: Dict[str, Any]) -> StrategicEntry:
-        """A knowledge entry for a relation with no strategy host."""
+    def _new_claim_entry(self, subject: Optional[str],
+                         predicates: Dict[str, Any]) -> StrategicEntry:
+        """A knowledge entry for a claim with no strategy host."""
         return StrategicEntry(
             entry_id=StrategicEntry.new_id(),
-            strategy_id=str(subject or "relation"),
+            strategy_id=str(subject or "claim"),
             pattern={"predicates": dict(predicates)},
             expected_quality_hat=0.0,
             quality_interval=(0.0, 1.0),
@@ -583,11 +561,38 @@ class InductionEngine:
             failure_prob=0.0,
             support_n=0,
             verification=empty_verification(),
-            relations=[],
+            claim=None,
         )
 
-    def _relation_veto(self, entry: StrategicEntry,
-                       relation: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def _find_claim_entry(self, subject: str,
+                          predicates: Dict[str, Any],
+                          kind: Optional[str]
+                          ) -> Optional[StrategicEntry]:
+        """The claim-bearing entry this submission REVISES, when one exists.
+
+        Only CLAIM-bearing entries are candidates (an entry with a
+        ``claim``). A statistical entry with the same identity is NOT a host:
+        a claim and a statistical claim are separate knowledge objects and
+        must not inherit each other's verdict — so this returns None when the
+        only match is statistical, and a new claim-only entry is created.
+
+        Matching is by ``strategy_id`` AND the claim's structural CELL AND
+        its ``kind``, so two independent claims under one subject (a
+        different cell, or a different kind) stay independent entries and
+        never inherit each other's verification."""
+        for entry in self.sbank.list(strategy_id=str(subject),
+                                     include_dormant=True):
+            claim = entry.claim
+            if claim is None:
+                continue
+            if not self._same_cell(entry.predicates, predicates):
+                continue
+            if (claim.get("kind") or None) != (kind or None):
+                continue
+            return entry
+        return None
+
+    def _claim_veto(self, entry: StrategicEntry) -> Optional[Dict[str, Any]]:
         card = self.sbank.archive_vetoes(entry.strategy_id,
                                          entry.predicates)
         if card is None:
@@ -595,21 +600,21 @@ class InductionEngine:
         return {"pattern_hash": card.pattern_hash, "reason": card.reason}
 
     @staticmethod
-    def _merge_relation(current: Dict[str, Any],
-                        incoming: Dict[str, Any], *,
-                        fresh_verdict: bool) -> Dict[str, Any]:
-        """Refresh an existing relation in place, marking a stale verdict.
+    def _merge_claim(current: Dict[str, Any],
+                     incoming: Dict[str, Any], current_verification: Dict[str, Any],
+                     incoming_verification: Dict[str, Any], *,
+                     fresh_verdict: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Revise an existing claim in place, marking a stale verdict.
 
-        A SUBSTANTIVE change (claim text, conditions, evidence set, check)
-        invalidates the previous verdict: the old check no longer covers the
-        new claim. A pure re-submission with identical content is a no-op.
+        Returns ``(merged_claim, verification)``. A SUBSTANTIVE change (claim
+        text, conditions, evidence set, method) invalidates the previous
+        verdict: the old check no longer covers the new claim. A pure
+        re-submission with identical content is a no-op.
 
         ``fresh_verdict`` says the caller supplied a NEW verification. That
-        verdict WINS outright — it was computed over the incoming evidence,
-        so the previous one is neither kept nor marked stale. Marking a
-        fresh verdict stale was the defect that made a re-verified (and
-        refuted) relation keep reading as its old published state."""
-        substantive_keys = ("claim", "conditions", "check")
+        verdict WINS outright — it was computed over the incoming evidence, so
+        the previous one is neither kept nor marked stale."""
+        substantive_keys = ("text", "conditions", "method", "kind")
         substantive = any(current.get(k) != incoming.get(k)
                           for k in substantive_keys)
         current_evidence = [(e.get("execution_id"), e.get("role"))
@@ -618,45 +623,68 @@ class InductionEngine:
                              for e in incoming.get("evidence") or []]
         if current_evidence != incoming_evidence:
             substantive = True
-        merged = dict(incoming)
-        previous = dict(current.get("verification") or {})
         if fresh_verdict:
             # The incoming verdict already reflects the incoming evidence.
-            return merged
+            return incoming, incoming_verification
+        previous = dict(current_verification or {})
         if substantive and previous.get("state") == "verified":
-            merged["verification"] = dict(previous)
-            merged["verification"]["stale_after_revision"] = True
-            merged["verification"]["stale_reason"] = (
-                "relation claim substantively revised (claim/conditions/"
-                "evidence/check) without a fresh verification; re-submit with "
+            stale = dict(previous)
+            stale["stale_after_revision"] = True
+            stale["stale_reason"] = (
+                "claim substantively revised (text/conditions/evidence/"
+                "method) without a fresh verification; re-submit with "
                 "--verify to re-publish")
-        elif not substantive and previous.get("state") == "verified":
+            return incoming, stale
+        if not substantive and previous.get("state") == "verified":
             # Identical re-submission: keep the existing verdict.
-            merged["verification"] = previous
-        return merged
+            return incoming, previous
+        return incoming, (previous or incoming_verification)
 
     @staticmethod
-    def _relation_publication(relation: Dict[str, Any]) -> Dict[str, Any]:
-        """Why a relation is (or is not) publishable, from the ONE rule.
-
-        The decision itself lives in ``relation_is_published`` — this only
-        reports the reasons, so the gate cannot drift between the place that
-        decides and the place that explains."""
-        state = relation_state(relation)
-        scope_tasks = relation_scope_tasks(relation)
+    def _claim_publication_placeholder(claim: Dict[str, Any],
+                                       verification: Dict[str, Any]
+                                       ) -> Dict[str, Any]:
+        state = str((verification or {}).get("state") or "unverified")
+        scope = (verification or {}).get("scope") or {}
+        tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
+            or {str(t) for t in (claim.get("tasks") or []) if str(t)}
         reasons: List[str] = []
         if state != "verified":
             reasons.append(f"verification state is {state!r}")
-        if len(scope_tasks) < RELATION_MIN_TASKS:
+        if len(tasks) < CLAIM_MIN_TASKS:
             reasons.append(
-                f"verification covers {len(scope_tasks)} task(s); a "
-                f"transferable knowledge claim needs >= {RELATION_MIN_TASKS} "
-                "independent tasks (a single-task repair is a verified fact "
-                "about that task, not yet knowledge)")
-        return {"published": relation_is_published(relation), "state": state,
-                "distinct_tasks": len(scope_tasks),
-                "required_tasks": RELATION_MIN_TASKS,
-                "reasons": reasons}
+                f"verification covers {len(tasks)} task(s); a transferable "
+                f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks")
+        return {"published": state == "verified" and len(tasks) >= CLAIM_MIN_TASKS,
+                "state": state, "distinct_tasks": len(tasks),
+                "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+
+    @staticmethod
+    def _claim_publication(entry: StrategicEntry) -> Dict[str, Any]:
+        """Why a claim-bearing entry is (or is not) publishable."""
+        state = str((entry.verification or {}).get("state") or "unverified")
+        block = entry.verification or {}
+        scope = block.get("scope") or {}
+        tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
+            or {str(t) for t in ((entry.claim or {}).get("tasks") or [])
+                if str(t)}
+        reasons: List[str] = []
+        if block.get("stale_after_revision"):
+            reasons.append("the claim was revised without a fresh verification")
+        elif state != "verified":
+            reasons.append(f"verification state is {state!r}")
+        if len(tasks) < CLAIM_MIN_TASKS:
+            reasons.append(
+                f"verification covers {len(tasks)} task(s); a transferable "
+                f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks "
+                "(a single-task repair is a verified fact about that task, "
+                "not yet knowledge)")
+        return {"published": (state == "verified"
+                              and not block.get("stale_after_revision")
+                              and len(tasks) >= CLAIM_MIN_TASKS),
+                "state": state, "distinct_tasks": len(tasks),
+                "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+
 
     @staticmethod
     def _note_withheld(out: Dict[str, Any], withheld: Dict[str, Dict[str, int]],

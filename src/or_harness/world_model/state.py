@@ -154,10 +154,10 @@ class KnowledgeRef:
     status: str
     verification_state: str
     snapshot_at: float
-    #: STRUCTURED relation claims (see ``core.schema.validate_relation``),
-    #: each with its own verification block. A relation is published on its
-    #: own verdict, independent of the entry's statistical admission.
-    relations: List[Dict[str, Any]] = field(default_factory=list)
+    #: The entry's stated knowledge CLAIM (see ``core.schema.validate_claim``),
+    #: when it states one. One claim per entry; its verdict is
+    #: ``verification_state`` (the entry's ONE verification block).
+    claim: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -174,7 +174,8 @@ class KnowledgeRef:
             "support_n": self.support_n,
             "status": self.status,
             "verification_state": self.verification_state,
-            "relations": copy.deepcopy(self.relations or []),
+            "claim": (copy.deepcopy(self.claim)
+                      if self.claim is not None else None),
             "snapshot_at": self.snapshot_at,
         }
 
@@ -194,7 +195,8 @@ class KnowledgeRef:
             support_n=entry.support_n,
             status=entry.status,
             verification_state=entry.verification_state,
-            relations=[copy.deepcopy(r) for r in (entry.relations or [])],
+            claim=(copy.deepcopy(entry.claim)
+                   if entry.claim is not None else None),
             snapshot_at=time.time(),
         )
 
@@ -215,9 +217,8 @@ class KnowledgeRef:
             status=str(data.get("status", "candidate")),
             verification_state=str(data.get("verification_state",
                                             "unverified")),
-            relations=[copy.deepcopy(dict(r))
-                       for r in (data.get("relations") or [])
-                       if isinstance(r, dict)],
+            claim=(copy.deepcopy(dict(data["claim"]))
+                   if isinstance(data.get("claim"), dict) else None),
             snapshot_at=float(data.get("snapshot_at", time.time())),
         )
 
@@ -403,35 +404,22 @@ def verified_knowledge_view(profile: ProblemProfile, sbank,
     - ``unverified``: unverified / insufficient_evidence / refuted
       candidates — held by the framework, not knowledge.
 
-    RELATION claims are layered on their OWN verdict, independent of the
-    entry's statistical admission: an entry whose statistical claim was never
-    verified but which holds a published relation is ``verified`` knowledge
-    for that relation's sake. A relation-only entry (no statistical claim) is
-    ``verified`` iff it holds at least one published relation.
+    A claim-only entry (stated claim, no statistical support) is layered by
+    the SAME single rule: its own verdict decides.
     """
     from or_harness.strategy.selector import is_publishable
-    from or_harness.core.schema import relation_knowledge_publishable
     layers: Dict[str, List[Dict[str, Any]]] = {
         "verified": [], "legacy_unknown": [], "unverified": []}
     for entry in sbank.matching(profile, include_dormant=True):
         block = entry.verification or {}
-        statistical_verified = (bool(block)
-                                and block.get("state") == "verified"
-                                and is_publishable(entry))
-        relations_published = relation_knowledge_publishable(entry)
-        if statistical_verified or relations_published:
-            layer = "verified"
-        elif not block:
+        if not block:
             # No verification block at all: a legacy entry written before
             # admission verification existed. Kept for historical recall
             # compatibility, but never counted as verified-knowledge growth.
             layer = "legacy_unknown"
+        elif is_publishable(entry):
+            layer = "verified"
         else:
             layer = "unverified"
-        ref = KnowledgeRef.from_entry(entry).to_dict()
-        # The relation list travels with the ref, but a NON-published
-        # relation must never look like an admitted claim: its verification
-        # state is carried verbatim so the consumer can gate on it.
-        ref["relations_published"] = relations_published
-        layers[layer].append(ref)
+        layers[layer].append(KnowledgeRef.from_entry(entry).to_dict())
     return layers

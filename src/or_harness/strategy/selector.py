@@ -80,15 +80,14 @@ class Recommendation:
     #: Dimensions of ``expected_cost`` that are actually measured (never
     #: treat an unmeasured placeholder zero as evidence of cheapness).
     cost_known_dims: List[str] = field(default_factory=list)
-    #: Dimensions used for this recall's cost scalarization — the common
+    #: Dimensiones used for this recall's cost scalarization — the common
     #: measured dimensions across cost-evidenced candidates. Empty = cost
     #: not comparable this recall (missing data never auto-benefits).
     cost_basis_dims: List[str] = field(default_factory=list)
-    #: STRUCTURED relation claims carried by the backing entry (see
-    #: ``core.schema.validate_relation``). Each carries its own
-    #: ``verification`` state; a relation is published on its OWN verdict,
-    #: independent of the entry's statistical admission.
-    relations: List[Dict[str, Any]] = field(default_factory=list)
+    #: The entry's stated knowledge CLAIM (see ``core.schema.validate_claim``),
+    #: when the backing entry states one. Its verdict is the entry's OWN
+    #: ``verification`` block, reported under ``knowledge``.
+    claim: Optional[Dict[str, Any]] = None
     #: What the backing ENTRY itself says about the method: its own
     #: applicability notes, its own recorded actions, its strategy_type and
     #: fallback, and its support. Present only on the ``strategic_entry``
@@ -114,7 +113,8 @@ class Recommendation:
             "basis": self.basis,
             "cost_known_dims": list(self.cost_known_dims),
             "cost_basis_dims": list(self.cost_basis_dims),
-            "relations": [dict(r) for r in self.relations],
+            "claim": (copy.deepcopy(self.claim)
+                      if self.claim is not None else None),
             "knowledge": copy.deepcopy(self.knowledge),
         }
 
@@ -404,7 +404,8 @@ class Selector:
                   f"n={entry.prediction_track.n_predictions})",
             cost_known_dims=sorted(cost.measured_dims()),
             cost_basis_dims=list(cost_basis or []),
-            relations=[dict(r) for r in (entry.relations or [])],
+            claim=(copy.deepcopy(entry.claim)
+                   if entry.claim is not None else None),
             knowledge=self._entry_knowledge(entry))
 
     @staticmethod
@@ -424,6 +425,9 @@ class Selector:
             "support_n": entry.support_n,
             "verification_state": entry.verification_state,
             "status": entry.status,
+            "verification": copy.deepcopy(entry.verification or {}),
+            "claim": (copy.deepcopy(entry.claim)
+                      if entry.claim is not None else None),
             "applicability": [str(n) for n in (entry.applicability or [])],
             "actions": [str(a) for a in (entry.actions or [])],
             "fallback_strategy_id": entry.fallback_strategy_id,

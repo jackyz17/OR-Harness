@@ -404,14 +404,19 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["published"], 1)
         self.assertIn("published", out["summary"])
 
-        # Recall surfaces it with its own verification state.
+        # Recall surfaces it as remembered knowledge with its verification
+        # state and stated claim.
         proc = run_orx(self.home, "recall", "--task", str(self.task_path))
-        knowledge = json.loads(proc.stdout)["result"]["knowledge"]
-        self.assertTrue(knowledge)
-        self.assertEqual(knowledge[0]["verification_state"], "verified")
-        self.assertTrue(knowledge[0]["published"])
-        self.assertEqual(knowledge[0]["strategy_id"],
+        recs = json.loads(proc.stdout)["result"]["recommendations"]
+        entry_recs = [r for r in recs
+                      if r.get("knowledge", {}).get("claim")]
+        self.assertTrue(entry_recs)
+        item = entry_recs[0]
+        self.assertEqual(item["strategy_id"],
                          "principle:repair_keeps_period_state")
+        self.assertEqual(item["knowledge"]["verification_state"],
+                         "verified")
+        self.assertIn("跨期", item["knowledge"]["claim"]["text"])
 
         # A counterexample (worse 'after') refutes the group comparison.
         worse_path = self.work / "worse.py"

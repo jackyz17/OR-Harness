@@ -663,22 +663,20 @@ class TestDocumentBuilders(HarnessTestCase):
         self.assertNotEqual(document_digest(doc),
                             document_digest(document_entry(other)))
 
-    def test_entry_document_carries_relation_claims(self):
-        """A relation's claim is part of what the knowledge says, so a text
-        search must be able to find it — and editing it must move the digest
-        (which is what invalidates the old vector)."""
+    def test_entry_document_carries_the_claim(self):
+        """The entry's stated claim is part of what the knowledge says, so a
+        text search must be able to find it — and editing it must move the
+        digest (which is what invalidates the old vector)."""
         entry = _entry()
-        entry.relations = [{
-            "relation_id": "rel_1",
-            "claim": "keep the cross-period state",
+        entry.claim = {
+            "text": "keep the cross-period state",
             "evidence": [{"execution_id": "ex_1", "role": "preserved"}],
-            "verification": {"state": "verified"},
-        }]
+        }
         doc = document_entry(entry)
         self.assertIn("keep the cross-period state", doc)
         edited = document_entry(entry)
         self.assertEqual(document_digest(doc), document_digest(edited))
-        entry.relations[0]["claim"] = "a revised claim"
+        entry.claim["text"] = "a revised claim"
         revised = document_entry(entry)
         self.assertNotEqual(document_digest(doc), document_digest(revised))
 

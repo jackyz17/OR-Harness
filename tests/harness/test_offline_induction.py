@@ -333,7 +333,7 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         outcome = result["relations"][0]
         self.assertIsNotNone(outcome.get("saved"))
         # Every execution in the bundle was cited.
-        stored = h.sbank.get(outcome["saved"]).relations[0]
+        stored = h.sbank.get(outcome["saved"]).claim
         self.assertEqual(len(stored["evidence"]), 3)
 
     def test_an_unknown_bundle_is_refused_with_a_reason(self):

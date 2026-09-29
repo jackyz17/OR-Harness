@@ -3400,46 +3400,33 @@ class ORHarness:
         }
 
     @staticmethod
-    def _relation_change(before: Any, after: Any) -> Optional[Dict[str, Any]]:
-        """How an entry's RELATION claims changed, by relation id.
+    def _claim_change(before: Any, after: Any) -> Optional[Dict[str, Any]]:
+        """How an entry's stated CLAIM changed (one claim per entry).
 
-        A relation is a knowledge object with its own verification, so a
-        rewrite is a knowledge change and must appear in the delta. Reported
-        per relation (added / removed / revised) with the FIELDS that moved,
-        so an added claim, a re-verified claim and an invalidated claim are
-        distinguishable — a single "relations differ" flag would hide which.
-
-        Returns None when the relation set is unchanged.
+        A claim rewrite is a knowledge change and must appear in the delta.
+        Reported field by field (text / conditions / evidence / kind /
+        method) so a revised assertion, a re-scoped condition set and an
+        added evidence reference are distinguishable — a single "claim
+        differs" flag would hide which. Returns None when the claim is
+        unchanged.
         """
-        before_map = {r.get("relation_id"): r
-                      for r in (before or []) if isinstance(r, dict)}
-        after_map = {r.get("relation_id"): r
-                     for r in (after or []) if isinstance(r, dict)}
-        if before_map == after_map:
+        if (before or None) == (after or None):
             return None
-        added = sorted(set(after_map) - set(before_map))
-        removed = sorted(set(before_map) - set(after_map))
-        revised = []
-        for rid in sorted(set(before_map) & set(after_map)):
-            old, new = before_map[rid], after_map[rid]
-            if old == new:
-                continue
-            fields = {}
-            for field in ("claim", "conditions", "evidence", "kind",
-                          "verification", "epistemic"):
-                if old.get(field) != new.get(field):
-                    fields[field] = {"before": old.get(field),
-                                     "after": new.get(field)}
-            # A verification-state move is called out explicitly: it is the
-            # event an admission/effect judgement turns on.
-            old_state = (old.get("verification") or {}).get("state")
-            new_state = (new.get("verification") or {}).get("state")
-            change: Dict[str, Any] = {"fields": fields}
-            if old_state != new_state:
-                change["verification_state"] = {"before": old_state,
-                                                "after": new_state}
-            revised.append({"relation_id": rid, "change": change})
-        return {"added": added, "removed": removed, "revised": revised}
+        before = before if isinstance(before, dict) else None
+        after = after if isinstance(after, dict) else None
+        if before is None:
+            return {"added": True, "after": after}
+        if after is None:
+            return {"removed": True, "before": before}
+        fields = {}
+        for field in ("text", "conditions", "evidence", "kind", "method",
+                      "subject"):
+            if before.get(field) != after.get(field):
+                fields[field] = {"before": before.get(field),
+                                 "after": after.get(field)}
+        if not fields:
+            return None
+        return {"fields": fields}
 
     def evaluate_knowledge_consolidation(self, result: Dict[str, Any],
                                          execution_ids: Sequence[str] = (),
@@ -4430,16 +4417,15 @@ class ORHarness:
                 recs, known, proposed, memory_mode),
             "available_solver_families": solvers,
             "solver_advisories": solver_advisories(self.bank),
-            # RELATION knowledge travels in its own section. The structural
-            # channel above is keyed on the strategy ids MEMORY holds, and
-            # its entry filter (`is_publishable`) speaks about the
-            # STATISTICAL claim. A relation claim is published on its own
-            # verdict, and a relation-only entry names a free-form subject
-            # rather than a strategy — neither would survive the
-            # recommendation filter. This section carries them with their
-            # verification state intact so a caller can gate on it.
-            "knowledge": self._relation_knowledge(profile,
-                                                  include_unverified),
+            # Unverified claims travel in their own section. The structural
+            # channel above is keyed on the strategy ids MEMORY holds and its
+            # entry filter (`is_publishable`) speaks about the admitted
+            # claim; a claim-only entry names a free-form subject rather than
+            # a strategy and would not survive the recommendation filter.
+            # This section carries the NOT-YET-PUBLISHED claims (with their
+            # verification state intact) so a caller can see what is held
+            # rather than admitted.
+            "held_claims": self._held_claims(profile, include_unverified),
         }
         if proposed is not None:
             result["candidates_proposed"] = list(proposed)
@@ -4505,74 +4491,68 @@ class ORHarness:
             "reason": reason,
         }
 
-    def _relation_knowledge(self, profile, include_unverified: bool
-                            ) -> List[Dict[str, Any]]:
-        """The structured relation claims applicable to this profile.
+    def _held_claims(self, profile, include_unverified: bool
+                     ) -> List[Dict[str, Any]]:
+        """The applicable knowledge CLAIMS NOT yet published as knowledge.
 
-        Read through ``verified_knowledge_view`` so the SAME layering rules
-        apply as everywhere else (an unpublished relation is never dressed up
-        as knowledge). Each item names the entry, the relation, and the
-        relation's own verification state — a consumer gates on the state, and
-        ``newer_evidence_since_verification`` reports how many matching
-        executions arrived AFTER the verdict so a frozen batch of evidence is
-        never mistaken for a standing guarantee about future tasks.
+        Published claims reach a caller through the ordinary recommendation
+        path (their entry is an admitted entry). What does NOT survive that
+        path is a HELD claim: either not yet verified, or a claim-only entry
+        naming a free-form subject instead of a strategy. This section
+        carries those, read through ``verified_knowledge_view`` so the SAME
+        layering rules apply everywhere, with each claim's own verification
+        state and the ``newer_evidence_since_verification`` annotation.
+
+        Empty when nothing is held (the common case) — a caller that wants to
+        see candidates-in-waiting sets ``include_unverified``.
         """
-        from or_harness.core.schema import (relation_is_published,
-                                            relation_state)
         from or_harness.world_model.state import verified_knowledge_view
         layers = verified_knowledge_view(profile, self.sbank)
         out: List[Dict[str, Any]] = []
-        for layer in ("verified", "legacy_unknown", "unverified"):
+        for layer in ("legacy_unknown", "unverified"):
             if layer == "unverified" and not include_unverified:
                 continue
             for ref in layers.get(layer) or []:
-                relations = ref.get("relations") or []
-                if not relations:
+                claim = ref.get("claim")
+                if not claim:
                     continue
-                for relation in relations:
-                    published = relation_is_published(relation)
-                    if not published and not include_unverified:
-                        continue
-                    item = {
-                        "layer": layer,
-                        "entry_id": ref.get("entry_id"),
-                        "strategy_id": ref.get("strategy_id"),
-                        # Whether this entry is knowledge about a CONDITION
-                        # (no statistical claim) or a strategy's claim that
-                        # additionally carries a relation.
-                        "relation_only": bool(ref.get("support_n") == 0),
-                        "relation_id": relation.get("relation_id"),
-                        "claim": relation.get("claim"),
-                        "kind": relation.get("kind"),
-                        "conditions": copy.deepcopy(
-                            relation.get("conditions") or {}),
-                        "evidence": copy.deepcopy(
-                            relation.get("evidence") or []),
-                        "tasks": list(relation.get("tasks") or []),
-                        "verification_state": relation_state(relation),
-                        "verification_scope": copy.deepcopy(
-                            (relation.get("verification") or {}).get("scope")
-                            or {}),
-                        "published": published,
-                        "newer_evidence_since_verification":
-                            self._newer_evidence_count(relation),
-                    }
-                    out.append(item)
+                item = {
+                    "layer": layer,
+                    "entry_id": ref.get("entry_id"),
+                    "strategy_id": ref.get("strategy_id"),
+                    # Whether this entry is knowledge about a CONDITION
+                    # (no statistical claim) or a strategy's claim.
+                    "claim_only": bool(ref.get("support_n", 0) == 0),
+                    "text": claim.get("text"),
+                    "kind": claim.get("kind"),
+                    "conditions": copy.deepcopy(claim.get("conditions") or {}),
+                    "evidence": copy.deepcopy(claim.get("evidence") or []),
+                    "tasks": list(claim.get("tasks") or []),
+                    "verification_state": ref.get("verification_state"),
+                    "published": False,
+                    "newer_evidence_since_verification":
+                        self._newer_evidence_count(ref),
+                }
+                out.append(item)
         return out
 
-    def _newer_evidence_count(self, relation: Dict[str, Any]) -> Optional[int]:
-        """Matching executions recorded AFTER this relation's verdict.
+    def _newer_evidence_count(self, ref: Dict[str, Any]) -> Optional[int]:
+        """Matching executions recorded AFTER this claim's verdict.
 
         A visibility annotation, never a lifecycle state: a frozen batch of
         evidence remains a true historical fact, and this count simply tells
-        a reader that the world has moved on since the check ran.
-        """
-        block = (relation.get("verification") or {})
+        a reader that the world has moved on since the check ran. The verdict
+        time is read from the ENTRY's verification block (the claim shares the
+        entry's one verdict)."""
+        entry = self.sbank.get(str(ref.get("entry_id")))
+        if entry is None:
+            return None
+        block = (entry.verification or {})
         verified_at = block.get("verified_at")
         if not verified_at:
             return None
-        conditions = ((relation.get("conditions") or {}).get("predicates")
-                      or {})
+        conditions = ((entry.claim or {}).get("conditions") or {}).get(
+            "predicates") or {}
         count = 0
         for record in self.bank.all():
             if record.source != "executed":
@@ -5468,11 +5448,11 @@ class ORHarness:
 
         Induction is not limited to restating one cell's means. A COMPARISON
         against other evidence (another strategy in the same cell, or the
-        same strategy in another cell) is submitted as a STRUCTURED relation
+        same strategy in another cell) is submitted as a STRUCTURED CLAIM
         with the executions that established it — read the material with
         ``orx induction-material`` and use ``--relation``. The statistical
         path records no free-text contrast: a sentence the framework cannot
-        check is not knowledge.
+        check is not knowledge. ONE entry is ONE claim.
 
         ``verify`` carries the harness's admission check for the candidate
         this call forms (see ``InductionEngine.induce``); the verdict is
@@ -5797,11 +5777,11 @@ class ORHarness:
         # values (expected quality/cost, predicates, verification state)
         # are what future analysis needs to replay this knowledge change.
         #
-        # RELATIONS are part of the entry's knowledge, so they are diffed
-        # too — and by RELATION, not as one opaque blob: adding, revising,
-        # re-verifying or invalidating a claim are different events, and a
-        # capability feedback that read "nothing changed" while a relation
-        # was rewritten would misjudge the induction entirely.
+        # The stated CLAIM is part of the entry's knowledge, so it is
+        # diffed too — field by field, not as one opaque blob: revising an
+        # assertion or re-scoping its conditions are different events, and a
+        # feedback that read "nothing changed" while the claim was rewritten
+        # would misjudge the induction entirely.
         entry_changes = []
         for entry_id in sorted(before_ids & after_ids):
             before, after = before_by_id[entry_id], after_by_id[entry_id]
@@ -5815,10 +5795,10 @@ class ORHarness:
                         "before": before.get(field),
                         "after": after.get(field),
                     }
-            relation_change = self._relation_change(before.get("relations"),
-                                                   after.get("relations"))
-            if relation_change:
-                changed_fields["relations"] = relation_change
+            claim_change = self._claim_change(before.get("claim"),
+                                              after.get("claim"))
+            if claim_change:
+                changed_fields["claim"] = claim_change
             if changed_fields:
                 entry_changes.append({"entry_id": entry_id,
                                       "changed": changed_fields})
@@ -6185,6 +6165,23 @@ class ORHarness:
     def index_health(self) -> Dict[str, Any]:
         """Read-only index health (counts, model id, stale/missing items)."""
         return self.index_sync.health()
+
+    def migrate_relations(self, *, dry_run: bool = False) -> Dict[str, Any]:
+        """One-way migration of legacy entry-level ``relations`` into claim
+        entries (see ``strategy.relation_migration``).
+
+        Idempotent: every relation becomes its OWN claim entry with its
+        verification copied verbatim; a host whose only content was its
+        relations is removed. ``dry_run`` reports and writes nothing. The
+        derived index is refreshed afterwards so a migrated claim is
+        retrievable."""
+        from or_harness.strategy.relation_migration import (
+            migrate_legacy_relations,
+        )
+        report = migrate_legacy_relations(self.sbank, dry_run=dry_run)
+        if not dry_run:
+            report["index_sync"] = self.index_sync.sync_entries()
+        return report
 
     def doctor(self) -> Dict[str, Any]:
         reports = probe_all()

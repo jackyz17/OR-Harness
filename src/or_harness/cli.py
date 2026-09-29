@@ -816,19 +816,19 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
                 parts.append(f"Refused: {item['skipped']}")
             continue
         publication = item.get("publication") or {}
-        relation = item.get("relation") or {}
-        claim = str(relation.get("claim") or "")[:80]
+        claim = item.get("claim") or {}
+        text = str(claim.get("text") or "")[:80]
         state = publication.get("state", "unverified")
         if publication.get("published"):
-            parts.append(f"Entry {entry_id}: {state} relation published — "
-                         f"{claim}")
+            parts.append(f"Entry {entry_id}: {state} claim published — "
+                         f"{text}")
         else:
             reasons = "; ".join(publication.get("reasons") or []) or \
                 "not yet publishable"
-            parts.append(f"Entry {entry_id}: relation saved as {state} but NOT "
+            parts.append(f"Entry {entry_id}: claim saved as {state} but NOT "
                          f"published ({reasons})")
     if not parts:
-        parts.append("No relation was submitted.")
+        parts.append("No claim was submitted.")
     return " ".join(parts)
 
 
@@ -1344,6 +1344,30 @@ def cmd_enforce_window(args) -> int:
                 "(calibration window / late-check grace / young unclosed). "
                 "An eviction is a source reference expiring, never a "
                 "refutation or a withdrawal.")
+        return _emit(result, summary)
+    finally:
+        h.close()
+
+
+def cmd_migrate_relations(args) -> int:
+    """One-way migration of legacy relations into standalone claim entries."""
+    h = _harness(args)
+    try:
+        result = h.migrate_relations(dry_run=bool(args.dry_run))
+        if result.get("dry_run"):
+            summary = (f"Dry run: {result.get('relations_found', 0)} legacy "
+                       f"relation(s) across "
+                       f"{result.get('entries_with_relations', 0)} entry(ies) "
+                       "would be migrated; nothing was written.")
+        elif result.get("relations_found"):
+            summary = (
+                f"Migrated {result.get('created_entries', 0)} claim "
+                f"entr(ies) from {result.get('relations_found', 0)} legacy "
+                f"relation(s). Each relation became its OWN entry with its "
+                "verification copied verbatim (a migration never widens what "
+                "was verified).")
+        else:
+            summary = "Nothing to migrate: no legacy relation lists found."
         return _emit(result, summary)
     finally:
         h.close()
@@ -2537,6 +2561,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would be evicted without writing")
     p.set_defaults(func=cmd_enforce_window)
+
+    p = sub.add_parser(
+        "migrate-relations",
+        help="ONE-WAY migration: turn legacy entry-level relation lists into "
+             "standalone claim entries (one claim per entry). Idempotent; "
+             "each relation's verification is copied verbatim (a migration "
+             "never widens what was verified)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be migrated without writing")
+    p.set_defaults(func=cmd_migrate_relations)
 
     p = sub.add_parser(
         "predict-capability",

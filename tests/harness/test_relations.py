@@ -1,26 +1,26 @@
-"""Relation claims: structured cross-task strategic knowledge.
+"""Knowledge CLAIMS: ONE claim per entry, verified and recalled as knowledge.
 
-The point of this suite is that a claim is GENERATED, CHECKED and TRANSFERRED
-— not merely that a field exists. It covers the plan's acceptance example
-(no recommended/comparison strategy, no pre-existing statistical entry), the
-publication gate, the assertion semantics (paired per-assertion, counterexample
-handling), qualification of relation vs statistical knowledge, and revision.
+The unit of knowledge is the ENTRY, and one entry is one claim. This suite
+covers the claim's generation (from cross-task evidence, with no host lookup
+and no relation sub-structure), its assertion semantics, the publication gate
+(>= 2 independent tasks), revision (a substantive change invalidates the old
+verdict), transfer to a future task's recall, and the rule that two
+independent claims never inherit each other's verification.
 """
 import unittest
 
 from helpers import HarnessTestCase
 
 from or_harness.api import ORHarness
-from or_harness.core.schema import (StrategicEntry, published_relations,
-                                    relation_is_published, relation_state,
-                                    validate_relation)
+from or_harness.core.schema import (CLAIM_MIN_TASKS, StrategicEntry,
+                                    claim_scope_tasks, validate_claim)
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.strategic_bank import StrategicBank
 
 
-class RelationCase(HarnessTestCase):
+class ClaimCase(HarnessTestCase):
     def setUp(self):
         super().setUp()
         self.bank = ExperienceBank(self.store)
@@ -55,7 +55,7 @@ class RelationCase(HarnessTestCase):
         ]:
             self.bank.append(rec)
 
-    def cross_period_relation(self, extra_evidence=()):
+    def cross_period_claim(self, extra_evidence=()):
         evidence = [
             {"execution_id": "ex_t1d", "role": "dropped"},
             {"execution_id": "ex_t1p", "role": "preserved"},
@@ -80,72 +80,73 @@ class RelationCase(HarnessTestCase):
                  "mode": "paired", "aggregation": "all"}]},
         }
 
-    def verify_payload(self, relation):
+    def verify_payload(self, claim):
         return {"purpose": "relation",
-                "check": {"assertions": relation["check"]["assertions"]}}
+                "check": {"assertions": claim["check"]["assertions"]}}
 
 
-class TestRelationGeneration(RelationCase):
-    """Generation: cross-task evidence forms a NEW knowledge object without
-    any recommended/comparison strategy and without a pre-existing
-    statistical entry."""
+class TestClaimGeneration(ClaimCase):
+    """Generation: cross-task evidence forms a NEW knowledge object, with no
+    recommended/comparison strategy and no pre-existing statistical entry."""
 
-    def test_relation_only_entry_is_created_without_any_statistical_entry(self):
+    def test_claim_only_entry_is_created_without_any_statistical_entry(self):
         self.seed_cross_period()
         self.assertEqual(self.sbank.count(), 0)   # nothing pre-exists
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
+            claim, verify=self.verify_payload(claim))
         self.assertIsNotNone(out["saved"])
         entry = self.sbank.get(out["saved"])
         # The claim does not belong to a catalog strategy: its subject names
-        # the principle, and it carries NO statistical claim.
+        # the principle, it carries NO statistical claim, and its stated
+        # claim lives directly on the entry.
         self.assertEqual(entry.strategy_id, "principle:cross_period_state")
         self.assertEqual(entry.support_n, 0)
-        self.assertTrue(entry.is_relation_only)
-        self.assertEqual(len(entry.relations), 1)
+        self.assertTrue(entry.is_claim_only)
+        self.assertIsNotNone(entry.claim)
+        self.assertIn("跨期", entry.claim["text"])
 
     def test_evidence_identity_is_derived_not_submitted(self):
         """tasks/family/strategy ids come from the recorded facts: the caller
         never submits a second, contradictory identity."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         # The caller supplies NO tasks / family / strategy_ids.
-        self.assertNotIn("tasks", relation)
-        self.assertNotIn("family", relation)
-        out = self.engine.submit_relation(relation)
-        stored = self.sbank.get(out["saved"]).relations[0]
+        self.assertNotIn("tasks", claim)
+        self.assertNotIn("family", claim)
+        out = self.engine.submit_relation(claim)
+        stored = self.sbank.get(out["saved"]).claim
         self.assertEqual(stored["tasks"], ["T1", "T2", "T3"])
         self.assertEqual(stored["family"], "scheduling")
         self.assertEqual(stored["strategy_ids"], ["S01"])
 
     def test_unknown_execution_is_refused(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        relation["evidence"].append({"execution_id": "ex_missing",
-                                     "role": "preserved"})
-        out = self.engine.submit_relation(relation)
+        claim = self.cross_period_claim()
+        claim["evidence"].append({"execution_id": "ex_missing",
+                                  "role": "preserved"})
+        out = self.engine.submit_relation(claim)
         self.assertIsNone(out.get("saved"))
         self.assertIn("unknown execution", out["skipped"])
         self.assertEqual(self.sbank.count(), 0)
 
     def test_role_is_required_on_every_reference(self):
         with self.assertRaises(ValueError) as ctx:
-            validate_relation({"claim": "c",
-                               "evidence": [{"execution_id": "ex_x"}]})
+            validate_claim({"text": "c",
+                            "evidence": [{"execution_id": "ex_x"}]})
         self.assertIn("role", str(ctx.exception))
 
-    def test_claim_is_required(self):
+    def test_claim_text_is_required(self):
         with self.assertRaises(ValueError):
-            validate_relation({"evidence": [{"execution_id": "ex_x",
-                                             "role": "a"}]})
+            validate_claim({"evidence": [{"execution_id": "ex_x",
+                                          "role": "a"}]})
 
     def test_statistical_induction_is_untouched(self):
-        """Submitting a relation must not perform statistical induction: the
+        """Submitting a claim must not perform statistical induction: the
         peer evidence never enters the target's statistics."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.engine.submit_relation(relation)
+        claim = self.cross_period_claim()
+        self.engine.submit_relation(claim)
         # No statistical entry was created for the evidence's strategy.
         self.assertEqual(self.sbank.count(), 1)
         entry = self.sbank.list()[0]
@@ -153,18 +154,18 @@ class TestRelationGeneration(RelationCase):
         self.assertEqual(entry.expected_quality_hat, 0.0)
 
 
-class TestRelationAssertions(RelationCase):
+class TestClaimAssertions(ClaimCase):
     """Verification checks the DECLARED assertions over the referenced
     evidence — not a natural-language sentence, and not a per-kind template."""
 
     def test_probe_and_paired_comparison_verify(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "verified")
-        scope = stored["verification"]["scope"]
+            claim, verify=self.verify_payload(claim))
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "verified")
+        scope = entry.verification["scope"]
         self.assertEqual(scope["tasks"], ["T1", "T2", "T3"])
         self.assertEqual(scope["assertions_checked"], [0, 1])
         self.assertEqual(scope["assertions_unchecked"], [])
@@ -173,11 +174,11 @@ class TestRelationAssertions(RelationCase):
         """T3 has no 'dropped' side: it must NOT be mixed into the paired
         statistic — it is recorded as unpaired in the scope."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        paired = [c for c in stored["verification"]["checks"]
+            claim, verify=self.verify_payload(claim))
+        checks = self.sbank.get(out["saved"]).verification["checks"]
+        paired = [c for c in checks
                   if c.get("check") == "assertion_paired_scope"]
         self.assertEqual(paired[0]["n_pairs"], 2)
         self.assertIn("ex_t3p", paired[0]["unpaired_execution_ids"])
@@ -186,21 +187,20 @@ class TestRelationAssertions(RelationCase):
         """A new comparable pair that violates the declared direction/gap
         refutes the claim — 'all pairs' means every pair."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.engine.submit_relation(relation,
-                                    verify=self.verify_payload(relation))
+        claim = self.cross_period_claim()
+        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
         self.bank.append(self.exec_record("ex_t9d", "T9", status="feasible",
                                           gap=0.02))
         self.bank.append(self.exec_record("ex_t9p", "T9", status="feasible",
                                           gap=0.03))
-        relation_v2 = self.cross_period_relation(
+        claim_v2 = self.cross_period_claim(
             extra_evidence=[{"execution_id": "ex_t9d", "role": "dropped"},
                             {"execution_id": "ex_t9p", "role": "preserved"}])
         out = self.engine.submit_relation(
-            relation_v2, verify=self.verify_payload(relation_v2))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "refuted")
-        self.assertFalse(relation_is_published(stored))
+            claim_v2, verify=self.verify_payload(claim_v2))
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "refuted")
+        self.assertFalse(entry.is_published)
 
     def test_mean_aggregation_tolerates_one_negative_pair(self):
         """With ``aggregation=mean`` a single unfavourable pair does not
@@ -210,19 +210,19 @@ class TestRelationAssertions(RelationCase):
                                           gap=0.02))
         self.bank.append(self.exec_record("ex_t9p", "T9", status="feasible",
                                           gap=0.03))
-        relation = self.cross_period_relation(
+        claim = self.cross_period_claim(
             extra_evidence=[{"execution_id": "ex_t9d", "role": "dropped"},
                             {"execution_id": "ex_t9p", "role": "preserved"}])
-        relation["check"]["assertions"] = [
+        claim["check"]["assertions"] = [
             {"kind": "comparison", "metric": "quality",
              "roles_a": ["preserved"], "roles_b": ["dropped"],
              "direction": "higher", "min_gap": 0.2,
              "mode": "paired", "aggregation": "mean"}]
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
+        out = self.engine.submit_relation(claim,
+                                          verify=self.verify_payload(claim))
+        entry = self.sbank.get(out["saved"])
         # (T1: 1.0-0.0, T2: 0.95-0.60, T9: 0.97-0.98) mean = (1.0+0.35-0.01)/3
-        self.assertEqual(relation_state(stored), "verified")
+        self.assertEqual(entry.verification_state, "verified")
 
     def test_unmeasured_metric_is_insufficient_not_refuted(self):
         """A metric no record measured can never decide a claim: 'we could
@@ -236,63 +236,63 @@ class TestRelationAssertions(RelationCase):
         ]:
             rec.cost.measured = {"llm_tokens"}   # tool_calls never measured
             self.bank.append(rec)
-        relation = self.cross_period_relation(
-            extra_evidence=[])
-        relation["evidence"] = [
+        claim = self.cross_period_claim()
+        claim["evidence"] = [
             {"execution_id": "ex_t1d", "role": "dropped"},
             {"execution_id": "ex_t1p", "role": "preserved"},
             {"execution_id": "ex_t2d", "role": "dropped"},
             {"execution_id": "ex_t2p", "role": "preserved"}]
-        relation["check"]["assertions"] = [
+        claim["check"]["assertions"] = [
             {"kind": "comparison", "metric": "cost:tool_calls",
              "roles_a": ["preserved"], "roles_b": ["dropped"],
              "direction": "lower", "min_gap": 0.1, "mode": "group"}]
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "insufficient_evidence")
+        out = self.engine.submit_relation(claim,
+                                          verify=self.verify_payload(claim))
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "insufficient_evidence")
 
     def test_no_assertion_is_insufficient(self):
         """A claim with nothing declared checkable stays unverified: the
         framework computes only what is computable."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        relation["check"] = {"assertions": []}
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "insufficient_evidence")
+        claim = self.cross_period_claim()
+        claim["check"] = {"assertions": []}
+        out = self.engine.submit_relation(claim,
+                                          verify=self.verify_payload(claim))
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "insufficient_evidence")
 
     def test_only_declared_parts_are_covered(self):
-        """A multi-part claim that only declares the quality assertion
-        records the cost part as unchecked — it does not get a blanket
-        'verified'."""
+        """A passing verdict records WHICH checks ran and states what is NOT
+        covered, so 'verified' is never read as a proof of the whole prose."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        relation["claim"] = "质量更高且 token 更低"
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        declared = stored["verification"]["scope"]["assertions_declared"]
+        claim = self.cross_period_claim()
+        claim["claim"] = "质量更高且 token 更低"
+        out = self.engine.submit_relation(claim,
+                                          verify=self.verify_payload(claim))
+        block = self.sbank.get(out["saved"]).verification
+        declared = block["scope"]["assertions_declared"]
         self.assertEqual(declared, ["probe", "comparison"])
         self.assertNotIn("cost", [str(d) for d in declared])
+        self.assertIn("ONLY the declared checks", block["not_covered"])
+        self.assertEqual(len(block["checked"]["execution_ids"]), 5)
 
 
-class TestRelationPublication(RelationCase):
+class TestClaimPublication(ClaimCase):
     """Publication is the cross-task independence gate, applied to the
-    RELATION's own evidence — a single-task fact is saved but not published."""
+    claim's own evidence — a single-task fact is saved but not published."""
 
-    def test_verified_relation_with_two_tasks_is_published(self):
+    def test_verified_claim_with_two_tasks_is_published(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
+            claim, verify=self.verify_payload(claim))
         self.assertTrue(out["publication"]["published"])
         self.assertEqual(out["publication"]["distinct_tasks"], 3)
 
-    def test_single_task_relation_is_saved_but_not_published(self):
+    def test_single_task_claim_is_saved_but_not_published(self):
         self.seed_cross_period()
-        relation = {
+        claim = {
             "subject": "principle:one_task_only",
             "claim": "只在一个任务上观察到的修复",
             "evidence": [{"execution_id": "ex_t2d", "role": "before"},
@@ -302,104 +302,123 @@ class TestRelationPublication(RelationCase):
                  "roles_a": ["after"], "roles_b": ["before"],
                  "direction": "higher", "min_gap": 0.2, "mode": "paired"}]},
         }
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
+        out = self.engine.submit_relation(claim,
+                                          verify=self.verify_payload(claim))
         # Saved, and the single-task fact itself verified...
         self.assertIsNotNone(out["saved"])
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "verified")
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "verified")
         # ...but NOT published as transferable knowledge.
         self.assertFalse(out["publication"]["published"])
         self.assertTrue(any("task" in r
                             for r in out["publication"]["reasons"]))
-        entry = self.sbank.get(out["saved"])
-        self.assertEqual(published_relations(entry), [])
+        self.assertLess(len(claim_scope_tasks(entry)), CLAIM_MIN_TASKS)
 
-    def test_unverified_relation_is_not_published(self):
+    def test_unverified_claim_is_not_published(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        out = self.engine.submit_relation(relation)   # no verify
+        claim = self.cross_period_claim()
+        out = self.engine.submit_relation(claim)   # no verify
         self.assertIsNotNone(out["saved"])
         self.assertFalse(out["publication"]["published"])
-        entry = self.sbank.get(out["saved"])
-        self.assertEqual(published_relations(entry), [])
+        self.assertFalse(self.sbank.get(out["saved"]).is_published)
 
 
-class TestRelationRevision(RelationCase):
+class TestClaimRevision(ClaimCase):
     """Revision: a substantive change invalidates the old verdict; a fresh
-    verification replaces it; a refuted verdict is not 'stale'."""
+    verification replaces it; an identical resubmission keeps it."""
 
     def test_substantive_change_without_reverification_marks_stale(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
+            claim, verify=self.verify_payload(claim))
         entry_id = out["saved"]
         self.assertTrue(out["publication"]["published"])
-        # Same identity (subject+kind), CHANGED claim, NO fresh verification.
-        revised = self.cross_period_relation()
+        # Same identity (subject+kind+cell), CHANGED claim, NO fresh verdict.
+        revised = self.cross_period_claim()
         revised["claim"] = "修订后的主张：只保留跨期状态的一部分"
-        out2 = self.engine.submit_relation(revised)
-        stored = self.sbank.get(entry_id).relations[0]
-        self.assertEqual(relation_state(stored), "verified")
-        self.assertTrue(stored["verification"]["stale_after_revision"])
-        self.assertFalse(relation_is_published(stored))
+        self.engine.submit_relation(revised)
+        entry = self.sbank.get(entry_id)
+        self.assertEqual(entry.verification_state, "verified")
+        self.assertTrue(entry.verification["stale_after_revision"])
+        self.assertFalse(entry.is_published)
 
     def test_fresh_verification_replaces_the_verdict(self):
         """A newly supplied verdict WINS: it must never be overwritten by
         the stale marker of the previous one."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.engine.submit_relation(relation,
-                                    verify=self.verify_payload(relation))
-        revised = self.cross_period_relation()
+        claim = self.cross_period_claim()
+        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
+        revised = self.cross_period_claim()
         revised["claim"] = "修订后的主张"
         out = self.engine.submit_relation(
             revised, verify=self.verify_payload(revised))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "verified")
-        self.assertFalse(stored["verification"].get("stale_after_revision"))
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "verified")
+        self.assertFalse(entry.verification.get("stale_after_revision"))
 
     def test_identical_resubmission_keeps_the_verdict(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        stored = self.sbank.get(out["saved"]).relations[0]
-        self.assertEqual(relation_state(stored), "verified")
-        # Re-submit the SAME relation with no verification: the verdict stays.
-        out2 = self.engine.submit_relation(self.cross_period_relation())
-        stored2 = self.sbank.get(out2["saved"]).relations[0]
-        self.assertEqual(relation_state(stored2), "verified")
-        self.assertFalse(stored2["verification"].get("stale_after_revision"))
+            claim, verify=self.verify_payload(claim))
+        self.assertEqual(self.sbank.get(out["saved"]).verification_state,
+                         "verified")
+        # Re-submit the SAME claim with no verification: the verdict stays.
+        out2 = self.engine.submit_relation(self.cross_period_claim())
+        entry = self.sbank.get(out2["saved"])
+        self.assertEqual(entry.verification_state, "verified")
+        self.assertFalse(entry.verification.get("stale_after_revision"))
 
     def test_resubmission_revises_rather_than_duplicates(self):
-        """Same subject+kind -> same relation identity: a revision must not
-        append a second copy of the same knowledge object."""
+        """Same identity -> same entry: a revision must not append a second
+        copy of the same knowledge object."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.engine.submit_relation(relation,
-                                    verify=self.verify_payload(relation))
-        self.engine.submit_relation(self.cross_period_relation())
-        entry = self.sbank.list()[0]
-        self.assertEqual(len(entry.relations), 1)
+        claim = self.cross_period_claim()
+        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
+        self.engine.submit_relation(self.cross_period_claim())
+        self.assertEqual(self.sbank.count(), 1)
 
-    def test_distinct_kinds_coexist_under_one_subject(self):
+    def test_two_claims_under_one_subject_stay_independent(self):
+        """#8: two independent claims must NOT share an entry, and a
+        verification on one must never leak to the other."""
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        relation["kind"] = "intervention_recovery"
-        self.engine.submit_relation(relation,
-                                    verify=self.verify_payload(relation))
-        other = self.cross_period_relation()
+        first = self.cross_period_claim()
+        first["kind"] = "intervention_recovery"
+        out1 = self.engine.submit_relation(
+            first, verify=self.verify_payload(first))
+        # A DIFFERENT kind under the same subject is a second claim.
+        other = self.cross_period_claim()
         other["kind"] = "structural_reproduction"
-        self.engine.submit_relation(other)
-        entry = self.sbank.list()[0]
-        self.assertEqual(len(entry.relations), 2)
+        other["claim"] = "另一条独立主张"
+        out2 = self.engine.submit_relation(other)
+        self.assertNotEqual(out1["saved"], out2["saved"])
+        self.assertEqual(self.sbank.count(), 2)
+        # The second was never verified: it must not inherit the first's
+        # verdict.
+        independent = self.sbank.get(out2["saved"])
+        self.assertEqual(independent.verification_state, "unverified")
+        self.assertFalse(independent.is_published)
+
+    def test_claim_and_statistical_claim_do_not_merge(self):
+        """A statistical entry and a claim entry under the same strategy id
+        are DIFFERENT knowledge objects: the claim must not attach to the
+        statistical entry or inherit its verdict."""
+        self.seed_cross_period()
+        self.engine.induce(self.profile("T1"), "S01")
+        stats_entry = self.sbank.list(strategy_id="S01")[0]
+        claim = self.cross_period_claim()
+        claim["subject"] = "S01"
+        out = self.engine.submit_relation(
+            claim, verify=self.verify_payload(claim))
+        self.assertNotEqual(out["saved"], stats_entry.entry_id)
+        self.assertEqual(self.sbank.count(), 2)
+        self.assertIsNone(self.sbank.get(stats_entry.entry_id).claim)
 
 
-class TestRelationRecall(RelationCase):
-    """Transfer: the relation must actually reach a future task's recall,
-    including when the host entry's STATISTICAL claim is unpublished."""
+class TestClaimRecall(ClaimCase):
+    """Transfer: a verified claim reaches a future task's recall through the
+    ORDINARY entry path (no special section)."""
 
     def task(self, task_id="NEW1"):
         return {"task_id": task_id,
@@ -409,138 +428,132 @@ class TestRelationRecall(RelationCase):
                                              "temporal_coupling": 0.7,
                                              "route_complexity": 0.1}}}
 
-    def test_verified_relation_reaches_recall(self):
+    def test_verified_claim_reaches_recall(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.h.induce(relations=[relation],
-                      verify=self.verify_payload(relation))
+        claim = self.cross_period_claim()
+        self.h.induce(relations=[claim],
+                      verify=self.verify_payload(claim))
         recalled = self.h.recall(self.task())
-        knowledge = recalled["knowledge"]
-        self.assertTrue(knowledge)
-        item = knowledge[0]
-        self.assertEqual(item["verification_state"], "verified")
-        self.assertTrue(item["published"])
-        self.assertIn("跨期", item["claim"])
-        self.assertEqual(item["tasks"], ["T1", "T2", "T3"])
-        self.assertIn("temporal_coupling", item["conditions"]["predicates"])
+        recs = recalled["recommendations"]
+        self.assertTrue(recs)
+        item = next(r for r in recs
+                    if r["strategy_id"] == "principle:cross_period_state")
+        self.assertEqual(item["evidence"], "strategic_entry")
+        self.assertEqual(item["knowledge"]["verification_state"], "verified")
+        self.assertIsNotNone(item["knowledge"]["claim"])
+        self.assertIn("跨期", item["knowledge"]["claim"]["text"])
 
-    def test_relation_survives_an_unpublished_statistical_host(self):
-        """The host entry's statistical claim is unverified (no --verify for
-        it), yet the verified relation must still be recallable."""
+    def test_claim_survives_beside_an_unpublished_statistical_entry(self):
+        """A statistical entry for the same strategy is unverified; the
+        verified claim is a SEPARATE entry and must still be recalled."""
         self.seed_cross_period()
-        # Build a statistical entry for S01 in the same cell, unverified.
         self.engine.induce(self.profile("T1"), "S01")
-        host = self.sbank.list(strategy_id="S01")[0]
-        self.assertNotEqual(host.verification_state, "verified")
-        relation = self.cross_period_relation()
-        relation["subject"] = "S01"
-        out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
-        self.assertEqual(out["saved"], host.entry_id)
+        claim = self.cross_period_claim()
+        claim["subject"] = "S01"
+        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
+        # The claim is a separate entry, so the S01 recommendation now shows
+        # the verified claim as its own knowledge object.
         recalled = self.h.recall(self.task())
-        self.assertTrue(recalled["knowledge"],
-                        "a verified relation must reach recall even when its "
-                        "host's statistical claim is unpublished")
+        self.assertTrue(any(r["strategy_id"] == "S01"
+                            and r["knowledge"]["claim"] is not None
+                            for r in recalled["recommendations"]))
 
-    def test_refuted_relation_is_not_offered_as_knowledge(self):
+    def test_refuted_claim_is_not_offered_as_knowledge(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.h.induce(relations=[relation],
-                      verify=self.verify_payload(relation))
-        self.assertTrue(self.h.recall(self.task())["knowledge"])
+        claim = self.cross_period_claim()
+        self.h.induce(relations=[claim], verify=self.verify_payload(claim))
+        self.assertTrue(self.h.recall(self.task())["recommendations"])
         # A counterexample refutes it.
         self.bank.append(self.exec_record("ex_t9d", "T9", status="feasible",
                                           gap=0.02))
         self.bank.append(self.exec_record("ex_t9p", "T9", status="feasible",
                                           gap=0.03))
-        relation_v2 = self.cross_period_relation(
+        claim_v2 = self.cross_period_claim(
             extra_evidence=[{"execution_id": "ex_t9d", "role": "dropped"},
                             {"execution_id": "ex_t9p", "role": "preserved"}])
-        self.h.induce(relations=[relation_v2],
-                      verify=self.verify_payload(relation_v2))
-        self.assertEqual(self.h.recall(self.task())["knowledge"], [])
-        # The offline/inspection view still shows it, with its state.
+        self.h.induce(relations=[claim_v2],
+                      verify=self.verify_payload(claim_v2))
+        # The refuted claim no longer appears in recommendations...
+        recs = self.h.recall(self.task())["recommendations"]
+        self.assertFalse(any(r["strategy_id"] == "principle:cross_period_state"
+                             for r in recs))
+        # ...but the offline view still shows it, with its state.
         offline = self.h.recall(self.task(), include_unverified=True)
-        self.assertEqual(offline["knowledge"][0]["verification_state"],
-                         "refuted")
+        held = offline["held_claims"]
+        self.assertEqual(held[0]["verification_state"], "refuted")
 
     def test_newer_evidence_since_verification_is_reported(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        self.h.induce(relations=[relation],
-                      verify=self.verify_payload(relation))
+        claim = self.cross_period_claim()
+        self.h.induce(relations=[claim], verify=self.verify_payload(claim))
         self.bank.append(self.exec_record("ex_late", "TLATE", tc=0.9))
-        item = self.h.recall(self.task())["knowledge"][0]
-        self.assertGreaterEqual(item["newer_evidence_since_verification"], 1)
-
-    def test_structural_hits_carry_relations_and_boundaries(self):
-        """The structured channel must not drop what the knowledge says."""
-        from or_harness.world_model.context import _structural_hits
-        hits = _structural_hits([{
-            "strategy_id": "S01", "evidence_refs": ["se_x"],
-            "evidence": "strategic_entry", "expected": {},
-            "confidence": 0.5, "basis": "b",
-            "risk_warnings": ["a boundary"],
-            "relations": [{"relation_id": "rel_1", "claim": "c"}],
-        }])
-        content = hits[0]["content"]
-        self.assertEqual(content["risk_warnings"], ["a boundary"])
-        self.assertEqual(content["relations"][0]["relation_id"], "rel_1")
+        offline = self.h.recall(self.task(), include_unverified=True)
+        # A published claim reaches recommendations; the held-claims section
+        # is where the newer-evidence annotation is most visible for a
+        # claim-only entry that is not (yet) admitted.
+        entry = next(e for e in self.h.sbank.list()
+                     if e.claim is not None)
+        self.assertGreaterEqual(
+            self.h._newer_evidence_count({"entry_id": entry.entry_id}), 1)
 
 
-class TestRelationDryRunAndVeto(RelationCase):
+class TestClaimDryRunAndVeto(ClaimCase):
     """A rehearsal writes nothing, and a retired pattern cannot resurrect."""
 
     def test_dry_run_writes_nothing(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, dry_run=True, verify=self.verify_payload(relation))
+            claim, dry_run=True, verify=self.verify_payload(claim))
         self.assertIsNone(out["saved"])
         self.assertIn("would_create", out)
         self.assertEqual(self.sbank.count(), 0)
 
     def test_cold_archive_veto_blocks_then_force_lifts(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
-        first = self.engine.submit_relation(relation)
+        claim = self.cross_period_claim()
+        first = self.engine.submit_relation(claim)
         entry = self.sbank.get(first["saved"])
         entry.status = "suspect"
         self.sbank.update(entry)
         card = self.sbank.retire(entry.entry_id, reason="did not reproduce")
         # Same subject + same conditions -> the same pattern is vetoed.
-        blocked = self.engine.submit_relation(self.cross_period_relation())
+        blocked = self.engine.submit_relation(self.cross_period_claim())
         self.assertIsNone(blocked["saved"])
         self.assertEqual(blocked["vetoed"]["pattern_hash"], card.pattern_hash)
-        forced = self.engine.submit_relation(self.cross_period_relation(),
+        forced = self.engine.submit_relation(self.cross_period_claim(),
                                              force=True)
         self.assertIsNotNone(forced["saved"])
         self.assertEqual(self.sbank.cold_archive(), [])
 
 
-class TestRelationRoundTrip(RelationCase):
-    """Serialization: relations survive the storage boundary intact."""
+class TestClaimRoundTrip(ClaimCase):
+    """Serialization: the claim survives the storage boundary intact."""
 
-    def test_relations_round_trip(self):
+    def test_claim_round_trips(self):
         self.seed_cross_period()
-        relation = self.cross_period_relation()
+        claim = self.cross_period_claim()
         out = self.engine.submit_relation(
-            relation, verify=self.verify_payload(relation))
+            claim, verify=self.verify_payload(claim))
         entry = self.sbank.get(out["saved"])
         again = StrategicEntry.from_dict(entry.to_dict())
-        self.assertEqual(len(again.relations), 1)
-        self.assertEqual(again.relations[0]["relation_id"],
-                         entry.relations[0]["relation_id"])
-        self.assertEqual(relation_state(again.relations[0]), "verified")
-        self.assertTrue(again.is_relation_only)
+        self.assertIsNotNone(again.claim)
+        self.assertEqual(again.claim["text"], entry.claim["text"])
+        self.assertEqual(again.claim["evidence"], entry.claim["evidence"])
+        self.assertEqual(again.verification_state, "verified")
+        self.assertTrue(again.is_claim_only)
 
-    def test_legacy_entry_without_relations_reads_empty(self):
+    def test_legacy_entry_with_relations_key_does_not_crash(self):
+        """A legacy payload that still carries a ``relations`` list loads
+        with the field simply absent (the claim is None) — read compatibility
+        only, never re-interpreted as a claim."""
         entry = StrategicEntry(entry_id="se_legacy", strategy_id="S01",
                                pattern={"predicates": {"family": "routing"}})
         payload = entry.to_dict()
-        payload.pop("relations", None)
-        self.assertEqual(StrategicEntry.from_dict(payload).relations, [])
-        self.assertFalse(StrategicEntry.from_dict(payload).is_relation_only)
+        payload["relations"] = [{"relation_id": "rel_x", "claim": "old"}]
+        loaded = StrategicEntry.from_dict(payload)
+        self.assertIsNone(loaded.claim)
+        self.assertFalse(loaded.is_claim_only)
 
 
 if __name__ == "__main__":

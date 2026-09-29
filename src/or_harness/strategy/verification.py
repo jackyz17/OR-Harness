@@ -1138,17 +1138,37 @@ def _relation_report(state: str, claim: str, checks: List[Dict[str, Any]],
                      assertions: List[Dict[str, Any]], *,
                      scope: Dict[str, Any],
                      conclusion: str) -> Dict[str, Any]:
-    """The relation verdict, carrying its own scope and audit trail."""
+    """The claim verdict, carrying its own scope and audit trail.
+
+    This is the ONE verification block an entry's claim shares with its
+    statistical claim. `checked` names what the declared checks covered;
+    `not_covered` states, in the block itself, that a passing verdict is only
+    the declared checks holding over the listed samples — never a proof the
+    whole natural-language claim is correct, causal, or broadly general."""
+    evidence_ids = [str(e.get("execution_id")) for e in
+                    (scope.get("evidence") or [])
+                    if isinstance(e, dict) and e.get("execution_id")]
+    checked_assertions = scope.get("assertions_checked") or []
+    checked = {
+        "assertions": [assertions[i] for i in checked_assertions
+                       if isinstance(i, int) and 0 <= i < len(assertions)],
+        "execution_ids": evidence_ids,
+        "tasks": list(scope.get("tasks") or []),
+    }
     return {
         "state": state,
         "purpose": PURPOSE_RELATION,
         "claim": claim,
         "assertions": assertions,
         "checks": checks,
-        "evidence": [str(e.get("execution_id")) for e in
-                     (scope.get("evidence") or [])
-                     if isinstance(e, dict) and e.get("execution_id")],
+        "evidence": evidence_ids,
         "scope": scope,
+        "checked": checked,
+        "not_covered": (
+            "this verdict covers ONLY the declared checks over the listed "
+            "samples. It does not establish that the natural-language claim "
+            "is correct, causal, or generally transferable beyond the "
+            "conditions and tasks the evidence covers"),
         "conclusion": conclusion,
         "verified_at": time.time(),
     }

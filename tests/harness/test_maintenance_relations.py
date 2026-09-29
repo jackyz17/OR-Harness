@@ -133,14 +133,14 @@ class TestAcceptedOperationRunsDeclaredRelations(MaintenanceCase):
             }]},
         }
         accepted = self._accept(operation)
-        # A relation was REALLY written.
+        # The claim was REALLY written — as a standalone entry whose stated
+        # claim carries the agent's own words.
         entries = self.h.sbank.list()
         self.assertTrue(entries)
-        relations = [r for e in entries for r in (e.relations or [])]
-        self.assertTrue(relations,
-                        "the declared relation must reach the bank")
-        self.assertIn("integer vehicle variable", relations[0]["claim"])
-        # The knowledge delta reports the created relation entry.
+        claims = [e for e in entries if e.claim is not None]
+        self.assertTrue(claims, "the declared claim must reach the bank")
+        self.assertIn("integer vehicle variable", claims[0].claim["text"])
+        # The knowledge delta reports the created claim entry.
         delta = accepted["operation_result"]["knowledge_delta"]
         self.assertTrue(delta["entries_created"] or delta["entry_changes"])
         # And NOT a bare statistical claim on the strategy id.
@@ -166,28 +166,17 @@ class TestKnowledgeDeltaCoversRelations(MaintenanceCase):
         }
         first = self.h.induce(relations=[base])
         entry_id = first["relations"][0]["saved"]
-        # A SECOND claim on the same entry needs a distinct kind (the id is
-        # derived from subject + kind): an ADD.
-        added = self.h.induce(relations=[{
-            "subject": "principle:state",
-            "claim": "a boundary claim under the same subject",
-            "kind": "boundary",
-            "evidence": [{"execution_id": "ex1", "role": "preserved"},
-                         {"execution_id": "ex2", "role": "preserved"}]}])
-        self.assertEqual(added["relations"][0]["saved"], entry_id)
-        change = [c for c in added["knowledge_delta"]["entry_changes"]
-                  if c["entry_id"] == entry_id][0]
-        self.assertTrue(change["changed"]["relations"]["added"])
-        # Rewriting the FIRST claim (same relation id) is a REVISION, and the
-        # moved field is named.
+        # Submitting the same claim again with a CHANGED assertion is a
+        # REVISION of the SAME entry, and the moved text is named in the
+        # delta.
         revised = dict(base, claim="keep the inventory AND the deferral "
                                           "state")
         second = self.h.induce(relations=[revised])
+        self.assertEqual(second["relations"][0]["saved"], entry_id)
         self.assertEqual(second["business_result"], "relation_updated")
-        change = second["knowledge_delta"]["entry_changes"][0][
-            "changed"]["relations"]
-        self.assertIn("claim",
-                      change["revised"][0]["change"]["fields"])
+        change = [c for c in second["knowledge_delta"]["entry_changes"]
+                  if c["entry_id"] == entry_id][0]
+        self.assertIn("text", change["changed"]["claim"]["fields"])
 
 
 class TestPurposeDistinction(MaintenanceCase):
@@ -229,6 +218,7 @@ class TestRetiredVectorIsRemoved(MaintenanceCase):
             "evidence": [{"execution_id": "ex1", "role": "preserved"},
                          {"execution_id": "ex2", "role": "preserved"}]}])
         entry_id = self.h.sbank.list()[0].entry_id
+        self.assertIsNotNone(self.h.sbank.get(entry_id).claim)
         # Index the entry, then confirm it is present.
         self.h.index_sync.sync_entries()
         present = {item["id"] for item in

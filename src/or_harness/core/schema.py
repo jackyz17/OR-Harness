@@ -634,55 +634,14 @@ def task_effective_quality(record: Any, observed: float) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Relation claims (structured strategic claims on an entry)
+# knowledge claims (ONE structured claim per entry)
 # ---------------------------------------------------------------------------
 
-#: Distinct tasks a relation needs before it may be published as knowledge.
-#: A single-task repair is a verified FACT about that task; transferring it
-#: to future tasks is a knowledge claim and needs independent evidence.
-RELATION_MIN_TASKS = 2
-
-
-def empty_relation_verification() -> Dict[str, Any]:
-    """The honest default verification block of a relation nobody checked."""
-    return {
-        "state": "unverified",
-        "purpose": None,
-        "claim": None,
-        "assertions": [],
-        "checks": [],
-        "evidence": [],
-        "conclusion": None,
-        "scope": {},
-        "verified_at": None,
-        "stale_after_revision": False,
-        "stale_reason": None,
-    }
-
-
-def _relation_verification_block(raw: Any) -> Dict[str, Any]:
-    """Normalize a relation's verification block.
-
-    Same discipline as the entry verification block: ``state`` is
-    load-bearing, everything else is the audit trail. ``scope`` records the
-    executions/assertions the verdict actually covered."""
-    data = dict(raw) if isinstance(raw, dict) else {}
-    state = str(data.get("state", "unverified"))
-    if state not in VERIFICATION_STATES:
-        state = "unverified"
-    return {
-        "state": state,
-        "purpose": data.get("purpose"),
-        "claim": data.get("claim"),
-        "assertions": copy_any_list(data.get("assertions")),
-        "checks": copy_any_list(data.get("checks")),
-        "evidence": copy_any_list(data.get("evidence")),
-        "conclusion": data.get("conclusion"),
-        "scope": dict(data.get("scope") or {}),
-        "verified_at": data.get("verified_at"),
-        "stale_after_revision": bool(data.get("stale_after_revision", False)),
-        "stale_reason": data.get("stale_reason"),
-    }
+#: Distinct tasks a transferable knowledge CLAIM needs before it may be
+#: published as knowledge. A single-task repair is a verified FACT about that
+#: task; transferring it to future tasks is a knowledge claim and needs
+#: independent evidence.
+CLAIM_MIN_TASKS = 2
 
 
 def copy_any_list(raw: Any) -> List[Any]:
@@ -700,53 +659,98 @@ def copy_any_list(raw: Any) -> List[Any]:
     return out
 
 
-def validate_relation(raw: Any) -> Dict[str, Any]:
-    """Normalize and validate ONE relation claim.
+def _deep_normalize(value: Any) -> Any:
+    """A recursive copy of a JSON value (dicts/lists copied, scalars kept)."""
+    if isinstance(value, dict):
+        return {str(k): _deep_normalize(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_deep_normalize(v) for v in value]
+    return value
 
-    The minimal field constraint (an arbitrary JSON container is refused):
-    - ``claim``: non-empty statement of what is asserted;
-    - ``evidence``: at least one ``{"execution_id", "role"}`` entry — a
-      relation is always anchored to explicitly referenced evidence. The
-      role names the part that evidence plays in THIS claim (free string:
+
+def normalize_claim(raw: Any) -> Dict[str, Any]:
+    """Normalize a stored CLAIM WITHOUT validating it.
+
+    Used on the read path (``from_dict`` / ``to_dict``): a claim that was
+    never submitted through :func:`validate_claim` (a migrated legacy host,
+    a hand-written payload) must ROUND-TRIP unchanged rather than be dropped
+    or rejected. Validation belongs to the WRITE path."""
+    data = dict(raw) if isinstance(raw, dict) else {}
+    conditions = data.get("conditions")
+    if not isinstance(conditions, dict):
+        conditions = {}
+    evidence = data.get("evidence")
+    if not isinstance(evidence, (list, tuple)):
+        evidence = []
+    return {
+        "text": str(data.get("text") or ""),
+        "kind": (str(data["kind"]) if data.get("kind") is not None else None),
+        "subject": (str(data["subject"])
+                    if data.get("subject") is not None else None),
+        "conditions": _deep_normalize(conditions),
+        "evidence": _deep_normalize(list(evidence)),
+        "method": (_deep_normalize(data["method"])
+                   if isinstance(data.get("method"), dict) else None),
+        # DERIVED identity travels with the claim and MUST survive a storage
+        # round trip: dropping it empties the evidence identity a consumer
+        # needs to judge the claim.
+        **{key: _deep_normalize(data[key])
+           for key in ("tasks", "strategy_ids", "family", "cell")
+           if key in data},
+    }
+
+
+def validate_claim(raw: Any) -> Dict[str, Any]:
+    """Normalize and validate ONE knowledge claim (the WRITE path).
+
+    The entry is the unit of a knowledge claim: an independently revisable,
+    verifiable, recallable assertion. The minimal field constraint (an
+    arbitrary JSON container is refused):
+
+    - ``text``: non-empty statement of the method knowledge — the how, the
+      conditions, the expected effect, and where it stops, in the author's
+      words;
+    - ``evidence``: at least one ``{"execution_id", "role"}`` entry grounding
+      the claim. The role names the part that evidence plays (free string:
       ``dropped``/``preserved``, ``before``/``after``, ``strategy_a``, ...);
+      the references are historical and may expire.
+    - ``kind``: optional free string (e.g. ``rule``/``repair``/
+      ``cost_saving``) — a hint for the reader, never a scored taxonomy;
     - ``subject``: optional free-form subject for a claim that does not
-      belong to one strategy (e.g. ``principle:cross_period_state``).
-      It names the entry the relation is stored on when no strategy entry
-      applies;
-    - ``conditions``: optional predicates (+ optional note); when absent the
-      host entry's predicates apply;
-    - ``check``: optional declaration of what is computationally checkable
-      (assertions); a claim may legitimately have none yet.
+      belong to one strategy (e.g. ``principle:cross_period_state``);
+    - ``conditions``: optional predicates (+ optional note) narrowing the
+      claim; when absent the entry's ``pattern.predicates`` apply;
+    - ``method``: optional ``{name, steps, why?, fallback?}`` — the recorded
+      method content, when the claim states it structurally.
     """
     if not isinstance(raw, dict):
-        raise ValueError("a relation must be a JSON object")
-    claim = str(raw.get("claim") or "").strip()
-    if not claim:
-        raise ValueError("a relation requires a non-empty 'claim'")
+        raise ValueError("a claim must be a JSON object")
+    text = str(raw.get("text") or raw.get("claim") or "").strip()
+    if not text:
+        raise ValueError("a claim requires a non-empty 'text'")
     evidence_raw = raw.get("evidence")
     if not isinstance(evidence_raw, (list, tuple)) or not evidence_raw:
-        raise ValueError("a relation requires a non-empty 'evidence' list of "
+        raise ValueError("a claim requires a non-empty 'evidence' list of "
                          "{execution_id, role} references")
     evidence: List[Dict[str, Any]] = []
     for item in evidence_raw:
         if not isinstance(item, dict):
-            raise ValueError("every relation evidence entry must be an object "
+            raise ValueError("every claim evidence entry must be an object "
                              "with 'execution_id' and 'role'")
         execution_id = str(item.get("execution_id") or "").strip()
         role = str(item.get("role") or "").strip()
         if not execution_id:
-            raise ValueError("relation evidence entry is missing "
-                             "'execution_id'")
+            raise ValueError("claim evidence entry is missing 'execution_id'")
         if not role:
-            raise ValueError(f"relation evidence entry {execution_id} is "
-                             "missing 'role' (the part this evidence plays "
-                             "in the claim)")
+            raise ValueError(f"claim evidence entry {execution_id} is missing "
+                             "'role' (the part this evidence plays in the "
+                             "claim)")
         evidence.append({"execution_id": execution_id, "role": role})
     conditions_raw = raw.get("conditions")
     conditions: Dict[str, Any] = {}
     if conditions_raw is not None:
         if not isinstance(conditions_raw, dict):
-            raise ValueError("relation 'conditions' must be an object")
+            raise ValueError("claim 'conditions' must be an object")
         predicates = conditions_raw.get("predicates")
         conditions = {
             "predicates": (dict(predicates)
@@ -754,102 +758,58 @@ def validate_relation(raw: Any) -> Dict[str, Any]:
             "note": (str(conditions_raw["note"])
                      if conditions_raw.get("note") else None),
         }
-    check = raw.get("check")
     kind = raw.get("kind") or raw.get("source")
     if kind is not None:
         kind = str(kind)
     subject = (str(raw["subject"]).strip()
                if str(raw.get("subject") or "").strip() else None)
-    # Identity: an explicit ``relation_id`` wins; otherwise the id is DERIVED
-    # from (subject, kind) so re-submitting the same claim REVISES it rather
-    # than appending a duplicate. A changed claim under the same identity is
-    # what "the claim was revised" means, and the merge step is where the old
-    # verdict is invalidated. Keep several distinct relations under one
-    # subject by giving them distinct kinds (or explicit ids).
-    relation_id = str(raw.get("relation_id") or "").strip()
-    if not relation_id:
-        identity = json.dumps({"subject": subject, "kind": kind},
-                              sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
-        relation_id = f"rel_{digest}"
-    relation = {
-        "relation_id": relation_id,
-        "claim": claim,
-        "subject": subject,
+    claim = {
+        "text": text,
         "kind": kind,
-        "evidence": evidence,
+        "subject": subject,
         "conditions": conditions,
-        "check": (dict(check) if isinstance(check, dict) else None),
-        "verification": _relation_verification_block(raw.get("verification")),
+        "evidence": evidence,
+        "method": (_deep_normalize(raw["method"])
+                   if isinstance(raw.get("method"), dict) else None),
     }
-    # DERIVED identity travels with the relation. The caller never submits
-    # these (they are read off the recorded facts), but a round-trip through
-    # storage MUST preserve them: dropping them here silently emptied the
-    # evidence identity a consumer needs to judge the claim.
+    # DERIVED identity travels with the claim. The caller never submits these
+    # (they are read off the recorded facts), but a round-trip through storage
+    # MUST preserve them: dropping them silently emptied the evidence identity
+    # a consumer needs to judge the claim.
     for derived in ("tasks", "strategy_ids", "family", "cell"):
         if derived in raw:
             value = raw.get(derived)
             if isinstance(value, (list, tuple)):
-                relation[derived] = [str(v) for v in value]
+                claim[derived] = [str(v) for v in value]
             elif value is None:
-                relation[derived] = None
+                claim[derived] = None
             else:
-                relation[derived] = str(value)
-    return relation
+                claim[derived] = str(value)
+    return claim
 
 
-def relation_state(relation: Dict[str, Any]) -> str:
-    """The relation's admission state (``unverified`` when absent)."""
-    block = (relation or {}).get("verification") or {}
-    return str(block.get("state") or "unverified")
+def claim_text(entry: "StrategicEntry") -> str:
+    """The entry's stated claim text (empty when it states none)."""
+    return str(((entry.claim or {}).get("text")) or "")
 
 
-def relation_is_published(relation: Dict[str, Any]) -> bool:
-    """Whether a relation may act as published strategic knowledge.
+def claim_scope_tasks(entry: "StrategicEntry") -> Set[str]:
+    """The distinct tasks the entry's verification actually covered.
 
-    Two independent conditions, both about THIS relation:
-    - its own verdict is ``verified`` and not stale;
-    - its verification scope covers at least two distinct tasks. A
-      single-task repair is a verified FACT about that task; transferring it
-      to future tasks is a knowledge claim and needs independent evidence.
-
-    An ``unverified`` / ``insufficient_evidence`` / ``refuted`` relation is
-    held, not published — the same discipline the entry's own admission
-    applies to its statistical claim. Publication is per-relation: one
-    relation going stale never invalidates another."""
-    block = (relation or {}).get("verification") or {}
-    if block.get("stale_after_revision"):
-        return False
-    if block.get("state") != "verified":
-        return False
-    return len(relation_scope_tasks(relation)) >= RELATION_MIN_TASKS
-
-
-def published_relations(entry: "StrategicEntry") -> List[Dict[str, Any]]:
-    """The entry's relations that may be consumed as knowledge."""
-    return [r for r in (entry.relations or []) if relation_is_published(r)]
-
-
-def relation_scope_tasks(relation: Dict[str, Any]) -> Set[str]:
-    """The distinct tasks the relation's verification actually covered."""
-    scope = ((relation or {}).get("verification") or {}).get("scope") or {}
+    Read from the verdict's ``scope.tasks``; a verdict without a scope block
+    (legacy or hand-written) falls back to the evidence's own task list so
+    the gate stays decidable rather than defaulting to "pass"."""
+    scope = (entry.verification or {}).get("scope") or {}
     tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)}
     if tasks:
         return tasks
-    # A relation whose verdict has no scope block (legacy or hand-written)
-    # falls back to the evidence's own task list — the facts still name the
-    # tasks, so the gate stays decidable rather than defaulting to "pass".
-    return {str(t) for t in ((relation or {}).get("tasks") or []) if str(t)}
+    return {str(t) for t in ((entry.claim or {}).get("tasks") or []) if str(t)}
 
 
-def relation_knowledge_publishable(entry: "StrategicEntry") -> bool:
-    """Whether ANY of the entry's relation knowledge may be published.
-
-    Relation publication is decided per relation (see
-    :func:`relation_is_published`), independent of the entry's statistical
-    claim — so an entry whose statistics were never verified can still
-    publish the relations it holds."""
-    return bool(published_relations(entry))
+def claim_evidence_refs(entry: "StrategicEntry") -> List[Dict[str, Any]]:
+    """The ``{execution_id, role}`` references grounding the claim."""
+    evidence = (entry.claim or {}).get("evidence")
+    return list(evidence) if isinstance(evidence, list) else []
 
 
 def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool:
@@ -1415,18 +1375,23 @@ class StrategicEntry:
     holds harness-written notes: free text, kept for the reader, never
     scored.
 
-    ``relations`` holds STRUCTURED relation claims (see
-    :func:`validate_relation`): cross-task knowledge that is not a
-    restatement of one cell's statistics — a structural condition paired
-    with a strategy/modeling choice and its quality/cost/risk consequence.
-    Each relation carries its OWN verification block, independent of the
-    entry's own admission: a verified relation does NOT publish the entry's
-    statistical claim, and a stale/refuted relation does not invalidate
-    another relation. An entry may be created for a relation-only claim
-    (``strategy_id`` naming a free-form subject such as
-    ``principle:cross_period_state``) — such an entry carries no statistical
-    claim (``support_n = 0``) and is published iff it has at least one
-    published relation.
+    Everything this entry claims lives in ONE place: ``claim`` holds the
+    stated method knowledge (what was done, under what conditions, with what
+    expected effect and where it stops) together with the evidence that
+    grounds it — a list of ``{execution_id, role}`` references (see
+    :func:`validate_claim`). The entry's ``verification`` block is the ONE
+    verdict, covering the claim's declared checks over the listed evidence;
+    it turns the entry into published knowledge when ``state == "verified"``
+    and the claimed scope is not stale. There is no second, embedded claim
+    structure and no per-relation verdict: a second independent claim is a
+    second ENTRY.
+
+    An entry whose ``claim`` is set but which carries no statistical support
+    (``support_n == 0``, e.g. ``strategy_id`` naming a free-form subject
+    such as ``principle:cross_period_state``) is a CLAIM-ONLY entry: it makes
+    no quality/cost/failure claim, and its publication is decided by the
+    entry's single ``verification`` block. A claim-only entry publishes
+    nothing on a statistical basis.
     """
 
     entry_id: str
@@ -1474,26 +1439,48 @@ class StrategicEntry:
     #: the block is the audit trail: what claim was checked, which executions
     #: were used, what check was applied, and why that conclusion followed.
     #: Never a bare boolean — a claim is only ever backed by a readable check.
-    #: This block speaks ONLY about the entry's STATISTICAL claim; relation
-    #: claims carry their own ``verification`` inside ``relations``.
+    #: This block is the entry's ONE verdict; it covers whatever the entry
+    #: claims (its statistical interval AND/OR its ``claim`` block). A
+    #: passed check means only that the DECLARED checks held on the listed
+    #: samples — it is never a proof the whole prose claim is true, causal,
+    #: or general.
     verification: Dict[str, Any] = field(default_factory=dict)
-    #: Structured relation claims (see :func:`validate_relation`). Each has
-    #: its own verification; the entry-level block never covers them.
-    relations: List[Dict[str, Any]] = field(default_factory=list)
+    #: The stated knowledge claim (see :func:`validate_claim`): the method
+    #: knowledge this entry asserts — ``{text, kind?, subject?,
+    #: conditions?, evidence, method?}``. ``evidence`` is a list of
+    #: ``{execution_id, role}`` references that GROUND the claim; those
+    #: references are historical and MAY expire (the evidence window), which
+    #: never by itself retracts the claim — the claim text, conditions,
+    #: expected effect (``expected_quality_hat`` / ``expected_cost_hat`` /
+    #: ``failure_prob``) and the verification's scope live on THIS entry.
+    #: The text and conditions are the claim; the numeric fields are the
+    #: expected effect; ``verification.scope`` bounds what was checked.
+    claim: Optional[Dict[str, Any]] = None
+    #: LEGACY carrier: the retired per-entry ``relations`` list read back from
+    #: an older payload. It is preserved through round-trips so a migration
+    #: can turn each relation into its OWN claim entry; it is never written
+    #: by new code and never merged into ``claim`` (a legacy relation is
+    #: migrated, not silently reinterpreted). Empty once migrated.
+    legacy_relations: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
-    def is_relation_only(self) -> bool:
-        """True when the entry carries no statistical claim — a knowledge
-        entry created for a relation, whose ``strategy_id`` is a free-form
-        subject rather than a strategy id. Such an entry has no
-        quality/cost/failure statistics to publish, and its publication is
-        decided entirely by its relations."""
-        return bool(self.relations) and self.support_n == 0
+    def is_claim_only(self) -> bool:
+        """True when the entry carries a stated claim but no statistical
+        support (``support_n == 0``) — a knowledge entry whose
+        ``strategy_id`` is a free-form subject rather than a strategy id.
+        Such an entry makes no quality/cost/failure claim, and its
+        publication is decided by the entry's single ``verification`` block
+        alone."""
+        return self.claim is not None and self.support_n == 0
 
     @property
     def is_published(self) -> bool:
-        """True when this entry's claim passed admission verification."""
-        return (self.verification or {}).get("state") == "verified"
+        """True when this entry's claim passed admission verification AND
+        is not stale after a substantive revision."""
+        block = self.verification or {}
+        if block.get("stale_after_revision"):
+            return False
+        return block.get("state") == "verified"
 
     @property
     def verification_state(self) -> str:
@@ -1561,7 +1548,11 @@ class StrategicEntry:
             "actions": list(self.actions),
             "verification": (dict(self.verification)
                              if self.verification else None),
-            "relations": [dict(r) for r in (self.relations or [])],
+            "claim": (normalize_claim(self.claim)
+                      if self.claim is not None else None),
+            # Legacy relations are re-emitted UNCHANGED so a migration can
+            # consume them; they are never a new-code write path.
+            "relations": [copy.deepcopy(r) for r in self.legacy_relations],
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -1618,8 +1609,11 @@ class StrategicEntry:
             actions=[str(a) for a in (data.get("actions") or [])],
             verification=(_verification_block(data["verification"])
                           if data.get("verification") is not None else {}),
-            relations=[validate_relation(r)
-                       for r in (data.get("relations") or [])],
+            claim=(normalize_claim(data["claim"])
+                   if data.get("claim") is not None else None),
+            legacy_relations=[copy.deepcopy(dict(r))
+                              for r in (data.get("relations") or [])
+                              if isinstance(r, dict)],
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )
@@ -1636,9 +1630,12 @@ VERIFICATION_STATES = ("unverified", "verified", "insufficient_evidence",
 def _verification_block(raw: Any) -> Dict[str, Any]:
     """Normalize the verification block (compact, one dict).
 
-    Shape: ``{"state", "purpose", "claim", "checks", "evidence",
-    "conclusion", "verified_at"}``. Only ``state`` is load-bearing for
-    admission; the rest is the audit trail the harness reads back."""
+    Shape: ``{"state", "purpose", "claim", "checks", "assertions",
+    "evidence", "conclusion", "scope", "verified_at"}``. Only ``state`` is
+    load-bearing for admission; the rest is the audit trail the harness reads
+    back — ``scope`` in particular bounds WHAT was checked (the executions /
+    tasks the declared checks actually covered), so a passing verdict is
+    never read as a proof of the whole prose claim."""
     data = dict(raw) if isinstance(raw, dict) else {}
     state = str(data.get("state", "unverified"))
     if state not in VERIFICATION_STATES:
@@ -1647,9 +1644,17 @@ def _verification_block(raw: Any) -> Dict[str, Any]:
         "state": state,
         "purpose": data.get("purpose"),
         "claim": data.get("claim"),
-        "checks": list(data.get("checks") or []),
-        "evidence": list(data.get("evidence") or []),
+        "checks": copy_any_list(data.get("checks")),
+        "assertions": copy_any_list(data.get("assertions")),
+        "evidence": copy_any_list(data.get("evidence")),
         "conclusion": data.get("conclusion"),
+        "scope": dict(data.get("scope") or {}),
+        # What the verdict actually COVERED, and what it explicitly does NOT:
+        # kept through round-trips so a passing verdict is never read as a
+        # proof of the whole prose claim.
+        "checked": _deep_normalize(data.get("checked"))
+        if data.get("checked") is not None else None,
+        "not_covered": data.get("not_covered"),
         "verified_at": data.get("verified_at"),
         # Substantive revision without a fresh verdict: the old verification
         # no longer covers the (changed) claim. Kept through round-trips so
