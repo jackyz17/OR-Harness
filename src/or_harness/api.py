@@ -3805,7 +3805,14 @@ class ORHarness:
             return []
         specs = []
         for spec in list(candidates)[:limit]:
-            spec = ActionSpec.from_dict(spec.to_dict())  # value copy
+            if isinstance(spec, dict):
+                # The CLI reads candidates from JSON (``--candidates``) and a
+                # Python caller naturally writes them as dicts; both are the
+                # SAME shape. Accepting only ActionSpec made a plain dict
+                # crash with an opaque AttributeError.
+                spec = ActionSpec.from_dict(spec)
+            else:
+                spec = ActionSpec.from_dict(spec.to_dict())  # value copy
             if not spec.task_id:
                 spec.task_id = task_id
             if spec.episode_id is None:
@@ -5677,6 +5684,21 @@ class ORHarness:
         prediction_checks = self._check_predictions(record)
         if prediction_checks:
             record.execution_features["quality_feedback"] = prediction_checks
+        # Carry forward a TASK-RESULT check already written to the STAGED
+        # payload. ``check-task`` works on a staged execution ("the
+        # annotation survives ``record --from-staged`` verbatim"), so a
+        # caller that checks, then records the SAME in-memory object it got
+        # back from ``execute``, would otherwise overwrite the staged
+        # annotation with its stale copy and silently lose the verdict —
+        # the answer would re-enter the close-out as UNCHECKED. The staged
+        # annotation is the newer fact, so it wins; a check on the incoming
+        # record is never overwritten (it is at least as new).
+        staged = self.bank.get_pending(record.execution_id)
+        if staged is not None:
+            for key, value in (staged.execution_features or {}).items():
+                if key == "task_check" \
+                        and key not in record.execution_features:
+                    record.execution_features[key] = value
         self.bank.append(record)
         # HOST usage first (the REAL attempt spend the outer framework
         # measured), then any explicit override. A host report is recorded

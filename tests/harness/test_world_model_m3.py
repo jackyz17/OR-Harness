@@ -221,6 +221,29 @@ class TestPlanning(HarnessTestCase):
             self.assertNotIn("llm_tokens",
                              json.dumps(candidate["score"]))
 
+    def test_candidates_may_be_plain_dicts(self):
+        """The CLI reads candidates from JSON and a Python caller writes
+        them as dicts; both are the SAME shape, so both must be accepted.
+        Accepting only ActionSpec made a plain dict crash with an opaque
+        AttributeError."""
+        provider = ScriptableProvider(per_strategy={
+            "S01": {"quality": 0.9}, "S02": {"quality": 0.6}})
+        h = ORHarness(home=self.home, world_model=provider)
+        self.addCleanup(h.close)
+        raw = [{"action_type": "execute_strategy", "strategy_id": "S01",
+                "solver": "highs"},
+               {"action_type": "execute_strategy", "strategy_id": "S02",
+                "solver": "highs"}]
+        plan = h.plan_next(TASK, "ep1", candidates=raw)
+        self.assertEqual(plan["status"], "ok")
+        self.assertEqual(len(plan["candidates"]), 2)
+        # Identity was reconciled from the call, not left blank.
+        for candidate in plan["candidates"]:
+            self.assertEqual(candidate["action_spec"]["task_id"], "t1")
+            self.assertEqual(candidate["action_spec"]["episode_id"], "ep1")
+        # The caller's own dicts were not mutated.
+        self.assertNotIn("task_id", raw[0])
+
     def test_horizon_two_is_refused(self):
         """There is ONE protocol and it plans at horizon=1. A two-step
         request raises with the replacement path named — never a silent

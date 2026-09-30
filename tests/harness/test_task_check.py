@@ -817,6 +817,62 @@ class TestTaskCheckChannel(HarnessTestCase):
         bank.set_task_check("ex_bad", None)
         self.assertIsNone(task_check_block(bank.get("ex_bad")))
 
+
+class TestCheckSurvivesRecording(TaskCheckCase):
+    """A verdict written to a STAGED execution must survive recording, in
+    EITHER call order.
+
+    ``check-task`` works on a staged execution ("the annotation survives
+    ``record --from-staged`` verbatim"), and the documented online order is
+    check (step 6) THEN record (step 7). A caller that records the SAME
+    in-memory object it got back from ``execute`` used to overwrite the
+    staged annotation with its stale copy, silently turning a confirmed
+    failure back into an UNCHECKED answer at the close-out.
+    """
+
+    CHECK = {"integer": {"variables": ["x1", "x2"]}}
+
+    def _run(self):
+        """Execute ONE fractional attempt WITHOUT recording it."""
+        from pathlib import Path
+        work = Path(self.home) / "ws_survive"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 10750.0,"
+            " 'objective_bound': 10750.0, 'runtime_seconds': 0.01,"
+            " 'variables': {'x1': 2.5, 'x2': 1.5}}, fh)\n",
+            encoding="utf-8")
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S01",
+                   "solver": "highs"}, "ep1")
+        record = self.h.execute(task, None, str(script), str(work),
+                                solver=None, episode_id="ep1",
+                                prediction_id=prediction.prediction_id)
+        return task, record
+
+    def test_check_then_record_keeps_the_verdict(self):
+        task, record = self._run()
+        verdict = self.h.check_task_result(record.execution_id, check=self.CHECK)
+        self.assertEqual(verdict["state"], TASK_CHECK_FAILED)
+        # Record the ORIGINAL in-memory object (the one ``execute``
+        # returned) — the path that lost the annotation.
+        self.h.record(record)
+        closed = self.h.close_episode(task["task_id"], "ep1")
+        self.assertEqual(closed["task_checks"]["verdicts"],
+                         {TASK_CHECK_FAILED: 1})
+
+    def test_record_then_check_keeps_the_verdict(self):
+        task, record = self._run()
+        self.h.record(record)
+        self.h.check_task_result(record.execution_id, check=self.CHECK)
+        closed = self.h.close_episode(task["task_id"], "ep1")
+        self.assertEqual(closed["task_checks"]["verdicts"],
+                         {TASK_CHECK_FAILED: 1})
+
     def test_unknown_execution_is_refused(self):
         from or_harness.core.storage import StorageError
         from or_harness.strategy.experience_bank import ExperienceBank

@@ -45,6 +45,7 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/usage_accounting.py",
     "references/examples/capability_gain.py",
     "references/examples/capability_followup.py",
+    "references/examples/end_to_end.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.
@@ -244,6 +245,46 @@ def _check_not_hard_wrapped(path: Path) -> list:
             "paragraphs into one line each"]
 
 
+def _check_skill_result_table() -> list:
+    """Cross-check the Skill's command tables against the declared keys.
+
+    The tables in ``SKILL.md`` section 4/5 have a fixed shape::
+
+        | 5 | `orx execute --task ... --prediction <id> ...` | input | \
+          `result.execution_id`, `result.prediction_binding` | next |
+
+    The third column lists the result paths the agent should read. Every
+    ``result.<key>`` there must be declared for the command named in the
+    first column. A key that belongs to a DIFFERENT command is the exact
+    failure this catches (``result.effect_verified`` used to be cited for
+    ``evaluate-capability``, which returns it nested).
+    """
+    from _result_keys import declared_keys
+    problems: list = []
+    text = (ROOT / "SKILL.md").read_text(encoding="utf-8")
+    # `orx <command> ...` — the FIRST token after ``orx`` is the
+    # command; a later flag value must never be read as one.
+    row = re.compile(r"^\|\s*[^|]+\|\s*`orx\s+([a-z][a-z0-9-]+)"
+                     r"[^`]*`\s*\|[^|]*\|([^|]*)\|", re.MULTILINE)
+    for match in row.finditer(text):
+        command, result_column = match.group(1), match.group(2)
+        allowed = declared_keys(command)
+        for key in re.findall(r"result\.([a-z_][a-z0-9_]*)", result_column):
+            if key in ("json", "path"):
+                continue
+            if not allowed:
+                problems.append(
+                    f"SKILL.md cites `result.{key}` for `orx {command}`, "
+                    "which _result_keys.py does not cover — add it so the "
+                    "runtime test can guard it (or fix the path)")
+                continue
+            if key not in allowed:
+                problems.append(
+                    f"SKILL.md cites `result.{key}` for `orx {command}`, "
+                    f"which declares only {sorted(allowed)}")
+    return problems
+
+
 def main() -> int:
     failures = []
     parser = build_parser()
@@ -329,6 +370,16 @@ def main() -> int:
             if not resolved.exists():
                 failures.append(f"{doc} links to missing {target}")
         print(f"{doc:44s} links OK")
+
+    # The Skill's ONLINE-OPS table is the machine-readable contract: one row
+    # per step, with the command and the exact `result.*` paths to read.
+    # Checking THAT table (rather than every `result.*` mention in prose)
+    # keeps the check precise: a key cited for a command must be declared for
+    # that command, and the runtime half proves the command really emits it.
+    failures.extend(_check_skill_result_table())
+    from _result_keys import declared_keys as _declared_for, \
+        all_declared_keys as _all_keys
+    print(f"documented result keys ({len(_all_keys())})            OK")
 
     # The runnable examples the docs promise must be present.
     for example in DOCUMENTED_EXAMPLES:
