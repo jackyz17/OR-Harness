@@ -5032,7 +5032,8 @@ class ORHarness:
                                    solver: Optional[str],
                                    method_planned: Optional[Dict[str, Any]],
                                    task_id: str, episode_id: Optional[str],
-                                   task_text_ver: Optional[str]) -> None:
+                                   task_text_ver: Optional[str],
+                                   prediction_id: Optional[str] = None) -> None:
         """Stage a REAL execution fact for a run that raised before producing
         one.
 
@@ -5060,6 +5061,22 @@ class ORHarness:
                 solver={"name": str(solver) if solver else None},
                 source="executed",
             )
+            # The attempt really consumed wall-clock time before it blew up.
+            # That latency is MEASURABLE (the action's own start stamp is on
+            # record), so it is recorded as a real measurement — never left
+            # as an unmeasured zero, which would read as "this attempt cost
+            # nothing". Only latency is observable this way; no token count,
+            # tool call or solver runtime is invented.
+            try:
+                elapsed_s = max(0.0, time.time() - float(action.started_at))
+                record.cost.latency_s = round(elapsed_s, 6)
+                record.cost.mark_measured("latency_s")
+                record.execution_features["interrupted_latency_provenance"] = (
+                    "wall-clock from the action's started_at to the "
+                    "executor's exception: a real measurement of the time "
+                    "this attempt consumed, not a placeholder")
+            except Exception:  # noqa: BLE001 - never mask the original error
+                pass
             record.quality["error"] = f"{type(exc).__name__}: {exc}"
             record.failures.append(FailureRecord(
                 attempt=1, error=f"{type(exc).__name__}: {exc}",
@@ -5072,6 +5089,12 @@ class ORHarness:
             record.execution_features["baseline_measurement"] = (
                 "staged before the run began: latency reflects the real time "
                 "the attempt consumed up to the exception")
+            # The failed attempt's tie to its prediction is KEPT here, even
+            # after the claim is released: the prediction is freed to be
+            # tested on a real attempt, but the failure is not orphaned, and
+            # a later reader can see which prediction this attempt was for.
+            if prediction_id:
+                record.execution_features["predicted_for"] = str(prediction_id)
             if method_planned is not None:
                 record.method_planned = method_planned
             if task_text_ver is not None:
@@ -5275,7 +5298,7 @@ class ORHarness:
                 action, exc, profile=profile, strategy_id=str(strategy_id),
                 solver=solver, method_planned=method_planned,
                 task_id=str(task["task_id"]), episode_id=episode_id,
-                task_text_ver=task_text_ver)
+                task_text_ver=task_text_ver, prediction_id=prediction_id)
             if prediction_id:
                 self._release_prediction_claim(
                     str(prediction_id), action.action_id,

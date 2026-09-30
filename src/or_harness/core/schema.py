@@ -51,6 +51,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -967,6 +968,17 @@ def normalize_method(raw: Any) -> Optional[Dict[str, Any]]:
     return out
 
 
+#: Words that join or frame steps rather than name method content. Used only
+#: by :func:`compare_methods` to recognise a step that MERGES two planned
+#: steps ("solve X and Y") as a restatement, not as new material.
+_METHOD_STOPWORDS = frozenset({
+    "and", "then", "the", "a", "an", "to", "of", "for", "with", "in", "on",
+    "into", "by", "from", "as", "at", "out", "up", "it", "its", "this",
+    "that", "is", "are", "was", "were", "be", "been", "all", "each", "both",
+    "after", "before", "while", "during", "via", "using", "again", "also",
+})
+
+
 def compare_methods(planned: Any,
                     actual: Any) -> Optional[Dict[str, Any]]:
     """Compare a planned method against the method actually performed.
@@ -978,16 +990,22 @@ def compare_methods(planned: Any,
     * ``match`` — the performed step NAMES line up with the plan (same
       normalized name, and the performed steps are a subsequence of the
       planned steps, allowing an abbreviated run);
-    * ``mismatch`` — the performed method is substantively different
-      (different name, or steps that are not a subsequence of the plan);
+    * ``reworded`` — the plan was carried out, but restated: the performed
+      steps are the plan's steps in different words, or merge two of them,
+      or carry a different label. This is NOT a different method; it is a
+      receipt describing the same method in its own words;
+    * ``mismatch`` — the performed method is substantively different (steps
+      that carry content the plan does not; a different real method ran);
     * ``unknown`` — both sides are present but one carries no comparable
       step content (names only for one side, steps only for the other).
 
     The comparison never scores anything: it reports what was observed, and
     the caller decides what it means. Step comparison is on normalized text
-    (lowercased, whitespace-collapsed), because the plan is prose from the
-    outer agent and the receipt is prose from the script — exact byte
-    equality would manufacture mismatches.
+    (lowercased, punctuation stripped, whitespace-collapsed), because the
+    plan is prose from the outer agent and the receipt is prose from the
+    script — exact byte equality would manufacture mismatches. A receipt is
+    an honest description of what the script did; it is never required to
+    photocopy the plan's wording.
     """
     p = normalize_method(planned)
     a = normalize_method(actual)
@@ -995,7 +1013,11 @@ def compare_methods(planned: Any,
         return None
 
     def _norm(text: str) -> str:
-        return " ".join(str(text).lower().split())
+        # Lowercase, drop punctuation, collapse whitespace: the difference
+        # between "solve the master" and "Solve the master." is typography,
+        # not evidence of a different method.
+        cleaned = re.sub(r"[^\w\s]", " ", str(text).lower())
+        return " ".join(cleaned.split())
 
     p_name = _norm(p["name"])
     a_name = _norm(a["name"])
@@ -1037,15 +1059,46 @@ def compare_methods(planned: Any,
                 "the performed steps appear in order among the planned "
                 "steps (an abbreviated run is still the planned method)")
         else:
-            observation["verdict"] = "mismatch"
+            # The steps line up exactly; only the LABEL differs. A name is a
+            # label, not a method (the module's own rule for the steps-less
+            # case), so a renamed but step-identical run is the plan RESTATED,
+            # not a different method — it must not hard-block the benefit.
+            observation["verdict"] = "reworded"
+            observation["name_differs"] = True
             observation["reason"] = (
-                "the performed steps follow the plan but the method name "
-                "differs: the label changed, which is not this plan's method")
+                "the performed steps are exactly the plan's steps in order, "
+                "but under a different label: the plan was carried out and "
+                "restated, which is not by itself a different method")
+        return observation
+    # The receipt did not reproduce the plan's step TEXT. That alone is not
+    # proof of a different method: the plan is prose the outer agent wrote
+    # and the receipt is prose the script wrote, so a rewording or a MERGE of
+    # the same steps must not read as "a different method ran" (which would
+    # hard-block the benefit). Compare on WORD SETS to separate a rewording
+    # from a genuinely different method:
+    #   * every word of the performed steps appears somewhere in the plan's
+    #     steps -> ``reworded``: the same content, phrased differently (a
+    #     merge keeps every word) — reported, and NOT a deviation;
+    #   * a performed step carries content the plan does not -> ``mismatch``:
+    #     a different method really ran.
+    p_words = set().union(*(set(s.split()) for s in p_steps))
+    a_words = set().union(*(set(s.split()) for s in a_steps))
+    # Connectives are not method content: a merge ("solve X and Y") must not
+    # read as new material just because it joins two steps with a word the
+    # plan spelled only once.
+    a_content = a_words - _METHOD_STOPWORDS
+    if a_content and a_content <= p_words:
+        observation["verdict"] = "reworded"
+        observation["reason"] = (
+            "the performed steps restate the plan's steps in different words "
+            "(every performed step's content is covered by the plan): this "
+            "is a rewording or merge of the planned method, not a different "
+            "method, so it does not by itself invalidate the comparison")
         return observation
     observation["verdict"] = "mismatch"
     observation["reason"] = (
-        "the performed steps are not a subsequence of the planned steps: a "
-        "different method really ran")
+        "the performed steps are not a subsequence of the planned steps and "
+        "carry content the plan does not: a different method really ran")
     return observation
 
 

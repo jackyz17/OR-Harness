@@ -220,7 +220,7 @@ class TestAttributionTable(unittest.TestCase):
         self.assertTrue(attr["blocked"]["benefit"])
         self.assertTrue(attr["blocked"]["cost"])
 
-    def test_a_method_deviation_blocks_the_benefit_only(self):
+    def test_a_method_deviation_blocks_the_benefit_and_its_interval(self):
         observation = {
             "verdict": "mismatch",
             "planned_name": "benders", "actual_name": "direct milp",
@@ -229,9 +229,30 @@ class TestAttributionTable(unittest.TestCase):
         }
         attr = binding_attribution({}, {}, observation)
         self.assertTrue(attr["blocked"]["benefit"])
+        # The interval is the SAME observed value read as a range: it must
+        # not be scored when the benefit may not be.
+        self.assertTrue(attr["blocked"]["interval"])
         self.assertFalse(attr["blocked"]["cost"])
         self.assertIsNotNone(attr["deviation"])
         self.assertEqual(attr["deviation"]["actual_name"], "direct milp")
+
+    def test_a_reworded_method_is_not_a_deviation(self):
+        # The plan was carried out and RESTATED: the receipt need not
+        # photocopy the plan's wording, and a rewording must not block.
+        attr = binding_attribution({}, {}, {"verdict": "reworded",
+                                            "reason": "restated"})
+        blocked = {k: v for k, v in attr["blocked"].items() if v}
+        self.assertEqual(blocked, {},
+                         "a rewording is not a different method")
+        self.assertIsNone(attr["deviation"])
+
+    def test_a_known_episode_mismatch_excludes_everything(self):
+        attr = binding_attribution({"episode_id": {"predicted": "ep1",
+                                                    "actual": "ep2"}}, {})
+        for dim in ("benefit", "cost", "risk", "interval"):
+            self.assertTrue(attr["blocked"][dim],
+                            "a run from another episode is not this "
+                            "prediction's execution")
 
     def test_a_matching_method_is_not_a_deviation(self):
         attr = binding_attribution({}, {}, {"verdict": "match"})
@@ -587,6 +608,16 @@ class TestInterruptedAttemptIsPreserved(Base):
         self.assertTrue(failure.failures)
         self.assertIsNotNone(failure.failures[0].error_class)
         self.assertIn("interrupted_before_record", failure.execution_features)
+        # The WALL-CLOCK the attempt really consumed is MEASURED, not left
+        # as an unmeasured zero (which would read as "cost nothing").
+        self.assertIn("latency_s", failure.cost.measured_dims())
+        self.assertGreaterEqual(failure.cost.latency_s, 0.0)
+        self.assertIn("interrupted_latency_provenance",
+                      failure.execution_features)
+        # The tie to the ORIGINAL prediction is kept on the fact even though
+        # the prediction's claim is released: the failure is not orphaned.
+        self.assertEqual(failure.execution_features.get("predicted_for"),
+                         prediction.prediction_id)
         # And it is LINKED to the failed action, so the close-out can see it.
         action = [a for a in self.h.actions.query(
             task_id="t1", episode_id="ep1", action_type="execute_strategy")

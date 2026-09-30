@@ -139,6 +139,56 @@ class TestCompareMethods(unittest.TestCase):
         self.assertEqual(compare_methods(planned, actual)["verdict"],
                          "mismatch")
 
+    def test_a_reworded_step_is_not_a_different_method(self):
+        # The receipt describes the same work with the plan's own words in a
+        # different arrangement ("relax the coupling" for "relax the coupling
+        # constraint"): the plan is prose and the receipt is prose, so this
+        # is NOT a deviation (the reported regression: rewording blocked the
+        # benefit).
+        planned = {"name": "reroute",
+                   "steps": ["relax the coupling constraint",
+                             "solve the master"]}
+        actual = {"name": "reroute",
+                  "steps": ["relax the coupling", "solve the master"]}
+        observation = compare_methods(planned, actual)
+        self.assertEqual(observation["verdict"], "reworded")
+
+    def test_new_method_vocabulary_still_mismatches(self):
+        # A performed step names work the plan does not: reworded content is
+        # tolerated, invented content is not.
+        planned = {"name": "reroute", "steps": ["scan the depot space"]}
+        actual = {"name": "reroute", "steps": ["scan the depots"]}
+        self.assertEqual(compare_methods(planned, actual)["verdict"],
+                         "mismatch")
+    def test_a_merged_step_is_not_a_different_method(self):
+        # Two planned steps performed as one: every performed word is covered
+        # by the plan, so the plan was carried out and restated.
+        planned = {"name": "Benders",
+                   "steps": ["solve the master", "solve the subproblem"]}
+        actual = {"name": "Benders",
+                  "steps": ["solve the master and the subproblem"]}
+        self.assertEqual(compare_methods(planned, actual)["verdict"],
+                         "reworded")
+
+    def test_a_renamed_but_step_identical_run_is_reworded(self):
+        # Steps line up exactly; only the label differs. A name is a label,
+        # not a method — the plan was carried out under another name.
+        planned = {"name": "benders", "steps": ["master", "subproblem"]}
+        actual = {"name": "cutting-plane benders",
+                  "steps": ["master", "subproblem"]}
+        observation = compare_methods(planned, actual)
+        self.assertEqual(observation["verdict"], "reworded")
+        self.assertTrue(observation["name_differs"])
+
+    def test_a_genuinely_different_method_still_mismatches(self):
+        # A performed step carries content the plan does not: a merge cannot
+        # hide a different method.
+        planned = {"name": "Benders", "steps": ["solve the master"]}
+        actual = {"name": "Benders",
+                  "steps": ["solve the master", "run a local search"]}
+        self.assertEqual(compare_methods(planned, actual)["verdict"],
+                         "mismatch")
+
     def test_names_only_is_a_label_not_a_method(self):
         # Both sides carry names but no steps: the verdict rests on the name
         # alone, and that is reported as such.

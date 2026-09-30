@@ -30,8 +30,13 @@ engine over field names:
   does not invalidate an observation; an unreported ``relaxation`` does,
   because the answer may not be the predicted approach's answer.
 * an unknown ``episode_id`` changes nothing: the observation is the bound
-  action's own execution, and an episode label is provenance, not a
-  measurement.
+  action's own execution, and a MISSING label is a receipt the run did not
+  fill in, not a proven mismatch.
+* a KNOWN ``episode_id`` MISMATCH is different from an unknown one: the
+  prediction declared one episode and the execution is on record as a
+  DIFFERENT one, so the execution is provably not the predicted run's. It
+  invalidates everything — the same standing as a wrong ``task_id``. Real
+  runs from different episodes must never be paired.
 """
 
 from __future__ import annotations
@@ -46,6 +51,12 @@ _ALL: FrozenSet[str] = frozenset(EVALUATION_DIMENSIONS)
 #: on record while making the quality/risk comparison meaningless.
 _OUTCOME: FrozenSet[str] = frozenset({"benefit", "risk", "interval"})
 _BENEFIT_ONLY: FrozenSet[str] = frozenset({"benefit"})
+#: A benefit and the interval drawn around the SAME value are two readings
+#: of ONE observation. They must share one eligibility: if the benefit may
+#: not be scored, an interval "covering" the same value would be scoring it
+#: anyway. ``risk`` is left alone — it is a per-event label, not the same
+#: number.
+_BENEFIT_AND_INTERVAL: FrozenSet[str] = frozenset({"benefit", "interval"})
 _NONE: FrozenSet[str] = frozenset()
 
 #: Config keys that name the APPROACH rather than the effort spent. An
@@ -79,7 +90,7 @@ MISMATCH_IMPACT: Dict[str, FrozenSet[str]] = {
     "window_round": _ALL,
     "strategy_id": _ALL,
     "effective_input": _ALL,
-    "episode_id": _NONE,
+    "episode_id": _ALL,
     "solver": _OUTCOME,
     # A config key is handled separately (see ``binding_attribution``):
     # ANY config disagreement is a condition deviation.
@@ -144,8 +155,8 @@ def binding_attribution(mismatch: Mapping[str, Any],
 
     ``method_observed`` is the binding's own ``compare_methods`` record (a
     performed method that really differs from the plan). It blocks the
-    BENEFIT only: the answer is not scored as the planned method's result,
-    while the cost and any failure stay on record.
+    BENEFIT and its INTERVAL only: the answer is not scored as the planned
+    method's result, while the cost and any failure stay on record.
     """
     blocked: Dict[str, list] = {dim: [] for dim in EVALUATION_DIMENSIONS}
     fields: Dict[str, Dict[str, Any]] = {}
@@ -193,7 +204,7 @@ def binding_attribution(mismatch: Mapping[str, Any],
     # not the planned method's answer.
     deviation = method_deviation(method_observed)
     if deviation is not None and "method" not in fields:
-        _add("method", "deviation", _BENEFIT_ONLY,
+        _add("method", "deviation", _BENEFIT_AND_INTERVAL,
              method_deviation_note(deviation))
 
     soft = sorted(f for f, e in fields.items() if not e["blocks"])
@@ -246,6 +257,10 @@ def _mismatch_reason(field: str) -> str:
         return ("the run used a different solver: the quality is not the "
                 "predicted solver's performance (the real cost and any "
                 "failure are still kept)")
+    if field == "episode_id":
+        return ("the run happened in a different episode: it is a different "
+                "real run, not this prediction's execution, so no dimension "
+                "is scored against it")
     if field == "effective_input":
         return ("the problem changed between the prediction and the "
                 "execution: this sample is not the predicted problem's "
@@ -318,9 +333,10 @@ def method_deviation_note(deviation: Mapping[str, Any]) -> str:
     planned = deviation.get("planned_name") or "(unnamed plan)"
     actual = deviation.get("actual_name") or "(unnamed performance)"
     return (f"the run performed {actual!r}, not the planned {planned!r}: the "
-            "answer is not scored as the planned method's benefit (the cost "
-            "and any failure really happened and stay on record). Nothing "
-            "about the planned method can be concluded from this attempt")
+            "answer and the interval drawn around it are not scored as the "
+            "planned method's benefit (the cost and any failure really "
+            "happened and stay on record). Nothing about the planned method "
+            "can be concluded from this attempt")
 
 
 # ---------------------------------------------------------------------------

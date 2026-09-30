@@ -1822,8 +1822,13 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         }
 
     # -- interval ------------------------------------------------------------
+    # An interval is the SAME observed value read as a range, so it shares
+    # the benefit's eligibility: if the benefit may not be scored (an
+    # identity problem or a method deviation), an interval "covering" that
+    # value would be scoring the very comparison that was refused.
     if benefit is not None and benefit.interval is not None:
-        if "observed" in summary.benefit and not _blocked("interval"):
+        if "observed" in summary.benefit and not _blocked("interval") \
+                and not _blocked("benefit"):
             lo, hi = benefit.interval
             observed = summary.benefit["observed"]
             evaluation.interval = {
@@ -1839,10 +1844,28 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             }
             n_compared += 1
         else:
-            evaluation.interval = {
-                "eligibility": "unobserved",
-                "reason": "no comparable observed value for the interval",
-            }
+            if "observed" not in summary.benefit:
+                evaluation.interval = {
+                    "eligibility": "unobserved",
+                    "reason": "no comparable observed value for the "
+                              "interval",
+                }
+            elif _blocked("interval"):
+                evaluation.interval = {
+                    "eligibility": eligibility_for(blocked["interval"]),
+                    "reason": _block_reason("interval") + ": the real "
+                              "outcome may not be this prediction's truth",
+                }
+            else:
+                # Only the BENEFIT is blocked: the interval is drawn around
+                # the SAME observed value, so it inherits the benefit's
+                # eligibility rather than scoring a refused comparison.
+                evaluation.interval = {
+                    "eligibility": eligibility_for(blocked["benefit"]),
+                    "reason": ("an interval drawn around the same observed "
+                               "value shares the benefit's eligibility: "
+                               + _block_reason("benefit")),
+                }
     else:
         evaluation.interval = {
             "eligibility": "not_predicted",
