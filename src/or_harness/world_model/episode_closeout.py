@@ -76,7 +76,12 @@ from or_harness.world_model.attribution import (
     binding_attribution,
     blocked_dimensions,
     eligibility_for,
+    method_deviation,
     method_deviation_note,
+)
+from or_harness.world_model.cost_eligibility import (
+    MEASURED,
+    cost_eligibility,
 )
 
 #: Version of the close-out record schema.
@@ -648,19 +653,23 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
     ``None`` (unknown, never zero). ``latency_s`` is never summed — it is
     reported per item elsewhere and never folded into an end-to-end figure.
 
-    ``records`` (optional) enables DECLARATION SCREENING: a dimension whose
-    contributing records include a declared estimate or a single-side token
-    figure gets a ``screened`` block naming what was excluded and the total
-    over only the ELIGIBLE records. The raw ``total`` is unchanged (it is
-    the honest sum of what the mask says was measured); the reader decides
-    which to use, and the calibration uses ``screened``.
+    ``records`` (optional) narrows each total to the records whose value is
+    a MEASURED TRUTH: a DECLARED estimate (``agent_estimate``) or a
+    single-side token figure is dropped from the total instead of standing
+    in for a measurement. The dropped count is reported inline under
+    ``excluded``, so a reader sees the number shrank and why.
     """
     dims: Dict[str, Any] = {}
     for dim in COST_DIMENSIONS:
         values: List[float] = []
-        for cost in vectors:
+        excluded = 0
+        for index, cost in enumerate(vectors):
             if cost is None or dim not in cost.measured_dims():
                 continue
+            if records is not None and index < len(records):
+                if cost_eligibility(records[index], dim) != MEASURED:
+                    excluded += 1
+                    continue
             values.append(float(getattr(cost, dim)))
         dims[dim] = {
             "total": round(sum(values), 6) if values else None,
@@ -668,17 +677,8 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
             "n_items": len(vectors),
             "complete": bool(vectors) and len(values) == len(vectors),
         }
-    if records:
-        try:
-            from or_harness.world_model.cost_eligibility import (
-                screen_aggregate,
-            )
-            screened = screen_aggregate(dims, records)
-            for dim, block in screened.items():
-                dims[dim]["screened"] = block
-        except Exception:  # noqa: BLE001 - a screening failure never
-            # invalidates the raw aggregate.
-            pass
+        if excluded:
+            dims[dim]["excluded"] = excluded
     return dims
 
 
@@ -1588,15 +1588,15 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                            "method_observed")))
     blocked = blocked_dimensions(attribution)
     evaluation.attribution = copy.deepcopy(blocked)
-    # A method deviation is REPORTED on the evaluation in two places: the
-    # dimension map above (which blocks the benefit), and the flat
-    # ``method_deviation`` block below, so a reader does not have to read
-    # the identity bookkeeping to learn that the plan was not carried out.
-    evaluation.method_deviation = copy.deepcopy(
-        attribution.get("deviation"))
-    if evaluation.method_deviation is not None:
-        evaluation.notes.append(method_deviation_note(
-            evaluation.method_deviation))
+    # The performed-vs-planned method comparison is REPORTED in the flat
+    # ``method_deviation`` block so a reader can see the prose difference.
+    # It blocks nothing: identity is decided by the structured fields, so a
+    # re-worded receipt never invalidates a comparison whose strategy,
+    # solver and config all matched.
+    deviation = method_deviation(attribution.get("method_observed"))
+    evaluation.method_deviation = copy.deepcopy(deviation)
+    if deviation is not None:
+        evaluation.notes.append(method_deviation_note(deviation))
 
     def _blocked(dim: str) -> bool:
         return bool(blocked.get(dim))
@@ -1695,27 +1695,18 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         predicted_dims = predicted_cost.expected.measured_dims()
         for dim in sorted(predicted_dims):
             real = summary.cost.get(dim) or {}
-            # DECLARATION SCREENING: a value that was DECLARED (an
-            # ``agent_estimate``) or recorded from a single token side is
-            # not a measured truth. It stays visible in the aggregate, but
-            # it can never stand as the real total the prediction is scored
-            # against.
-            screened = real.get("screened")
-            if screened is not None:
-                eligible_n = screened.get("n_eligible_items", 0)
-                total_n = screened.get("n_items", 0)
-                if eligible_n < total_n:
-                    kinds = ", ".join(
-                        f"{k}={v}" for k, v in
-                        sorted((screened.get("excluded") or {}).items()))
-                    excluded[dim] = (
-                        "partly declared on the real scope "
-                        f"({eligible_n}/{total_n} records measured it from a "
-                        f"trusted source; excluded: {kinds}): a "
-                        "partly-declared total is not a measured truth to "
-                        "score against (the declarations stay visible in the "
-                        "aggregate)")
-                    continue
+            # A value that was DECLARED (an ``agent_estimate``) or recorded
+            # from a single token side is not a measured truth: the aggregate
+            # already dropped it from the total, and the dropped count is
+            # reported so the exclusion is visible rather than silent.
+            dropped = int(real.get("excluded") or 0)
+            if dropped:
+                excluded[dim] = (
+                    f"{dropped} of {real.get('n_items')} record(s) on the "
+                    "real scope carried a DECLARED or single-side value, "
+                    "which is not a measured truth: the total they would "
+                    "have contributed to is not scored against")
+                continue
             if real.get("total") is None:
                 excluded[dim] = ("not measured on the real scope"
                                  if real.get("n_items") else

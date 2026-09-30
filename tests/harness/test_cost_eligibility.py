@@ -49,8 +49,6 @@ from or_harness.world_model.cost_eligibility import (  # noqa: E402
     PARTIAL,
     UNKNOWN,
     cost_eligibility,
-    eligible_cost_records,
-    record_cost_exclusions,
 )
 
 
@@ -132,34 +130,6 @@ class TestTheRule(unittest.TestCase):
         rec = _record(tokens=0.0, source="agent_estimate")
         self.assertEqual(cost_eligibility(rec, "llm_tokens"), ESTIMATE)
 
-    def test_eligible_records_exclude_declarations(self):
-        records = [_record(source="provider_usage", execution_id="a"),
-                   _record(source="agent_estimate", execution_id="b")]
-        eligible = eligible_cost_records(records, "llm_tokens")
-        self.assertEqual([r.execution_id for r in eligible], ["a"])
-
-    def test_the_exclusion_report_names_what_was_dropped(self):
-        records = [_record(source="provider_usage", execution_id="a"),
-                   _record(source="agent_estimate", execution_id="b"),
-                   _record(source="provider_usage", basis="completion_only",
-                           execution_id="c")]
-        report = record_cost_exclusions(records)["llm_tokens"]
-        self.assertEqual(report["n_measured"], 1)
-        self.assertEqual(report["n_total"], 3)
-        self.assertEqual(report["excluded"], {"estimate": 1, "partial": 1})
-
-    def test_a_screen_names_only_dimensions_that_had_non_truths(self):
-        from or_harness.world_model.cost_eligibility import screen_aggregate
-        good = _record(tokens=1000.0, source="provider_usage")
-        declared = _record(tokens=20000.0, source="agent_estimate",
-                           execution_id="b")
-        screened = screen_aggregate({}, [good, declared])
-        self.assertEqual(screened["llm_tokens"]["total"], 1000.0)
-        self.assertEqual(screened["llm_tokens"]["n_eligible_items"], 1)
-        self.assertEqual(screened["llm_tokens"]["excluded"], {"estimate": 1})
-        # A dimension with no non-truth contributor is not "screened".
-        self.assertNotIn("tool_calls", screened)
-
 
 # ---------------------------------------------------------------------------
 # 2. calibration: an estimate is not an actual
@@ -175,34 +145,31 @@ class TestCalibration(HarnessTestCase):
 
     def test_a_declared_token_value_is_excluded_from_the_real_total(self):
         rec = self.make_record(task_id="t1", strategy_id="S01",
-                                 cost=CostVector(llm_tokens=20000.0,
-                                                 solver_runtime_s=1.0,
-                                                 measured={"llm_tokens",
-                                                           "solver_runtime_s"}))
+                               cost=CostVector(llm_tokens=20000.0,
+                                               solver_runtime_s=1.0,
+                                               measured={"llm_tokens",
+                                                         "solver_runtime_s"}))
         rec.execution_features["cost_provenance"] = {
             "llm_tokens": {"source": "agent_estimate"}}
         self.h.bank.append(rec)
         from or_harness.world_model.episode_closeout import _aggregate_costs
         aggregate = _aggregate_costs([rec.cost], [rec])
-        screened = aggregate["llm_tokens"]["screened"]
-        # The declaration is excluded from the eligible total...
-        self.assertIsNone(screened["total"])
-        self.assertEqual(screened["n_eligible_items"], 0)
-        self.assertIn("estimate", screened["excluded"])
-        # ...while the raw measured total stays visible for display.
-        self.assertEqual(aggregate["llm_tokens"]["total"], 20000.0)
+        # The declaration is dropped from the total...
+        self.assertIsNone(aggregate["llm_tokens"]["total"])
+        self.assertEqual(aggregate["llm_tokens"]["n_measured"], 0)
+        self.assertEqual(aggregate["llm_tokens"]["excluded"], 1)
 
-    def test_a_provider_measurement_needs_no_screening(self):
+    def test_a_provider_measurement_is_the_total(self):
         rec = self.make_record(task_id="t1", strategy_id="S01",
-                                 cost=CostVector(llm_tokens=1500.0,
-                                                 measured={"llm_tokens"}))
+                               cost=CostVector(llm_tokens=1500.0,
+                                               measured={"llm_tokens"}))
         rec.execution_features["cost_provenance"] = {
             "llm_tokens": {"source": "provider_usage"}}
         self.h.bank.append(rec)
         from or_harness.world_model.episode_closeout import _aggregate_costs
         aggregate = _aggregate_costs([rec.cost], [rec])
-        self.assertNotIn("screened", aggregate["llm_tokens"])
         self.assertEqual(aggregate["llm_tokens"]["total"], 1500.0)
+        self.assertNotIn("excluded", aggregate["llm_tokens"])
 
 
 class TestTheDefaultIsADeclaration(HarnessTestCase):
@@ -276,8 +243,6 @@ class TestConditionalStats(HarnessTestCase):
         cell = self._cell(rec)
         self.assertEqual(cell.n_measured.get("llm_tokens", 0), 0)
         self.assertIsNone(cell.measured_cost("llm_tokens"))
-        self.assertIn("llm_tokens", cell.cost_exclusions)
-        self.assertIn("estimate", cell.cost_exclusions["llm_tokens"])
         # The measured dimension is unaffected.
         self.assertEqual(cell.n_measured.get("solver_runtime_s"), 1)
 

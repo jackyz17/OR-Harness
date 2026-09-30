@@ -87,12 +87,8 @@ class GroupStats:
     #: record whose value was DECLARED (an ``agent_estimate``) or recorded
     #: under a single-side token口径 is NOT counted here: it is not a
     #: measured fact, so it neither enters the mean nor supports a cost
-    #: claim. The exclusions are reported in ``cost_exclusions``.
+    #: claim.
     n_measured: Dict[str, int] = field(default_factory=dict)
-    #: Per-dimension: {verdict: n} for the records EXCLUDED from the mean
-    #: (``estimate`` / ``partial``), so the declarations that did not enter
-    #: a cost claim stay visible instead of being silently dropped.
-    cost_exclusions: Dict[str, Dict[str, int]] = field(default_factory=dict)
     #: ``solver_runtime_s`` split by provenance. A script-reported runtime
     #: (the inner solve) and a wall-clock proxy (the whole process, including
     #: interpreter start-up and imports) are DIFFERENT quantities under one
@@ -175,8 +171,6 @@ class GroupStats:
             "std_quality": round(self.std_quality, 4),
             "mean_cost": {d: round(v, 4) for d, v in self.mean_cost.to_dict().items()},
             "n_measured": dict(self.n_measured),
-            "cost_exclusions": {d: dict(v)
-                                for d, v in self.cost_exclusions.items()},
             "solver_runtime_by_provenance": {
                 p: {"n": int(v["n"]), "mean": round(v["mean"], 4)}
                 for p, v in self.solver_runtime_by_provenance.items()},
@@ -412,15 +406,10 @@ class ConditionalStats:
             for d in COST_DIMENSIONS:
                 if d not in measured:
                     continue
-                # DECLARATION SCREENING: only a value from a trusted source
-                # counts as a measured fact. A declared estimate or a
-                # single-side token figure stays visible (in
-                # ``cost_exclusions``) but never enters the mean or
-                # supports a cost claim.
-                verdict = cost_eligibility(rec, d)
-                if verdict != MEASURED:
-                    excluded = stats.cost_exclusions.setdefault(d, {})
-                    excluded[verdict] = excluded.get(verdict, 0) + 1
+                # Only a value from a trusted source counts as a measured
+                # fact. A declared estimate or a single-side token figure is
+                # skipped: it neither enters the mean nor supports a claim.
+                if cost_eligibility(rec, d) != MEASURED:
                     continue
                 sums[d] += getattr(rec.cost, d)
                 counts[d] += 1

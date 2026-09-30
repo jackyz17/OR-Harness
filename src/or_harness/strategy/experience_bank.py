@@ -251,31 +251,21 @@ class ExperienceBank:
                 from or_harness.world_model.cost_eligibility import (
                     MEASURED,
                     cost_eligibility,
-                    cost_eligibility_reason,
                 )
-                per_dim = dict(feedback.get("per_dim") or {})
-                per_dimension = dict(feedback.get("per_dimension") or {})
-                exclusions: Dict[str, str] = {}
-                for dim in list(per_dim):
-                    if cost_eligibility(rec, dim) != MEASURED:
-                        exclusions[dim] = cost_eligibility_reason(rec, dim)
-                        per_dim.pop(dim)
-                for dim in list(per_dimension):
-                    if dim not in per_dim and (
-                            cost_eligibility(rec, dim) != MEASURED
-                            or dim not in per_dim):
+                # A DECLARED (or single-side) dimension is not a measured
+                # truth, so it is dropped from the comparison rather than
+                # manufacturing an error against the prediction.
+                for key in ("per_dim", "per_dimension"):
+                    block = dict(feedback.get(key) or {})
+                    for dim in list(block):
                         if cost_eligibility(rec, dim) != MEASURED:
-                            exclusions.setdefault(
-                                dim, cost_eligibility_reason(rec, dim))
-                            per_dimension.pop(dim)
-                if "per_dimension" in feedback:
-                    feedback["per_dimension"] = per_dimension
-                feedback["per_dim"] = per_dim
-                if exclusions:
-                    feedback["excluded_dims"] = exclusions
+                            block.pop(dim)
+                    if key in feedback:
+                        feedback[key] = block
                 if isinstance(feedback.get("n_dims"), int):
-                    feedback["n_dims"] = len(per_dim)
-                if not per_dim and not per_dimension:
+                    feedback["n_dims"] = len(feedback.get("per_dim") or {})
+                if not feedback.get("per_dim") \
+                        and not feedback.get("per_dimension"):
                     feedback = None
             if feedback is None:
                 rec.execution_features.pop("cost_feedback", None)

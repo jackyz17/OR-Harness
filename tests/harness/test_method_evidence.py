@@ -122,81 +122,70 @@ class TestNormalizeMethod(unittest.TestCase):
 
 
 class TestCompareMethods(unittest.TestCase):
+    """``compare_methods`` REPORTS a prose difference; it never rules on
+    identity. The verdicts are ``identical`` / ``differs`` / ``unknown``,
+    and nothing downstream blocks a comparison on them (identity is decided
+    by the structured fields — see the attribution tests)."""
+
     def test_unknown_when_a_side_is_missing(self):
         self.assertIsNone(compare_methods(None, {"name": "x", "steps": ["a"]}))
         self.assertIsNone(compare_methods({"name": "x", "steps": ["a"]}, None))
 
-    def test_abbreviated_run_matches(self):
-        planned = {"name": "Benders", "steps": ["master", "subproblem",
-                                                "cleanup"]}
+    def test_identical_steps_are_identical(self):
+        planned = {"name": "Benders", "steps": ["master", "subproblem"]}
         actual = {"name": "Benders", "steps": ["master", "subproblem"]}
-        observation = compare_methods(planned, actual)
-        self.assertEqual(observation["verdict"], "match")
+        self.assertEqual(compare_methods(planned, actual)["verdict"],
+                         "identical")
 
-    def test_different_steps_mismatch(self):
+    def test_different_prose_reports_differs(self):
+        # The receipt says something else in words. That is a DESCRIPTION
+        # difference, reported as `differs`, and nothing more.
         planned = {"name": "Benders", "steps": ["master", "subproblem"]}
         actual = {"name": "Benders", "steps": ["round the solution"]}
-        self.assertEqual(compare_methods(planned, actual)["verdict"],
-                         "mismatch")
+        observation = compare_methods(planned, actual)
+        self.assertEqual(observation["verdict"], "differs")
+        self.assertNotIn("mismatch", observation["verdict"])
 
-    def test_a_reworded_step_is_not_a_different_method(self):
-        # The receipt describes the same work with the plan's own words in a
-        # different arrangement ("relax the coupling" for "relax the coupling
-        # constraint"): the plan is prose and the receipt is prose, so this
-        # is NOT a deviation (the reported regression: rewording blocked the
-        # benefit).
+    def test_a_reworded_step_only_reports_differs(self):
         planned = {"name": "reroute",
                    "steps": ["relax the coupling constraint",
                              "solve the master"]}
         actual = {"name": "reroute",
                   "steps": ["relax the coupling", "solve the master"]}
+        self.assertEqual(compare_methods(planned, actual)["verdict"],
+                         "differs")
+
+    def test_symbol_dense_receipt_is_not_treated_specially(self):
+        # The reported regression: a subscript variant and a split
+        # underscore used to be judged `mismatch` (a "different method"),
+        # which hard-blocked the benefit. The verdict is now purely
+        # descriptive, so the same input cannot block anything.
+        planned = {"name": "S1_monolithic_integer_milp",
+                   "steps": ["write a monolithic MILP over x1, x2, a1, a2",
+                             "solve with a mip_gap target"]}
+        actual = {"name": "S1_monolithic_integer_milp",
+                  "steps": ["write a monolithic MILP over x_j, a_j for each "
+                            "year j",
+                            "solve with a mip gap target"]}
         observation = compare_methods(planned, actual)
-        self.assertEqual(observation["verdict"], "reworded")
+        self.assertEqual(observation["verdict"], "differs")
+        # The words that used to trip it are simply not examined any more.
+        self.assertNotIn("mismatch", observation["reason"])
 
-    def test_new_method_vocabulary_still_mismatches(self):
-        # A performed step names work the plan does not: reworded content is
-        # tolerated, invented content is not.
-        planned = {"name": "reroute", "steps": ["scan the depot space"]}
-        actual = {"name": "reroute", "steps": ["scan the depots"]}
-        self.assertEqual(compare_methods(planned, actual)["verdict"],
-                         "mismatch")
-    def test_a_merged_step_is_not_a_different_method(self):
-        # Two planned steps performed as one: every performed word is covered
-        # by the plan, so the plan was carried out and restated.
-        planned = {"name": "Benders",
-                   "steps": ["solve the master", "solve the subproblem"]}
-        actual = {"name": "Benders",
-                  "steps": ["solve the master and the subproblem"]}
-        self.assertEqual(compare_methods(planned, actual)["verdict"],
-                         "reworded")
-
-    def test_a_renamed_but_step_identical_run_is_reworded(self):
-        # Steps line up exactly; only the label differs. A name is a label,
-        # not a method — the plan was carried out under another name.
+    def test_a_renamed_but_step_identical_run_is_identical(self):
         planned = {"name": "benders", "steps": ["master", "subproblem"]}
         actual = {"name": "cutting-plane benders",
                   "steps": ["master", "subproblem"]}
         observation = compare_methods(planned, actual)
-        self.assertEqual(observation["verdict"], "reworded")
+        self.assertEqual(observation["verdict"], "identical")
         self.assertTrue(observation["name_differs"])
 
-    def test_a_genuinely_different_method_still_mismatches(self):
-        # A performed step carries content the plan does not: a merge cannot
-        # hide a different method.
-        planned = {"name": "Benders", "steps": ["solve the master"]}
-        actual = {"name": "Benders",
-                  "steps": ["solve the master", "run a local search"]}
-        self.assertEqual(compare_methods(planned, actual)["verdict"],
-                         "mismatch")
-
     def test_names_only_is_a_label_not_a_method(self):
-        # Both sides carry names but no steps: the verdict rests on the name
-        # alone, and that is reported as such.
         planned = {"name": "greedy insertion", "steps": ["seed", "insert"]}
         actual = {"name": "greedy insertion"}
         observation = compare_methods(planned, actual)
-        self.assertEqual(observation["verdict"], "match")
-        self.assertIn("name", observation["reason"])
+        self.assertEqual(observation["verdict"], "identical")
+        self.assertIn("label", observation["reason"])
 
 
 class TestMethodRoundTrip(MethodChainCase):
@@ -348,9 +337,9 @@ class TestBindMethodObservation(MethodChainCase):
         stored = h.read_prediction(prediction.prediction_id)
         observed = stored["prediction"]["trace"]["model_info"]["method_observed"]
         self.assertIsNotNone(observed)
-        self.assertEqual(observed["verdict"], "match")
+        self.assertEqual(observed["verdict"], "identical")
 
-    def test_binding_reports_a_mismatched_performed_method(self):
+    def test_binding_reports_a_different_performed_method(self):
         h = self.harness()
         prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
                                                 "ep1")
@@ -373,7 +362,9 @@ class TestBindMethodObservation(MethodChainCase):
         h.record(record)
         stored = h.read_prediction(prediction.prediction_id)
         observed = stored["prediction"]["trace"]["model_info"]["method_observed"]
-        self.assertEqual(observed["verdict"], "mismatch")
+        # A prose difference is REPORTED as `differs`, never as an
+        # identity verdict that would block the comparison.
+        self.assertEqual(observed["verdict"], "differs")
 
     def test_no_observed_method_leaves_the_comparison_unknown(self):
         h = self.harness()

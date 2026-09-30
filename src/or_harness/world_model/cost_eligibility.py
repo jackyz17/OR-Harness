@@ -14,11 +14,12 @@ and still not be usable as a calibration truth:
 
 Before this module every consumer read ``CostVector.measured_dims()``
 alone, so a declared estimate and a provider measurement were
-indistinguishable. The rule lives HERE, once, and each consumer calls it:
+indistinguishable. The rule lives HERE, once:
 
 * :func:`cost_eligibility` — the verdict for ONE (record, dimension).
-* :func:`eligible_cost_records` — the records whose dimension may be used
-  as a measured fact.
+
+Consumers apply it by SKIPPING a non-measured value; they do not build a
+second report of what they skipped.
 
 The rules (deliberately small; no new bank, no new lifecycle):
 
@@ -85,116 +86,3 @@ def cost_eligibility(record: Any, dim: str) -> str:
         if basis in _PARTIAL_TOKEN_BASES:
             return PARTIAL
     return MEASURED
-
-
-def cost_eligibility_reason(record: Any, dim: str) -> str:
-    """A short, actionable reason for a non-measured verdict."""
-    verdict = cost_eligibility(record, dim)
-    entry = _provenance_of(record, dim)
-    if verdict == ESTIMATE:
-        return (f"{dim} was DECLARED (source={entry.get('source')!r}), not "
-                "observed: it is shown but never used as a calibration "
-                "truth or a measured cost evidence claim")
-    if verdict == PARTIAL:
-        return (f"{dim} was recorded under the token口径 "
-                f"{entry.get('basis')!r}, which is a LOWER bound (the "
-                "provider reported only one side): it cannot stand in for a "
-                "complete total")
-    return (f"{dim} was not measured on this record: unknown is never "
-            "treated as zero")
-
-
-def eligible_cost_records(records: Iterable[Any],
-                          dim: str) -> list:
-    """The records whose ``dim`` may be used as a MEASURED fact."""
-    return [r for r in (records or [])
-            if cost_eligibility(r, dim) == MEASURED]
-
-
-def record_cost_exclusions(records: Iterable[Any]) -> Dict[str, Any]:
-    """Per-dimension exclusions for a group of records, with counts.
-
-    ``{dim: {"n_measured", "n_total", "excluded": {verdict: n}}}`` — only
-    dimensions that had at least one excluded record are listed, so a
-    clean group reports nothing.
-    """
-    records = list(records or [])
-    out: Dict[str, Any] = {}
-    for dim in COST_DIMENSIONS:
-        excluded: Dict[str, int] = {}
-        n_measured = 0
-        for rec in records:
-            verdict = cost_eligibility(rec, dim)
-            if verdict == MEASURED:
-                n_measured += 1
-            else:
-                excluded[verdict] = excluded.get(verdict, 0) + 1
-        # "unknown" alone is not an exclusion (the dimension was simply not
-        # measured there); a declared/partial value IS.
-        non_truth = {k: v for k, v in excluded.items() if k != UNKNOWN}
-        if non_truth:
-            out[dim] = {
-                "n_measured": n_measured,
-                "n_total": len(records),
-                "excluded": non_truth,
-                "note": ("only measured values may stand as the real total; "
-                         "declared estimates and single-side token figures "
-                         "are excluded from it (they remain visible in the "
-                         "per-dimension breakdown)"),
-            }
-    return out
-
-
-def screen_aggregate(aggregate: Dict[str, Any],
-                     records: Iterable[Any]) -> Dict[str, Any]:
-    """Fold declaration screening into an ``aggregate_costs`` result.
-
-    The aggregate's ``total`` comes from the records' ``measured_dims()``
-    mask. This narrows it to the ELIGIBLE records and keeps the excluded
-    values visible under ``excluded``. Returns a NEW dict; the input is not
-    modified.
-
-    Only dimensions that actually had a non-truth contributor (a DECLARED
-    estimate or a single-side token figure) are reported — a dimension
-    nobody measured is simply unknown, not "screened". The per-dimension
-    exclusions are computed in ONE pass over the records.
-    """
-    from or_harness.core.schema import accumulate_measured_costs
-
-    records = list(records or [])
-    if not records:
-        return {}
-    # One pass: classify every record for every dimension.
-    by_dim: Dict[str, Dict[str, int]] = {
-        dim: {} for dim in COST_DIMENSIONS}
-    totals: Dict[str, Dict[str, float]] = {
-        dim: {d: 0.0 for d in COST_DIMENSIONS} for dim in COST_DIMENSIONS}
-    counts: Dict[str, Dict[str, int]] = {
-        dim: {d: 0 for d in COST_DIMENSIONS} for dim in COST_DIMENSIONS}
-    for rec in records:
-        measured = rec.cost.measured_dims()
-        for dim in COST_DIMENSIONS:
-            verdict = cost_eligibility(rec, dim)
-            by_dim[dim][verdict] = by_dim[dim].get(verdict, 0) + 1
-            if verdict == MEASURED and dim in measured:
-                accumulate_measured_costs([rec.cost], totals[dim],
-                                          counts[dim])
-    screened: Dict[str, Any] = {}
-    for dim in COST_DIMENSIONS:
-        non_truth = {k: v for k, v in by_dim[dim].items()
-                     if k not in (MEASURED, UNKNOWN)}
-        if not non_truth:
-            continue
-        n_eligible = by_dim[dim].get(MEASURED, 0)
-        screened[dim] = {
-            "total": (round(totals[dim][dim], 6) if counts[dim][dim] else None),
-            "n_measured": counts[dim][dim],
-            "n_eligible_items": n_eligible,
-            "n_items": len(records),
-            "excluded": non_truth,
-            "note": ("only measured values may stand as the real total; "
-                     "declared estimates and single-side token figures are "
-                     "excluded from it (they remain visible in the "
-                     "per-dimension breakdown)"),
-        }
-    return screened

@@ -160,7 +160,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("2. An unreported APPROACH knob (relaxation) blocks the benefit")
+    print("2. An unreported APPROACH knob is a caveat, not a veto")
     print("=" * 72)
     prediction2 = h.predict_strategy_outcome(
         TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
@@ -170,7 +170,8 @@ def main() -> int:
     record2 = h.execute(TASK, "S02", str(script2), str(work2),
                         solver="highs", episode_id="ep2")
     h.record(record2)
-    h.bind_strategy_outcome(prediction2.prediction_id, record2.action_id)
+    bound2 = h.bind_strategy_outcome(prediction2.prediction_id,
+                                     record2.action_id)
     result2 = h.close_episode(TASK["task_id"], "ep2")
     evaluation2 = result2["evaluations"][0]
     print(f"benefit eligibility    : "
@@ -179,12 +180,19 @@ def main() -> int:
           f"{evaluation2['benefit'].get('identity_fields')}")
     print(f"cost eligibility       : {evaluation2['cost']['eligibility']}")
     print(f"state                  : {evaluation2['state']}")
-    # The approach could not be confirmed: the benefit is not scored, but
-    # the real spend is preserved.
-    assert evaluation2["benefit"]["eligibility"] == "identity_unknown"
-    assert "config.relaxation" in evaluation2["benefit"]["identity_fields"]
+    # Identity is decided by the STRUCTURED fields (strategy, solver,
+    # config values actually observed). A prose knob the run never reported
+    # is worth chasing, but it does not block the comparison, so the whole
+    # sample is still scored.
+    assert evaluation2["benefit"]["eligibility"] == "evaluable"
+    assert not evaluation2["benefit"].get("identity_fields")
     assert evaluation2["cost"]["eligibility"] == "evaluable"
-    assert evaluation2["state"] == "evaluated"
+    # It is still REPORTED, so the agent can see the evidence is thinner.
+    info2 = bound2.trace.model_info
+    print(f"  reported as unknown  : "
+          f"{sorted((info2.get('binding_unknown') or {}).get('config') or {})}")
+    assert "relaxation" in (info2.get("binding_unknown") or {}).get("config",
+                                                                    {})
 
     # ------------------------------------------------------------------
     print()
@@ -331,11 +339,12 @@ def main() -> int:
     tmp.cleanup()
     print()
     print("All assertions passed.")
-    print("NOTE: a missing receipt is a CAVEAT, not a discard. The close-out "
-          "blocks only the comparison a problem really invalidates — an "
-          "unreported time_limit blocks nothing, a different solver blocks "
-          "the outcome and keeps the cost — while a wrong task, a wrong "
-          "strategy or a post-hoc prediction still excludes the sample.")
+    print("NOTE: identity is decided by the STRUCTURED fields. A missing "
+          "receipt and a re-worded method description are both CAVEATS, not "
+          "vetoes — an unreported time_limit and a re-worded receipt block "
+          "nothing, a different solver blocks the outcome and keeps the cost "
+          "— while a wrong task, a wrong strategy or a post-hoc prediction "
+          "still excludes the sample.")
     return 0
 
 

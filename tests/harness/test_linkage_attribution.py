@@ -171,13 +171,17 @@ class TestAttributionTable(unittest.TestCase):
                          "an unreported time_limit must not discard a sample")
         self.assertEqual(attr["fields"]["config.time_limit"]["blocks"], [])
 
-    def test_an_unreported_approach_key_blocks_the_benefit_only(self):
+    def test_an_unreported_approach_key_blocks_nothing(self):
+        # An approach-sounding config key the run never reported is worth
+        # chasing, but it is NOT grounds to block the comparison: identity
+        # is decided by the structured fields, not by a missing prose knob.
         attr = binding_attribution(
             {}, {"config": {"relaxation": {"predicted": "lp",
                                            "actual": None}}})
-        self.assertTrue(attr["blocked"]["benefit"])
-        self.assertFalse(attr["blocked"]["cost"])
-        self.assertFalse(attr["blocked"]["risk"])
+        blocked = {k: v for k, v in attr["blocked"].items() if v}
+        self.assertEqual(blocked, {},
+                         "a missing approach knob is a caveat, not a veto")
+        self.assertIn("config.relaxation", attr["fields"])
 
     def test_an_unknown_episode_blocks_nothing(self):
         attr = binding_attribution({}, {"episode_id": {"predicted": "ep1",
@@ -220,31 +224,26 @@ class TestAttributionTable(unittest.TestCase):
         self.assertTrue(attr["blocked"]["benefit"])
         self.assertTrue(attr["blocked"]["cost"])
 
-    def test_a_method_deviation_blocks_the_benefit_and_its_interval(self):
+    def test_a_prose_difference_blocks_nothing(self):
+        # THE reported regression: a receipt that described the same work in
+        # its own words (``x1`` vs ``x_j``, ``mip_gap`` vs "mip gap"), while
+        # strategy/solver/config all matched, used to hard-block the benefit
+        # and never recover it. A free-text description cannot decide
+        # identity, so it now blocks nothing at all.
         observation = {
-            "verdict": "mismatch",
-            "planned_name": "benders", "actual_name": "direct milp",
-            "planned_steps": ["master", "subproblem"], "actual_steps": ["lp"],
-            "reason": "the performed steps are not a subsequence",
+            "verdict": "differs",
+            "planned_name": "S1_monolithic_integer_milp",
+            "actual_name": "S1_monolithic_integer_milp",
+            "planned_steps": ["write a monolithic MILP over x1, x2, a1, a2"],
+            "actual_steps": ["write a monolithic MILP over x_j, a_j"],
+            "reason": "the performed step text differs",
         }
         attr = binding_attribution({}, {}, observation)
-        self.assertTrue(attr["blocked"]["benefit"])
-        # The interval is the SAME observed value read as a range: it must
-        # not be scored when the benefit may not be.
-        self.assertTrue(attr["blocked"]["interval"])
-        self.assertFalse(attr["blocked"]["cost"])
-        self.assertIsNotNone(attr["deviation"])
-        self.assertEqual(attr["deviation"]["actual_name"], "direct milp")
-
-    def test_a_reworded_method_is_not_a_deviation(self):
-        # The plan was carried out and RESTATED: the receipt need not
-        # photocopy the plan's wording, and a rewording must not block.
-        attr = binding_attribution({}, {}, {"verdict": "reworded",
-                                            "reason": "restated"})
         blocked = {k: v for k, v in attr["blocked"].items() if v}
         self.assertEqual(blocked, {},
-                         "a rewording is not a different method")
-        self.assertIsNone(attr["deviation"])
+                         "a prose difference must not block any dimension")
+        # The comparison is still REPORTED, so a reader can see it.
+        self.assertIsNotNone(attr["method_observed"])
 
     def test_a_known_episode_mismatch_excludes_everything(self):
         attr = binding_attribution({"episode_id": {"predicted": "ep1",
@@ -253,18 +252,6 @@ class TestAttributionTable(unittest.TestCase):
             self.assertTrue(attr["blocked"][dim],
                             "a run from another episode is not this "
                             "prediction's execution")
-
-    def test_a_matching_method_is_not_a_deviation(self):
-        attr = binding_attribution({}, {}, {"verdict": "match"})
-        blocked = {k: v for k, v in attr["blocked"].items() if v}
-        self.assertEqual(blocked, {})
-        self.assertIsNone(attr["deviation"])
-
-    def test_an_unknown_method_is_not_a_deviation(self):
-        attr = binding_attribution({}, {}, {"verdict": "unknown",
-                                            "reason": "no steps"})
-        self.assertIsNone(attr["deviation"],
-                          "an unobserved performance is not a deviation")
 
 
 # ---------------------------------------------------------------------------
@@ -341,7 +328,7 @@ class TestMissingReceiptIsACaveat(Base):
         self.assertIn("time_limit", (info.get("binding_unknown") or {}).get(
             "config", {}))
 
-    def test_an_unreported_approach_key_keeps_the_cost_but_blocks_benefit(self):
+    def test_an_unreported_approach_key_keeps_both_benefit_and_cost(self):
         script, work = self._plain_script("approach")
         prediction = self._predict(relaxation="lp")
         record = self.h.execute(TASK, "S01", str(script), str(work),
@@ -350,15 +337,21 @@ class TestMissingReceiptIsACaveat(Base):
         self.h.record(record)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        # The benefit is blocked (the approach could not be confirmed)...
-        self.assertEqual(evaluation["benefit"]["eligibility"],
-                         "identity_unknown")
-        self.assertIn("config.relaxation",
-                      evaluation["benefit"]["identity_fields"])
-        # ...but the measured cost is preserved and still scored.
+        # A missing prose knob is a caveat, not a veto: the answer IS the
+        # candidate's execution (strategy/solver/config all matched), so the
+        # benefit is scored.
+        self.assertEqual(evaluation["benefit"]["eligibility"], "evaluable")
+        self.assertNotIn("config.relaxation",
+                         evaluation["benefit"].get("identity_fields") or [])
+        # The measured cost is preserved and scored too.
         self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
         self.assertIn("solver_runtime_s", evaluation["cost"]["per_dim"])
         self.assertEqual(evaluation["state"], "evaluated")
+        # The unconfirmed key is still REPORTED.
+        info = self.h.strategy_predictions.get(
+            prediction.prediction_id).trace.model_info
+        self.assertIn("relaxation", (info.get("binding_unknown") or {}).get(
+            "config", {}))
 
 
 # ---------------------------------------------------------------------------
@@ -454,13 +447,13 @@ class TestGenuineBoundariesStillRefuse(Base):
 
 
 # ---------------------------------------------------------------------------
-# 6. end-to-end: a method deviation is an evaluation fact
+# 6. end-to-end: a method prose difference is REPORTED, not scored
 # ---------------------------------------------------------------------------
 
 
 class TestMethodDeviationIsAnEvaluationFact(Base):
 
-    def test_a_different_performed_method_blocks_the_benefit_only(self):
+    def test_a_different_performed_method_is_reported_but_blocks_nothing(self):
         plan = {"name": "benders decomposition",
                 "steps": ["build master problem", "solve subproblem"]}
         performed = {"name": "direct milp",
@@ -475,15 +468,16 @@ class TestMethodDeviationIsAnEvaluationFact(Base):
         self.h.record(record)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        # The deviation is reported on its own block.
+        # The prose difference is reported on its own block...
         self.assertIsNotNone(evaluation.get("method_deviation"))
         self.assertEqual(
             evaluation["method_deviation"]["actual_name"], "direct milp")
-        # Benefit blocked (not the planned method's answer), cost kept.
-        self.assertEqual(evaluation["benefit"]["eligibility"], "identity_unknown")
+        # ...and it blocks NOTHING: the structured identity (strategy,
+        # solver, config) all matched, so the answer IS this prediction's
+        # execution and the benefit is scored.
+        self.assertEqual(evaluation["benefit"]["eligibility"], "evaluable")
         self.assertEqual(evaluation["cost"]["eligibility"], "evaluable")
-        self.assertTrue(any("planned method" in n
-                            for n in evaluation.get("notes") or []))
+        self.assertEqual(evaluation["state"], "evaluated")
 
 
 # ---------------------------------------------------------------------------

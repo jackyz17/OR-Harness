@@ -126,19 +126,18 @@ def main() -> int:
           f"{stored.execution_features['cost_provenance']['llm_tokens']['source']}")
     assert stored.cost.llm_tokens == 1000.0
 
-    # 4. A DECLARED estimate never stands as a measured truth: it is shown,
-    #    but excluded from the calibration aggregate's eligible total.
+    # 4. A DECLARED estimate never stands as a measured truth: it is dropped
+    #    from the counted total rather than scored as an observation.
     from or_harness.world_model.episode_closeout import _aggregate_costs
     declared = CostVector(llm_tokens=20000.0, measured={"llm_tokens"})
     stored.cost = declared
     stored.execution_features["cost_provenance"] = {
         "llm_tokens": {"source": "agent_estimate"}}
     aggregate = _aggregate_costs([declared], [stored])
-    screened = aggregate["llm_tokens"]["screened"]
-    print(f"3. declared 20000 tokens: raw total="
-          f"{aggregate['llm_tokens']['total']}, eligible total="
-          f"{screened['total']}, excluded={screened['excluded']}")
-    assert screened["total"] is None and "estimate" in screened["excluded"]
+    block = aggregate["llm_tokens"]
+    print(f"3. declared 20000 tokens: counted total={block['total']}, "
+          f"n_measured={block['n_measured']}, excluded={block.get('excluded')}")
+    assert block["total"] is None and block["excluded"] == 1
 
     # 5. The online gain is followed up along the REAL path, with no second
     #    prediction: bind the claim, then evaluate it.

@@ -50,21 +50,14 @@ _ALL: FrozenSet[str] = frozenset(EVALUATION_DIMENSIONS)
 #: Everything except cost. A different execution condition leaves the spend
 #: on record while making the quality/risk comparison meaningless.
 _OUTCOME: FrozenSet[str] = frozenset({"benefit", "risk", "interval"})
-_BENEFIT_ONLY: FrozenSet[str] = frozenset({"benefit"})
-#: A benefit and the interval drawn around the SAME value are two readings
-#: of ONE observation. They must share one eligibility: if the benefit may
-#: not be scored, an interval "covering" the same value would be scoring it
-#: anyway. ``risk`` is left alone — it is a per-event label, not the same
-#: number.
-_BENEFIT_AND_INTERVAL: FrozenSet[str] = frozenset({"benefit", "interval"})
 _NONE: FrozenSet[str] = frozenset()
 
 #: Config keys that name the APPROACH rather than the effort spent. An
-#: UNCONFIRMED value for one of these blocks the benefit comparison (the
-#: answer may not be the predicted approach's answer); every other config
-#: key leaves the comparison intact. Config keys that merely tune effort
-#: (``time_limit``, ``mip_gap``, ``seed``, ``threads``) are deliberately
-#: absent: an unreported budget never discards a real observation.
+#: UNCONFIRMED value for one of these is REPORTED (the answer may not be the
+#: predicted approach's answer) but blocks NOTHING, for the same reason a
+#: re-worded method does not: the identity that decides whether a sample is
+#: this prediction's truth is carried by the structured fields, and this set
+#: only tells the reader which unreported keys are worth chasing.
 APPROACH_CONFIG_KEYS: FrozenSet[str] = frozenset({
     "method", "method_performed", "algorithm", "formulation",
     "relaxation", "integer", "integrality", "decomposition",
@@ -129,9 +122,6 @@ def _field_impact(field: str, *, kind: str,
             return MISMATCH_IMPACT["config"]
         return MISMATCH_IMPACT.get(field, _DEFAULT_MISMATCH_IMPACT)
     # unknown
-    if config_key:
-        return (_BENEFIT_ONLY if config_key in APPROACH_CONFIG_KEYS
-                else _NONE)
     return UNKNOWN_IMPACT.get(field, _NONE)
 
 
@@ -147,16 +137,23 @@ def binding_attribution(mismatch: Mapping[str, Any],
           "blocked": {dimension: [{"field": ..., "kind": ...}, ...]},
           "fields": {"<field>": {"kind", "blocks", "reason"}},
           "notes": [...],
+          "method_observed": {...} | None,
         }
 
     ``blocked`` holds only the dimensions that must NOT be compared;
     a dimension absent from a list is free to be evaluated. The reason
     strings are short and actionable — they are shown to the agent.
 
-    ``method_observed`` is the binding's own ``compare_methods`` record (a
-    performed method that really differs from the plan). It blocks the
-    BENEFIT and its INTERVAL only: the answer is not scored as the planned
-    method's result, while the cost and any failure stay on record.
+    ``method_observed`` (the binding's own ``compare_methods`` record) is
+    REPORTED, never scored: the identity that decides whether a comparison
+    is this prediction's truth is carried by STRUCTURED fields
+    (``strategy_id`` / ``solver`` / ``config`` / task / timing), and a free-
+    text method description is not one of them. Deciding identity from a
+    prose match systematically misfires in symbol-dense domains (``x1`` vs
+    ``x_j``, ``mip_gap`` vs "mip gap"), and it would let a RE-WORDED receipt
+    hard-block the benefit of a run whose strategy, solver and config all
+    matched. The comparison is left in the output for a reader (and for
+    offline induction); it blocks nothing.
     """
     blocked: Dict[str, list] = {dim: [] for dim in EVALUATION_DIMENSIONS}
     fields: Dict[str, Dict[str, Any]] = {}
@@ -199,14 +196,6 @@ def binding_attribution(mismatch: Mapping[str, Any],
         _add(name, "unknown", _field_impact(name, kind="unknown"),
              _unknown_reason(name))
 
-    # A performed method that differs from the plan. It is neither a
-    # mismatch nor an unknown: the run really happened, but the answer is
-    # not the planned method's answer.
-    deviation = method_deviation(method_observed)
-    if deviation is not None and "method" not in fields:
-        _add("method", "deviation", _BENEFIT_AND_INTERVAL,
-             method_deviation_note(deviation))
-
     soft = sorted(f for f, e in fields.items() if not e["blocks"])
     if soft:
         notes.append(
@@ -215,8 +204,8 @@ def binding_attribution(mismatch: Mapping[str, Any],
             " — the observation is the bound action's own execution, and a "
             "missing receipt is a caveat, not grounds to discard a real "
             "attempt")
-    return {"blocked": blocked, "fields": fields, "notes": notes, "deviation":
-            deviation}
+    return {"blocked": blocked, "fields": fields, "notes": notes,
+            "method_observed": method_observed}
 
 
 def blocked_dimensions(attribution: Mapping[str, Any]) -> Dict[str, Any]:
@@ -285,10 +274,10 @@ def _unknown_reason(field: str) -> str:
 def _unknown_config_reason(key: str) -> str:
     if key in APPROACH_CONFIG_KEYS:
         return (f"the run did not report {key!r}, which names the APPROACH: "
-                "the answer may not be the predicted approach's answer, so "
-                "the benefit is not scored (the real cost is still kept). "
-                f"Have solve.py read {key!r} back into result.json's "
-                "`config` to confirm it")
+                "the answer may not be the predicted approach's answer. It "
+                "blocks nothing (the identity is carried by the structured "
+                "fields), but the evidence would be stronger if solve.py "
+                f"read {key!r} back into result.json's `config`")
     return (f"the run did not report {key!r}: it is a caveat, not grounds "
             "to discard the attempt — this blocks nothing")
 
@@ -300,18 +289,20 @@ def _unknown_config_reason(key: str) -> str:
 #: Verdicts from :func:`or_harness.core.schema.compare_methods` that mean
 #: the performed method was NOT the planned method. ``unknown`` is not one
 #: of them: an unobserved performance is not evidence of a deviation.
-METHOD_DEVIATION_VERDICTS = ("mismatch",)
+#:
+#: NOTE: this is REPORTING ONLY. A prose mismatch is never grounds to block
+#: a comparison — see :func:`binding_attribution` for why.
+METHOD_DEVIATION_VERDICTS = ("differs",)
 
 
 def method_deviation(method_observed: Any) -> Optional[Dict[str, Any]]:
     """Read a ``compare_methods`` observation, or None when there is none.
 
     The comparison record is produced by the BINDING (``method_observed``
-    in the prediction's ``trace.model_info``) and is the ONLY honest source
-    of "the run did not carry out the plan". Returns a small, actionable
-    summary when the performed method really differs from the plan; returns
-    ``None`` when either side is unknown (an absent plan or an unobserved
-    performance is NOT a deviation).
+    in the prediction's ``trace.model_info``). Returns a small readable
+    summary when the performed method differs from the plan; returns
+    ``None`` when either side is unknown. The result is REPORTED — it
+    blocks no comparison.
     """
     if not isinstance(method_observed, dict):
         return None
@@ -329,14 +320,16 @@ def method_deviation(method_observed: Any) -> Optional[Dict[str, Any]]:
 
 
 def method_deviation_note(deviation: Mapping[str, Any]) -> str:
-    """A short note explaining what a method deviation DOES and does not do."""
+    """A short note REPORTING that the plan and the receipt differ in prose.
+
+    It is a reading aid, never a verdict: nothing here blocks a comparison.
+    """
     planned = deviation.get("planned_name") or "(unnamed plan)"
     actual = deviation.get("actual_name") or "(unnamed performance)"
-    return (f"the run performed {actual!r}, not the planned {planned!r}: the "
-            "answer and the interval drawn around it are not scored as the "
-            "planned method's benefit (the cost and any failure really "
-            "happened and stay on record). Nothing about the planned method "
-            "can be concluded from this attempt")
+    return (f"the run reported {actual!r} where the plan said {planned!r}. "
+            "The description differs; this does NOT by itself make the "
+            "sample invalid — the structured identity (strategy, solver, "
+            "config) is what decides that")
 
 
 # ---------------------------------------------------------------------------
