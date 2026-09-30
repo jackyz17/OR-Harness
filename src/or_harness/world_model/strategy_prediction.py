@@ -714,26 +714,55 @@ def parse_strategy_outcome_payload(
 
     # -- capability gain (H+) -------------------------------------------------
     # EXPLANATORY only: it is parsed and recorded, NEVER scored and NEVER
-    # written into the harness capability evidence. A MISSING block is an
-    # honest "no gain claimed" and must not invalidate the rest of the
-    # prediction — an H+ the model omitted is not a wrong prediction about
-    # benefit/cost/risk.
+    # written into the harness capability evidence. Two rules govern a bad
+    # block:
+    #
+    # * a MISSING block is an honest "no gain claimed" and must not
+    #   invalidate the rest of the prediction — but it must SAY SO: the
+    #   framework records why the block is absent ("not predicted by the
+    #   model"), exactly as it does for benefit/cost/risk, so a null is
+    #   never a silent omission;
+    # * a MALFORMED block (a bad metric, an unparsable entry) is a local
+    #   error and takes only H+ down: the block is dropped with the reason
+    #   recorded and the valid G/C/R prediction is KEPT. An explanatory
+    #   extra must never destroy the forecast it explains.
     capability_gain: Optional[CapabilityGain] = None
     raw_gain = payload.get("capability_gain")
-    if raw_gain is not None:
-        if not isinstance(raw_gain, dict):
-            problems.append("capability_gain must be a JSON object")
+    if raw_gain is None:
+        unsupported["capability_gain"] = (
+            "not predicted by the model (no potential capability gain was "
+            "claimed for this candidate; an absent block means 'not "
+            "assessed', never 'no gain')")
+    elif not isinstance(raw_gain, dict):
+        unsupported["capability_gain"] = (
+            "malformed: capability_gain must be a JSON object; the block "
+            "was dropped and the benefit/cost/risk prediction is kept")
+        notes.append(
+            "capability_gain was malformed and dropped: only the gain "
+            "block is affected — the benefit/cost/risk prediction stands")
+    else:
+        try:
+            capability_gain = CapabilityGain.from_dict(raw_gain)
+        except (ValueError, TypeError) as exc:
+            capability_gain = None
+            unsupported["capability_gain"] = f"malformed: {exc}"
+            notes.append(
+                "capability_gain was malformed and dropped (" + str(exc) +
+                "): only the gain block is affected — the benefit/cost/"
+                "risk prediction stands")
         else:
-            try:
-                capability_gain = CapabilityGain.from_dict(raw_gain)
-            except (ValueError, TypeError) as exc:
-                problems.append(f"capability_gain: {exc}")
-                capability_gain = None
-            else:
-                if not capability_gain.claimed:
-                    notes.append(
-                        "capability_gain was present but empty: recorded as "
-                        "'no gain claimed', never a default positive")
+            if not capability_gain.claimed:
+                notes.append(
+                    "capability_gain was present but empty: recorded as "
+                    "'no gain claimed', never a default positive")
+            # The model may PREDICT; it may not declare its prediction
+            # BOUND or VERIFIED. Those two flags are framework-maintained
+            # facts about the real evidence, so whatever the payload says
+            # about them is reset here.
+            for condition in capability_gain.verification_conditions:
+                condition.prediction_made = True
+                condition.fact_bound = False
+                condition.effect_verified = False
 
     has_content = any(value is not None for value in
                       (benefit, cost, risk, uncertainty))
@@ -794,13 +823,28 @@ def parse_strategy_outcome_payload(
     )
     if status == "valid":
         # Re-run the contract validator on the assembled object: the parse
-        # rules and the contract rules must agree.
-        contract_problems = validate_strategy_outcome(prediction)
+        # rules and the contract rules must agree. H+ problems are filtered
+        # out here: a malformed explanatory gain block was already dropped
+        # with its reason recorded, and it must not downgrade the valid
+        # forecast beside it.
+        contract_problems = [p for p in validate_strategy_outcome(prediction)
+                             if not _is_capability_gain_problem(p)]
         if contract_problems:
             prediction.status = "invalid"
             prediction.notes.extend(f"validation: {p}"
                                     for p in contract_problems)
     return prediction
+
+
+def _is_capability_gain_problem(problem: str) -> bool:
+    """Whether a contract problem belongs to the H+ block alone.
+
+    The contract validator reports every problem as a flat string; the
+    cause is the leading token. An H+ problem must be a LOCAL one: it is
+    recorded as the block's drop reason and never invalidates the
+    benefit/cost/risk forecast.
+    """
+    return str(problem).startswith("capability_gain")
 
 
 def model_identity_label(identity: Optional[Dict[str, Any]]) -> str:
@@ -1035,6 +1079,31 @@ class StrategyOutcomeService:
             prediction.candidate.episode_id,
             self.store.dumps(prediction.to_dict()),
             created_at=prediction.trace.created_at)
+        # An online capability-gain CLAIM is archived as a trace so the real
+        # execution and its later effect can be followed up, and so the
+        # offline stage-2 evaluator can read it by id. The trace is metadata
+        # only: it never changes the prediction, never ranks the candidate
+        # and never touches the capability evidence. Best-effort — a trace
+        # failure must never fail the prediction that was already saved.
+        if getattr(prediction, "capability_gain", None) is not None \
+                and prediction.capability_gain.claimed:
+            try:
+                from or_harness.world_model.trace_archive import (
+                    archive_capability_gain,
+                )
+                archive_capability_gain(self._harness(), prediction)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _harness(self):
+        """The harness whose store this service writes to.
+
+        The service is constructed with an explicit store and an optional
+        ``harness`` handle; the trace archive needs the latter (it reads the
+        action log to follow a claim). A service built without one simply
+        skips the trace.
+        """
+        return getattr(self, "harness", None)
 
     def get(self, prediction_id: str) -> Optional[StrategyOutcomePrediction]:
         raw = self.store.get_contract_prediction(prediction_id)

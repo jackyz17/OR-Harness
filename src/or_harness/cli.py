@@ -45,6 +45,16 @@ def _fail_structured(error: Dict[str, Any], summary: str,
     return exit_code
 
 
+def _online_gains_line(summary: Any) -> str:
+    """One line describing the ONLINE capability-gain follow-up state."""
+    if not isinstance(summary, dict) or not summary.get("n_online_gains"):
+        return ""
+    return (f" Online gains: {summary['n_online_gains']} claimed, "
+            f"{summary['n_pending']} pending, {summary['n_bound']} bound to "
+            f"a real execution, {summary['n_effect_verified']} with a "
+            "VERIFIED effect.")
+
+
 def _cir_error_payload(exc: Any) -> Dict[str, Any]:
     """The structured error for a rejected CIR payload."""
     detail = getattr(exc, "detail", None)
@@ -1013,7 +1023,8 @@ def cmd_inspect(args) -> int:
                 f"{result['n_fact_bound']} with a bound maintenance fact, "
                 f"{result['n_effect_verified']} with a VERIFIED effect. A "
                 "bound fact says the operation happened; only a verified "
-                "effect says real later performance moved.")
+                "effect says real later performance moved."
+                + _online_gains_line(result.get("online_gains")))
         if args.bank == "evaluations":
             if getattr(args, "evaluation", None):
                 return _emit(result, f"Evaluation {args.evaluation}: state "

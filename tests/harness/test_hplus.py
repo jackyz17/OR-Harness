@@ -233,7 +233,7 @@ class TestGainIsNotUtility(HPlusCase):
 
 class TestGainAbsence(HPlusCase):
 
-    def test_a_prediction_with_no_gain_block_still_scores(self):
+    def test_a_prediction_with_no_gain_block_records_why_it_is_absent(self):
         provider = StubProvider(payload=dict(BASE_PAYLOAD))
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
@@ -244,6 +244,12 @@ class TestGainAbsence(HPlusCase):
         self.assertEqual(prediction.status, "valid")
         self.assertIsNone(prediction.capability_gain)
         self.assertFalse(prediction.claims_capability_gain)
+        # A MISSING block is not a silent null: the framework records that
+        # the model did not assess it, exactly as it does for G/C/R.
+        unsupported = prediction.trace.unsupported_fields
+        self.assertIn("capability_gain", unsupported)
+        self.assertIn("not predicted by the model", unsupported[
+            "capability_gain"])
         # The benefit/cost are unaffected.
         self.assertEqual(prediction.benefit.value, 0.8)
         self.assertIsNotNone(prediction.cost)
@@ -262,7 +268,7 @@ class TestGainAbsence(HPlusCase):
         self.assertTrue(any("no gain claimed" in n
                             for n in prediction.notes))
 
-    def test_a_malformed_gain_is_a_problem_not_a_crash(self):
+    def test_a_malformed_gain_drops_only_the_gain_block(self):
         provider = StubProvider(payload=dict(
             BASE_PAYLOAD,
             capability_gain={"expected_changes": [{"direction": "increase"}]}))
@@ -272,11 +278,32 @@ class TestGainAbsence(HPlusCase):
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1")
-        # The benefit/cost are still parsed; the malformed change is a
-        # named validation problem.
-        self.assertIn(prediction.status, ("invalid",))
-        self.assertTrue(any("metric is required" in n
+        # The malformed gain is DROPPED with a reason, and the valid
+        # benefit/cost prediction it accompanied is KEPT: a local error in
+        # the explanatory extra never destroys the forecast.
+        self.assertEqual(prediction.status, "valid")
+        self.assertIsNone(prediction.capability_gain)
+        self.assertEqual(prediction.benefit.value, 0.8)
+        self.assertIsNotNone(prediction.cost)
+        unsupported = prediction.trace.unsupported_fields
+        self.assertIn("capability_gain", unsupported)
+        self.assertIn("malformed", unsupported["capability_gain"])
+        self.assertTrue(any("only the gain block is affected" in n
                             for n in prediction.notes))
+
+    def test_a_non_object_gain_drops_only_the_gain_block(self):
+        provider = StubProvider(payload=dict(BASE_PAYLOAD,
+                                             capability_gain="more gain!"))
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        prediction = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        self.assertEqual(prediction.status, "valid")
+        self.assertIsNone(prediction.capability_gain)
+        self.assertIn("malformed",
+                      prediction.trace.unsupported_fields["capability_gain"])
 
 
 # ---------------------------------------------------------------------------

@@ -257,6 +257,11 @@ class ORHarness:
         )
         self.strategy_predictions = StrategyOutcomeService(
             self.store, self.world_model)
+        # The service writes a capability-gain TRACE when a strategy
+        # prediction claims an online H+. The archive needs the HARNESS
+        # (it follows the claim through the action log), so the link is
+        # injected here rather than built into the service.
+        self.strategy_predictions.harness = self
         # World-model M5: the capability-evolution prediction SERVICE under
         # the wm-ce/1 protocol. Same provider, same explicit injection
         # discipline; a SEPARATE prediction table, so a capability record
@@ -2720,8 +2725,23 @@ class ORHarness:
                 "note": ("already bound: the stored fact stands, nothing was "
                          "re-counted or re-billed"),
             }
+        prediction, source = self._capability_prediction_for(prediction_id)
+        if prediction is None:
+            raise ValueError(
+                f"unknown capability prediction {prediction_id!r}")
+        if source == "online_trace":
+            # An ONLINE gain claim: the real action it was bound to IS the
+            # operation the fact is about, so the trace supplies it.
+            from or_harness.world_model.trace_archive import (
+                get_capability_trace,
+            )
+            trace = get_capability_trace(self, prediction_id)
+            adoption_action_id = (adoption_action_id
+                                  or (trace.bound_action_id
+                                      if trace is not None else None))
         binding = bind_maintenance_fact(
-            self, prediction_id, adoption_action_id=adoption_action_id)
+            self, prediction_id, prediction=prediction,
+            adoption_action_id=adoption_action_id)
         if binding.adoption_action_id is None:
             return {
                 "binding": binding.to_dict(),
@@ -2733,11 +2753,42 @@ class ORHarness:
                          "alone, and nothing is recorded as if it ran"),
             }
         record_maintenance_binding(self, binding)
+        try:
+            from or_harness.world_model.trace_archive import refresh_trace
+            refresh_trace(self, prediction_id)
+        except Exception:  # noqa: BLE001 - a trace update never breaks bind
+            pass
         return {
             "binding": binding.to_dict(),
             "already_bound": False,
             "state": "bound",
+            "prediction_source": source,
         }
+
+    def _capability_prediction_for(self, prediction_id: str):
+        """The prediction an id names, offline or an ONLINE gain trace.
+
+        Returns ``(prediction, source)`` where source is ``"stored"`` for a
+        real ``hp_`` capability prediction, ``"online_trace"`` for a
+        strategy-outcome prediction that claimed an H+ (materialized on
+        demand from its trace), or ``(None, None)`` when nothing matches.
+
+        No third kind of prediction is invented: an online H+ is not a
+        capability prediction, and the materialized view says so itself.
+        """
+        stored = self.capability_predictions.get(prediction_id)
+        if stored is not None:
+            return stored, "stored"
+        try:
+            from or_harness.world_model.trace_archive import (
+                effect_prediction_of,
+            )
+            materialized = effect_prediction_of(self, prediction_id)
+        except Exception:  # noqa: BLE001
+            return None, None
+        if materialized is not None:
+            return materialized, "online_trace"
+        return None, None
 
     def capability_maintenance_binding(
             self, prediction_id: str) -> Optional[Dict[str, Any]]:
@@ -2764,7 +2815,7 @@ class ORHarness:
         from or_harness.world_model.maintenance_decision import (
             record_paired_evaluation,
         )
-        if self.capability_predictions.get(prediction_id) is None:
+        if self._capability_prediction_for(prediction_id) == (None, None):
             raise StorageError(
                 f"unknown capability prediction {prediction_id!r}")
         return record_paired_evaluation(
@@ -2811,14 +2862,24 @@ class ORHarness:
                 "note": ("already evaluated: the stored verdict stands and "
                          "the sample was not counted again"),
             }
+        prediction, source = self._capability_prediction_for(prediction_id)
+        if prediction is None:
+            raise ValueError(
+                f"unknown capability prediction {prediction_id!r}")
         evaluation = evaluate_capability_effect(
-            self, prediction_id, task_ids=task_ids,
+            self, prediction_id, prediction=prediction, task_ids=task_ids,
             require_paired_reference=require_paired_reference)
         if persist:
             record_effect_evaluation(self, evaluation)
+        try:
+            from or_harness.world_model.trace_archive import refresh_trace
+            refresh_trace(self, prediction_id)
+        except Exception:  # noqa: BLE001 - a trace update never breaks eval
+            pass
         return {
             "evaluation": evaluation.to_dict(),
             "already_evaluated": False,
+            "prediction_source": source,
         }
 
     def capability_effect_evaluation(
@@ -2841,6 +2902,33 @@ class ORHarness:
             capability_effect_summary,
         )
         return capability_effect_summary(self)
+
+    def online_capability_gains(self) -> Dict[str, Any]:
+        """Every ONLINE capability-gain claim's follow-up state.
+
+        The third view beside the offline capability predictions and the
+        learning-operation facts. An online H+ used to die the moment it was
+        printed, so ``inspect --bank capability`` reported 0 even when a
+        candidate had claimed a gain in the same call. Read-only: no model
+        call, no re-prediction, no re-billing.
+        """
+        from or_harness.world_model.maintenance_decision import (
+            online_gain_summary,
+        )
+        return online_gain_summary(self)
+
+    def online_capability_gains(self) -> Dict[str, Any]:
+        """Every ONLINE capability-gain claim's follow-up state.
+
+        The third view beside the offline capability predictions and the
+        learning-operation facts: an online H+ used to die the moment it
+        was printed, so ``inspect --bank capability`` reported 0 even when
+        a candidate had claimed a gain in the same call. Read-only.
+        """
+        from or_harness.world_model.maintenance_decision import (
+            online_gain_summary,
+        )
+        return online_gain_summary(self)
 
     def capability_evidence_with_effects(self, **kwargs
                                          ) -> HarnessCapabilityEvidence:
@@ -5383,6 +5471,18 @@ class ORHarness:
         post = self.snapshot(task, episode_id, task_progress=progress)
         self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
+        # An ONLINE capability-gain claim, if this candidate made one, now
+        # has a REAL execution behind it: the trace advances to ``bound`` so
+        # the follow-up view reflects the attempt without a second
+        # prediction. Bookkeeping only — best-effort.
+        if prediction_id:
+            try:
+                from or_harness.world_model.trace_archive import (
+                    refresh_trace,
+                )
+                refresh_trace(self, str(prediction_id))
+            except Exception:  # noqa: BLE001
+                pass
         # The configuration that REALLY took effect is now known (the
         # executor reported it, and the solve script may have read back its
         # own effective values). Attach it to the ACTION so the binding can
@@ -6202,19 +6302,28 @@ class ORHarness:
             return {"bank": "retention", **self.calibration_retention()}
         if bank == "capability":
             if prediction_id is not None:
-                single = self.get_capability_evolution_prediction(
-                    prediction_id)
-                if single is None:
-                    raise ValueError(
-                        f"unknown prediction_id {prediction_id!r}")
+                stored = self.capability_predictions.get(prediction_id)
+                if stored is None:
+                    # An ONLINE capability-gain claim: materialized on demand
+                    # from its trace so the same read shows the claim, its
+                    # binding and its effect verdict.
+                    single, source = self._capability_prediction_for(
+                        prediction_id)
+                    if single is None:
+                        raise ValueError(
+                            f"unknown prediction_id {prediction_id!r}")
+                else:
+                    single, source = stored, "stored"
                 return {"bank": "capability", "count": 1,
                         "prediction": single.to_dict(),
+                        "prediction_source": source,
                         "binding": self.capability_maintenance_binding(
                             prediction_id),
                         "evaluation": self.capability_effect_evaluation(
                             prediction_id)}
             return {"bank": "capability",
-                    **self.capability_feedback_summary()}
+                    **self.capability_feedback_summary(),
+                    "online_gains": self.online_capability_gains()}
         if bank == "texts":
             # The retrieval SOURCE documents (not a knowledge bank): the
             # documented look-up entry point for records that carry no

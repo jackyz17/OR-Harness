@@ -763,7 +763,8 @@ class MaintenanceFactBinding:
 
 
 def bind_maintenance_fact(harness, prediction_id: str, *,
-                          adoption_action_id: Optional[str] = None
+                          adoption_action_id: Optional[str] = None,
+                          prediction: Any = None
                           ) -> MaintenanceFactBinding:
     """Stage 1: bind the REAL maintenance fact to one prediction.
 
@@ -773,10 +774,16 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
     evidence scope, and checks the scope against the predicted one. A
     widened scope is REPORTED, never silently accepted.
 
+    ``prediction`` lets the caller supply an already-resolved prediction
+    object — the ONLINE capability-gain trace materialized on demand (see
+    :mod:`or_harness.world_model.trace_archive`). When it is None the stored
+    ``hp_`` capability prediction is read as before.
+
     It cannot set ``effect_verified``: creating ten verified entries proves
     the knowledge changed, not that future performance improved.
     """
-    prediction = harness.capability_predictions.get(prediction_id)
+    if prediction is None:
+        prediction = harness.capability_predictions.get(prediction_id)
     if prediction is None:
         raise ValueError(f"unknown capability prediction {prediction_id!r}")
     binding = MaintenanceFactBinding(
@@ -790,7 +797,9 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
     if adoption is None:
         # Locate the adoption action that names this prediction. The
         # prediction id is recorded on the adoption's params so the binding
-        # never has to guess which operation followed.
+        # never has to guess which operation followed. An ONLINE gain claim
+        # (see trace_archive) has no adoption action: the real attempt it
+        # was bound to IS the operation.
         for action in harness.actions.query():
             params = action.params or {}
             outcome = action.outcome or {}
@@ -799,6 +808,12 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
                     prediction_id:
                 adoption = action
                 break
+    if adoption is None:
+        try:
+            from or_harness.world_model.trace_archive import bound_action_of
+            adoption = bound_action_of(harness, prediction_id)
+        except Exception:  # noqa: BLE001
+            adoption = None
     if adoption is None:
         binding.notes.append(
             "no adoption action references this prediction: the operation "
@@ -819,6 +834,12 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
     binding.actual_execution_ids = [str(e) for e in
                                     (operation_result.get("execution_ids")
                                      or [])]
+    if not binding.actual_execution_ids and adoption.linked_execution_id:
+        # An ONLINE capability claim is bound to the real attempt it was
+        # made for (no separate learning operation ran): that execution IS
+        # the fact. Without this the binding would report an empty scope,
+        # which reads as "no evidence" instead of "this run".
+        binding.actual_execution_ids = [str(adoption.linked_execution_id)]
     binding.changed = bool(delta.get("entries_created")
                            or delta.get("entries_updated")
                            or delta.get("entry_changes")
@@ -1006,6 +1027,7 @@ class CapabilityEffectEvaluation:
 def evaluate_capability_effect(
         harness, prediction_id: str, *,
         binding: Optional[MaintenanceFactBinding] = None,
+        prediction: Any = None,
         task_ids: Optional[Sequence[str]] = None,
         require_paired_reference: bool = True,
         ) -> CapabilityEffectEvaluation:
@@ -1025,11 +1047,16 @@ def evaluate_capability_effect(
     The horizon decides ``pending``: an unreached horizon stays re-
     evaluable forever. Repeating the call is idempotent (the stored
     evaluation is returned), so a second look never doubles the sample.
+
+    ``prediction`` lets the caller supply an already-resolved prediction
+    (the ONLINE capability-gain trace materialized on demand); when it is
+    None the stored ``hp_`` capability prediction is read as before.
     """
     from or_harness.world_model.episode_closeout import (
         _iter_closed_evaluations,
     )
-    prediction = harness.capability_predictions.get(prediction_id)
+    if prediction is None:
+        prediction = harness.capability_predictions.get(prediction_id)
     if prediction is None:
         raise ValueError(f"unknown capability prediction {prediction_id!r}")
     if binding is None:
@@ -2061,3 +2088,79 @@ def capability_effect_summary(harness) -> Dict[str, Any]:
                  "performance moved — only the latter supports a claim that "
                  "the harness got stronger"),
     }
+
+
+def online_gain_summary(harness) -> Dict[str, Any]:
+    """Every ONLINE capability-gain claim's follow-up state.
+
+    Three separate views, never collapsed into one number:
+
+    * the ONLINE gain predictions (strategy-outcome predictions that
+      claimed an H+), with how far each has been followed up;
+    * the learning-operation FACTS (whether the claim was bound to a real
+      execution and what knowledge the operation produced);
+    * the later VERIFICATION results (the stage-2 effect verdict).
+
+    Read-only: no model call, no re-prediction, no re-billing. A trace that
+    never got a real execution stays ``pending`` — never assumed verified
+    and never silently dropped.
+    """
+    from or_harness.world_model.trace_archive import (
+        get_capability_trace,
+        refresh_trace,
+    )
+    out: List[Dict[str, Any]] = []
+    for trace in _all_traces(harness):
+        # Refresh from the real facts so the view reflects a bind or an
+        # evaluation that happened since (idempotent; no model call).
+        refreshed = None
+        try:
+            refreshed = refresh_trace(harness, trace.prediction_id)
+        except Exception:  # noqa: BLE001
+            refreshed = get_capability_trace(harness, trace.prediction_id)
+        trace = refreshed or trace
+        binding = get_maintenance_binding(harness, trace.prediction_id)
+        evaluation = get_effect_evaluation(harness, trace.prediction_id)
+        out.append({
+            "prediction_id": trace.prediction_id,
+            "claim": trace.claim,
+            "applies_to": list(trace.applies_to),
+            "n_expected_changes": len(trace.expected_changes),
+            "n_verification_conditions": len(trace.verification_conditions),
+            "task_id": trace.task_id,
+            "episode_id": trace.episode_id,
+            "strategy_id": trace.strategy_id,
+            "state": trace.state,
+            "bound_action_id": trace.bound_action_id,
+            "bound_execution_ids": list(trace.bound_execution_ids),
+            "fact_bound": binding is not None,
+            "changed": (binding.changed if binding is not None else None),
+            "effect_state": (evaluation.state if evaluation is not None
+                             else None),
+            "effect_verified": bool(evaluation is not None
+                                    and evaluation.effect_verified),
+        })
+    return {
+        "n_online_gains": len(out),
+        "n_pending": sum(1 for e in out if e["state"] == "pending"),
+        "n_bound": sum(1 for e in out if e["fact_bound"]),
+        "n_effect_verified": sum(1 for e in out if e["effect_verified"]),
+        "online_gains": out,
+        "note": ("an online H+ is explanatory: it never ranked the "
+                 "candidate and it is not capability evidence. It is "
+                 "followed up along the REAL path — the execution it was "
+                 "bound to, the knowledge the learning operation produced, "
+                 "and the later effect verdict — and stays pending when "
+                 "that path has not happened. No separate predict-capability "
+                 "call is required"),
+    }
+
+
+def _all_traces(harness) -> List[Any]:
+    try:
+        from or_harness.world_model.trace_archive import (
+            iter_capability_traces,
+        )
+        return iter_capability_traces(harness)
+    except Exception:  # noqa: BLE001
+        return []
