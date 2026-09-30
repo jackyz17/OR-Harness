@@ -28,7 +28,6 @@ This module is the ONE place a provider's ``usage`` is turned into a
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
-
 from or_harness.core.schema import CostVector
 
 #: The token number is the provider's FULL total (prompt + completion).
@@ -168,9 +167,19 @@ def usage_cost_vector(usage: Optional[Mapping[str, Any]],
 #: tokenizer: it consumes what the host reports. ``source`` names the host
 #: so a reader can tell an OpenClaw report from a Hermes one, and
 #: ``calls`` optionally breaks the total down per model call.
+#:
+#: IDEMPOTENCY. A host hook may fire more than once for one attempt (a
+#: retry of the hook, a re-read of the same log line, a replay). Every call
+#: entry may therefore carry an ``id`` (or ``call_id``) — the provider's own
+#: identifier for that model call — and a report may carry a
+#: ``report_id``/``usage_id``. When they are present,
+#: :func:`dedupe_host_reports` collapses repeated events so the same tokens
+#: are never counted twice; when they are absent the report is applied once
+#: (``replace`` is idempotent), so a late duplicate can never double-count.
 HOST_USAGE_KEYS: Tuple[str, ...] = (
     "prompt_tokens", "completion_tokens", "total_tokens",
     "reasoning_tokens", "cached_tokens", "model", "source", "calls",
+    "report_id", "usage_id", "late", "final",
 )
 
 #: Hosts this build knows how to NORMALIZE a report from. The adapters below
@@ -259,12 +268,8 @@ def normalize_host_usage(report: Mapping[str, Any],
     else:
         normalized_calls = None
     # ``total_tokens`` alone is kept so :func:`token_breakdown` can use it
-    # verbatim when neither side is known.
-    if prompt is None and completion is None and total is not None:
-        prompt = None
-        completion = None
-        # Represent a total-only report by overloading prompt=None and
-        # letting token_breakdown see total_tokens.
+    # verbatim when neither side is known (a provider that reports only a
+    # total is still reporting the FULL口径).
     return {
         "prompt_tokens": prompt,
         "completion_tokens": completion,
@@ -275,6 +280,86 @@ def normalize_host_usage(report: Mapping[str, Any],
         "source": source,
         "calls": normalized_calls,
     }
+
+
+def dedupe_host_reports(reports: Sequence[Mapping[str, Any]]
+                        ) -> Tuple[list, Dict[str, Any]]:
+    """Collapse repeated host usage events so nothing is counted twice.
+
+    A host hook can fire more than once for the same model call (a retried
+    hook, a log re-read, a replay of the same storage row). ``replace`` mode
+    already makes re-applying the SAME numbers idempotent, but a report that
+    arrives TWICE with per-call entries would otherwise sum both copies.
+
+    The rule is small and uses only what the host already reports:
+
+    * a report carrying ``report_id``/``usage_id`` seen before is dropped
+      whole (it is the same event);
+    * otherwise, call entries are keyed by their own ``id``/``call_id``;
+      a call id seen before is dropped. A LATE report (``late=True`` or
+      ``final=True``) for a known call REPLACES the earlier figure rather
+      than adding to it: a correction supersedes, it does not accumulate;
+    * entries with no id are kept as-is — deduplication is never guessed.
+
+    Returns ``(kept_reports, summary)`` where ``summary`` reports what was
+    dropped/replaced so the caller can record it honestly.
+    """
+    kept: list = []
+    seen_reports: set = set()
+    seen_calls: Dict[str, Tuple[int, int]] = {}
+    dropped_reports = 0
+    dropped_calls = 0
+    replaced_calls = 0
+    for report in (reports or []):
+        if not isinstance(report, Mapping):
+            continue
+        report = dict(report)
+        report_id = report.get("report_id") or report.get("usage_id")
+        if report_id is not None:
+            key = str(report_id)
+            if key in seen_reports:
+                dropped_reports += 1
+                continue
+            seen_reports.add(key)
+        calls = report.get("calls") or report.get("events")
+        is_late = bool(report.get("late") or report.get("final"))
+        if isinstance(calls, (list, tuple)):
+            report_index = len(kept)
+            kept_calls = []
+            for call in calls:
+                if not isinstance(call, Mapping):
+                    continue
+                call = dict(call)
+                call_id = call.get("id") or call.get("call_id")
+                if call_id is None:
+                    kept_calls.append(call)
+                    continue
+                key = str(call_id)
+                position = seen_calls.get(key)
+                if position is not None:
+                    if is_late:
+                        # A correction: replace the earlier figure in place
+                        # rather than adding to it.
+                        kept[position[0]]["calls"][position[1]] = call
+                        replaced_calls += 1
+                    else:
+                        dropped_calls += 1
+                    continue
+                seen_calls[key] = (report_index, len(kept_calls))
+                kept_calls.append(call)
+            report["calls"] = kept_calls
+        kept.append(report)
+    summary = {
+        "dropped_reports": dropped_reports,
+        "dropped_calls": dropped_calls,
+        "replaced_calls": replaced_calls,
+        "note": ("repeated host usage events are collapsed so the same "
+                 "tokens are counted once; a late report for a known call "
+                 "replaces its figure instead of adding to it"),
+    }
+    if not (dropped_reports or dropped_calls or replaced_calls):
+        summary = {}
+    return kept, summary
 
 
 def host_usage_cost_vector(report: Optional[Mapping[str, Any]],
@@ -293,13 +378,20 @@ def host_usage_cost_vector(report: Optional[Mapping[str, Any]],
     """
     if report is None:
         return None, None
-    normalized = normalize_host_usage(report, source=source)
+    # A host hook may report the SAME call more than once (a retried hook, a
+    # re-read log line). Collapse repeats by their own ids before summing, so
+    # the same tokens are never counted twice.
+    reports, dedupe = dedupe_host_reports([report])
+    normalized = normalize_host_usage(
+        reports[0] if reports else report, source=source)
     vector, breakdown = usage_cost_vector(normalized, latency_s)
     if breakdown is not None:
         breakdown["host"] = normalized.get("source")
         breakdown["model"] = normalized.get("model")
         breakdown["scope"] = "attempt"
         breakdown["calls"] = normalized.get("calls")
+        if dedupe:
+            breakdown["dedup"] = dedupe
     return vector, breakdown
 
 

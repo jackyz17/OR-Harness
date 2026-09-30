@@ -636,7 +636,7 @@ def cmd_record(args) -> int:
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
                           override_source=getattr(args, "override_source",
-                                                 "agent_estimate"),
+                                                 "agent_observed"),
                           override_force=bool(getattr(args,
                                                       "override_force",
                                                       False)),
@@ -728,10 +728,34 @@ def cmd_amend_cost(args) -> int:
     nothing an agent could actually run."""
     h = _harness(args)
     try:
-        try:
-            dimensions = _parse_dimension_pairs(args.override)
-        except ValueError as exc:
-            return _fail(str(exc))
+        dimensions = {}
+        if getattr(args, "usage_file", None):
+            # A HOST usage report is the late-backfill channel: the outer
+            # framework's own numbers, applied instead of hand-typed ones.
+            try:
+                report = _load_json_arg(args.usage_file)
+            except ValueError as exc:
+                return _fail(str(exc))
+            from or_harness.world_model.usage import host_usage_cost_vector
+            vector, breakdown = host_usage_cost_vector(
+                report, source=getattr(args, "usage_source", None))
+            if vector is None or "llm_tokens" not in vector.measured_dims():
+                return _fail(
+                    "the usage report carried no token count: there is "
+                    "nothing to backfill (a missing usage is UNKNOWN, never "
+                    "zero). Provide the report from the host's hook/log or "
+                    "hand-type --override llm_tokens=<number>")
+            dimensions["llm_tokens"] = float(vector.llm_tokens)
+            # A host report is a real observation: record it as such, not as
+            # whatever --source defaulted to.
+            args.source = "provider_usage"
+            result_breakdown = breakdown
+        else:
+            result_breakdown = None
+            try:
+                dimensions = _parse_dimension_pairs(args.override)
+            except ValueError as exc:
+                return _fail(str(exc))
         if not dimensions:
             return _fail("--override requires at least one dimension=value pair")
         from or_harness.core.schema import COST_DIMENSIONS
@@ -740,13 +764,13 @@ def cmd_amend_cost(args) -> int:
             return _fail(f"unknown cost dimensions {unknown}; "
                          f"expected any of {list(COST_DIMENSIONS)}")
         try:
-            record = h.bank.update_cost(args.execution_id,
-                                        mode=args.mode,
-                                        source=getattr(args, "source",
-                                                       "agent_estimate"),
-                                        force=bool(getattr(args, "amend_force",
-                                                          False)),
-                                        **dimensions)
+            record = h.bank.update_cost(
+                args.execution_id,
+                mode=args.mode,
+                source=getattr(args, "source", "agent_observed"),
+                force=bool(getattr(args, "amend_force", False)),
+                basis=(result_breakdown or {}).get("basis"),
+                **dimensions)
         except StorageError as exc:
             return _fail(str(exc))
         measured = sorted(record.cost.measured_dims())
@@ -758,6 +782,8 @@ def cmd_amend_cost(args) -> int:
             "cost_measured": measured,
             "still_missing": missing,
         }
+        if result_breakdown is not None:
+            result["usage"] = result_breakdown
         summary = (f"Amended {record.execution_id} ({args.mode}): "
                    + ", ".join(f"{d}={dimensions[d]:g}" for d in dimensions)
                    + ".")
@@ -2361,13 +2387,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "double-counts) or 'increment' (an additional measured "
                         "amount within the record's scope)")
     p.add_argument("--override-source", dest="override_source",
-                   default="agent_estimate",
+                   default="agent_observed",
                    choices=["provider_usage", "agent_observed",
                             "agent_estimate"],
                    help="where the backfilled number came from (recorded per "
                         "dimension): 'provider_usage' (the provider reported "
-                        "it), 'agent_observed' (you really counted it) or "
-                        "'agent_estimate' (default — you DECLARED it)")
+                        "it), 'agent_observed' (default — you READ it off a "
+                        "real report) or 'agent_estimate' (you DECLARED it "
+                        "without a source; shown but never used as a "
+                        "measured truth or a calibration actual)")
     p.add_argument("--force", action="store_true", dest="override_force",
                    help="allow an override to overwrite a dimension the "
                         "FRAMEWORK measured (latency_s / solver_runtime_s); "
@@ -2450,15 +2478,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="'replace' (default, idempotent — the value IS the "
                         "measurement) or 'increment' (an additional measured "
                         "amount)")
-    p.add_argument("--source", default="agent_estimate",
+    p.add_argument("--source", default="agent_observed",
                    choices=["provider_usage", "agent_observed",
                             "agent_estimate"],
                    help="where the number came from: 'provider_usage' (the "
-                        "provider reported it), 'agent_observed' (you "
-                        "really counted it) or 'agent_estimate' (default — "
-                        "you DECLARED it). Recorded per dimension so a real "
-                        "measurement is never indistinguishable from an "
-                        "estimate")
+                        "provider reported it), 'agent_observed' (default — "
+                        "you READ it off a real report) or 'agent_estimate' "
+                        "(you DECLARED it without a source; shown but never "
+                        "used as a measured truth). Recorded per dimension "
+                        "so a real measurement is never indistinguishable "
+                        "from an estimate")
+    p.add_argument("--usage-file", dest="usage_file", default=None,
+                   metavar="JSON|PATH",
+                   help="a HOST attempt-level usage report to apply instead "
+                        "of hand-typed overrides (the late-backfill channel: "
+                        "the host's hook/log output, or '@path'). Its "
+                        "llm_tokens is recorded with source=provider_usage")
+    p.add_argument("--usage-source", dest="usage_source", default=None,
+                   help="which host/hook reported --usage-file (e.g. "
+                        "openclaw, hermes); used for the provenance record")
     p.add_argument("--force", action="store_true",
                    dest="amend_force",
                    help="allow overwriting a dimension the FRAMEWORK measured "

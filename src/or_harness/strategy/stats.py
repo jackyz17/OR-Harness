@@ -24,6 +24,10 @@ from or_harness.core.schema import (
     task_effective_quality,
 )
 from or_harness.strategy.experience_bank import ExperienceBank
+from or_harness.world_model.cost_eligibility import (
+    MEASURED,
+    cost_eligibility,
+)
 
 
 def cell_token(profile) -> str:
@@ -79,8 +83,16 @@ class GroupStats:
     mean_cost: CostVector = field(default_factory=CostVector)
     #: Per-dimension count of records where the dimension was actually
     #: measured. A dimension with n_measured == 0 is UNKNOWN for this cell
-    #: (mean_cost reports a placeholder 0, never evidence of cheap).
+    #: (mean_cost reports a placeholder 0, never evidence of cheap). A
+    #: record whose value was DECLARED (an ``agent_estimate``) or recorded
+    #: under a single-side token口径 is NOT counted here: it is not a
+    #: measured fact, so it neither enters the mean nor supports a cost
+    #: claim. The exclusions are reported in ``cost_exclusions``.
     n_measured: Dict[str, int] = field(default_factory=dict)
+    #: Per-dimension: {verdict: n} for the records EXCLUDED from the mean
+    #: (``estimate`` / ``partial``), so the declarations that did not enter
+    #: a cost claim stay visible instead of being silently dropped.
+    cost_exclusions: Dict[str, Dict[str, int]] = field(default_factory=dict)
     #: ``solver_runtime_s`` split by provenance. A script-reported runtime
     #: (the inner solve) and a wall-clock proxy (the whole process, including
     #: interpreter start-up and imports) are DIFFERENT quantities under one
@@ -163,6 +175,8 @@ class GroupStats:
             "std_quality": round(self.std_quality, 4),
             "mean_cost": {d: round(v, 4) for d, v in self.mean_cost.to_dict().items()},
             "n_measured": dict(self.n_measured),
+            "cost_exclusions": {d: dict(v)
+                                for d, v in self.cost_exclusions.items()},
             "solver_runtime_by_provenance": {
                 p: {"n": int(v["n"]), "mean": round(v["mean"], 4)}
                 for p, v in self.solver_runtime_by_provenance.items()},
@@ -396,9 +410,20 @@ class ConditionalStats:
             if "retries" in measured:
                 stats.total_retries += rec.cost.retries
             for d in COST_DIMENSIONS:
-                if d in measured:
-                    sums[d] += getattr(rec.cost, d)
-                    counts[d] += 1
+                if d not in measured:
+                    continue
+                # DECLARATION SCREENING: only a value from a trusted source
+                # counts as a measured fact. A declared estimate or a
+                # single-side token figure stays visible (in
+                # ``cost_exclusions``) but never enters the mean or
+                # supports a cost claim.
+                verdict = cost_eligibility(rec, d)
+                if verdict != MEASURED:
+                    excluded = stats.cost_exclusions.setdefault(d, {})
+                    excluded[verdict] = excluded.get(verdict, 0) + 1
+                    continue
+                sums[d] += getattr(rec.cost, d)
+                counts[d] += 1
             if "solver_runtime_s" in measured:
                 provenance = rec.solver_runtime_provenance or "wall_proxy"
                 runtime_sums[provenance] = (runtime_sums.get(provenance, 0.0)

@@ -56,10 +56,15 @@ from or_harness.core.storage import Store, StorageError
 #: Where a amended cost dimension's number CAME FROM. Kept per dimension so
 #: a real measurement is never indistinguishable from a declared estimate:
 #: - ``provider_usage``: a model provider reported it (a real observation);
-#: - ``agent_observed``: the harness really counted it (e.g. shell commands);
-#: - ``agent_estimate``: the harness DECLARED it (the ``--override`` default).
-#: Only ``provider_usage`` and ``agent_observed`` are measurements; an
-#: estimate is usable evidence but never treated as a measured truth.
+#: - ``agent_observed``: the operator/agent READ it off a real report (the
+#:   default for a manual backfill — transcribing the provider's bill is an
+#:   observation, not a guess);
+#: - ``agent_estimate``: a value declared WITHOUT a source (a guess).
+#: ``provider_usage`` and ``agent_observed`` may stand as measured facts;
+#: an ``agent_estimate`` is usable evidence (it is shown) but is never
+#: treated as a measured truth, never used as a calibration actual, and
+#: never enters a learning evidence mean. See
+#: :mod:`or_harness.world_model.cost_eligibility` for the one rule.
 COST_SOURCES: tuple = ("provider_usage", "agent_observed", "agent_estimate")
 
 #: Dimensions the FRAMEWORK itself measures during a run. Backfilling one of
@@ -125,8 +130,8 @@ class ExperienceBank:
         return payload.execution_id
 
     def update_cost(self, execution_id: str, *,
-                    mode: str = "replace", source: str = "agent_estimate",
-                    force: bool = False,
+                    mode: str = "replace", source: str = "agent_observed",
+                    force: bool = False, basis: Optional[str] = None,
                     **dimensions: float) -> ExecutionRecord:
         """Backfill cost dimensions (harness-owned llm_tokens via --override).
 
@@ -141,12 +146,15 @@ class ExperienceBank:
           the record's declared scope.
 
         ``source`` records WHERE the number came from (:data:`COST_SOURCES`):
-        ``provider_usage`` (the provider reported it), ``agent_estimate``
-        (a value the harness declared — the default for ``--override``), or
-        ``agent_observed`` (something the agent really counted). It is kept
-        per dimension in ``execution_features.cost_provenance`` so a reader
-        can tell a real measurement from a declaration — the two must never
-        be indistinguishable in the stored fact.
+        ``provider_usage`` (the provider reported it), ``agent_observed``
+        (the operator read it off a real report — the DEFAULT for a manual
+        backfill), or ``agent_estimate`` (a value declared without a
+        source). It is kept per dimension in
+        ``execution_features.cost_provenance`` so a reader can tell a real
+        measurement from a declaration — the two must never be
+        indistinguishable in the stored fact, and an ``agent_estimate``
+        stays out of every measured-truth consumer (calibration actuals,
+        cost claims, learning means).
 
         ``force`` guards the ONE dangerous case: overwriting a dimension the
         FRAMEWORK itself measured (``latency_s`` / ``solver_runtime_s``, and
@@ -211,19 +219,62 @@ class ExperienceBank:
         # a declared estimate.
         provenance = dict(rec.execution_features.get("cost_provenance") or {})
         for d in dimensions:
-            provenance[d] = {"source": source, "mode": mode,
-                             "amended_at": time.time()}
+            entry = {"source": source, "mode": mode,
+                     "amended_at": time.time()}
+            # The token口径 (prompt+completion vs one side) is part of the
+            # number's identity for ``llm_tokens``: a single-side figure is
+            # a LOWER bound, and a later reader (and the eligibility rule)
+            # must be able to tell it from a complete total.
+            if basis is not None and d == "llm_tokens":
+                entry["basis"] = str(basis)
+            provenance[d] = entry
         rec.execution_features["cost_provenance"] = provenance
         # Recompute feedback whenever a prediction snapshot exists — not
         # only when feedback was already stored. A dimension that was
         # UNKNOWN at record time (so no feedback could be computed then)
         # becomes comparable once it is backfilled, and must produce
         # feedback now. No snapshot -> nothing to compare -> untouched.
+        #
+        # DECLARATION SCREENING: a DECLARED value (an ``agent_estimate``
+        # amendment, the ``--override`` default) is not a measured truth, so
+        # it must not manufacture cost feedback against the prediction. It
+        # stays on the record for display, and the dimensions it would have
+        # fed are reported as excluded with the reason instead.
         if rec.prediction_snapshot is not None:
             feedback = compute_cost_feedback(rec.prediction_snapshot,
                                              rec.strategy_id,
                                              rec.measurement_scope,
                                              rec.cost)
+            if feedback is not None:
+                from or_harness.world_model.cost_eligibility import (
+                    MEASURED,
+                    cost_eligibility,
+                    cost_eligibility_reason,
+                )
+                per_dim = dict(feedback.get("per_dim") or {})
+                per_dimension = dict(feedback.get("per_dimension") or {})
+                exclusions: Dict[str, str] = {}
+                for dim in list(per_dim):
+                    if cost_eligibility(rec, dim) != MEASURED:
+                        exclusions[dim] = cost_eligibility_reason(rec, dim)
+                        per_dim.pop(dim)
+                for dim in list(per_dimension):
+                    if dim not in per_dim and (
+                            cost_eligibility(rec, dim) != MEASURED
+                            or dim not in per_dim):
+                        if cost_eligibility(rec, dim) != MEASURED:
+                            exclusions.setdefault(
+                                dim, cost_eligibility_reason(rec, dim))
+                            per_dimension.pop(dim)
+                if "per_dimension" in feedback:
+                    feedback["per_dimension"] = per_dimension
+                feedback["per_dim"] = per_dim
+                if exclusions:
+                    feedback["excluded_dims"] = exclusions
+                if isinstance(feedback.get("n_dims"), int):
+                    feedback["n_dims"] = len(per_dim)
+                if not per_dim and not per_dimension:
+                    feedback = None
             if feedback is None:
                 rec.execution_features.pop("cost_feedback", None)
             else:

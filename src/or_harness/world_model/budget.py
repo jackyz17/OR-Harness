@@ -321,8 +321,6 @@ class BudgetLedger:
         wildcard), and a call of THIS episode adds its measured dimensions.
         """
         from or_harness.core.schema import accumulate_measured_costs
-        if call_cost is None:
-            return
         if charged_to_parent:
             return  # already counted on the parent action
         if episode_id is not None:
@@ -334,12 +332,29 @@ class BudgetLedger:
             if episode_of_prediction is None:
                 unattributed.append({
                     "prediction_id": prediction_id,
-                    "cost": call_cost.to_dict(),
-                    "cost_measured": sorted(call_cost.measured_dims()),
+                    "cost": (call_cost.to_dict() if call_cost is not None
+                             else None),
+                    "cost_measured": (sorted(call_cost.measured_dims())
+                                      if call_cost is not None else []),
                 })
                 return
             if episode_of_prediction != episode_id:
                 return
+        if call_cost is None:
+            # A call this episode really made but whose usage the provider
+            # never reported. It is NOT free and it is NOT invisible: the
+            # entry keeps the call in the view with an UNKNOWN cost so the
+            # dimension stays unknown (and the budget verdict stays
+            # ``unconfirmed``) instead of a call silently vanishing and the
+            # total reading as complete.
+            prediction_costs.append({
+                "prediction_id": prediction_id,
+                "cost": None,
+                "cost_measured": [],
+                "note": ("the provider reported no usage for this call: its "
+                         "cost is UNKNOWN, never zero"),
+            })
+            return
         measured = call_cost.measured_dims()
         accumulate_measured_costs([call_cost], total, n_measured)
         prediction_costs.append({

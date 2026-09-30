@@ -5487,7 +5487,7 @@ class ORHarness:
                override: Optional[Dict[str, float]] = None,
                *,
                override_mode: str = "replace",
-               override_source: str = "agent_estimate",
+               override_source: str = "agent_observed",
                override_force: bool = False,
                host_usage: Optional[Dict[str, Any]] = None,
                prediction: Optional[PredictionSnapshot] = None,

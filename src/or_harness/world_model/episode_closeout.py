@@ -637,7 +637,8 @@ class RealOutcomeSummary:
         }
 
 
-def _aggregate_costs(vectors: Sequence[Optional[CostVector]]
+def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
+                     records: Optional[Sequence[Any]] = None
                      ) -> Dict[str, Any]:
     """Per-dimension totals over measured costs, with completeness.
 
@@ -646,6 +647,13 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]]
     only when every item measured it; a dimension nobody measured stays
     ``None`` (unknown, never zero). ``latency_s`` is never summed — it is
     reported per item elsewhere and never folded into an end-to-end figure.
+
+    ``records`` (optional) enables DECLARATION SCREENING: a dimension whose
+    contributing records include a declared estimate or a single-side token
+    figure gets a ``screened`` block naming what was excluded and the total
+    over only the ELIGIBLE records. The raw ``total`` is unchanged (it is
+    the honest sum of what the mask says was measured); the reader decides
+    which to use, and the calibration uses ``screened``.
     """
     dims: Dict[str, Any] = {}
     for dim in COST_DIMENSIONS:
@@ -660,6 +668,17 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]]
             "n_items": len(vectors),
             "complete": bool(vectors) and len(values) == len(vectors),
         }
+    if records:
+        try:
+            from or_harness.world_model.cost_eligibility import (
+                screen_aggregate,
+            )
+            screened = screen_aggregate(dims, records)
+            for dim, block in screened.items():
+                dims[dim]["screened"] = block
+        except Exception:  # noqa: BLE001 - a screening failure never
+            # invalidates the raw aggregate.
+            pass
     return dims
 
 
@@ -960,7 +979,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
 
     # -- cost observations ------------------------------------------------
     in_scope_costs = [r.cost for r in records]
-    summary.cost = _aggregate_costs(in_scope_costs)
+    summary.cost = _aggregate_costs(in_scope_costs, records)
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -1676,6 +1695,27 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         predicted_dims = predicted_cost.expected.measured_dims()
         for dim in sorted(predicted_dims):
             real = summary.cost.get(dim) or {}
+            # DECLARATION SCREENING: a value that was DECLARED (an
+            # ``agent_estimate``) or recorded from a single token side is
+            # not a measured truth. It stays visible in the aggregate, but
+            # it can never stand as the real total the prediction is scored
+            # against.
+            screened = real.get("screened")
+            if screened is not None:
+                eligible_n = screened.get("n_eligible_items", 0)
+                total_n = screened.get("n_items", 0)
+                if eligible_n < total_n:
+                    kinds = ", ".join(
+                        f"{k}={v}" for k, v in
+                        sorted((screened.get("excluded") or {}).items()))
+                    excluded[dim] = (
+                        "partly declared on the real scope "
+                        f"({eligible_n}/{total_n} records measured it from a "
+                        f"trusted source; excluded: {kinds}): a "
+                        "partly-declared total is not a measured truth to "
+                        "score against (the declarations stay visible in the "
+                        "aggregate)")
+                    continue
             if real.get("total") is None:
                 excluded[dim] = ("not measured on the real scope"
                                  if real.get("n_items") else
