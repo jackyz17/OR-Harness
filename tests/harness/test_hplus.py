@@ -9,8 +9,9 @@ What this file asserts, one behaviour per class:
    only; a large H+ does not change a candidate's ranking, and the plan's
    candidate list carries H+ as read-only information.
 3. **An absent or empty H+ does not invalidate the rest.** A prediction with
-   no gain block still scores benefit/cost/risk; an empty block reads as "no
-   gain claimed", never a default positive.
+   no gain block still scores benefit/cost/risk; the missing block is
+   recorded as an UNSTATED stance (never "no gain"), and an empty block
+   reads as "no gain claimed", never a default positive.
 4. **No invented composite score.** Each expected change names its own
    metric and unit; there is no forced 0-1 "H+ number".
 5. **A predicted gain is never a verified capability.** Nothing in the
@@ -19,6 +20,10 @@ What this file asserts, one behaviour per class:
 6. **The framework's identity fields stay fixed.** A payload that tries to
    rewrite the candidate is not read as content (the same discipline the
    other prediction paths use).
+7. **The stance is explicit and observable.** Every candidate's H+ block
+   carries one of assessment=expected/none/insufficient_basis; a missing
+   block counts as unassessed, and the online-gain summary counts each
+   stance so a silent model is visible.
 """
 import json
 import os
@@ -60,6 +65,7 @@ BASE_PAYLOAD = {
 }
 
 GAIN_PAYLOAD = {
+    "assessment": "expected",
     "claim": "builds a reusable warm-start structure",
     "applies_to": ["routing with high resource_coupling"],
     "expected_changes": [
@@ -244,15 +250,21 @@ class TestGainAbsence(HPlusCase):
         self.assertEqual(prediction.status, "valid")
         self.assertIsNone(prediction.capability_gain)
         self.assertFalse(prediction.claims_capability_gain)
-        # A MISSING block is not a silent null: the framework records that
-        # the model did not assess it, exactly as it does for G/C/R.
+        # A MISSING block is not a silent null: the contract now REQUIRES a
+        # stance, so the framework records that the model did not state
+        # one — never read as "no gain".
         unsupported = prediction.trace.unsupported_fields
         self.assertIn("capability_gain", unsupported)
         self.assertIn("not predicted by the model", unsupported[
             "capability_gain"])
+        self.assertIn("stance", unsupported["capability_gain"])
         # The benefit/cost are unaffected.
         self.assertEqual(prediction.benefit.value, 0.8)
         self.assertIsNotNone(prediction.cost)
+        # And the missing stance is COUNTED as unassessed, not as "none".
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 0)
+        self.assertEqual(summary["n_unassessed"], 0)
 
     def test_an_empty_gain_block_is_no_gain_not_a_positive(self):
         provider = StubProvider(payload=dict(BASE_PAYLOAD,
@@ -267,6 +279,10 @@ class TestGainAbsence(HPlusCase):
         self.assertFalse(prediction.claims_capability_gain)
         self.assertTrue(any("no gain claimed" in n
                             for n in prediction.notes))
+        # An empty block carries NO stance: it reads as unassessed, never
+        # as "the model said none".
+        self.assertFalse(prediction.capability_gain.assessed)
+        self.assertTrue(any("no assessment" in n for n in prediction.notes))
 
     def test_a_malformed_gain_drops_only_the_gain_block(self):
         provider = StubProvider(payload=dict(
@@ -304,6 +320,141 @@ class TestGainAbsence(HPlusCase):
         self.assertIsNone(prediction.capability_gain)
         self.assertIn("malformed",
                       prediction.trace.unsupported_fields["capability_gain"])
+
+
+# ---------------------------------------------------------------------------
+# 3b. the stance is explicit: assessment must be stated and observable
+# ---------------------------------------------------------------------------
+
+
+class TestGainAssessment(HPlusCase):
+
+    def _predict_with(self, gain_payload):
+        provider = StubProvider(payload=dict(
+            BASE_PAYLOAD, capability_gain=gain_payload))
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        return h, h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+
+    def test_all_three_assessments_parse_and_round_trip(self):
+        for stance in ("expected", "none", "insufficient_basis"):
+            with self.subTest(assessment=stance):
+                payload = dict(GAIN_PAYLOAD, assessment=stance)
+                h, prediction = self._predict_with(payload)
+                self.assertEqual(prediction.status, "valid")
+                gain = prediction.capability_gain
+                self.assertEqual(gain.assessment, stance)
+                self.assertTrue(gain.assessed)
+                # Round-trip through storage keeps the stance.
+                reloaded = h.get_strategy_outcome_prediction(
+                    prediction.prediction_id)
+                self.assertEqual(reloaded.capability_gain.assessment, stance)
+                # And through the contract dict.
+                self.assertEqual(gain.to_dict()["assessment"], stance)
+
+    def test_an_illegal_assessment_drops_only_the_gain_block(self):
+        h, prediction = self._predict_with(
+            dict(GAIN_PAYLOAD, assessment="probably"))
+        # An illegal stance is a MALFORMED block: dropped with its reason,
+        # and the valid benefit/cost prediction beside it is KEPT.
+        self.assertEqual(prediction.status, "valid")
+        self.assertIsNone(prediction.capability_gain)
+        self.assertEqual(prediction.benefit.value, 0.8)
+        self.assertIsNotNone(prediction.cost)
+        unsupported = prediction.trace.unsupported_fields
+        self.assertIn("capability_gain", unsupported)
+        self.assertIn("malformed", unsupported["capability_gain"])
+        self.assertIn("assessment", unsupported["capability_gain"])
+        self.assertTrue(any("only the gain block is affected" in n
+                            for n in prediction.notes))
+
+    def test_a_none_assessment_still_writes_a_trace(self):
+        # A stated "no gain" is a real, falsifiable stance: it must be
+        # archived like any other, or it would vanish exactly like a
+        # silent null — the confusion the stance requirement removes.
+        h, prediction = self._predict_with({"assessment": "none"})
+        self.assertEqual(prediction.status, "valid")
+        self.assertFalse(prediction.claims_capability_gain)
+        self.assertEqual(prediction.capability_gain.assessment, "none")
+        from or_harness.world_model.trace_archive import (
+            get_capability_trace,
+        )
+        trace = get_capability_trace(h, prediction.prediction_id)
+        self.assertIsNotNone(trace)
+        self.assertEqual(trace.assessment, "none")
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 1)
+        self.assertEqual(summary["n_none"], 1)
+        self.assertEqual(summary["n_expected"], 0)
+        self.assertEqual(summary["n_unassessed"], 0)
+
+    def test_an_insufficient_basis_assessment_is_counted(self):
+        h, prediction = self._predict_with({"assessment":
+                                            "insufficient_basis"})
+        self.assertEqual(prediction.status, "valid")
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 1)
+        self.assertEqual(summary["n_insufficient_basis"], 1)
+        entry = summary["online_gains"][0]
+        self.assertEqual(entry["assessment"], "insufficient_basis")
+
+    def test_an_expected_assessment_is_counted(self):
+        h, prediction = self._predict_with(dict(GAIN_PAYLOAD))
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 1)
+        self.assertEqual(summary["n_expected"], 1)
+        entry = summary["online_gains"][0]
+        self.assertEqual(entry["assessment"], "expected")
+
+    def test_a_missing_block_counts_as_unassessed_in_the_summary(self):
+        # The summary counts only ARCHIVED stances; a missing block leaves
+        # no trace, so the unassessed count must come from the prediction
+        # side. The observable contract: the block's absence is recorded
+        # on the prediction (see TestGainAbsence) and a stated stance is
+        # never conflated with an unstated one.
+        provider = StubProvider(payload=dict(BASE_PAYLOAD))
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+            "ep1")
+        other = h.predict_strategy_outcome(
+            TASK, {"action_type": "execute_strategy", "strategy_id": "S02"},
+            "ep2")
+        self.assertIsNone(other.capability_gain)
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 0)
+        self.assertEqual(summary["n_none"], 0)
+        self.assertEqual(summary["n_unassessed"], 0)
+
+    def test_an_old_payload_without_assessment_reads_as_unassessed(self):
+        # An old payload (no assessment field) is NOT retroactively read
+        # as "no gain": it stays unassessed, and a claimed gain still
+        # archives a trace.
+        old_payload = {k: v for k, v in GAIN_PAYLOAD.items()
+                       if k != "assessment"}
+        h, prediction = self._predict_with(old_payload)
+        self.assertEqual(prediction.status, "valid")
+        gain = prediction.capability_gain
+        self.assertEqual(gain.assessment, "")
+        self.assertFalse(gain.assessed)
+        self.assertTrue(gain.claimed,
+                        "claimed semantics are unchanged by assessment")
+        self.assertTrue(prediction.claims_capability_gain)
+        # Round-trip: still unassessed after storage.
+        reloaded = h.get_strategy_outcome_prediction(
+            prediction.prediction_id)
+        self.assertEqual(reloaded.capability_gain.assessment, "")
+        self.assertFalse(reloaded.capability_gain.assessed)
+        # The trace exists (a claim is present) and counts as unassessed.
+        summary = h.online_capability_gains()
+        self.assertEqual(summary["n_online_gains"], 1)
+        self.assertEqual(summary["n_unassessed"], 1)
+        self.assertEqual(summary["n_expected"], 0)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ the candidate might TEACH. This shows the H+ block — predicted in the SAME
 wm-so/1 call, surfaced read-only, and never confused with a verified gain.
 
 It runs with NO real model (a fixed-output stub provider), NO network and NO
-API key. The five assertions:
+API key. The six assertions:
 
 1. **one call, one answer** — H+ arrives with the benefit/cost/risk; no extra
    model round is spent per candidate;
@@ -14,9 +14,14 @@ API key. The five assertions:
    is not compressed into a 0-1 score;
 3. **H+ is not the utility** — two candidates with equal benefit/cost/risk rank
    equally even when only one claims a gain;
-4. **absence is honest** — a prediction with no gain block still scores, and an
-   empty block reads as "no gain claimed", never a positive default;
-5. **a predicted gain is never verified** — nothing is written into the
+4. **the stance is explicit** — every candidate's block carries one of
+   assessment=expected/none/insufficient_basis; a missing block is recorded
+   as UNSTATED (never "no gain"), and an empty block reads as "no gain
+   claimed", never a positive default;
+5. **the stance is observable** — the online-gain summary counts each
+   stance (n_expected/n_none/n_insufficient_basis/n_unassessed), so a
+   silent model is visible instead of reading as "no gain";
+6. **a predicted gain is never verified** — nothing is written into the
    capability evidence, and the block carries no verified state.
 
     PYTHONPATH=src python3 references/examples/capability_gain.py
@@ -50,6 +55,7 @@ BASE = {
 }
 
 GAIN = {
+    "assessment": "expected",
     "claim": "builds a reusable warm-start structure",
     "applies_to": ["routing with high resource_coupling"],
     "expected_changes": [
@@ -140,7 +146,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("4. Absence is honest: no block, or an empty block")
+    print("4. The stance is explicit: every candidate must state one")
     print("=" * 72)
     h2 = ORHarness(home=tempfile.mkdtemp(),
                    world_model=StubProvider(gain_on=None),
@@ -149,14 +155,58 @@ def main() -> int:
         TASK, {"action_type": "execute_strategy", "strategy_id": "S01"}, "ep1")
     print(f"no gain block          : status={self_gain_none.status}, "
           f"claims={self_gain_none.claims_capability_gain}")
+    print(f"recorded reason        : "
+          f"{self_gain_none.trace.unsupported_fields['capability_gain']}")
     assert self_gain_none.status == "valid"
     assert not self_gain_none.claims_capability_gain
+    # A missing block is an UNSTATED stance — recorded, never silent, and
+    # never read as "no gain".
+    assert "not predicted by the model" in \
+        self_gain_none.trace.unsupported_fields["capability_gain"]
+
+    # An explicit "none" is a real stance: it is archived and counted, so
+    # it can never vanish like a silent null.
+    class NoneStanceProvider(StubProvider):
+        def predict(self, request, timeout_s=None):
+            return {"payload": dict(BASE, capability_gain={
+                        "assessment": "none"}),
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    "error": None, "latency_s": 0.01}
+
+    h3 = ORHarness(home=tempfile.mkdtemp(),
+                   world_model=NoneStanceProvider(),
+                   embedding=LocalHashEmbeddingBackend())
+    stated_none = h3.predict_strategy_outcome(
+        TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
+        "ep1")
+    print(f"assessment='none'      : status={stated_none.status}, "
+          f"assessment={stated_none.capability_gain.assessment}, "
+          f"claims={stated_none.claims_capability_gain}")
+    assert stated_none.capability_gain.assessment == "none"
+    assert not stated_none.claims_capability_gain
+    h3.close()
+
+    # ------------------------------------------------------------------
+    print()
+    print("=" * 72)
+    print("5. The stance is observable: the summary counts each one")
+    print("=" * 72)
+    summary = h.online_capability_gains()
+    print(f"online gains           : {summary['n_online_gains']} "
+          f"(expected={summary['n_expected']}, "
+          f"none={summary['n_none']}, "
+          f"insufficient_basis={summary['n_insufficient_basis']}, "
+          f"unassessed={summary['n_unassessed']})")
+    assert summary["n_online_gains"] == 1
+    assert summary["n_expected"] == 1
+    assert summary["n_none"] == 0
+    assert summary["n_unassessed"] == 0
     h2.close()
 
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("5. A predicted gain is never a VERIFIED capability")
+    print("6. A predicted gain is never a VERIFIED capability")
     print("=" * 72)
     evidence_before = h.capability_evidence_with_effects().to_dict()
     h.predict_strategy_outcome(
@@ -182,7 +232,9 @@ def main() -> int:
     print("NOTE: H+ is a PREDICTION about what a candidate might teach. It "
           "rides the same call, never enters the utility, and becomes "
           "'verified' only through the offline capability path on later "
-          "tasks.")
+          "tasks. Every candidate's block must STATE a stance "
+          "(expected/none/insufficient_basis); a missing block is recorded "
+          "as unstated — never as 'no gain'.")
     return 0
 
 

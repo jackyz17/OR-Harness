@@ -2125,6 +2125,7 @@ def online_gain_summary(harness) -> Dict[str, Any]:
             "prediction_id": trace.prediction_id,
             "claim": trace.claim,
             "applies_to": list(trace.applies_to),
+            "assessment": str(getattr(trace, "assessment", "") or ""),
             "n_expected_changes": len(trace.expected_changes),
             "n_verification_conditions": len(trace.verification_conditions),
             "task_id": trace.task_id,
@@ -2145,14 +2146,25 @@ def online_gain_summary(harness) -> Dict[str, Any]:
         "n_pending": sum(1 for e in out if e["state"] == "pending"),
         "n_bound": sum(1 for e in out if e["fact_bound"]),
         "n_effect_verified": sum(1 for e in out if e["effect_verified"]),
+        "n_expected": sum(1 for e in out
+                          if e["assessment"] == "expected"),
+        "n_none": sum(1 for e in out if e["assessment"] == "none"),
+        "n_insufficient_basis": sum(1 for e in out
+                                     if e["assessment"]
+                                     == "insufficient_basis"),
+        "n_unassessed": sum(1 for e in out if not e["assessment"]),
         "online_gains": out,
         "note": ("an online H+ is explanatory: it never ranked the "
-                 "candidate and it is not capability evidence. It is "
-                 "followed up along the REAL path — the execution it was "
-                 "bound to, the knowledge the learning operation produced, "
-                 "and the later effect verdict — and stays pending when "
-                 "that path has not happened. No separate predict-capability "
-                 "call is required"),
+                 "candidate and it is not capability evidence. The model "
+                 "must STATE a stance for every candidate "
+                 "(expected/none/insufficient_basis); the counts above "
+                 "make a silent model visible instead of reading as "
+                 "'no gain'. The stance is followed up along the REAL path "
+                 "— the execution it was bound to, the knowledge the "
+                 "learning operation produced, and the later effect "
+                 "verdict — and stays pending when that path has not "
+                 "happened. No separate predict-capability call is "
+                 "required"),
     }
 
 

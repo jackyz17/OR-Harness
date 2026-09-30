@@ -1460,6 +1460,12 @@ class VerificationCondition:
 # ---------------------------------------------------------------------------
 
 
+#: The three EXPLICIT stances a model may take on a candidate's H+ block
+#: (see :class:`CapabilityGain.assessment`). The empty string is NOT one of
+#: them: it means the model never stated a stance at all.
+CAPABILITY_GAIN_ASSESSMENTS = ("expected", "none", "insufficient_basis")
+
+
 @dataclass
 class CapabilityGain:
     """A candidate's POTENTIAL capability gain (H+), predicted ONLINE.
@@ -1492,8 +1498,19 @@ class CapabilityGain:
     - **no forced 0-1 score.** ``expected_changes`` carries each metric in
       its OWN unit (like the capability-evolution contract); there is no
       composite "H+ number" that would have to be invented.
+    - **the stance is explicit.** ``assessment`` is one of
+      ``expected`` / ``none`` / ``insufficient_basis`` — the model MUST
+      state which, for every candidate. The empty string means the model
+      did NOT state one (an old payload, or a silent omission): it is
+      never read as "no gain".
     """
 
+    #: The model's EXPLICIT stance on this candidate's H+: "expected"
+    #: (a gain is expected — carry a claim / expected_changes), "none"
+    #: (no new gain expected) or "insufficient_basis" (cannot judge).
+    #: Empty means NO stance was stated — kept distinct from "none" so an
+    #: old payload is never retroactively read as "the model saw no gain".
+    assessment: str = ""
     claim: str = ""
     #: Which problems/structures the gain would apply to (free text; a
     #: structural target is a description, never a fabricated cell id).
@@ -1517,13 +1534,25 @@ class CapabilityGain:
 
         A block with no ``expected_changes`` and no ``claim`` says nothing:
         it is EMPTY, not a positive default. The framework never reads an
-        empty gain as "this candidate improves capability".
+        empty gain as "this candidate improves capability". This is the
+        CONTENT dimension; ``assessment`` is the separate STANCE dimension
+        (a block may state ``assessment="none"`` and claim nothing).
         """
         return bool(self.claim or self.expected_changes
                     or self.evidence_required)
 
+    @property
+    def assessed(self) -> bool:
+        """Whether the model stated an explicit stance at all.
+
+        ``False`` means no stance was given (an old payload, or a silent
+        omission) — which is NOT the same as ``assessment="none"``.
+        """
+        return self.assessment in CAPABILITY_GAIN_ASSESSMENTS
+
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "assessment": self.assessment,
             "claim": self.claim,
             "applies_to": list(self.applies_to),
             "expected_changes": [c.to_dict() for c in self.expected_changes],
@@ -1543,6 +1572,15 @@ class CapabilityGain:
     def from_dict(cls, data: Dict[str, Any]) -> "CapabilityGain":
         if not isinstance(data, dict):
             raise ValueError("CapabilityGain must be a JSON object")
+        assessment = str(data.get("assessment") or "")
+        if assessment and assessment not in CAPABILITY_GAIN_ASSESSMENTS:
+            # An illegal stance is a MALFORMED block: the caller drops the
+            # whole H+ block (the existing local-error path) rather than
+            # guessing which stance was meant.
+            raise ValueError(
+                f"CapabilityGain.assessment must be one of "
+                f"{CAPABILITY_GAIN_ASSESSMENTS} or empty (not stated), "
+                f"got {assessment!r}")
         raw_changes = data.get("expected_changes")
         changes: List[ExpectedChange] = []
         for item in (raw_changes or []):
@@ -1555,6 +1593,7 @@ class CapabilityGain:
                 conditions.append(VerificationCondition.from_dict(item))
         raw_risk = data.get("degradation_risk")
         return cls(
+            assessment=assessment,
             claim=str(data.get("claim") or ""),
             applies_to=[str(a) for a in (data.get("applies_to") or [])],
             expected_changes=changes,
@@ -2100,6 +2139,12 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
         # the harness "stronger". A gain that names no metric, or a change
         # value with no baseline to compare against, is a malformed claim
         # rather than a weaker one.
+        if capability_gain.assessment \
+                and capability_gain.assessment \
+                not in CAPABILITY_GAIN_ASSESSMENTS:
+            problems.append(
+                "capability_gain.assessment must be one of "
+                f"{CAPABILITY_GAIN_ASSESSMENTS} or empty (not stated)")
         for index, change in enumerate(capability_gain.expected_changes):
             if not change.metric:
                 problems.append(

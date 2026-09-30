@@ -79,6 +79,9 @@ class CapabilityTrace:
     basis: List[str] = field(default_factory=list)
     claim: str = ""
     applies_to: List[str] = field(default_factory=list)
+    #: The model's stated H+ stance ("expected"/"none"/
+    #: "insufficient_basis"; empty = not stated, e.g. an old payload).
+    assessment: str = ""
     created_at: float = field(default_factory=time.time)
     notes: List[str] = field(default_factory=list)
     #: The strategy prediction's own status at archive time.
@@ -112,6 +115,7 @@ class CapabilityTrace:
             "basis": list(self.basis),
             "claim": self.claim,
             "applies_to": list(self.applies_to),
+            "assessment": self.assessment,
             "created_at": self.created_at,
             "notes": list(self.notes),
             "prediction_status": self.prediction_status,
@@ -151,6 +155,7 @@ class CapabilityTrace:
             basis=[str(b) for b in (data.get("basis") or [])],
             claim=str(data.get("claim", "")),
             applies_to=[str(a) for a in (data.get("applies_to") or [])],
+            assessment=str(data.get("assessment", "")),
             created_at=float(data.get("created_at", time.time())),
             notes=[str(n) for n in (data.get("notes") or [])],
             prediction_status=str(data.get("prediction_status", "valid")),
@@ -180,18 +185,25 @@ def _put_trace(harness, trace: CapabilityTrace) -> None:
 
 
 def archive_capability_gain(harness, prediction) -> Optional[CapabilityTrace]:
-    """Record an online capability-gain claim so it can be followed up.
+    """Record an online capability-gain stance so it can be followed up.
 
-    Called when a strategy-outcome prediction that CLAIMS a gain is saved.
-    Returns the stored trace, or ``None`` when the prediction claims no
-    gain (an unclaimed or absent block leaves no trace — there is nothing
-    to follow up).
+    Called when a strategy-outcome prediction carrying an H+ block is
+    saved. Returns the stored trace, or ``None`` when the block neither
+    states a stance nor claims a gain (an absent block leaves no trace —
+    the prediction's ``unsupported_fields`` already records that the model
+    did not state one).
+
+    A STATED stance is archived even when it is ``assessment="none"``: "no
+    gain expected" is a real, falsifiable position, and dropping it would
+    make the model's silence and its explicit "none" indistinguishable —
+    exactly the confusion the stance requirement exists to remove.
 
     The trace COPIES the claim verbatim. It never re-predicts, never
     scores, and never touches the capability evidence.
     """
     gain = getattr(prediction, "capability_gain", None)
-    if gain is None or not gain.claimed:
+    if gain is None or not (getattr(gain, "assessed", False)
+                            or gain.claimed):
         return None
     candidate = prediction.candidate
     trace = CapabilityTrace(
@@ -202,7 +214,7 @@ def archive_capability_gain(harness, prediction) -> Optional[CapabilityTrace]:
         strategy_id=candidate.strategy_id,
         task_targeting={
             "task_ids": [candidate.task_id] if candidate.task_id else [],
-            "description": ("the online gain was claimed for this "
+            "description": ("the online gain stance was stated for this "
                             "candidate's task and execution"),
         },
         expected_changes=[c.to_dict() for c in gain.expected_changes],
@@ -212,14 +224,24 @@ def archive_capability_gain(harness, prediction) -> Optional[CapabilityTrace]:
         basis=list(gain.basis),
         claim=gain.claim,
         applies_to=list(gain.applies_to),
+        assessment=str(getattr(gain, "assessment", "") or ""),
         prediction_status=str(getattr(prediction, "status", "valid")),
         state="pending",
     )
     trace.notes.append(
-        "an ONLINE capability-gain claim, recorded so the real execution "
+        "an ONLINE capability-gain stance, recorded so the real execution "
         "and its later effect can be followed up. It is explanatory only: "
         "it never ranked the candidate, it is not the prediction's utility, "
         "and it is not capability evidence")
+    if getattr(gain, "assessment", "") == "none":
+        trace.notes.append(
+            "the model stated assessment='none': it expects NO new gain "
+            "from this candidate. The stance is kept so an explicit 'no "
+            "gain' is never silently conflated with an unstated one")
+    elif getattr(gain, "assessment", "") == "insufficient_basis":
+        trace.notes.append(
+            "the model stated assessment='insufficient_basis': it could "
+            "not judge the gain from the evidence given")
     if not gain.expected_changes:
         trace.notes.append(
             "the claim named no expected change: there is nothing "

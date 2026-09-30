@@ -54,6 +54,7 @@ BASE = {
 }
 
 GAIN = {
+    "assessment": "expected",
     "claim": "builds a reusable warm-start structure",
     "applies_to": ["routing with high resource_coupling"],
     "expected_changes": [
@@ -104,8 +105,10 @@ def main() -> int:
                "solver": "highs", "episode_id": "ep1"}, "ep1")
     print(f"1. prediction {prediction.prediction_id}: status "
           f"{prediction.status}, claims_gain="
-          f"{prediction.claims_capability_gain}")
+          f"{prediction.claims_capability_gain}, assessment="
+          f"{prediction.capability_gain.assessment}")
     assert prediction.claims_capability_gain
+    assert prediction.capability_gain.assessment == "expected"
     print(f"   gain block is read-only: view="
           f"{harness.inspect(bank='capability', prediction_id=prediction.prediction_id)['prediction_source']}")
     assert harness.online_capability_gains()["n_online_gains"] == 1
@@ -160,9 +163,13 @@ def main() -> int:
     summary = harness.inspect(bank="capability")
     print(f"6. capability bank: {summary['n_predictions']} offline "
           f"prediction(s), {summary['online_gains']['n_online_gains']} "
-          f"online gain(s), "
+          f"online gain(s) "
+          f"(expected={summary['online_gains']['n_expected']}, "
+          f"none={summary['online_gains']['n_none']}, "
+          f"unassessed={summary['online_gains']['n_unassessed']}), "
           f"{summary['online_gains']['n_effect_verified']} verified")
     assert summary["online_gains"]["n_online_gains"] == 1
+    assert summary["online_gains"]["n_expected"] == 1
 
     # 7. An interrupted attempt is a real failure, preserved as its own fact
     #    with the wall-clock it really consumed.

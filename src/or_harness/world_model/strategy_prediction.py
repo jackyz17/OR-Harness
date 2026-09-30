@@ -254,9 +254,16 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "- capability_gain: object — the POTENTIAL capability gain (H+) of this "
     "candidate, predicted in THIS SAME answer. It is EXPLANATORY: it never "
     "ranks the candidates by itself and it is NEVER a claim that the "
-    "harness got stronger. Omit it entirely when you see no credible gain "
-    "(an empty block means \"no gain claimed\", never a default positive). "
-    "Shape: {\"claim\": short text of WHAT capability could improve, "
+    "harness got stronger. You MUST include this block for EVERY "
+    "candidate and state an explicit stance in \"assessment\", exactly "
+    "one of: \"expected\" (a gain is expected — then carry a \"claim\" "
+    "and/or \"expected_changes\"), \"none\" (no new gain expected — the "
+    "evidence fields may be empty), or \"insufficient_basis\" (you cannot "
+    "judge from the evidence given — the evidence fields may be empty). "
+    "An absent block is NOT \"no gain\": it is an unstated stance, and the "
+    "framework records it as such. Shape: {\"assessment\": "
+    "expected|none|insufficient_basis, \"claim\": short text of WHAT "
+    "capability could improve, "
     "\"applies_to\": [text: which problems/structures the gain would apply "
     "to], \"expected_changes\": [{\"metric\": text, \"direction\": "
     "increase|decrease|unchanged|unknown, \"value\": number?, \"unit\": "
@@ -270,7 +277,8 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "unsure about and what might yield NO gain], \"basis\": [text]}. A new "
     "method, one more experience entry, or having tried and failed once is "
     "NOT by itself a capability gain: say what the improvement IS, on which "
-    "metric, and how it would be confirmed.\n"
+    "metric, and how it would be confirmed — or state "
+    "assessment=\"none\"/\"insufficient_basis\" honestly.\n"
     "CALIBRATION EVIDENCE: the context may carry a "
     "`strategy_outcome_calibration` block describing how THIS model's past "
     "predictions turned out. Use it to adjust your numbers, and read it "
@@ -714,25 +722,29 @@ def parse_strategy_outcome_payload(
 
     # -- capability gain (H+) -------------------------------------------------
     # EXPLANATORY only: it is parsed and recorded, NEVER scored and NEVER
-    # written into the harness capability evidence. Two rules govern a bad
-    # block:
+    # written into the harness capability evidence. Three rules govern a
+    # bad block:
     #
-    # * a MISSING block is an honest "no gain claimed" and must not
-    #   invalidate the rest of the prediction — but it must SAY SO: the
-    #   framework records why the block is absent ("not predicted by the
-    #   model"), exactly as it does for benefit/cost/risk, so a null is
-    #   never a silent omission;
-    # * a MALFORMED block (a bad metric, an unparsable entry) is a local
-    #   error and takes only H+ down: the block is dropped with the reason
-    #   recorded and the valid G/C/R prediction is KEPT. An explanatory
-    #   extra must never destroy the forecast it explains.
+    # * a MISSING block is a contract violation — the model was REQUIRED to
+    #   state a stance — but it must not invalidate the rest of the
+    #   prediction. It must SAY SO: the framework records why the block is
+    #   absent ("the model did not state an H+ stance"), exactly as it does
+    #   for benefit/cost/risk, so a null is never a silent omission and
+    #   never read as "no gain";
+    # * a block with NO assessment is kept (an old payload, or a model that
+    #   answered the old prompt): it reads as UNASSESSED, never as "none";
+    # * a MALFORMED block (a bad metric, an unparsable entry, an illegal
+    #   assessment) is a local error and takes only H+ down: the block is
+    #   dropped with the reason recorded and the valid G/C/R prediction is
+    #   KEPT. An explanatory extra must never destroy the forecast it
+    #   explains.
     capability_gain: Optional[CapabilityGain] = None
     raw_gain = payload.get("capability_gain")
     if raw_gain is None:
         unsupported["capability_gain"] = (
-            "not predicted by the model (no potential capability gain was "
-            "claimed for this candidate; an absent block means 'not "
-            "assessed', never 'no gain')")
+            "not predicted by the model (the model did not state an H+ "
+            "stance for this candidate, which the contract requires; an "
+            "absent block means 'not assessed', never 'no gain')")
     elif not isinstance(raw_gain, dict):
         unsupported["capability_gain"] = (
             "malformed: capability_gain must be a JSON object; the block "
@@ -751,6 +763,11 @@ def parse_strategy_outcome_payload(
                 "): only the gain block is affected — the benefit/cost/"
                 "risk prediction stands")
         else:
+            if not capability_gain.assessed:
+                notes.append(
+                    "capability_gain carried no assessment: recorded as "
+                    "UNASSESSED (the model did not state a stance), never "
+                    "as 'no gain'")
             if not capability_gain.claimed:
                 notes.append(
                     "capability_gain was present but empty: recorded as "
@@ -1079,14 +1096,18 @@ class StrategyOutcomeService:
             prediction.candidate.episode_id,
             self.store.dumps(prediction.to_dict()),
             created_at=prediction.trace.created_at)
-        # An online capability-gain CLAIM is archived as a trace so the real
+        # An online capability-gain STANCE is archived as a trace so the real
         # execution and its later effect can be followed up, and so the
         # offline stage-2 evaluator can read it by id. The trace is metadata
         # only: it never changes the prediction, never ranks the candidate
-        # and never touches the capability evidence. Best-effort — a trace
-        # failure must never fail the prediction that was already saved.
-        if getattr(prediction, "capability_gain", None) is not None \
-                and prediction.capability_gain.claimed:
+        # and never touches the capability evidence. A trace is written for
+        # every ASSESSED block (a stated "none" is a real, falsifiable
+        # stance that must not vanish) and for every CLAIMED block (an
+        # unassessed old payload that claims a gain still has something to
+        # follow up). Best-effort — a trace failure must never fail the
+        # prediction that was already saved.
+        gain = getattr(prediction, "capability_gain", None)
+        if gain is not None and (gain.assessed or gain.claimed):
             try:
                 from or_harness.world_model.trace_archive import (
                     archive_capability_gain,
