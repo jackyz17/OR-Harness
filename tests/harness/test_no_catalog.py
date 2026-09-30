@@ -402,10 +402,14 @@ class TestSameIdDifferentMethod(NoCatalogCase):
         h = self.harness()
         first = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
                           solver="highs")
-        h.record(first, override={"llm_tokens": 100})
+        # The counted backfill is a TRUSTED source: a bare hand-typed number
+        # would be tagged agent_estimate and excluded from the mean.
+        h.record(first, override={"llm_tokens": 100},
+                 override_source="agent_observed")
         second = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
                            solver="highs")
-        h.record(second, override={"llm_tokens": 900})
+        h.record(second, override={"llm_tokens": 900},
+                 override_source="agent_observed")
         costs = sorted(
             h.bank.get(e).cost.llm_tokens
             for e in (first.execution_id, second.execution_id))

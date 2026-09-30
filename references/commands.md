@@ -497,6 +497,29 @@ Bind a strategy-outcome prediction to an action that ALREADY ran. This is the ma
 
 ### `orx record --execution <json|path> | --from-staged <id> [--usage-file <json|path>] [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment] [--override-source agent_estimate|agent_observed|provider_usage] [--force] [--prediction <json>] [--method JSON] [--method-actual JSON] | --discard-staged <id>`
 
+**What `--usage-file` accepts.** Either an inline JSON object or a path. The canonical shape is one attempt-level report:
+
+```json
+{"prompt_tokens": 700, "completion_tokens": 300,
+ "reasoning_tokens": 120, "cached_tokens": 40,
+ "model": "your-model", "source": "your-host",
+ "report_id": "optional-dedupe-key",
+ "calls": [{"id": "call-1", "prompt_tokens": 400, "completion_tokens": 150}]}
+```
+
+Every key is optional; a per-call `calls` list is summed only when the totals are absent (a call's own prompt+completion is never added twice). A provider that reports only one side yields a LOWER bound (`basis=completion_only`/`prompt_only`), never a complete total. Repeats are collapsed: a `report_id`/`usage_id` seen before, or a call `id` seen before, is not counted twice, and a late report (`"late": true`) for a known call REPLACES its figure instead of adding to it. A report with no token numbers records nothing and says so — unknown is never zero.
+
+**What `--candidate` takes on `predict-strategy`.** An inline JSON object or a path, in the contract's `CandidateRef` shape or the legacy `ActionSpec` shape (the same objects `plan-next --candidates` takes, as a LIST):
+
+```json
+{"action_type": "execute_strategy", "task_id": "t1", "episode_id": "ep1",
+ "strategy_id": "my-method", "solver": "highs",
+ "method": {"name": "rolling-horizon", "steps": ["relax coupling", "solve master"]},
+ "config": {"time_limit": 60}}
+```
+
+`method` is a PLAN in YOUR words (a bare string is read as the name); `config` holds execution parameters only — a `method`-like key placed in `config` is moved to `method` and recorded, and a key that names no execution parameter is refused before an attempt is spent. `recall --candidate` is different: it takes a bare method ID for filtering.
+
 Appends the fact to the Execution Evidence Bank, then runs the automatic chain: cost backfill (replace by default — idempotent, never double-counts) → quality checks against matching entries, frozen ONTO THE FACT (`execution_features.quality_feedback`: the interval in force, the observed quality, hit/miss — only the strategy that actually ran is checked, attempt scope only) → cost feedback against the record's frozen pre-execution prediction snapshot (same strategy, same scope, both sides measured; written into `execution_features.cost_feedback`) → induction-pattern hint checks (the `intervention_recovery` pattern detects cross-execution recovery chains automatically: a failed attempt under one solver followed by success under another).
 
 **Recording never changes knowledge.** No entry is promoted, demoted, or woken here — the frozen checks are replayed by the next `orx induce`. Each detector hit is also PERSISTED onto the fact (`execution_features.induction_hints`), so the offline candidate builder reuses the detector's own cross-execution evidence instead of re-deriving it.
@@ -517,13 +540,13 @@ Backfills cost dimensions of an **already-recorded** execution, in place — not
 
 `--mode replace` (default) means the value IS the measurement — re-applying the same override is idempotent and never double-counts. `--mode increment` adds an additional measured amount within the record's scope. Cost feedback is recomputed against the frozen prediction snapshot, so the stored summary can never disagree with the stored fact.
 
-**Where the number came from is recorded, and it decides what the number MAY be used as.** `--source` (default `agent_observed`) tags the amended dimension: `provider_usage` (a provider/host reported it — a real observation), `agent_observed` (you read it off a real report), or `agent_estimate` (a declaration with no source). The tag travels in `execution_features.cost_provenance`, so a real measurement is never indistinguishable from an estimate in the stored fact. An `agent_estimate` is kept and shown everywhere, but it is **never** used as a calibration actual, a measured cost claim or a learning evidence mean — see [concepts.md](concepts.md). A single-side token figure (`basis=completion_only`/`prompt_only`) is likewise a LOWER bound and cannot stand in for a complete total. **A framework-measured dimension cannot be silently overwritten**: `latency_s` / `solver_runtime_s` (and any dimension recorded with `provider_usage`) are refused unless `--force` is passed — a real observation is never silently rewritten.
+**Where the number came from is recorded, and it decides what the number MAY be used as.** `--source` (default `agent_estimate`) tags the amended dimension: `provider_usage` (a provider/host reported it — a real observation), `agent_observed` (you read it off a real report), or `agent_estimate` (the default — a hand-typed number with no stated source). The tag travels in `execution_features.cost_provenance`, so a real measurement is never indistinguishable from an estimate in the stored fact. An `agent_estimate` is kept and shown everywhere, but it is **never** used as a calibration actual, a measured cost claim or a learning evidence mean — see [concepts.md](concepts.md). A single-side token figure (`basis=completion_only`/`prompt_only`) is likewise a LOWER bound and cannot stand in for a complete total. **A framework-measured dimension cannot be silently overwritten**: `latency_s` / `solver_runtime_s` (and any dimension recorded with `provider_usage`) are refused unless `--force` is passed — a real observation is never silently rewritten.
 
 The token口径 is the FULL total (prompt + completion; reasoning/cached are sub-facts, never added again). A declaration is tagged with its basis, and the budget view reports `token_basis_mixed` rather than summing a legacy completion-only figure with a full total as if they were the same unit.
 
 A `tool_calls` declaration below the sandbox's provable lower bound is refused (exit 2): the executor demonstrably ran the solve script, so the record itself refutes the number. The response reports `still_missing` — the dimensions that remain unmeasured — so you can see whether the gap is closed.
 
-Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). **A late host report backfills through `--usage-file`** (the host's hook/log output, or `@path`): its `llm_tokens` is recorded with `source=provider_usage` and the full口径, exactly as `record --usage-file` would have. Prefer that over a hand-typed `llm_tokens`. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
+Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). **A late host report backfills through `--usage-file`** (the host's hook/log output, or `@path`): its `llm_tokens` is recorded with `source=provider_usage` and the full口径, exactly as `record --usage-file` would have. Prefer that (or `--source provider_usage`/`agent_observed` when you read a number off a real report) over a bare hand-typed `llm_tokens`, which defaults to a declaration. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
 
 **Next.** Re-run `induce` if the gap was a `cost_claim_withheld` dimension. Failures: a `tool_calls` value below the sandbox's provable floor is refused (exit 2), since the record itself refutes the number.
 

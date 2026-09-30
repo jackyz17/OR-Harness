@@ -508,7 +508,8 @@ class TestCostClaimCompleteness(InductionCase):
         self.assertNotIn("llm_tokens",
                          self.sbank.get(entry_id).expected_cost_hat.measured_dims())
         # The fix is a backfill of the ONE incomplete record, not a re-run.
-        self.bank.update_cost(ids[-1], llm_tokens=1234.0)
+        self.bank.update_cost(ids[-1], llm_tokens=1234.0,
+                             source="agent_observed")
         self.engine.induce(self.make_profile(family="routing"), "S01")
         entry = self.sbank.get(entry_id)
         self.assertIn("llm_tokens", entry.expected_cost_hat.measured_dims())

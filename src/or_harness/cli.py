@@ -646,7 +646,7 @@ def cmd_record(args) -> int:
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
                           override_source=getattr(args, "override_source",
-                                                 "agent_observed"),
+                                                 "agent_estimate"),
                           override_force=bool(getattr(args,
                                                       "override_force",
                                                       False)),
@@ -777,7 +777,7 @@ def cmd_amend_cost(args) -> int:
             record = h.bank.update_cost(
                 args.execution_id,
                 mode=args.mode,
-                source=getattr(args, "source", "agent_observed"),
+                source=getattr(args, "source", "agent_estimate"),
                 force=bool(getattr(args, "amend_force", False)),
                 basis=(result_breakdown or {}).get("basis"),
                 **dimensions)
@@ -2398,15 +2398,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "double-counts) or 'increment' (an additional measured "
                         "amount within the record's scope)")
     p.add_argument("--override-source", dest="override_source",
-                   default="agent_observed",
+                   default="agent_estimate",
                    choices=["provider_usage", "agent_observed",
                             "agent_estimate"],
                    help="where the backfilled number came from (recorded per "
-                        "dimension): 'provider_usage' (the provider reported "
-                        "it), 'agent_observed' (default — you READ it off a "
-                        "real report) or 'agent_estimate' (you DECLARED it "
-                        "without a source; shown but never used as a "
-                        "measured truth or a calibration actual)")
+                        "dimension): 'provider_usage' (the provider "
+                        "reported it), 'agent_observed' (you READ it off a "
+                        "real report) or 'agent_estimate' (default — a "
+                        "hand-typed number with no stated source: shown, but "
+                        "never used as a measured truth or a calibration "
+                        "actual). Say provider_usage/agent_observed when the "
+                        "number really came from a report")
     p.add_argument("--force", action="store_true", dest="override_force",
                    help="allow an override to overwrite a dimension the "
                         "FRAMEWORK measured (latency_s / solver_runtime_s); "
@@ -2489,16 +2491,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="'replace' (default, idempotent — the value IS the "
                         "measurement) or 'increment' (an additional measured "
                         "amount)")
-    p.add_argument("--source", default="agent_observed",
+    p.add_argument("--source", default="agent_estimate",
                    choices=["provider_usage", "agent_observed",
                             "agent_estimate"],
                    help="where the number came from: 'provider_usage' (the "
-                        "provider reported it), 'agent_observed' (default — "
-                        "you READ it off a real report) or 'agent_estimate' "
-                        "(you DECLARED it without a source; shown but never "
-                        "used as a measured truth). Recorded per dimension "
-                        "so a real measurement is never indistinguishable "
-                        "from an estimate")
+                        "provider reported it), 'agent_observed' (you READ "
+                        "it off a real report) or 'agent_estimate' (default "
+                        "— a hand-typed number with no stated source: shown "
+                        "but never used as a measured truth). Recorded per "
+                        "dimension so a real measurement is never "
+                        "indistinguishable from an estimate")
     p.add_argument("--usage-file", dest="usage_file", default=None,
                    metavar="JSON|PATH",
                    help="a HOST attempt-level usage report to apply instead "

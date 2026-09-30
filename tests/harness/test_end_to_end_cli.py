@@ -228,10 +228,13 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertNotIn("tool_calls", mask)
 
         # Backfill BOTH records -> the claim is restored on the next induce.
+        # The numbers were read off real reports, so the source is stated.
         run_orx(self.home, "amend-cost", execution["execution_id"],
-                "--override", "llm_tokens=1840,tool_calls=4")
+                "--override", "llm_tokens=1840,tool_calls=4",
+                "--source", "agent_observed")
         run_orx(self.home, "amend-cost", execution2["execution_id"],
-                "--override", "llm_tokens=1820,tool_calls=4")
+                "--override", "llm_tokens=1820,tool_calls=4",
+                "--source", "agent_observed")
         proc = run_orx(self.home, "induce", "--strategy", "S01")
         result = json.loads(proc.stdout)["result"]["results"][0]
         self.assertNotIn("cost_claim_withheld", result)

@@ -56,15 +56,17 @@ from or_harness.core.storage import Store, StorageError
 #: Where a amended cost dimension's number CAME FROM. Kept per dimension so
 #: a real measurement is never indistinguishable from a declared estimate:
 #: - ``provider_usage``: a model provider reported it (a real observation);
-#: - ``agent_observed``: the operator/agent READ it off a real report (the
-#:   default for a manual backfill — transcribing the provider's bill is an
-#:   observation, not a guess);
-#: - ``agent_estimate``: a value declared WITHOUT a source (a guess).
-#: ``provider_usage`` and ``agent_observed`` may stand as measured facts;
-#: an ``agent_estimate`` is usable evidence (it is shown) but is never
-#: treated as a measured truth, never used as a calibration actual, and
-#: never enters a learning evidence mean. See
-#: :mod:`or_harness.world_model.cost_eligibility` for the one rule.
+#: - ``agent_observed``: a number READ OFF a real report (a provider
+#:   dashboard, a host log line) — an OBSERVATION, so it may stand as a
+#:   measured fact, and the caller must opt in explicitly;
+#: - ``agent_estimate``: a value typed from memory or assumed, with no
+#:   source behind it — the DEFAULT for a bare ``--override``.
+#: The default is the honest one: a bare hand-typed number is a
+#: DECLARATION. It is kept and shown, but it is never used as a calibration
+#: actual, a measured cost claim or a learning evidence mean — the caller
+#: says ``agent_observed``/``provider_usage`` when the number really came
+#: from a report. See :mod:`or_harness.world_model.cost_eligibility` for the
+#: one rule.
 COST_SOURCES: tuple = ("provider_usage", "agent_observed", "agent_estimate")
 
 #: Dimensions the FRAMEWORK itself measures during a run. Backfilling one of
@@ -130,7 +132,7 @@ class ExperienceBank:
         return payload.execution_id
 
     def update_cost(self, execution_id: str, *,
-                    mode: str = "replace", source: str = "agent_observed",
+                    mode: str = "replace", source: str = "agent_estimate",
                     force: bool = False, basis: Optional[str] = None,
                     **dimensions: float) -> ExecutionRecord:
         """Backfill cost dimensions (harness-owned llm_tokens via --override).
@@ -147,9 +149,9 @@ class ExperienceBank:
 
         ``source`` records WHERE the number came from (:data:`COST_SOURCES`):
         ``provider_usage`` (the provider reported it), ``agent_observed``
-        (the operator read it off a real report — the DEFAULT for a manual
-        backfill), or ``agent_estimate`` (a value declared without a
-        source). It is kept per dimension in
+        (the operator read it off a real report), or ``agent_estimate`` —
+        the DEFAULT for a bare backfill, because a hand-typed number with no
+        stated source is a declaration. It is kept per dimension in
         ``execution_features.cost_provenance`` so a reader can tell a real
         measurement from a declaration — the two must never be
         indistinguishable in the stored fact, and an ``agent_estimate``

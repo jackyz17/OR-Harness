@@ -299,7 +299,8 @@ class TestBackfillConsistency(HarnessTestCase):
         feedback = outcome["cost_feedback"]
         self.assertEqual(feedback["per_dimension"]["llm_tokens"]["actual"],
                          110.0)
-        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0)
+        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0,
+                                source="agent_observed")
         stored = self.h.bank.get(outcome["execution_id"])
         self.assertEqual(stored.cost.llm_tokens, 1000.0)
         self.assertEqual(
@@ -316,7 +317,8 @@ class TestBackfillConsistency(HarnessTestCase):
         entry = self.h.sbank.get(entry_id)
         self.assertAlmostEqual(entry.expected_cost_hat.llm_tokens, 100.0)
         for i in range(2):
-            self.h.bank.update_cost(f"ex_s{i}", llm_tokens=1000.0)
+            self.h.bank.update_cost(f"ex_s{i}", llm_tokens=1000.0,
+                                    source="agent_observed")
         again = self.h.induce(strategy_id="S01")
         updated = again["results"][0].get("updated")
         self.assertEqual(updated, entry_id)
@@ -458,7 +460,8 @@ class TestDelayedBackfillFeedback(HarnessTestCase):
         outcome = self.h.record(rec, prediction=snapshot)
         # tokens unmeasured on the actual side -> no feedback yet.
         self.assertNotIn("cost_feedback", outcome)
-        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0)
+        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0,
+                                source="agent_observed")
         stored = self.h.bank.get(outcome["execution_id"])
         feedback = stored.execution_features.get("cost_feedback")
         self.assertIsNotNone(feedback)
@@ -471,7 +474,8 @@ class TestDelayedBackfillFeedback(HarnessTestCase):
         rec = self.make_record(task_id="td2", strategy_id="S01",
                                cost_measured=MEASURED_ALL)
         outcome = self.h.record(rec)
-        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0)
+        self.h.bank.update_cost(outcome["execution_id"], llm_tokens=1000.0,
+                                source="agent_observed")
         stored = self.h.bank.get(outcome["execution_id"])
         self.assertNotIn("cost_feedback", stored.execution_features)
 
@@ -528,7 +532,8 @@ class TestSupportRefresh(HarnessTestCase):
         entry = self.h.sbank.get(entry_id)
         self.assertEqual(entry.cost_support_n["llm_tokens"], 1)
         # Same mean (100), one more measured sample.
-        self.h.bank.update_cost("ex_two", llm_tokens=100.0)
+        self.h.bank.update_cost("ex_two", llm_tokens=100.0,
+                            source="agent_observed")
         again = self.h.induce(strategy_id="S01")
         self.assertEqual(again["results"][0].get("updated"), entry_id)
         entry = self.h.sbank.get(entry_id)

@@ -205,6 +205,49 @@ class TestCalibration(HarnessTestCase):
         self.assertEqual(aggregate["llm_tokens"]["total"], 1500.0)
 
 
+class TestTheDefaultIsADeclaration(HarnessTestCase):
+    """A bare hand-typed cost number must not become a calibration truth.
+
+    The safe default and the honest default are the same one: a number
+    typed with no stated source is an ``agent_estimate``. The caller opts
+    IN to a trusted source when the number really came from a report.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.h = ORHarness(home=self.home)
+        self.addCleanup(self.h.close)
+
+    def test_update_cost_defaults_to_a_declaration(self):
+        rec = self.make_record(task_id="t1", strategy_id="S01")
+        self.h.bank.append(rec)
+        stored = self.h.bank.update_cost(rec.execution_id, llm_tokens=5000.0)
+        self.assertEqual(
+            stored.execution_features["cost_provenance"]["llm_tokens"]
+            ["source"], "agent_estimate")
+        self.assertEqual(cost_eligibility(stored, "llm_tokens"), ESTIMATE)
+
+    def test_record_defaults_to_a_declaration(self):
+        rec = self.make_record(
+            task_id="t1", strategy_id="S01",
+            cost=CostVector(llm_tokens=0.0,
+                            measured={"latency_s", "solver_runtime_s"}),
+            cost_measured=("latency_s", "solver_runtime_s"))
+        outcome = self.h.record(rec, override={"llm_tokens": 5000.0})
+        stored = self.h.bank.get(outcome["execution_id"])
+        self.assertEqual(
+            stored.execution_features["cost_provenance"]["llm_tokens"]
+            ["source"], "agent_estimate")
+        self.assertEqual(cost_eligibility(stored, "llm_tokens"), ESTIMATE)
+
+    def test_opting_in_to_a_trusted_source_makes_it_measured(self):
+        rec = self.make_record(task_id="t1", strategy_id="S01")
+        self.h.bank.append(rec)
+        stored = self.h.bank.update_cost(
+            rec.execution_id, llm_tokens=5000.0, source="agent_observed")
+        self.assertEqual(cost_eligibility(stored, "llm_tokens"), MEASURED)
+
+
 # ---------------------------------------------------------------------------
 # 3. learning evidence: an estimate does not enter the mean
 # ---------------------------------------------------------------------------

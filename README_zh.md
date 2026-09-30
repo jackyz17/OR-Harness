@@ -8,6 +8,8 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 
 只有在你**显式配置**了 provider（`--world-model URL::MODEL`，或 `ORHarness(world_model=...)`）并**显式调用**预测命令时才会调用模型。未配置 provider 时，所有世界模型命令都返回明确的 `not_configured`，不发生任何网络活动。预测始终是影子假设：它不会变成事实，未执行候选的预测也不等于真实反馈。
 
+**完整主流程需要 provider。** `execute` 可以在没有 provider 时求解，但那样就没有任何预测被生成、绑定或校准——不带 `--prediction` 的尝试没有可收尾的评价，所以缺 provider 是配置缺口，而不是降级模式。下面的快速开始因此走完整的预测路径；以 [SKILL.md](SKILL.md) 为权威走查。
+
 ## 核心能力
 
 - **双层记忆**：有界的 **Execution Evidence Bank**（执行证据层：实际策略/实际质量/实际代价/失败与恢复/产物；只保留最近 N 个完整 episode 的滑动窗口，最旧的整集淘汰，绝不拆散修复链）+ 派生的 **Strategic Knowledge Bank**（战略知识层：期望质量/期望代价/期望风险,带预测区间与前瞻校验；来源引用过期后知识仍自足，凭自身内容与验证范围继续有效）。条件统计即时计算、永不落库。
@@ -15,7 +17,7 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 - **外层保有全部控制权的策略召回**：透明评分（`α·Q̂ − β·C_scalar − γ·R̂`）、双层证据回退、四消融模式。**框架内置策略目录已删除**：候选来自真实记忆（跑过或归纳过），由外层自行提出；冷启动时无先验分数——没有经验就如实返回空结果并说明原因，从零积累。
 - **沙箱执行**：AST 策略 + POSIX rlimit + 墙钟超时；基本验证；五维代价计量（retries 计入代价）。
 - **由你掌控的归纳**：每次 record 后的归纳 pattern hint（策略对比 / 干预恢复 / 结构复现 / 优势反转）；`induce` 永远是外层显式调用。经验适用范围 = 家族 + 支持证据所在的结构格（沿用旧版四区间，不用跨样本 min/max 跨度，避免把表现相反的区段合并）；建条目需要 ≥2 个不同任务的支持执行（重复同一任务不算复现）；**发布**需要入库验证通过（`induce --verify`：规则成立 / 修复有效 / 质量不降而代价下降），未验证候选只记录、不进推荐；冷归档防复活。触发准则不再引用先验分数，改为纯统计判据。
-- **结构化关系主张**（`induce --relation`）：跨任务知识——不是某个策略的统计量，而是"结构条件 → 建模/求解选择 → 后果"的关系，例如"时间耦合 ≥0.5 的调度任务上，时间分解必须保留跨期衔接状态"。每条主张显式引用**已记录的执行**并标注其在主张中的角色，同时声明**可计算的部分**（`probe` / `status` / `comparison` 断言）；证据身份（任务、家族、结构格、策略）由框架从事实派生，判定也由框架计算。断言自带语义：`mode: paired` 只比较同任务配对，`mode: group` 比较双方在"每条记录都测得"的指标上的均值，`aggregation: all|mean` 决定不利样本如何处理。`verified` 的含义是"**在所声明范围内未发现违例**"，范围（执行、任务、角色、哪些断言已检/未检）随判定一起保存。**发布以单条关系为单位**：自身判定通过 + 覆盖 ≥2 个独立任务；它既不发布、也不因宿主统计条目的入库状态而获得任何资格，单任务修复仍是关于该任务的事实。`recall` 把已发布关系放在独立的 `knowledge` 段（携带状态与 `newer_evidence_since_verification`），未验证/被驳回的关系绝不会被包装成可用知识。详见 [references/induction.md](references/induction.md)。
+- **结构化关系主张**（`induce --relation`）：跨任务知识——不是某个策略的统计量，而是"结构条件 → 建模/求解选择 → 后果"的关系，例如"时间耦合 ≥0.5 的调度任务上，时间分解必须保留跨期衔接状态"。每条主张显式引用**已记录的执行**并标注其在主张中的角色，同时声明**可计算的部分**（`probe` / `status` / `comparison` 断言）；证据身份（任务、家族、结构格、策略）由框架从事实派生，判定也由框架计算。断言自带语义：`mode: paired` 只比较同任务配对，`mode: group` 比较双方在"每条记录都测得"的指标上的均值，`aggregation: all|mean` 决定不利样本如何处理。`verified` 的含义是"**在所声明范围内未发现违例**"，范围（执行、任务、角色、哪些断言已检/未检）随判定一起保存。**发布以单条关系为单位**：自身判定通过 + 覆盖 ≥2 个独立任务；它既不发布、也不因宿主统计条目的入库状态而获得任何资格，单任务修复仍是关于该任务的事实。已发布关系与其他已入库条目一样，通过 `recall` 的 `recommendations`（其 `knowledge` 块携带主张）到达你这里；未发布的放在 `held_claims`（携带状态与 `newer_evidence_since_verification`），未验证/被驳回的关系绝不会被包装成可用知识。详见 [references/induction.md](references/induction.md)。
 - **七个求解器适配器**（highs、pulp、ortools、scip、copt、pyomo、gurobi）——仅做可用性探测，具体求解器由你按情况选择。
 - **统一世界模型契约**（`wm-contract/1`）：为两个预测模块提供有版本、可序列化、可校验的结构——**OR 策略后果预测**（收益携带指标/单位/基线，代价复用 `CostVector`，风险为具名事件，不确定性区分执行随机性与证据不足）与 **Harness 能力演化预测**（`H = F(M, W_OR, Pi, R, T)` 的能力证据、候选学习操作、基线与时间范围、学习代价、退化风险、验证条件）。构建契约本身不调用模型：它如实返回 `status="contract_only"`，并把 `provider_configured`（已挂载 provider）、`service_available`（本构建实现了该类服务）与 `prediction_made`（确实产生了预测）作为三个独立事实分别报告——仅配置了 provider 而模型调用次数为 0，永远不会是 `valid`。策略后果与能力演化两个服务都已实现（`wm-so/1` / `wm-ce/1`），agent 流程使用 `predict-strategy` / `plan-next` 与 `predict-capability`。旧无版本载荷通过显式 legacy 视图保持可读；未知契约版本明确失败，绝不猜测解析。详见 [references/world_model_contract.md](references/world_model_contract.md)。
 - **冻结的预测输入上下文**（`wm-context/1`）：预测实际依据什么信息，以及这些信息如何一致、完整、可追溯地到达模型。一次 `orx context` 冻结一份上下文：**联合问题表征**（任务文本与载荷、CIR 关系——保留为关系而非压缩成三个数、带来源标注的数学属性、结构画像与推导报告）、**X/B**（来自同一快照）、**两条既有检索渠道的证据**（按证据身份去重，携带内容与适用性标注，跨格命中可见但不进入当前格统计）、**Harness 能力证据**（`H = F(M, W_OR, Pi, R, T)`，仅证据强度，无综合评分）与**外部执行约束**。**建模前即可构建**：没有 `model`、没有 CIR、没有文本都是正常输入，缺失部分逐项如实报告，不从 `family` 名称臆断数学性质。构建上下文**不调用预测模型、不执行 solver、不做归纳**；同一次候选比较共享同一份上下文，复用需通过任务版本校验。详见 [references/prediction_context.md](references/prediction_context.md)。
@@ -32,12 +34,17 @@ pip install -e ".[solvers-free]"   # 可选：highspy + pulp
 orx doctor                        # 探测求解器、检查记忆目录
 orx profile   --task t.json
 orx recall    --task t.json --top 3 --candidate my-method --candidate alt-method
-orx execute   --task t.json --strategy my-method --code solve.py --workspace ws --solver highs
+orx predict-strategy --task t.json --episode ep1 --candidate candidate.json
+orx execute   --task t.json --episode ep1 --prediction sp_... --code solve.py --workspace ws
 orx check-task exec_... --check '{"reference_objective": 10755, "integer": {"variables": ["x1", "x2"]}}'
-orx record    --execution exec.json --usage-file usage.json
-orx induce    --strategy my-method
-orx inspect   --bank strategic
+orx record    --from-staged exec_... --usage-file usage.json
+orx close-episode --task t.json --episode ep1 --terminal completed
+orx calibration
 ```
+
+每次尝试都需要 `--episode`，且预测必须在运行前绑定（`--prediction`）：`close-episode` 评价的正是这条关联。宿主的用量报告（`--usage-file`）才是真实 token 数；手填 `--override` 只是兜底，而"无来源的声明"必须加 `--override-source agent_estimate`，这样它永远不会被当作校准真值。
+
+**归纳是独立的离线步骤，不属于第一轮。** `orx induce --strategy my-method` 至少需要 ≥2 个不同任务的执行才能建条目；等这些执行攒够之后、在 episode 之外再跑。
 
 `my-method` 刻意是框架从未见过的名字：框架不内置任何策略目录，因此不存在"是否属于目录"这个问题。`recall` 只报告你点名的方案在真实记忆里有什么（初始状态下是"空 + 原因"），`predict-cost`/`execute` 接受你提出的任何方案。完整走查（空库 → 外层提出方案 → 代价未知 → 执行 → 答案校验 → 记录 → 召回）是一个可运行脚本：`PYTHONPATH=src python3 references/examples/no_catalog.py`。
 
