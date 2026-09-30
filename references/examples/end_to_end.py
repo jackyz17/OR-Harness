@@ -100,9 +100,20 @@ SOLVE_RIGHT = """
 """
 
 # The host's usage report for the attempt (a fixture in the canonical
-# shape; no OpenClaw/Hermes is installed in this environment).
-HOST_USAGE = {"prompt_tokens": 700, "completion_tokens": 300,
-              "source": "example-fixture"}
+# versioned shape; no OpenClaw/Hermes is installed in this environment).
+# One report carries BOTH dimensions: llm_tokens (the full口径 total,
+# provider_usage) and tool_calls (the whole-scope count, agent_observed).
+HOST_USAGE = {
+    "schema": "or-host-usage/1",
+    "host": "example-fixture",
+    "model": "stub-model",
+    "tokens": {"prompt_tokens": 700, "completion_tokens": 300},
+    "tool_calls": 12,
+    "tool_calls_lower_bound": 1,
+    "measured": ["prompt_tokens", "completion_tokens", "tool_calls"],
+    "provenance": {"llm_tokens": "provider_usage",
+                   "tool_calls": "agent_observed"},
+}
 
 # The check that catches the fractional answer: the integer domain.
 CHECK = {"integer": {"variables": ["x_depot", "x_store"]}}
@@ -236,16 +247,22 @@ def main() -> int:
     print(f"5. attempt 2 ({CANDIDATE_B['strategy_id']}): "
           f"task check state={checked2['state']}")
     assert checked2["state"] == "passed"
-    # This attempt DID keep the host's report, so its token figure stands as
-    # a real observation and can enter calibration.
+    # This attempt DID keep the host's report, so BOTH its token figure and
+    # its tool-call count stand as real observations and can enter
+    # calibration — no hand-typing, one report.
     harness.record(second, host_usage=HOST_USAGE)
     stored2 = harness.bank.get(second.execution_id)
     source2 = stored2.execution_features["cost_provenance"]["llm_tokens"]
+    tool_source = stored2.execution_features["cost_provenance"]["tool_calls"]
     print(f"   recorded with the host report: llm_tokens="
           f"{stored2.cost.llm_tokens} source={source2['source']} "
           f"basis={source2.get('basis')}")
+    print(f"   tool_calls={stored2.cost.tool_calls} "
+          f"source={tool_source['source']} (the whole-scope count)")
     assert source2["source"] == "provider_usage"
     assert source2["basis"] == "provider_total"
+    assert tool_source["source"] == "agent_observed"
+    assert {"llm_tokens", "tool_calls"} <= stored2.cost.measured_dims()
 
     # ---- 6. close the episode and read the calibration ------------------
     closed = harness.close_episode("e2e_demo", "ep1",
@@ -257,6 +274,17 @@ def main() -> int:
     print(f"   evaluations={len(closed['evaluations'])} "
           f"(one per bound prediction), "
           f"n_evaluated={summary.get('n_evaluated')}")
+    # The FIRST attempt's tool_calls was never backfilled (its llm_tokens
+    # was hand-declared), so the close-out WARNS about it: unknown is never
+    # zero, and the gap is visible at the moment it can still be repaired.
+    cost_warnings = closed.get("cost_completeness_warnings")
+    if cost_warnings:
+        unknown = sorted(cost_warnings["unknown_dimensions"])
+        print(f"   cost warnings        : {unknown} still UNKNOWN on "
+              f"{cost_warnings['unknown_dimensions'][unknown[0]]}")
+    assert "cost_completeness_warnings" in closed
+    assert "tool_calls" in closed["cost_completeness_warnings"][
+        "unknown_dimensions"]
     # The failed attempt is still visible in the episode's occurrence
     # count: the retry did not erase it.
     occurrence = (summary.get("occurrence") or {})
@@ -279,7 +307,7 @@ def main() -> int:
         f"orx --home {home} execute --task {task_path} --episode ep1 "
         "--prediction <sp_...> --code solve.py --workspace ws",
         f"orx --home {home} check-task <execution_id> --check '{json.dumps(CHECK)}'",
-        f"orx --home {home} record --from-staged <execution_id> --usage-file usage.json",
+        f"orx --home {home} record --from-staged <execution_id> --usage-host openclaw",
         f"orx --home {home} close-episode --task e2e_demo --episode ep1 "
         "--terminal completed",
     ]:

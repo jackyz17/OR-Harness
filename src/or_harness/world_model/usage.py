@@ -27,6 +27,8 @@ This module is the ONE place a provider's ``usage`` is turned into a
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from or_harness.core.schema import CostVector
 
@@ -393,6 +395,267 @@ def host_usage_cost_vector(report: Optional[Mapping[str, Any]],
         if dedupe:
             breakdown["dedup"] = dedupe
     return vector, breakdown
+
+
+# ---------------------------------------------------------------------------
+# host usage adapters: locate + normalize a host's attempt-level report
+# ---------------------------------------------------------------------------
+
+#: The schema tag of the attempt-level HostUsageReport a host produces
+#: (see :class:`HostUsageAdapter`). A report carrying this tag is read
+#: through :func:`host_report_dimensions`, which honours its ``measured``
+#: whitelist and per-dimension ``provenance`` map.
+HOST_USAGE_SCHEMA = "or-host-usage/1"
+
+#: The dimensions a HostUsageReport can carry, with the provenance each is
+#: recorded under when the report supplies no explicit map.
+_HOST_REPORT_DEFAULT_SOURCES = {
+    "llm_tokens": "provider_usage",
+    "tool_calls": "agent_observed",
+}
+
+
+def is_host_usage_report(report: Any) -> bool:
+    """Whether a payload is a versioned HostUsageReport.
+
+    Only the SCHEMA TAG decides: a report that says ``or-host-usage/1`` is
+    read under that contract (its ``measured`` whitelist governs what may
+    enter ``cost_measured``); anything else is the older permissive shape
+    and keeps its existing behaviour.
+    """
+    return isinstance(report, Mapping) \
+        and str((report or {}).get("schema") or "") == HOST_USAGE_SCHEMA
+
+
+def host_report_dimensions(report: Mapping[str, Any]
+                           ) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """The MEASURED dimensions of a versioned HostUsageReport.
+
+    Returns ``(dimensions, info)``. ``dimensions`` holds only what the
+    report's ``measured`` whitelist allows — a number outside the whitelist
+    is a sub-fact, never a cost measurement — and ``llm_tokens`` is the
+    full口径 total (prompt + completion; reasoning/cached are sub-facts
+    inside those sides and are never added again). ``info`` carries the
+    per-dimension provenance map, the token basis and the sub-facts, so the
+    caller can store the口径 beside the number.
+
+    ``tool_calls`` is validated against the report's own
+    ``tool_calls_lower_bound`` when the report carries one: a total below a
+    bound the host itself proved is a contradiction, and it is refused
+    (``ValueError``) rather than stored.
+    """
+    report = report or {}
+    tokens = report.get("tokens") if isinstance(report.get("tokens"),
+                                                Mapping) else report
+    prompt = _as_count(tokens.get("prompt_tokens"))
+    completion = _as_count(tokens.get("completion_tokens"))
+    reasoning = _as_count(tokens.get("reasoning_tokens"))
+    cached = _as_count(tokens.get("cached_tokens"))
+    calls = _as_count(tokens.get("calls"))
+    total: Optional[float]
+    if prompt is not None and completion is not None:
+        total, basis = prompt + completion, TOKEN_BASIS_TOTAL
+    elif completion is not None:
+        total, basis = completion, TOKEN_BASIS_COMPLETION_ONLY
+    elif prompt is not None:
+        total, basis = prompt, TOKEN_BASIS_PROMPT_ONLY
+    else:
+        total, basis = None, None
+    tool_calls = _as_count(report.get("tool_calls"))
+    lower_bound = _as_count(report.get("tool_calls_lower_bound"))
+    if tool_calls is not None and lower_bound is not None \
+            and tool_calls < lower_bound:
+        raise ValueError(
+            f"tool_calls={tool_calls} is below the report's own "
+            f"tool_calls_lower_bound={lower_bound}: the host proved at "
+            "least that many invocations happened. tool_calls counts ALL "
+            "tool invocations in the attempt's scope (shell commands, "
+            "file reads/writes, sandbox runs, solver calls)")
+    measured = {str(m) for m in (report.get("measured") or [])}
+    # The whitelist names the report's OWN fields (prompt_tokens,
+    # completion_tokens, tool_calls); the cost dimensions they feed are
+    # llm_tokens and tool_calls. Either side of the token report being
+    # measured means the FULL口径 total is measured (it is their sum).
+    if measured & {"prompt_tokens", "completion_tokens", "total_tokens"}:
+        measured.add("llm_tokens")
+    provenance = report.get("provenance") \
+        if isinstance(report.get("provenance"), Mapping) else {}
+    dimensions: Dict[str, float] = {}
+    if total is not None and "llm_tokens" in measured:
+        dimensions["llm_tokens"] = float(total)
+    if tool_calls is not None and "tool_calls" in measured:
+        dimensions["tool_calls"] = float(tool_calls)
+    info: Dict[str, Any] = {
+        "schema": HOST_USAGE_SCHEMA,
+        "host": str(report.get("host") or "generic"),
+        "model": (str(report["model"]) if report.get("model") else None),
+        "scope": "attempt",
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "reasoning_tokens": reasoning,
+        "cached_tokens": cached,
+        "model_calls": calls,
+        "tool_calls_lower_bound": lower_bound,
+        "basis": basis,
+        "provenance": {
+            dim: str(provenance.get(dim)
+                     or _HOST_REPORT_DEFAULT_SOURCES.get(dim, "agent_estimate"))
+            for dim in dimensions
+        },
+        "note": ("llm_tokens is the FULL口径 total (prompt + completion); "
+                 "reasoning/cached tokens are sub-facts already inside those "
+                 "sides and are never added again. Only dimensions listed in "
+                 "the report's 'measured' whitelist enter cost_measured; "
+                 "everything else stays unknown, never zero"),
+    }
+    return dimensions, info
+
+
+class HostUsageAdapter:
+    """Locate and normalize ONE host's attempt-level usage report.
+
+    A host (OpenClaw, Hermes, ...) runs the outer agent loop: it owns the
+    LLM connection and the tool invocations, so the REAL ``llm_tokens`` and
+    ``tool_calls`` of an attempt are facts only it can produce. This
+    abstract interface is the pluggable bridge — the core never depends on
+    a concrete host at import time, and an unavailable host degrades
+    gracefully to "unknown" instead of failing.
+
+    Implementations do TWO things and nothing else:
+
+    * ``locate(scope)`` — find the report file for one attempt (or None);
+    * ``load(scope)`` — read it (or None when missing/unreadable);
+    * ``normalize(report)`` — turn the host's raw shape into
+      ``(dimensions, info)`` in the canonical form
+      (:func:`host_report_dimensions`).
+
+    They must NOT re-implement accounting: the口径 rules (full total,
+    sub-facts, measured whitelist, lower-bound check) live in ONE place.
+    """
+
+    #: The host name this adapter answers to (lower-case).
+    name = ""
+
+    #: Default file names this host writes its attempt report under, tried
+    #: in order inside the scope's directory. Subclasses may override.
+    report_filenames: Tuple[str, ...] = ()
+
+    def locate(self, scope: Mapping[str, Any]) -> Optional[str]:
+        """The path of the report for one attempt, or None.
+
+        ``scope`` carries at least ``home`` (the harness memory directory)
+        and usually ``execution_id`` / ``task_id`` / ``episode_id``. The
+        default implementation looks for the adapter's
+        ``report_filenames`` under ``<home>/host_usage/`` and accepts an
+        explicit ``usage_file`` override in the scope.
+        """
+        scope = scope or {}
+        explicit = scope.get("usage_file")
+        if explicit:
+            path = Path(str(explicit))
+            return str(path) if path.is_file() else None
+        home = scope.get("home")
+        if not home:
+            return None
+        base = Path(str(home)) / "host_usage"
+        for name in self.report_filenames:
+            for key in ("execution_id", "attempt_id"):
+                identifier = scope.get(key)
+                if identifier:
+                    candidate = base / f"{name}.{identifier}.json"
+                    if candidate.is_file():
+                        return str(candidate)
+            candidate = base / f"{name}.json"
+            if candidate.is_file():
+                return str(candidate)
+        return None
+
+    def load(self, scope: Mapping[str, Any]
+             ) -> Optional[Dict[str, Any]]:
+        """The parsed report for one attempt, or None when absent/invalid.
+
+        Never raises for a missing or malformed file: an unreadable report
+        is the honest "unknown", not an error the caller must handle.
+        """
+        path = self.locate(scope)
+        if path is None:
+            return None
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def normalize(self, report: Mapping[str, Any]
+                  ) -> Tuple[Dict[str, float], Dict[str, Any]]:
+        """The host's raw report -> (measured dimensions, info).
+
+        The default reads the versioned HostUsageReport shape
+        (:func:`host_report_dimensions`); a host whose raw shape differs
+        overrides this to MAP its fields onto that shape first.
+        """
+        return host_report_dimensions(report)
+
+    def collect(self, scope: Mapping[str, Any]
+                ) -> Optional[Tuple[Dict[str, float], Dict[str, Any]]]:
+        """Locate + load + normalize in one step, or None.
+
+        The convenience entry point the CLI uses: one call returns the
+        measured dimensions and their info, or None when the host produced
+        no readable report (the dimensions then stay UNKNOWN — never zero).
+        """
+        report = self.load(scope)
+        if report is None:
+            return None
+        try:
+            return self.normalize(report)
+        except ValueError:
+            # A contradictory report (e.g. tool_calls below its own lower
+            # bound) is refused by normalize; the caller decides whether to
+            # surface it. Collect treats it as "no usable report".
+            return None
+
+
+class OpenClawUsageAdapter(HostUsageAdapter):
+    """The OpenClaw host: locate + normalize its attempt usage report.
+
+    OpenClaw writes one ``or-host-usage/1`` JSON per attempt. This adapter
+    only FINDS and READS that file — it contains no OpenClaw code, imports
+    nothing from the host, and degrades to "unknown" when the file is not
+    there. The report itself is produced by the host (see the docs for the
+    3-line contract a host implements).
+    """
+
+    name = "openclaw"
+    report_filenames = ("openclaw-usage", "host-usage")
+
+
+class GenericHostUsageAdapter(HostUsageAdapter):
+    """The fallback: a report in the canonical shape, any host name."""
+
+    name = "generic"
+    report_filenames = ("host-usage",)
+
+
+#: The registry the CLI resolves ``--usage-host <host>`` against. A host
+#: not listed here still works through ``--usage-file`` (the file IS the
+#: report); the registry only automates LOCATING it.
+HOST_USAGE_ADAPTERS: Dict[str, HostUsageAdapter] = {
+    adapter.name: adapter
+    for adapter in (OpenClawUsageAdapter(), GenericHostUsageAdapter())
+}
+
+
+def host_usage_adapter(host: Optional[str]) -> Optional[HostUsageAdapter]:
+    """The adapter for a host name, or None when the host is unknown.
+
+    Unknown hosts are NOT an error at resolution time: the caller reports
+    "no adapter for host X" and the dimensions stay unknown, exactly as a
+    missing report would.
+    """
+    if not host:
+        return None
+    return HOST_USAGE_ADAPTERS.get(str(host).strip().lower())
 
 
 # ---------------------------------------------------------------------------

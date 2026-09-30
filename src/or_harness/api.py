@@ -5706,27 +5706,52 @@ class ORHarness:
         # host really measured it), so it is distinguishable from a declared
         # estimate and protected from a later silent overwrite.
         if host_usage:
-            from or_harness.world_model.usage import host_usage_cost_vector
-            vector, breakdown = host_usage_cost_vector(host_usage)
-            if vector is not None and "llm_tokens" in vector.measured_dims():
-                self.bank.update_cost(
-                    record.execution_id, source="provider_usage",
-                    llm_tokens=float(vector.llm_tokens))
-                # Record the口径 basis beside the value, so a legacy
-                # completion-only record and a full-口径 total are never
-                # pooled as if they were the same unit.
+            from or_harness.world_model.usage import (
+                host_report_dimensions,
+                host_usage_cost_vector,
+                is_host_usage_report,
+            )
+            if is_host_usage_report(host_usage):
+                # A versioned HostUsageReport (or-host-usage/1): its
+                # ``measured`` whitelist governs which dimensions may enter
+                # cost_measured, and its per-dimension ``provenance`` map
+                # says where each number came from (llm_tokens from the
+                # provider, tool_calls observed by the host). A dimension
+                # outside the whitelist stays UNKNOWN — never zero.
+                dimensions, info = host_report_dimensions(host_usage)
+                for dim, value in dimensions.items():
+                    self.bank.update_cost(
+                        record.execution_id,
+                        source=info["provenance"].get(
+                            dim, "provider_usage"),
+                        basis=(info.get("basis")
+                               if dim == "llm_tokens" else None),
+                        **{dim: float(value)})
                 self.bank.annotate_features(
-                    record.execution_id,
-                    {"host_usage": breakdown} if breakdown else
-                    {"host_usage": {"note": "host reported no token usage"}})
-                stored = self.bank.get(record.execution_id)
-                prov = dict(stored.execution_features.get("cost_provenance")
-                            or {})
-                if isinstance(prov.get("llm_tokens"), dict) \
-                        and breakdown and breakdown.get("basis"):
-                    prov["llm_tokens"]["basis"] = breakdown["basis"]
+                    record.execution_id, {"host_usage": info})
+            else:
+                vector, breakdown = host_usage_cost_vector(host_usage)
+                if vector is not None and "llm_tokens" in \
+                        vector.measured_dims():
+                    self.bank.update_cost(
+                        record.execution_id, source="provider_usage",
+                        llm_tokens=float(vector.llm_tokens))
+                    # Record the口径 basis beside the value, so a legacy
+                    # completion-only record and a full-口径 total are never
+                    # pooled as if they were the same unit.
                     self.bank.annotate_features(
-                        record.execution_id, {"cost_provenance": prov})
+                        record.execution_id,
+                        {"host_usage": breakdown} if breakdown else
+                        {"host_usage": {"note": "host reported no token "
+                                                "usage"}})
+                    stored = self.bank.get(record.execution_id)
+                    prov = dict(stored.execution_features.get(
+                        "cost_provenance") or {})
+                    if isinstance(prov.get("llm_tokens"), dict) \
+                            and breakdown and breakdown.get("basis"):
+                        prov["llm_tokens"]["basis"] = breakdown["basis"]
+                        self.bank.annotate_features(
+                            record.execution_id, {"cost_provenance": prov})
             record = self.bank.get(record.execution_id)
         if override:
             # Backfilled dimensions are DECLARATIONS by default (the harness

@@ -2217,6 +2217,9 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
     # GUARDED by one indexed COUNT, so an ordinary close-out walks nothing.
     window_result = maybe_enforce_evidence_window(harness,
                                                   calibration_policy=policy)
+    cost_warnings = _unmeasured_cost_warning(harness, task_id, episode_id)
+    if cost_warnings:
+        closeout.notes.append(cost_warnings["note"])
     return {
         "closeout": closeout.to_dict(),
         "already_closed": False,
@@ -2226,6 +2229,49 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
                                                    episode_id),
         "retention": archive_result,
         "evidence_window": window_result,
+        **({"cost_completeness_warnings": cost_warnings}
+           if cost_warnings else {}),
+    }
+
+
+def _unmeasured_cost_warning(harness, task_id: str,
+                             episode_id: Optional[str]) -> Dict[str, Any]:
+    """Which cost dimensions are still UNKNOWN across the task's records.
+
+    Reported, never enforced: closing an episode with unmeasured dimensions
+    is legitimate (the host may not have produced its usage report), but the
+    close-out must not let that read as "the cost was zero". Calibration
+    already accepts ONLY measured dimensions — this warning makes the gap
+    VISIBLE at the moment it can still be repaired (`amend-cost`), instead
+    of surfacing later as a silently shrunken sample.
+    """
+    records = list(harness.bank.query(task_id=task_id))
+    if not records:
+        return {}
+    unknown: Dict[str, List[str]] = {}
+    for record in records:
+        measured = record.cost.measured_dims() if record.cost else set()
+        for dim in ("llm_tokens", "tool_calls"):
+            if dim not in measured:
+                unknown.setdefault(dim, []).append(record.execution_id)
+    if not unknown:
+        return {}
+    parts = []
+    for dim in sorted(unknown):
+        parts.append(f"{dim} on {len(unknown[dim])} of {len(records)} "
+                     f"record(s)")
+    return {
+        "unknown_dimensions": {dim: sorted(ids)
+                               for dim, ids in unknown.items()},
+        "n_records": len(records),
+        "note": (
+            "cost dimensions still UNKNOWN at close-out ("
+            + "; ".join(parts) + "): unknown is never zero, and these "
+            "dimensions support no cost claim and no calibration until "
+            "backfilled. Repair with `orx amend-cost <execution_id> "
+            "--usage-file <host report>` (or --usage-host <host>) — the "
+            "host's attempt-level usage report is the real observation; a "
+            "hand-typed --override stays a declaration"),
     }
 
 

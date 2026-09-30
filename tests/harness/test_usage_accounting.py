@@ -38,11 +38,16 @@ from or_harness.core.schema import (  # noqa: E402
 )
 from or_harness.core.storage import StorageError  # noqa: E402
 from or_harness.world_model.usage import (  # noqa: E402
+    HOST_USAGE_ADAPTERS,
+    HOST_USAGE_SCHEMA,
     LEGACY_TOKEN_BASIS,
     TOKEN_BASIS_COMPLETION_ONLY,
     TOKEN_BASIS_PROMPT_ONLY,
     TOKEN_BASIS_TOTAL,
+    host_report_dimensions,
+    host_usage_adapter,
     host_usage_cost_vector,
+    is_host_usage_report,
     normalize_host_usage,
     token_bases_mixed,
     token_basis_of,
@@ -164,6 +169,167 @@ class TestHostUsage(unittest.TestCase):
         self.assertEqual(normalized["prompt_tokens"], 5)
         self.assertEqual(normalized["completion_tokens"], 7)
         self.assertEqual(normalized["reasoning_tokens"], 3)
+
+
+# ---------------------------------------------------------------------------
+# 4b. the versioned HostUsageReport (or-host-usage/1) and its adapters
+# ---------------------------------------------------------------------------
+
+
+#: A report in the exact shape the host contract specifies.
+HOST_REPORT = {
+    "schema": "or-host-usage/1",
+    "host": "openclaw",
+    "model": "paratera/DeepSeek-V4.1-Flash",
+    "scope": {"task_id": "t1", "episode_id": "ep1", "attempt_id": "ex_1"},
+    "tokens": {"prompt_tokens": 12345, "completion_tokens": 678,
+               "reasoning_tokens": 291, "cached_tokens": 0, "calls": 3},
+    "tool_calls": 38,
+    "tool_calls_lower_bound": 1,
+    "measured": ["prompt_tokens", "completion_tokens", "tool_calls"],
+    "provenance": {"llm_tokens": "provider_usage",
+                   "tool_calls": "agent_observed"},
+    "notes": "fixture",
+}
+
+
+class TestHostUsageReport(unittest.TestCase):
+
+    def test_the_schema_tag_decides_the_contract(self):
+        self.assertTrue(is_host_usage_report(HOST_REPORT))
+        self.assertFalse(is_host_usage_report(
+            {"prompt_tokens": 1, "completion_tokens": 2}))
+        self.assertFalse(is_host_usage_report("not a report"))
+
+    def test_normalize_yields_both_dimensions_with_provenance(self):
+        dimensions, info = host_report_dimensions(HOST_REPORT)
+        # llm_tokens is the FULL口径 total (prompt + completion); the 291
+        # reasoning tokens are a sub-fact inside completion, never added.
+        self.assertEqual(dimensions["llm_tokens"], 12345 + 678)
+        self.assertEqual(dimensions["tool_calls"], 38.0)
+        self.assertEqual(info["basis"], TOKEN_BASIS_TOTAL)
+        self.assertEqual(info["provenance"]["llm_tokens"],
+                         "provider_usage")
+        self.assertEqual(info["provenance"]["tool_calls"],
+                         "agent_observed")
+        self.assertEqual(info["reasoning_tokens"], 291.0)
+        self.assertEqual(info["model_calls"], 3.0)
+
+    def test_the_measured_whitelist_governs_what_counts(self):
+        # tool_calls present as a NUMBER but outside the whitelist: it is a
+        # sub-fact, never a cost measurement.
+        report = dict(HOST_REPORT, measured=["prompt_tokens",
+                                             "completion_tokens"])
+        dimensions, info = host_report_dimensions(report)
+        self.assertEqual(dimensions, {"llm_tokens": 12345 + 678})
+        self.assertNotIn("tool_calls", info["provenance"])
+
+    def test_a_dimension_outside_the_whitelist_stays_unknown(self):
+        report = dict(HOST_REPORT, tokens={"prompt_tokens": 10},
+                      measured=["tool_calls"], tool_calls=4)
+        dimensions, _ = host_report_dimensions(report)
+        # prompt-only is a lower bound AND outside the whitelist: unknown.
+        self.assertEqual(dimensions, {"tool_calls": 4.0})
+
+    def test_completion_only_is_a_lower_bound_basis(self):
+        report = dict(HOST_REPORT, tokens={"completion_tokens": 50})
+        dimensions, info = host_report_dimensions(report)
+        self.assertEqual(dimensions["llm_tokens"], 50.0)
+        self.assertEqual(info["basis"], TOKEN_BASIS_COMPLETION_ONLY)
+
+    def test_tool_calls_below_the_reports_own_bound_is_refused(self):
+        report = dict(HOST_REPORT, tool_calls=0,
+                      tool_calls_lower_bound=1)
+        with self.assertRaises(ValueError) as caught:
+            host_report_dimensions(report)
+        self.assertIn("tool_calls_lower_bound", str(caught.exception))
+
+    def test_a_report_with_no_numbers_yields_nothing(self):
+        report = {"schema": HOST_USAGE_SCHEMA, "host": "openclaw",
+                  "measured": ["prompt_tokens", "tool_calls"]}
+        dimensions, info = host_report_dimensions(report)
+        self.assertEqual(dimensions, {})
+        self.assertIsNone(info["basis"])
+
+
+class TestHostUsageAdapter(unittest.TestCase):
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = self.tmp.name
+
+    def _write_report(self, name="openclaw-usage.ex_1.json",
+                      payload=None):
+        base = Path(self.home) / "host_usage"
+        base.mkdir(parents=True, exist_ok=True)
+        path = base / name
+        path.write_text(json.dumps(payload or HOST_REPORT),
+                        encoding="utf-8")
+        return path
+
+    def test_the_openclaw_adapter_is_registered(self):
+        self.assertIn("openclaw", HOST_USAGE_ADAPTERS)
+        self.assertEqual(host_usage_adapter("OpenClaw").name, "openclaw")
+        self.assertIsNone(host_usage_adapter("no-such-host"))
+        self.assertIsNone(host_usage_adapter(None))
+
+    def test_locate_finds_the_attempt_report(self):
+        self._write_report()
+        adapter = host_usage_adapter("openclaw")
+        path = adapter.locate({"home": self.home, "execution_id": "ex_1"})
+        self.assertIsNotNone(path)
+        self.assertIn("ex_1", path)
+
+    def test_locate_falls_back_to_the_untagged_file(self):
+        self._write_report("openclaw-usage.json")
+        adapter = host_usage_adapter("openclaw")
+        self.assertIsNotNone(
+            adapter.locate({"home": self.home, "execution_id": "ex_9"}))
+
+    def test_locate_returns_none_when_no_report_exists(self):
+        adapter = host_usage_adapter("openclaw")
+        self.assertIsNone(
+            adapter.locate({"home": self.home, "execution_id": "ex_1"}))
+
+    def test_load_reads_and_parses_the_report(self):
+        self._write_report()
+        adapter = host_usage_adapter("openclaw")
+        report = adapter.load({"home": self.home, "execution_id": "ex_1"})
+        self.assertEqual(report["schema"], HOST_USAGE_SCHEMA)
+
+    def test_load_is_none_for_a_malformed_file(self):
+        base = Path(self.home) / "host_usage"
+        base.mkdir(parents=True, exist_ok=True)
+        (base / "openclaw-usage.ex_1.json").write_text("{not json",
+                                                       encoding="utf-8")
+        adapter = host_usage_adapter("openclaw")
+        self.assertIsNone(
+            adapter.load({"home": self.home, "execution_id": "ex_1"}))
+
+    def test_normalize_maps_to_the_canonical_dimensions(self):
+        adapter = host_usage_adapter("openclaw")
+        dimensions, info = adapter.normalize(HOST_REPORT)
+        self.assertEqual(dimensions["llm_tokens"], 12345 + 678)
+        self.assertEqual(dimensions["tool_calls"], 38.0)
+
+    def test_collect_end_to_end_or_none(self):
+        adapter = host_usage_adapter("openclaw")
+        self.assertIsNone(adapter.collect({"home": self.home,
+                                           "execution_id": "ex_1"}))
+        self._write_report()
+        collected = adapter.collect({"home": self.home,
+                                     "execution_id": "ex_1"})
+        self.assertIsNotNone(collected)
+        dimensions, info = collected
+        self.assertEqual(dimensions["tool_calls"], 38.0)
+
+    def test_collect_treats_a_contradictory_report_as_absent(self):
+        self._write_report(payload=dict(HOST_REPORT, tool_calls=0))
+        adapter = host_usage_adapter("openclaw")
+        self.assertIsNone(adapter.collect({"home": self.home,
+                                           "execution_id": "ex_1"}))
 
 
 # ---------------------------------------------------------------------------
@@ -365,6 +531,7 @@ class TestHostUsageEndToEnd(HarnessTestCase):
             "override": None, "override_mode": "replace",
             "override_source": "agent_estimate", "override_force": False,
             "usage_file": str(usage_path), "usage_source": None,
+            "usage_host": None,
             "prediction": None, "method": None, "method_actual": None,
         })()
         # The record is already staged; use --from-staged.
@@ -373,6 +540,370 @@ class TestHostUsageEndToEnd(HarnessTestCase):
         self.assertEqual(code, 0)
         stored = h.bank.get(record.execution_id)
         self.assertEqual(stored.cost.llm_tokens, 1000.0)
+
+
+# ---------------------------------------------------------------------------
+# 9. a versioned HostUsageReport writes BOTH dimensions in one command
+# ---------------------------------------------------------------------------
+
+
+class TestHostReportIngestion(HarnessTestCase):
+
+    def setUp(self):
+        super().setUp()
+        saved = {key: os.environ.pop(key, None) for key in EMBEDDING_ENV_KEYS}
+
+        def restore():
+            for key, value in saved.items():
+                if value is not None:
+                    os.environ[key] = value
+        self.addCleanup(restore)
+        self.saved_env = os.environ.pop("OR_HOST_USAGE_FILE", None)
+
+        def restore_env():
+            if self.saved_env is not None:
+                os.environ["OR_HOST_USAGE_FILE"] = self.saved_env
+        self.addCleanup(restore_env)
+
+    def _solve(self, name="solve_host"):
+        work = Path(self.home) / f"ws_{name}"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0,\n"
+            "               'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        return work
+
+    HOST_REPORT = {
+        "schema": "or-host-usage/1",
+        "host": "openclaw",
+        "model": "paratera/DeepSeek-V4.1-Flash",
+        "scope": {"task_id": "t1", "episode_id": "ep1"},
+        "tokens": {"prompt_tokens": 12345, "completion_tokens": 678,
+                   "reasoning_tokens": 291, "cached_tokens": 0, "calls": 3},
+        "tool_calls": 38,
+        "tool_calls_lower_bound": 1,
+        "measured": ["prompt_tokens", "completion_tokens", "tool_calls"],
+        "provenance": {"llm_tokens": "provider_usage",
+                       "tool_calls": "agent_observed"},
+    }
+
+    def test_one_report_writes_both_dimensions_without_hand_typing(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve()
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record, host_usage=dict(self.HOST_REPORT))
+        stored = h.bank.get(record.execution_id)
+        # llm_tokens: the FULL口径 total, provider_usage.
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertIn("llm_tokens", stored.cost.measured_dims())
+        # tool_calls: the host's whole-scope count, agent_observed.
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+        self.assertIn("tool_calls", stored.cost.measured_dims())
+        provenance = stored.execution_features["cost_provenance"]
+        self.assertEqual(provenance["llm_tokens"]["source"],
+                         "provider_usage")
+        self.assertEqual(provenance["llm_tokens"]["basis"],
+                         TOKEN_BASIS_TOTAL)
+        self.assertEqual(provenance["tool_calls"]["source"],
+                         "agent_observed")
+        # The report's own facts travel with the record.
+        info = stored.execution_features["host_usage"]
+        self.assertEqual(info["schema"], "or-host-usage/1")
+        self.assertEqual(info["reasoning_tokens"], 291.0)
+
+    def test_dimensions_outside_the_whitelist_stay_unknown(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("whitelist")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        report = dict(self.HOST_REPORT,
+                      measured=["prompt_tokens", "completion_tokens"])
+        h.record(record, host_usage=report)
+        stored = h.bank.get(record.execution_id)
+        self.assertIn("llm_tokens", stored.cost.measured_dims())
+        # tool_calls is a NUMBER in the report but NOT whitelisted: it stays
+        # unknown — never zero, never a measurement.
+        self.assertNotIn("tool_calls", stored.cost.measured_dims())
+
+    def test_the_cli_records_a_versioned_report_from_a_file(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("cli_host")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        usage_path = Path(self.home) / "host_report.json"
+        usage_path.write_text(json.dumps(self.HOST_REPORT),
+                              encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "discard_staged": None, "from_staged": record.execution_id,
+            "execution": None, "record_file": None,
+            "override": None, "override_mode": "replace",
+            "override_source": "agent_estimate", "override_force": False,
+            "usage_file": str(usage_path), "usage_source": None,
+            "usage_host": None,
+            "prediction": None, "method": None, "method_actual": None,
+        })()
+        code = cli_module.cmd_record(args)
+        self.assertEqual(code, 0)
+        stored = h.bank.get(record.execution_id)
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+
+    def test_the_cli_locates_the_report_through_the_named_adapter(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("adapter")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        # The host wrote its report under <home>/host_usage/.
+        base = Path(self.home) / "host_usage"
+        base.mkdir(parents=True, exist_ok=True)
+        (base / f"openclaw-usage.{record.execution_id}.json").write_text(
+            json.dumps(self.HOST_REPORT), encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "home": self.home,
+            "discard_staged": None, "from_staged": record.execution_id,
+            "execution": None, "record_file": None,
+            "override": None, "override_mode": "replace",
+            "override_source": "agent_estimate", "override_force": False,
+            "usage_file": None, "usage_source": None,
+            "usage_host": "openclaw",
+            "prediction": None, "method": None, "method_actual": None,
+        })()
+        code = cli_module.cmd_record(args)
+        self.assertEqual(code, 0)
+        stored = h.bank.get(record.execution_id)
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+
+    def test_a_missing_adapter_report_leaves_dimensions_unknown(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("no_report")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "home": self.home,
+            "discard_staged": None, "from_staged": record.execution_id,
+            "execution": None, "record_file": None,
+            "override": None, "override_mode": "replace",
+            "override_source": "agent_estimate", "override_force": False,
+            "usage_file": None, "usage_source": None,
+            "usage_host": "openclaw",
+            "prediction": None, "method": None, "method_actual": None,
+        })()
+        code = cli_module.cmd_record(args)
+        # Recording SUCCEEDS: the dimensions stay unknown, never zero, and
+        # the summary says the adapter found no report.
+        self.assertEqual(code, 0)
+        stored = h.bank.get(record.execution_id)
+        self.assertNotIn("llm_tokens", stored.cost.measured_dims())
+        self.assertNotIn("tool_calls", stored.cost.measured_dims())
+
+    def test_an_unknown_host_name_is_refused_with_the_known_hosts(self):
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "home": self.home,
+            "discard_staged": None, "from_staged": None,
+            "execution": None, "record_file": None,
+            "override": None, "override_mode": "replace",
+            "override_source": "agent_estimate", "override_force": False,
+            "usage_file": None, "usage_source": None,
+            "usage_host": "no-such-host",
+            "prediction": None, "method": None, "method_actual": None,
+        })()
+        code = cli_module.cmd_record(args)
+        self.assertEqual(code, 2)
+
+    def test_amend_cost_applies_a_versioned_report_per_dimension(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("amend")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record)
+        usage_path = Path(self.home) / "late_report.json"
+        usage_path.write_text(json.dumps(self.HOST_REPORT),
+                              encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "execution_id": record.execution_id,
+            "override": None, "mode": "replace",
+            "source": "agent_estimate", "amend_force": False,
+            "usage_file": str(usage_path), "usage_source": None,
+            "usage_host": None,
+        })()
+        code = cli_module.cmd_amend_cost(args)
+        self.assertEqual(code, 0)
+        stored = h.bank.get(record.execution_id)
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+        provenance = stored.execution_features["cost_provenance"]
+        self.assertEqual(provenance["llm_tokens"]["source"],
+                         "provider_usage")
+        self.assertEqual(provenance["tool_calls"]["source"],
+                         "agent_observed")
+
+    def test_amend_cost_refuses_tool_calls_below_the_bound(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("bound")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record)
+        report = dict(self.HOST_REPORT, tool_calls=0,
+                      tool_calls_lower_bound=1)
+        usage_path = Path(self.home) / "bad_report.json"
+        usage_path.write_text(json.dumps(report), encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "execution_id": record.execution_id,
+            "override": None, "mode": "replace",
+            "source": "agent_estimate", "amend_force": False,
+            "usage_file": str(usage_path), "usage_source": None,
+            "usage_host": None,
+        })()
+        code = cli_module.cmd_amend_cost(args)
+        # The report contradicts itself (0 calls below its own bound of 1):
+        # refused, nothing stored.
+        self.assertEqual(code, 2)
+        stored = h.bank.get(record.execution_id)
+        self.assertNotIn("tool_calls", stored.cost.measured_dims())
+
+
+# ---------------------------------------------------------------------------
+# 10. close-episode warns when dimensions are still unknown
+# ---------------------------------------------------------------------------
+
+
+class TestCloseEpisodeCostWarning(HarnessTestCase):
+
+    def setUp(self):
+        super().setUp()
+        saved = {key: os.environ.pop(key, None) for key in EMBEDDING_ENV_KEYS}
+
+        def restore():
+            for key, value in saved.items():
+                if value is not None:
+                    os.environ[key] = value
+        self.addCleanup(restore)
+
+    def test_unknown_dimensions_are_warned_about_at_close(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = Path(self.home) / "ws"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0,\n"
+            "               'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        # No host report, no override: llm_tokens and tool_calls stay
+        # UNKNOWN (never zero).
+        h.record(record)
+        closed = h.close_episode("t1", "ep1", terminal_state="completed")
+        warnings = closed.get("cost_completeness_warnings")
+        self.assertIsNotNone(warnings)
+        self.assertIn("llm_tokens", warnings["unknown_dimensions"])
+        self.assertIn("tool_calls", warnings["unknown_dimensions"])
+        self.assertIn(record.execution_id,
+                      warnings["unknown_dimensions"]["llm_tokens"])
+        self.assertIn("never zero", warnings["note"])
+
+    def test_no_warning_when_every_dimension_is_measured(self):
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = Path(self.home) / "ws"
+        work.mkdir(parents=True, exist_ok=True)
+        (work / "solve.py").write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
+            "               'objective_bound': 1.0,\n"
+            "               'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        task = {"task_id": "t2", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record, host_usage={
+            "schema": "or-host-usage/1", "host": "openclaw",
+            "tokens": {"prompt_tokens": 100, "completion_tokens": 20},
+            "tool_calls": 5,
+            "measured": ["prompt_tokens", "completion_tokens",
+                         "tool_calls"],
+            "provenance": {"llm_tokens": "provider_usage",
+                           "tool_calls": "agent_observed"}})
+        closed = h.close_episode("t2", "ep1", terminal_state="completed")
+        self.assertNotIn("cost_completeness_warnings", closed)
 
 
 if __name__ == "__main__":

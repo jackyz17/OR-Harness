@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -97,6 +98,12 @@ def _parse_dimension_pairs(text: str) -> Dict[str, float]:
     except ValueError as exc:
         raise ValueError(
             f"expected 'name=value,name=value', got {text!r}: {exc}") from exc
+
+
+def _known_usage_hosts() -> List[str]:
+    """The host names ``--usage-host`` can resolve, for error messages."""
+    from or_harness.world_model.usage import HOST_USAGE_ADAPTERS
+    return sorted(HOST_USAGE_ADAPTERS)
 
 
 def _wm_env_float(name: str) -> Optional[float]:
@@ -626,12 +633,70 @@ def cmd_record(args) -> int:
         # captured (its hook / log / storage). The framework never guesses
         # tokens; a supplied report is the REAL spend, recorded with the
         # full口径 (prompt + completion) and marked as a host observation.
+        # Three delivery channels, in precedence order:
+        #   1. --usage-file <path|@path|JSON> — the report itself;
+        #   2. --usage-host <host> — a named adapter locates the report
+        #      (e.g. openclaw under <home>/host_usage/);
+        #   3. $OR_HOST_USAGE_FILE — a default path, same as (1).
         host_usage = None
+        usage_note = None
         if getattr(args, "usage_file", None):
             raw = _load_json_arg(args.usage_file)
-            from or_harness.world_model.usage import normalize_host_usage
-            host_usage = normalize_host_usage(
-                raw, source=getattr(args, "usage_source", None))
+            from or_harness.world_model.usage import (
+                is_host_usage_report,
+                normalize_host_usage,
+            )
+            host_usage = (raw if is_host_usage_report(raw)
+                          else normalize_host_usage(
+                              raw, source=getattr(args, "usage_source",
+                                                  None)))
+        elif getattr(args, "usage_host", None) \
+                or os.environ.get("OR_HOST_USAGE_FILE"):
+            from or_harness.world_model.usage import (
+                is_host_usage_report,
+                normalize_host_usage,
+            )
+            scope = {
+                "home": args.home,
+                "execution_id": (getattr(args, "from_staged", None)
+                                 or (record.execution_id
+                                     if record is not None else None)),
+                "task_id": (record.task_id
+                            if record is not None else None),
+                "usage_file": os.environ.get("OR_HOST_USAGE_FILE"),
+            }
+            report = None
+            host_name = getattr(args, "usage_host", None)
+            if host_name:
+                from or_harness.world_model.usage import host_usage_adapter
+                adapter = host_usage_adapter(host_name)
+                if adapter is None:
+                    return _fail(
+                        f"no usage adapter for host {host_name!r}: known "
+                        "hosts are "
+                        f"{sorted(set(_known_usage_hosts()))}. Pass the "
+                        "report directly with --usage-file, or leave the "
+                        "dimensions unknown (never zero)")
+                report = adapter.load(scope)
+                if report is None:
+                    usage_note = (
+                        f"the {host_name} adapter found no usage report for "
+                        "this attempt: llm_tokens/tool_calls stay UNKNOWN "
+                        "(never zero). Have the host produce the report, or "
+                        "pass it with --usage-file")
+            elif scope["usage_file"]:
+                try:
+                    report = _load_json_arg(scope["usage_file"])
+                except (OSError, ValueError):
+                    report = None
+                    usage_note = (
+                        f"$OR_HOST_USAGE_FILE={scope['usage_file']!r} could "
+                        "not be read: the dimensions stay UNKNOWN (never "
+                        "zero)")
+            if report is not None:
+                host_usage = (report if is_host_usage_report(report)
+                              else normalize_host_usage(
+                                  report, source=host_name))
         prediction = None
         if args.prediction:
             from or_harness.core.schema import PredictionSnapshot
@@ -679,6 +744,8 @@ def cmd_record(args) -> int:
                 f"still unrecorded ({', '.join(unrecorded)}). If one is a failed "
                 "attempt you abandoned, record it with `orx record --from-staged "
                 "<id>` — failures are the most valuable induction raw material.")
+        if usage_note:
+            summary.append(f"NOTE: {usage_note}.")
         return _emit(result, " ".join(summary))
     finally:
         h.close()
@@ -739,29 +806,86 @@ def cmd_amend_cost(args) -> int:
     h = _harness(args)
     try:
         dimensions = {}
-        if getattr(args, "usage_file", None):
+        result_breakdown = None
+        per_dim_sources: Dict[str, str] = {}
+        if getattr(args, "usage_file", None) \
+                or getattr(args, "usage_host", None) \
+                or os.environ.get("OR_HOST_USAGE_FILE"):
             # A HOST usage report is the late-backfill channel: the outer
             # framework's own numbers, applied instead of hand-typed ones.
-            try:
-                report = _load_json_arg(args.usage_file)
-            except ValueError as exc:
-                return _fail(str(exc))
-            from or_harness.world_model.usage import host_usage_cost_vector
-            vector, breakdown = host_usage_cost_vector(
-                report, source=getattr(args, "usage_source", None))
-            if vector is None or "llm_tokens" not in vector.measured_dims():
-                return _fail(
-                    "the usage report carried no token count: there is "
-                    "nothing to backfill (a missing usage is UNKNOWN, never "
-                    "zero). Provide the report from the host's hook/log or "
-                    "hand-type --override llm_tokens=<number>")
-            dimensions["llm_tokens"] = float(vector.llm_tokens)
-            # A host report is a real observation: record it as such, not as
-            # whatever --source defaulted to.
-            args.source = "provider_usage"
-            result_breakdown = breakdown
+            # A versioned HostUsageReport (or-host-usage/1) can carry BOTH
+            # llm_tokens (provider_usage) and tool_calls (agent_observed)
+            # in one report, each recorded under its own provenance.
+            report = None
+            if getattr(args, "usage_file", None):
+                try:
+                    report = _load_json_arg(args.usage_file)
+                except ValueError as exc:
+                    return _fail(str(exc))
+            else:
+                host_name = getattr(args, "usage_host", None)
+                if host_name:
+                    from or_harness.world_model.usage import (
+                        host_usage_adapter,
+                    )
+                    adapter = host_usage_adapter(host_name)
+                    if adapter is None:
+                        return _fail(
+                            f"no usage adapter for host {host_name!r}: "
+                            f"known hosts are "
+                            f"{sorted(set(_known_usage_hosts()))}. Pass the "
+                            "report directly with --usage-file, or leave "
+                            "the dimensions unknown (never zero)")
+                    report = adapter.load({"home": args.home,
+                                           "execution_id": args.execution_id})
+                    if report is None:
+                        return _fail(
+                            f"the {host_name} adapter found no usage report "
+                            f"for {args.execution_id}: there is nothing to "
+                            "backfill (a missing usage is UNKNOWN, never "
+                            "zero). Have the host produce the report, or "
+                            "pass it with --usage-file")
+                else:
+                    try:
+                        report = _load_json_arg(
+                            os.environ["OR_HOST_USAGE_FILE"])
+                    except (OSError, ValueError):
+                        return _fail(
+                            "$OR_HOST_USAGE_FILE could not be read: the "
+                            "dimensions stay UNKNOWN (never zero)")
+            from or_harness.world_model.usage import (
+                host_report_dimensions,
+                host_usage_cost_vector,
+                is_host_usage_report,
+            )
+            if is_host_usage_report(report):
+                try:
+                    dimensions, result_breakdown = \
+                        host_report_dimensions(report)
+                except ValueError as exc:
+                    return _fail(str(exc))
+                per_dim_sources = result_breakdown.get("provenance") or {}
+                if not dimensions:
+                    return _fail(
+                        "the usage report's 'measured' whitelist carried no "
+                        "cost dimension: there is nothing to backfill (a "
+                        "missing usage is UNKNOWN, never zero)")
+            else:
+                vector, breakdown = host_usage_cost_vector(
+                    report, source=getattr(args, "usage_source", None))
+                if vector is None or "llm_tokens" not in \
+                        vector.measured_dims():
+                    return _fail(
+                        "the usage report carried no token count: there is "
+                        "nothing to backfill (a missing usage is UNKNOWN, "
+                        "never zero). Provide the report from the host's "
+                        "hook/log or hand-type --override llm_tokens=<number>")
+                dimensions["llm_tokens"] = float(vector.llm_tokens)
+                # A host report is a real observation: record it as such,
+                # not as whatever --source defaulted to.
+                per_dim_sources["llm_tokens"] = "provider_usage"
+                result_breakdown = breakdown
         else:
-            result_breakdown = None
             try:
                 dimensions = _parse_dimension_pairs(args.override)
             except ValueError as exc:
@@ -774,13 +898,33 @@ def cmd_amend_cost(args) -> int:
             return _fail(f"unknown cost dimensions {unknown}; "
                          f"expected any of {list(COST_DIMENSIONS)}")
         try:
-            record = h.bank.update_cost(
-                args.execution_id,
-                mode=args.mode,
-                source=getattr(args, "source", "agent_estimate"),
-                force=bool(getattr(args, "amend_force", False)),
-                basis=(result_breakdown or {}).get("basis"),
-                **dimensions)
+            # A versioned report may carry several dimensions with
+            # DIFFERENT provenance (llm_tokens=provider_usage,
+            # tool_calls=agent_observed): amend per dimension so each number
+            # is recorded under where IT came from.
+            if per_dim_sources and len(dimensions) > 1:
+                record = None
+                for dim, value in dimensions.items():
+                    record = h.bank.update_cost(
+                        args.execution_id,
+                        mode=args.mode,
+                        source=per_dim_sources.get(dim, "provider_usage"),
+                        force=bool(getattr(args, "amend_force", False)),
+                        basis=(result_breakdown or {}).get("basis")
+                        if dim == "llm_tokens" else None,
+                        **{dim: float(value)})
+            else:
+                record = h.bank.update_cost(
+                    args.execution_id,
+                    mode=args.mode,
+                    source=(per_dim_sources.get(
+                        next(iter(dimensions)),
+                        getattr(args, "source", "agent_estimate"))
+                        if per_dim_sources
+                        else getattr(args, "source", "agent_estimate")),
+                    force=bool(getattr(args, "amend_force", False)),
+                    basis=(result_breakdown or {}).get("basis"),
+                    **dimensions)
         except StorageError as exc:
             return _fail(str(exc))
         measured = sorted(record.cost.measured_dims())
@@ -2419,9 +2563,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="the outer framework's ATTEMPT-level usage report "
                         "(its hook/log/storage output: prompt_tokens, "
                         "completion_tokens, reasoning_tokens, cached_tokens, "
-                        "model, and optionally a per-call 'calls' list). "
+                        "model, and optionally a per-call 'calls' list; a "
+                        "versioned or-host-usage/1 report is read with its "
+                        "own measured whitelist and provenance). "
                         "Recorded with the full token口径 and marked as a "
                         "host observation — the REAL spend, not an estimate")
+    p.add_argument("--usage-host", dest="usage_host", default=None,
+                   metavar="HOST",
+                   help="locate the attempt's usage report through a NAMED "
+                        "host adapter (e.g. 'openclaw') instead of passing "
+                        "the file: the adapter looks under "
+                        "<home>/host_usage/. When no report is found the "
+                        "dimensions stay UNKNOWN (never zero) and the "
+                        "summary says so")
     p.add_argument("--usage-source", dest="usage_source", default=None,
                    help="which host produced --usage-file (e.g. 'openclaw' "
                         "'hermes'); recorded so the figure is traceable")
@@ -2506,7 +2660,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="a HOST attempt-level usage report to apply instead "
                         "of hand-typed overrides (the late-backfill channel: "
                         "the host's hook/log output, or '@path'). Its "
-                        "llm_tokens is recorded with source=provider_usage")
+                        "llm_tokens is recorded with source=provider_usage; "
+                        "a versioned or-host-usage/1 report can also carry "
+                        "tool_calls (agent_observed) in the same report")
+    p.add_argument("--usage-host", dest="usage_host", default=None,
+                   metavar="HOST",
+                   help="locate the report through a NAMED host adapter "
+                        "(e.g. 'openclaw') instead of passing the file; "
+                        "when no report is found the command fails with "
+                        "the reason and the dimensions stay UNKNOWN")
     p.add_argument("--usage-source", dest="usage_source", default=None,
                    help="which host/hook reported --usage-file (e.g. "
                         "openclaw, hermes); used for the provenance record")

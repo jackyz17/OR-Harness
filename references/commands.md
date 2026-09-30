@@ -497,9 +497,30 @@ Bind a strategy-outcome prediction to an action that ALREADY ran. This is the ma
 
 ## Stage 5 — Record facts and cost
 
-### `orx record --execution <json|path> | --from-staged <id> [--usage-file <json|path>] [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment] [--override-source agent_estimate|agent_observed|provider_usage] [--force] [--prediction <json>] [--method JSON] [--method-actual JSON] | --discard-staged <id>`
+### `orx record --execution <json|path> | --from-staged <id> [--usage-file <json|path>] [--usage-host <host>] [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment] [--override-source agent_estimate|agent_observed|provider_usage] [--force] [--prediction <json>] [--method JSON] [--method-actual JSON] | --discard-staged <id>`
 
-**What `--usage-file` accepts.** Either an inline JSON object or a path. The canonical shape is one attempt-level report:
+**What `--usage-file` accepts.** Either an inline JSON object or a path. Two shapes:
+
+1. **The versioned HostUsageReport** (`schema: "or-host-usage/1"`) — the attempt-level report the HOST produces (it owns the LLM connection and the tool invocations, so the real `llm_tokens` and `tool_calls` are its facts). One report fills BOTH dimensions with no hand-typing:
+
+```json
+{"schema": "or-host-usage/1",
+ "host": "openclaw",
+ "model": "paratera/DeepSeek-V4.1-Flash",
+ "scope": {"task_id": "...", "episode_id": "...", "attempt_id": "..."},
+ "tokens": {"prompt_tokens": 12345, "completion_tokens": 678,
+            "reasoning_tokens": 291, "cached_tokens": 0, "calls": 3},
+ "tool_calls": 38,
+ "tool_calls_lower_bound": 1,
+ "measured": ["prompt_tokens", "completion_tokens", "tool_calls"],
+ "provenance": {"llm_tokens": "provider_usage",
+                "tool_calls": "agent_observed"},
+ "notes": "..."}
+```
+
+Rules: `llm_tokens` = prompt + completion (the FULL口径; reasoning/cached are sub-facts inside those sides, never added again; a single side alone is a LOWER bound, `basis=completion_only`/`prompt_only`). `tool_calls` = ALL tool invocations in the attempt's scope (shell, file reads/writes, sandbox runs, solver calls) and must be `>= tool_calls_lower_bound` — a report contradicting its own bound is refused. Only dimensions in the `measured` whitelist enter `cost_measured`; everything else stays UNKNOWN, never zero. Each dimension is recorded under its own `provenance` entry (`llm_tokens` → `provider_usage`, `tool_calls` → `agent_observed` by default).
+
+2. **The older permissive shape** — every key optional, kept for backward compatibility:
 
 ```json
 {"prompt_tokens": 700, "completion_tokens": 300,
@@ -509,7 +530,13 @@ Bind a strategy-outcome prediction to an action that ALREADY ran. This is the ma
  "calls": [{"id": "call-1", "prompt_tokens": 400, "completion_tokens": 150}]}
 ```
 
-Every key is optional; a per-call `calls` list is summed only when the totals are absent (a call's own prompt+completion is never added twice). A provider that reports only one side yields a LOWER bound (`basis=completion_only`/`prompt_only`), never a complete total. Repeats are collapsed: a `report_id`/`usage_id` seen before, or a call `id` seen before, is not counted twice, and a late report (`"late": true`) for a known call REPLACES its figure instead of adding to it. A report with no token numbers records nothing and says so — unknown is never zero.
+A per-call `calls` list is summed only when the totals are absent (a call's own prompt+completion is never added twice). Repeats are collapsed: a `report_id`/`usage_id` seen before, or a call `id` seen before, is not counted twice, and a late report (`"late": true`) for a known call REPLACES its figure instead of adding to it. A report with no token numbers records nothing and says so — unknown is never zero.
+
+**`--usage-host <host>`** locates the report through a NAMED adapter instead of passing the file: `openclaw` looks under `<home>/host_usage/` (per-attempt `openclaw-usage.<execution_id>.json`, then the untagged `openclaw-usage.json`); `generic` reads `host-usage.json` there. When no report is found, `record` still succeeds — the dimensions stay UNKNOWN (never zero) and the summary says the adapter found nothing. An unknown host name exits 2 with the known hosts listed. `$OR_HOST_USAGE_FILE` may name a default report path (checked last, after `--usage-file` and `--usage-host`).
+
+**How the host produces the report** (for the external implementation — not this repo): (1) on each model call, request usage (a streaming endpoint needs `stream_options.include_usage=true`, exposed as `compat.supportsUsageInStreaming:true`); (2) at attempt end, write one `or-host-usage/1` JSON per attempt with the summed tokens, the whole-scope tool-call count and the measured whitelist; (3) place it where the adapter looks (`<home>/host_usage/openclaw-usage.<attempt>.json`) or hand it to the agent for `--usage-file`.
+
+**Conflict rule.** Do not pass `--usage-file` (or `--usage-host`) AND `--override` for the SAME dimension: the host report is a real observation, so the override is refused rather than silently overwriting it. `--override` remains for dimensions the report does not carry.
 
 **What `--candidate` takes on `predict-strategy`.** An inline JSON object or a path, in the contract's `CandidateRef` shape or the legacy `ActionSpec` shape (the same objects `plan-next --candidates` takes, as a LIST):
 
@@ -536,9 +563,9 @@ There is no retention mark to set: retention is decided by the evidence WINDOW (
 
 **Next.** `close-episode`, or go back to prediction if you are retrying. Failures: `cost_completeness.missing` names the dimensions still unmeasured, and `index_sync.state != synced` is a deferred index write, recovered with `rebuild-index` — neither blocks the fact.
 
-### `orx amend-cost <execution_id> [--override llm_tokens=1840,tool_calls=9] [--usage-file JSON|PATH] [--usage-source host] [--mode replace|increment] [--source agent_observed|agent_estimate|provider_usage] [--force]`
+### `orx amend-cost <execution_id> [--override llm_tokens=1840,tool_calls=9] [--usage-file JSON|PATH] [--usage-host <host>] [--usage-source host] [--mode replace|increment] [--source agent_observed|agent_estimate|provider_usage] [--force]`
 
-Backfills cost dimensions of an **already-recorded** execution, in place — nothing is re-run and nothing is appended. This is the repair path for a cost gap (`record`'s `cost_completeness.missing`, `induce`'s `cost_claim_withheld`): an unmeasured dimension supports no cost claim until every supporting record measures it, and this is how you close it without re-executing.
+Backfills cost dimensions of an **already-recorded** execution, in place — nothing is re-run and nothing is appended. This is the repair path for a cost gap (`record`'s `cost_completeness.missing`, `induce`'s `cost_claim_withheld`, `close-episode`'s `cost_completeness_warnings`): an unmeasured dimension supports no cost claim until every supporting record measures it, and this is how you close it without re-executing.
 
 `--mode replace` (default) means the value IS the measurement — re-applying the same override is idempotent and never double-counts. `--mode increment` adds an additional measured amount within the record's scope. Cost feedback is recomputed against the frozen prediction snapshot, so the stored summary can never disagree with the stored fact.
 
@@ -548,7 +575,7 @@ The token口径 is the FULL total (prompt + completion; reasoning/cached are sub
 
 A `tool_calls` declaration below the sandbox's provable lower bound is refused (exit 2): the executor demonstrably ran the solve script, so the record itself refutes the number. The response reports `still_missing` — the dimensions that remain unmeasured — so you can see whether the gap is closed.
 
-Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). **A late host report backfills through `--usage-file`** (the host's hook/log output, or `@path`): its `llm_tokens` is recorded with `source=provider_usage` and the full口径, exactly as `record --usage-file` would have. Prefer that (or `--source provider_usage`/`agent_observed` when you read a number off a real report) over a bare hand-typed `llm_tokens`, which defaults to a declaration. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
+Result: `result.{execution_id, recorded, prediction_checks[], cost_feedback?, induction_hints[]}` and, when same-task executions are staged but unrecorded, `result.unrecorded_staged_executions[]` — backfill those with `--from-staged` (records the original payload verbatim; never re-type an execution JSON by hand). **A late host report backfills through `--usage-file` or `--usage-host`** (the host's hook/log output, or `@path`): a versioned `or-host-usage/1` report applies BOTH its dimensions at once, each under its own provenance (`llm_tokens` → `provider_usage`, `tool_calls` → `agent_observed`), exactly as `record --usage-file` would have; the older permissive shape backfills `llm_tokens` with `source=provider_usage`. Prefer that (or `--source provider_usage`/`agent_observed` when you read a number off a real report) over a bare hand-typed `llm_tokens`, which defaults to a declaration. A task's full cost is the sum of its recorded attempt-scope records (`api.task_cost_summary`): every attempt charged to the strategy that actually ran it; retries = sum of per-attempt NEW retries; end-to-end latency is unknown unless you supply explicit task timing (never inferred by max or sum).
 
 **Next.** Re-run `induce` if the gap was a `cost_claim_withheld` dimension. Failures: a `tool_calls` value below the sandbox's provable floor is refused (exit 2), since the record itself refutes the number.
 
@@ -577,6 +604,8 @@ The budget view for a task/episode: consumption over ALL real action costs — r
 ### `orx close-episode --task ID [--episode ep1] [--terminal completed|failed|aborted|budget_exhausted] [--finish-action ACTION_ID] [--min-samples N]`
 
 **Episode close-out.** Closes ONE episode: evaluates its bound strategy-outcome predictions against their real outcomes (field by field: benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage) and publishes the experience calibration summary that later episodes' prediction contexts read. Reads what was recorded — no solver run, no model call, no induction. Unfinished actions are reported (their predictions stay pending, never fabricated into endings); a failed/aborted/budget-exhausted episode closes honestly under its own terminal state. Idempotent: re-closing returns the stored record and counts nothing twice.
+
+**Unknown cost dimensions are warned about, never zeroed.** When any of the task's records still carry an UNKNOWN `llm_tokens` or `tool_calls` (no host report, no backfill), the result carries `cost_completeness_warnings = {unknown_dimensions: {dim: [execution_ids]}, n_records, note}`: calibration already accepts ONLY measured dimensions, so the warning makes the gap visible at the moment it can still be repaired (`amend-cost --usage-file`/`--usage-host`) instead of surfacing later as a silently shrunken sample. Closing is never blocked — the fact is honest as it stands.
 
 **A close-out is the end of the episode, NOT a certification of the answer.** The result carries `task_checks = {n_executions, verdicts, unchecked, note}` reporting how many of the episode's executions carry a task-result verdict (`orx check-task`). An execution confirmed NOT to satisfy the task contributes `0.0` to the benefit observation and the gate is recorded in `evaluations[].benefit.task_check_gated` — so a reader seeing "predicted 0.8, observed 0.0" can tell a confirmed-wrong answer from a genuinely bad solve. Unchecked answers keep their observed value and the note says their validity is UNKNOWN. Full spec: [episode_closeout.md](episode_closeout.md).
 
