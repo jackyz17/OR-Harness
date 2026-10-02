@@ -504,12 +504,17 @@ def cmd_execute(args) -> int:
         prediction_id = getattr(args, "prediction", None)
         method = _load_json_arg(args.method) if getattr(args, "method", None) \
             else None
+        adapted_raw = getattr(args, "adapted_from", None)
+        adapted_from = ([e.strip() for e in adapted_raw.split(",")
+                         if e.strip()] if adapted_raw else None)
         try:
             record = h.execute(task, args.strategy, args.code, args.workspace,
                                solver=args.solver,
                                episode_id=getattr(args, "episode", None),
                                prediction_id=prediction_id,
-                               method=method)
+                               method=method,
+                               adapted_from=adapted_from,
+                               adaptation=getattr(args, "adaptation", None))
         except ValueError as exc:
             # A prediction-driven precondition failure (unknown prediction,
             # a changed problem, a contradictory explicit argument, a
@@ -1119,7 +1124,7 @@ def cmd_induction_material(args) -> int:
                     f"{item['strategy_id'] or '(unnamed)'} "
                     f"n={item['n_supporting']} tasks={len(item['tasks'])} "
                     f"material={state['state']}")
-            if state["state"] == "insufficient":
+            if state["state"] in ("insufficient", "sufficient_limited"):
                 line += f" ({state['reason']})"
             parts.append(line)
         return _emit(result, " | ".join(parts)
@@ -2527,6 +2532,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "(method_planned) — the method that actually ran "
                         "comes solely from the script's result.json "
                         "'method_performed' receipt, never from this plan")
+    p.add_argument("--adapted-from", default=None, metavar="EXEC_IDS",
+                   help="comma-separated execution ids this attempt was "
+                        "ADAPTED FROM (the recall hits you actually read). "
+                        "Recorded as a citation only: it means you LOOKED AT "
+                        "those cases, NOT that reuse succeeded — the effect is "
+                        "judged by this attempt's own task check and "
+                        "calibration, and 'was recalled' is never counted as "
+                        "'reused successfully'")
+    p.add_argument("--adaptation", default=None, metavar="TEXT",
+                   help="one line naming the key adaptation you made to the "
+                        "cited method (used with --adapted-from)")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")

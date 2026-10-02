@@ -191,22 +191,32 @@ class InductionCandidateBundle:
     def material_state(self) -> Dict[str, Any]:
         """Whether this bundle carries enough METHOD material to induce from.
 
-        Three states, and the distinction between the first two matters:
+        Four states; the distinction matters because "a plan is not a
+        performed method" is only fatal to ONE kind of claim:
 
         * ``unavailable`` — the candidate cannot be used at all (its
           comparison lost a whole side to an exclusion). Reported with the
           reason, never presented as a claim.
-        * ``insufficient`` — a strategy name and a mean are not a technique,
-          and the framework will not invent one. An empty method list IS the
-          insufficiency, and so is a record that carries only a PLAN: intent
-          is readable, but a plan does not show how the work was actually
-          done, so it cannot ground a how-to claim on its own.
+        * ``insufficient`` — nothing to abstract: no method content at all,
+          or a PATTERN candidate (a how-to abstraction) whose evidence
+          reports only PLANNED methods. A plan does not show how the work was
+          actually done, so it cannot ground a technique claim on its own —
+          this judgment is unchanged for how-to claims.
+        * ``sufficient_limited`` — a CELL/statistical candidate whose
+          evidence reports PLANNED methods with at least one task-level
+          check PASSED. This grounds a CONDITIONAL FACT ("under condition C,
+          method M produced a checked-correct answer"), NOT a performed
+          technique: "I observed the work run" is not part of what such a
+          claim may assert. The limitation is carried in the state and every
+          evidence entry, so a reader sees the basis is ``planned_only``.
         * ``sufficient`` — at least one PERFORMED method (``actual``) is on
           record, or the agent stated the method in a claim of its own (which
           is checked at submission, not here).
 
         The state is derived from the frozen evidence, never from a threshold
-        the caller can lower.
+        the caller can lower. ``purpose`` splits how-to from conditional-fact
+        claims; it never lets a claim assert a performed method it did not
+        observe.
         """
         if self.material_problem:
             return {"state": "unavailable",
@@ -220,22 +230,56 @@ class InductionCandidateBundle:
         performed = [m for m in self.methods if m.get("actual")]
         planned_only = [m for m in self.methods
                         if m.get("planned") and not m.get("actual")]
-        if not performed:
-            # Every record reports only what it PLANNED. A plan is intent,
-            # not a performed method: it can be read and compared, but it
-            # cannot ground a claim about how the work was really done.
-            note = ("the evidence reports only PLANNED methods: a plan is "
-                    "intent, not a performed method, so there is nothing "
-                    "observed to abstract")
-            if planned_only:
-                note += (" (record what actually ran — `execute --method` is "
-                         "the plan; the solve script's 'method_performed' "
-                         "receipt is the observation)")
-            return {"state": "insufficient", "reason": note,
+        if performed:
+            return {"state": "sufficient",
+                    "n_with_method": len(performed),
                     "n_planned_only": len(planned_only),
                     "n_supporting": len(self.methods)}
-        return {"state": "sufficient",
-                "n_with_method": len(performed),
+        # No PERFORMED method. Whether the PLAN alone can ground a claim
+        # depends on WHAT the claim is for.
+        if not planned_only:
+            # No method content anywhere (every entry is a bare name/mean).
+            return {"state": "insufficient",
+                    "reason": ("no supporting execution reports a method: a "
+                               "strategy name and a mean are not a "
+                               "technique, and none will be invented from "
+                               "them")}
+        if self.purpose == "method_induction":
+            # A how-to abstraction: a plan is intent, not an observation.
+            return {"state": "insufficient",
+                    "reason": ("the evidence reports only PLANNED methods: a "
+                               "plan is intent, not a performed method, so "
+                               "there is nothing observed to abstract a "
+                               "technique from (record what actually ran — "
+                               "`execute --method` is the plan; the solve "
+                               "script's 'method_performed' receipt is the "
+                               "observation)"),
+                    "n_planned_only": len(planned_only),
+                    "n_supporting": len(self.methods)}
+        # A conditional-FACT candidate (statistical refresh). A plan plus a
+        # PASSED task check grounds "under condition C, method M produced a
+        # checked-correct answer" — a limited claim that does NOT assert the
+        # work was observed running. Require at least one checked pass so the
+        # claim never rests on an unjudged answer.
+        checked_pass = [m for m in self.methods
+                        if (m.get("task_check") or {}).get("state") == "passed"]
+        if checked_pass:
+            return {"state": "sufficient_limited",
+                    "basis": "planned_only",
+                    "n_planned_only": len(planned_only),
+                    "n_checked_pass": len(checked_pass),
+                    "n_supporting": len(self.methods),
+                    "reason": ("the evidence reports PLANNED methods with a "
+                               "passed task check: this grounds a "
+                               "CONDITIONAL FACT (condition -> method -> "
+                               "checked outcome), NOT a performed technique. "
+                               "A claim from it must not assert the method "
+                               "was observed running; a stronger claim needs "
+                               "a 'method_performed' receipt")}
+        return {"state": "insufficient",
+                "reason": ("the evidence reports only PLANNED methods and no "
+                           "task-level check has PASSED: a plan plus an "
+                           "unverified answer grounds nothing"),
                 "n_planned_only": len(planned_only),
                 "n_supporting": len(self.methods)}
 
@@ -257,6 +301,13 @@ def _method_material(records: Sequence[Any]) -> List[Dict[str, Any]]:
             "planned": copy.deepcopy(rec.method_planned),
             "actual": copy.deepcopy(rec.method_actual),
             "trajectory": [t.to_dict() for t in (rec.trajectory or [])],
+            # The TASK-level verdict, frozen with the method material: a
+            # PLANNED-only record can ground a conditional-fact claim ONLY
+            # when its answer was checked and PASSED, so the state reader
+            # needs this here (never re-read live, so the frozen bundle and
+            # its state agree).
+            "task_check": copy.deepcopy(
+                (rec.execution_features or {}).get("task_check")),
         })
     return material
 

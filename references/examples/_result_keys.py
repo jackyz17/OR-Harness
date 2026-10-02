@@ -43,7 +43,8 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "required": {"recommendations", "recommendations_basis", "profile"},
         "conditional": {"held_claims", "vector_recall", "degraded",
                         "available_solver_families", "solver_advisories",
-                        "task_digest"},
+                        "task_digest", "evidence_candidates",
+                        "evidence_candidates_note"},
     },
     "context": {
         "required": {"context_id"},

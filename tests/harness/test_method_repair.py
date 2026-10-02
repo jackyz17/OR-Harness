@@ -121,6 +121,29 @@ class TestPlanIsNotAnIntervention(RepairCase):
         self.assertEqual(state["state"], "insufficient")
         self.assertIn("PLANNED", state["reason"])
 
+    def test_planned_only_with_passed_check_is_a_conditional_fact(self):
+        """A plan + a PASSED task check grounds a CONDITIONAL FACT
+        (condition -> method -> checked outcome), not a performed technique:
+        the state says ``sufficient_limited`` with basis ``planned_only``.
+        A plan without a passed check stays ``insufficient`` (the test
+        above), so a plan never grounds a claim on an unjudged answer."""
+        h = self.harness()
+        for i in range(2):
+            h.record(ExecutionRecord(
+                execution_id=f"lim{i}", task_id=f"T{i}", strategy_id="S-lim",
+                profile_snapshot=h.profile(dict(TASK, task_id=f"T{i}")),
+                quality={"feasible": True, "objective": 1.0, "gap": 0.0,
+                         "status": "optimal"},
+                solver={"name": "highs"},
+                method_planned=PER_BOX_METHOD))
+            h.check_task_result(f"lim{i}", {"reference_objective": 1.0})
+        material = h.induction_material(strategy_id="S-lim")
+        self.assertTrue(material["count"])
+        state = material["material"][0]["material_state"]
+        self.assertEqual(state["state"], "sufficient_limited")
+        self.assertEqual(state["basis"], "planned_only")
+        self.assertIn("CONDITIONAL FACT", state["reason"])
+
     # The POSITIVE counterpart — BOTH attempts report a performed method, so
     # the difference DOES fire, with basis='performed_method' — lives in
     # test_triggers.TestInterventionRecovery.test_same_solver_modeling_fix_fires,

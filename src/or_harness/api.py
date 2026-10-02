@@ -4595,6 +4595,26 @@ class ORHarness:
         except VectorRecallUnavailable as exc:
             result["degraded"] = {"path": "profile_only",
                                   "reason": str(exc)}
+        # The strategic channel is the FIRST place to look. A recommendation
+        # backed by an ADMITTED entry (`evidence == "strategic_entry"`) is
+        # knowledge that applies here; a `conditional_stats` recommendation
+        # is only a recount over the evidence bank. When NO admitted entry
+        # applies and the text channel found comparable EXECUTIONS, their
+        # recorded methods are surfaced here as candidates to consider — the
+        # evidence channel standing in for the (empty) knowledge channel,
+        # exactly as the two-layer split intends. They are suggestions only:
+        # the caller still predicts, executes and checks whichever it picks.
+        suggestions = (result.get("vector_recall") or {}).get(
+            "suggested_candidates") or []
+        applied_knowledge = [r for r in result["recommendations"]
+                             if r.get("evidence") == "strategic_entry"]
+        if not applied_knowledge and suggestions:
+            result["evidence_candidates"] = suggestions
+            result["evidence_candidates_note"] = (
+                "no admitted strategic knowledge applies here; these are "
+                "methods actually recorded on comparable past executions, "
+                "offered as candidates — not ranked, not vouched for, and not "
+                "a replacement for predicting and checking the choice")
         return result
 
     @staticmethod
@@ -5226,7 +5246,9 @@ class ORHarness:
                 code_path: str = "", workspace: str = "", *, solver: Optional[str] = None,
                 episode_id: Optional[str] = None,
                 prediction_id: Optional[str] = None,
-                method: Optional[Dict[str, Any]] = None) -> ExecutionRecord:
+                method: Optional[Dict[str, Any]] = None,
+                adapted_from: Optional[Sequence[str]] = None,
+                adaptation: Optional[str] = None) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
 
         The returned record is an evidence unit: the strategy ACTUALLY used,
@@ -5437,6 +5459,28 @@ class ORHarness:
             record.execution_features["retries_proof"] = (
                 "no earlier execute_strategy attempt of this "
                 "(task, episode, strategy) exists: retries=0 is observed")
+        # REUSE TRACE (lightweight, opt-in). When the agent states that this
+        # attempt was ADAPTED FROM specific past executions (the recall hits
+        # it actually read), the citation is recorded on the fact. It is a
+        # citation, not a claim of benefit: "adapted_from ex_..." means the
+        # agent LOOKED AT that case, NOT that reusing it succeeded. Whether
+        # the reuse worked is decided independently by THIS attempt's task
+        # check and by later calibration — never by the citation itself, and
+        # never counted as "reuse succeeded". Unknown ids are kept verbatim
+        # (the citation is the agent's, the framework does not validate
+        # existence) so a later reader can retrace it.
+        adapted = [str(e) for e in (adapted_from or []) if str(e).strip()]
+        if adapted:
+            reuse: Dict[str, Any] = {
+                "adapted_from": adapted,
+                "note": ("citations of past executions this attempt was "
+                         "adapted from — a record that the agent READ them, "
+                         "NOT a claim that reuse helped; its effect is judged "
+                         "by this attempt's own task check and calibration"),
+            }
+            if adaptation is not None and str(adaptation).strip():
+                reuse["adaptation"] = str(adaptation).strip()
+            record.execution_features["reuse_trace"] = reuse
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's

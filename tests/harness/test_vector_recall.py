@@ -112,17 +112,27 @@ class VectorCase(HarnessTestCase):
         self.h = ORHarness(home=self.home, embedding=self.backend)
         self.addCleanup(self.h.close)
 
-    def solve(self, task, strategy="S04", objective=100.0):
+    def solve(self, task, strategy="S04", objective=100.0, method=None):
         """Write a solve script, execute and record it — the honest path."""
         work = Path(self.home) / f"ws_{task['task_id']}_{strategy}"
         work.mkdir(parents=True, exist_ok=True)
         script = work / "solve.py"
-        script.write_text(
-            "import json\n"
-            "with open('result.json', 'w') as fh:\n"
-            "    json.dump({'status': 'optimal', 'objective_value': "
+        lines = [
+            "import json, os",
+            "payload = {'status': 'optimal', 'objective_value': "
             f"{objective}, 'objective_bound': {objective}, "
-            "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
+            "'runtime_seconds': 0.01}",
+        ]
+        if method is not None:
+            lines.append(
+                "payload['method_performed'] = "
+                f"{json.dumps(method)}")
+            lines.append(
+                "payload['method_performed']['action_id'] = "
+                "os.environ.get('OR_ACTION_ID')")
+        lines.append("with open('result.json', 'w') as fh:")
+        lines.append("    json.dump(payload, fh)")
+        script.write_text("\n".join(lines) + "\n", encoding="utf-8")
         record = self.h.execute(task, strategy, str(script), str(work),
                                 solver="highs")
         self.h.record(record)
@@ -399,6 +409,107 @@ class TestNewMemoryIsSearchable(VectorCase):
         out = self.h.recall(_task("t_q", description=REQ_A))
         hit = out["vector_recall"]["execution_evidence"][0]
         self.assertIn("distribution centre", hit["task_text_excerpt"])
+
+
+class TestMethodTravelsWithTheHit(VectorCase):
+    """An execution hit must carry HOW the work was done — the half that
+    makes it reusable — never just an id, a score and an outcome."""
+
+    def _hits(self, task):
+        out = self.h.recall(task)
+        return out, out["vector_recall"]["execution_evidence"]
+
+    def test_planned_only_hit_reports_basis_and_inspect_hint(self):
+        task = _task("t_m", description=REQ_A)
+        work = Path(self.home) / "ws_planned"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 5.0, "
+            "'objective_bound': 5.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        record = self.h.execute(task, "S04", str(script), str(work),
+                                solver="highs",
+                                method={"name": "capacity-first greedy",
+                                        "steps": ["load the binding resource"]})
+        self.h.record(record)
+        out, hits = self._hits(_task("t_q", description=REQ_A))
+        hit = [h for h in hits if h["execution_id"] == record.execution_id][0]
+        self.assertEqual(hit["method"]["basis"], "planned_only")
+        self.assertEqual(hit["method"]["planned"]["name"],
+                         "capacity-first greedy")
+        self.assertIsNone(hit["method"]["actual"])
+        self.assertIn(record.execution_id, hit["inspect_hint"])
+
+    def test_performed_receipt_is_reflected_verbatim(self):
+        method = {"name": "capacity-first greedy",
+                  "steps": ["load the binding resource first", "fill the rest"]}
+        record = self.solve(_task("t_p", description=REQ_A), method=method)
+        stored = self.h.bank.get(record.execution_id)
+        self.assertIsNotNone(stored.method_actual,
+                             "the method_performed receipt must be read back")
+        out, hits = self._hits(_task("t_q", description=REQ_A))
+        hit = [h for h in hits if h["execution_id"] == record.execution_id][0]
+        self.assertEqual(hit["method"]["basis"], "performed")
+        self.assertEqual(hit["method"]["actual"]["name"],
+                         "capacity-first greedy")
+        self.assertIn("ex_", hit["inspect_hint"])
+
+    def test_failure_summary_is_one_line_not_a_traceback(self):
+        work = Path(self.home) / "ws_fail2"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text("raise RuntimeError('kaboom')\n", encoding="utf-8")
+        record = self.h.execute(_task("t_f2", description=REQ_A), "S04",
+                                str(script), str(work), solver="highs")
+        record.quality = {"status": "error", "feasible": False,
+                          "objective": None, "gap": None}
+        self.h.record(record)
+        out, hits = self._hits(_task("t_q", description=REQ_A))
+        hit = [h for h in hits if h["execution_id"] == record.execution_id][0]
+        self.assertTrue(hit["failure_summary"])
+        self.assertNotIn("\n", hit["failure_summary"][0]["error"])
+
+    def test_evidence_candidates_fill_when_no_knowledge_applies(self):
+        method = {"name": "capacity-first greedy",
+                  "steps": ["load the binding resource first"]}
+        self.solve(_task("t_c", description=REQ_A), method=method)
+        out = self.h.recall(_task("t_q", description=REQ_A))
+        # No ADMITTED knowledge for this cell (a conditional-stats recount is
+        # not an admitted entry) -> evidence candidates appear.
+        self.assertNotIn("strategic_entry",
+                         [r["evidence"] for r in out["recommendations"]])
+        self.assertIn("evidence_candidates", out)
+        names = [c["method_name"] for c in out["evidence_candidates"]]
+        self.assertIn("capacity-first greedy", names)
+        # And they are explicitly NOT a ranked menu.
+        self.assertIn("not ranked",
+                      out["evidence_candidates_note"].lower())
+
+    def test_adapted_from_is_recorded_as_a_citation(self):
+        prior = self.solve(_task("t_src", description=REQ_A))
+        target = _task("t_dst", description=REQ_B, resource_coupling=0.8)
+        work = Path(self.home) / "ws_dst"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0, "
+            "'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        rec = self.h.execute(target, "S04", str(script), str(work),
+                             solver="highs",
+                             adapted_from=[prior.execution_id],
+                             adaptation="raised the demand cap")
+        trace = rec.execution_features.get("reuse_trace")
+        self.assertIsNotNone(trace)
+        self.assertEqual(trace["adapted_from"], [prior.execution_id])
+        self.assertEqual(trace["adaptation"], "raised the demand cap")
+        # It is explicitly a citation, not a success claim.
+        self.assertIn("NOT a claim", trace["note"])
 
 
 class TestStaleAndLifecycle(VectorCase):

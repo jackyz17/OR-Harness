@@ -37,7 +37,8 @@ index, and no record.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+import copy
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
     GROUPING_FEATURES,
@@ -139,6 +140,129 @@ def classify_applicability(profile: Optional[ProblemProfile],
     return "applies", True, None
 
 
+def _first_error_line(error: str) -> str:
+    """The first non-blank line of a traceback — enough to name the failure."""
+    for line in str(error or "").splitlines():
+        line = line.strip()
+        if line and not line.lower().startswith("traceback"):
+            return line
+    return ""
+
+
+def method_summary(record) -> Dict[str, Any]:
+    """The reusable METHOD content of one fact, for a recall hit.
+
+    A hit that reports only an id, a score and an outcome is unusable: the
+    question a new task asks of past evidence is HOW the work was done. The
+    method the record already carries is echoed here — the PLAN the candidate
+    proposed (``planned``) and the method the run reports as actually
+    performed (``actual``) — never a paraphrase and never the plan promoted
+    to a performed method. ``basis`` states which side grounds the summary:
+
+    * ``performed`` — a ``method_actual`` receipt exists: the strongest basis;
+    * ``planned_only`` — only the intended plan is on record: real, but a
+      plan is intent, not an observation;
+    * ``none`` — the record reports no method at all (UNKNOWN, never filled).
+
+    ``steps`` are returned whole (they are already bounded by what the agent
+    wrote); a reader that needs the raw record uses ``inspect_hint``.
+    """
+    planned = record.method_planned
+    actual = record.method_actual
+
+    def _side(method: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not isinstance(method, dict):
+            return None
+        name = str(method.get("name") or "").strip()
+        steps = [str(s) for s in (method.get("steps") or []) if str(s).strip()]
+        if not name and not steps:
+            return None
+        out: Dict[str, Any] = {"name": name, "steps": steps}
+        for key in ("why", "fallback", "source"):
+            if method.get(key):
+                out[key] = method[key]
+        return out
+
+    p_side = _side(planned)
+    a_side = _side(actual)
+    if a_side is not None:
+        basis = "performed"
+    elif p_side is not None:
+        basis = "planned_only"
+    else:
+        basis = "none"
+    return {"planned": p_side, "actual": a_side, "basis": basis}
+
+
+def _failure_summary(record) -> List[Dict[str, Any]]:
+    """One line per failure: its class and the first traceback line.
+
+    The full traceback stays on the record; a hit carries just enough to
+    tell a real failure from a clean run. An empty list means no failure was
+    recorded — it does NOT mean the answer was correct (that is
+    ``task_check``).
+    """
+    out: List[Dict[str, Any]] = []
+    for failure in (record.failures or []):
+        data = failure.to_dict()
+        out.append({
+            "error_class": data.get("error_class"),
+            "error": _first_error_line(str(data.get("error") or "")),
+            "recovery_action": data.get("recovery_action"),
+        })
+    return out
+
+
+def _suggested_candidates(hits: Sequence[Dict[str, Any]],
+                          structural_empty: bool) -> List[Dict[str, Any]]:
+    """Candidate methods named by the EXECUTION EVIDENCE of this recall.
+
+    When the structural (strategic) channel holds nothing for this cell, the
+    text channel's execution hits are the only concrete "what was tried on a
+    comparable problem" material. Rather than leaving the agent to re-invent
+    a method, the methods actually recorded on those hits are surfaced as
+    SUGGESTIONS — each stamped with the evidence it came from and how strong
+    that evidence is (``basis``), and explicitly NOT ranked. This is a
+    presentation of past facts, never a menu the framework vouches for and
+    never a substitute for predicting, executing and checking the choice.
+
+    Only distinct method names are suggested, in the recall's own similarity
+    order, and a hit whose record reports no method contributes nothing
+    (absence stays absent). ``structural_empty`` is accepted for symmetry and
+    reporting; suggestions are always derived from the hits themselves so a
+    caller can see WHERE each came from.
+    """
+    suggestions: List[Dict[str, Any]] = []
+    seen: set = set()
+    for hit in hits:
+        summary = hit.get("method") or {}
+        if summary.get("basis") == "none":
+            continue
+        side = summary.get("actual") or summary.get("planned") or {}
+        name = str(side.get("name") or "").strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append({
+            "method_name": name,
+            "steps": list(side.get("steps") or []),
+            "from_execution_id": hit.get("execution_id"),
+            "from_task_id": hit.get("task_id"),
+            "strategy_id": hit.get("strategy_id"),
+            "similarity": hit.get("similarity"),
+            "basis": summary.get("basis"),
+            "task_check": hit.get("task_check"),
+            "structural_match": hit.get("structural_match"),
+            "note": ("a method actually recorded on a past execution; "
+                     "presented for consideration, not ranked or vouched for "
+                     "— predict, execute and check it like any candidate"),
+        })
+    return suggestions
+
+
 def _execution_entry(harness, item: Dict[str, Any], score: float,
                      task_profile: Optional[ProblemProfile],
                      query_cell: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -190,6 +314,33 @@ def _execution_entry(harness, item: Dict[str, Any], score: float,
                    "been run"] if task_check_state(record) is None else [])),
         "profile_cell": record_cell,
         "structural_match": structural,
+        # HOW the work was done — the half that made a hit reusable. Echoed
+        # from the record, never rewritten; `basis` says how strong it is
+        # (performed > planned_only > none). See `method_summary`.
+        "method": method_summary(record),
+        # The answer's variable values, when the run reported them, so a
+        # reader can see WHAT was produced — not to be copied blindly, and
+        # absent when the script did not report them (never fabricated).
+        "solution_variables": (copy.deepcopy(
+            record.execution_features.get("solution_variables"))
+            if isinstance(record.execution_features.get("solution_variables"),
+                          dict) else None),
+        # One line per failure (class + first traceback line + any recorded
+        # recovery). Empty is "no failure recorded", not "the answer was
+        # right" — that is `task_check`.
+        "failure_summary": _failure_summary(record),
+        "method_basis": method_summary(record)["basis"],
+        # The full record (CIR snapshot, complete tracebacks, artifacts) is
+        # NOT inlined — this names the call that fetches it on demand.
+        "inspect_hint": (f"orx inspect --bank experience --id "
+                         f"{record.execution_id}"),
+        # Citations of past executions this attempt was adapted from (the
+        # agent's own `--adapted-from`), when recorded. A citation is a record
+        # that the case was READ, never that reuse succeeded.
+        "reuse_trace": (copy.deepcopy(
+            record.execution_features.get("reuse_trace"))
+            if isinstance(record.execution_features.get("reuse_trace"), dict)
+            else None),
     }
 
 
@@ -318,6 +469,15 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
                        for layer in LAYERS if not statuses[layer]["usable"]}
     if degraded_layers:
         result["degraded_layers"] = degraded_layers
+    # When the text channel finds NO published knowledge, the execution hits
+    # are the only concrete "what was tried on a comparable problem" material
+    # — so name their methods as suggestions. With strategic knowledge
+    # present, the entry path already carries the reusable claim and the
+    # evidence stays a discovery signal; suggestions are therefore scoped to
+    # the knowledge-empty case, never a second menu bolted on top.
+    if not result["strategic_knowledge"]:
+        result["suggested_candidates"] = _suggested_candidates(
+            result["execution_evidence"], structural_empty=True)
     return result
 
 

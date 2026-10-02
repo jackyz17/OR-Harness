@@ -186,6 +186,8 @@ Recalls accumulated experience through **two independent channels**. They answer
 
 **Text channel — "what should I LOOK AT?"** (`result.vector_recall`). The task text is embedded and compared with every indexed memory, **with no structural pre-filter**, so a nearly identical problem from a different structural cell still surfaces. `similarity` is the raw text cosine: it is **never** a quality, cost, or risk estimate and never enters a score.
 
+**An execution hit is usable experience on its own** — it does not have to be promoted to strategic knowledge before you may read and adapt it. The hit therefore carries the METHOD, not just an id and a mean:
+
 ```jsonc
 "vector_recall": {
   "backend": {"source": "remote|local-hashing", "model_id": "...", "dimension": 384},
@@ -198,8 +200,28 @@ Recalls accumulated experience through **two independent channels**. They answer
     "failures": 2, "status": "feasible", "measurement_scope": "attempt",
     "task_check": "passed|failed|insufficient|null",
     "task_check_limitations": ["…present when the answer was NOT validated…"],
+    "method": {                          // HOW the work was done (never rewritten)
+      "planned": {"name": "...", "steps": ["..."]},   // the DECLARED intent
+      "actual":  {"name": "...", "steps": ["..."]}|null,  // method_performed receipt
+      "basis": "performed|planned_only|none"          // how strong the summary is
+    },
+    "method_basis": "performed|planned_only|none",     // = method.basis (flat)
+    "solution_variables": {"x1": 10, ...}|null,        // what was PRODUCED, if reported
+    "failure_summary": [{"error_class": "model",       // one line per failure
+                         "error": "AttributeError: ...",
+                         "recovery_action": null}],
+    "reuse_trace": {"adapted_from": ["ex_..."],        // the agent's own citations
+                    "adaptation": "..."}|null,          // (READ, not "reuse worked")
+    "inspect_hint": "orx inspect --bank experience --id ex_...",  // fetch the full record
     "profile_cell": "family=vrp|rc[0.25,0.50]|...",
     "structural_match": "same_cell|different_cell|unknown"
+  }],
+  "suggested_candidates": [{              // only when strategic_knowledge is EMPTY
+    "method_name": "...", "steps": ["..."],
+    "from_execution_id": "ex_...", "from_task_id": "t1", "strategy_id": "S04",
+    "similarity": 0.87, "basis": "performed|planned_only",
+    "task_check": "passed|null", "structural_match": "same_cell",
+    "note": "…presented for consideration, not ranked or vouched for…"
   }],
   "strategic_knowledge": [{
     "entry_id": "se_...", "strategy_id": "S04", "similarity": 0.81,
@@ -216,6 +238,13 @@ Recalls accumulated experience through **two independent channels**. They answer
                 "note": "query these via `orx inspect --bank experience|strategic`"}
 }
 ```
+
+**The two channels are used in order.** `strategic_knowledge` / an admitted-ENTRY `recommendations[]` (`evidence: "strategic_entry"`) is checked FIRST. A `conditional_stats` recommendation is a recount over the evidence bank, not admitted knowledge — when no admitted entry applies and the text channel found comparable executions, the EXECUTION hits are the main source and `recall` fills `result.evidence_candidates[]` (a copy of `suggested_candidates`): the methods those past executions actually recorded, each stamped with its `from_execution_id`, `basis` and `task_check`. They are **suggestions, not a ranked menu and not a voucher**: the caller still predicts, executes and `check-task`s whichever it picks. Reading them:
+
+- `method.planned` is intent; `method.actual` (with `basis: "performed"`) is what the run reports it did. `basis: "planned_only"` is real but unobserved; `basis: "none"` means the record reports no method at all (UNKNOWN — never guessed).
+- `task_check: "failed"` / `failures` present → a FAILED/REPAIR case: its cost and failure are real, but it must never be read as a working strategy. `task_check: null` → never checked, NOT a pass.
+- A hit is a hint to ADAPT AND PROVE, not to copy: check applicability, adapt, then predict/execute/check it as your own candidate. `inspect_hint` fetches the full record on demand.
+- When you adapt a past case, cite it with `execute --adapted-from ex_... [--adaptation "…"]`; the citation is recorded on the fact as `reuse_trace` and means the case was READ — never that reuse succeeded (see the `execute` section).
 
 Field discipline: `observed_*` (what happened) and `expected_*` (what the knowledge claims) are separate fields — a promise is never read as a measurement. `task_check` carries the TASK-level verdict when one exists: `failed` means the answer was confirmed NOT to satisfy the task, so its `observed_quality` is a solver-side figure and must not be read as a quality the strategy achieved (`task_check_limitations` says so in words); `null` means **never checked** — which is not a pass. `structural_match` for executions compares `group_key` values; for entries it reports the applicability verdict, where `conflicts` names the contradiction and `unknown` means a value needed to decide is missing. `same_cell` and `applies` are independent judgments with different bases. Dormant, retired and (by default) unpublished entries are filtered out **before** the `top_k` cut, so an ineligible item never takes a slot a usable memory could have filled. `stale_indexed` counts items whose document changed under the index (excluded — the stored vector describes text that no longer exists).
 
@@ -395,7 +424,7 @@ Then execute the step with `orx execute --prediction <that same prediction_id>`,
 
 ## Stage 4 — Execute and verify
 
-### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1] [--method JSON]`
+### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT]`
 
 Run this for the strategy you CHOSE. Predicting several candidates is how the choice is made; executing one is what the loop does. A further attempt is your decision after a real failure or an unresolved uncertainty — nothing here starts a second solve on its own, and every attempt that does run is charged its own real cost.
 
@@ -422,6 +451,8 @@ json.dump({"status": "optimal", "objective_value": 10755,
 ```
 
 It is accepted only when its `action_id` matches this attempt (a leftover is refused), read on the failure paths too, and the performed steps are added to the record's trajectory in order. The result lands on the record as `method_actual` (`method_planned` carries the candidate's own method, or the `--method` you passed) and under `execution_features.method_receipt`. **A plan is not a fact**: without a receipt the performed method stays `None`, and the outcome reports `config_observed`-style evidence — never a copy of the plan. `--method JSON` states the method for an UNPREDICTED attempt (`{"name": ..., "steps": [...]}`).
+
+**Cite the past cases you adapted from (optional, `--adapted-from ex_a,ex_b`).** When you reused a method from `vector_recall.execution_evidence` / `evidence_candidates`, name those executions here and add one line with `--adaptation "..."`. This is written to the record as `execution_features.reuse_trace = {adapted_from: [...], adaptation: "...", note: "..."}`. It is a CITATION, never a claim of benefit: it records that you READ those cases, **not** that reusing them worked — and "was recalled" is never counted as "reused successfully". Whether the reuse helped is judged by THIS attempt's own task check and by calibration, never by the citation. Unknown ids are kept verbatim (the framework does not validate existence); the field is a fact about what you looked at, and a later reader (and the offline induction step) can retrace it.
 
 **Report the configuration that really took effect (optional but recommended).** To let the framework tell a predicted configuration from an observed one, have `solve.py` write the parameters it really used back into `result.json` under a `config` object, stamped with the action id the executor passes through `$OR_ACTION_ID`:
 
@@ -693,7 +724,7 @@ This makes NO model call and changes NO knowledge. It exists for what it feeds: 
 
 Organizes the READABLE material for an offline induction step: per candidate, the methods actually used (planned and performed), the comparison evidence (both sides of a contrast, the failed/recovered pair), what followed (outcome, task check, failures), and the verification state of each cited execution. No model call, no writes — it is what you read before writing a claim in your own words.
 
-Each candidate reports `material_state`: `sufficient` when at least one PERFORMED method (`method_actual`) is on record, `insufficient` when there is nothing to abstract (no method at all, or only PLANNED methods — a plan is intent, not a performed method), or `unavailable` when the comparison lost a whole side to an exclusion or a later task check refuted the premise. **`insufficient` is the honest answer**: the framework does not (and will not) derive a technique from numbers alone, so the right response is to record how the work was actually done — the solve script's `method_performed` receipt is the observation (`execute --method` is only the plan). **`unavailable` means the premise no longer holds** — re-check the evidence rather than writing a claim over a half-excluded comparison. Each candidate also carries `purpose`: `method_induction` (a detector candidate, worth abstracting) or `statistical_refresh` (a cell that cleared the count gate — its claim is its statistics, not a technique).
+Each candidate reports `material_state`: `sufficient` when at least one PERFORMED method (`method_actual`) is on record; `sufficient_limited` when the evidence reports only PLANNED methods but has a PASSED task check (a CONDITIONAL FACT: "under condition C, method M produced a checked-correct answer" — NOT a performed technique; carries `basis: "planned_only"`); `insufficient` when there is nothing to abstract (no method at all, or a how-to candidate with only PLANNED methods, or a planned-only candidate with no passed check); or `unavailable` when the comparison lost a whole side to an exclusion or a later task check refuted the premise. **`insufficient` is the honest answer**: the framework does not (and will not) derive a technique from numbers alone, so the right response is to record how the work was actually done — the solve script's `method_performed` receipt is the observation (`execute --method` is only the plan). A plan is not worthless though: with a PASSED check it is `sufficient_limited`, and a LIMITED claim that does not overreach is allowed. **`unavailable` means the premise no longer holds** — re-check the evidence rather than writing a claim over a half-excluded comparison; an execution cited by a hint can also leave the evidence window, in which case the candidate reports nothing rather than a claim on a stale premise. Each candidate carries `purpose`: `method_induction` (a detector candidate, worth abstracting) or `statistical_refresh` (a cell that cleared the count gate — its claim is its statistics, not a technique); the purpose is what separates `insufficient` from `sufficient_limited`.
 
 **Next.** Form the claim (condition -> how -> consequence -> boundary) and submit it with `induce --relation`, citing the executions (or the `bundle_id`) you were shown. Failures: no material means no candidate has enough evidence yet; keep solving and recording.
 
