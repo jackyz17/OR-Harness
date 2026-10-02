@@ -886,12 +886,19 @@ def cmd_amend_cost(args) -> int:
                 per_dim_sources["llm_tokens"] = "provider_usage"
                 result_breakdown = breakdown
         else:
+            if not getattr(args, "override", None):
+                return _fail(
+                    "amend-cost requires a backfill source: --override "
+                    "<dim>=<value>[,<dim>=<value>] or a host report with "
+                    "--usage-file <json|path> / --usage-host <host>. "
+                    "A bare call would amend nothing")
             try:
                 dimensions = _parse_dimension_pairs(args.override)
             except ValueError as exc:
                 return _fail(str(exc))
         if not dimensions:
-            return _fail("--override requires at least one dimension=value pair")
+            return _fail("no dimension to amend: pass --override "
+                         "<dim>=<value> or a host report")
         from or_harness.core.schema import COST_DIMENSIONS
         unknown = sorted(set(dimensions) - set(COST_DIMENSIONS))
         if unknown:
@@ -2637,9 +2644,10 @@ def build_parser() -> argparse.ArgumentParser:
                 "cost_claim_withheld): an unmeasured dimension supports no "
                 "cost claim until every supporting record measures it."))
     p.add_argument("execution_id", metavar="EXECUTION_ID")
-    p.add_argument("--override", required=True,
+    p.add_argument("--override", default=None,
                    help="dimension=value pairs, e.g. 'llm_tokens=1840,"
-                        "tool_calls=9'")
+                        "tool_calls=9'. Optional: a host report supplied "
+                        "with --usage-file/--usage-host replaces it")
     p.add_argument("--mode", default="replace",
                    choices=["replace", "increment"],
                    help="'replace' (default, idempotent — the value IS the "

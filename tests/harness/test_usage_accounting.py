@@ -21,9 +21,11 @@ What this file asserts, one behaviour per class:
    such, so pooling them is detectable.
 """
 import json
+import io
 import os
 import sys
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
@@ -794,6 +796,56 @@ class TestHostReportIngestion(HarnessTestCase):
                          "provider_usage")
         self.assertEqual(provenance["tool_calls"]["source"],
                          "agent_observed")
+
+    def test_amend_cost_usage_file_works_through_the_real_parser(self):
+        # Regression: `--override` used to be required=True, which made the
+        # DOCUMENTED `amend-cost --usage-file <report>` path impossible —
+        # argparse exited 2 before the handler ever saw the report. The
+        # other amend-cost tests call cmd_amend_cost directly and so missed
+        # it; this one goes through build_parser + main, exactly as the CLI
+        # user does.
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("amend_parser")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        h.record(record)
+        usage_path = Path(self.home) / "late_report.json"
+        usage_path.write_text(json.dumps(self.HOST_REPORT),
+                              encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli_module.main(
+                ["--home", self.home, "amend-cost", record.execution_id,
+                 "--usage-file", str(usage_path), "--mode", "replace"])
+        self.assertEqual(code, 0, buffer.getvalue()[:300])
+        stored = h.bank.get(record.execution_id)
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+
+    def test_amend_cost_with_no_source_is_refused_not_a_silent_noop(self):
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = cli_module.main(["--home", self.home, "amend-cost",
+                                    "ex_missing"])
+        # A bare amend (neither --override nor a report) exits 2 with a
+        # named reason rather than silently amending nothing.
+        self.assertEqual(code, 2)
+        self.assertIn("backfill source", buffer.getvalue())
 
     def test_amend_cost_refuses_tool_calls_below_the_bound(self):
         from or_harness.strategy.embedding_index import (
