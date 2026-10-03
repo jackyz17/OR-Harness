@@ -166,6 +166,13 @@ def profile_task(task: Dict[str, Any],
         temporal_coupling=coupling["temporal_coupling"],
         route_complexity=coupling["route_complexity"],
         risk_features=risk, source=source, annotations=annotations)
+    # The PROBLEM CLASS anchor: derived from the CIR's decision domains
+    # (integer/binary vs continuous) and the structural coupling dims, so
+    # the grouping key reflects what the model IS rather than the free-text
+    # family label. Stored on the profile so it is a stable part of the
+    # identity key; legacy records without it are recomputed on read.
+    from or_harness.core.schema import problem_class as _problem_class
+    profile.problem_class = _derive_problem_class(cir, coupling, scale)
     # Derivation report + warnings ride along in annotations (schema-stable).
     report: Dict[str, Any] = {"origin": origin}
     if model_report is not None:
@@ -314,6 +321,54 @@ def _clamp01(value: Optional[float]) -> Optional[float]:
     if value is None:
         return None
     return max(0.0, min(1.0, float(value)))
+
+
+def _derive_problem_class(cir, coupling: Dict[str, Optional[float]],
+                          scale: Dict[str, float]) -> str:
+    """The structural PROBLEM CLASS of a task (a grouping anchor).
+
+    Derived from what the model IS, not from the family label:
+
+    * **network / scheduling** when the coupling dims show network-like or
+      time-like indexes (they dominate: such a model is its own method
+      family regardless of integer-ness);
+    * otherwise **milp** vs **pure_lp** from the integer structure, read
+      from ``spec.n_int_vars`` when present, else from the CIR's decision
+      domains (``integer`` / ``binary``);
+    * **unknown** when neither the spec nor the CIR says anything about the
+      integer structure — an unmeasured model is never guessed continuous.
+
+    The class is stored on the profile so the grouping key stays stable;
+    a legacy record without it re-derives the same value from its own
+    snapshot's coupling/scale.
+    """
+    tc = coupling.get("temporal_coupling")
+    rx = coupling.get("route_complexity")
+    network = rx is not None and float(rx) > 0.0
+    scheduling = tc is not None and float(tc) > 0.0
+    if network and scheduling:
+        return "mixed"
+    if network:
+        return "network"
+    if scheduling:
+        return "scheduling"
+    if "n_int_vars" in scale:
+        return "milp" if float(scale["n_int_vars"]) > 0 else "pure_lp"
+    # Fall back to the CIR's decision domains.
+    domains: List[str] = []
+    if cir is not None:
+        for decision in getattr(cir, "decisions", []) or []:
+            domain = str((getattr(decision, "attrs", {}) or {}).get("domain")
+                         or "").strip().lower()
+            if domain:
+                domains.append(domain)
+    if not domains:
+        return "unknown"
+    if any(d in ("integer", "binary", "int", "bin") for d in domains):
+        return "milp"
+    if all(d in ("continuous", "real", "float") for d in domains):
+        return "pure_lp"
+    return "unknown"
 
 
 def _ratio(numerator: Any, denominator: Any) -> Optional[float]:

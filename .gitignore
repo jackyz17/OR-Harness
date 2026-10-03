@@ -51,3 +51,6 @@ OR_Agent_Cross_Memory_Induction_本轮讨论总结.md
 *.log
 or_harness_home/
 .tmptest/
+
+# ── Local review benchmark data (not for the repo) ──
+harness_review_bench/

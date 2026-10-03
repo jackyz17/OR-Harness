@@ -3232,6 +3232,41 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
         }
     if (stored.risk or {}).get("scored") != (derived.risk or {}).get("scored"):
         changed["risk"] = {"note": "risk labels moved with the live facts"}
+    # A LATE COST MEASUREMENT. The host reports ``llm_tokens`` / ``tool_calls``
+    # AFTER the run and they are backfilled by ``amend-cost`` — which can land
+    # after the evaluation was frozen at close-out. The stored evaluation then
+    # keeps ``excluded: "not measured on the real scope"`` for that dimension
+    # while the LIVE facts now measure it, producing the self-contradiction
+    # where the calibration reports a dimension measured but the stored
+    # evaluation carries no per-dim entry for it. Re-derivation reads the
+    # current facts, so the dimension appears; the change is reported and the
+    # stored evaluation stays as history — nothing is rewritten.
+    stored_cost = stored.cost or {}
+    derived_cost = derived.cost or {}
+    stored_dims = set((stored_cost.get("per_dim") or {}))
+    derived_dims = set((derived_cost.get("per_dim") or {}))
+    cost_moved = stored_dims != derived_dims
+    if not cost_moved:
+        for dim in stored_dims & derived_dims:
+            s = (stored_cost.get("per_dim") or {}).get(dim) or {}
+            d = (derived_cost.get("per_dim") or {}).get(dim) or {}
+            if s.get("log_error") != d.get("log_error") \
+                    or s.get("actual") != d.get("actual"):
+                cost_moved = True
+                break
+    if cost_moved:
+        changed["cost"] = {
+            "stored_dims": sorted(stored_dims),
+            "derived_dims": sorted(derived_dims),
+            "newly_measured": sorted(derived_dims - stored_dims),
+            "dropped": sorted(stored_dims - derived_dims),
+            "eligibility": derived_cost.get("eligibility"),
+            "note": ("a cost dimension's measurement moved after the "
+                     "evaluation was frozen (typically a late host-usage "
+                     "amend of llm_tokens / tool_calls): the live "
+                     "re-derivation reflects it; the stored evaluation is "
+                     "kept as history and nothing is rewritten"),
+        }
     # A RULE REBUILD: the corrected attribution rules can move a stored
     # evaluation's STATE without any new fact arriving — an evaluation that
     # was `excluded` because a single unconfirmed config key used to
@@ -3274,8 +3309,11 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
             + ("; the stored STATE changed because the attribution rules "
                "now block only the dimensions a problem really invalidates"
                if "state" in changed else
-               ". A task-result verdict changed after the evaluation was "
-               "written")),
+               ("; a cost dimension's measurement moved (a late host-usage "
+                "amend), so more of the real spend is now scored"
+                if "cost" in changed else
+                ". A task-result verdict changed after the evaluation was "
+                "written"))),
         "stored_state": stored_state,
         "derived_state": derived_state,
     }

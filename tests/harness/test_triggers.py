@@ -214,69 +214,67 @@ class TestInterventionRecovery(TriggerCase):
 
 class TestStructuralReproduction(TriggerCase):
     def test_reproduced_high_performance_fires(self):
-        """Two families, same strategy, SAME structure (rc cell), same
-        direction — the reproduction this pattern exists to report."""
+        """Two INDEPENDENT TASKS, same strategy, SAME structure (rc cell),
+        same direction — the reproduction this pattern exists to report. The
+        independence unit is the task, not the free-text family label."""
         last = None
-        for fam in ("routing", "scheduling"):
-            for i in range(2):
-                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
-                                            resource_coupling=0.90)
-                last = self.make_record(execution_id=f"sr_{fam}_{i}",
-                                        task_id=f"{fam}{i}", strategy_id="S04",
-                                        profile=profile, gap=0.05)
-                self.bank.append(last)
+        for i, fam in enumerate(("routing", "scheduling")):
+            profile = self.make_profile(problem_id=f"task{i}", family=fam,
+                                        resource_coupling=0.90)
+            last = self.make_record(execution_id=f"sr_{fam}",
+                                    task_id=f"task{i}", strategy_id="S04",
+                                    profile=profile, gap=0.05)
+            self.bank.append(last)
         hints = [h for h in self.check(last)
                  if h.pattern == "structural_reproduction"]
         self.assertTrue(hints)
-        self.assertEqual(set(hints[0].evidence["families"]),
-                         {"routing", "scheduling"})
+        self.assertEqual(set(hints[0].evidence["tasks"]),
+                         {"task0", "task1"})
         self.assertEqual(hints[0].evidence["structure"]["resource_coupling"],
                          "[0.75,1.00]")
 
     def test_incomparable_structure_is_not_mixed_in(self):
-        """The reproduced defect: a third family whose evidence comes from an
+        """The reproduced defect: a third task whose evidence comes from an
         unrelated structure used to be pooled into the same statistic."""
         last = None
-        for fam, rc in (("routing", 0.90), ("scheduling", 0.90),
-                        ("packing", 0.10)):
-            for i in range(2):
-                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
-                                            resource_coupling=rc)
-                last = self.make_record(execution_id=f"mix_{fam}_{i}",
-                                        task_id=f"{fam}{i}", strategy_id="S04",
-                                        profile=profile, gap=0.05)
-                self.bank.append(last)
+        tasks = (("task_r", 0.90), ("task_s", 0.90), ("task_p", 0.10))
+        for tid, rc in tasks:
+            profile = self.make_profile(problem_id=tid, family="routing",
+                                        resource_coupling=rc)
+            last = self.make_record(execution_id=f"mix_{tid}", task_id=tid,
+                                    strategy_id="S04", profile=profile,
+                                    gap=0.05)
+            self.bank.append(last)
         hits = [h for h in self.check(last)
                 if h.pattern == "structural_reproduction"]
-        # packing is structurally different: not reported as reproduction.
+        # task_p is structurally different: not reported as reproduction.
         for h in hits:
-            self.assertNotIn("packing", h.evidence["families"])
+            self.assertNotIn("task_p", h.evidence["tasks"])
 
-    def test_unrelated_family_cannot_veto_a_real_reproduction(self):
-        """The reproduced defect (the other direction): an incomparable third
-        family with opposite behaviour used to cancel a genuine reproduction
-        between two comparable families."""
+    def test_unrelated_task_cannot_veto_a_real_reproduction(self):
+        """The reproduced defect (the other direction): a structurally
+        incomparable task with opposite behaviour used to cancel a genuine
+        reproduction between two comparable tasks."""
         scheduling = None
-        orders = (("routing", 0.90, 0.05), ("scheduling", 0.90, 0.05),
-                  ("packing", 0.10, 0.55))
-        for fam, rc, gap in orders:
-            for i in range(2):
-                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
-                                            resource_coupling=rc)
-                rec = self.make_record(execution_id=f"veto_{fam}_{i}",
-                                       task_id=f"{fam}{i}", strategy_id="S04",
-                                       profile=profile, gap=gap)
-                self.bank.append(rec)
-                if fam == "scheduling" and i == 1:
-                    scheduling = rec
+        orders = (("task_r", 0.90, 0.05), ("task_s", 0.90, 0.05),
+                  ("task_p", 0.10, 0.55))
+        for tid, rc, gap in orders:
+            profile = self.make_profile(problem_id=tid, family="routing",
+                                        resource_coupling=rc)
+            rec = self.make_record(execution_id=f"veto_{tid}", task_id=tid,
+                                   strategy_id="S04", profile=profile,
+                                   gap=gap)
+            self.bank.append(rec)
+            if tid == "task_s":
+                scheduling = rec
         hints = [h for h in self.check(scheduling)
                  if h.pattern == "structural_reproduction"]
-        self.assertTrue(hints, "routing+scheduling reproduce")
-        self.assertEqual(set(hints[0].evidence["families"]),
-                         {"routing", "scheduling"})
-        # packing is structurally incomparable AND opposite: it is neither
+        self.assertTrue(hints, "task_r+task_s reproduce")
+        self.assertEqual(set(hints[0].evidence["tasks"]),
+                         {"task_r", "task_s"})
+        # task_p is structurally incomparable AND opposite: it is neither
         # mixed into the statistic nor able to veto the reproduction.
-        self.assertNotIn("packing", hints[0].evidence["families"])
+        self.assertNotIn("task_p", hints[0].evidence["tasks"])
 
     def test_unknown_structure_never_counts_as_similarity(self):
         """'Both sides unknown' is a shared absence of evidence, not evidence
@@ -292,12 +290,14 @@ class TestStructuralReproduction(TriggerCase):
                 self.bank.append(last)
         self.assertNotIn("structural_reproduction", self.patterns(last))
 
-    def test_single_family_silent(self):
-        """One family's own evidence is not reproduction: a single task's (or
-        family's) observation is never transferable knowledge."""
+    def test_single_task_silent(self):
+        """One TASK's repeated attempts are not reproduction: re-running one
+        instance proves something about that instance, not about the
+        strategy. Independence is counted by task_id (the system's own
+        independence unit), so several attempts of ONE task stay silent."""
         last = None
         for i in range(3):
-            last = self.make_record(execution_id=f"srs_{i}", task_id=f"t{i}",
+            last = self.make_record(execution_id=f"srs_{i}", task_id="t_only",
                                     strategy_id="S04", gap=0.05)
             self.bank.append(last)
         self.assertNotIn("structural_reproduction", self.patterns(last))

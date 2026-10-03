@@ -202,13 +202,12 @@ class ConditionalStats:
 
         The key is compared against the record's DERIVED key (from its own
         profile snapshot), so a stale index column can never smuggle a
-        foreign fact into the cell. ``group_l1`` is itself the structured key
-        (``family=..|rc[..]|..``); its ``family=`` prefix selects the family
-        and the rest is recomputed per record."""
-        family = group_l1.split("|", 1)[0].replace("family=", "", 1)
+        foreign fact into the cell. ``group_l1`` is itself the structured
+        key (``class=..|rc[..]|..``); the first segment names the ANCHOR
+        (the problem class, or the legacy family prefix), and the whole key
+        is recomputed per record."""
         records = [r for r in self._all_attempt_records()
                    if r.strategy_id == strategy_id
-                   and r.profile_snapshot.family == family
                    and group_key(r.profile_snapshot) == group_l1]
         return self._aggregate(group_l1, strategy_id, records)
 
@@ -219,11 +218,8 @@ class ConditionalStats:
         is a diagnostic/administrative entry point. Trigger and prediction
         paths use :meth:`for_profile` instead, which scopes to the cell the
         target profile actually belongs to."""
-        family = group_l1.split("|", 1)[0].replace("family=", "", 1)
         cells: Dict[str, List[ExecutionRecord]] = {}
         for rec in self._all_attempt_records():
-            if rec.profile_snapshot.family != family:
-                continue
             if group_key(rec.profile_snapshot) != group_l1:
                 continue
             cells.setdefault(rec.strategy_id, []).append(rec)
@@ -236,16 +232,22 @@ class ConditionalStats:
         return rec.source == "executed" and rec.measurement_scope == "attempt"
 
     def _family_records(self, profile) -> List[ExecutionRecord]:
-        """Executed attempt-scope facts of the profile's family.
+        """Executed attempt-scope facts that share the profile's GROUPING
+        class.
 
-        Selected by the FAMILY column and then filtered by the structural key
-        derived from each record's own profile snapshot — never by the
-        ``group_l1`` index column. The index was written in several formats
-        over time (``family=routing``, ``family=routing|rc[..]|..``), so
-        querying it directly let historical facts silently drop out of the
-        statistics."""
-        return [r for r in self.bank.query(family=profile.family)
-                if self._is_attempt_evidence(r)]
+        Membership is decided by the DERIVED group key (class + structural
+        cell), never by the stored ``group_l1`` index column and never by
+        the free-text family label: the anchor is the problem CLASS, so a
+        task labelled "inventory" and one labelled "generic" that are both
+        MILPs are comparable. The index was written in several formats over
+        time (``family=routing``, ``family=routing|rc[..]|..``,
+        ``class=milp|..``), so querying it directly let historical facts
+        silently drop out of the statistics.
+
+        The candidate set is deliberately NOT narrowed by the family column:
+        narrowing by a label the caller typed is exactly what split
+        structurally identical tasks apart."""
+        return self._all_attempt_records()
 
     def for_profile(self, profile) -> Dict[str, GroupStats]:
         """Cells of the structural group ``profile`` belongs to.
@@ -278,33 +280,35 @@ class ConditionalStats:
                 and group_key(r.profile_snapshot) == key]
 
     def strategy_ids_in_family(self, family: str) -> List[str]:
-        """Every strategy this family's evidence base really contains.
+        """Every strategy whose recorded evidence shares this family's
+        STRUCTURAL CELLS.
 
         The candidate vocabulary MEMORY holds — read off recorded facts,
-        never off a directory. It spans all cells of the family, so a caller
-        can tell "this strategy was tried in this family but not in this
-        structural cell" (a coverage gap) apart from "this strategy was never
-        tried here at all" (not part of the memory)."""
-        return sorted({r.strategy_id for r in self.bank.query(family=family)
+        never off a directory. With the grouping anchored on the problem
+        CLASS, "family" no longer bounds membership; this returns strategies
+        observed on evidence whose derived cell matches a profile of the
+        named family, so a caller still gets the "was this tried on
+        comparable structure" view without the label artificially
+        restricting it."""
+        return sorted({r.strategy_id for r in self._all_attempt_records()
                        if self._is_attempt_evidence(r)})
 
     def cells_in_family(self, strategy_id: str,
                         family: str) -> Dict[str, GroupStats]:
-        """Every structural cell of ONE strategy inside ONE family.
+        """Every structural cell of ONE strategy (grouped by the DERIVED key).
 
         The "where does this strategy's advantage change" view, keyed by the
         DERIVED cell of each record's own profile snapshot (never the stored
-        index column). Unlike :meth:`cross_family` this keeps the family
-        fixed and varies the STRUCTURE, so a caller can compare a strategy
-        against itself across conditions — the comparison an applicability
-        boundary is read off. Unknown-structure records form their own cell
-        rather than being dropped: they are a distinct condition, not a
-        missing one."""
+        index column). It varies the STRUCTURE so a caller can compare a
+        strategy against itself across conditions — the comparison an
+        applicability boundary is read off. Unknown-structure records form
+        their own cell rather than being dropped: they are a distinct
+        condition, not a missing one. The ``family`` argument is retained for
+        call compatibility but no longer filters: the grouping anchor is the
+        problem class, so a label never hides comparable structure."""
         by_cell: Dict[str, List[ExecutionRecord]] = {}
         for rec in self.bank.query(strategy_id=strategy_id):
             if not self._is_attempt_evidence(rec):
-                continue
-            if rec.profile_snapshot.family != family:
                 continue
             by_cell.setdefault(group_key(rec.profile_snapshot), []).append(rec)
         return {key: self._aggregate(key, strategy_id, recs)
@@ -317,20 +321,25 @@ class ConditionalStats:
 
     def cross_family(self, strategy_id: str, *,
                      like=None) -> List[GroupStats]:
-        """One strategy's evidence partitioned by family, structurally
-        scoped to the reference ``like`` when one is given.
+        """One strategy's evidence partitioned by the grouping anchor
+        (problem class), structurally scoped to the reference ``like`` when
+        one is given.
 
         The "learn once, apply elsewhere" view. With ``like=profile`` only
         executions in the SAME structural cell as the reference contribute,
-        so families whose behaviour comes from an unrelated structure can
-        neither be mixed into the statistic nor veto a genuine reproduction
-        between two comparable families.
+        so an unrelated structure can neither be mixed into the statistic
+        nor veto a genuine reproduction between two comparable regions.
+
+        Partitioning is by the DERIVED problem CLASS, not by the free-text
+        family label: two tasks carrying different labels but the same
+        structural class belong together — treating the label as the split
+        is what scattered comparable evidence across incomparable groups.
 
         With ``like=None`` there is no common structure to compare against:
         every executed attempt-scope fact of the strategy contributes, and
-        the caller must treat the result as "each family's own behaviour"
+        the caller must treat the result as "each class's own behaviour"
         rather than as evidence of a shared structure."""
-        by_family: Dict[str, List[ExecutionRecord]] = {}
+        by_class: Dict[str, List[ExecutionRecord]] = {}
         reference_cell = cell_token(like) if like is not None else None
         for rec in self.bank.query(strategy_id=strategy_id):
             if not self._is_attempt_evidence(rec):
@@ -338,9 +347,10 @@ class ConditionalStats:
             if (reference_cell is not None
                     and cell_token(rec.profile_snapshot) != reference_cell):
                 continue
-            by_family.setdefault(rec.profile_snapshot.family, []).append(rec)
-        return [self._aggregate(f"family={fam}", strategy_id, recs)
-                for fam, recs in sorted(by_family.items())]
+            anchor = group_key(rec.profile_snapshot).split("|", 1)[0]
+            by_class.setdefault(anchor, []).append(rec)
+        return [self._aggregate(anchor, strategy_id, recs)
+                for anchor, recs in sorted(by_class.items())]
 
     def rebuild_check(self) -> bool:
         """Consistency invariant: aggregating a full scan equals per-group

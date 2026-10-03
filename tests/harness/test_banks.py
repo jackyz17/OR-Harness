@@ -65,14 +65,26 @@ class TestConditionalStats(HarnessTestCase):
                 gap=0.05 * i))
         self.assertTrue(self.stats.rebuild_check())
 
-    def test_cross_family_partition(self):
+    def test_cross_class_partition(self):
+        """Evidence is partitioned by the DERIVED problem class, not the
+        free-text family label: two different labels with the same structure
+        stay in ONE group, and a genuinely different class splits off."""
         p_a = self.make_profile(problem_id="a1", family="routing")
         p_b = self.make_profile(problem_id="b1", family="scheduling")
+        # Same structure, different labels -> SAME class group.
         self.bank.append(self.make_record(execution_id="ex_a", task_id="a1", profile=p_a))
         self.bank.append(self.make_record(execution_id="ex_b", task_id="b1", profile=p_b))
         cells = self.stats.cross_family("S01")
+        self.assertEqual(len(cells), 1)
+        self.assertEqual(cells[0].n, 2)
+        # A structurally different class (pure LP) splits off.
+        p_lp = self.make_profile(problem_id="c1", family="routing",
+                                 route_complexity=0.0, temporal_coupling=0.0)
+        p_lp.scale_features = {"n_vars": 10.0, "n_int_vars": 0.0}
+        self.bank.append(self.make_record(execution_id="ex_c", task_id="c1",
+                                          profile=p_lp))
+        cells = self.stats.cross_family("S01")
         self.assertEqual(len(cells), 2)
-        self.assertTrue(all(c.n == 1 for c in cells))
 
     def test_stats_exclude_legacy_compacted_lines(self):
         # A legacy `compacted` row is NOT revived as a counting fact: it maps

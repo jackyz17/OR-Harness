@@ -53,10 +53,12 @@ Four patterns are worth generalizing. They are named for what they are — no hi
 |---|---|---|
 | `strategy_contrast` | ≥2 strategies in the same structural cell differ significantly in quality **or** in cost, and the contrast is not already encoded | a difference existing entries already capture is not news (quality and cost are judged separately: an entry explaining the quality gap does not explain the cost gap) |
 | `intervention_recovery` | a real result changed after an intervention — within one execution (`failures[].recovery_action`), across executions under the SAME solver when the PERFORMED method changed (a differing `method_actual`, or a declared `intervention`), or across executions when the solver changed. A prior attempt counts as failed when the solver refused OR the answer failed its task check | failures without an intervention; retrying the same solver with NO evidence of a change (a plain retry is not a demonstrated recovery); only a PLAN differing while neither attempt reports what it ran |
-| `structural_reproduction` | the same strategy shows the same-direction behaviour in ≥2 families **at the same structure** (the reference dimensions must all be measured) | single-family evidence, mixed directions, or an unmeasured structure |
-| `advantage_reversal` | the same strategy performs high (≥0.75) in one structural cell and low (≤0.35) in another cell **of the same family**, each with n ≥ 2 | consistent advantage across cells, a single cell, a thin cell, or a cross-family difference |
+| `structural_reproduction` | the same strategy shows the same-direction behaviour across ≥2 distinct `task_id`s **in the same structural cell** (the reference dimensions must all be measured) | a single task's repeated runs (re-running ONE instance is not reproduction), mixed directions, or an unmeasured structure |
+| `advantage_reversal` | the same strategy performs high (≥0.75) in one structural cell and low (≤0.35) in another cell, each with n ≥ 2 | consistent advantage across cells, a single cell, or a thin cell |
 
-All detectors are scoped to the target's **structural cell**, not the whole family: evidence from a structurally different region cannot create, dilute, or veto a relation. `structural_reproduction` is the only cross-family pattern and it compares each family's evidence in the same cell; `advantage_reversal` is the only cross-cell pattern and it stays inside one family.
+**The independence unit is the TASK, not a label.** Reproduction counts distinct `task_id`s — "repeating one task is repetition, not reproduction". The old family-label partition has been retired as an anchor: two tasks carrying different `family` words but the same structure are comparable evidence, and a task id is what makes them independent. The grouping anchor is now the derived **problem class** (below), never the free-text label.
+
+All detectors are scoped to the target's **structural cell**: evidence from a structurally different region cannot create, dilute, or veto a relation. `advantage_reversal` is the only cross-cell pattern.
 
 These four are **what draws your attention**, not a classification your final claim must fit. An `intervention_recovery` observation may end up as a modeling rule; a `structural_reproduction` may occur within one family. When you submit a structured relation (below), `kind` is an optional note about the prompt, and the verdict is decided by the assertions you declare — never by the pattern name.
 
@@ -66,20 +68,18 @@ All detectors are purely statistical — they detect patterns in observed data, 
 
 Every detector requires **n ≥ 2** supporting executions: a single observation never counts as a pattern — that restraint is deliberate (see worked example 1 in examples.md). Hints count **executions**, not tasks: three runs of one instance can legitimately fire a hint. That is not a bug and not a contradiction — a hint says the numbers look patterned, while the admission gate below decides whether the evidence may become a claim.
 
-## Applicability: family + structural cell
+## Applicability: problem class + structural cell
 
-Applicability is not declared on a ladder and no widening command exists, but it IS structurally quantized — the same four intervals the framework used before the ladder was retired:
+Applicability is not declared on a ladder and no widening command exists, but it IS structurally quantized:
 
-- **family** — the claim speaks for that family only;
+- **problem class** — the grouping anchor, DERIVED from what the model IS (integer-vs-continuous structure and index shape): `pure_lp`, `milp`, `network`, `scheduling`, `mixed`, or `unknown`. It is NOT the free-text `family` label. The label used to be the anchor, and because callers typed it freely ("inventory", "generic", "planning" for structurally identical tasks) it scattered comparable evidence across incomparable groups — the direct cause of a cold-start run yielding zero claims. Two tasks with different labels but the same class now share a cell, which is what makes them comparable.
 - **cell** — each measurable coupling dimension falls in one of `[0.00,0.25] [0.25,0.50] [0.50,0.75] [0.75,1.00]`, and the claim's applicability is that cell (e.g. `rc[0.75,1.00]`). Unmeasured dimensions get their own `[unknown]` cell.
 
-Why cell rather than observed min/max span: a min/max span is a range in which samples happened to be observed, not a demonstrated region. One family can hold a low-coupling region where a strategy scores 1.0 and a high-coupling region where it scores 0.1; a single span across both would claim "0.55 everywhere in [0.10, 0.90]", erasing the very relation between structure and performance. Cells keep those regions separate — each gets its own claim.
+`family` is still recorded and a claim still NAMES the family its evidence came from (it appears in the predicate set), but it no longer SPLITS the statistics. A profile with no structural signal at all classifies as `unknown`, which is its own cell — never pooled with a measured class.
 
-**Unknown is never similarity.** `[unknown]` matches only a task whose value is also unmeasured: "neither side measured it" is a shared absence of evidence, not evidence that the structures agree. This is stricter than the pre-2026 behaviour (which simply omitted the dimension and therefore matched everything) and old entries are NOT rewritten — their wording stays as written; only newly induced claims use the strict reading.
+Why cell rather than observed min/max span: a min/max span is a range in which samples happened to be observed, not a demonstrated region. One region can score 1.0 and another 0.1; a single span across both would claim "0.55 everywhere", erasing the relation between structure and performance. Cells keep those regions separate — each gets its own claim.
 
-**The trade-off, stated plainly:** evidence scattered across cells may be too thin to form a claim. Four successful runs in one family at four different coupling magnitudes produce four cells holding one observation each, so no claim is created — the statistics remain visible and recall answers from them. The framework does not merge neighbouring cells automatically; run the strategy again at a similar structure, or judge the transfer yourself.
-
-Widening across families is **your** call: the evidence says "in routing, in this cell, S04 held", and nothing about packing. If you decide a routing lesson transfers, act on it yourself — and record the executions, which is what will give packing its own claim.
+**Unknown is never similarity.** `[unknown]` matches only a task whose value is also unmeasured: "neither side measured it" is a shared absence of evidence, not evidence that the structures agree.
 
 Counterexamples need no special machinery: a miss inside the claimed cell is a miss *of the claim* (the claim covered that task when it ran), and three consecutive ones demote the entry to `suspect`. Records outside the cell or from another family do not match, so they are neither checks nor counterexamples.
 
@@ -87,11 +87,15 @@ Counterexamples need no special machinery: a miss inside the claimed cell is a m
 
 Creating an entry is cheap and reversible, but it is not free of evidence requirements. `induce` refuses to create one unless all of this holds:
 
-1. **≥2 supporting executions** in the (family, cell, strategy) evidence set, all of them executed, attempt-scope facts;
-2. **≥2 distinct `task_id`s** — repeating one task is repetition, not reproduction: five runs of the same instance prove something about that instance, not about the strategy in this family. A task-scope total is not attempt evidence and never counts here or in the statistics;
+1. **≥2 supporting executions** in the (class, cell, strategy) evidence set, all of them executed, attempt-scope facts;
+2. **≥2 distinct `task_id`s** — repeating one task is repetition, not reproduction: five runs of the same instance prove something about that instance, not about the strategy. A task-scope total is not attempt evidence and never counts here or in the statistics;
 3. **no cold-archive card** for the same (strategy, predicates) pattern.
 
-A refusal is a report, not a loss: the call returns `verification {tasks, required_tasks}` and a `skipped` reason, the executions stay in the Evidence Bank, and recall keeps answering from them as `conditional_stats` until a second task arrives. A standing cold-archive card is reported **before** this gate, because that is the real blocker (collecting a second task would not help while the card stands). The gate guards **creation only** — once a claim exists, any new matching evidence refreshes it, however repetitive, because the claim's value there is calibration, not admission. Dedup also considers **dormant** entries: new evidence refreshes the dormant claim's id (and waking it stays an offline decision) instead of creating a second entry for the same knowledge object. (This is also why `--dry-run` obeys the gate: it reports the same `skipped` reason it would have produced for real.)
+A refusal is a report, not a loss: the call returns `verification {tasks, required_tasks}` and a `skipped` reason, the executions stay in the Evidence Bank, and recall keeps answering from them as `conditional_stats` until a second task arrives. A standing cold-archive card is reported **before** this gate, because that is the real blocker. The gate guards **creation only** — once a claim exists, any new matching evidence refreshes it, however repetitive. Dedup also considers **dormant** entries. (This is also why `--dry-run` obeys the gate.)
+
+**Cold start: the single-observation fact.** The four detectors above all need a SECOND comparable observation, so a cold-start run of distinct tasks fires none of them and the strategic bank stays empty even though real, verified work happened. The evidence-anchored entry point exists for exactly this: `induction-candidates` also emits `kind="single_observation"` bundles — one per (cell, method) where the task check PASSED, a substantive method is on record, and no other candidate already covers it. These carry `support_scope: "single_observation"` and `transferability: "unproven"`, and their `material_state` is `sufficient_limited`: they ground a **conditional FACT** ("under this structure, this method produced a checked-correct answer"), NEVER a transferable rule. As soon as a second task supports the same (cell, method), the ordinary cell candidate takes over and the placeholder is superseded.
+
+**Publication splits by KIND.** A `conditional_fact` claim publishes with ONE verified observation (it makes no transfer claim) and is stamped `support_scope: single_observation` / `transferability: unproven`. Every OTHER kind is a TRANSFERABLE claim and still needs ≥2 independent tasks. So the independence rule is never relaxed for transfer — it is simply not imposed on a fact that does not claim to transfer.
 
 Task identity is taken from the recorded `task_id`, so one logical problem solved several times (retry under another solver, larger time limit) is one task. If you legitimately consider two runs independent — different instance drawn from the same distribution — give them distinct `task_id`s; that decision is yours to make and to record.
 

@@ -153,8 +153,8 @@ class TestDetectorCandidates(HarnessTestCase):
                                  "steps": ["relax", "solve master"]}
             h.record(rec)
         material = h.induction_material()
-        item = material["material"][0]
-        self.assertEqual(item["material_state"]["state"], "sufficient")
+        item = next(m for m in material["material"]
+                    if m["strategy_id"] == "S01" and m["methods"])
         methods = item["methods"]
         self.assertEqual(len(methods), 2)
         self.assertEqual(methods[0]["planned"]["steps"],
@@ -325,7 +325,12 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self._seed(h)
         bundles = h.induction_candidates()
         self.assertTrue(bundles)
-        bundle_id = bundles[0]["bundle_id"]
+        # The cell bundle cites ALL three executions (a reproduction pattern
+        # bundle may cite fewer — it fires as soon as two independent tasks
+        # agree).
+        bundle = max(bundles, key=lambda b: len(b["execution_ids"]))
+        bundle_id = bundle["bundle_id"]
+        self.assertEqual(len(bundle["execution_ids"]), 3)
         result = h.induce(relations=[{
             "subject": "principle:from_bundle",
             "claim": "the bundle's evidence supports this",
@@ -346,6 +351,127 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
             "evidence": [{"bundle_id": "cb_missing", "role": "preserved"}]}])
         self.assertIn("unknown induction bundle",
                       result["relations"][0]["skipped"])
+
+
+class TestColdStartObservation(HarnessTestCase):
+    """W3: a VERIFIED single execution in an empty cell is induction raw
+    material on its own — the evidence-anchored entry point the four
+    relation detectors (which all need a SECOND comparable observation)
+    cannot provide at cold start."""
+
+    def _verified(self, h, task_id, method_name, strategy_id=None):
+        rec = self.make_record(execution_id=f"ex_{task_id}", task_id=task_id,
+                               strategy_id=strategy_id or f"s_{task_id}",
+                               profile=_profile(task_id))
+        rec.method_planned = {"name": method_name, "steps": ["do the thing"]}
+        h.record(rec)
+        h.check_task_result(rec.execution_id, {"reference_objective": 100.0})
+        return rec
+
+    def test_verified_distinct_task_yields_a_single_observation(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        # Three DISTINCT cold-start tasks, each its own method, each
+        # verified: no contrast/repair/reproduction can fire, yet each is
+        # real material.
+        for i in range(3):
+            self._verified(h, f"t{i}", f"method-{i}")
+        bundles = h.induction_candidates()
+        obs = [b for b in bundles if b["kind"] == "single_observation"]
+        self.assertEqual(len(obs), 3)
+        for b in obs:
+            self.assertEqual(b["support_scope"], "single_observation")
+            self.assertEqual(b["transferability"], "unproven")
+            self.assertEqual(len(b["execution_ids"]), 1)
+        # The material state is the LIMITED conditional-fact form.
+        material = h.induction_material(pattern=None)
+        states = {m["bundle_id"]: m["material_state"]["state"]
+                  for m in material["material"]}
+        for b in obs:
+            self.assertEqual(states[b["bundle_id"]], "sufficient_limited")
+
+    def test_unverified_or_methodless_record_is_not_a_candidate(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        # No task check -> not verified.
+        rec = self.make_record(execution_id="ex_nv", task_id="t_nv",
+                               strategy_id="s_nv", profile=_profile("t_nv"))
+        rec.method_planned = {"name": "m", "steps": ["x"]}
+        h.record(rec)
+        # Verified but no method content -> not abstractable.
+        rec2 = self.make_record(execution_id="ex_nm", task_id="t_nm",
+                                strategy_id="s_nm", profile=_profile("t_nm"))
+        h.record(rec2)
+        h.check_task_result("ex_nm", {"reference_objective": 100.0})
+        obs = [b for b in h.induction_candidates()
+               if b["kind"] == "single_observation"]
+        self.assertEqual(obs, [])
+
+    def test_a_covered_cell_is_not_reissued_as_an_observation(self):
+        """A cell already abstracted by a cell candidate is not re-issued as
+        a bare placeholder (no duplicate knowledge)."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        for i in range(2):
+            self._verified(h, f"c{i}", "same-method", strategy_id="s_shared")
+        bundles = h.induction_candidates()
+        obs = [b for b in bundles if b["kind"] == "single_observation"]
+        # The cell is already covered by a new_claim candidate for the same
+        # (cell, method): no single-observation placeholder is added.
+        self.assertEqual(obs, [])
+
+
+class TestConditionalFactPublication(HarnessTestCase):
+    """W4: a ``conditional_fact`` claim publishes on ONE verified
+    observation, but is stamped unproven — the fact/transfer distinction."""
+
+    def test_single_observation_fact_publishes_but_is_unproven(self):
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        rec = self.make_record(execution_id="ex_one", task_id="T1",
+                               strategy_id="m1", profile=_profile("T1"))
+        rec.method_planned = {"name": "direct upper-bound",
+                              "steps": ["set the bound"]}
+        h.record(rec)
+        h.check_task_result("ex_one", {"reference_objective": 100.0})
+        result = h.induce(relations=[{
+            "subject": "principle:single_fact",
+            "kind": "conditional_fact",
+            "claim": ("on independent upper-bound problems, setting each "
+                      "variable to its bound gave a checked answer"),
+            "method": {"name": "direct upper-bound", "steps": ["set the bound"]},
+            "evidence": [{"execution_id": "ex_one", "role": "sole_evidence"}]}],
+            verify={"claim": "the answer passed its check",
+                    "check": {"assertions": [
+                        {"kind": "status", "roles": ["sole_evidence"],
+                         "status": "optimal"}]}})
+        rel = result["relations"][0]
+        pub = rel["publication"]
+        self.assertTrue(pub["published"])
+        self.assertEqual(pub["support_scope"], "single_observation")
+        self.assertEqual(pub["transferability"], "unproven")
+        from or_harness.strategy.selector import is_publishable
+        self.assertTrue(is_publishable(h.sbank.get(rel["saved"])))
+
+    def test_transferable_claim_still_needs_two_tasks(self):
+        """The rule is NOT relaxed for transferable (non-fact) claims."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        rec = self.make_record(execution_id="ex_two", task_id="T1",
+                               strategy_id="m1", profile=_profile("T1"))
+        h.record(rec)
+        h.check_task_result("ex_two", {"reference_objective": 100.0})
+        result = h.induce(relations=[{
+            "subject": "principle:rule",
+            "kind": "rule",
+            "claim": "this method always works",
+            "evidence": [{"execution_id": "ex_two", "role": "evidence"}]}],
+            verify={"claim": "ok", "check": {"assertions": [
+                {"kind": "status", "roles": ["evidence"],
+                 "status": "optimal"}]}})
+        pub = result["relations"][0]["publication"]
+        self.assertFalse(pub["published"])
+        self.assertIn("independent tasks", " ".join(pub["reasons"]))
 
 
 if __name__ == "__main__":

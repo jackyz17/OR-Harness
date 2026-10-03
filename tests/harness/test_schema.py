@@ -14,6 +14,7 @@ from or_harness.core.schema import (
     min_interval_width,
     pattern_hash,
     predicates_cover,
+    problem_class,
     profile_matches,
 )
 
@@ -136,27 +137,51 @@ class TestSchemaRoundTrip(HarnessTestCase):
 
 
 class TestStructuralGrouping(HarnessTestCase):
-    def test_group_key_is_the_family_plus_cell(self):
-        """One evidence set = one (family, structural cell, strategy) triple.
-        Structure conditions the aggregation; semantic_coupling never does."""
-        p = self.make_profile()        # rc 0.9, tc 0.1, rx 0.85
+    def test_group_key_is_the_class_plus_cell(self):
+        """One evidence set = one (problem class, structural cell, method)
+        triple. The anchor is the STRUCTURAL problem class — derived from
+        what the model IS — not the free-text family label, so two tasks
+        with different labels but identical structure share a cell."""
+        p = self.make_profile()        # rc 0.9, tc 0.1, rx 0.85 -> mixed
         self.assertEqual(group_key(p),
-                         "family=routing|rc[0.75,1.00]|tc[0.00,0.25]|rx[0.75,1.00]")
+                         "class=mixed|rc[0.75,1.00]|tc[0.00,0.25]|rx[0.75,1.00]")
         # A structurally different region is a DIFFERENT evidence set: pooling
         # them once averaged a Q=1.0 region and a Q=0.1 region into one claim.
         self.assertNotEqual(group_key(p),
                             group_key(self.make_profile(resource_coupling=0.1)))
-        self.assertNotEqual(group_key(p),
-                            group_key(self.make_profile(family="scheduling")))
+        # A different FAMILY LABEL with the same structure is the SAME cell:
+        # the label is not an anchor (this is what split comparable evidence).
+        self.assertEqual(group_key(p),
+                         group_key(self.make_profile(family="scheduling")))
         # Same cell wherever the (never-derived) semantic value points.
         self.assertEqual(group_key(p),
                          group_key(self.make_profile(semantic_coupling=0.2)))
+        # A different PROBLEM CLASS is a different cell.
+        self.assertNotEqual(
+            group_key(p),
+            group_key(self.make_profile(route_complexity=None,
+                                        temporal_coupling=None)))
 
     def test_unknown_is_its_own_cell(self):
         self.assertEqual(group_key(self.make_profile(resource_coupling=None)),
-                         "family=routing|rc[unknown]|tc[0.00,0.25]|rx[0.75,1.00]")
+                         "class=mixed|rc[unknown]|tc[0.00,0.25]|rx[0.75,1.00]")
         self.assertNotEqual(group_key(self.make_profile(resource_coupling=None)),
                             group_key(self.make_profile(resource_coupling=0.9)))
+
+    def test_problem_class_separates_lp_from_milp(self):
+        """The class is derived from integer structure, not the label: a
+        continuous model and a mixed-integer model are different classes."""
+        lp = self.make_profile(route_complexity=0.0, temporal_coupling=0.0)
+        lp.scale_features = {"n_vars": 100.0, "n_int_vars": 0.0}
+        milp = self.make_profile(route_complexity=0.0, temporal_coupling=0.0)
+        milp.scale_features = {"n_vars": 100.0, "n_int_vars": 10.0}
+        self.assertEqual(problem_class(lp), "pure_lp")
+        self.assertEqual(problem_class(milp), "milp")
+        self.assertNotEqual(group_key(lp), group_key(milp))
+        # With no structural signal at all, the class is honestly unknown.
+        blank = self.make_profile(route_complexity=None, temporal_coupling=None)
+        blank.scale_features = {}
+        self.assertEqual(problem_class(blank), "unknown")
 
     def test_evidence_predicates_are_the_cell(self):
         """Predicates are the structural CELL the evidence occupies — not a

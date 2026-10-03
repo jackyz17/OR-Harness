@@ -421,6 +421,14 @@ class ProblemProfile:
 
     problem_id: str
     family: str
+    #: Structural PROBLEM CLASS (an anchor of the grouping key). Unlike
+    #: ``family`` (a free-text label the caller types), this is derived from
+    #: what the task IS — integer-vs-continuous decisions and index shape —
+    #: so structurally comparable tasks land in one cell whatever labels
+    #: they carry. It is stored when derived and recomputed on read when a
+    #: legacy record has none (see :func:`problem_class`), so old evidence
+    #: is never silently dropped from the statistics.
+    problem_class: Optional[str] = None
     scale_features: Dict[str, float] = field(default_factory=dict)
     semantic_coupling: Optional[float] = None
     resource_coupling: Optional[float] = None
@@ -434,6 +442,7 @@ class ProblemProfile:
         return {
             "problem_id": self.problem_id,
             "family": self.family,
+            "problem_class": self.problem_class,
             "scale_features": {k: float(v) for k, v in self.scale_features.items()},
             **{f: getattr(self, f) for f in COUPLING_FEATURES},
             "risk_features": self.risk_features,
@@ -459,6 +468,8 @@ class ProblemProfile:
         return cls(
             problem_id=str(data["problem_id"]),
             family=str(data["family"]),
+            problem_class=(str(data["problem_class"])
+                           if data.get("problem_class") else None),
             scale_features={k: float(v) for k, v in (data.get("scale_features") or {}).items()},
             semantic_coupling=_opt_float("semantic_coupling"),
             resource_coupling=_opt_float("resource_coupling"),
@@ -493,16 +504,85 @@ def bin_label(value: Optional[float],
     return f"[{edges[-2]:.2f},{edges[-1]:.2f}]"
 
 
-def group_key(profile: ProblemProfile) -> str:
-    """Similarity key of one evidence set: family + structural cells.
+#: The problem CLASSES the grouping key understands. A class is a coarse
+#: structural type, not a business label: it answers "what KIND of model is
+#: this" (pure continuous / mixed-integer / network / scheduling), which is
+#: what decides whether one task's solving method is comparable to another's.
+PROBLEM_CLASSES: Tuple[str, ...] = (
+    "pure_lp", "milp", "network", "scheduling", "mixed", "unknown")
 
-    One (family, structural cell, strategy) triple is one evidence set — the
-    observations that may be aggregated together. Structure is the legacy
-    four-interval quantization of the measurable coupling dims, so evidence
-    from structurally incomparable regions of a family is never pooled (the
-    defect that averaged a Q=1.0 region and a Q=0.1 region into one claim).
+
+def problem_class(profile: "ProblemProfile") -> str:
+    """The structural PROBLEM CLASS of a profile (a grouping anchor).
+
+    Derived from what the task IS, never from the free-text ``family``:
+
+    * a stored ``problem_class`` (written when the profile was built from a
+      model/spec) is authoritative and returned as-is;
+    * otherwise it is DERIVED from the scale features and index signals the
+      profile carries, so a LEGACY record (written before this field
+      existed) still lands in a meaningful class instead of vanishing.
+
+    The classification is deliberately coarse and honest. A profile with NO
+    structural signal at all is ``unknown`` — never guessed into ``pure_lp``
+    (an unmeasured model is not a known continuous one), and ``unknown`` is
+    its OWN anchor so it can never be pooled with a measured class.
     """
-    parts: List[str] = [f"family={profile.family}"]
+    stored = getattr(profile, "problem_class", None)
+    if stored and str(stored).strip():
+        return str(stored).strip().lower()
+
+    scale = getattr(profile, "scale_features", None) or {}
+    n_int = scale.get("n_int_vars")
+    n_vars = scale.get("n_vars")
+    tc = getattr(profile, "temporal_coupling", None)
+    rx = getattr(profile, "route_complexity", None)
+
+    if n_int is not None:
+        has_int = float(n_int) > 0
+    elif n_vars is not None:
+        # No integer count but a model size IS known: treat as continuous.
+        has_int = False
+    else:
+        has_int = None  # unknown integer structure
+
+    network = rx is not None and float(rx) > 0.0
+    scheduling = tc is not None and float(tc) > 0.0
+
+    # Network and scheduling are BOTH stronger signals than integer-ness:
+    # a network-flow or time-indexed model is its own method family whether
+    # or not it also carries integers.
+    if network and scheduling:
+        return "mixed"
+    if network:
+        return "network"
+    if scheduling:
+        return "scheduling"
+    if has_int is None:
+        return "unknown"
+    return "milp" if has_int else "pure_lp"
+
+
+def group_key(profile: ProblemProfile) -> str:
+    """Similarity key of one evidence set: problem class + structural cells.
+
+    One (problem_class, structural cell, method) triple is one evidence set
+    — the observations that may be aggregated together. The anchor is the
+    **PROBLEM CLASS** (a structural type derived from integer-vs-continuous
+    decisions and index shape), NOT the harness-supplied ``family`` label.
+    "family" is a free-text word the caller types ("inventory", "generic",
+    "planning"); two tasks whose structure is identical were being split
+    into different cells merely because that word differed, which is how ten
+    tasks scattered across eight cells and no claim could form. The class is
+    derived from what the task IS, so structurally comparable tasks share a
+    cell regardless of the label.
+
+    Structure is the legacy four-interval quantization of the measurable
+    coupling dims, so evidence from structurally incomparable regions is
+    never pooled (the defect that averaged a Q=1.0 region and a Q=0.1 region
+    into one claim).
+    """
+    parts: List[str] = [f"class={problem_class(profile)}"]
     short = {"resource_coupling": "rc", "temporal_coupling": "tc",
              "route_complexity": "rx"}
     for f in GROUPING_FEATURES:

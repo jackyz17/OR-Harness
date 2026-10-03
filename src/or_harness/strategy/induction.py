@@ -639,42 +639,70 @@ class InductionEngine:
         scope = (verification or {}).get("scope") or {}
         tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
             or {str(t) for t in (claim.get("tasks") or []) if str(t)}
+        kind = str(claim.get("kind") or "")
+        single_fact = kind == "conditional_fact"
         reasons: List[str] = []
         if state != "verified":
             reasons.append(f"verification state is {state!r}")
-        if len(tasks) < CLAIM_MIN_TASKS:
+        if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
             reasons.append(
                 f"verification covers {len(tasks)} task(s); a transferable "
                 f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks")
-        return {"published": state == "verified" and len(tasks) >= CLAIM_MIN_TASKS,
-                "state": state, "distinct_tasks": len(tasks),
-                "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+        out = {"published": state == "verified"
+                             and (single_fact or len(tasks) >= CLAIM_MIN_TASKS),
+               "state": state, "distinct_tasks": len(tasks),
+               "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+        if single_fact:
+            out["support_scope"] = "single_observation"
+            out["transferability"] = "unproven"
+        return out
 
     @staticmethod
     def _claim_publication(entry: StrategicEntry) -> Dict[str, Any]:
-        """Why a claim-bearing entry is (or is not) publishable."""
+        """Why a claim-bearing entry is (or is not) publishable.
+
+        Two publication rules, by claim KIND:
+
+        * ``conditional_fact`` — a verified statement about the evidence it
+          cites, INCLUDING a single observation ("under this structure, this
+          method produced a checked-correct answer"). It publishes with ONE
+          task, but it is stamped ``support_scope: single_observation`` and
+          ``transferability: unproven`` so no reader mistakes it for a rule.
+        * everything else — a TRANSFERABLE claim, which needs
+          >= ``CLAIM_MIN_TASKS`` independent tasks: one task's observation is
+          not transferable knowledge.
+        """
         state = str((entry.verification or {}).get("state") or "unverified")
         block = entry.verification or {}
         scope = block.get("scope") or {}
+        claim = entry.claim or {}
         tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
-            or {str(t) for t in ((entry.claim or {}).get("tasks") or [])
-                if str(t)}
+            or {str(t) for t in (claim.get("tasks") or []) if str(t)}
+        single_fact = str(claim.get("kind") or "") == "conditional_fact"
         reasons: List[str] = []
         if block.get("stale_after_revision"):
             reasons.append("the claim was revised without a fresh verification")
         elif state != "verified":
             reasons.append(f"verification state is {state!r}")
-        if len(tasks) < CLAIM_MIN_TASKS:
+        if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
             reasons.append(
                 f"verification covers {len(tasks)} task(s); a transferable "
                 f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks "
                 "(a single-task repair is a verified fact about that task, "
                 "not yet knowledge)")
-        return {"published": (state == "verified"
-                              and not block.get("stale_after_revision")
-                              and len(tasks) >= CLAIM_MIN_TASKS),
-                "state": state, "distinct_tasks": len(tasks),
-                "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+        out = {"published": (state == "verified"
+                             and not block.get("stale_after_revision")
+                             and (single_fact or len(tasks) >= CLAIM_MIN_TASKS)),
+               "state": state, "distinct_tasks": len(tasks),
+               "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
+        if single_fact:
+            out["support_scope"] = "single_observation"
+            out["transferability"] = "unproven"
+            out["note"] = ("a conditional FACT about the cited evidence: it "
+                           "publishes with one observation but makes NO "
+                           "transfer claim — more evidence either widens it "
+                           "into a rule or supersedes it")
+        return out
 
 
     @staticmethod

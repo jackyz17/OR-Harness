@@ -483,7 +483,15 @@ class ExperienceBank:
         if strategy_id is not None:
             clauses.append("strategy_id=?"); params.append(strategy_id)
         if group_l1 is not None and family is None:
-            family = group_l1.split("|", 1)[0].replace("family=", "", 1) or None
+            # The first segment of a group key used to be the family label
+            # (``family=routing|..``); it is now the problem CLASS
+            # (``class=milp|..``). A key carrying a class cannot name a
+            # family, so nothing is narrowed by label here — the membership
+            # filter below re-derives the key from each record, which is the
+            # authoritative path for BOTH formats.
+            head = group_l1.split("|", 1)[0]
+            if head.startswith("family="):
+                family = head.replace("family=", "", 1) or None
         if family is not None:
             clauses.append("family=?"); params.append(family)
         if source is not None:

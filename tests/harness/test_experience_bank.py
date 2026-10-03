@@ -44,10 +44,11 @@ class TestExperienceBank(HarnessTestCase):
         self.assertEqual(len(self.bank.query()), 2)
 
     def test_query_by_group(self):
-        """One evidence set = one (family, structural cell, strategy) triple:
-        a query for a cell returns that cell's facts, and the key is derived
-        from each record's own profile rather than trusted from the index
-        column."""
+        """One evidence set = one (problem class, structural cell, method)
+        triple: a query for a cell returns that cell's facts, and the key is
+        derived from each record's own profile rather than trusted from the
+        index column. The anchor is the derived problem CLASS, so a different
+        family label with the same structure stays in the SAME cell."""
         rec = self.make_record(execution_id="ex_g")          # rc 0.9
         self.bank.append(rec)
         same_cell = self.make_record(execution_id="ex_g2", task_id="t2",
@@ -58,14 +59,25 @@ class TestExperienceBank(HarnessTestCase):
                                       profile=self.make_profile(
                                           problem_id="t3", resource_coupling=0.1))
         self.bank.append(other_cell)
-        other_family = self.make_record(
+        # A different family LABEL but the same structure is the SAME cell
+        # now: the label is not an anchor.
+        other_label = self.make_record(
             execution_id="ex_g4", task_id="t4",
             profile=self.make_profile(problem_id="t4", family="scheduling"))
-        self.bank.append(other_family)
+        self.bank.append(other_label)
+        # A genuinely different structural CLASS splits off.
+        other_class = self.make_record(
+            execution_id="ex_g5", task_id="t5",
+            profile=self.make_profile(problem_id="t5", route_complexity=0.0,
+                                      temporal_coupling=0.0))
+        other_class.profile_snapshot.scale_features = {
+            "n_vars": 10.0, "n_int_vars": 0.0}
+        self.bank.append(other_class)
         rows = self.bank.query(group_l1=rec.group_l1)
-        self.assertEqual({r.execution_id for r in rows}, {"ex_g", "ex_g2"})
+        self.assertEqual({r.execution_id for r in rows},
+                         {"ex_g", "ex_g2", "ex_g4"})
         # The family alone is a wider view than one cell.
-        self.assertEqual(len(self.bank.query(family="routing")), 3)
+        self.assertEqual(len(self.bank.query(family="routing")), 4)
 
     def test_query_by_group_reads_legacy_index_formats(self):
         """group_l1's FORMAT has changed over time; membership is decided by

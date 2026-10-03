@@ -1213,6 +1213,43 @@ class TestLiveCorrection(CalibrationV2Case):
                          "the execution really happened, so its observation "
                          "stays")
 
+    def test_late_cost_amend_is_reflected_by_re_derivation(self):
+        """A host-usage amend of llm_tokens can land AFTER close-out froze
+        the evaluation. The stored evaluation then says ``not measured on
+        the real scope`` while the live fact measures it — the
+        self-contradiction W1 fixes. The live re-derivation must pick up
+        the newly measured dimension instead of leaving calibration and
+        evaluation reading two cost views."""
+        from or_harness.world_model import episode_closeout as ec
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy", "strategy_id": "S04"},
+            "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        stored = self.h.strategy_prediction_evaluations(task_id="t1")
+        self.assertTrue(stored)
+        # At close-out llm_tokens was not yet measured.
+        self.assertNotIn("llm_tokens",
+                         stored[0]["cost"].get("per_dim") or {})
+        # The host report arrives late and is backfilled.
+        self.h.bank.update_cost(record.execution_id, llm_tokens=1000.0,
+                                source="provider_usage")
+        # Now re-derive from the live facts.
+        evaluation = ec.get_evaluation(
+            self.h.store, stored[0]["evaluation_id"])
+        derived, correction = ec._live_evaluation(self.h, evaluation)
+        self.assertIsNotNone(correction,
+                             "the late amend must be reported as a change")
+        self.assertEqual(correction["kind"], "live_rederivation")
+        self.assertIn("cost", correction["fields"])
+        self.assertIn("llm_tokens", correction["detail"]["cost"]
+                      ["newly_measured"])
+        self.assertEqual(derived.cost["per_dim"]["llm_tokens"]["actual"],
+                         1000.0)
+
 
 class TestLegacyMigration(CalibrationV2Case):
     """Review P1-4: a legacy store and an interrupted close both lost

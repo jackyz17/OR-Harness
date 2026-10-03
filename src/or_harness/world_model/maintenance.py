@@ -36,7 +36,12 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
-from or_harness.core.schema import ProblemProfile, group_key
+from or_harness.core.schema import (
+    ProblemProfile,
+    group_key,
+    task_check_state,
+)
+from or_harness.strategy.stats import quality_score
 from or_harness.core.storage import StorageError
 from or_harness.strategy.triggers import (
     PATTERNS,
@@ -60,6 +65,7 @@ class InductionCandidateBundle:
 
     bundle_id: str
     kind: str  # "new_claim" | "revision" | "pattern" | "pattern_unavailable"
+    #               | "single_observation"
     strategy_id: str
     family: str
     cell_token: str
@@ -68,6 +74,11 @@ class InductionCandidateBundle:
     tasks: List[str]
     n_supporting: int
     trigger_reasons: List[str]
+    #: For a ``single_observation`` bundle: the scope of what it grounds.
+    #: ``single_observation`` means ONE verified task — a conditional FACT,
+    #: never a transferable claim.
+    support_scope: Optional[str] = None
+    transferability: Optional[str] = None
     # Frozen summary of the supporting evidence.
     mean_quality: Optional[float] = None
     mean_cost: Dict[str, float] = field(default_factory=dict)
@@ -148,6 +159,8 @@ class InductionCandidateBundle:
             "tasks": list(self.tasks),
             "n_supporting": int(self.n_supporting),
             "trigger_reasons": list(self.trigger_reasons),
+            "support_scope": self.support_scope,
+            "transferability": self.transferability,
             "mean_quality": self.mean_quality,
             "mean_cost": copy.deepcopy(self.mean_cost),
             "cost_measured": list(self.cost_measured),
@@ -175,6 +188,8 @@ class InductionCandidateBundle:
             tasks=list(data.get("tasks") or []),
             n_supporting=int(data.get("n_supporting", 0)),
             trigger_reasons=list(data.get("trigger_reasons") or []),
+            support_scope=data.get("support_scope"),
+            transferability=data.get("transferability"),
             mean_quality=data.get("mean_quality"),
             mean_cost=dict(data.get("mean_cost") or {}),
             cost_measured=list(data.get("cost_measured") or []),
@@ -246,16 +261,20 @@ class InductionCandidateBundle:
                                "them")}
         if self.purpose == "method_induction":
             # A how-to abstraction: a plan is intent, not an observation.
-            return {"state": "insufficient",
-                    "reason": ("the evidence reports only PLANNED methods: a "
-                               "plan is intent, not a performed method, so "
-                               "there is nothing observed to abstract a "
-                               "technique from (record what actually ran — "
-                               "`execute --method` is the plan; the solve "
-                               "script's 'method_performed' receipt is the "
-                               "observation)"),
-                    "n_planned_only": len(planned_only),
-                    "n_supporting": len(self.methods)}
+            # UNLESS this is a single-observation cold-start bundle, which
+            # grounds a conditional FACT (not a technique) and therefore
+            # follows the same rule as a statistical candidate below.
+            if self.support_scope != "single_observation":
+                return {"state": "insufficient",
+                        "reason": ("the evidence reports only PLANNED methods: a "
+                                   "plan is intent, not a performed method, so "
+                                   "there is nothing observed to abstract a "
+                                   "technique from (record what actually ran — "
+                                   "`execute --method` is the plan; the solve "
+                                   "script's 'method_performed' receipt is the "
+                                   "observation)"),
+                        "n_planned_only": len(planned_only),
+                        "n_supporting": len(self.methods)}
         # A conditional-FACT candidate (statistical refresh). A plan plus a
         # PASSED task check grounds "under condition C, method M produced a
         # checked-correct answer" — a limited claim that does NOT assert the
@@ -282,6 +301,25 @@ class InductionCandidateBundle:
                            "unverified answer grounds nothing"),
                 "n_planned_only": len(planned_only),
                 "n_supporting": len(self.methods)}
+
+
+def _method_signature_key(record: Any) -> str:
+    """A stable key for the METHOD a record reports (planned or performed).
+
+    Used to decide whether two executions describe the SAME method without
+    relying on the strategy id (a name the agent typed freely). Reads the
+    performed method first (the strongest basis), else the plan; an empty or
+    missing method yields "" so a record that reports NOTHING about how it
+    worked never merges with another empty one."""
+    method = record.method_actual or record.method_planned
+    if not isinstance(method, dict):
+        return ""
+    name = " ".join(str(method.get("name") or "").lower().split())
+    steps = [" ".join(str(s).lower().split())
+             for s in (method.get("steps") or []) if str(s).strip()]
+    if not name and not steps:
+        return ""
+    return name + " :: " + " | ".join(steps)
 
 
 def _method_material(records: Sequence[Any]) -> List[Dict[str, Any]]:
@@ -326,6 +364,13 @@ def build_induction_candidates(harness
       cell with >= 2 executions and >= 2 independent tasks, when no
       published entry covers it (new claim) or an existing entry has
       accumulated misses / divergence / new evidence (revision).
+    * OBSERVATION candidates (``kind="single_observation"``): a VERIFIED
+      single execution whose cell has no candidate yet. This is the
+      evidence-anchored entry for COLD START — one task that worked, with a
+      method on record, is real (if narrow) material. It grounds a
+      conditional FACT ("under this structure, this method produced a
+      checked-correct answer"), NOT a transferable rule, which is why it
+      is a bundle of its own kind and never a statistical claim.
 
     Every bundle freezes the METHOD material of its supporting executions so
     an offline material read (and therefore an honest induction) has the
@@ -341,8 +386,117 @@ def build_induction_candidates(harness
         return bundles
     by_id = {r.execution_id: r for r in records}
 
-    bundles.extend(_detector_candidates(records, by_id))
-    bundles.extend(_cell_candidates(harness, records))
+    detector_bundles = _detector_candidates(records, by_id)
+    cell_bundles = _cell_candidates(harness, records)
+    bundles.extend(detector_bundles)
+    bundles.extend(cell_bundles)
+    bundles.extend(_observation_candidates(harness, records,
+                                           detector_bundles + cell_bundles))
+    return bundles
+
+
+def _has_substantive_method(record: Any) -> bool:
+    """A method with a NAME or STEPS — an empty/blank method is not one.
+
+    Mirrors the induction layer's own rule: a strategy name and a mean are
+    a statistic, not a technique. The single-observation path only fires
+    when there is real method content to read."""
+    for method in (record.method_planned, record.method_actual):
+        if isinstance(method, dict) and (str(method.get("name") or "").strip()
+                                         or method.get("steps")):
+            return True
+    return False
+
+
+def _observation_candidates(harness, records: Sequence[Any],
+                            existing: Sequence[InductionCandidateBundle]
+                            ) -> List[InductionCandidateBundle]:
+    """Cold-start OBSERVATION bundles: one VERIFIED execution per empty cell.
+
+    The four relation detectors all need a SECOND comparable observation
+    (a contrast, a repair, a reproduction, a reversal). A cold-start run of
+    distinct tasks has none — every task is its own method, so nothing
+    fires and the strategic bank stays empty even though real, verified
+    work happened. This path supplies the missing entry point: it is
+    ANCHORED ON THE EVIDENCE, not on any strategy identity.
+
+    It fires once per (cell, method) when ALL hold:
+
+    * the execution's task check PASSED (the answer is verified, not just
+      solver-optimal — a relaxed answer is not knowledge);
+    * the record reports substantive method content (a name or steps);
+    * no candidate ALREADY covers that (cell, method) — from a relation
+      detector, a cell candidate, or another observation — so a cell already
+      being abstracted is never re-issued as a bare placeholder.
+
+    The bundle is ``kind="single_observation"`` and carries
+    ``support_scope="single_observation"``: it grounds a conditional FACT,
+    never a transferable claim. One task is one observation, and the bundle
+    says so."""
+    by_cell_method: Dict[tuple, Dict[str, Any]] = {}
+    for rec in sorted(records, key=lambda r: r.created_at):
+        if task_check_state(rec) != "passed":
+            continue
+        if not _has_substantive_method(rec):
+            continue
+        profile = rec.profile_snapshot
+        if profile is None:
+            continue
+        gkey = group_key(profile)
+        anchor = gkey.split("|", 1)[0]
+        method_key = _method_signature_key(rec)
+        if not method_key:
+            continue
+        key = (gkey, method_key)
+        # Keep the FIRST verified observation per (cell, method).
+        by_cell_method.setdefault(key, {"record": rec, "anchor": anchor,
+                                        "gkey": gkey,
+                                        "method_key": method_key})
+
+    # Cells/methods ALREADY covered by another candidate are skipped.
+    covered: set = set()
+    for bundle in existing:
+        for eid in bundle.execution_ids:
+            rec = harness.bank.get(eid)
+            if rec is None or rec.profile_snapshot is None:
+                continue
+            covered.add((group_key(rec.profile_snapshot),
+                         _method_signature_key(rec)))
+
+    bundles: List[InductionCandidateBundle] = []
+    for (gkey, method_key), info in sorted(by_cell_method.items(),
+                                           key=lambda kv: kv[0]):
+        if (gkey, method_key) in covered:
+            continue
+        rec = info["record"]
+        profile = rec.profile_snapshot
+        bundles.append(InductionCandidateBundle(
+            bundle_id=InductionCandidateBundle.content_id(
+                "single_observation", gkey, [rec.strategy_id],
+                [rec.execution_id], pattern="single_observation"),
+            kind="single_observation",
+            purpose="method_induction",
+            strategy_id=rec.strategy_id,
+            family=profile.family,
+            cell_token=gkey.split("|", 1)[-1],
+            group_key=gkey,
+            execution_ids=[rec.execution_id],
+            tasks=[rec.task_id],
+            n_supporting=1,
+            trigger_reasons=[
+                ("verified single observation: the task check PASSED and a "
+                 "method is on record, with no other candidate covering "
+                 "this (cell, method) yet"),
+                ("cold start: the relation detectors need a second "
+                 "comparable observation, which does not exist yet"),
+            ],
+            mean_quality=quality_score(rec),
+            cost_measured=sorted(rec.cost.measured or []),
+            failure_rate=0.0 if rec.quality.get("feasible") else 1.0,
+            methods=_method_material([rec]),
+            support_scope="single_observation",
+            transferability="unproven",
+        ))
     return bundles
 
 
@@ -612,23 +766,26 @@ def _cell_candidates(harness,
     technique is decided by ``material_state()``.
     """
     bundles: List[InductionCandidateBundle] = []
-    # Group by (family, strategy_id, cell_token).
+    # Group by (anchor, strategy_id, cell_token). The anchor is the derived
+    # PROBLEM CLASS (the first segment of the group key, ``class=<name>``) —
+    # NOT the free-text family label, which is no longer a grouping anchor.
     by_cell: Dict[tuple, List[Any]] = {}
     for r in records:
         prof = r.profile_snapshot
         if prof is None:
             continue
         gkey = group_key(prof)
-        # gkey format: "family=<name>|rc[..]|tc[..]|rx[..]"
+        # gkey format: "class=<name>|rc[..]|tc[..]|rx[..]"
         parts = gkey.split("|", 1)
-        family = parts[0].removeprefix("family=") if "=" in parts[0] else parts[0]
+        anchor = parts[0].removeprefix("class=") if "=" in parts[0] \
+            else parts[0]
         cell_token = parts[1] if len(parts) > 1 else ""
-        key = (family, r.strategy_id, cell_token, gkey)
+        key = (anchor, r.strategy_id, cell_token, gkey)
         by_cell.setdefault(key, []).append(r)
 
     # Check triggers against current stats.
     # Group existing entries by strategy.
-    for (family, sid, cell_token, gkey), recs in sorted(by_cell.items()):
+    for (anchor, sid, cell_token, gkey), recs in sorted(by_cell.items()):
         # Deduplicate executions by execution_id.
         seen_ids = set()
         unique_recs = []
@@ -644,6 +801,10 @@ def _cell_candidates(harness,
 
         # Check if an entry already covers this.
         from or_harness.strategy.induction import evidence_predicates
+        # The predicate's ``family`` is the record's OWN family label — a
+        # claim still speaks for the family it was induced from, even though
+        # the grouping ANCHOR is the problem class.
+        family = unique_recs[0].profile_snapshot.family
         predicates = evidence_predicates(unique_recs, family=family)
         existing = harness.induction._find_existing(sid, predicates,
                                                     include_dormant=True)

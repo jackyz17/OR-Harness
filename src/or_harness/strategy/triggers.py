@@ -45,7 +45,11 @@ from or_harness.core.schema import (
     normalize_method,
     task_check_state,
 )
-from or_harness.strategy.stats import ConditionalStats, GroupStats
+from or_harness.strategy.stats import (
+    ConditionalStats,
+    GroupStats,
+    quality_score,
+)
 
 #: Evidence below this count never forms a pattern: single observations are
 #: not patterns.
@@ -543,22 +547,24 @@ def solver_advisories(bank) -> List[Dict[str, Any]]:
 def _structural_reproduction(record: ExecutionRecord,
                              stats: ConditionalStats
                              ) -> List[InductionHint]:
-    """structural_reproduction: the same strategy relation recurs in a
-    structurally comparable but INDEPENDENT task/family — the 'learn once,
-    apply elsewhere' detector. Informational: it reports reproduction across
-    independently observed families from the data alone.
+    """structural_reproduction: the same strategy relation recurs in
+    structurally comparable but INDEPENDENT tasks — the 'learn once, apply
+    elsewhere' detector. Informational: it reports reproduction across
+    independently observed TASKS from the data alone.
 
-    One task's observation is never transferable knowledge on its own, and
-    neither is one family's: reproduction needs >= 2 families, each with its
-    own >= 2 supporting executions.
+    One task's observation is never transferable knowledge on its own:
+    reproduction needs >= 2 distinct TASK IDs, each contributing >= 1
+    supporting execution, all in the SAME structural cell. The independence
+    unit is the task (the system's own definition), NOT the free-text family
+    label — a task identity is what makes evidence independent, and the
+    label is a word the caller typed.
 
     Structural comparability is required BEFORE the reproduction claim is
-    made: each family's evidence is scoped to the record's own cell (same
-    rc/tc/rx interval), so a family whose behaviour comes from an unrelated
-    structure can neither be mixed into the statistic nor veto a genuine
-    reproduction between two comparable families.
+    made: every contributing execution is scoped to the record's own cell
+    (same rc/tc/rx interval), so evidence from an unrelated structure can
+    neither be mixed into the statistic nor veto a genuine reproduction.
 
-    Unknown structure never counts. If the reference dimension is unmeasured
+    Unknown structure never counts. If a reference dimension is unmeasured
     there is nothing to compare, and this returns nothing: "both sides are
     unknown" is a shared absence of evidence, not evidence of structural
     similarity."""
@@ -567,38 +573,38 @@ def _structural_reproduction(record: ExecutionRecord,
     for f in GROUPING_FEATURES:
         if getattr(profile, f) is None:
             return []
-    cells = stats.cross_family(sid, like=profile)
-    per_family = [c for c in cells if c.n >= MIN_DIVERGENCE_N]
-    if len(per_family) < 2:
+    key = group_key(profile)
+    by_task: Dict[str, List[ExecutionRecord]] = {}
+    for rec in stats.evidence(profile, sid):
+        by_task.setdefault(rec.task_id, []).append(rec)
+    if len(by_task) < MIN_DIVERGENCE_N:
         return []
-    # Same-direction: all high or all low.
-    all_high = all(c.mean_quality >= QUALITY_HIGH_THRESHOLD for c in per_family)
-    all_low = all(c.mean_quality <= QUALITY_LOW_THRESHOLD for c in per_family)
+    # Per-task mean quality, then the same-direction test across tasks.
+    mean_by_task = {t: sum(quality_score(r) for r in recs) / len(recs)
+                    for t, recs in by_task.items()}
+    values = list(mean_by_task.values())
+    all_high = all(v >= QUALITY_HIGH_THRESHOLD for v in values)
+    all_low = all(v <= QUALITY_LOW_THRESHOLD for v in values)
     if not (all_high or all_low):
         return []
     direction = "high" if all_high else "low"
-    magnitude_spread = max(c.mean_quality for c in per_family) - \
-        min(c.mean_quality for c in per_family)
-    if magnitude_spread > SIGNIFICANT_QUALITY_DELTA:
+    if max(values) - min(values) > SIGNIFICANT_QUALITY_DELTA:
         return []
-
-    def _family(cell: GroupStats) -> str:
-        return cell.group_key.split("family=")[-1]
 
     structure = {f: bin_label(getattr(profile, f)) for f in GROUPING_FEATURES}
     return [InductionHint(
         pattern="structural_reproduction", strategy_ids=[sid],
-        group_key=group_key(profile),
-        reason=(f"{direction} performance reproduces independently in "
-                f"{len(per_family)} families at the same structure "
+        group_key=key,
+        reason=(f"{direction} performance reproduces independently across "
+                f"{len(by_task)} tasks at the same structure "
                 f"({', '.join(f'{k}{v}' for k, v in structure.items())})"),
-        evidence={"families": [_family(c) for c in per_family],
+        evidence={"tasks": sorted(by_task),
                   "direction": direction,
                   "structure": structure,
-                  "mean_qualities": {_family(c): round(c.mean_quality, 4)
-                                     for c in per_family},
-                  "execution_ids": {_family(c): c.execution_ids
-                                    for c in per_family}})]
+                  "mean_qualities": {t: round(v, 4)
+                                     for t, v in sorted(mean_by_task.items())},
+                  "execution_ids": {t: [r.execution_id for r in recs]
+                                    for t, recs in sorted(by_task.items())}})]
 
 
 def _advantage_reversal(record: ExecutionRecord, stats: ConditionalStats,

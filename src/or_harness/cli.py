@@ -1124,6 +1124,8 @@ def cmd_induction_material(args) -> int:
                     f"{item['strategy_id'] or '(unnamed)'} "
                     f"n={item['n_supporting']} tasks={len(item['tasks'])} "
                     f"material={state['state']}")
+            if item.get("support_scope") == "single_observation":
+                line += " [single_observation, transferability=unproven]"
             if state["state"] in ("insufficient", "sufficient_limited"):
                 line += f" ({state['reason']})"
             parts.append(line)
