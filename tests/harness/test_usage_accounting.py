@@ -741,6 +741,48 @@ class TestHostReportIngestion(HarnessTestCase):
         self.assertNotIn("llm_tokens", stored.cost.measured_dims())
         self.assertNotIn("tool_calls", stored.cost.measured_dims())
 
+    def test_the_adapter_resolves_home_from_the_env_when_flag_is_absent(self):
+        """Regression: with ONLY `$OR_HARNESS_HOME` set (no `--home`), the
+        usage scope must resolve the same home the store uses. The raw
+        ``args.home`` was ``None`` here, so the adapter's ``locate`` returned
+        None and a report sitting under ``<home>/host_usage/`` was never
+        found — the documented `--usage-host openclaw` + env-home path
+        silently degraded to UNKNOWN."""
+        from or_harness.strategy.embedding_index import (
+            LocalHashEmbeddingBackend,
+        )
+        from or_harness import cli as cli_module
+        h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(h.close)
+        work = self._solve("env_home")
+        task = {"task_id": "t1", "family": "routing", "spec": {}}
+        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+                           solver="highs", episode_id="ep1")
+        base = Path(self.home) / "host_usage"
+        base.mkdir(parents=True, exist_ok=True)
+        (base / f"openclaw-usage.{record.execution_id}.json").write_text(
+            json.dumps(self.HOST_REPORT), encoding="utf-8")
+        original = cli_module._harness
+        cli_module._harness = lambda args: h
+        self.addCleanup(setattr, cli_module, "_harness", original)
+        args = type("Args", (), {
+            "home": None,               # only $OR_HARNESS_HOME is set
+            "discard_staged": None, "from_staged": record.execution_id,
+            "execution": None, "record_file": None,
+            "override": None, "override_mode": "replace",
+            "override_source": "agent_estimate", "override_force": False,
+            "usage_file": None, "usage_source": None,
+            "usage_host": "openclaw",
+            "prediction": None, "method": None, "method_actual": None,
+        })()
+        code = cli_module.cmd_record(args)
+        self.assertEqual(code, 0)
+        stored = h.bank.get(record.execution_id)
+        # The report under the RESOLVED home was found and ingested.
+        self.assertEqual(stored.cost.llm_tokens, 12345 + 678)
+        self.assertEqual(stored.cost.tool_calls, 38.0)
+        self.assertIn("llm_tokens", stored.cost.measured_dims())
+
     def test_an_unknown_host_name_is_refused_with_the_known_hosts(self):
         from or_harness import cli as cli_module
         h = ORHarness(home=self.home)

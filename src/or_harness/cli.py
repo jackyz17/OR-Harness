@@ -661,8 +661,14 @@ def cmd_record(args) -> int:
                 is_host_usage_report,
                 normalize_host_usage,
             )
+            # ``h.home`` is the RESOLVED home (flag > $OR_HARNESS_HOME >
+            # default). Using the raw ``args.home`` here was the bug: with
+            # only $OR_HARNESS_HOME set it was None, so the adapter's
+            # ``locate`` returned None and the report under
+            # <home>/host_usage/ was never found — even though it was right
+            # there. The scope must resolve home the SAME way the store does.
             scope = {
-                "home": args.home,
+                "home": str(h.home),
                 "execution_id": (getattr(args, "from_staged", None)
                                  or (record.execution_id
                                      if record is not None else None)),
@@ -841,8 +847,12 @@ def cmd_amend_cost(args) -> int:
                             f"{sorted(set(_known_usage_hosts()))}. Pass the "
                             "report directly with --usage-file, or leave "
                             "the dimensions unknown (never zero)")
-                    report = adapter.load({"home": args.home,
-                                           "execution_id": args.execution_id})
+                    # ``h.home`` (resolved), never the raw ``args.home``:
+                    # the latter is None when only $OR_HARNESS_HOME is set,
+                    # which silently defeated the adapter.
+                    report = adapter.load({"home": str(h.home),
+                                           "execution_id":
+                                               args.execution_id})
                     if report is None:
                         return _fail(
                             f"the {host_name} adapter found no usage report "
