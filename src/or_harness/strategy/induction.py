@@ -104,6 +104,49 @@ def _has_method_content(record: ExecutionRecord) -> bool:
                 or (actual or {}).get("steps") or (actual or {}).get("name"))
 
 
+def _resolve_relation_check(raw: Dict[str, Any],
+                            verify: Optional[Dict[str, Any]]
+                            ) -> Tuple[Optional[Dict[str, Any]],
+                                       Optional[Dict[str, Any]]]:
+    """Unify the two ways a relation's declared checks may be supplied.
+
+    A ``--relation`` payload may carry its checks INSIDE the relation (a
+    ``check`` block, as the documentation's example shows) or the caller may
+    pass a separate ``--verify`` payload. Historically only the latter was
+    read, so an embedded ``check`` was silently ignored and a claim that
+    looked verified was published unverified. This normalizes both into ONE
+    ``verify`` payload and reports where the checks came from, so the caller
+    can never be surprised about which checks a verdict covered.
+
+    Returns ``(verify, note)``. When both forms are present, ``verify`` wins
+    and ``note`` records the override (``check_source: "verify_arg"`` plus
+    the keys the embedded block declared) — a conflict is REPORTED, not
+    swallowed. When only the embedded block is present it is promoted to a
+    ``relation``-purpose verify payload. Nothing here changes what is
+    checked; it only makes the two spellings equivalent.
+    """
+    embedded = raw.get("check")
+    if not isinstance(embedded, dict) or not embedded:
+        embedded = None
+    if verify and embedded:
+        return verify, {
+            "check_source": "verify_arg",
+            "note": ("both a standalone --verify payload and an embedded "
+                     "relation 'check' were supplied; --verify WINS and the "
+                     "embedded check was overridden and NOT evaluated"),
+            "overridden_embedded_keys": sorted(embedded),
+        }
+    if verify:
+        return verify, None
+    if embedded:
+        promoted = {
+            "claim": raw.get("claim") or raw.get("text"),
+            "check": embedded,
+        }
+        return promoted, {"check_source": "embedded_relation_check"}
+    return verify, None
+
+
 def relation_material_gate(relation: Dict[str, Any],
                            records: Sequence[ExecutionRecord]
                            ) -> Optional[Dict[str, Any]]:
@@ -398,6 +441,15 @@ class InductionEngine:
         (:data:`CLAIM_MIN_TASKS`) is a PUBLICATION gate, not a save gate: a
         single-task claim is saved and may be verified as a fact about that
         task, but it is not published as transferable knowledge.
+
+        The declared checks may be supplied in EITHER place: the standalone
+        ``verify`` payload (``{"claim", "check", "executions"}``) OR a
+        ``check`` block INSIDE ``raw`` (``{"assertions": [...]}``), which is
+        what the documentation's ``--relation`` example shows. The two are
+        unified here so an embedded ``check`` is never silently ignored. If
+        BOTH are present, ``verify`` WINS and the outcome records
+        ``check_source: "verify_arg"`` with a note that the embedded
+        ``check`` was overridden — the conflict is reported, never swallowed.
         """
         # The stored claim is built on the schema's validate_claim so the
         # write path has ONE shape authority; ``claim`` text keeps the
@@ -410,6 +462,9 @@ class InductionEngine:
             "method": raw.get("method"),
             "evidence": raw.get("evidence"),
         })
+        # Unify the two check syntaxes BEFORE any verification runs, so the
+        # embedded form is never dropped on the floor.
+        verify, check_note = _resolve_relation_check(raw, verify)
         subject = claim.get("subject")
         # Resolve the referenced executions and derive the evidence identity.
         resolved = self._resolve_claim_evidence(claim["evidence"])
@@ -465,6 +520,7 @@ class InductionEngine:
                         (effective_subject or "claim"),
                     "claim": claim,
                     "material": material_gate,
+                    "check_note": check_note,
                     "publication": self._claim_publication_placeholder(claim,
                                                                        verification)}
         if entry is None:
@@ -475,6 +531,7 @@ class InductionEngine:
                 if not force:
                     return {"saved": None, "vetoed": veto,
                             "material": material_gate,
+                            "check_note": check_note,
                             "skipped": ("cold-archive veto (use --force to "
                                         "override)")}
                 self.sbank.revive(veto["pattern_hash"], force=True)
@@ -484,6 +541,7 @@ class InductionEngine:
             return {"saved": entry.entry_id, "created_entry": entry.entry_id,
                     "entry": entry.to_dict(), "claim": claim,
                     "material": material_gate,
+                    "check_note": check_note,
                     "publication": self._claim_publication(entry)}
         # Existing entry: revise the claim in place (dedup by content). A
         # SUBSTANTIVE change to an already-verified claim invalidates the
@@ -497,6 +555,7 @@ class InductionEngine:
         return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
                 "claim": merged,
                 "material": material_gate,
+                "check_note": check_note,
                 "publication": self._claim_publication(entry)}
 
     def _resolve_claim_evidence(self, evidence: List[Dict[str, Any]]
@@ -623,8 +682,9 @@ class InductionEngine:
             stale["stale_after_revision"] = True
             stale["stale_reason"] = (
                 "claim substantively revised (text/conditions/evidence/"
-                "method) without a fresh verification; re-submit with "
-                "--verify to re-publish")
+                "method) without a fresh verification; re-submit with a "
+                "verification (a `--verify` payload or an embedded relation "
+                "`check` block) to re-publish")
             return incoming, stale
         if not substantive and previous.get("state") == "verified":
             # Identical re-submission: keep the existing verdict.

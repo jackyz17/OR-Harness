@@ -419,6 +419,21 @@ class Selector:
         distinction), and an entry that never recorded its actions reports
         none rather than being filled in from elsewhere.
         """
+        from or_harness.core.schema import claim_evidence_refs, \
+            claim_scope_tasks
+        has_claim = entry.claim is not None
+        evidence_refs = claim_evidence_refs(entry) if has_claim else []
+        # ESTIMATE HONESTY: a claim-only entry (a claim with no statistical
+        # support) carries the DEFAULT ``support_n=0`` / ``expected_quality_
+        # hat=0.0``. Read without care those look like "measured zero", which
+        # is exactly the misreading this block prevents: it says whether a
+        # statistical estimate EXISTS at all, and separates the counts a
+        # reader must not conflate — the executions a claim CITES, the
+        # INDEPENDENT TASKS those cover, and the STATISTICAL support n. A
+        # STATISTICAL entry (support_n>0, no claim) has no claim-cited
+        # executions: its evidence is its support_n samples, so the claim-only
+        # counts are reported as None (not zero, which would read as "no
+        # evidence").
         out: Dict[str, Any] = {
             "entry_id": entry.entry_id,
             "strategy_type": entry.strategy_type,
@@ -434,6 +449,29 @@ class Selector:
             "applicability": [str(n) for n in (entry.applicability or [])],
             "actions": [str(a) for a in (entry.actions or [])],
             "fallback_strategy_id": entry.fallback_strategy_id,
+            # The counts kept APART, each reported ONLY when it exists.
+            # ``evidence_executions`` / ``distinct_tasks`` are claim-only
+            # (None for a statistical entry — its evidence is support_n, not
+            # cited executions). ``statistical_support_n`` is the sample the
+            # quality/cost estimate rests on (0 = NO estimate).
+            "estimate": {
+                "estimated": entry.support_n > 0,
+                "statistical_support_n": entry.support_n,
+                "evidence_executions": (len(evidence_refs) if has_claim
+                                        else None),
+                "distinct_tasks": (len(claim_scope_tasks(entry)) if has_claim
+                                   else None),
+                "quality_hat": (entry.expected_quality_hat
+                                if entry.support_n > 0 else None),
+                "failure_prob": (entry.failure_prob
+                                 if entry.support_n > 0 else None),
+                "note": ("a statistical estimate backs this entry"
+                         if entry.support_n > 0 else
+                         "NO statistical estimate: this is a claim-only entry "
+                         "(support_n=0 is 'not estimated', NOT 'measured 0'); "
+                         "its quality/cost fields are absent, and only its "
+                         "verification scope supports it"),
+            },
             "note": ("content read from the entry that backs this "
                      "recommendation; empty lists mean the memory does not "
                      "record it"),

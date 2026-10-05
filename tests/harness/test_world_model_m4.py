@@ -46,22 +46,29 @@ class TestM4CandidateBundling(HarnessTestCase):
     """M4-A: candidate bundle construction from real evidence."""
 
     def test_bundle_requires_independent_evidence(self):
-        """A candidate bundle forms only when >=2 executions exist across
-        >=2 distinct tasks. Repeating one task does NOT form a bundle."""
+        """A ``new_claim`` bundle forms only when >=2 executions exist across
+        >=2 distinct tasks. A thin cell / single repeated task is still
+        VISIBLE (as ``cell_observation``) but is NOT a publishable claim."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
 
-        # 1. Single execution: no bundle.
+        # 1. Single execution: a visible THIN cell, not a publishable claim.
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
                                        profile=_profile()))
-        self.assertEqual(len(h.induction_candidates()), 0)
+        bundles = h.induction_candidates()
+        self.assertEqual([b["kind"] for b in bundles], ["cell_observation"])
+        self.assertIsNotNone(bundles[0]["admission_note"])
 
-        # 2. Repeated execution on the SAME task: n=2 but tasks=1 => no bundle.
+        # 2. Repeated execution on the SAME task: n=2 but tasks=1 — still a
+        #     visible thin cell, still NOT a publishable claim.
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
                                        profile=_profile()))
-        self.assertEqual(len(h.induction_candidates()), 0)
+        bundles = h.induction_candidates()
+        self.assertEqual([b["kind"] for b in bundles], ["cell_observation"])
+        self.assertIn("single task", bundles[0]["admission_note"])
 
-        # 3. Independent execution on task t2: n=2, tasks=2 => bundle forms.
+        # 3. Independent execution on task t2: n=2, tasks=2 => a new_claim
+        #    bundle forms, carrying all three unique executions.
         h.bank.append(self.make_record(task_id="t2", strategy_id="S01",
                                        profile=_profile()))
         bundles = h.induction_candidates()

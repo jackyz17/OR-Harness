@@ -46,6 +46,7 @@ from or_harness.core.schema import (
     ProblemProfile,
     group_key,
     task_check_state,
+    unsupported_predicate_keys,
 )
 from or_harness.strategy.embedding_index import (
     LAYER_EXECUTION,
@@ -110,6 +111,15 @@ def classify_applicability(profile: Optional[ProblemProfile],
                 f"family mismatch: claim covers family {family_pred}, task is "
                 f"family {profile.family}")
     undecided: List[str] = []
+    # A key the framework cannot EVALUATE is never assumed satisfied. It may
+    # be a semantic condition only an agent can judge, so it makes the claim
+    # UNDECIDABLE (``unknown``) rather than applicable — reported with the
+    # exact keys so a reader knows what the code could not check.
+    semantic = unsupported_predicate_keys(predicates)
+    if semantic:
+        undecided.append(
+            "unsupported predicate key(s) this framework cannot evaluate: "
+            + ", ".join(semantic))
     for dim in GROUPING_FEATURES:
         if dim not in predicates:
             continue

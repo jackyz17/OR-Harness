@@ -1,4 +1,4 @@
-# Prediction input context (`wm-context/1`)
+# Prediction input context (`wm-context/2`)
 
 Read this page when a prediction surprised you and you need to know what it was conditioned on: the frozen joint problem representation, the retrieval evidence it carried, the capability evidence behind `H`, and how a context is reused. For the protocol a prediction is written in, see [strategy_outcome.md](strategy_outcome.md); for the field definitions of every prediction, [world_model_contract.md](world_model_contract.md).
 
@@ -6,7 +6,7 @@ Read this page when a prediction surprised you and you need to know what it was 
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
 
-- Context version: `wm-context/1`
+- Context version: `wm-context/2`
 - Joint representation version: `joint/1`
 - Python module: `or_harness.world_model.context`
 - Entry point: `ORHarness.build_prediction_context` / `orx context`
@@ -54,6 +54,9 @@ Everything is optional beyond `task_id`. **You do not need a mathematical model,
 | `knowledge_targets` | the framework's structural proposal set, **frozen** (see §6) |
 | `reliability` | the measured reliability of past predictions, **frozen** |
 | `strategy_calibration` | the PUBLISHED strategy-outcome experience calibration, frozen (see §6b) |
+| `paired_feedback` | the COMPACT per-episode prediction-execution PAIRS of closed episodes, frozen (see §6c) |
+| `prediction_reminders` | the DETERMINISTIC "watch this next time" notes derived from the summary (see §6c) |
+| `hplus_feedback` | the follow-up state of ONLINE capability-gain claims (see §6d) |
 | `snapshot` | the frozen condition blocks (X/B + coverage + harness condition) of the snapshot this context was built from |
 | `cell_evidence` | per strategy, the distinct-task count behind the cell's statistics, **frozen** |
 | `sources` | where each part came from (snapshot id, task version, channel list, CIR origin) |
@@ -252,6 +255,40 @@ This is the phase's most important engineering boundary.
 **What the model is told.** The system prompt explains that `mean_benefit_signed_error` / `mean_cost_log_ratio` are DIRECTED (positive = under-predicted), that `insufficient_evidence` groups are not calibration, and that the statistics are global diagnostics with no per-strategy breakdown — a measured record of past errors, never a promise about the current prediction.
 
 **Historical reconstruction reports it MISSING.** A context rebuilt from a snapshot does not read today's summary: the gap is appended to `missing` with the reason. Frozen contexts never change; only NEW contexts read a newer publication.
+
+---
+
+## 6c. The paired-feedback and reminder blocks
+
+`strategy_calibration` is a GLOBAL aggregate statistic. It is deliberately NOT the only feedback a prediction receives, because a global mean signed error is not the per-case material a conditional lesson needs.
+
+| Block | What it is | How it reaches the provider |
+|---|---|---|
+| `paired_feedback` | the COMPACT per-episode pairs of CLOSED episodes: conditions, planned method, the ORIGINAL prediction, the REAL observation, the per-field difference, the task-check outcome, the scope, the not-comparable reasons and an evaluation reference | `prediction_execution_pairs` |
+| `prediction_reminders` | DETERMINISTIC "watch this next time" notes rendered from the measured statistics (never written by a model) | `prediction_reminders` |
+
+**Rules the paired block enforces:**
+
+- **All closed episodes, not a top-k.** Pairs are included until a character budget (`OR_HARNESS_PAIRED_FEEDBACK_CHARS`, default 8000) is reached, in window order. The `n_pairs_total` / `n_pairs_included` / `n_pairs_omitted` counts are REPORTED, so an omission is never silent. There is no fixed top-3/top-5 cut.
+- **Success AND failure.** A pair whose answer failed the task check is included; a cross-cell or cross-strategy-name case is included. Nothing filters by cell, `strategy_id` or verification state.
+- **An unexecuted candidate never appears.** A predicted-but-unexecuted candidate has no real outcome, and none is fabricated.
+- **One unknown field does not drop the row.** A blocked benefit dimension still leaves the cost ratio and the task-check fact in the row.
+- **O(1) read.** The block is DERIVED at publish time (the single calibration publish point) and stored, exactly like the summary, so a prediction read serves it in one row lookup rather than scanning the window. When nothing has been published the block is empty with a `missing` note.
+
+**The reminders are deterministic.** Each names the applicability it was derived under (metric/unit/scope/observation-rule identity), the OBSERVED bias and its direction, a concrete instruction, and the group key as support. A group below the episode threshold yields NO reminder — "insufficient evidence" is not a lesson. The block carries `kind: "derived_reminder"` and `basis: "measured_statistics"` so a reader never mistakes the instruction for an observation, nor for framework-vetted method advice.
+
+## 6d. The H+ follow-up block
+
+`hplus_feedback` closes the delayed-supervision loop: an online strategy-outcome prediction that stated an H+ stance is archived (see [`episode_closeout.md`](episode_closeout.md) and `trace_archive`), and this block makes its follow-up state visible to LATER predictions. Four states are kept APART:
+
+| State | Means |
+|---|---|
+| `pending` | the claim is archived but not yet bound to a real execution — NOT a failure, NOT an improvement |
+| `bound` | bound to a real execution, the later effect not yet observable |
+| a stage-2 effect state | a learning product exists and the later effect evaluation has a verdict |
+| `effect_verified: true` | the only state that CONFIRMS a claim was borne out |
+
+The block is EXPLANATORY: an H+ claim never ranks a candidate and is not capability evidence. It is read-only and bounded (`HPLUS_FEEDBACK_CHARS`), and it does NOT change whether H+ participates in online ordering (it does not). When no claim was ever archived the block says so (`missing`) rather than reading as "every claim was `none`".
 
 ---
 

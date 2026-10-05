@@ -1134,8 +1134,8 @@ def cmd_induction_material(args) -> int:
                     f"{item['strategy_id'] or '(unnamed)'} "
                     f"n={item['n_supporting']} tasks={len(item['tasks'])} "
                     f"material={state['state']}")
-            if item.get("support_scope") == "single_observation":
-                line += " [single_observation, transferability=unproven]"
+            if item.get("admission_note"):
+                line += f" [not-admissible: {item['admission_note']}]"
             if state["state"] in ("insufficient", "sufficient_limited"):
                 line += f" ({state['reason']})"
             parts.append(line)
@@ -1144,6 +1144,47 @@ def cmd_induction_material(args) -> int:
                        "submit a claim with `orx induce --relation` — the "
                        "framework checks what you submit, it does not "
                        "write the technique for you.")
+    finally:
+        h.close()
+
+
+def cmd_review_material(args) -> int:
+    """Read a BATCH of completed tasks for offline review (no model call).
+
+    The independent MATERIAL entry point: it reads the Experience Bank
+    directly and needs no detector candidate and no sample-count gate, so a
+    batch that fires neither (distinct tasks, a failed-only cell, a single
+    run) is still visible for review. Success and failure material are both
+    included, and a missing field is marked rather than dropped."""
+    h = _harness(args)
+    try:
+        result = h.review_material(
+            strategy_id=getattr(args, "strategy", None),
+            task_id=getattr(args, "task", None),
+            limit=getattr(args, "limit", None))
+        if not result["count"]:
+            return _emit(
+                result,
+                "No completed tasks to review: record and close some "
+                "episodes first (successes and failures both count).")
+        budget = result["budget"]
+        summary = (f"Read {result['count']} of {result['total_completed']} "
+                   f"completed task attempt(s) across "
+                   f"{result['n_distinct_tasks']} distinct task(s) "
+                   f"(checks: {result['check_states']['passed']} passed, "
+                   f"{result['check_states']['failed']} failed, "
+                   f"{result['check_states']['never_checked_or_insufficient']} "
+                   "unchecked).")
+        if budget["truncated_by_budget"]:
+            summary += (f" {len(budget['omitted_execution_ids'])} omitted by "
+                        f"the {budget['chars_limit']}-char budget — narrow "
+                        "the scope or raise OR_HARNESS_REVIEW_MATERIAL_CHARS.")
+        if budget["truncated_by_limit"]:
+            summary += (" --limit kept only the newest attempts; more "
+                        "completed material exists.")
+        summary += (" Form a claim (condition -> how -> consequence -> "
+                    "boundary) and submit it with `orx induce --relation`.")
+        return _emit(result, summary)
     finally:
         h.close()
 
@@ -3165,6 +3206,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--strategy", default=None,
                    help="restrict to candidates about one strategy id")
     p.set_defaults(func=cmd_induction_material)
+
+    p = sub.add_parser(
+        "review-material",
+        help="read a BATCH of completed tasks for offline review WITHOUT a "
+             "detector candidate or a sample-count gate. Success, failure, "
+             "cross-cell and cross-method-name material are all included; "
+             "a missing field is marked, never dropped. No model call, no "
+             "writes — read it, then submit a claim with "
+             "`orx induce --relation`")
+    p.add_argument("--strategy", default=None,
+                   help="restrict the batch to one strategy id")
+    p.add_argument("--task", default=None,
+                   help="restrict the batch to one task id")
+    p.add_argument("--limit", type=int, default=None, metavar="N",
+                   help="keep only the N most recent attempt(s)")
+    p.set_defaults(func=cmd_review_material)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)

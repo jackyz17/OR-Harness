@@ -6,11 +6,13 @@ Read this page when you are deciding whether to induce, working out why a candid
 
 ```text
 completed episodes
-  induction-candidates            freeze the evidence packages (no model call);
-        |                         detector-derived candidates carry both sides
-        |                         of a contrast, cell candidates carry the gate
-  induction-material              read the METHODS, the change, what followed
-        |                         and the verification state (no model call)
+  review-material                 read a BATCH straight from the evidence bank
+        |                         (no model call, no detector, no count gate):
+        |                         success / failure / cross-cell / cross-name
+        |                         all visible, retries marked non-independent
+        |                         -- the DEFAULT material entry point
+  (optional lead)                 induction-candidates freeze detector/cell
+        |                         packages; induction-material reads one
         v   material=insufficient or unavailable = record how the work was
         |   done / re-check the evidence, do not invent
   (you form the claim: condition -> how -> consequence -> boundary)
@@ -35,11 +37,13 @@ completed episodes
   evaluate-capability             did it help? (TASK-EPISODES, work after it)
 ```
 
-**Entry conditions.** Creating a statistical entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. `induction-candidates` reports only what clears the bar, so an empty answer means "keep solving and recording" — there is nothing to decide yet. Use `--relation` for a lesson that is not one strategy's statistics.
+**Read first, gate later.** The material you review comes from ONE place: `orx review-material` reads a BATCH of completed tasks straight from the evidence bank — no detector candidate and no sample-count gate. Success, failure, cross-cell and cross-method-name material all reach you, and a repeated run of one task is marked `independent_task: false` so repetition is never mistaken for cross-task support. Detectors (`induction_hints`) and cell bundles (`induction-candidates`) are LEADS that point at a pattern worth a second look — they never decide what you may read.
+
+**Entry conditions gate PUBLICATION, not visibility.** Creating a statistical entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. A thin cell (fewer than 2 executions) or a single task's repeated runs still APPEAR — as `kind="cell_observation"` with an `admission_note` — because its material is reviewable even though a transferable claim is not yet admissible from it. There is NO separate "single observation" trigger category: a lone verified execution is simply a thin cell, and the same principle covers every case — induction may come from one or many executions, and the evidence COUNT constrains the claim's STRENGTH, never whether the material may be seen.
 
 **What `record` tells you.** After every `record`, cheap detectors may return an `induction_hint`. A hint is a reason to LOOK, never an induction: `induce` is your explicit call, and you may induct from your own business knowledge with no hint at all. Each hint is also **persisted onto the fact that produced it** (`execution_features.induction_hints`), so `induction-candidates` can reuse the detector's own cross-execution evidence — both sides of a contrast, the failed/recovered pair — instead of re-deriving the pattern from bare counts.
 
-**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt (stamped with the attempt's `OR_ACTION_ID`) records what ACTUALLY ran, and the receipt's steps appear in the record's trajectory. Nothing promotes the plan to a fact: an unobserved performance stays `None`. `induction-material` is what you read before writing a claim.
+**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt (stamped with the attempt's `OR_ACTION_ID`) records what ACTUALLY ran, and the receipt's steps appear in the record's trajectory. Nothing promotes the plan to a fact: an unobserved performance stays `None`. Method evidence is not limited to `method_performed` either — the code, model or trajectory associated with an execution can be inspected too, keeping its source and determinism; but a PLAN alone never counts as a performed method. `review-material` (or, for a lead, `induction-material`) is what you read before writing a claim.
 
 Induction is the part of OR-Harness most worth understanding correctly. It answers: "given the facts accumulated so far, which generalizations am I entitled to commit to?"
 
@@ -64,6 +68,8 @@ These four are **what draws your attention**, not a classification your final cl
 
 **The lesson is the relation, not the win.** `strategy_contrast` reports a comparison between two strategies under one structural condition; `advantage_reversal` reports where an advantage weakens or flips — an applicability boundary or a counterexample. Neither is a success count. `intervention_recovery` names the change in real outcome; a success after an intervention is **evidence, not proof of causation by itself**, so the hint carries both sides and you draw the conclusion.
 
+**Leads point; they do not admit.** A detector firing, a cell clearing a sample count, two runs sharing a `strategy_id` — none of these is a precondition for reading material or a bar on what you may abstract. They are reasons to LOOK, and they shape how strong a claim its evidence can later support ("at least two tasks" is a PUBLICATION bar for TRANSFER, not a gate on material). Where a claim asserts a benefit — faster, higher quality, cheaper — the matching COMPARISON evidence is required at VERIFICATION, not as a precondition for review.
+
 All detectors are purely statistical — they detect patterns in observed data, not divergence from fabricated baselines. For `intervention_recovery`, the recovery chain ("solver A failed, switched to solver B, succeeded") is detected from two independent facts — you never need to narrate it into a record. This is why failed executions must be recorded: the chain is invisible if the failure was dropped. The pending staging area guarantees the failure is at least never lost, and `record --from-staged` backfills it verbatim.
 
 Every detector requires **n ≥ 2** supporting executions: a single observation never counts as a pattern — that restraint is deliberate (see worked example 1 in examples.md). Hints count **executions**, not tasks: three runs of one instance can legitimately fire a hint. That is not a bug and not a contradiction — a hint says the numbers look patterned, while the admission gate below decides whether the evidence may become a claim.
@@ -81,6 +87,13 @@ Why cell rather than observed min/max span: a min/max span is a range in which s
 
 **Unknown is never similarity.** `[unknown]` matches only a task whose value is also unmeasured: "neither side measured it" is a shared absence of evidence, not evidence that the structures agree.
 
+**Only evaluable predicates can decide applicability.** `profile_matches` / `classify_applicability` evaluate exactly four keys: `family`, `resource_coupling`, `temporal_coupling`, `route_complexity`. A predicate carrying ANY OTHER key (`problem_class`, `task_family`, `structure`, a free-text `description`, …) is a SEMANTIC condition code cannot decide, and it is never defaulted to satisfied:
+
+- `profile_matches` returns `False` for such a predicate set (an unverifiable condition is not a match);
+- recall's `classify_applicability` returns `("unknown", reusable=False, reason)` naming the exact unsupported keys — distinct from `("conflicts", …)` where a KNOWN value contradicts the claim.
+
+Read `unknown` as "the framework could not check this — TEST it", never as "it applies". A claim's structural predicates are what the code can verify; a semantic condition belongs in the claim TEXT for a human/agent reader, not in `conditions.predicates` pretending to be checkable.
+
 Counterexamples need no special machinery: a miss inside the claimed cell is a miss *of the claim* (the claim covered that task when it ran), and three consecutive ones demote the entry to `suspect`. Records outside the cell or from another family do not match, so they are neither checks nor counterexamples.
 
 ## What it takes to become a claim (admission)
@@ -93,9 +106,9 @@ Creating an entry is cheap and reversible, but it is not free of evidence requir
 
 A refusal is a report, not a loss: the call returns `verification {tasks, required_tasks}` and a `skipped` reason, the executions stay in the Evidence Bank, and recall keeps answering from them as `conditional_stats` until a second task arrives. A standing cold-archive card is reported **before** this gate, because that is the real blocker. The gate guards **creation only** — once a claim exists, any new matching evidence refreshes it, however repetitive. Dedup also considers **dormant** entries. (This is also why `--dry-run` obeys the gate.)
 
-**Cold start: the single-observation fact.** The four detectors above all need a SECOND comparable observation, so a cold-start run of distinct tasks fires none of them and the strategic bank stays empty even though real, verified work happened. The evidence-anchored entry point exists for exactly this: `induction-candidates` also emits `kind="single_observation"` bundles — one per (cell, method) where the task check PASSED, a substantive method is on record, and no other candidate already covers it. These carry `support_scope: "single_observation"` and `transferability: "unproven"`, and their `material_state` is `sufficient_limited`: they ground a **conditional FACT** ("under this structure, this method produced a checked-correct answer"), NEVER a transferable rule. As soon as a second task supports the same (cell, method), the ordinary cell candidate takes over and the placeholder is superseded.
+**Cold start: a thin cell is still reviewable material.** The four detectors above all need a SECOND comparable observation, so a cold-start run of distinct tasks fires none of them. That does NOT hide the work: `orx review-material` reads the batch directly, and `induction-candidates` reports a lone verified execution as a thin `kind="cell_observation"` carrying an `admission_note` ("fewer than 2 executions; a transferable claim is not admissible yet"). Its `material_state` is `sufficient_limited`: a plan plus a PASSED task check grounds a **conditional FACT** ("under this structure, this method produced a checked-correct answer"), NEVER a transferable rule. As soon as a second task supports the same (cell, method), the ordinary `new_claim` candidate takes over.
 
-**Publication splits by KIND.** A `conditional_fact` claim publishes with ONE verified observation (it makes no transfer claim) and is stamped `support_scope: single_observation` / `transferability: unproven`. Every OTHER kind is a TRANSFERABLE claim and still needs ≥2 independent tasks. So the independence rule is never relaxed for transfer — it is simply not imposed on a fact that does not claim to transfer.
+**Publication splits by KIND.** A `conditional_fact` claim publishes with ONE verified observation (it makes no transfer claim). Every OTHER kind is a TRANSFERABLE claim and still needs ≥2 DISTINCT tasks, so the independence rule is never relaxed for transfer — it is simply not imposed on a fact that does not claim to transfer. The independence bar gates PUBLICATION; it never gates whether the material is visible.
 
 Task identity is taken from the recorded `task_id`, so one logical problem solved several times (retry under another solver, larger time limit) is one task. If you legitimately consider two runs independent — different instance drawn from the same distribution — give them distinct `task_id`s; that decision is yours to make and to record.
 
@@ -164,11 +177,23 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 - **advantage_reversal** detects a boundary between two cells of one family. It does not claim WHY the advantage flips, and it never merges the cells into one applicability range.
 - All four patterns are hints: they never satisfy the admission gate, and they never decide how a submitted relation is verified.
 
-## Reading the material (`induction-material`)
+## Reading the material
 
-Semantic induction is a division of labour: the framework ORGANS element the material and checks what you submit; YOU read the material and write the claim.
+Semantic induction is a division of labour: the framework organizes the material and checks what you submit; YOU read the material and write the claim.
 
-`orx induction-material [--bundle BUNDLE_ID] [--pattern P] [--strategy S]` returns, for each candidate, the frozen evidence a claim can rest on:
+**`orx review-material [--strategy S] [--task T] [--limit N]` is the default.** It reads a BATCH of completed tasks straight from the evidence bank and returns, per attempt:
+
+- `task_text` — an excerpt of the task semantics (or an explicit `unknown` marker when the version is not retained — never a fabricated summary);
+- `profile` / `cir` — the identity measured BEFORE modeling, and the coupling structure if one was built (frozen, never rewritten after the solve);
+- `method` — `planned` vs `actual` with a `basis` of `performed` > `planned_only` > `none`, plus `trajectory`;
+- `outcome`, `task_check` (a SEPARATE fact from the solver's own status; absent reads as `never_checked`, never a pass), `failures`, `cost`;
+- `attempts_of_task` / `independent_task` — how many attempts share this `task_id`, so a same-task RETRY is never read as cross-task support;
+- `existing_knowledge` — the entries this batch's strategies already have, so you can see whether to add, revise, merge or leave alone;
+- a `budget` block (chars used / limit / omitted ids) — eviction is REPORTED, never silent.
+
+Missing fields are marked `unknown` individually; one unknown field never drops the rest of the fact. Scope filters and `--limit` narrow the batch, and `OR_HARNESS_REVIEW_MATERIAL_CHARS` bounds its size — growth trends toward batching, never toward material that is permanently invisible.
+
+**`orx induction-material [--bundle BUNDLE_ID] [--pattern P] [--strategy S]` is the optional LEAD** for a detector/cell candidate — read it when a hint points at a pattern worth a second look. It returns, for each candidate, the frozen evidence a claim can rest on:
 
 - `methods[]` — per execution, its `planned` method, the method it reports as actually `performed`, and the trajectory steps that really happened;
 - `comparisons[]` — the detector's own evidence blocks (both sides of a contrast, the failed/recovered pair), so a claim can cite both sides rather than one;
@@ -205,6 +230,10 @@ Not every lesson is one strategy's statistics. "When temporal coupling is high, 
  "check": {"assertions": [ ... ]},
  "kind": "intervention_recovery"}
 ```
+
+**Where the checks live — one of two equivalent spellings.** The declared checks may sit INSIDE the relation (the `"check"` block above, as shown) OR in a standalone `--verify` payload (`{"purpose": "relation", "claim": "...", "check": {"assertions": [...]}}`). Both are read; an embedded `check` is NEVER silently ignored. If you supply BOTH, `--verify` wins and the outcome records `check_note.check_source: "verify_arg"` plus a note that the embedded block was overridden — a conflict is reported, never swallowed. Verify a claim before trusting it: a claim whose checks were not read is not a verified claim.
+
+**Only evaluable predicates decide applicability.** `conditions.predicates` may carry keys the framework can EVALUATE (`family`, `resource_coupling`, `temporal_coupling`, `route_complexity`) and keys it cannot (`problem_class`, `task_family`, `structure`, any free-text key). A key the framework cannot evaluate is NEVER treated as satisfied: recall reports the hit as `unknown` (undecided, with the exact unsupported keys) rather than `applies`. Put what matters in the structural predicates the framework can check, and read `unknown` as "test this", not "this applies".
 
 An evidence entry may instead be `{"bundle_id": "cb_...", "role": "..."}` — see `induction-material`.
 
@@ -281,4 +310,22 @@ REMOVED. Naming another strategy or cell used to write one contrast line under t
 
 ## Cold archive (anti-resurrection)
 
-Retired entries leave cards in the cold archive (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `induce --force` LIFTS the veto — it removes the card and then proceeds, so your environment-drift judgment is made once rather than repeated on every induction. Reserve it for genuine drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data.
+Retired entries leave cards in the cold archive (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `induce --force` LIFTS the veto — it removes the card and then proceeds, so your environment-drift judgment is made once rather than repeated on every induction. Reserve it for genuine drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data. New SUPPORT or a counterexample is likewise a reason to re-review (with `--force` when a card stands): the card blocks the SAME failed generalization, not new evidence.
+
+## Worked contrasts
+
+Three short contrasts between what NOT to submit and what to submit, all from the same kind of batch `review-material` returns.
+
+**1. Execution summary → reusable technique.** A summary reads:
+
+> "`milp_lot_sizing` solved `orarla_9` to optimal (`objective=14.0`, reference match)."
+
+That is a fact about one run, not transferable knowledge: it names a task, not a condition→how→consequence. The reusable version states the MECHANISM, the CONDITIONS, the EXPECTED EFFECT and the BOUNDARY, and cites the executions on both sides:
+
+> "On multi-product lot-sizing with a terminal stock target and backlog (this structural cell), formulating inventory AND backlog as integer per-period variables with a final-period stock/backlog equality keeps the model feasible where a continuous-flow relaxation reports `optimal` at a fractional answer; scope: terminal constraints present, integer lots required."
+
+Submit it with `kind="rule"` (or `conditional_fact` if only one task supports it), `evidence` naming the dropped and preserved runs, and a `check` whose assertions state the comparison.
+
+**2. When to REVISE old knowledge.** An existing entry claims a method is faster in this cell. A new `review-material` batch shows a later task where it was slower (`independent_task: true`). Do NOT just add another entry: re-submit the SAME identity (`subject` + cell + `kind`) with the widened or narrowed condition and a FRESH `check`. A substantive change marks the old verdict `stale_after_revision` until the new one lands; a fresh verdict replaces it outright. **3. When NOT to induce.** The batch's material state is `insufficient` (a name and a mean, no method content), or the only "evidence" is two runs of ONE task (repetition — `independent_task: false`), or the claim would rest on a semantic predicate the framework cannot evaluate. In all three the honest outcome is NO new entry: record how the work was actually done (or make the retry a distinct task if it truly is one), and wait for independent evidence. Deleting a task number or renaming a label is not abstraction — the CONTENT has to earn the claim.
+
+These examples prove the FLOW (read → form → verify → publish → recall); they make no claim about generalization or solving quality beyond the conditions the cited evidence covers.

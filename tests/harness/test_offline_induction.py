@@ -354,10 +354,11 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
 
 
 class TestColdStartObservation(HarnessTestCase):
-    """W3: a VERIFIED single execution in an empty cell is induction raw
-    material on its own — the evidence-anchored entry point the four
-    relation detectors (which all need a SECOND comparable observation)
-    cannot provide at cold start."""
+    """A lone verified execution is no longer a special trigger CATEGORY: it
+    is simply a THIN CELL, reported by the same cell path with an
+    ``admission_note`` that says a transferable claim is not yet admissible.
+    Its material is ALWAYS visible (the sample count limits what a claim may
+    assert, never what may be read)."""
 
     def _verified(self, h, task_id, method_name, strategy_id=None):
         rec = self.make_record(execution_id=f"ex_{task_id}", task_id=task_id,
@@ -368,29 +369,30 @@ class TestColdStartObservation(HarnessTestCase):
         h.check_task_result(rec.execution_id, {"reference_objective": 100.0})
         return rec
 
-    def test_verified_distinct_task_yields_a_single_observation(self):
+    def test_verified_distinct_task_is_a_visible_thin_cell(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         # Three DISTINCT cold-start tasks, each its own method, each
-        # verified: no contrast/repair/reproduction can fire, yet each is
-        # real material.
+        # verified: no contrast/repair/reproduction fires, yet each is real,
+        # VISIBLE material — a thin ``cell_observation``, not a silent drop.
         for i in range(3):
             self._verified(h, f"t{i}", f"method-{i}")
         bundles = h.induction_candidates()
-        obs = [b for b in bundles if b["kind"] == "single_observation"]
+        obs = [b for b in bundles if b["kind"] == "cell_observation"]
         self.assertEqual(len(obs), 3)
         for b in obs:
-            self.assertEqual(b["support_scope"], "single_observation")
-            self.assertEqual(b["transferability"], "unproven")
             self.assertEqual(len(b["execution_ids"]), 1)
-        # The material state is the LIMITED conditional-fact form.
+            self.assertIsNotNone(b.get("admission_note"))
+            self.assertIn("admissible", b["admission_note"])
+        # The material state is the LIMITED conditional-fact form: a plan
+        # plus a passed check grounds a conditional FACT, not a technique.
         material = h.induction_material(pattern=None)
         states = {m["bundle_id"]: m["material_state"]["state"]
                   for m in material["material"]}
         for b in obs:
             self.assertEqual(states[b["bundle_id"]], "sufficient_limited")
 
-    def test_unverified_or_methodless_record_is_not_a_candidate(self):
+    def test_unverified_or_methodless_record_is_visible_but_insufficient(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         # No task check -> not verified.
@@ -403,22 +405,40 @@ class TestColdStartObservation(HarnessTestCase):
                                 strategy_id="s_nm", profile=_profile("t_nm"))
         h.record(rec2)
         h.check_task_result("ex_nm", {"reference_objective": 100.0})
-        obs = [b for b in h.induction_candidates()
-               if b["kind"] == "single_observation"]
-        self.assertEqual(obs, [])
+        bundles = h.induction_candidates()
+        # Both are VISIBLE thin cells (material is never hidden), but the
+        # methodless/unverified one reports INSUFFICIENT material so nothing
+        # is invented from a name and a mean.
+        ids = {b["strategy_id"] for b in bundles
+               if b["kind"] == "cell_observation"}
+        self.assertEqual(ids, {"s_nv", "s_nm"})
+        material = h.induction_material(pattern=None)
+        states = {m["strategy_id"]: m["material_state"]["state"]
+                  for m in material["material"]}
+        self.assertEqual(states["s_nm"], "insufficient")
 
-    def test_a_covered_cell_is_not_reissued_as_an_observation(self):
-        """A cell already abstracted by a cell candidate is not re-issued as
-        a bare placeholder (no duplicate knowledge)."""
+    def test_repeated_runs_of_one_task_are_not_independent(self):
+        """Two runs of ONE task are repetition, not reproduction: the cell is
+        visible but its ``admission_note`` says so — never disguised as
+        cross-task support."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
+        # Two runs of the SAME task (distinct execution ids) — a retry.
         for i in range(2):
-            self._verified(h, f"c{i}", "same-method", strategy_id="s_shared")
-        bundles = h.induction_candidates()
-        obs = [b for b in bundles if b["kind"] == "single_observation"]
-        # The cell is already covered by a new_claim candidate for the same
-        # (cell, method): no single-observation placeholder is added.
-        self.assertEqual(obs, [])
+            rec = self.make_record(execution_id=f"ex_c_same_{i}",
+                                   task_id="c_same", strategy_id="s_shared",
+                                   profile=_profile("c_same"))
+            rec.method_planned = {"name": "same-method",
+                                  "steps": ["do the thing"]}
+            h.record(rec)
+            h.check_task_result(rec.execution_id,
+                                {"reference_objective": 100.0})
+        bundles = [b for b in h.induction_candidates()
+                   if b["strategy_id"] == "s_shared"]
+        self.assertTrue(bundles)
+        cell = bundles[0]
+        self.assertEqual(cell["kind"], "cell_observation")
+        self.assertIn("single task", cell["admission_note"])
 
 
 class TestConditionalFactPublication(HarnessTestCase):

@@ -897,10 +897,20 @@ class ORHarness:
         # feedback: only closed episodes contribute.
         if historical:
             strategy_calibration = {}
+            paired_feedback = {}
+            hplus_feedback = {}
             history_notes.append(
                 "MISSING: the strategy-outcome experience calibration was "
                 "not saved with this snapshot, so none is sent (today's "
                 "summary was NOT consulted for a historical reconstruction)")
+            history_notes.append(
+                "MISSING: the paired prediction-execution feedback was not "
+                "saved with this snapshot, so none is sent (today's store "
+                "was NOT consulted for a historical reconstruction)")
+            history_notes.append(
+                "MISSING: the capability-gain follow-up state was not saved "
+                "with this snapshot, so none is sent (today's traces were "
+                "NOT consulted for a historical reconstruction)")
         else:
             from or_harness.world_model.episode_closeout import (
                 calibration_summary_for_context,
@@ -922,6 +932,25 @@ class ORHarness:
             strategy_calibration = calibration_summary_for_context(
                 self,
                 model_identity=self.strategy_predictions.model_identity_label)
+            # The compact per-episode prediction-execution pairs of closed
+            # episodes (M5). Built from the SAME closed-episode window as
+            # the summary above, so it can never carry an active episode's
+            # unclosed feedback. It is a read: no model call, no storage.
+            from or_harness.world_model.episode_closeout import (
+                paired_feedback_for_context,
+            )
+            paired_feedback = paired_feedback_for_context(
+                self,
+                model_identity=self.strategy_predictions.model_identity_label)
+            # ONLINE H+ follow-up state (M5 delayed supervision): what the
+            # harness knows about earlier capability-gain claims, so this
+            # prediction can see how its own past H+ stances turned out.
+            # `pending` is NOT a failure; `effect_verified` is the only
+            # state that confirms a claim. Explanatory only.
+            from or_harness.world_model.maintenance_decision import (
+                hplus_feedback_for_context,
+            )
+            hplus_feedback = hplus_feedback_for_context(self)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -1000,6 +1029,10 @@ class ORHarness:
             reliability=reliability,
             cell_evidence=cell_evidence,
             strategy_calibration=strategy_calibration,
+            paired_feedback=paired_feedback,
+            prediction_reminders=(strategy_calibration.get("reminders")
+                                  if not historical else []),
+            hplus_feedback=hplus_feedback,
             cir_source=("caller_supplied" if cir is not None
                         else "task_coupling"),
             retrieval_bounding=bounding,
@@ -4482,6 +4515,27 @@ class ORHarness:
                 entry["measurement_scope"] = rec.measurement_scope
             material.append(payload)
         return {"count": len(material), "material": material}
+
+    def review_material(self, *, strategy_id: Optional[str] = None,
+                        task_id: Optional[str] = None,
+                        limit: Optional[int] = None
+                        ) -> Dict[str, Any]:
+        """Organize a BATCH of completed tasks for offline review.
+
+        This is the independent MATERIAL entry point: it reads the Experience
+        Bank directly and needs NO detector candidate and NO sample-count
+        gate, so new, failed, cross-cell and cross-method-name material all
+        reach the reviewer. Success AND failure are included; a missing field
+        is reported as ``unknown`` rather than dropping the rest of the fact.
+
+        Read-only: nothing is written and no claim is formed here. The
+        chararacter budget (``OR_HARNESS_REVIEW_MATERIAL_CHARS``) bounds how
+        much material travels and REPORTS eviction, so growth trends toward
+        batching rather than toward material that is permanently invisible.
+        """
+        from or_harness.world_model.maintenance import build_review_material
+        return build_review_material(self, strategy_id=strategy_id,
+                                     task_id=task_id, limit=limit)
 
 
     # -- world-model M3: bounded planning ------------------------------------

@@ -893,14 +893,44 @@ def claim_evidence_refs(entry: "StrategicEntry") -> List[Dict[str, Any]]:
     return list(evidence) if isinstance(evidence, list) else []
 
 
+#: Predicate keys this framework can EVALUATE against a profile. ``family``
+#: is the evidence scope label; the grouping features are the structural
+#: coupling cells. Anything OUTSIDE this set is a SEMANTIC condition a code
+#: path cannot decide (`problem_class`/`task_family`/`structure`/free text a
+#: claim author wrote): such a key is never silently treated as satisfied, so
+#: an entry whose applicability cannot be evaluated is not presented as
+#: applying ("default deny", refined by :func:`classify_applicability` into
+#: the separate ``unknown`` state).
+SUPPORTED_PREDICATE_KEYS: Tuple[str, ...] = ("family",) + GROUPING_FEATURES
+
+
+def unsupported_predicate_keys(predicates: Dict[str, Any]) -> List[str]:
+    """The keys a predicate set carries that this framework cannot evaluate.
+
+    Empty when every key is a structural/semantic condition the matching
+    machinery understands. A non-empty result means the predicate set holds
+    conditions only an agent can judge by reading them — the framework
+    reports that as ``unknown`` rather than defaulting them to ``True``.
+    """
+    return sorted(k for k in (predicates or {})
+                  if k not in SUPPORTED_PREDICATE_KEYS)
+
+
 def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool:
-    """True when the profile satisfies every predicate.
+    """True when the profile DEFINITELY satisfies every predicate.
 
     An ``unknown`` predicate matches ONLY an unmeasured profile value on that
     dimension: "we never measured this" is not evidence that the structure is
     similar, so an unknown-cell claim must not be applied to a task whose
     structure is known (nor the reverse). A missing predicate still means
-    "no constraint on this dimension" (harness-authored predicates)."""
+    "no constraint on this dimension" (harness-authored predicates).
+
+    A predicate set carrying a key the framework cannot EVALUATE returns
+    False: an unverifiable condition is never defaulted to satisfied. The
+    refined callers use :func:`classify_applicability` to separate "this
+    conflicts" from "this cannot be decided"."""
+    if unsupported_predicate_keys(predicates):
+        return False
     family_pred = predicates.get("family")
     if family_pred is not None and profile.family != family_pred:
         return False
@@ -920,7 +950,15 @@ def profile_matches(profile: ProblemProfile, predicates: Dict[str, Any]) -> bool
 
 
 def predicates_cover(outer: Dict[str, Any], inner: Dict[str, Any]) -> bool:
-    """True when every profile matching ``inner`` also matches ``outer``."""
+    """True when every profile matching ``inner`` also matches ``outer``.
+
+    A semantic key the framework cannot evaluate can only be covered by an
+    IDENTICAL key (no interval logic applies to it), so it is compared for
+    equality first; a mismatch means ``outer`` says something ``inner`` does
+    not demonstrate."""
+    for key in unsupported_predicate_keys(outer):
+        if outer.get(key) != inner.get(key):
+            return False
     if "family" in outer and outer.get("family") != inner.get("family"):
         return False
     for f in GROUPING_FEATURES:

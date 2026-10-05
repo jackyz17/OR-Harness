@@ -108,11 +108,16 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
     },
     "induction-candidates": {
         "required": {"candidates"},
-        "conditional": set(),
+        "conditional": {"count"},
     },
     "induction-material": {
         "required": set(),
         "conditional": {"material", "bundle_id", "evidence"},
+    },
+    "review-material": {
+        "required": {"count", "material", "existing_knowledge", "budget"},
+        "conditional": {"tasks", "n_distinct_tasks", "check_states",
+                        "total_completed", "n_attempts"},
     },
     "predict-capability": {
         "required": {"prediction_id"},

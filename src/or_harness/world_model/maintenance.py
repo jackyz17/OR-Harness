@@ -31,6 +31,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -41,7 +42,6 @@ from or_harness.core.schema import (
     group_key,
     task_check_state,
 )
-from or_harness.strategy.stats import quality_score
 from or_harness.core.storage import StorageError
 from or_harness.strategy.triggers import (
     PATTERNS,
@@ -64,8 +64,8 @@ class InductionCandidateBundle:
     constructed, its content is fixed."""
 
     bundle_id: str
-    kind: str  # "new_claim" | "revision" | "pattern" | "pattern_unavailable"
-    #               | "single_observation"
+    kind: str  # "new_claim" | "revision" | "cell_observation" | "pattern"
+    #               | "pattern_unavailable"
     strategy_id: str
     family: str
     cell_token: str
@@ -74,11 +74,6 @@ class InductionCandidateBundle:
     tasks: List[str]
     n_supporting: int
     trigger_reasons: List[str]
-    #: For a ``single_observation`` bundle: the scope of what it grounds.
-    #: ``single_observation`` means ONE verified task — a conditional FACT,
-    #: never a transferable claim.
-    support_scope: Optional[str] = None
-    transferability: Optional[str] = None
     # Frozen summary of the supporting evidence.
     mean_quality: Optional[float] = None
     mean_cost: Dict[str, float] = field(default_factory=dict)
@@ -105,6 +100,11 @@ class InductionCandidateBundle:
     #: A non-None value means `material_state` reports ``unavailable``: the
     #: hint is shown with its reason, never upgraded into a claim.
     material_problem: Optional[str] = None
+    #: A NOTE about what a CLAIM from this candidate may later assert (a thin
+    #: cell, a single task's repeated runs). It never hides the material — it
+    #: separates "this is reviewable" from "this is admissible as a
+    #: transferable claim". None when the candidate is already admissible.
+    admission_note: Optional[str] = None
     #: WHAT an induction from this candidate is FOR. ``method_induction`` —
     #: the evidence holds a comparison/recovery worth abstracting into a
     #: technique (the detectors' own candidates). ``statistical_refresh`` —
@@ -159,8 +159,6 @@ class InductionCandidateBundle:
             "tasks": list(self.tasks),
             "n_supporting": int(self.n_supporting),
             "trigger_reasons": list(self.trigger_reasons),
-            "support_scope": self.support_scope,
-            "transferability": self.transferability,
             "mean_quality": self.mean_quality,
             "mean_cost": copy.deepcopy(self.mean_cost),
             "cost_measured": list(self.cost_measured),
@@ -171,6 +169,7 @@ class InductionCandidateBundle:
             "evidence_refs": copy.deepcopy(self.evidence_refs),
             "methods": copy.deepcopy(self.methods),
             "material_problem": self.material_problem,
+            "admission_note": self.admission_note,
             "created_at": float(self.created_at),
         }
 
@@ -188,8 +187,6 @@ class InductionCandidateBundle:
             tasks=list(data.get("tasks") or []),
             n_supporting=int(data.get("n_supporting", 0)),
             trigger_reasons=list(data.get("trigger_reasons") or []),
-            support_scope=data.get("support_scope"),
-            transferability=data.get("transferability"),
             mean_quality=data.get("mean_quality"),
             mean_cost=dict(data.get("mean_cost") or {}),
             cost_measured=list(data.get("cost_measured") or []),
@@ -200,6 +197,7 @@ class InductionCandidateBundle:
             evidence_refs=list(data.get("evidence_refs") or []),
             methods=list(data.get("methods") or []),
             material_problem=data.get("material_problem"),
+            admission_note=data.get("admission_note"),
             created_at=float(data.get("created_at", time.time())),
         )
 
@@ -217,13 +215,14 @@ class InductionCandidateBundle:
           reports only PLANNED methods. A plan does not show how the work was
           actually done, so it cannot ground a technique claim on its own —
           this judgment is unchanged for how-to claims.
-        * ``sufficient_limited`` — a CELL/statistical candidate whose
-          evidence reports PLANNED methods with at least one task-level
-          check PASSED. This grounds a CONDITIONAL FACT ("under condition C,
-          method M produced a checked-correct answer"), NOT a performed
-          technique: "I observed the work run" is not part of what such a
-          claim may assert. The limitation is carried in the state and every
-          evidence entry, so a reader sees the basis is ``planned_only``.
+        * ``sufficient_limited`` — a CELL/statistical candidate (including a
+          thin ``cell_observation``) whose evidence reports PLANNED methods
+          with at least one task-level check PASSED. This grounds a
+          CONDITIONAL FACT ("under condition C, method M produced a
+          checked-correct answer"), NOT a performed technique: "I observed
+          the work run" is not part of what such a claim may assert. The
+          limitation is carried in the state and every evidence entry, so a
+          reader sees the basis is ``planned_only``.
         * ``sufficient`` — at least one PERFORMED method (``actual``) is on
           record, or the agent stated the method in a claim of its own (which
           is checked at submission, not here).
@@ -260,21 +259,21 @@ class InductionCandidateBundle:
                                "technique, and none will be invented from "
                                "them")}
         if self.purpose == "method_induction":
-            # A how-to abstraction: a plan is intent, not an observation.
-            # UNLESS this is a single-observation cold-start bundle, which
-            # grounds a conditional FACT (not a technique) and therefore
-            # follows the same rule as a statistical candidate below.
-            if self.support_scope != "single_observation":
-                return {"state": "insufficient",
-                        "reason": ("the evidence reports only PLANNED methods: a "
-                                   "plan is intent, not a performed method, so "
-                                   "there is nothing observed to abstract a "
-                                   "technique from (record what actually ran — "
-                                   "`execute --method` is the plan; the solve "
-                                   "script's 'method_performed' receipt is the "
-                                   "observation)"),
-                        "n_planned_only": len(planned_only),
-                        "n_supporting": len(self.methods)}
+            # A how-to abstraction: a plan is intent, not an observation, so
+            # a planned-only PATTERN candidate has nothing observed to
+            # abstract a technique from. A CELL candidate instead follows the
+            # conditional-fact rule below: a plan plus a PASSED check grounds
+            # a limited fact about the outcome, never a performed technique.
+            return {"state": "insufficient",
+                    "reason": ("the evidence reports only PLANNED methods: a "
+                               "plan is intent, not a performed method, so "
+                               "there is nothing observed to abstract a "
+                               "technique from (record what actually ran — "
+                               "`execute --method` is the plan; the solve "
+                               "script's 'method_performed' receipt is the "
+                               "observation)"),
+                    "n_planned_only": len(planned_only),
+                    "n_supporting": len(self.methods)}
         # A conditional-FACT candidate (statistical refresh). A plan plus a
         # PASSED task check grounds "under condition C, method M produced a
         # checked-correct answer" — a limited claim that does NOT assert the
@@ -301,25 +300,6 @@ class InductionCandidateBundle:
                            "unverified answer grounds nothing"),
                 "n_planned_only": len(planned_only),
                 "n_supporting": len(self.methods)}
-
-
-def _method_signature_key(record: Any) -> str:
-    """A stable key for the METHOD a record reports (planned or performed).
-
-    Used to decide whether two executions describe the SAME method without
-    relying on the strategy id (a name the agent typed freely). Reads the
-    performed method first (the strongest basis), else the plan; an empty or
-    missing method yields "" so a record that reports NOTHING about how it
-    worked never merges with another empty one."""
-    method = record.method_actual or record.method_planned
-    if not isinstance(method, dict):
-        return ""
-    name = " ".join(str(method.get("name") or "").lower().split())
-    steps = [" ".join(str(s).lower().split())
-             for s in (method.get("steps") or []) if str(s).strip()]
-    if not name and not steps:
-        return ""
-    return name + " :: " + " | ".join(steps)
 
 
 def _method_material(records: Sequence[Any]) -> List[Dict[str, Any]]:
@@ -360,24 +340,27 @@ def build_induction_candidates(harness
       hint on a real executed record becomes a bundle that carries the
       detector's OWN evidence references. A contrast's two sides stay in
       ONE bundle — they are one observation, not two statistical bins.
-    * CELL candidates (``kind="new_claim"`` / ``"revision"``): a structural
-      cell with >= 2 executions and >= 2 independent tasks, when no
-      published entry covers it (new claim) or an existing entry has
-      accumulated misses / divergence / new evidence (revision).
-    * OBSERVATION candidates (``kind="single_observation"``): a VERIFIED
-      single execution whose cell has no candidate yet. This is the
-      evidence-anchored entry for COLD START — one task that worked, with a
-      method on record, is real (if narrow) material. It grounds a
-      conditional FACT ("under this structure, this method produced a
-      checked-correct answer"), NOT a transferable rule, which is why it
-      is a bundle of its own kind and never a statistical claim.
+    * CELL candidates (``kind="new_claim"`` / ``"revision"`` /
+      ``"cell_observation"``): a structural cell, gated on NOTHING but
+      visibility. A cell with >= 2 executions and >= 2 independent tasks is a
+      ``new_claim`` (or ``revision``); a thin cell (fewer than 2 executions)
+      or a single task's repeated runs is a ``cell_observation`` carrying an
+      ``admission_note`` that says a transferable claim is not yet
+      admissible. The material is ALWAYS visible — the sample count limits
+      what a claim may later assert, never what may be read.
+
+    There is no separate "single observation" trigger category: a lone
+    verified execution is simply a thin cell, reported by the SAME path (and
+    also reachable through the independent ``orx review-material`` batch
+    reader), so one principle covers every case — induction may come from one
+    or many executions, and the evidence COUNT constrains the claim's
+    STRENGTH, not whether the material is admissible.
 
     Every bundle freezes the METHOD material of its supporting executions so
     an offline material read (and therefore an honest induction) has the
     how-to content, not just a name and a mean.
 
-    Returns a list of frozen :class:`InductionCandidateBundle` objects.
-    Empty when no candidate has sufficient supporting evidence."""
+    Returns a list of frozen :class:`InductionCandidateBundle` objects."""
     bundles: List[InductionCandidateBundle] = []
     # Collect all executed attempt-scope records.
     records = [r for r in harness.bank.all()
@@ -390,113 +373,6 @@ def build_induction_candidates(harness
     cell_bundles = _cell_candidates(harness, records)
     bundles.extend(detector_bundles)
     bundles.extend(cell_bundles)
-    bundles.extend(_observation_candidates(harness, records,
-                                           detector_bundles + cell_bundles))
-    return bundles
-
-
-def _has_substantive_method(record: Any) -> bool:
-    """A method with a NAME or STEPS — an empty/blank method is not one.
-
-    Mirrors the induction layer's own rule: a strategy name and a mean are
-    a statistic, not a technique. The single-observation path only fires
-    when there is real method content to read."""
-    for method in (record.method_planned, record.method_actual):
-        if isinstance(method, dict) and (str(method.get("name") or "").strip()
-                                         or method.get("steps")):
-            return True
-    return False
-
-
-def _observation_candidates(harness, records: Sequence[Any],
-                            existing: Sequence[InductionCandidateBundle]
-                            ) -> List[InductionCandidateBundle]:
-    """Cold-start OBSERVATION bundles: one VERIFIED execution per empty cell.
-
-    The four relation detectors all need a SECOND comparable observation
-    (a contrast, a repair, a reproduction, a reversal). A cold-start run of
-    distinct tasks has none — every task is its own method, so nothing
-    fires and the strategic bank stays empty even though real, verified
-    work happened. This path supplies the missing entry point: it is
-    ANCHORED ON THE EVIDENCE, not on any strategy identity.
-
-    It fires once per (cell, method) when ALL hold:
-
-    * the execution's task check PASSED (the answer is verified, not just
-      solver-optimal — a relaxed answer is not knowledge);
-    * the record reports substantive method content (a name or steps);
-    * no candidate ALREADY covers that (cell, method) — from a relation
-      detector, a cell candidate, or another observation — so a cell already
-      being abstracted is never re-issued as a bare placeholder.
-
-    The bundle is ``kind="single_observation"`` and carries
-    ``support_scope="single_observation"``: it grounds a conditional FACT,
-    never a transferable claim. One task is one observation, and the bundle
-    says so."""
-    by_cell_method: Dict[tuple, Dict[str, Any]] = {}
-    for rec in sorted(records, key=lambda r: r.created_at):
-        if task_check_state(rec) != "passed":
-            continue
-        if not _has_substantive_method(rec):
-            continue
-        profile = rec.profile_snapshot
-        if profile is None:
-            continue
-        gkey = group_key(profile)
-        anchor = gkey.split("|", 1)[0]
-        method_key = _method_signature_key(rec)
-        if not method_key:
-            continue
-        key = (gkey, method_key)
-        # Keep the FIRST verified observation per (cell, method).
-        by_cell_method.setdefault(key, {"record": rec, "anchor": anchor,
-                                        "gkey": gkey,
-                                        "method_key": method_key})
-
-    # Cells/methods ALREADY covered by another candidate are skipped.
-    covered: set = set()
-    for bundle in existing:
-        for eid in bundle.execution_ids:
-            rec = harness.bank.get(eid)
-            if rec is None or rec.profile_snapshot is None:
-                continue
-            covered.add((group_key(rec.profile_snapshot),
-                         _method_signature_key(rec)))
-
-    bundles: List[InductionCandidateBundle] = []
-    for (gkey, method_key), info in sorted(by_cell_method.items(),
-                                           key=lambda kv: kv[0]):
-        if (gkey, method_key) in covered:
-            continue
-        rec = info["record"]
-        profile = rec.profile_snapshot
-        bundles.append(InductionCandidateBundle(
-            bundle_id=InductionCandidateBundle.content_id(
-                "single_observation", gkey, [rec.strategy_id],
-                [rec.execution_id], pattern="single_observation"),
-            kind="single_observation",
-            purpose="method_induction",
-            strategy_id=rec.strategy_id,
-            family=profile.family,
-            cell_token=gkey.split("|", 1)[-1],
-            group_key=gkey,
-            execution_ids=[rec.execution_id],
-            tasks=[rec.task_id],
-            n_supporting=1,
-            trigger_reasons=[
-                ("verified single observation: the task check PASSED and a "
-                 "method is on record, with no other candidate covering "
-                 "this (cell, method) yet"),
-                ("cold start: the relation detectors need a second "
-                 "comparable observation, which does not exist yet"),
-            ],
-            mean_quality=quality_score(rec),
-            cost_measured=sorted(rec.cost.measured or []),
-            failure_rate=0.0 if rec.quality.get("feasible") else 1.0,
-            methods=_method_material([rec]),
-            support_scope="single_observation",
-            transferability="unproven",
-        ))
     return bundles
 
 
@@ -662,7 +538,6 @@ def _stale_premise_problem(hint: InductionHint,
         failed = (hint.evidence.get("failed") or {}).get("execution_id")
     else:
         return None
-    from or_harness.core.schema import task_check_state
     after = by_id.get(recovered) if recovered else None
     before = by_id.get(failed) if failed else None
     if after is not None and task_check_state(after) == "failed":
@@ -757,13 +632,20 @@ def _pruned_evidence_refs(evidence: Dict[str, Any],
 def _cell_candidates(harness,
                      records: Sequence[Any]
                      ) -> List[InductionCandidateBundle]:
-    """Structural-cell candidates: the sample-count evidence gate.
+    """Structural-cell candidates: a LEAD to look at, never an admission bar.
 
-    This is the SAMPLE gate, not a method abstraction: it reports that a cell
-    has enough independent evidence to be worth an induction, or that an
-    existing entry no longer matches the evidence. The how-to content (if
-    any) travels in ``methods``; whether it is sufficient to abstract a
-    technique is decided by ``material_state()``.
+    The sample count used to be a hard gate (``< 2 executions -> continue``)
+    and independent tasks used to be a hard precondition, so a cell that fired
+    neither simply VANISHED from ``induction-candidates`` — even though its
+    material was perfectly reviewable. Sample count is now a NOTE on the
+    bundle: a thin cell is reported as ``cell_observation`` with an
+    ``admission_note`` saying it is not yet publishable as a transferable
+    claim, while its material stays visible. "At least two tasks" remains a
+    PUBLICATION bar for transfer, never a bar on what may be read (the
+    independent material entry point is ``orx review-material``).
+
+    The how-to content (if any) travels in ``methods``; whether it is
+    sufficient to abstract a technique is decided by ``material_state()``.
     """
     bundles: List[InductionCandidateBundle] = []
     # Group by (anchor, strategy_id, cell_token). The anchor is the derived
@@ -793,11 +675,11 @@ def _cell_candidates(harness,
             if r.execution_id not in seen_ids:
                 seen_ids.add(r.execution_id)
                 unique_recs.append(r)
-        if len(unique_recs) < 2:
-            continue
         tasks = sorted({r.task_id for r in unique_recs})
         execution_ids = sorted(r.execution_id for r in unique_recs)
         cell = harness.stats.aggregate(gkey, sid, unique_recs)
+        thin = len(unique_recs) < 2
+        single_task = len(tasks) < 2
 
         # Check if an entry already covers this.
         from or_harness.strategy.induction import evidence_predicates
@@ -808,7 +690,7 @@ def _cell_candidates(harness,
         predicates = evidence_predicates(unique_recs, family=family)
         existing = harness.induction._find_existing(sid, predicates,
                                                     include_dormant=True)
-        # Collect trigger reasons.
+        # Collect trigger reasons — a LEAD to look at, not an admission bar.
         trigger_reasons: List[str] = []
         if len(tasks) >= 2 and existing is None:
             trigger_reasons.append(
@@ -830,6 +712,30 @@ def _cell_candidates(harness,
                 trigger_reasons.append(
                     f"new evidence available (n={cell.n} vs entry support_n="
                     f"{existing.support_n})")
+        # A thin cell is a LEAD, not a silent drop. Its material is
+        # reviewable; the sample count only limits what a CLAIM may later
+        # assert. Report it under its own kind so the reader can tell a
+        # not-yet-publishable observation from a publishable candidate.
+        kind = ("revision" if existing is not None
+                else ("new_claim" if not thin and not single_task
+                      else "cell_observation"))
+        admission_note = None
+        if thin:
+            trigger_reasons.append(
+                f"thin cell: {len(unique_recs)} execution(s) — reviewable "
+                "material, but NOT yet publishable as a transferable claim "
+                "(needs >=2 executions)")
+            admission_note = ("thin cell: fewer than 2 executions; material "
+                              "is readable, a transferable claim is not "
+                              "admissible yet")
+        elif single_task:
+            trigger_reasons.append(
+                f"all {len(unique_recs)} executions come from one task "
+                f"({tasks}) — a retry is repetition, not independent "
+                "cross-task support")
+            admission_note = ("single task: repeated runs are repetition, not "
+                              "reproduction; a transferable claim needs >=2 "
+                              "distinct tasks")
         if not trigger_reasons:
             continue
 
@@ -840,9 +746,15 @@ def _cell_candidates(harness,
 
         bundle = InductionCandidateBundle(
             bundle_id=InductionCandidateBundle.content_id(
-                "revision" if existing is not None else "new_claim",
+                "revision" if existing is not None else kind,
                 gkey, [sid], execution_ids),
-            kind="revision" if existing is not None else "new_claim",
+            kind=kind,
+            # A CELL candidate is statistical material (its claim is a
+            # quality/cost/failure estimate or a conditional fact), never a
+            # how-to technique: only a DETECTOR (pattern) candidate asks for
+            # a method abstraction. A thin ``cell_observation`` follows the
+            # same rule — a plan plus a passed check grounds a limited
+            # conditional fact, not a performed technique.
             purpose="statistical_refresh",
             strategy_id=sid,
             family=family,
@@ -859,7 +771,246 @@ def _cell_candidates(harness,
             target_entry_id=existing.entry_id if existing else None,
             entry_before=existing.to_dict() if existing else None,
             methods=_method_material(unique_recs),
+            admission_note=admission_note,
         )
         bundles.append(bundle)
 
     return bundles
+
+
+# ---------------------------------------------------------------------------
+# Review material: read a BATCH of completed tasks WITHOUT a candidate gate
+# ---------------------------------------------------------------------------
+#
+# The candidate path above starts from a DETECTOR or a sample-count gate, so a
+# batch that fires neither (distinct tasks, a failed-only cell, a cell with a
+# single run) never becomes visible for offline review. This entry point is
+# the material SIDE of semantic induction: it organizes what a batch of
+# COMPLETED tasks actually recorded so the outer agent can read it, compare
+# and decide — including new, failed, cross-cell and cross-method-name
+# material. It performs no statistical gating and creates no candidate: the
+# only limits are a scope filter and a character BUDGET, and both are
+# REPORTED so nothing is silently invisible.
+
+#: Default character budget for one review-material batch. Overridden by
+#: ``OR_HARNESS_REVIEW_MATERIAL_CHARS``. A batch over the budget is REPORTED
+#: as truncated (with the omitted execution ids) and the caller narrows the
+#: scope (`--strategy` / `--task` / `--limit`) or raises the budget — new
+#: material is never made permanently invisible by missing a candidate.
+#:
+#: Larger than the world-model paired block (8000): induction compares
+#: METHODS across tasks, so a useful batch is several full records, and one
+#: record (profile + planned method + outcome) runs ~2 KB.
+DEFAULT_REVIEW_MATERIAL_CHARS = 24000
+
+
+def _review_material_budget() -> int:
+    raw = os.environ.get("OR_HARNESS_REVIEW_MATERIAL_CHARS")
+    if raw is None or not str(raw).strip():
+        return DEFAULT_REVIEW_MATERIAL_CHARS
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_REVIEW_MATERIAL_CHARS
+    return value if value >= 0 else DEFAULT_REVIEW_MATERIAL_CHARS
+
+
+#: Characters of task text echoed with each material entry. Enough to name
+#: the problem's semantics and key constraints without the whole prompt.
+_REVIEW_TEXT_CHARS = 280
+
+
+def _review_entry(harness, record: Any) -> Dict[str, Any]:
+    """One completed task's reviewable material, missing fields marked.
+
+    Every field is echoed from the RECORD itself (never re-derived from live
+    state) so the batch is a faithful picture of what was observed. A field
+    the record does not carry is reported as an explicit ``unknown`` marker
+    rather than dropped, so a missing task check never hides a real method.
+    """
+    features = record.execution_features or {}
+    task_check = features.get("task_check")
+    planned = record.method_planned
+    actual = record.method_actual
+    if isinstance(actual, dict) and (actual.get("name") or actual.get("steps")):
+        method_basis = "performed"
+    elif isinstance(planned, dict) and (planned.get("name")
+                                        or planned.get("steps")):
+        method_basis = "planned_only"
+    else:
+        method_basis = "none"
+    text = None
+    if record.task_text_digest:
+        stored = harness.store.get_task_text(record.task_id,
+                                             record.task_text_digest)
+        if stored is not None:
+            text = " ".join(stored.split())[:_REVIEW_TEXT_CHARS]
+    profile = record.profile_snapshot
+    return {
+        "execution_id": record.execution_id,
+        "task_id": record.task_id,
+        "strategy_id": record.strategy_id,
+        "family": (profile.family if profile is not None else None),
+        "group_key": group_key(profile) if profile is not None else None,
+        "created_at": record.created_at,
+        # Task semantics: the text excerpt when the version is retained,
+        # else an explicit marker (never a fabricated summary).
+        "task_text": text if text is not None
+                     else {"unknown": "task text not retained for this "
+                                      "version"},
+        # Profile measured BEFORE modeling (frozen identity, never rewritten).
+        "profile": (profile.to_dict() if profile is not None
+                    else {"unknown": "no profile snapshot"}),
+        "cir": copy.deepcopy(record.cir_snapshot),
+        # Method evidence: the PLAN the agent declared and the method the run
+        # reports it ACTUALLY performed. A plan is never promoted to a fact.
+        "method": {
+            "planned": copy.deepcopy(planned),
+            "actual": copy.deepcopy(actual),
+            "basis": method_basis,
+        },
+        "trajectory": [t.to_dict() for t in (record.trajectory or [])],
+        "outcome": {
+            "status": (record.quality or {}).get("status"),
+            "feasible": (record.quality or {}).get("feasible"),
+            "objective": (record.quality or {}).get("objective"),
+            "gap": (record.quality or {}).get("gap"),
+        },
+        # TASK verdict, a SEPARATE fact from the solver's own status: absent
+        # is reported as never-checked, NOT as a pass.
+        "task_check": (copy.deepcopy(task_check) if task_check is not None
+                       else {"state": "never_checked"}),
+        "task_check_state": (task_check_state(record) or "never_checked"),
+        "failures": [f.to_dict() for f in (record.failures or [])],
+        "cost": record.cost.to_dict(),
+        "cost_measured": (sorted(record.cost.measured)
+                          if record.cost.measured is not None else None),
+        "measurement_scope": record.measurement_scope,
+    }
+
+
+def _existing_knowledge_for(harness, records: Sequence[Any]
+                            ) -> List[Dict[str, Any]]:
+    """Existing entries whose applicability could cover this batch.
+
+    Lets a reviewer see what knowledge ALREADY exists before deciding to add,
+    revise or leave alone — including the claim text and verification state,
+    so an entry that a new counterexample would change is visible.
+    """
+    seen: set = set()
+    out: List[Dict[str, Any]] = []
+    strategy_ids = {r.strategy_id for r in records}
+    for entry in harness.sbank.list(include_dormant=True):
+        if entry.strategy_id not in strategy_ids:
+            continue
+        if entry.entry_id in seen:
+            continue
+        seen.add(entry.entry_id)
+        out.append({
+            "entry_id": entry.entry_id,
+            "strategy_id": entry.strategy_id,
+            "claim_text": ((entry.claim or {}).get("text") or None),
+            "kind": ((entry.claim or {}).get("kind") or None),
+            "predicates": entry.predicates,
+            "support_n": entry.support_n,
+            "verification_state": entry.verification_state,
+            "status": entry.status,
+        })
+    return out
+
+
+def build_review_material(harness, *,
+                          strategy_id: Optional[str] = None,
+                          task_id: Optional[str] = None,
+                          limit: Optional[int] = None
+                          ) -> Dict[str, Any]:
+    """Organize a BATCH of completed tasks for offline review.
+
+    This is the independent MATERIAL entry point: it reads the Experience
+    Bank directly and needs NO detector candidate and NO sample-count gate,
+    so new, failed, cross-cell and cross-method-name material all reach the
+    reviewer. Success and failure are BOTH included; a missing field is
+    reported as ``unknown`` rather than dropping the rest of the fact.
+
+    Scope filters (all optional) select which completed tasks are read:
+    ``strategy_id`` / ``task_id`` narrow to one strategy or task. ``limit``
+    caps how many entries are returned, and the character budget
+    (``OR_HARNESS_REVIEW_MATERIAL_CHARS``) caps how much material travels —
+    eviction is REPORTED, never silent, so growth trends toward batching, not
+    toward permanently invisible material.
+
+    ``retries`` reports, per task, how many attempts share that ``task_id``
+    so a same-task retry is never mistaken for independent cross-task
+    support. Read-only: nothing is written and no claim is formed here.
+    """
+    records = [r for r in harness.bank.all()
+               if r.source == "executed" and r.measurement_scope == "attempt"]
+    if strategy_id is not None:
+        records = [r for r in records if r.strategy_id == str(strategy_id)]
+    if task_id is not None:
+        records = [r for r in records if r.task_id == str(task_id)]
+    records.sort(key=lambda r: (r.created_at, r.execution_id))
+
+    # Same-task attempts: the retry count is a fact the reviewer must see so
+    # repeated runs of ONE instance are not read as cross-task support.
+    attempts_by_task: Dict[str, int] = {}
+    for r in records:
+        attempts_by_task[r.task_id] = attempts_by_task.get(r.task_id, 0) + 1
+
+    total = len(records)
+    truncated_by_limit = False
+    if limit is not None and limit >= 0 and len(records) > limit:
+        records = records[len(records) - limit:]  # keep the NEWEST
+        truncated_by_limit = True
+
+    budget = _review_material_budget()
+    # Budget eviction keeps the NEWEST material, matching ``--limit``: a
+    # reviewer should see the most recent work first, and an older record is
+    # what is omitted when the budget runs out. Pack from the newest
+    # backwards, then restore chronological order for reading.
+    entries_newest_first: List[Dict[str, Any]] = []
+    used = 0
+    omitted: List[str] = []
+    for record in reversed(records):
+        entry = _review_entry(harness, record)
+        entry["attempts_of_task"] = attempts_by_task.get(record.task_id, 1)
+        entry["independent_task"] = entry["attempts_of_task"] == 1
+        size = len(json.dumps(entry, ensure_ascii=False, default=str))
+        if entries_newest_first and used + size > budget:
+            omitted.append(record.execution_id)
+            continue
+        entries_newest_first.append(entry)
+        used += size
+    material: List[Dict[str, Any]] = list(reversed(entries_newest_first))
+    omitted.reverse()
+
+    tasks = sorted({m["task_id"] for m in material})
+    passed = sum(1 for m in material if m["task_check_state"] == "passed")
+    failed = sum(1 for m in material if m["task_check_state"] == "failed")
+    untested = len(material) - passed - failed
+    reviewed = [harness.bank.get(m["execution_id"]) for m in material]
+    return {
+        "count": len(material),
+        "total_completed": total,
+        "tasks": tasks,
+        "n_distinct_tasks": len(tasks),
+        "n_attempts": len(material),
+        "check_states": {"passed": passed, "failed": failed,
+                         "never_checked_or_insufficient": untested},
+        "material": material,
+        "existing_knowledge": _existing_knowledge_for(
+            harness, [r for r in reviewed if r is not None]),
+        "budget": {
+            "chars_used": used,
+            "chars_limit": budget,
+            "truncated_by_budget": bool(omitted),
+            "omitted_execution_ids": omitted,
+            "truncated_by_limit": truncated_by_limit,
+        },
+        "note": ("read a BATCH of completed tasks directly — no detector "
+                 "candidate and no sample-count gate is required. Success, "
+                 "failure, cross-cell and cross-method-name material are all "
+                 "here; a missing field is marked 'unknown', never dropped. "
+                 "Form a claim (condition -> how -> consequence -> boundary) "
+                 "and submit it with `orx induce --relation`."),
+    }

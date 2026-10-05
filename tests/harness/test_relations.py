@@ -317,10 +317,41 @@ class TestClaimPublication(ClaimCase):
     def test_unverified_claim_is_not_published(self):
         self.seed_cross_period()
         claim = self.cross_period_claim()
-        out = self.engine.submit_relation(claim)   # no verify
+        # No verdict AND no embedded check: nothing computable to verify.
+        claim.pop("check", None)
+        out = self.engine.submit_relation(claim)   # no verify, no check
         self.assertIsNotNone(out["saved"])
         self.assertFalse(out["publication"]["published"])
         self.assertFalse(self.sbank.get(out["saved"]).is_published)
+
+    def test_embedded_relation_check_is_honoured(self):
+        """A ``check`` block INSIDE the relation is read, not silently
+        ignored: the two spellings of a declared check are equivalent."""
+        self.seed_cross_period()
+        claim = self.cross_period_claim()
+        out = self.engine.submit_relation(claim)   # embedded check only
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "verified")
+        self.assertTrue(out["publication"]["published"])
+        self.assertEqual(out["check_note"]["check_source"],
+                         "embedded_relation_check")
+
+    def test_verify_arg_wins_over_an_embedded_check(self):
+        """When BOTH are supplied the standalone ``--verify`` wins and the
+        override is reported, never swallowed."""
+        self.seed_cross_period()
+        claim = self.cross_period_claim()
+        payload = self.verify_payload(claim)
+        # A deliberately WRONG embedded check that would refute if used.
+        claim["check"] = {"assertions": [
+            {"kind": "probe", "roles": ["preserved"],
+             "path": "quality.feasible", "equals": False}]}
+        out = self.engine.submit_relation(claim, verify=payload)
+        self.assertEqual(out["check_note"]["check_source"], "verify_arg")
+        self.assertIn("overridden", out["check_note"]["note"])
+        # The standalone (correct) verdict won.
+        self.assertEqual(self.sbank.get(out["saved"]).verification_state,
+                         "verified")
 
 
 class TestClaimRevision(ClaimCase):
@@ -334,9 +365,11 @@ class TestClaimRevision(ClaimCase):
             claim, verify=self.verify_payload(claim))
         entry_id = out["saved"]
         self.assertTrue(out["publication"]["published"])
-        # Same identity (subject+kind+cell), CHANGED claim, NO fresh verdict.
+        # Same identity (subject+kind+cell), CHANGED claim, NO fresh verdict
+        # and NO embedded check (so nothing re-verifies the revised claim).
         revised = self.cross_period_claim()
         revised["claim"] = "修订后的主张：只保留跨期状态的一部分"
+        revised.pop("check", None)
         self.engine.submit_relation(revised)
         entry = self.sbank.get(entry_id)
         self.assertEqual(entry.verification_state, "verified")
@@ -365,7 +398,9 @@ class TestClaimRevision(ClaimCase):
         self.assertEqual(self.sbank.get(out["saved"]).verification_state,
                          "verified")
         # Re-submit the SAME claim with no verification: the verdict stays.
-        out2 = self.engine.submit_relation(self.cross_period_claim())
+        resubmit = self.cross_period_claim()
+        resubmit.pop("check", None)
+        out2 = self.engine.submit_relation(resubmit)
         entry = self.sbank.get(out2["saved"])
         self.assertEqual(entry.verification_state, "verified")
         self.assertFalse(entry.verification.get("stale_after_revision"))
@@ -387,10 +422,12 @@ class TestClaimRevision(ClaimCase):
         first["kind"] = "intervention_recovery"
         out1 = self.engine.submit_relation(
             first, verify=self.verify_payload(first))
-        # A DIFFERENT kind under the same subject is a second claim.
+        # A DIFFERENT kind under the same subject is a second claim, and it
+        # carries NO verdict of its own (no verify, no embedded check).
         other = self.cross_period_claim()
         other["kind"] = "structural_reproduction"
         other["claim"] = "另一条独立主张"
+        other.pop("check", None)
         out2 = self.engine.submit_relation(other)
         self.assertNotEqual(out1["saved"], out2["saved"])
         self.assertEqual(self.sbank.count(), 2)
