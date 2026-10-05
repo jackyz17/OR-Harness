@@ -2284,9 +2284,48 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
                                                    episode_id),
         "retention": archive_result,
         "evidence_window": window_result,
+        **({"unclosed_bound_predictions": unclosed}
+           if (unclosed := _unclosed_bound_predictions(harness, task_id,
+                                                        episode_id)) else {}),
         **({"cost_completeness_warnings": cost_warnings}
            if cost_warnings else {}),
     }
+
+
+def _unclosed_bound_predictions(harness, task_id: str,
+                                episode_id: Optional[str]
+                                ) -> List[Dict[str, Any]]:
+    """Bound predictions of THIS task that live OUTSIDE the closed episode.
+
+    A bound prediction under a DIFFERENT episode id (including the ``None``
+    episode) is never evaluated by a close-out that matches (task, episode)
+    exactly, so its real execution can silently miss calibration. Reported,
+    never auto-collected: the episode is the caller's unit and the framework
+    does not close an episode the caller did not name. The report names the
+    other episodes and their bound predictions so they can be closed
+    explicitly.
+    """
+    out: List[Dict[str, Any]] = []
+    seen: Dict[str, List[str]] = {}
+    for prediction in harness.strategy_predictions.query(task_id=task_id):
+        if not prediction.trace.model_info.get("bound_action_id"):
+            continue
+        other = prediction.candidate.episode_id
+        if other == episode_id:
+            continue
+        seen.setdefault("" if other is None else str(other), []).append(
+            prediction.prediction_id)
+    for other, ids in seen.items():
+        out.append({
+            "episode_id": other or None,
+            "prediction_ids": sorted(ids),
+            "note": ("this episode's bound predictions are NOT evaluated by "
+                     "this close-out (which matches the episode id exactly); "
+                     "close it explicitly with `orx close-episode --task "
+                     f"{task_id} --episode {other!r}` to bring them into "
+                     "calibration"),
+        })
+    return out
 
 
 def _unmeasured_cost_warning(harness, task_id: str,
@@ -2895,19 +2934,31 @@ def build_calibration_summary(harness, *,
                 1.0 if interval.get("covered") else 0.0)
             if interval.get("width") is not None:
                 group["interval_widths"].append(float(interval["width"]))
-        # Coverage is split by WHAT the interval was about: an outcome
-        # interval and a mean interval have different claimed coverage, so
-        # their hit rates are never averaged into one number. The interval's
-        # own block carries the declared kind (a bare range groups under
+        # Coverage is split by WHAT the interval was about AND by the
+        # NOMINAL level the prediction claimed: an outcome interval and a
+        # mean interval make different claims, and a 0.5-nominal interval
+        # and a 0.9-nominal interval are different promises — their hit
+        # rates are never averaged into one number. The interval's own block
+        # carries the declared kind and coverage (a bare range groups under
         # ``(unstated)``, never relabelled).
         ik = (evaluation.interval or {}).get("interval_kind")
         if interval.get("eligibility") == "evaluable":
             bucket = group.setdefault("interval_by_kind", {}).setdefault(
-                str(ik or "(unstated)"), {"covered": [], "widths": []})
+                str(ik or "(unstated)"), {"covered": [], "widths": [],
+                                          "by_coverage": {}})
             bucket["covered"].append(
                 1.0 if interval.get("covered") else 0.0)
             if interval.get("width") is not None:
                 bucket["widths"].append(float(interval["width"]))
+            nominal = interval.get("interval_coverage")
+            level = (f"{float(nominal):.2f}" if nominal is not None
+                     else "(unstated)")
+            sub = bucket["by_coverage"].setdefault(
+                level, {"covered": [], "widths": []})
+            sub["covered"].append(
+                1.0 if interval.get("covered") else 0.0)
+            if interval.get("width") is not None:
+                sub["widths"].append(float(interval["width"]))
         risk = evaluation.risk or {}
         for entry in risk.get("scored") or []:
             # PER-EVENT accounting: different event names are different
@@ -3007,12 +3058,23 @@ def build_calibration_summary(harness, *,
             "mean_interval_width": _mean(group["interval_widths"]),
             # Coverage split by interval KIND: an outcome interval and a
             # mean interval make different claims, so their hit rates are
-            # reported separately and never pooled.
+            # reported separately and never pooled. Within a kind, coverage
+            # is FURTHER split by the NOMINAL level claimed, because a 0.5
+            # interval covering 50% and a 0.9 interval covering 50% are
+            # different failures.
             "interval_by_kind": {
                 kind: {
                     "n": len(bucket["covered"]),
                     "coverage": _mean(bucket["covered"]),
                     "mean_width": _mean(bucket["widths"]),
+                    "by_nominal_coverage": {
+                        level: {
+                            "n": len(sub["covered"]),
+                            "coverage": _mean(sub["covered"]),
+                            "mean_width": _mean(sub["widths"]),
+                        }
+                        for level, sub in sorted(
+                            (bucket.get("by_coverage") or {}).items())},
                 }
                 for kind, bucket in sorted(
                     (group.get("interval_by_kind") or {}).items())},
@@ -3663,10 +3725,10 @@ def _compact_problem_conditions(evaluation, prediction) -> Dict[str, Any]:
 
     Derived from what the closed episode already recorded, NEVER from a live
     profile read (which would let today's bank leak into a past pair). Kept
-    deliberately small and only what the record itself carries: the task id
-    and the family — a recognisable handle, not the whole joint
-    representation. The prediction's trace ``model_info`` may also carry a
-    ``cell_token`` when one was recorded; it is echoed verbatim when present.
+    deliberately small: the task id, the family and the structural cell the
+    prediction was made for — a recognisable handle, not the whole joint
+    representation. The family and cell come from the FROZEN prediction
+    context/trace, so they describe the conditions of THAT decision.
     """
     conditions: Dict[str, Any] = {}
     if getattr(evaluation, "task_id", None):
@@ -3674,13 +3736,13 @@ def _compact_problem_conditions(evaluation, prediction) -> Dict[str, Any]:
     candidate = getattr(prediction, "candidate", None)
     if candidate is not None and getattr(candidate, "strategy_id", None):
         conditions["strategy_id"] = str(candidate.strategy_id)
-    cell = None
     info = (getattr(getattr(prediction, "trace", None), "model_info", None)
             or {})
-    if isinstance(info, dict) and info.get("cell_token"):
-        cell = str(info["cell_token"])
-    if cell:
-        conditions["cell"] = cell
+    if isinstance(info, dict):
+        if info.get("cell_token"):
+            conditions["cell"] = str(info["cell_token"])
+        if info.get("family"):
+            conditions["family"] = str(info["family"])
     return conditions
 
 
@@ -3922,7 +3984,69 @@ def _prediction_reminders(out_groups: Dict[str, Any],
                     "outcome vs mean intervals rather than mixing them"),
                 "support": [key],
             })
+    reminders.extend(_single_case_reminders(out_groups, min_samples))
     return reminders
+
+
+#: A single-observation benefit error this large is worth a scoped "watch
+#: this" note even without the multi-episode threshold: it is NOT a
+#: statistical lesson, only a flagged case.
+SINGLE_CASE_ERROR_THRESHOLD = 0.5
+
+
+def _single_case_reminders(out_groups: Dict[str, Any],
+                           min_samples: int) -> List[Dict[str, Any]]:
+    """SCOPED reminders from a group that has too FEW episodes to generalise.
+
+    A group below the multi-episode threshold yields no statistical reminder
+    (one observation is not a lesson). But a LARGE single-observation error
+    is still worth flagging as a case: the reminder is stamped
+    ``kind="single_case_reminder"`` / ``basis="single_observation"`` with its
+    applicability and the ONE episode id, so a reader sees a flagged case and
+    never mistakes it for a measured bias. This is the range-limited
+    counterpart the multi-episode reminders deliberately do not provide.
+    """
+    out: List[Dict[str, Any]] = []
+    rec_id = 0
+    for key, group in sorted(out_groups.items()):
+        distinct = group.get("n_distinct_episodes") or 0
+        if distinct == 0 or distinct >= min_samples:
+            continue  # covered by the statistical reminders above
+        evidence = group.get("benefit_evidence") or {}
+        if evidence.get("evidence") != "measured":
+            continue
+        signed = group.get("mean_benefit_signed_error")
+        if signed is None or abs(float(signed)) < SINGLE_CASE_ERROR_THRESHOLD:
+            continue
+        parts = str(key).split("|")
+        rec_id += 1
+        out.append({
+            "reminder_id": f"rem_single_{rec_id:03d}",
+            "kind": "single_case_reminder",
+            "basis": "single_observation",
+            "field": "benefit",
+            "applicability": {
+                "metric": parts[2] if len(parts) > 2 else "(none)",
+                "unit": parts[3] if len(parts) > 3 else "(none)",
+                "scope": parts[4] if len(parts) > 4 else "(none)",
+                "model_identity": parts[1] if len(parts) > 1 else "(unknown)",
+            },
+            "observed": {
+                "mean_signed_error": signed,
+                "n_distinct_episodes": distinct,
+                "note": ("observed (fact): a single episode's directed error; "
+                         "NOT a measured bias — too few episodes to "
+                         "generalise"),
+            },
+            "watch_next_time": (
+                f"a single past prediction under this applicability missed by "
+                f"{abs(float(signed)):.3f} (positive = the real outcome was "
+                "better). Treat it as a flagged CASE, not a correction: it "
+                "shows where your estimate can be far off, not how far it "
+                "usually is"),
+            "support": [key],
+        })
+    return out
 
 
 def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
@@ -3953,14 +4077,24 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
         "conditions": _compact_problem_conditions(evaluation, prediction),
         "task_check": copy.deepcopy(benefit.get("task_check")),
     }
-    # The method that was planned, one line (planned vs actual when both
-    # exist). Never a paraphrase.
+    # The method that was planned, one line: its name, the number of steps
+    # and the FIRST FEW steps themselves (clipped), so a pair shows HOW the
+    # work was organised, not only its length. Never a paraphrase.
     method = getattr(getattr(prediction, "candidate", None), "method", None)
     if isinstance(method, dict) and method:
+        steps = [str(s) for s in (method.get("steps") or [])]
         row["method_planned"] = {
             "name": method.get("name"),
-            "n_steps": len(method.get("steps") or []),
+            "n_steps": len(steps),
+            "steps": [(" ".join(s.split()))[:160] for s in steps[:3]],
         }
+    # The predicted RISK events (their NAMES), so a pair shows what the model
+    # was wary of beside what happened — a fact, never a recommendation.
+    risk = getattr(prediction, "risk", None)
+    if risk is not None and getattr(risk, "events", None):
+        row["risk_predicted"] = [
+            {"event": e.event, "probability": e.probability}
+            for e in risk.events][:5]
     # The ORIGINAL prediction (read-only) and the real observation, with the
     # per-field difference. A field the prediction did not carry is simply
     # absent — never a zero.

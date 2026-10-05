@@ -17,7 +17,6 @@ from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.strategic_bank import StrategicBank
-from or_harness.strategy.triggers import check_triggers
 
 
 class _Case(HarnessTestCase):
@@ -122,15 +121,22 @@ class TestEvidenceScope(_Case):
 
     def test_task_scope_cannot_be_an_independent_task(self):
         """Two attempts of one task plus a task-scope row for a SECOND task
-        used to satisfy the >=2-task gate (the task-scope row was counted as
-        an independent task while being excluded from the statistics)."""
+        must NOT satisfy the >=2-task bar (the task-scope row was counted as
+        an independent task while being excluded from the statistics). The
+        framework no longer BLOCKS creation on the count; it DRAFTS the entry
+        and reports the single-task fact, so the entry is never published as
+        transferable knowledge."""
         self.add("ex_p1", "same", rc=0.20)
         self.add("ex_p2", "same", rc=0.20)
         self.add("ex_ts", "other", rc=0.20, scope="task")
         result = self.h.induce(strategy_id="S01")["results"][0]
-        self.assertIsNone(result.get("created"))
-        self.assertIn("needs independent evidence", result["skipped"])
-        self.assertEqual(result["verification"]["tasks"], ["same"])
+        entry = self.h.sbank.get(result["created"])
+        # The task-scope row does not count: only "same" is a real task.
+        self.assertEqual(entry.predicates["family"],
+                         self.make_profile(problem_id="same").family)
+        self.assertIn("single_task_note", result)
+        self.assertNotIn("other", result["single_task_note"])
+        self.assertFalse(result["entry"]["verification"]["state"] == "verified")
 
     def test_task_scope_never_enters_the_range(self):
         self.add("ex_p1", "ta", rc=0.20)
@@ -183,63 +189,6 @@ class TestDormantDedup(_Case):
         self.add("ex_c", "tc")
         self.h.induce(strategy_id="S01")
         self.assertEqual([e.entry_id for e in self.h.sbank.list()], [created])
-
-
-class TestTriggers(_Case):
-    def test_cost_contrast_not_swallowed_by_quality_dedup(self):
-        """The reproduced defect: when both sides' QUALITY was already encoded
-        by entries, the pair was skipped wholesale and a 5x token difference
-        was never reported."""
-        from or_harness.core.schema import StrategicEntry
-        for sid in ("S01", "S02"):
-            self.h.sbank.add(StrategicEntry(
-                entry_id=f"se_{sid}", strategy_id=sid,
-                pattern={"predicates": {"family": "routing"}},
-                expected_quality_hat=0.90, quality_interval=(0.5, 1.0),
-                support_n=9))
-        for i in range(2):
-            self.add(f"ex_S01_{i}", f"S01t{i}", strategy_id="S01", gap=0.1,
-                     tokens=500)
-            self.add(f"ex_S02_{i}", f"S02t{i}", strategy_id="S02", gap=0.1,
-                     tokens=100)
-        last = self.h.bank.get("ex_S02_1")
-        expected = {e.strategy_id: {"quality": e.expected_quality_hat}
-                    for e in self.h.sbank.matching(last.profile_snapshot)}
-        hints = [h for h in check_triggers(last, self.h.stats, expected)
-                 if h.pattern == "strategy_contrast"]
-        self.assertTrue(hints, "a 5x cost gap must still be reported")
-        self.assertEqual(hints[0].evidence["kind"], "cost")
-
-    def test_patterns_read_the_cell_not_the_family(self):
-        """The contrast pattern must not mix evidence from another structural
-        cell of the same family: a relation is only meaningful between
-        structurally comparable evidence."""
-        for i in range(2):
-            self.add(f"ex_far{i}", f"far{i}", strategy_id="S07", rc=0.10,
-                     gap=0.95)
-        record = self.add("ex_near", "near", strategy_id="S01", rc=0.90,
-                          gap=0.05)
-        hints = check_triggers(record, self.h.stats)
-        # strategy_contrast needs two eligible strategies IN THE CELL; S07's
-        # evidence is in another cell, so no contrast may be claimed.
-        self.assertNotIn("strategy_contrast", {h.pattern for h in hints})
-        self.assertNotIn("S07", [s for h in hints for s in h.strategy_ids])
-
-    def test_retired_criteria_have_no_path(self):
-        """The retired per-strategy criteria (a lone strategy's extreme mean,
-        a within-cell quality trend, an accumulated success count) must never
-        be emitted: none of them is a relation between evidence."""
-        last = None
-        for i in range(4):
-            last = self.add(f"ex_ok{i}", f"ok{i}", gap=0.0)
-        patterns = {h.pattern for h in
-                    check_triggers(last, self.h.stats)}
-        self.assertNotIn("stable_success", patterns)
-        self.assertNotIn("extreme_performance", patterns)
-        self.assertNotIn("drift", patterns)
-        self.assertNotIn("C6", patterns)
-        self.assertNotIn("C2", patterns)
-        self.assertNotIn("C3", patterns)
 
 
 class TestPrecision(_Case):

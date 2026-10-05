@@ -20,7 +20,6 @@ from or_harness.profiling.profiler import profile_task
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.triggers import (
-    check_triggers,
     classify_failure,
     solver_advisories,
 )
@@ -205,7 +204,7 @@ class TestPendingStaging(HarnessTestCase):
             store2.close()
 
 
-class TestCrossExecutionRecovery(HarnessTestCase):
+class TestFailureClassification(HarnessTestCase):
     def setUp(self):
         super().setUp()
         self.bank = ExperienceBank(self.store)
@@ -217,27 +216,6 @@ class TestCrossExecutionRecovery(HarnessTestCase):
                                solver={"name": solver, "code_hash": "x"})
         rec.failures = [FailureRecord(attempt=1, error=error)]
         return rec
-
-    def test_recovery_chain_fires(self):
-        failed = self.failed_record("ex_f1", "pulp")
-        success = self.make_record(execution_id="ex_s1", task_id="t1",
-                                   solver={"name": "ortools", "code_hash": "y"})
-        hints = check_triggers(success, self.stats,
-                               prior_failures=[failed])
-        c4 = [h for h in hints if h.pattern == "intervention_recovery"]
-        self.assertTrue(c4)
-        self.assertEqual(c4[0].evidence["kind"], "cross_execution_recovery")
-        self.assertEqual(c4[0].evidence["failed"]["solver"], "pulp")
-        self.assertEqual(c4[0].evidence["recovered_by"]["solver"], "ortools")
-
-    def test_same_solver_retry_not_a_chain(self):
-        failed = self.failed_record("ex_f2", "pulp")
-        success = self.make_record(execution_id="ex_s2", task_id="t1",
-                                   solver={"name": "pulp", "code_hash": "y"})
-        hints = check_triggers(success, self.stats,
-                               prior_failures=[failed])
-        self.assertFalse(any(h.pattern == "intervention_recovery"
-                             for h in hints))
 
     def test_failure_classification(self):
         env = self.failed_record("ex_c1", "pulp")

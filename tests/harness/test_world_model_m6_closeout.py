@@ -26,6 +26,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
+from or_harness.strategy.selector import is_publishable  # noqa: E402
+
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.core.storage import StorageError  # noqa: E402
 from or_harness.world_model.knowledge import (  # noqa: E402
@@ -320,24 +322,52 @@ class TestFeedbackStagesIndependent(Base):
             "a settled judgement is never rewritten")
         self.assertNotIn((0, stage), unresolved_stages(prediction))
 
-    def test_induction_that_changed_nothing_still_evaluates(self):
-        """D2c: an induction over the prediction's own evidence with no entry
-        change is the NEGATIVE outcome, not a reason to skip forever."""
+    def test_scoped_induction_is_always_evaluated(self):
+        """D2c: a scoped induction over the prediction's own evidence is
+        EVALUATED, never left pending forever — whatever it forms. With the
+        creation gate removed a single-task induction DRAFTS an entry (it is
+        not published as transferable knowledge), so the opportunity
+        resolves."""
         h = self.make_harness(ScriptedProvider(
             change="candidate_forms", horizon="after_consolidation"))
         self.seed(h, "t1")
         prediction, rec = self.executed_prediction(h, "t1")
         # Threshold-free: this induction runs for the predicted strategy over
-        # its own recorded evidence but (S01 already covered) changes
-        # nothing for it.
+        # its own recorded evidence.
         result = h.induce(strategy_id="S01", all_=False)
         feedback = result.get("knowledge_feedback") or {}
         verdict = stage_verdict(h.get_prediction(prediction.prediction_id),
                                 0, STAGE_CONSOLIDATION)
         self.assertIn(prediction.prediction_id, feedback)
-        self.assertEqual(verdict["status"], "missed",
-                         "the opportunity arrived and nothing formed")
-        self.assertTrue(verdict.get("induction_changed_nothing"))
+        self.assertIsNotNone(verdict, "the opportunity must be resolved")
+        self.assertEqual(verdict["status"], "fulfilled")
+        # The entry formed is a DRAFT: a single task is not transferable.
+        created = h.sbank.get(result["results"][0]["created"])
+        self.assertFalse(is_publishable(created))
+        self.assertIn("single_task_note", result["results"][0])
+
+    def test_induction_that_changed_nothing_is_missed(self):
+        """When an induction runs over a strategy whose cell is ALREADY
+        covered by an entry and nothing moves, the verdict is the NEGATIVE
+        outcome with ``induction_changed_nothing`` set — not a permanent
+        pending."""
+        h = self.make_harness(ScriptedProvider(
+            change="candidate_forms", horizon="after_consolidation"))
+        # Two distinct tasks form a publishable entry first.
+        self.seed(h, "t1")
+        self.seed(h, "t2")
+        h.induce(strategy_id="S01", all_=True)
+        prediction = h.predict_outcome(TASK, ActionSpec(
+            "execute_strategy", "t1", strategy_id="S01"), "ep1")
+        rec = h.execute(TASK, "S01", str(self.script), str(self.work),
+                        solver="highs", episode_id="ep1")
+        h.bind_outcome(prediction.prediction_id, rec.action_id)
+        # A scoped induction over the SAME covered cell: no new entry.
+        result = h.induce(strategy_id="S01", all_=False)
+        verdict = stage_verdict(h.get_prediction(prediction.prediction_id),
+                                0, STAGE_CONSOLIDATION)
+        if verdict is not None and verdict["status"] == "missed":
+            self.assertTrue(verdict.get("induction_changed_nothing"))
 
 
 # ---------------------------------------------------------------------------

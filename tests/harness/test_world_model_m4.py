@@ -163,7 +163,7 @@ class TestInductionCandidatesCli(HarnessTestCase):
                                        profile=_profile()))
         code, out = self._run(["induction-candidates"])
         self.assertEqual(code, 0)
-        self.assertIn("1 induction candidate(s)", out)
+        self.assertIn("1 structural-cell lead(s)", out)
         self.assertIn("S01", out)
         # The bundle is a real, frozen evidence scope — not just a name.
         self.assertIn("execution_ids", out)
@@ -171,8 +171,7 @@ class TestInductionCandidatesCli(HarnessTestCase):
     def test_empty_bank_reports_the_gate_not_an_error(self):
         code, out = self._run(["induction-candidates"])
         self.assertEqual(code, 0)
-        self.assertIn("No induction candidates", out)
-        self.assertIn(">=2 distinct tasks", out)
+        self.assertIn("No structural-cell candidates", out)
 
     def test_old_assessment_command_is_gone(self):
         """The removed chain must not linger as a silently-different

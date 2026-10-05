@@ -24,7 +24,7 @@ from or_harness.core.schema import (  # noqa: E402
     CostVector,
     FailureRecord,
 )
-from or_harness.strategy.triggers import InductionHint  # noqa: E402
+from or_harness.strategy.triggers import classify_failure, solver_advisories  # noqa: E402
 
 
 def _profile(problem_id="t1", family="routing", **coupling):
@@ -39,10 +39,12 @@ def _profile(problem_id="t1", family="routing", **coupling):
         **values)
 
 
-class TestHintPersistence(HarnessTestCase):
-    """A hint produced online is PERSISTED onto the fact that produced it."""
+class TestNoAutomaticHints(HarnessTestCase):
+    """Recording no longer produces or persists induction labels: the
+    framework does not interpret the fact it just stored. The material is
+    read later with ``review-material`` and the agent abstracts it."""
 
-    def test_record_writes_its_hints_onto_the_fact(self):
+    def test_record_does_not_produce_hints(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         failed = self.make_record(execution_id="f1", task_id="ft",
@@ -54,116 +56,13 @@ class TestHintPersistence(HarnessTestCase):
                                    solver={"name": "ortools"},
                                    profile=_profile("ft"))
         result = h.record(success)
-        # The hint is in the RETURN value (unchanged behaviour) ...
-        returned = [r["pattern"] for r in result["induction_hints"]]
-        self.assertIn("intervention_recovery", returned)
-        # ... AND on the stored fact, so it survives the call.
+        self.assertNotIn("induction_hints", result)
         stored = h.bank.get("f2")
-        persisted = stored.execution_features.get("induction_hints")
-        self.assertTrue(persisted)
-        self.assertEqual(persisted[0]["pattern"], "intervention_recovery")
-
-    def test_a_record_with_no_hint_writes_none(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        record = self.make_record(profile=_profile())
-        h.record(record)
-        stored = h.bank.get(record.execution_id)
         self.assertNotIn("induction_hints", stored.execution_features)
 
 
-class TestDetectorCandidates(HarnessTestCase):
-    """An offline candidate REUSES the detector's own evidence references."""
-
-    def _seed_conflict(self, h):
-        """S01 poor-quality in one cell, S04 good in the same cell."""
-        cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0,
-                           measured={"llm_tokens", "solver_runtime_s"})
-        ids = []
-        for prefix, sid, gap in (("a", "S01", 0.40), ("b", "S04", 0.02)):
-            for i in range(2):
-                rec = self.make_record(
-                    execution_id=f"{prefix}_{i}", task_id=f"{prefix}{i}",
-                    strategy_id=sid, gap=gap, cost=cheap,
-                    profile=_profile(f"{prefix}{i}", resource_coupling=0.30))
-                h.record(rec)
-                ids.append(rec.execution_id)
-        return ids
-
-    def test_a_contrast_becomes_one_bundle_with_both_sides(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        self._seed_conflict(h)
-        bundles = h.induction_candidates()
-        contrasts = [b for b in bundles if b["kind"] == "pattern"
-                     and b["pattern"] == "strategy_contrast"]
-        self.assertEqual(len(contrasts), 1)
-        bundle = contrasts[0]
-        # Both sides travel in ONE bundle: the execution ids cover BOTH
-        # strategies, rather than splitting into two unrelated bins.
-        strategies = {
-            h.bank.get(eid).strategy_id for eid in bundle["execution_ids"]}
-        self.assertEqual(strategies, {"S01", "S04"})
-        self.assertEqual(bundle["evidence_refs"][0]["kind"], "quality")
-        self.assertEqual(set(bundle["evidence_refs"][0]["n"]),
-                         {"S01", "S04"})
-
-    def test_the_same_candidate_is_not_multiplied(self):
-        """Re-reading the bank must not multiply one observation into many
-        candidates: the signature is (pattern, group, evidence set)."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        self._seed_conflict(h)
-        first = h.induction_candidates()
-        second = h.induction_candidates()
-        self.assertTrue(first, "the seeded conflict must form a candidate")
-        self.assertEqual(len(first), len(second))
-        self.assertEqual({b["bundle_id"] for b in first},
-                         {b["bundle_id"] for b in second})
-
-    def test_a_candidate_carrying_no_method_is_insufficient(self):
-        """No execution reports a method: the material is INSUFFICIENT, not
-        an invitation to invent a technique from a name and a mean."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        for i in range(2):
-            h.record(self.make_record(task_id=f"t{i}", strategy_id="S01",
-                                      profile=_profile(f"t{i}")))
-        bundles = h.induction_candidates()
-        self.assertTrue(bundles)
-        material = h.induction_material()
-        self.assertTrue(material["material"])
-        for item in material["material"]:
-            self.assertEqual(item["material_state"]["state"], "insufficient")
-        # And the CLI says so plainly rather than emitting a claim.
-        code, out = self._run_cli(h, ["induction-material"])
-        self.assertEqual(code, 0)
-        self.assertIn("material=insufficient", out)
-
-    def test_method_material_travels_when_it_exists(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        for i in range(2):
-            rec = self.make_record(task_id=f"t{i}", strategy_id="S01",
-                                   profile=_profile(f"t{i}"))
-            rec.method_planned = {"name": "rolling-horizon decomposition",
-                                  "steps": ["relax", "solve master",
-                                            "recombine"]}
-            rec.method_actual = {"name": "rolling-horizon decomposition",
-                                 "steps": ["relax", "solve master"]}
-            h.record(rec)
-        material = h.induction_material()
-        item = next(m for m in material["material"]
-                    if m["strategy_id"] == "S01" and m["methods"])
-        methods = item["methods"]
-        self.assertEqual(len(methods), 2)
-        self.assertEqual(methods[0]["planned"]["steps"],
-                         ["relax", "solve master", "recombine"])
-        self.assertEqual(methods[0]["actual"]["steps"],
-                         ["relax", "solve master"])
-        # Each cited execution carries its verified outcome, so a claim can
-        # rest on what was CHECKED, not just on what was intended.
-        self.assertIn("task_check", methods[0])
+class TestCellCandidates(HarnessTestCase):
+    """The candidate builder produces structural-cell LEADS only."""
 
     def _run_cli(self, h, argv):
         from or_harness import cli
@@ -176,15 +75,47 @@ class TestDetectorCandidates(HarnessTestCase):
             sys.stdout = old
         return code, buffer.getvalue()
 
-    def test_material_can_be_selected_by_bundle(self):
+    def test_only_cell_kinds_are_emitted(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-        self._seed_conflict(h)
+        cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0,
+                           measured={"llm_tokens", "solver_runtime_s"})
+        for prefix, sid, gap in (("a", "S01", 0.40), ("b", "S04", 0.02)):
+            for i in range(2):
+                h.record(self.make_record(
+                    execution_id=f"{prefix}_{i}", task_id=f"{prefix}{i}",
+                    strategy_id=sid, gap=gap, cost=cheap,
+                    profile=_profile(f"{prefix}{i}", resource_coupling=0.30)))
         bundles = h.induction_candidates()
-        wanted = bundles[0]["bundle_id"]
-        material = h.induction_material(bundle_id=wanted)
-        self.assertEqual(material["count"], 1)
-        self.assertEqual(material["material"][0]["bundle_id"], wanted)
+        self.assertTrue(bundles)
+        kinds = {b["kind"] for b in bundles}
+        self.assertTrue(kinds <= {"new_claim", "revision",
+                                  "cell_observation"})
+        for b in bundles:
+            self.assertNotIn("pattern", b)
+            self.assertNotIn("purpose", b)
+
+    def test_a_candidate_carrying_no_method_is_reported(self):
+        """No execution reports a method: the material report NAMES the
+        missing content rather than inventing a technique from a name and a
+        mean. It is a report, not an admission verdict."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        for i in range(2):
+            h.record(self.make_record(task_id=f"t{i}", strategy_id="S01",
+                                      profile=_profile(f"t{i}")))
+        bundles = h.induction_candidates()
+        self.assertTrue(bundles)
+        material = h.induction_material()
+        self.assertTrue(material["material"])
+        for item in material["material"]:
+            report = item["material_report"]
+            self.assertFalse(report["basis"] == "performed")
+            self.assertTrue(any("method_performed" in m
+                                for m in report["missing"]))
+        code, out = self._run_cli(h, ["induction-material"])
+        self.assertEqual(code, 0)
+        self.assertIn("missing", out)
 
     def test_unknown_bundle_is_refused(self):
         from or_harness.core.storage import StorageError
@@ -194,14 +125,10 @@ class TestDetectorCandidates(HarnessTestCase):
             h.induction_material(bundle_id="cb_does_not_exist")
 
 
-class TestEvidenceExecutionIds(unittest.TestCase):
-    # The four detector evidence shapes are covered in one place by
-    # test_method_repair.TestAdvantageReversalReachesOffline
-    # (`test_every_detector_shape_is_covered`), which includes this subset
-    # plus the advantage-reversal nested cells.
-    def test_stored_hint_refuses_an_unknown_pattern(self):
-        with self.assertRaises(ValueError):
-            InductionHint.from_dict({"pattern": "invented", "group_key": "g"})
+class TestRetainedFactsReachable(unittest.TestCase):
+    def test_failure_classification_is_available(self):
+        self.assertTrue(callable(classify_failure))
+        self.assertTrue(callable(solver_advisories))
 
 
 class TestRelationWriteBookkeeping(HarnessTestCase):
@@ -325,9 +252,6 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self._seed(h)
         bundles = h.induction_candidates()
         self.assertTrue(bundles)
-        # The cell bundle cites ALL three executions (a reproduction pattern
-        # bundle may cite fewer — it fires as soon as two independent tasks
-        # agree).
         bundle = max(bundles, key=lambda b: len(b["execution_ids"]))
         bundle_id = bundle["bundle_id"]
         self.assertEqual(len(bundle["execution_ids"]), 3)
@@ -384,13 +308,14 @@ class TestColdStartObservation(HarnessTestCase):
             self.assertEqual(len(b["execution_ids"]), 1)
             self.assertIsNotNone(b.get("admission_note"))
             self.assertIn("admissible", b["admission_note"])
-        # The material state is the LIMITED conditional-fact form: a plan
-        # plus a passed check grounds a conditional FACT, not a technique.
-        material = h.induction_material(pattern=None)
-        states = {m["bundle_id"]: m["material_state"]["state"]
-                  for m in material["material"]}
+        # The material report names what the evidence carries: a plan plus a
+        # passed check, with no performed method recorded.
+        material = h.induction_material()
+        reports = {m["bundle_id"]: m["material_report"]
+                   for m in material["material"]}
         for b in obs:
-            self.assertEqual(states[b["bundle_id"]], "sufficient_limited")
+            self.assertEqual(reports[b["bundle_id"]]["basis"],
+                             "planned_only")
 
     def test_unverified_or_methodless_record_is_visible_but_insufficient(self):
         h = ORHarness(home=self.home)
@@ -407,15 +332,17 @@ class TestColdStartObservation(HarnessTestCase):
         h.check_task_result("ex_nm", {"reference_objective": 100.0})
         bundles = h.induction_candidates()
         # Both are VISIBLE thin cells (material is never hidden), but the
-        # methodless/unverified one reports INSUFFICIENT material so nothing
+        # methodless/unverified one reports its missing content so nothing
         # is invented from a name and a mean.
         ids = {b["strategy_id"] for b in bundles
                if b["kind"] == "cell_observation"}
         self.assertEqual(ids, {"s_nv", "s_nm"})
-        material = h.induction_material(pattern=None)
-        states = {m["strategy_id"]: m["material_state"]["state"]
-                  for m in material["material"]}
-        self.assertEqual(states["s_nm"], "insufficient")
+        material = h.induction_material()
+        reports = {m["strategy_id"]: m["material_report"]
+                   for m in material["material"]}
+        self.assertEqual(reports["s_nm"]["basis"], "none")
+        self.assertTrue(any("method_performed" in x
+                            for x in reports["s_nm"]["missing"]))
 
     def test_repeated_runs_of_one_task_are_not_independent(self):
         """Two runs of ONE task are repetition, not reproduction: the cell is

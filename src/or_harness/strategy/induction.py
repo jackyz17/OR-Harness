@@ -263,16 +263,21 @@ class InductionEngine:
             else:
                 veto = None
         tasks = sorted({r.task_id for r in records})
+        # The framework does NOT decide whether one task's evidence is
+        # "enough to create a claim": that is a judgment the agent makes from
+        # the material. What the framework DOES report is the fact a reader
+        # needs to weigh the claim — how many distinct tasks the evidence
+        # spans — and a single-task claim is DRAFTED as a candidate (it is not
+        # published as transferable knowledge; see ``_claim_publication`` and
+        # the entry's ``verification`` scope). Creating the entry is never
+        # blocked on a sample count.
+        single_task_note = None
         if existing is None and len(tasks) < 2:
-            # A veto (above) is the real blocker and reports first: telling the
-            # harness to go collect a second task would send it down a path
-            # that cannot succeed while the card stands.
-            return {"created": None,
-                    "verification": {"tasks": tasks, "required_tasks": 2},
-                    "skipped": (f"needs independent evidence: all {cell.n} "
-                                f"observations come from {len(tasks)} task "
-                                f"{tasks} — a claim requires >=2 tasks"),
-                    "cell": cell.to_dict()}
+            single_task_note = (
+                f"all {cell.n} supporting observations come from "
+                f"{len(tasks)} task {tasks}: the entry is DRAFTED as a "
+                "candidate and is NOT publishable as transferable knowledge "
+                "until it is verified over >=2 independent tasks")
 
         quality_hat = cell.mean_quality
         lo, hi = self._honest_interval(cell)
@@ -406,6 +411,8 @@ class InductionEngine:
         out = {"created": entry.entry_id, "entry": entry.to_dict(),
                "predicates": predicates, "cell": cell.to_dict()}
         self._note_withheld(out, withheld, cell)
+        if single_task_note is not None:
+            out["single_task_note"] = single_task_note
         if verification is not None:
             out["verification"] = verification
         if verification_note is not None:

@@ -179,13 +179,11 @@ class TestKnowledgeDeltaCoversRelations(MaintenanceCase):
         self.assertIn("text", change["changed"]["claim"]["fields"])
 
 
-class TestPurposeDistinction(MaintenanceCase):
-    def test_a_method_less_cell_is_not_a_method_induction(self):
-        """A cell clearing the count gate is a STATISTICAL refresh, never a
-        method induction. Material is ``insufficient`` — nothing is
-        abstracted from a name and a mean."""
-        # Method-LESS evidence: exactly what the count gate does NOT turn
-        # into a technique.
+class TestMaterialReport(MaintenanceCase):
+    def test_a_method_less_cell_reports_its_missing_content(self):
+        """A cell clearing the count gate does NOT turn a name and a mean
+        into a technique. The material report names the missing content
+        (``method_performed``) rather than asserting a technique."""
         for i in range(2):
             self.h.bank.append(ExecutionRecord(
                 execution_id=f"nm{i}", task_id=f"N{i}",
@@ -200,11 +198,13 @@ class TestPurposeDistinction(MaintenanceCase):
         self.assertTrue(bundles, "the cell must clear the sample-count gate")
         for bundle in bundles:
             self.assertEqual(bundle["kind"], "new_claim")
-            self.assertEqual(bundle["purpose"], "statistical_refresh")
-            state = self.h.induction_material(
+            self.assertNotIn("purpose", bundle)
+            report = self.h.induction_material(
                 bundle_id=bundle["bundle_id"])["material"][0][
-                    "material_state"]
-            self.assertEqual(state["state"], "insufficient")
+                    "material_report"]
+            self.assertEqual(report["basis"], "none")
+            self.assertTrue(any("method_performed" in m
+                                for m in report["missing"]))
 
 
 class TestRetiredVectorIsRemoved(MaintenanceCase):

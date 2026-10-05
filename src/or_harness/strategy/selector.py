@@ -1,36 +1,36 @@
-"""Strategy selector: recall of REAL memory, transparent scoring.
+"""Strategy recall: surface the REAL memory this cell has, in relevance order.
 
-Score = alpha * Q_hat - beta * C_scalar - gamma * R_hat
+**Recall discovers material; it does not decide.** This module answers "what
+has really been recorded about strategies in this structural cell?" — a
+DISCOVERY channel. It deliberately produces NO utility score and applies NO
+utility ranking: the old ``alpha*Q - beta*C - gamma*R`` ordering and its
+``top`` cut silently evicted candidates, which is exactly the per-candidate
+benefit/cost ranking that belongs to the world model's consequence
+prediction and the agent's choice, not here.
+
+What recall returns, per candidate, is a REPORT of the backing memory's
+`expected`/`observed` values, its evidence basis, its support, and the
+strategy's own recorded knowledge — for the agent to weigh. Ranked ordering
+is by RELEVANCE (a strategic entry before a bare recount; then strategy id),
+never by a utility scalar. ``top`` is a MATERIAL BUDGET: the caller may cap
+how many rows it reads, and the cap is reported (``n_matched`` vs returned),
+so a cap can never look like "nothing else matched".
 
 **There is no candidate menu.** The candidate set is derived from memory
 alone: a strategy is a candidate because something was really executed
 (conditional statistics) or really induced (a strategic entry) for this
 structural cell. When nothing matches, recall returns an EMPTY list — not a
-placeholder row, not a `-inf` score, not a zero quality. A candidate list the
-caller proposes is scored against those same real memories; a proposed
-strategy with no memory is reported as such and carries no score.
+placeholder row, not a zero quality. A caller-proposed list is filtered
+against those same real memories; a proposed strategy with no memory is
+reported as such.
 
 Evidence precedence (per strategy):
   1. Strategic entries whose pattern matches the profile (commitments).
-  2. Conditional statistics over the Experience Bank (recounts) — this single
-     path subsumes what older designs split into "case retrieval" and
-     "statistics": both are the same data used two ways.
+  2. Conditional statistics over the Experience Bank (recounts).
 
-Ablation modes (--memory-mode), reused by the experiments runner:
-  A none      — no memory consulted at all: nothing is recalled.
-  B cases     — case-based evidence only (no entries, no cost weighting).
-  C strategic — entries/stats condition the choice, WITHOUT cost weighting.
-  D cost-aware— C + cost scalarization. C vs D only separates in
-                "quality tied, cost divergent" scenarios — the experimental
-                support for 'cost awareness is a necessary part of memory'.
-
-Cross-family generalization (a family-free entry pattern matching a family it
-has no provenance in) carries an explicit confidence discount and is
-labelled.
-
-Note: the method is named ``recall`` (not ``recommend``) because its purpose
-is to *recall* accumulated experience — when there is none, it says so
-honestly rather than fabricating priors.
+The method is named ``recall`` (not ``recommend``) because its purpose is to
+*recall* accumulated experience — when there is none, it says so honestly
+rather than fabricating priors.
 """
 
 from __future__ import annotations
@@ -47,12 +47,9 @@ from or_harness.core.schema import (
     StrategicEntry,
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats
-from or_harness.strategy.strategic_bank import SUSPECT_SCORE_FACTOR, StrategicBank
+from or_harness.strategy.strategic_bank import StrategicBank
 
 MEMORY_MODES = ("none", "cases", "strategic", "cost-aware")
-DEFAULT_ALPHA, DEFAULT_BETA, DEFAULT_GAMMA = 1.0, 1.0, 1.0
-CROSS_FAMILY_CONFIDENCE_DISCOUNT = 0.6
-NEW_ENTRY_CONFIDENCE_FLOOR = 0.35  # confidence scales with support: n/5, floored
 
 
 @dataclass
@@ -64,10 +61,14 @@ class Recommendation:
     it. Whatever content travels with this recommendation came from the
     memory that backs it (see ``knowledge``) or from the harness that wrote
     the entry — never from a built-in directory.
+
+    There is NO utility ``score``: the expected values below are REPORTS
+    (a recount over real executions, or an entry's own estimate), and
+    whether to act on them is the agent's decision after the world model
+    predicts the candidate's consequences.
     """
 
     strategy_id: str
-    score: float
     expected_quality: float
     expected_cost: CostVector
     failure_prob: float
@@ -80,7 +81,7 @@ class Recommendation:
     #: Dimensions of ``expected_cost`` that are actually measured (never
     #: treat an unmeasured placeholder zero as evidence of cheapness).
     cost_known_dims: List[str] = field(default_factory=list)
-    #: Dimensiones used for this recall's cost scalarization — the common
+    #: Dimensions used for this recall's cost reporting — the common
     #: measured dimensions across cost-evidenced candidates. Empty = cost
     #: not comparable this recall (missing data never auto-benefits).
     cost_basis_dims: List[str] = field(default_factory=list)
@@ -99,7 +100,6 @@ class Recommendation:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "strategy_id": self.strategy_id,
-            "score": round(self.score, 4),
             "expected": {
                 "quality": round(self.expected_quality, 4),
                 "cost": {d: round(v, 4) for d, v in self.expected_cost.to_dict().items()},
@@ -122,12 +122,12 @@ class Recommendation:
 class Selector:
     def __init__(self, sbank: StrategicBank,
                  stats: ConditionalStats, *,
-                 alpha: float = DEFAULT_ALPHA, beta: float = DEFAULT_BETA,
-                 gamma: float = DEFAULT_GAMMA,
                  cost_weights: Optional[Dict[str, float]] = None):
         self.sbank = sbank
         self.stats = stats
-        self.alpha, self.beta, self.gamma = alpha, beta, gamma
+        # Cost weights are retained ONLY for the experiments runner's cost
+        # accounting and for reporting which dimensions are comparable;
+        # recall applies NO cost scalarization to rank candidates.
         self.cost_weights = dict(cost_weights or DEFAULT_COST_WEIGHTS)
 
     # -- public ----------------------------------------------------------------
@@ -163,43 +163,49 @@ class Selector:
                exclude: Optional[Sequence[str]] = None,
                candidates: Optional[Sequence[str]] = None,
                memory_mode: str = "cost-aware",
-               include_unverified: bool = False
-               ) -> List[Recommendation]:
+               include_unverified: bool = False,
+               with_meta: bool = False
+               ) -> Any:
         """Recall accumulated experience for this problem signature.
 
-        Returns one entry per strategy this cell has real memory about. Each
-        carries an ``evidence`` field: ``strategic_entry`` (a commitment) or
-        ``conditional_stats`` (a recount). **No memory means an empty
-        list** — there is no placeholder candidate, no ``-inf`` score and no
-        zero-quality stand-in, because a fabricated row is indistinguishable
-        downstream from a measured one.
+        Returns one row per strategy this cell has real memory about, in
+        RELEVANCE order (a strategic entry before a bare recount; then
+        strategy id). It does NOT rank by utility and computes no score:
+        the ``expected`` values on each row are reports for the agent to
+        weigh after the world model predicts a candidate's consequences.
+
+        **No memory means an empty list** — there is no placeholder
+        candidate and no zero-quality stand-in, because a fabricated row is
+        indistinguishable downstream from a measured one.
 
         ``candidates`` is the CALLER's proposal set (the outer agent names
-        the methods it is considering). Supplying it does two things and
-        nothing else: it restricts the result to those ids, and it makes the
-        strategies that have no memory in this cell simply absent from the
-        result (the caller can compare its own list against
-        :meth:`candidate_ids`). It never creates evidence, never ranks a
-        memory-less strategy, and never mutates the statistics.
+        the methods it is considering). Supplying it restricts the result to
+        those ids and makes memory-less strategies simply absent (the caller
+        can compare its own list against :meth:`candidate_ids`). It never
+        creates evidence and never mutates the statistics.
+
+        ``top`` is a MATERIAL BUDGET, not a utility cut: the number of rows
+        the caller wants to READ. The cap is reported (``n_matched`` vs the
+        rows returned) when ``with_meta=True``, so a small ``top`` can never
+        look like "nothing else matched". The default ``with_meta=False``
+        returns the plain list for existing callers.
 
         Only PUBLISHED knowledge is treated as strategic knowledge: an
         admission-verified entry, or a legacy entry from before admission
-        verification existed (its provenance cannot be re-litigated, and
-        silently discarding accumulated knowledge would be worse than
-        labelling it). An entry whose verification explicitly failed
+        verification existed. An entry whose verification explicitly failed
         (``refuted``) or could not be decided yet (``insufficient_evidence``)
         is NOT published: with ``include_unverified=False`` (the default) it
         contributes nothing and recall falls back to the raw conditional
         statistics. ``include_unverified=True`` is the offline/inspection
         view and returns it with an explicit warning.
-
-        Unverified entries are still RECORDED as checks (a fact about the
-        claim is worth keeping) — they are just not published.
         """
         if memory_mode not in MEMORY_MODES:
             raise ValueError(f"memory_mode must be one of {MEMORY_MODES}")
         if memory_mode == "none":
-            return []
+            return ({"recall": [], "n_matched": 0, "returned": 0,
+                     "material_budget": 0, "omitted": 0,
+                     "note": "memory_mode 'none': no memory was consulted"}
+                    if with_meta else [])
         excluded = set(exclude or [])
         proposed = (None if candidates is None
                     else {str(c) for c in candidates})
@@ -212,31 +218,43 @@ class Selector:
         if proposed is not None:
             ids = [sid for sid in ids if sid in proposed]
         ids = [sid for sid in ids if sid not in excluded]
-        if memory_mode == "cost-aware":
-            # Comparable cost dimensions: the common measured dims across
-            # candidates that actually carry cost evidence. Missing data
-            # never auto-benefits — unshared dimensions are dropped for
-            # everyone, and no common dimension means cost is not
-            # comparable (cost term set to zero with an explicit warning).
-            cost_basis = self._cost_basis_dims(ids, entries, cells)
-            norms = self._cost_norms(ids, entries, cells, cost_basis) \
-                if cost_basis else {}
-        else:
-            cost_basis = None
-            norms = {}
+        # Cost evidence is REPORTED (which dimensions are comparable), not
+        # scalarized into a ranking. The basis is the common measured dims
+        # across candidates that carry cost evidence; missing data never
+        # auto-benefits — unshared dimensions are dropped for everyone.
+        cost_basis = self._cost_basis_dims(ids, entries, cells)
         consulted: List[str] = []
         recs: List[Recommendation] = []
         for strategy_id in ids:
-            for rec in self._score(strategy_id, profile, entries, cells,
-                                   memory_mode, norms, cost_basis):
+            for rec in self._collect(strategy_id, profile, entries, cells,
+                                     memory_mode, cost_basis):
                 consulted.extend(r for r in rec.evidence_refs
                                  if r.startswith("se_"))
                 recs.append(rec)
         if consulted:
             self.sbank.mark_consulted(sorted(set(consulted)))
-        recs.sort(key=lambda r: (-r.score, r.strategy_id,
+        # RELEVANCE order: a published entry (a commitment) before a bare
+        # recount; ties by strategy id then first evidence ref. NEVER a
+        # utility scalar — that lives in the world model's consequence
+        # prediction and the agent's choice.
+        rank = {"strategic_entry": 0, "conditional_stats": 1}
+        recs.sort(key=lambda r: (rank.get(r.evidence, 2), r.strategy_id,
                                  r.evidence_refs[:1]))
-        return recs[: max(1, top)]
+        budget = max(1, int(top))
+        shown = recs[:budget]
+        if not with_meta:
+            return shown
+        return {
+            "recall": shown,
+            "n_matched": len(recs),
+            "returned": len(shown),
+            "material_budget": budget,
+            "omitted": len(recs) - len(shown),
+            "note": ("recall DISCOVERS material in relevance order; it does "
+                     "NOT rank by utility. A `top` cap is a material budget, "
+                     "and any omission is reported — it is not a decision "
+                     "about which candidate is best"),
+        }
 
     def _matching_entries(self, profile: ProblemProfile, memory_mode: str,
                           include_unverified: bool) -> List[StrategicEntry]:
@@ -278,66 +296,43 @@ class Selector:
             common &= dims
         return sorted(common)
 
-    def _cost_norms(self, candidates, entries, cells,
-                    dims: Optional[List[str]]) -> Dict[str, float]:
-        """Per-dimension normalization divisors from the current candidate
-        cost range, restricted to the comparable dimensions, so no raw unit
-        (e.g. thousands of tokens) can swamp the quality term and no
-        unmeasured dimension can distort normalization."""
-        vectors: List[CostVector] = []
-        for strategy_id in candidates:
-            matched = [e for e in entries if e.strategy_id == strategy_id]
-            vectors.extend(e.expected_cost_hat for e in matched)
-            cell = cells.get(strategy_id)
-            if not matched and cell is not None and cell.n > 0:
-                vectors.append(cell.mean_cost)
-            # No prior fallback — if no evidence, no vector contributes.
-        norms: Dict[str, float] = {}
-        for d in (dims or []):
-            peak = max((getattr(v, d) for v in vectors), default=0.0) if vectors else 0.0
-            norms[d] = float(peak) if peak > 0 else 1.0
-        return norms
-
-    def _score(self, strategy_id: str, profile: ProblemProfile,
-               entries: List[StrategicEntry],
-               cells: Dict[str, GroupStats],
-               memory_mode: str,
-               norms: Optional[Dict[str, float]] = None,
-               cost_basis: Optional[List[str]] = None,
-               ) -> List[Recommendation]:
-        """Score one strategy from memory: zero, one, or several results.
+    def _collect(self, strategy_id: str, profile: ProblemProfile,
+                 entries: List[StrategicEntry],
+                 cells: Dict[str, GroupStats],
+                 memory_mode: str,
+                 cost_basis: Optional[List[str]] = None,
+                 ) -> List[Recommendation]:
+        """Collect the memory rows for one strategy: zero, one, or several.
 
         The ladder has exactly two rungs and no fallback: published entries
         for this cell, else this cell's conditional statistics. A strategy
         with neither yields NOTHING — an empty result is the honest answer,
         and a placeholder row would be indistinguishable from a measurement.
 
-        MULTIPLE ENTRIES UNDER ONE ID produce one recommendation EACH. Two
-        claims that share a strategy id are still two claims (different
-        predicates, different estimates); collapsing them into one row would
-        silently discard one and present the other as "the" memory about that
-        id — which is exactly the mixing the design forbids.
+        MULTIPLE ENTRIES UNDER ONE ID produce one row EACH. Two claims that
+        share a strategy id are still two claims (different predicates,
+        different estimates); collapsing them into one row would silently
+        discard one and present the other as "the" memory about that id.
         """
         matched = [e for e in entries if e.strategy_id == strategy_id]
         if matched and memory_mode in ("strategic", "cost-aware"):
-            return [self._from_entry(strategy_id, profile, entry, memory_mode,
-                                     norms, cost_basis)
+            return [self._from_entry(strategy_id, profile, entry,
+                                     cost_basis)
                     for entry in matched]
         cell = cells.get(strategy_id)
         if (cell is not None and cell.n > 0
                 and memory_mode in ("cases", "strategic", "cost-aware")):
-            return [self._from_stats(strategy_id, cell, memory_mode,
-                                     norms, cost_basis=cost_basis)]
+            return [self._from_stats(strategy_id, cell, cost_basis=cost_basis)]
         return []
 
     def _entry_confidence(self, entry: StrategicEntry, profile: ProblemProfile) -> float:
-        # Confidence scales with support (new entries get a grace floor), and
-        # cross-family generalization is explicitly discounted.
-        conf = max(NEW_ENTRY_CONFIDENCE_FLOOR,
-                   min(1.0, entry.support_n / PROMOTE_REFERENCE_N))
-        if self._is_cross_family(entry, profile):
-            conf *= CROSS_FAMILY_CONFIDENCE_DISCOUNT
-        return conf
+        """How much support this entry's estimate rests on, as a plain count.
+
+        A PURE REPORT of support (n/5, capped at 1), NOT a discount applied
+        to a score: there is no score. Cross-family application is LABELLED
+        elsewhere and is not folded into this number.
+        """
+        return min(1.0, entry.support_n / PROMOTE_REFERENCE_N)
 
     @staticmethod
     def _is_cross_family(entry: StrategicEntry,
@@ -349,18 +344,17 @@ class Selector:
         return "family" not in entry.predicates and bool(entry.predicates)
 
     def _from_entry(self, strategy_id: str, profile: ProblemProfile,
-                    entry: StrategicEntry, memory_mode: str,
-                    norms: Optional[Dict[str, float]] = None,
+                    entry: StrategicEntry,
                     cost_basis: Optional[List[str]] = None
                     ) -> Recommendation:
-        """Recommendation from a Strategic Knowledge entry.
+        """A recalled row from a Strategic Knowledge entry.
 
         An entry that is not publishable is only reachable through the
         explicit offline view (``include_unverified=True``): the framework
-        HOLDS that claim, it has not admitted it as knowledge. Scoring it the
-        same way while attaching an explicit warning keeps the inspection
-        view useful without letting the caller mistake an unchecked claim for
-        a verified one.
+        HOLDS that claim, it has not admitted it as knowledge. The row
+        carries an explicit warning so the inspection view stays useful
+        without letting the caller mistake an unchecked claim for a verified
+        one.
 
         The content block is read off the ENTRY (its own notes, its own
         recorded actions, its own strategy_type/fallback, its own support) —
@@ -369,10 +363,6 @@ class Selector:
         confidence = self._entry_confidence(entry, profile)
         cross_family = self._is_cross_family(entry, profile)
         cost = entry.expected_cost_hat
-        cost_term = self._cost_term(cost, memory_mode, norms, cost_basis)
-        score = (self.alpha * entry.expected_quality_hat
-                 - self.beta * cost_term
-                 - self.gamma * entry.failure_prob)
         warnings: List[str] = []
         if not is_publishable(entry):
             warnings.append(
@@ -381,19 +371,18 @@ class Selector:
                 "holds this claim, it has not been admitted as knowledge — "
                 "its estimates support inspection, not a decision")
         if entry.status == "suspect":
-            score *= SUSPECT_SCORE_FACTOR
             warnings.append(
                 f"entry {entry.entry_id} is suspect (3 consecutive prediction "
-                "misses); its estimate is downweighted x0.5")
+                "misses); its estimate is unreliable until re-verified")
         if cross_family:
             warnings.append(
                 f"cross-family generalization: entry {entry.entry_id} states no "
-                f"family predicate; confidence discounted "
-                f"x{CROSS_FAMILY_CONFIDENCE_DISCOUNT}")
+                "family predicate, so it is applied outside the family it "
+                "was induced from")
         warnings.extend(self._cost_basis_warnings(cost_basis))
         warnings.extend(entry.risk_conditions)
         return Recommendation(
-            strategy_id=strategy_id, score=score,
+            strategy_id=strategy_id,
             expected_quality=entry.expected_quality_hat,
             expected_cost=cost, failure_prob=entry.failure_prob,
             evidence="strategic_entry", evidence_refs=[entry.entry_id],
@@ -478,35 +467,17 @@ class Selector:
         }
         return out
 
-    def _cost_term(self, cost: CostVector, memory_mode: str,
-                   norms: Optional[Dict[str, float]],
-                   cost_basis: Optional[List[str]]) -> float:
-        """Scalarized cost term restricted to the comparable dimensions.
-
-        ``cost_basis=None``: no cost comparison performed this recall (or
-        non-cost-aware mode) — term is zero. ``cost_basis=[]``: candidates
-        carry cost evidence but share NO measured dimension — cost is not
-        comparable, term is zero (missing data never auto-benefits).
-        Otherwise the term uses only the shared dimensions' weights.
-        """
-        if memory_mode != "cost-aware" or cost_basis is None or not cost_basis:
-            return 0.0
-        weights = {d: self.cost_weights.get(d, 0.0) for d in cost_basis}
-        return cost.scalarize(weights, norms)
-
     @staticmethod
     def _cost_basis_warnings(cost_basis: Optional[List[str]]) -> List[str]:
         if cost_basis == []:
             return ["cost not comparable across candidates: no common "
-                    "measured cost dimension; cost term set to zero (missing "
-                    "data does not count as cheap)"]
+                    "measured cost dimension (missing data does not count "
+                    "as cheap, and no cost ranking is made here)"]
         return []
 
     def _from_stats(self, strategy_id: str, cell: GroupStats,
-                    memory_mode: str,
-                    norms: Optional[Dict[str, float]] = None,
                     cost_basis: Optional[List[str]] = None) -> Recommendation:
-        """Recommendation from conditional statistics over the Evidence Bank.
+        """A recalled row from conditional statistics over the Evidence Bank.
 
         This path is a RECOUNT of observations (mean quality/cost actually
         observed in this structural group), not a Strategic Knowledge
@@ -517,17 +488,13 @@ class Selector:
         layers stay distinguishable downstream.
         """
         cost = cell.mean_cost
-        cost_term = self._cost_term(cost, memory_mode, norms, cost_basis)
-        score = (self.alpha * cell.mean_quality
-                 - self.beta * cost_term
-                 - self.gamma * cell.fail_rate)
         warnings = []
         if cell.n < 2:
             warnings.append(f"single observation for {strategy_id} in "
                             "this structural group; treat as weak evidence")
         warnings.extend(self._cost_basis_warnings(cost_basis))
         return Recommendation(
-            strategy_id=strategy_id, score=score,
+            strategy_id=strategy_id,
             expected_quality=cell.mean_quality, expected_cost=cost,
             failure_prob=cell.fail_rate, evidence="conditional_stats",
             evidence_refs=list(cell.execution_ids),

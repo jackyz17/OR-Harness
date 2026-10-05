@@ -497,9 +497,11 @@ class TestShadowLoop(HarnessTestCase):
         self.assertEqual(
             [r["strategy_id"] for r in recs_plain["recommendations"]],
             [r["strategy_id"] for r in recs_wm["recommendations"]])
+        # Recall reports expected values and computes no utility score;
+        # the two channels must still agree on those reports.
         self.assertEqual(
-            [r["score"] for r in recs_plain["recommendations"]],
-            [r["score"] for r in recs_wm["recommendations"]])
+            [r["expected"] for r in recs_plain["recommendations"]],
+            [r["expected"] for r in recs_wm["recommendations"]])
 
 
 class TestBugfixRegressions(HarnessTestCase):

@@ -238,10 +238,16 @@ def _summarize_recall(result: Dict[str, Any]) -> str:
                      + str(basis.get("reason") or ""))
     else:
         top = recs[0]
-        parts.append(f"Top recalled strategy: {top['strategy_id']}, "
-                     f"score {top['score']}, evidence={top['evidence']}, "
+        parts.append(f"Recalled strategy (relevance order, NOT a utility "
+                     f"ranking): {top['strategy_id']}, "
+                     f"evidence={top['evidence']}, "
                      f"E[Q]={top['expected']['quality']}, "
                      f"P(fail)={top['expected']['failure_prob']}.")
+        budget = result.get("recall_budget") or {}
+        if budget.get("omitted"):
+            parts.append(f"{budget['omitted']} more recalled row(s) beyond "
+                         f"the {budget.get('material_budget')} material "
+                         "budget (a READ budget, not a decision).")
         if top["risk_warnings"]:
             parts.append("Warnings: " + "; ".join(top["risk_warnings"]))
     vector = result.get("vector_recall")
@@ -733,21 +739,12 @@ def cmd_record(args) -> int:
                           method_actual=(_load_json_arg(args.method_actual)
                                          if getattr(args, "method_actual", None)
                                          else None))
-        hints = result["induction_hints"]
         checks = result["prediction_checks"]
         summary = [f"Recorded {result['execution_id']}."]
         if checks:
             hits = sum(1 for c in checks if c["hit"])
             summary.append(f"Prediction checks: {hits}/{len(checks)} hits "
                            f"across matching entries.")
-        if hints:
-            summary.append("Induction hints: " + "; ".join(
-                f"{h['pattern']}({','.join(h['strategy_ids'])})"
-                for h in hints)
-                + ". Hints are evidence, not orders — induce only when you judge "
-                  "the pattern worth generalizing.")
-        else:
-            summary.append("No induction hints.")
         unrecorded = result.get("unrecorded_staged_executions") or []
         if unrecorded:
             summary.append(
@@ -784,11 +781,16 @@ def cmd_check_task(args) -> int:
             return _fail(str(exc))
         report = result["report"]
         state = report["state"]
+        source_note = ""
+        provenance = report.get("reference_source")
+        if provenance is not None:
+            source_note = " " + provenance["note"] + "."
         if state == "passed":
             summary = (f"Task check for {args.execution_id}: PASSED on "
                        f"{', '.join(report['scope']['basis'])}. This covers "
                        "the declared bases only — it is not a proof that the "
-                       "model represents the task. Unchecked: "
+                       "model represents the task." + source_note
+                       + " Unchecked: "
                        + "; ".join(report["scope"]["unchecked"]) + ".")
         elif state == "failed":
             diffs = "; ".join(d["reason"] for d in report["diffs"][:3])
@@ -1081,24 +1083,25 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
 
 
 def cmd_induction_candidates(args) -> int:
-    """Scan the bank for induction candidate bundles (no model call).
+    """Scan the bank for structural-cell LEADS (no model call).
 
-    This is the EVIDENCE PACKAGE generator: it freezes, per candidate, the
-    experience scope, the task targeting and the baseline that
-    ``predict-capability --bundle`` consumes. It makes no model call and
-    changes no knowledge."""
+    This is a LEAD view: per structural cell, the frozen evidence scope the
+    capability predictor (``predict-capability --bundle``) consumes. The
+    DEFAULT material entry point is ``orx review-material``; this command is
+    for when you want a cell's evidence packaged for a capability prediction.
+    It makes no model call and changes no knowledge."""
     h = _harness(args)
     try:
         bundles = h.induction_candidates()
         if not bundles:
             return _emit(
                 {"count": 0, "candidates": []},
-                "No induction candidates with sufficient evidence. A claim "
-                "needs >=2 supporting executions from >=2 distinct tasks — "
-                "keep solving and recording.")
+                "No structural-cell candidates yet — record some executions. "
+                "To READ material for a claim, use `orx review-material`, "
+                "which needs no candidate at all.")
         return _emit(
             {"count": len(bundles), "candidates": bundles},
-            f"Found {len(bundles)} induction candidate(s). Each bundle "
+            f"Found {len(bundles)} structural-cell lead(s). Each bundle "
             "carries its own frozen evidence scope; pass one to "
             "`orx predict-capability --bundle` to price the operation "
             "before committing to it.")
@@ -1107,37 +1110,34 @@ def cmd_induction_candidates(args) -> int:
 
 
 def cmd_induction_material(args) -> int:
-    """Organize the READABLE material for an offline induction step.
+    """Organize the READABLE material for a structural-cell LEAD.
 
-    This is the framework's half of semantic induction: gather the methods
-    that were actually used, what changed, the two sides of a comparison and
-    what followed, so YOU (the outer agent) can read it and form a claim in
-    your own words. It calls no model, writes nothing, and does not invent a
-    technique: a candidate whose evidence reports no method is reported as
-    ``insufficient``, and the honest response is to record how the work was
-    really done."""
+    A LEAD view over a structural cell: the recorded methods, the outcome
+    and the task-check state, so YOU (the outer agent) can read it and form
+    a claim in your own words. The default material entry point is
+    ``orx review-material``. This calls no model, writes nothing, and does
+    not invent a technique: each candidate reports what its evidence CARRIES
+    and what is ``missing`` — a report, not an admission verdict."""
     h = _harness(args)
     try:
         result = h.induction_material(
-            bundle_id=args.bundle, pattern=args.pattern,
-            strategy_id=args.strategy)
+            bundle_id=args.bundle, strategy_id=args.strategy)
         if not result["count"]:
             return _emit(result,
-                         "No induction material: no candidate currently has "
-                         "supporting evidence. (A claim needs >=2 executions "
-                         "from >=2 distinct tasks.)")
+                         "No structural-cell material: no candidate "
+                         "currently has supporting evidence. Use "
+                         "`orx review-material` to read a batch directly.")
         parts = []
         for item in result["material"]:
-            state = item["material_state"]
-            label = item.get("pattern") or item["kind"]
-            line = (f"{item['bundle_id']} [{label}] "
+            report = item["material_report"]
+            line = (f"{item['bundle_id']} [{item['kind']}] "
                     f"{item['strategy_id'] or '(unnamed)'} "
                     f"n={item['n_supporting']} tasks={len(item['tasks'])} "
-                    f"material={state['state']}")
+                    f"basis={report.get('basis')}")
             if item.get("admission_note"):
                 line += f" [not-admissible: {item['admission_note']}]"
-            if state["state"] in ("insufficient", "sufficient_limited"):
-                line += f" ({state['reason']})"
+            if report.get("missing"):
+                line += " (missing: " + ", ".join(report["missing"]) + ")"
             parts.append(line)
         return _emit(result, " | ".join(parts)
                      + ". Read the material, compare the evidence, and "
@@ -1161,7 +1161,8 @@ def cmd_review_material(args) -> int:
         result = h.review_material(
             strategy_id=getattr(args, "strategy", None),
             task_id=getattr(args, "task", None),
-            limit=getattr(args, "limit", None))
+            limit=getattr(args, "limit", None),
+            cursor=getattr(args, "cursor", None))
         if not result["count"]:
             return _emit(
                 result,
@@ -1177,12 +1178,21 @@ def cmd_review_material(args) -> int:
                    "unchecked).")
         if budget["truncated_by_budget"]:
             summary += (f" {len(budget['omitted_execution_ids'])} omitted by "
-                        f"the {budget['chars_limit']}-char budget — narrow "
-                        "the scope or raise OR_HARNESS_REVIEW_MATERIAL_CHARS.")
+                        f"the {budget['chars_limit']}-char budget")
+            if budget.get("next_cursor"):
+                summary += ("; pass budget.next_cursor as --cursor to read "
+                            "the next (older) batch")
+            else:
+                summary += ("; narrow the scope or raise "
+                            "OR_HARNESS_REVIEW_MATERIAL_CHARS")
+            summary += "."
         if budget["truncated_by_limit"]:
             summary += (" --limit kept only the newest attempts; more "
                         "completed material exists.")
-        summary += (" Form a claim (condition -> how -> consequence -> "
+        summary += (f" A TRANSFERABLE claim needs the same mechanism on >=2 "
+                    f"independent tasks (this batch spans "
+                    f"{result['cross_task_hint']['n_distinct_tasks_in_batch']}"
+                    "). Form a claim (condition -> how -> consequence -> "
                     "boundary) and submit it with `orx induce --relation`.")
         return _emit(result, summary)
     finally:
@@ -2687,18 +2697,27 @@ def build_parser() -> argparse.ArgumentParser:
                 "which is neither a pass nor a failure. `failed` never "
                 "deletes the attempt — the cost is real and the failure is "
                 "raw material — it stops the answer from counting as a "
-                "success sample."))
+                "success sample. A reference value you do not source with "
+                "reference_source is treated as SELF-DERIVED: a pass is then "
+                "only a consistency check against your own value, not proof "
+                "the answer satisfies the task. Never replace a benchmark "
+                "reference with your own value and call the task passed."))
     p.add_argument("execution_id", metavar="EXECUTION_ID")
     p.add_argument("--check", default=None, metavar="JSON",
                    help=("the check basis, e.g. '{\"reference_objective\": "
-                         "10755, \"integer\": {\"variables\": [\"x1\", "
+                         "10755, \"reference_source\": \"bench_declared\", "
+                         "\"integer\": {\"variables\": [\"x1\", "
                          "\"x2\"]}}'. Supported keys: reference_objective "
                          "(+tolerance), reference_status, integer "
                          "({variables?, tolerance?}), recompute_objective "
                          "({coefficients, constant?, tolerance?}), "
                          "semantic_probe ([{path, equals|min|max|in}]), "
-                         "intent (relaxation|intermediate). Omitted: the "
-                         "verdict is `insufficient` — never a default pass"))
+                         "reference_source (bench_declared|independent|"
+                         "self_derived), reference_version, intent "
+                         "(relaxation|intermediate). Omitted: the verdict is "
+                         "`insufficient` — never a default pass. A probe path "
+                         "that does not resolve reports `insufficient`, NOT a "
+                         "refutation"))
     p.add_argument("--episode", default=None,
                    help="episode to scope the check to (defaults to the "
                         "episode of the action that produced the execution)")
@@ -3184,25 +3203,23 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "induction-candidates",
-        help="scan the REAL bank for induction/revision candidate bundles "
-             "(frozen evidence, no model call). The evidence package is "
-             "what `predict-capability --bundle` consumes")
+        help="scan the REAL bank for structural-cell LEADS (frozen evidence, "
+             "no model call). This is a lead view — the default material "
+             "entry point is `review-material`; the bundle is what "
+             "`predict-capability --bundle` consumes")
     p.set_defaults(func=cmd_induction_candidates)
 
     p = sub.add_parser(
         "induction-material",
-        help="organize the READABLE material for an offline induction step: "
-             "the methods actually used, what changed, both sides of a "
-             "comparison, what followed. Read it, then submit a claim with "
-             "`orx induce --relation`. No model call, no writes")
+        help="organize the READABLE material for a structural-cell LEAD: the "
+             "recorded methods, the outcome and the task-check state. Read "
+             "it, then submit a claim with `orx induce --relation`. The "
+             "default material entry point is `review-material`. No model "
+             "call, no writes")
     p.add_argument("--bundle", default=None, metavar="BUNDLE_ID",
                    help="read the material of ONE candidate (default: every "
                         "candidate). Pass the id `orx induction-candidates` "
                         "printed")
-    p.add_argument("--pattern", default=None,
-                   choices=["strategy_contrast", "intervention_recovery",
-                            "structural_reproduction", "advantage_reversal"],
-                   help="restrict to candidates from one detector")
     p.add_argument("--strategy", default=None,
                    help="restrict to candidates about one strategy id")
     p.set_defaults(func=cmd_induction_material)
@@ -3221,6 +3238,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="restrict the batch to one task id")
     p.add_argument("--limit", type=int, default=None, metavar="N",
                    help="keep only the N most recent attempt(s)")
+    p.add_argument("--cursor", default=None, metavar="CURSOR",
+                   help="continue with material OLDER than this cursor "
+                        "(pass budget.next_cursor from a previous call) so a "
+                        "long history is read in distinct batches")
     p.set_defaults(func=cmd_review_material)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")

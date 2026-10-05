@@ -1,449 +1,84 @@
-"""Induction-pattern tests: each of the four patterns fires when it should
-and, critically, stays silent when it should (n>=2 gate, cell scope,
-direction checks, unknown-is-not-similarity).
+"""Solver-failure facts: classification and environment advisories.
 
-The four patterns are named for what they are — there are no criterion
-numbers: strategy_contrast, intervention_recovery, structural_reproduction,
-advantage_reversal.
+The induction DETECTORS (strategy_contrast / intervention_recovery /
+structural_reproduction / advantage_reversal) were removed — the framework no
+longer manufactures induction labels from online pattern hits. What remains
+is purely factual and recomputable, and this module tests exactly that.
 """
-import inspect
 import unittest
 
 from helpers import HarnessTestCase
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector, FailureRecord
+from or_harness.core.schema import FailureRecord
 from or_harness.strategy.experience_bank import ExperienceBank
-from or_harness.strategy.stats import ConditionalStats
-from or_harness.strategy.triggers import check_triggers
+from or_harness.strategy.triggers import classify_failure, solver_advisories
 
 
-class TriggerCase(HarnessTestCase):
+class TestFailureClassification(HarnessTestCase):
     def setUp(self):
         super().setUp()
         self.bank = ExperienceBank(self.store)
-        self.stats = ConditionalStats(self.bank)
 
-    def check(self, record, **kwargs):
-        return check_triggers(record, self.stats, **kwargs)
+    def failed(self, execution_id, solver, error):
+        rec = self.make_record(execution_id=execution_id, task_id="t1",
+                               feasible=False, status="error",
+                               solver={"name": solver, "code_hash": "x"})
+        rec.failures = [FailureRecord(attempt=1, error=error)]
+        return rec
 
-    def patterns(self, record, **kwargs):
-        return {h.pattern for h in self.check(record, **kwargs)}
+    def test_environment_vs_model(self):
+        env = self.failed("ex_e", "pulp",
+                          "security policy: blocked import subprocess")
+        mod = self.failed("ex_m", "highs", "TypeError: bad operand")
+        self.assertEqual(classify_failure(env), "environment")
+        self.assertEqual(classify_failure(mod), "model")
 
-    def seed(self, strategy_id, n, gap, task_prefix="s", cost=None,
-             cost_measured=None, rc=None):
-        last = None
-        for i in range(n):
-            kwargs = {}
-            if rc is not None:
-                kwargs["profile"] = self.make_profile(
-                    problem_id=f"{task_prefix}{i}", resource_coupling=rc)
-            last = self.make_record(
-                execution_id=f"{task_prefix}_{strategy_id}_{i}",
-                task_id=f"{task_prefix}{i}", strategy_id=strategy_id, gap=gap,
-                cost=cost or CostVector(llm_tokens=100, solver_runtime_s=1.0),
-                cost_measured=cost_measured, **kwargs)
-            self.bank.append(last)
-        return last
+    def test_missing_module_is_environment(self):
+        rec = self.failed("ex_n", "highs",
+                          "ModuleNotFoundError: No module named 'highspy'")
+        self.assertEqual(classify_failure(rec), "environment")
 
 
-class TestStrategyContrast(TriggerCase):
-    def test_single_sample_never_triggers(self):
-        # Q1 from the design doc: S02 first execution Q=0.98 vs S01's single
-        # 0.85 -> no trigger (n=1 on both sides of the divergence check).
-        self.seed("S01", 1, 0.15, task_prefix="a")
-        new = self.seed("S02", 1, 0.02, task_prefix="b")
-        self.assertNotIn("strategy_contrast", self.patterns(new))
+class TestSolverAdvisories(HarnessTestCase):
+    def setUp(self):
+        super().setUp()
+        self.bank = ExperienceBank(self.store)
 
-    def test_quality_contrast_fires(self):
-        # S01 meanQ 0.60 vs S04 meanQ 0.98 — significant quality contrast.
-        self.seed("S01", 2, 0.40, task_prefix="a")   # meanQ 0.60
-        new = self.seed("S04", 2, 0.02, task_prefix="b")  # meanQ 0.98
-        hints = [h for h in self.check(new)
-                 if h.pattern == "strategy_contrast"]
-        self.assertTrue(hints)
-        self.assertEqual(set(hints[0].strategy_ids), {"S01", "S04"})
-
-    def test_small_difference_silent(self):
-        # Quality difference below threshold — no trigger.
-        self.seed("S01", 2, 0.10, task_prefix="a")   # meanQ 0.90
-        new = self.seed("S04", 2, 0.15, task_prefix="b")  # meanQ 0.85
-        self.assertNotIn("strategy_contrast", self.patterns(new))
-
-    def test_cost_contrast_fires(self):
-        # Quality tied (both ~0.80), S01 100% more expensive in tokens.
-        cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0)
-        pricey = CostVector(llm_tokens=200, solver_runtime_s=1.0)
-        self.seed("S06", 2, 0.20, task_prefix="a", cost=cheap)
-        new = self.seed("S01", 2, 0.20, task_prefix="b", cost=pricey)
-        hints = [h for h in self.check(new)
-                 if h.pattern == "strategy_contrast"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["kind"], "cost")
-
-    def test_the_lesson_is_the_relation_not_one_win(self):
-        """A contrast is reported as a RELATION between two strategies in one
-        structural cell — both sides and both sample counts are carried, so
-        the reader sees a comparison, never a single winner."""
-        self.seed("S01", 2, 0.40, task_prefix="a")
-        new = self.seed("S04", 3, 0.02, task_prefix="b")
-        hint = next(h for h in self.check(new)
-                    if h.pattern == "strategy_contrast")
-        self.assertEqual(set(hint.evidence["n"]), {"S01", "S04"})
-        self.assertEqual(hint.evidence["n"]["S04"], 3)
-        self.assertEqual(set(hint.evidence["observed_quality"]),
-                         {"S01", "S04"})
-
-
-class TestInterventionRecovery(TriggerCase):
-    def test_recovery_fires(self):
-        rec = self.make_record(
-            execution_id="f1", task_id="ft1", feasible=True, status="feasible",
-            failures=[FailureRecord(attempt=1, error="infeasible model",
-                                    recovery_action="fallback:S01")])
-        self.bank.append(rec)
-        hints = [h for h in self.check(rec)
-                 if h.pattern == "intervention_recovery"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["execution_id"], "f1")
-
-    def test_failure_without_recovery_silent(self):
-        rec = self.make_record(
-            execution_id="f2", task_id="ft2", feasible=False, status="error",
-            failures=[FailureRecord(attempt=1, error="crash")])
-        self.bank.append(rec)
-        self.assertNotIn("intervention_recovery", self.patterns(rec))
-
-    def test_clean_run_silent(self):
-        rec = self.make_record(execution_id="f3", task_id="ft3")
-        self.bank.append(rec)
-        self.assertNotIn("intervention_recovery", self.patterns(rec))
-
-    def test_cross_execution_solver_switch_fires(self):
-        """A solver switch is an intervention: the change in real outcome
-        emerges from two independent facts, never from a narrated record."""
-        failed = self.make_record(execution_id="x1", task_id="xt", feasible=False,
-                                  status="error", solver={"name": "pulp"})
-        self.bank.append(failed)
-        success = self.make_record(execution_id="x2", task_id="xt",
-                                   solver={"name": "ortools"})
-        hints = [h for h in self.check(success, prior_failures=[failed])
-                 if h.pattern == "intervention_recovery"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["kind"], "cross_execution_recovery")
-
-    def test_same_solver_retry_is_not_an_intervention(self):
-        failed = self.make_record(execution_id="y1", task_id="yt", feasible=False,
-                                  status="error", solver={"name": "pulp"})
-        success = self.make_record(execution_id="y2", task_id="yt",
-                                   solver={"name": "pulp"})
-        hints = [h for h in self.check(success, prior_failures=[failed])
-                 if h.pattern == "intervention_recovery"]
-        self.assertFalse(hints)
-
-    def test_same_solver_modeling_fix_fires(self):
-        """A real change under the SAME solver is a recovery: the failed
-        attempt's method and the successful one's differ, so the change is
-        visible in the evidence rather than narrated."""
-        failed = self.make_record(execution_id="z1", task_id="zt",
-                                  feasible=False, status="error",
-                                  solver={"name": "highs"})
-        failed.method_actual = {"name": "direct MIP",
-                                "steps": ["build the full model",
-                                          "solve in one shot"]}
-        self.bank.append(failed)
-        success = self.make_record(execution_id="z2", task_id="zt",
-                                   solver={"name": "highs"})
-        success.method_actual = {"name": "rolling-horizon decomposition",
-                                 "steps": ["relax the coupling constraint",
-                                           "solve the master",
-                                           "recombine"]}
-        hints = [h for h in self.check(success, prior_failures=[failed])
-                 if h.pattern == "intervention_recovery"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["kind"], "same_solver_intervention")
-        change = hints[0].evidence["change"]
-        self.assertEqual(change["kind"], "method")
-        self.assertEqual(change["from_execution_id"], "z1")
-        # The change must rest on what RAN, not on a plan someone wrote.
-        self.assertEqual(change["basis"], "performed_method")
-
-    def test_same_solver_retry_with_identical_method_stays_silent(self):
-        """A retry that reports the SAME method did not change anything, so
-        its success is not evidence of a recovery."""
-        failed = self.make_record(execution_id="w1", task_id="wt",
-                                  feasible=False, status="error",
-                                  solver={"name": "highs"})
-        failed.method_actual = {"name": "direct MIP", "steps": ["solve"]}
-        self.bank.append(failed)
-        success = self.make_record(execution_id="w2", task_id="wt",
-                                   solver={"name": "highs"})
-        success.method_actual = {"name": "direct MIP", "steps": ["solve"]}
-        hints = [h for h in self.check(success, prior_failures=[failed])
-                 if h.pattern == "intervention_recovery"]
-        self.assertFalse(hints)
-
-    def test_declared_intervention_fires_under_the_same_solver(self):
-        """The harness may NAME the change it made (a modeling fix); that
-        declaration is itself evidence, and it fires under one solver."""
-        failed = self.make_record(execution_id="d1", task_id="dt",
-                                  feasible=False, status="error",
-                                  solver={"name": "highs"})
-        self.bank.append(failed)
-        success = self.make_record(execution_id="d2", task_id="dt",
-                                   solver={"name": "highs"})
-        success.execution_features["intervention"] = {
-            "change": "tightened the big-M bound the failed attempt left loose"}
-        hints = [h for h in self.check(success, prior_failures=[failed])
-                 if h.pattern == "intervention_recovery"]
-        self.assertTrue(hints)
-        self.assertEqual(hints[0].evidence["change"]["kind"], "declared")
-
-    def test_success_after_intervention_is_evidence_not_proof(self):
-        """The hint names the change; it does not claim causation. The evidence
-        carries both sides so the reader decides."""
-        rec = self.make_record(
-            execution_id="f4", task_id="ft4", feasible=True, status="feasible",
-            failures=[FailureRecord(attempt=1, error="bad bounds",
-                                    recovery_action="repair:bounds")])
-        self.bank.append(rec)
-        hint = next(h for h in self.check(rec)
-                    if h.pattern == "intervention_recovery")
-        self.assertIn("failures", hint.evidence)
-        self.assertIn("final_status", hint.evidence)
-
-
-class TestStructuralReproduction(TriggerCase):
-    def test_reproduced_high_performance_fires(self):
-        """Two INDEPENDENT TASKS, same strategy, SAME structure (rc cell),
-        same direction — the reproduction this pattern exists to report. The
-        independence unit is the task, not the free-text family label."""
-        last = None
-        for i, fam in enumerate(("routing", "scheduling")):
-            profile = self.make_profile(problem_id=f"task{i}", family=fam,
-                                        resource_coupling=0.90)
-            last = self.make_record(execution_id=f"sr_{fam}",
-                                    task_id=f"task{i}", strategy_id="S04",
-                                    profile=profile, gap=0.05)
-            self.bank.append(last)
-        hints = [h for h in self.check(last)
-                 if h.pattern == "structural_reproduction"]
-        self.assertTrue(hints)
-        self.assertEqual(set(hints[0].evidence["tasks"]),
-                         {"task0", "task1"})
-        self.assertEqual(hints[0].evidence["structure"]["resource_coupling"],
-                         "[0.75,1.00]")
-
-    def test_incomparable_structure_is_not_mixed_in(self):
-        """The reproduced defect: a third task whose evidence comes from an
-        unrelated structure used to be pooled into the same statistic."""
-        last = None
-        tasks = (("task_r", 0.90), ("task_s", 0.90), ("task_p", 0.10))
-        for tid, rc in tasks:
-            profile = self.make_profile(problem_id=tid, family="routing",
-                                        resource_coupling=rc)
-            last = self.make_record(execution_id=f"mix_{tid}", task_id=tid,
-                                    strategy_id="S04", profile=profile,
-                                    gap=0.05)
-            self.bank.append(last)
-        hits = [h for h in self.check(last)
-                if h.pattern == "structural_reproduction"]
-        # task_p is structurally different: not reported as reproduction.
-        for h in hits:
-            self.assertNotIn("task_p", h.evidence["tasks"])
-
-    def test_unrelated_task_cannot_veto_a_real_reproduction(self):
-        """The reproduced defect (the other direction): a structurally
-        incomparable task with opposite behaviour used to cancel a genuine
-        reproduction between two comparable tasks."""
-        scheduling = None
-        orders = (("task_r", 0.90, 0.05), ("task_s", 0.90, 0.05),
-                  ("task_p", 0.10, 0.55))
-        for tid, rc, gap in orders:
-            profile = self.make_profile(problem_id=tid, family="routing",
-                                        resource_coupling=rc)
-            rec = self.make_record(execution_id=f"veto_{tid}", task_id=tid,
-                                   strategy_id="S04", profile=profile,
-                                   gap=gap)
+    def test_only_environment_failures_listed(self):
+        env_fail = self.make_record(
+            execution_id="ex_a", task_id="t1", feasible=False, status="error",
+            solver={"name": "pulp", "code_hash": "x"},
+            failures=[FailureRecord(
+                1, "security policy: blocked import subprocess")])
+        model_fail = self.make_record(
+            execution_id="ex_b", task_id="t2", feasible=False, status="error",
+            solver={"name": "highs", "code_hash": "y"},
+            failures=[FailureRecord(1, "TypeError: unsupported operand")])
+        ok = self.make_record(execution_id="ex_c", task_id="t3",
+                              solver={"name": "ortools", "code_hash": "z"})
+        for rec in (env_fail, model_fail, ok):
             self.bank.append(rec)
-            if tid == "task_s":
-                scheduling = rec
-        hints = [h for h in self.check(scheduling)
-                 if h.pattern == "structural_reproduction"]
-        self.assertTrue(hints, "task_r+task_s reproduce")
-        self.assertEqual(set(hints[0].evidence["tasks"]),
-                         {"task_r", "task_s"})
-        # task_p is structurally incomparable AND opposite: it is neither
-        # mixed into the statistic nor able to veto the reproduction.
-        self.assertNotIn("task_p", hints[0].evidence["tasks"])
+        advisories = solver_advisories(self.bank)
+        self.assertEqual(len(advisories), 1)  # pulp only
+        self.assertEqual(advisories[0]["solver"], "pulp")
+        self.assertEqual(advisories[0]["environment_failures"], 1)
 
-    def test_unknown_structure_never_counts_as_similarity(self):
-        """'Both sides unknown' is a shared absence of evidence, not evidence
-        of structural similarity — so the pattern stays silent."""
-        last = None
-        for fam in ("routing", "scheduling"):
-            for i in range(2):
-                profile = self.make_profile(problem_id=f"{fam}{i}", family=fam,
-                                            resource_coupling=None)
-                last = self.make_record(execution_id=f"unk_{fam}_{i}",
-                                        task_id=f"{fam}{i}", strategy_id="S04",
-                                        profile=profile, gap=0.05)
-                self.bank.append(last)
-        self.assertNotIn("structural_reproduction", self.patterns(last))
-
-    def test_single_task_silent(self):
-        """One TASK's repeated attempts are not reproduction: re-running one
-        instance proves something about that instance, not about the
-        strategy. Independence is counted by task_id (the system's own
-        independence unit), so several attempts of ONE task stay silent."""
-        last = None
-        for i in range(3):
-            last = self.make_record(execution_id=f"srs_{i}", task_id="t_only",
-                                    strategy_id="S04", gap=0.05)
-            self.bank.append(last)
-        self.assertNotIn("structural_reproduction", self.patterns(last))
+    def test_empty_when_no_failures(self):
+        self.bank.append(self.make_record(execution_id="ex_ok"))
+        self.assertEqual(solver_advisories(self.bank), [])
 
 
-class TestAdvantageReversal(TriggerCase):
-    def test_reversal_across_cells_fires(self):
-        """The same strategy is strong at low coupling and weak at high
-        coupling: the lesson is the BOUNDARY, not the success count."""
-        last = None
-        for i in range(2):
-            self.bank.append(self.make_record(
-                execution_id=f"rev_low_{i}", task_id=f"rl{i}",
-                strategy_id="S01", gap=0.05,  # meanQ 0.95
-                profile=self.make_profile(problem_id=f"rl{i}",
-                                          resource_coupling=0.10)))
-        for i in range(2):
-            last = self.make_record(
-                execution_id=f"rev_high_{i}", task_id=f"rh{i}",
-                strategy_id="S01", gap=0.95,  # meanQ 0.05
-                profile=self.make_profile(problem_id=f"rh{i}",
-                                          resource_coupling=0.90))
-            self.bank.append(last)
-        hints = [h for h in self.check(last)
-                 if h.pattern == "advantage_reversal"]
-        self.assertTrue(hints)
-        ev = hints[0].evidence
-        self.assertEqual(ev["kind"], "advantage_reversal")
-        self.assertIn("0.75,1.00", ev["adverse_cell"]["group_key"])
-        self.assertIn("0.00,0.25", ev["advantageous_cell"]["group_key"])
+class TestNoDetectorSurface(unittest.TestCase):
+    """The removed detectors must not reappear on the module."""
 
-    def test_consistent_advantage_is_not_a_reversal(self):
-        """Strong everywhere is not a boundary — the pattern stays silent."""
-        last = None
-        for rc in (0.10, 0.90):
-            for i in range(2):
-                last = self.make_record(
-                    execution_id=f"cons_{rc}_{i}", task_id=f"c{rc}{i}",
-                    strategy_id="S01", gap=0.05,
-                    profile=self.make_profile(problem_id=f"c{rc}{i}",
-                                              resource_coupling=rc))
-                self.bank.append(last)
-        self.assertNotIn("advantage_reversal", self.patterns(last))
-
-    def test_single_cell_silent(self):
-        """One cell cannot demonstrate a boundary: there is nothing to
-        compare against."""
-        last = self.seed("S01", 4, 0.05, task_prefix="one", rc=0.90)
-        self.assertNotIn("advantage_reversal", self.patterns(last))
-
-    def test_thin_cell_silent(self):
-        """A cell with n=1 is a single observation, not a condition."""
-        self.bank.append(self.make_record(
-            execution_id="thin_low", task_id="tl", strategy_id="S01", gap=0.05,
-            profile=self.make_profile(problem_id="tl", resource_coupling=0.10)))
-        last = None
-        for i in range(2):
-            last = self.make_record(
-                execution_id=f"thin_high_{i}", task_id=f"th{i}",
-                strategy_id="S01", gap=0.95,
-                profile=self.make_profile(problem_id=f"th{i}",
-                                          resource_coupling=0.90))
-            self.bank.append(last)
-        self.assertNotIn("advantage_reversal", self.patterns(last))
-
-    def test_another_family_cannot_create_a_boundary(self):
-        """A cross-family difference is a DIFFERENT question
-        (structural_reproduction). Pooling families here would let a family's
-        own structure masquerade as a boundary of this one."""
-        self.bank.append(self.make_record(
-            execution_id="fam_low", task_id="fl", strategy_id="S01", gap=0.05,
-            profile=self.make_profile(problem_id="fl", family="routing",
-                                      resource_coupling=0.10)))
-        last = self.make_record(
-            execution_id="fam_high", task_id="fh", strategy_id="S01", gap=0.95,
-            profile=self.make_profile(problem_id="fh", family="scheduling",
-                                      resource_coupling=0.90))
-        self.bank.append(last)
-        self.assertNotIn("advantage_reversal", self.patterns(last))
-
-    def test_unknown_structure_is_not_a_condition(self):
-        """An unmeasured dimension is an absence of evidence, not a
-        structural condition to read a boundary off."""
-        self.bank.append(self.make_record(
-            execution_id="unk_low", task_id="ul", strategy_id="S01", gap=0.05,
-            profile=self.make_profile(problem_id="ul", resource_coupling=None)))
-        last = self.make_record(
-            execution_id="unk_high", task_id="uh", strategy_id="S01", gap=0.95,
-            profile=self.make_profile(problem_id="uh", resource_coupling=0.90))
-        self.bank.append(last)
-        self.assertNotIn("advantage_reversal", self.patterns(last))
-
-
-class TestRetiredCriteriaLeftNoPath(unittest.TestCase):
-    """The retired per-strategy criteria must leave NO reachable path.
-
-    These were deleted because they were not relations: a lone strategy's
-    extreme mean, a within-cell quality trend, and an accumulated success
-    count. None of them may reappear as a hint or as a helper.
-    """
-
-    def test_no_historical_criterion_names_in_the_module(self):
+    def test_detectors_are_gone(self):
         import or_harness.strategy.triggers as triggers
-        source = inspect.getsource(triggers)
-        for name in ("_c1_", "_c2_", "_c3_", "_c4_", "_c5_", "_c6_"):
-            self.assertNotIn(name, source, f"{name} still exists")
-        for constant in ("TREND_MIN_N", "STABLE_SUCCESS_MIN_N"):
-            self.assertFalse(hasattr(triggers, constant),
-                             f"{constant} still exists")
+        for name in ("check_triggers", "InductionHint", "PATTERNS",
+                     "evidence_execution_ids"):
+            self.assertFalse(hasattr(triggers, name),
+                             f"{name} must not exist on the triggers module")
 
-    def test_no_quality_trend_helper_remains(self):
-        """The trend helper existed only for the retired drift criterion."""
-        from or_harness.strategy.stats import GroupStats
-        self.assertFalse(hasattr(GroupStats, "quality_trend"))
-
-    def test_hint_exposes_pattern_not_criterion(self):
-        from or_harness.strategy.triggers import InductionHint
-        hint = InductionHint(pattern="strategy_contrast", strategy_ids=["S01"],
-                             group_key="family=routing")
-        self.assertEqual(hint.to_dict()["pattern"], "strategy_contrast")
-        self.assertNotIn("criterion", hint.to_dict())
-
-    def test_pure_success_accumulation_is_not_a_pattern(self):
-        """Four clean runs, every dimension measured, no other strategy, one
-        cell: nothing is a relation, so nothing fires. The old stable-success
-        criterion would have fired here."""
-        case = HarnessTestCase("run")
-        case.setUp()
-        try:
-            bank = ExperienceBank(case.store)
-            stats = ConditionalStats(bank)
-            last = None
-            for i in range(4):
-                last = case.make_record(
-                    execution_id=f"pure{i}", task_id=f"pt{i}", strategy_id="S01",
-                    gap=0.05,
-                    cost_measured=tuple(COST_DIMENSIONS))
-                bank.append(last)
-            patterns = {h.pattern for h in check_triggers(last, stats)}
-            self.assertEqual(
-                patterns - {"strategy_contrast", "intervention_recovery",
-                            "structural_reproduction", "advantage_reversal"},
-                set(), "only the four named patterns may be emitted")
-        finally:
-            case.tearDown()
-
-
-if __name__ == "__main__":
-    unittest.main()
+    def test_retained_facts_are_present(self):
+        import or_harness.strategy.triggers as triggers
+        self.assertTrue(callable(triggers.classify_failure))
+        self.assertTrue(callable(triggers.solver_advisories))

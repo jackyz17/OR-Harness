@@ -159,9 +159,9 @@ def main() -> int:
         outcome = h.record(record, override={"llm_tokens": 1840,
                                             "tool_calls": 9})
         print(f"recorded: {outcome['recorded']}")
-        print(f"induction hints: "
-              f"{[hint['pattern'] for hint in outcome['induction_hints']]}")
-        print("-> recording accumulates EVIDENCE; it changes no knowledge")
+        print("-> recording accumulates EVIDENCE; it changes no knowledge and "
+              "emits no induction labels — read the material yourself with "
+              "`orx review-material`")
 
         # ------------------------------------------------------------------
         step(7, "recall again: the method is now a candidate, because it ran")

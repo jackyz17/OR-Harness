@@ -85,7 +85,9 @@ class TestNoCandidateMenu(SelectorCase):
         self.seed("S04", n=2)
         recs = self.selector.recall(self.make_profile(), top=50)
         self.assertNotIn("no_memory", {r.evidence for r in recs})
-        self.assertTrue(all(r.score != float("-inf") for r in recs))
+        # Recall reports expected values; it computes NO utility score.
+        self.assertFalse(hasattr(recs[0], "score"))
+        self.assertNotIn("score", recs[0].to_dict())
 
     def test_recommendation_carries_no_directory_content(self):
         """No name/description is fabricated for a strategy id."""
@@ -150,9 +152,15 @@ class TestAblationModes(SelectorCase):
         self.seed("S06", n=2, gap=0.05, task_prefix="tb", cost=dear)
 
     def _winner(self, mode):
+        # Recall returns rows in RELEVANCE order; the ablation applies its
+        # OWN bounded decision rule (higher quality, cost-aware also cheaper)
+        # because recall itself no longer ranks by utility.
+        from or_harness.experiments.runner import _experiment_choice
         recs = self.selector.recall(self.make_profile(), top=10,
                                     memory_mode=mode)
-        return recs[0].strategy_id, recs[0].evidence
+        return (_experiment_choice(recs, ["S01", "S06"], mode,
+                                   self.selector.cost_weights),
+                recs[0].evidence)
 
     def test_mode_none_recalls_nothing(self):
         self.assertEqual(
@@ -160,19 +168,19 @@ class TestAblationModes(SelectorCase):
             [])
 
     def test_mode_cases_ignores_cost_weights(self):
-        # No cost scalarization; quality tied -> fail_rate 0 both, tie broken
-        # by id order, and evidence is stats (not entries).
+        # The ablation's own rule ignores cost in non-cost-aware modes;
+        # quality is tied -> the proposed order wins (S01).
         winner, evidence = self._winner("cases")
         self.assertEqual(evidence, "conditional_stats")
         self.assertEqual(winner, "S01")
 
     def test_mode_strategic_ignores_cost(self):
-        winner, evidence = self._winner("strategic")
+        winner, _ = self._winner("strategic")
         self.assertEqual(winner, "S01")
 
     def test_mode_cost_aware_prefers_cheap(self):
-        winner, evidence = self._winner("cost-aware")
-        self.assertEqual(winner, "S06")  # same quality, ~10x cheaper
+        winner, _ = self._winner("cost-aware")
+        self.assertEqual(winner, "S06")  # same quality, cheaper cost
 
 
 class TestEntryFlags(SelectorCase):
@@ -186,7 +194,7 @@ class TestEntryFlags(SelectorCase):
         s07 = next(r for r in recs if r.strategy_id == "S07")
         self.assertTrue(any("suspect" in w for w in s07.risk_warnings))
 
-    def test_cross_family_discounted(self):
+    def test_cross_family_labelled_not_discounted(self):
         # A claim with no family predicate (cross-family by construction); its
         # evidence sits in 'routing' but it is queried from 'scheduling'.
         self.seed("S01", n=2, task_prefix="tr")
@@ -201,9 +209,12 @@ class TestEntryFlags(SelectorCase):
         recs = self.selector.recall(other_family, top=10)
         s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
+        # Cross-family application is LABELLED (a warning), and confidence is
+        # a plain support count — NO hidden discount formula. There is no
+        # utility score to discount.
         self.assertTrue(s01.cross_family)
-        self.assertLess(s01.confidence, 0.7)
         self.assertTrue(any("cross-family" in w for w in s01.risk_warnings))
+        self.assertEqual(s01.confidence, 1.0)  # support 5 -> n/5 = 1.0
 
     def test_consultation_marks_entries(self):
         self.sbank.add(StrategicEntry(

@@ -92,7 +92,7 @@ DOCUMENTED_FLAGS = [
                    "--prediction-mode", "--benefit-kind", "--benefit-metric",
                    "--benefit-unit"]),
     ("induction-candidates", []),
-    ("induction-material", ["--bundle", "--pattern", "--strategy"]),
+    ("induction-material", ["--bundle", "--strategy"]),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),
     ("snapshot", ["--task", "--episode"]),
     ("action", ["--report", "--task", "--amend-cost", "--cost"]),

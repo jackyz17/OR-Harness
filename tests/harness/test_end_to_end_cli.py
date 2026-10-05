@@ -96,7 +96,9 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         self.assertTrue(out["result"]["recorded"])
-        self.assertIn("induction_hints", out["result"])
+        # Recording no longer manufactures induction labels — the agent
+        # reads material with review-material and abstracts it itself.
+        self.assertNotIn("induction_hints", out["result"])
 
         # 5. record a second execution on a DIFFERENT task in the same group:
         #    repetition of one task is not independent evidence.

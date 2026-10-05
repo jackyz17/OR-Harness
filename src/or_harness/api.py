@@ -47,7 +47,7 @@ from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import StrategicBank
-from or_harness.strategy.triggers import check_triggers, solver_advisories
+from or_harness.strategy.triggers import solver_advisories
 from or_harness.strategy.vector_recall import (
     VectorRecallUnavailable,
     recall_vectors,
@@ -223,6 +223,11 @@ class ORHarness:
                  prediction_mode: str = "h-x-b-value"):
         self.home = resolve_home(home)
         self.store = Store(self.home)
+        # The utility weights belong to the WORLD MODEL's consequence
+        # comparison (planner.evaluate_path), NOT to recall: recall only
+        # discovers material. They are kept on the harness so the planner
+        # defaults can read them.
+        self.alpha, self.beta, self.gamma = alpha, beta, gamma
         self.bank = ExperienceBank(self.store)
         self.sbank = StrategicBank(self.store)
         self.stats = ConditionalStats(self.bank)
@@ -233,7 +238,6 @@ class ORHarness:
         # method content (names, descriptions, actions, fallbacks) that no
         # execution ever observed.
         self.selector = Selector(self.sbank, self.stats,
-                                 alpha=alpha, beta=beta, gamma=gamma,
                                  cost_weights=cost_weights)
         self.executor = executor or SafePythonExecutor()
         self.induction = InductionEngine(self.stats, self.sbank)
@@ -974,8 +978,8 @@ class ORHarness:
                                                            episode_id)
         version_block = capability_version(
             harness_config={
-                "alpha": self.selector.alpha, "beta": self.selector.beta,
-                "gamma": self.selector.gamma, "delta": self.delta,
+                "alpha": self.alpha, "beta": self.beta,
+                "gamma": self.gamma, "delta": self.delta,
                 "prediction_mode": self.prediction_mode,
                 "plan_mode": self.plan_mode,
             },
@@ -1846,6 +1850,19 @@ class ORHarness:
                 f"prediction {prediction_id!r} is already bound to action "
                 f"{bound!r}")
         candidate = prediction.candidate
+        # EPISODE BACKFILL: a prediction made without an episode (the
+        # caller omitted `--episode`) whose REAL execution later names one
+        # learns it here. Without this the prediction sits under episode
+        # None while its action sits under ep1, and `close-episode task ep1`
+        # — which matches (task, episode) exactly — never evaluates it: the
+        # bound execution leaks out of the close-out and is silently absent
+        # from calibration. A KNOWN action episode is the newer fact, so it
+        # fills a MISSING prediction episode; a prediction that already
+        # declared one is never overwritten (that is the mismatch path
+        # below).
+        if candidate.episode_id is None and action.episode_id is not None:
+            candidate.episode_id = action.episode_id
+            model_info["episode_backfilled_from_action"] = True
         mismatch: Dict[str, Any] = {}
         unknown: Dict[str, Any] = {}
         # Action type: the prediction is about executing a strategy; a
@@ -3904,11 +3921,11 @@ class ORHarness:
         # scores with (an empty default would have made every cost
         # dimension weight zero).
         if limits.alpha is None:
-            limits.alpha = self.selector.alpha
+            limits.alpha = self.alpha
         if limits.beta is None:
-            limits.beta = self.selector.beta
+            limits.beta = self.beta
         if limits.gamma is None:
-            limits.gamma = self.selector.gamma
+            limits.gamma = self.gamma
         if limits.cost_weights is None:
             limits.cost_weights = dict(self.selector.cost_weights)
         if limits.delta is None:
@@ -4456,25 +4473,23 @@ class ORHarness:
         return [b.to_dict() for b in bundles]
 
     def induction_material(self, *, bundle_id: Optional[str] = None,
-                           pattern: Optional[str] = None,
                            strategy_id: Optional[str] = None
                            ) -> Dict[str, Any]:
-        """Organize the READABLE material for an offline induction step.
+        """Organize the READABLE material for a structural-cell LEAD.
 
-        This is the framework's job in semantic induction: gather the
-        evidence (the methods actually used, what changed, what followed,
-        both sides of a comparison, the outcome and verification state) so
-        the OUTER AGENT can read it, compare, and form a claim in its own
-        words. The framework does not summarize the material into a claim
-        and never invokes a model: it organizes, and then checks what the
-        agent submits.
+        This is a LEAD view over a structural cell (``orx
+        induction-candidates``); the DEFAULT material entry point is
+        ``orx review-material``, which reads the batch directly. The
+        framework gathers the evidence (the methods recorded, the outcome and
+        the task-check state) so the OUTER AGENT can read it, compare, and
+        form a claim in its own words. The framework does not summarize the
+        material into a claim and never invokes a model.
 
-        ``bundle_id`` selects one candidate; ``pattern`` / ``strategy_id``
-        filter the candidate list. With no selector, every candidate is
-        returned. Each candidate reports its ``material_state`` — a
-        candidate whose evidence reports no method content is
-        ``insufficient``, and the right response is to record how the work
-        was actually done, not to invent a technique from a name and a mean.
+        ``bundle_id`` selects one candidate; ``strategy_id`` filters the
+        candidate list. Each candidate reports its ``material_report`` — a
+        list of what the evidence CARRIES (a performed method? a passed
+        task check?) and what is ``missing``. It is a report, not an
+        admission verdict: the agent decides what (if anything) to abstract.
         """
         from or_harness.world_model.maintenance import (
             build_induction_candidates,
@@ -4487,17 +4502,13 @@ class ORHarness:
                     f"unknown induction bundle {bundle_id!r}: candidates are "
                     "rebuilt from current evidence and are transient — call "
                     "`orx induction-candidates` to list the live ones")
-        if pattern is not None:
-            bundles = [b for b in bundles if b.pattern == str(pattern)]
         if strategy_id is not None:
             bundles = [b for b in bundles
                        if b.strategy_id == str(strategy_id)]
         material: List[Dict[str, Any]] = []
         for bundle in bundles:
             payload = bundle.to_dict()
-            payload["material_state"] = bundle.material_state()
-            payload["comparisons"] = [bundle.evidence_refs] \
-                if bundle.evidence_refs else []
+            payload["material_report"] = bundle.material_report()
             # The verification state of each cited execution, so the agent
             # reads the material knowing what was checked and what was not.
             for entry in payload.get("methods") or []:
@@ -4508,6 +4519,7 @@ class ORHarness:
                     "status": rec.quality.get("status"),
                     "feasible": rec.quality.get("feasible"),
                     "objective": rec.quality.get("objective"),
+                    "code_hash": (rec.solver or {}).get("code_hash"),
                 }
                 entry["task_check"] = rec.execution_features.get("task_check")
                 entry["failures"] = [f.to_dict() for f in rec.failures]
@@ -4518,7 +4530,8 @@ class ORHarness:
 
     def review_material(self, *, strategy_id: Optional[str] = None,
                         task_id: Optional[str] = None,
-                        limit: Optional[int] = None
+                        limit: Optional[int] = None,
+                        cursor: Optional[str] = None
                         ) -> Dict[str, Any]:
         """Organize a BATCH of completed tasks for offline review.
 
@@ -4529,13 +4542,16 @@ class ORHarness:
         is reported as ``unknown`` rather than dropping the rest of the fact.
 
         Read-only: nothing is written and no claim is formed here. The
-        chararacter budget (``OR_HARNESS_REVIEW_MATERIAL_CHARS``) bounds how
-        much material travels and REPORTS eviction, so growth trends toward
-        batching rather than toward material that is permanently invisible.
+        character budget (``OR_HARNESS_REVIEW_MATERIAL_CHARS``) bounds how
+        much material travels and REPORTS eviction; when material is omitted,
+        ``budget.next_cursor`` reads the next (older) batch — pass it back as
+        ``cursor`` so a long history is walked in distinct batches instead of
+        the same newest records being re-shown.
         """
         from or_harness.world_model.maintenance import build_review_material
         return build_review_material(self, strategy_id=strategy_id,
-                                     task_id=task_id, limit=limit)
+                                     task_id=task_id, limit=limit,
+                                     cursor=cursor)
 
 
     # -- world-model M3: bounded planning ------------------------------------
@@ -4600,10 +4616,12 @@ class ORHarness:
         profile = self.profile(task)
         proposed = (None if candidates is None
                     else sorted({str(c) for c in candidates}))
-        recs = self.selector.recall(profile, top=top, exclude=exclude,
-                                    candidates=proposed,
-                                    memory_mode=memory_mode,
-                                    include_unverified=include_unverified)
+        recalled = self.selector.recall(profile, top=top, exclude=exclude,
+                                        candidates=proposed,
+                                        memory_mode=memory_mode,
+                                        include_unverified=include_unverified,
+                                        with_meta=True)
+        recs = recalled["recall"]
         solvers = available_families()
         known = self.selector.candidate_ids(
             profile, memory_mode=memory_mode,
@@ -4617,6 +4635,16 @@ class ORHarness:
             # evidence (see world_model.context.retrieval_reuse_problems).
             "task_digest": task_text_digest(task),
             "recommendations": [r.to_dict() for r in recs],
+            # RECALL DISCOVERS, IT DOES NOT DECIDE: the rows are in
+            # relevance order and any `top` cap is a MATERIAL BUDGET whose
+            # omission is reported here, never a utility cut.
+            "recall_budget": {
+                "n_matched": recalled["n_matched"],
+                "returned": recalled["returned"],
+                "material_budget": recalled["material_budget"],
+                "omitted": recalled["omitted"],
+                "note": recalled["note"],
+            },
             "recommendations_basis": self._recall_basis(
                 recs, known, proposed, memory_mode),
             "available_solver_families": solvers,
@@ -5867,29 +5895,12 @@ class ORHarness:
             record.measurement_scope, record.cost)
         if cost_feedback is not None:
             self.bank.set_cost_feedback(record.execution_id, cost_feedback)
-        expected_map = {e.strategy_id: {"quality": e.expected_quality_hat}
-                        for e in self.sbank.matching(record.profile_snapshot)}
-        prior_failures = self._prior_failures(record)
-        hints = check_triggers(record, self.stats, expected_map,
-                               prior_failures=prior_failures)
-        # Hints are PERSISTED onto the fact that produced them. An online
-        # hint is the detector's OWN cross-execution evidence (both sides of
-        # a contrast, the failed/recovered pair); keeping only the return
-        # value threw that away, so the offline candidate builder could
-        # never reuse it and re-derived candidates from bare counts instead.
-        # The write goes through the narrow annotation channel: it adds a
-        # key, it rewrites no observation.
-        if hints:
-            self.bank.annotate_features(
-                record.execution_id,
-                {"induction_hints": [h.to_dict() for h in hints]})
         unrecorded = [p.execution_id for p in
                       self.bank.pending(task_id=record.task_id)]
         result = {
             "execution_id": record.execution_id,
             "recorded": True,
             "prediction_checks": prediction_checks,
-            "induction_hints": [h.to_dict() for h in hints],
         }
         completeness = self._cost_completeness(record)
         if completeness is not None:

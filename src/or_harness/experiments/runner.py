@@ -168,13 +168,54 @@ class RunMetrics:
             return
         fieldnames = ["task_index", "task_id", "family", "strategy_id",
                       "quality", "feasible"] + [f"cost_{d}" for d in COST_DIMENSIONS] + \
-                     ["cumulative_cost_scalar", "memory_entries", "memory_executions",
-                      "induction_hints"]
+                     ["cumulative_cost_scalar", "memory_entries", "memory_executions"]
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
             for row in self.rows:
                 writer.writerow(row)
+
+
+def _experiment_choice(recalled, proposed, mode: str,
+                       cost_weights: Dict[str, float]) -> Optional[str]:
+    """This ABLATION's own utility decision rule (NOT the framework's).
+
+    Recall no longer ranks by utility — it discovers the memory rows in
+    relevance order. The ablation still measures what a UTILITY decision
+    would do, so it applies the original bounded formula here, OUTSIDE the
+    framework's recall: ``alpha*Q - beta*C - gamma*R`` with per-dimension
+    peak normalization, where C is zero unless the mode is ``cost-aware``
+    (the controlled difference between the ``strategic`` and ``cost-aware``
+    arms). This is a FIXTURE, not a framework recommendation.
+    """
+    rows: Dict[str, Any] = {}
+    order = {sid: i for i, sid in enumerate(proposed)}
+    for rec in recalled:
+        if rec.strategy_id not in rows:
+            rows[rec.strategy_id] = rec
+    if not rows:
+        return None
+    # Peak normalization per dimension, over the candidates that MEASURED it.
+    peaks: Dict[str, float] = {}
+    for rec in rows.values():
+        for dim in rec.expected_cost.measured_dims():
+            value = getattr(rec.expected_cost, dim)
+            peaks[dim] = max(peaks.get(dim, 0.0), float(value))
+    cost_aware = mode == "cost-aware"
+
+    def _score(rec) -> float:
+        cost_term = 0.0
+        if cost_aware:
+            for dim in rec.expected_cost.measured_dims():
+                peak = peaks.get(dim, 0.0)
+                if peak > 0:
+                    cost_term += (cost_weights.get(dim, 0.0)
+                                  * getattr(rec.expected_cost, dim) / peak)
+        return rec.expected_quality - cost_term - rec.failure_prob
+
+    return min(rows.values(),
+               key=lambda rec: (-_score(rec), order.get(rec.strategy_id,
+                                                        999))).strategy_id
 
 
 def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
@@ -214,14 +255,23 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
         for index, task in enumerate(tasks):
             task_json = task.to_task_json()
             proposed = CANDIDATES_BY_FAMILY[task.family]
-            recs = harness.recall(task_json, top=1, memory_mode=mode,
-                                  candidates=proposed)
-            if recs["recommendations"]:
-                strategy_id = recs["recommendations"][0]["strategy_id"]
-            else:
-                # No memory consulted (or nothing recalled for the proposed
-                # methods): the harness falls back to ITS OWN default. The
-                # framework supplies no menu here.
+            # The SELECTOR no longer ranks by utility — recall discovers the
+            # memory rows in relevance order. This offline ABLATION measures
+            # what a utility decision WOULD do, so the experiment applies
+            # its own bounded rule here (a sibling of the world-model
+            # planner's, deliberately OUTSIDE the framework's recall): among
+            # the proposed candidates the cell has memory about, pick the
+            # highest observed quality, breaking ties by the cheapest
+            # scalarized measured cost — but ONLY in the cost-aware mode.
+            recalled = harness.selector.recall(
+                harness.profile(task_json), top=len(proposed),
+                candidates=proposed, memory_mode=mode)
+            strategy_id = _experiment_choice(
+                recalled, proposed, mode, cost_weights or harness.selector.cost_weights)
+            if strategy_id is None:
+                # Nothing recalled (or nothing for the proposed methods):
+                # the harness falls back to ITS OWN default. The framework
+                # supplies no menu here.
                 strategy_id = DEFAULT_STRATEGY_BY_FAMILY[task.family]
             law = _execution_law(task, strategy_id)
             script = workdir / f"solve_{task.task_id}.py"
@@ -257,7 +307,6 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                 "cumulative_cost_scalar": round(cumulative, 4),
                 "memory_entries": harness.sbank.count(),
                 "memory_executions": harness.bank.count(),
-                "induction_hints": len(outcome["induction_hints"]),
             })
             if (index + 1) % induce_every == 0:
                 harness.induce(all_=True)

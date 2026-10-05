@@ -10,6 +10,7 @@ from or_harness.core.schema import (StrategicEntry, evidence_predicates,
                                     min_interval_width)
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.induction import InductionEngine
+from or_harness.strategy.selector import is_publishable
 from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.strategic_bank import StrategicBank
 
@@ -107,19 +108,25 @@ class TestIndependentEvidence(HarnessTestCase):
                 profile=self.make_profile(problem_id=task_id, **coupling)))
 
     def test_same_task_repeated_is_not_independent_evidence(self):
+        """Repeated runs of ONE task are repetition, not reproduction. The
+        framework no longer BLOCKS creation on the count — it DRAFTS the
+        entry and reports the single-task fact, so it is never PUBLISHED as
+        transferable knowledge."""
         self._record("lonely", [0.0, 0.0, 0.0])
         result = self.h.induce(strategy_id="S01")["results"][0]
-        self.assertIsNone(result.get("created"))
-        self.assertIn("needs independent evidence", result["skipped"])
-        self.assertEqual(result["verification"],
-                         {"tasks": ["lonely"], "required_tasks": 2})
-        self.assertEqual(self.h.sbank.count(), 0)
+        self.assertIsNotNone(result.get("created"))
+        self.assertIn("single_task_note", result)
+        self.assertIn("NOT publishable", result["single_task_note"])
+        entry = self.h.sbank.get(result["created"])
+        self.assertFalse(is_publishable(entry))
 
     def test_gate_applies_to_dry_run(self):
+        """The single-task fact is reported in a dry run too: a rehearsal
+        shows the draft and its limitation, and writes nothing."""
         self._record("lonely", [0.0, 0.0])
         result = self.h.induce(strategy_id="S01", dry_run=True)["results"][0]
-        self.assertNotIn("would_create", result)
-        self.assertIn("needs independent evidence", result["skipped"])
+        self.assertIn("would_create", result)
+        self.assertEqual(self.h.sbank.count(), 0)
 
     def test_refused_evidence_is_still_recallable(self):
         self._record("lonely", [0.0, 0.0, 0.0])

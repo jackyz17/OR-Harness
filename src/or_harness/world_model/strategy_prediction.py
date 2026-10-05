@@ -195,8 +195,9 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "solution_quality|valid_progress|correct_infeasibility_diagnosis, "
     "\"metric\": a short name of WHAT is measured (required when benefit "
     "is present), \"unit\": the unit of the metric, \"value\": number — "
-    "for kind=solution_quality this MUST be a normalized value in [0,1] "
-    "(e.g. 1-gap); a raw objective value is NOT a solution_quality, "
+    "for kind=solution_quality the value IS the QUALITY Q = max(0, 1 - gap), "
+    "NOT the gap: optimal (gap=0) means Q=1.0 and a wide gap means Q near 0. "
+    "Q is NOT the raw objective. Do NOT write 0 for an expected-optimal run. "
     "\"interval\": [lo, hi], \"interval_kind\": one of outcome|mean (WHAT "
     "the range is about — \"outcome\" = this ONE run's value, \"mean\" = "
     "the average over repeated runs), \"interval_coverage\": the nominal "
@@ -364,11 +365,13 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
         "metric": "normalized_objective_gap",
         "unit": "1-gap",
         "scope": "the prediction's own candidate scope",
-        "observed_from": ("the solver's own normalized gap (an `optimal` "
-                          "status is a gap of 0; otherwise 1-gap)"),
-        "note": ("how well the solver solved the model it was given. Use "
-                 "this unless the question is whether the ANSWER satisfies "
-                 "the TASK"),
+        "observed_from": ("the solver's own normalized gap: Q = "
+                          "max(0, 1 - gap); an `optimal` status is a gap "
+                          "of 0 and therefore Q = 1.0"),
+        "note": ("how well the solver solved the model it was given, as "
+                 "QUALITY Q = max(0, 1 - gap) — optimal means Q=1.0, NOT "
+                 "0. Use this unless the question is whether the ANSWER "
+                 "satisfies the TASK"),
     },
     "completion": {
         "kind": "effective_completion",
@@ -398,9 +401,10 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
                                    "it never re-labels another measurement "
                                    "into it"),
         "value_and_baseline": ("a benefit VALUE requires a baseline; a "
-                               "`solution_quality` value is NORMALIZED in "
-                               "[0,1] (a raw objective value is refused, "
-                               "never clamped)"),
+                               "`solution_quality` value IS the quality "
+                               "Q = max(0, 1 - gap) in [0,1] — optimal "
+                               "(gap=0) is Q=1.0, never 0; a raw objective "
+                               "value is refused, never clamped"),
         "same_convention_per_decision": ("every candidate of one decision "
                                          "is predicted under the SAME "
                                          "convention, so the comparison "
@@ -576,6 +580,26 @@ def parse_strategy_outcome_payload(
                 "NORMALIZED value in [0,1] (e.g. 1-gap); a raw objective "
                 "value is not silently clamped — restate the metric or use "
                 "a different kind")
+        # GAP-vs-QUALITY CONFLICT: a solution_quality of 0.0 whose own notes
+        # say the run will be OPTIMAL describes a gap of 0 (i.e. Q=1), not a
+        # quality of 0 — the model wrote the GAP where the QUALITY belongs.
+        # The framework does NOT quietly convert it (that would let the
+        # model's number stand as the framework's): it reports the conflict
+        # so the call can be re-predicted, and the original stays unchanged.
+        if kind == "solution_quality" and value is not None \
+                and float(value) == 0.0:
+            notes_text = " ".join(str(n) for n in
+                                  (raw_benefit.get("notes") or [])).lower()
+            optimal_claims = ("optimal", "gap=0", "gap = 0", "gap of 0",
+                              "gap 0", "zero gap", "gap=0.0")
+            conflicts = any(token in notes_text for token in optimal_claims)
+            if raw_benefit.get("feasible") is True and conflicts:
+                problems.append(
+                    "benefit.value is 0.0 for kind='solution_quality' while "
+                    "the notes/feasible flag describe an OPTIMAL outcome: "
+                    "the value must be the QUALITY Q = 1 - gap (optimal "
+                    "=> Q=1.0), not the gap. Restate value as Q, or omit it "
+                    "— the framework does not convert the number for you")
         interval = None
         raw_interval = raw_benefit.get("interval")
         if isinstance(raw_interval, (list, tuple)) and len(raw_interval) == 2:

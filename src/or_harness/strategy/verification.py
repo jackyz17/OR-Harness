@@ -143,6 +143,7 @@ def _as_fact(record: Any) -> Dict[str, Any]:
             "quality": dict(record.get("quality") or {}),
             "cost": cost,
             "measured": measured,
+            "code_hash": _code_hash_of(record),
         }
     cost = _as_cost(getattr(record, "cost", None))
     profile = getattr(record, "profile_snapshot", None)
@@ -160,7 +161,25 @@ def _as_fact(record: Any) -> Dict[str, Any]:
         "quality": dict(getattr(record, "quality", {}) or {}),
         "cost": cost,
         "measured": sorted(cost.measured_dims()) if cost is not None else [],
+        "code_hash": _code_hash_of(record),
     }
+
+
+def _code_hash_of(record: Any) -> Optional[str]:
+    """The executed code hash a record carries, or None when it recorded none.
+
+    The executor stamps ``solver.code_hash``; a record without one cannot
+    support a "the code was unchanged" claim (its absence is reported, never
+    filled in)."""
+    solver = (record.get("solver") if isinstance(record, dict)
+              else getattr(record, "solver", None))
+    if isinstance(solver, dict):
+        value = solver.get("code_hash")
+    else:
+        value = getattr(solver, "code_hash", None)
+    if value is None or str(value).strip() == "":
+        return None
+    return str(value)
 
 
 def _usable(fact: Dict[str, Any]) -> bool:
@@ -195,6 +214,21 @@ def _resolve(payload: Any, path: str) -> Tuple[bool, Any]:
     return True, current
 
 
+#: Top-level payload keys a probe may address, reported when a path does not
+#: resolve. A wrong path (a caller writing ``outcome.gap`` for the record's
+#: ``quality.gap``) must be distinguishable from a REFUTED claim.
+_PROBE_HINT_KEYS = ("quality", "solver", "cost", "cost_measured", "failures",
+                    "execution_features", "task_id", "strategy_id",
+                    "measurement_scope", "trajectory", "method_planned",
+                    "method_actual", "cir_snapshot")
+
+
+def _available_probe_paths(payload: Dict[str, Any]) -> List[str]:
+    """Useful top-level paths present in a record payload, for an error hint."""
+    return [key for key in _PROBE_HINT_KEYS
+            if isinstance(payload, dict) and key in payload]
+
+
 def _evaluate_probe(fact: Dict[str, Any], probe: Dict[str, Any]) -> Dict[str, Any]:
     """Evaluate ONE framework-side probe against a real record.
 
@@ -202,27 +236,48 @@ def _evaluate_probe(fact: Dict[str, Any], probe: Dict[str, Any]) -> Dict[str, An
     ``{"path": "quality.objective", "equals"|"min"|"max"|"in": ...}``.
 
     This is what makes a problem-specific semantic check a *check* rather than
-    an assertion: the framework reads the value and compares it."""
+    an assertion: the framework reads the value and compares it.
+
+    A path that does NOT resolve is ``ok=None`` (undecided), NEVER a failed
+    comparison: a typo (``outcome.gap`` for the record's ``quality.gap``) must
+    not be reported as evidence AGAINST the claim. ``found=False`` is a
+    material problem, and the result names the available top-level paths so
+    the caller can correct it."""
     path = str(probe.get("path", ""))
-    found, observed = _resolve(fact.get("payload") or {}, path)
+    payload = fact.get("payload") or {}
+    found, observed = _resolve(payload, path)
     result: Dict[str, Any] = {"check": "semantic_probe", "source": FRAMEWORK,
                               "path": path, "found": found,
                               "observed": observed}
+    if not found:
+        result["ok"] = None
+        result["error"] = (f"the path {path!r} does not resolve in this "
+                           "execution's payload, so the probe cannot decide: "
+                           "a missing path is NOT evidence against the "
+                           "claim. Available top-level paths: "
+                           + ", ".join(_available_probe_paths(payload)))
+        return result
     if "equals" in probe:
-        ok = found and observed == probe["equals"]
+        ok = observed == probe["equals"]
         result.update({"expected": probe["equals"], "mode": "equals", "ok": ok})
     elif "min" in probe or "max" in probe:
         value = _finite(observed)
         lo = _finite(probe.get("min"))
         hi = _finite(probe.get("max"))
-        ok = (value is not None
-              and (lo is None or value >= lo)
-              and (hi is None or value <= hi))
-        result.update({"min": probe.get("min"), "max": probe.get("max"),
-                       "mode": "range", "ok": ok})
+        if value is None:
+            result.update({"min": probe.get("min"), "max": probe.get("max"),
+                           "mode": "range", "ok": None,
+                           "error": (f"the value at {path!r} is not a finite "
+                                     "number, so the range comparison cannot "
+                                     "run")})
+        else:
+            ok = ((lo is None or value >= lo)
+                  and (hi is None or value <= hi))
+            result.update({"min": probe.get("min"), "max": probe.get("max"),
+                           "mode": "range", "ok": ok})
     elif "in" in probe:
         options = probe.get("in") or []
-        ok = found and observed in options
+        ok = observed in options
         result.update({"expected": list(options), "mode": "in", "ok": ok})
     else:
         result.update({"ok": None,
@@ -347,18 +402,23 @@ def _framework_checks(checks: List[Dict[str, Any]]) -> int:
 
 def _apply_declared_checks(fact: Dict[str, Any], check: Dict[str, Any],
                            checks: List[Dict[str, Any]]
-                           ) -> Tuple[bool, Optional[str]]:
+                           ) -> Tuple[str, Optional[str]]:
     """Evaluate every declared criterion on ONE record.
 
-    Returns ``(passed, failure_reason)``. EVERY supplied record is checked —
-    evaluating only the first usable one let record ORDER decide the verdict
-    and let a counterexample later in the same batch go unnoticed."""
+    Returns ``(state, reason)`` where state is ``"passed"`` / ``"refuted"`` /
+    ``"undecided"``. EVERY supplied record is checked — evaluating only the
+    first usable one let record ORDER decide the verdict and let a
+    counterexample later in the same batch go unnoticed.
+
+    ``"undecided"`` is the honest answer for a probe whose PATH does not
+    resolve (a typo such as ``outcome.gap``), distinct from ``"refuted"``
+    where the criterion ran and did NOT hold."""
     q = fact["quality"]
     feasible = bool(q.get("feasible", False))
     checks.append({"check": "feasible", "source": FRAMEWORK,
                    "execution_id": fact["execution_id"], "observed": feasible})
     if not feasible:
-        return False, f"{fact['execution_id']} is not feasible"
+        return "refuted", f"{fact['execution_id']} is not feasible"
 
     reference_status = check.get("reference_status")
     if reference_status is not None:
@@ -369,8 +429,8 @@ def _apply_declared_checks(fact: Dict[str, Any], check: Dict[str, Any],
                        "observed": status, "expected": reference_status,
                        "ok": ok})
         if not ok:
-            return False, (f"{fact['execution_id']} finished with status "
-                           f"{status!r}, not {reference_status!r}")
+            return "refuted", (f"{fact['execution_id']} finished with status "
+                               f"{status!r}, not {reference_status!r}")
 
     reference = _finite(check.get("reference_objective"))
     if reference is not None:
@@ -384,8 +444,9 @@ def _apply_declared_checks(fact: Dict[str, Any], check: Dict[str, Any],
                        "reference": reference, "tolerance": tol, "gap": gap,
                        "ok": ok})
         if not ok:
-            return False, (f"{fact['execution_id']} reports objective {obj}, "
-                           f"outside {tol} of the reference {reference}")
+            return "refuted", (f"{fact['execution_id']} reports objective "
+                               f"{obj}, outside {tol} of the reference "
+                               f"{reference}")
 
     probe = check.get("semantic_probe")
     if probe is not None:
@@ -394,19 +455,21 @@ def _apply_declared_checks(fact: Dict[str, Any], check: Dict[str, Any],
             result["execution_id"] = fact["execution_id"]
             checks.append(result)
             if result.get("ok") is None:
-                return False, (f"semantic probe {result.get('path')!r} "
-                               "declares no comparison")
+                return "undecided", (result.get("error")
+                                     or f"semantic probe "
+                                        f"{result.get('path')!r} could not "
+                                        "decide")
             if not result["ok"]:
-                return False, (f"semantic probe {result.get('path')!r} failed "
-                               "on real values")
+                return "refuted", (f"semantic probe {result.get('path')!r} "
+                                   "failed on real values")
 
     if check.get("semantic_ok") is not None:
         result = _declared_semantic(check.get("semantic_ok"))
         result["execution_id"] = fact["execution_id"]
         checks.append(result)
         if not result["ok"]:
-            return False, "the problem-specific semantic check failed"
-    return True, None
+            return "refuted", "the problem-specific semantic check failed"
+    return "passed", None
 
 
 def _decision(purpose: Optional[str], claim: str, checks: List[Dict[str, Any]],
@@ -515,8 +578,13 @@ def _verify_rule(purpose: Optional[str], claim: str,
                            conclusion=(f"{fact['execution_id']} produced no "
                                        "usable result, so the check could not "
                                        "run on every supplied execution"))
-        passed, reason = _apply_declared_checks(fact, check, checks)
-        if not passed:
+        state, reason = _apply_declared_checks(fact, check, checks)
+        if state == "undecided":
+            return _report(INSUFFICIENT, purpose=purpose, claim=claim,
+                           checks=checks, evidence=evidence,
+                           conclusion=("the declared check could not be "
+                                       f"decided: {reason}"))
+        if state == "refuted":
             return _report(REFUTED, purpose=purpose, claim=claim,
                            checks=checks, evidence=evidence,
                            conclusion=f"the declared check failed: {reason}")
@@ -542,8 +610,13 @@ def _verify_rule(purpose: Optional[str], claim: str,
                                conclusion=(f"the comparison execution "
                                            f"{fact['execution_id']} produced no "
                                            "usable result — not yet verified"))
-            passed, reason = _apply_declared_checks(fact, check, checks)
-            if not passed:
+            state, reason = _apply_declared_checks(fact, check, checks)
+            if state == "undecided":
+                return _report(INSUFFICIENT, purpose=purpose, claim=claim,
+                               checks=checks, evidence=evidence,
+                               conclusion=("the comparison could not be "
+                                           f"decided: {reason}"))
+            if state == "refuted":
                 return _report(REFUTED, purpose=purpose, claim=claim,
                                checks=checks, evidence=evidence,
                                conclusion=("the claim did not hold on the "
@@ -595,8 +668,13 @@ def _verify_repair(purpose: Optional[str], claim: str,
                                    "different tasks, so this is not a repair "
                                    f"of one problem: {sorted(repair_tasks)} vs "
                                    f"{sorted(fixed_tasks)}"))
-    passed, reason = _apply_declared_checks(succeeded[-1], check, checks)
-    if not passed:
+    state, reason = _apply_declared_checks(succeeded[-1], check, checks)
+    if state == "undecided":
+        return _report(INSUFFICIENT, purpose=purpose, claim=claim,
+                       checks=checks, evidence=evidence,
+                       conclusion=("the repair check could not be decided: "
+                                   f"{reason}"))
+    if state == "refuted":
         return _report(REFUTED, purpose=purpose, claim=claim, checks=checks,
                        evidence=evidence,
                        conclusion=f"the repaired result fails the check: {reason}")
@@ -755,6 +833,11 @@ def _verify_cost_saving(purpose: Optional[str], claim: str,
 ASSERTION_PROBE = "probe"
 ASSERTION_STATUS = "status"
 ASSERTION_COMPARISON = "comparison"
+#: ``code_unchanged``: every record of the named role(s) reports the SAME
+#: executed code hash. A claim that says "the code was not changed" is
+#: checkable when the executions carry a code hash — an ``optimal`` status
+#: alone never backs such a claim.
+ASSERTION_CODE_UNCHANGED = "code_unchanged"
 
 #: Aggregation modes for a comparison assertion.
 AGGREGATION_ALL = "all"
@@ -841,8 +924,9 @@ def _assertion_checks(assertion: Dict[str, Any],
             result["execution_id"] = fact["execution_id"]
             checks.append(result)
             if result.get("ok") is None:
-                return INSUFFICIENT, (f"probe {probe.get('path')!r} declares "
-                                      "no comparison")
+                return INSUFFICIENT, (
+                    result.get("error")
+                    or f"probe {probe.get('path')!r} could not decide")
             if not result["ok"]:
                 return REFUTED, (f"probe {probe.get('path')!r} failed on "
                                  f"{fact['execution_id']}")
@@ -866,6 +950,35 @@ def _assertion_checks(assertion: Dict[str, Any],
             if not ok:
                 return REFUTED, (f"{fact['execution_id']} finished with status "
                                  f"{status!r}, not {expected!r}")
+        return VERIFIED, None
+
+    if kind == ASSERTION_CODE_UNCHANGED:
+        # "The code was not changed." The check reads the code hash each
+        # record actually carries; a record that recorded none makes the
+        # claim unverifiable (INSUFFICIENT), never verified by default.
+        records = _role_records(roles)
+        if records is None:
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind, "roles": roles,
+                           "problem": "a named role has no evidence"})
+            return INSUFFICIENT, ("a named role has no referenced evidence, "
+                                  "so the assertion cannot run")
+        hashes: Dict[str, List[str]] = {}
+        for fact in records:
+            code_hash = fact.get("code_hash")
+            checks.append({"check": "assertion_code_hash", "source": FRAMEWORK,
+                           "execution_id": fact["execution_id"],
+                           "code_hash": code_hash, "ok": code_hash is not None})
+            if code_hash is None:
+                return INSUFFICIENT, (
+                    f"{fact['execution_id']} recorded no code hash, so "
+                    "whether the code was unchanged cannot be established")
+            hashes.setdefault(code_hash, []).append(fact["execution_id"])
+        if len(hashes) > 1:
+            return REFUTED, (
+                "the referenced executions ran DIFFERENT code: "
+                + "; ".join(f"{h[:12]}… in {sorted(ids)}"
+                            for h, ids in sorted(hashes.items())))
         return VERIFIED, None
 
     if kind == ASSERTION_COMPARISON:
@@ -982,8 +1095,8 @@ def _assertion_checks(assertion: Dict[str, Any],
     checks.append({"check": "assertion_supported", "source": FRAMEWORK,
                    "kind": kind, "problem": "unsupported assertion kind"})
     return INSUFFICIENT, (f"assertion kind {kind!r} is not computable by the "
-                          "framework; only probe/status/comparison are "
-                          "evaluated")
+                          "framework; only probe/status/comparison/"
+                          "code_unchanged are evaluated")
 
 
 def _pair_by_task(side_a: List[Dict[str, Any]],
@@ -1090,8 +1203,9 @@ def verify_relation(claim: str,
             INSUFFICIENT, claim, [], assertion_list, scope=scope,
             conclusion=("no assertion was declared: the framework has nothing "
                         "it can compute, so the claim stays unverified — "
-                        "declare probe/status/comparison assertions for the "
-                        "parts of the claim that are checkable"))
+                        "declare probe/status/comparison/code_unchanged "
+                        "assertions for the parts of the claim that are "
+                        "checkable"))
 
     checks: List[Dict[str, Any]] = []
     usable = [f for f in records if _usable(f)]
@@ -1246,9 +1360,11 @@ def _variable_value(values: Dict[str, Any],
 def _task_check_report(state: str, *, execution_id: str, checks: List[Dict[str, Any]],
                        diffs: List[Dict[str, Any]], basis: List[str],
                        unchecked: List[str], intent: Optional[str],
-                       conclusion: str) -> Dict[str, Any]:
+                       conclusion: str,
+                       reference_source: Optional[Dict[str, Any]] = None
+                       ) -> Dict[str, Any]:
     """The task-result verdict: identity, scope, checks, diffs, unchecked."""
-    return {
+    report = {
         "state": state,
         "execution_id": execution_id,
         "checks": checks,
@@ -1260,6 +1376,51 @@ def _task_check_report(state: str, *, execution_id: str, checks: List[Dict[str, 
         "intent": intent,
         "conclusion": conclusion,
         "checked_at": time.time(),
+    }
+    if reference_source is not None:
+        report["reference_source"] = reference_source
+    return report
+
+
+#: Valid provenance tags for the reference value a task check compares against.
+#: ``bench_declared`` — an independent, versioned benchmark answer;
+#: ``independent`` — the harness states a source separate from its own run;
+#: ``self_derived`` — the harness computed/guessed the value itself. Only the
+#: first two are independent evidence; ``self_derived`` (or an UNSTATED tag)
+#: means a pass is a consistency check, NOT proof the answer satisfies the
+#: task.
+REFERENCE_SOURCES = ("bench_declared", "independent", "self_derived")
+
+
+def _reference_source_block(check: Dict[str, Any]) -> Dict[str, Any]:
+    """Where the declared reference value came from, as a reported fact.
+
+    The framework cannot know a reference is correct — it reports WHO claims
+    it, so a pass against a self-derived value is never read as "the task is
+    solved". An UNSTATED tag is exactly as weak as ``self_derived`` and is
+    labelled that way."""
+    declared = check.get("reference_source")
+    tag = str(declared) if declared in REFERENCE_SOURCES else None
+    if tag in ("bench_declared", "independent"):
+        note = (f"the reference came from a source the caller declared "
+                f"({tag}); a pass still covers only the declared bases")
+    elif tag == "self_derived":
+        note = ("the reference was declared SELF-DERIVED (computed or "
+                "guessed by the caller): a pass is a consistency check "
+                "against the caller's own value, NOT evidence the answer "
+                "satisfies the task")
+    else:
+        note = ("the caller did not state where the reference came from; an "
+                "UNSTATED source is treated as self-derived — a pass is not "
+                "evidence the answer satisfies the task. Declare "
+                "reference_source=bench_declared|independent|self_derived to "
+                "say which")
+    return {
+        "source": tag,
+        "declared": declared if declared is not None else None,
+        "version": check.get("reference_version"),
+        "independent": tag in ("bench_declared", "independent"),
+        "note": note,
     }
 
 
@@ -1282,6 +1443,52 @@ def _task_check_declared(check: Dict[str, Any]) -> List[str]:
 def verify_task_result(execution: Any,
                        check: Optional[Dict[str, Any]] = None
                        ) -> Dict[str, Any]:
+    """Check whether ONE execution's answer satisfies the original task.
+
+    ``check`` is the harness's declaration of what is checkable. Every base is
+    optional; the framework evaluates ONLY what is declared and reports the
+    rest as unchecked:
+
+    - ``reference_objective`` (+ optional ``tolerance``): the reported
+      objective must agree with the reference. The tolerance rule is the SAME
+      one admission verification uses (``1e-6 * max(1, |reference|)`` unless
+      overridden) — one rule, one place.
+    - ``reference_status``: the reported solver status must equal it.
+    - ``integer``: ``{"variables": [names] | omitted, "tolerance": t}`` —
+      every named variable (or every recorded variable) must be integral
+      within ``t``. This is the check that catches an LP relaxation answered
+      with fractional values.
+    - ``recompute_objective``: ``{"coefficients": {name: c}, "constant": k,
+      "tolerance": t}`` — the objective is RECOMPUTED from the recorded
+      solution vector and compared with the reported one.
+    - ``semantic_probe``: one or more ``{"path", equals|min|max|in}`` probes
+      over the record payload (the same probe evaluator admission uses).
+    - ``reference_source`` (optional): ONE of ``bench_declared`` /
+      ``independent`` / ``self_derived`` -- WHERE the reference value came
+      from. A value the caller derived itself (or left unstated) makes a pass
+      a consistency check, NOT evidence the answer satisfies the task; the
+      provenance travels in the report so it can never be silently read as
+      an independent confirmation.
+
+    A ``failed`` verdict means a declared check ran on real values and did not
+    hold. ``insufficient`` means the check could not be decided (no basis
+    declared, no solution vector, a needed variable missing, a probe PATH that
+    does not resolve, or the execution produced no usable result) — which is
+    NOT a pass and NOT a failure. A ``passed`` verdict covers only the
+    declared bases: the report always names what it did not check.
+    """
+    report = _verify_task_result(execution, check)
+    declared_basis = (report.get("scope") or {}).get("basis") or []
+    if declared_basis:
+        # The reference provenance is a FACT about this verdict, attached
+        # wherever a check basis was actually declared.
+        report["reference_source"] = _reference_source_block(check or {})
+    return report
+
+
+def _verify_task_result(execution: Any,
+                        check: Optional[Dict[str, Any]] = None
+                        ) -> Dict[str, Any]:
     """Check whether ONE execution's answer satisfies the original task.
 
     ``check`` is the harness's declaration of what is checkable. Every base is
@@ -1601,14 +1808,20 @@ def verify_task_result(execution: Any,
             result["check"] = "semantic_probe"
             checks.append(result)
             if result.get("ok") is None:
+                # An unresolvable path (a typo) or an uncomparable value is
+                # UNDECIDED: it is a material problem with the probe, never a
+                # failure of the answer.
                 return _task_check_report(
                     TASK_CHECK_INSUFFICIENT, execution_id=execution_id,
                     checks=checks, diffs=diffs, basis=declared,
-                    unchecked=unchecked + [f"probe {result.get('path')!r} "
-                                           "(declares no comparison)"],
+                    unchecked=unchecked + [(result.get("error")
+                                            or f"probe {result.get('path')!r} "
+                                               "(could not decide)")],
                     intent=intent,
-                    conclusion=(f"the probe {result.get('path')!r} declares "
-                                "no comparison, so it could not decide"))
+                    conclusion=(result.get("error")
+                                or (f"the probe {result.get('path')!r} could "
+                                    "not decide, so the answer's validity on "
+                                    "that check is UNKNOWN")))
             if not result["ok"]:
                 diffs.append({"basis": "semantic_probe",
                               "path": result.get("path"),
@@ -1651,4 +1864,4 @@ __all__ = ["verify_candidate", "verify_relation", "verify_task_result",
            "REFUTED", "PURPOSE_RULE", "PURPOSE_REPAIR", "PURPOSE_COST_SAVING",
            "PURPOSE_RELATION", "TASK_CHECK_PASSED", "TASK_CHECK_FAILED",
            "TASK_CHECK_INSUFFICIENT", "TASK_INTENTS", "INTENT_RELAXATION",
-           "INTENT_INTERMEDIATE"]
+           "INTENT_INTERMEDIATE", "ASSERTION_CODE_UNCHANGED"]

@@ -78,7 +78,7 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "conditional": {"next", "reflection_material"},
     },
     "record": {
-        "required": {"recorded", "cost_completeness", "induction_hints",
+        "required": {"recorded", "cost_completeness",
                      "prediction_checks", "index_sync", "execution_id"},
         "conditional": {"cost_feedback", "unrecorded_staged_executions"},
     },
