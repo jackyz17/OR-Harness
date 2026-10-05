@@ -1,0 +1,23 @@
+{
+  "task_id": "orarla_4",
+  "family": "generic",
+  "text": "A farmer needs to decide how many cows, sheep, and chickens to raise in order to achieve maximum profit. The farmer can sell cows, sheep, and chickens for $500, $200, and $8 each, respectively. The feed costs for each cow, sheep, and chicken are $100, $80, and $5, respectively. The profit is the difference between the selling price and the feed cost. Each cow, sheep, and chicken produces 10, 5, and 3 units of manure per day, respectively. Due to the limited time the farm staff has for cleaning the farm each day, they can handle up to 800 units of manure. Additionally, because of the limited farm size, the farmer can raise at most 50 chickens. Furthermore, the farmer must have at least 10 cows to meet customer demand. The farmer must also raise at least 20 sheep. Finally, the total number of animals cannot exceed 100.",
+  "model": "milp_animal_farm",
+  "CIR": {
+    "entities": [
+      {"id": "cow", "name": "Cow", "attributes": {"selling_price": 500, "feed_cost": 100, "manure_per_day": 10, "profit_per_unit": 400}},
+      {"id": "sheep", "name": "Sheep", "attributes": {"selling_price": 200, "feed_cost": 80, "manure_per_day": 5, "profit_per_unit": 120}},
+      {"id": "chicken", "name": "Chicken", "attributes": {"selling_price": 8, "feed_cost": 5, "manure_per_day": 3, "profit_per_unit": 3}}
+    ],
+    "decisions": [
+      {"id": "x_cow", "name": "Number of cows", "entity": "cow", "type": "integer", "lb": 10},
+      {"id": "x_sheep", "name": "Number of sheep", "entity": "sheep", "type": "integer", "lb": 20},
+      {"id": "x_chicken", "name": "Number of chickens", "entity": "chicken", "type": "integer", "lb": 0, "ub": 50}
+    ],
+    "relations": [
+      {"id": "manure", "name": "Manure constraint", "expression": "10*x_cow + 5*x_sheep + 3*x_chicken <= 800", "type": "constraint"},
+      {"id": "total", "name": "Total animals constraint", "expression": "x_cow + x_sheep + x_chicken <= 100", "type": "constraint"},
+      {"id": "profit", "name": "Total profit", "expression": "400*x_cow + 120*x_sheep + 3*x_chicken", "type": "objective", "sense": "maximize"}
+    ]
+  }
+}

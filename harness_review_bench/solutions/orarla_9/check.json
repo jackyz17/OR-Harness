@@ -1,0 +1,17 @@
+{
+  "reference_objective": 623,
+  "tolerance": 0,
+  "integer": {
+    "variables": ["trucks", "airplanes", "boats", "trains", "m_truck", "m_airplane", "m_boat", "m_train"],
+    "tolerance": 1e-6
+  },
+  "recompute_objective": {
+    "coefficients": {
+      "trucks": 5,
+      "airplanes": 10,
+      "boats": 8,
+      "trains": 7
+    },
+    "tolerance": 1e-6
+  }
+}

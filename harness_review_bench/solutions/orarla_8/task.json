@@ -1,0 +1,29 @@
+{
+  "task_id": "orarla_8",
+  "family": "scheduling",
+  "text": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The Hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
+  "coupling": {
+    "entities": [
+      {"name": "I", "kind": "worker"},
+      {"name": "II", "kind": "worker"},
+      {"name": "III", "kind": "worker"},
+      {"name": "IV", "kind": "worker"},
+      {"name": "V", "kind": "worker"},
+      {"name": "A", "kind": "task"},
+      {"name": "B", "kind": "task"},
+      {"name": "C", "kind": "task"},
+      {"name": "D", "kind": "task"}
+    ],
+    "decisions": [
+      {"name": "assign", "kind": "allocation", "description": "Assign exactly 4 workers to 4 tasks (one worker per task, one task per worker)"}
+    ],
+    "relations": []
+  },
+  "model": {
+    "sets": "workers = [I, II, III, IV, V]\ntasks = [A, B, C, D]",
+    "parameters": "time[workers,tasks] = [[9,4,3,7],[4,6,5,6],[5,4,7,5],[7,5,2,3],[10,6,7,4]]",
+    "variables": "x[workers,tasks] binary",
+    "objective": "minimize sum(w in workers, t in tasks) time[w,t] * x[w,t]",
+    "constraints": "C1: sum(w in workers) x[w,t] = 1  for t in tasks\nC2: sum(t in tasks) x[w,t] <= 1  for w in workers\nC3: sum(w in workers, t in tasks) x[w,t] = 4"
+  }
+}

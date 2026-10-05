@@ -1,0 +1,37 @@
+{
+  "entities": [
+    {"name": "W_s", "kind": "resource", "attrs": "Skilled workers (initially 50)"},
+    {"name": "W_t", "kind": "resource", "attrs": "Trainee workers (being trained)"},
+    {"name": "W_f", "kind": "resource", "attrs": "Fully trained workers (after training)"},
+    {"name": "food_I", "kind": "product", "attrs": "Food type I, 10 kg/h per skilled/fully-trained worker"},
+    {"name": "food_II", "kind": "product", "attrs": "Food type II, 6 kg/h per skilled/fully-trained worker"},
+    {"name": "train_slot", "kind": "resource", "attrs": "Training capacity: 1 skilled worker can train up to 3 trainees in 2 weeks"}
+  ],
+  "decisions": [
+    {"name": "x_s_w", "kind": "production", "indexes": "w=1..8", "attrs": "Number of skilled workers working in week w (40h, wage 360/y)"},
+    {"name": "x_o_w", "kind": "production", "indexes": "w=1..8", "attrs": "Number of skilled workers working overtime in week w (60h, wage 540/y)"},
+    {"name": "x_t_w", "kind": "training", "indexes": "w=1..8", "attrs": "Number of trainees in training during week w (wage 120/y, no production)"},
+    {"name": "x_f_w", "kind": "production", "indexes": "w=1..8", "attrs": "Number of fully trained workers working in week w (40h, wage 240/y)"},
+    {"name": "d_I_w", "kind": "shortfall", "indexes": "w=1..8", "attrs": "Shortfall (kg) of food I in week w (penalty 0.5 yuan/kg per week late)"},
+    {"name": "d_II_w", "kind": "shortfall", "indexes": "w=1..8", "attrs": "Shortfall (kg) of food II in week w (penalty 0.6 yuan/kg per week late)"}
+  ],
+  "constraints": [
+    {"id": "C1", "kind": "balance", "expr": "x_s_w + x_t_w + x_o_w <= W_s_initial - trainees_in_training[w]", "attrs": "At most 50 skilled workers total; some may be training"},
+    {"id": "C2", "kind": "training_output", "expr": "sum(w in 1..8, x_t_w[w]) >= 50", "attrs": "Must train 50 new workers by end of week 8"},
+    {"id": "C3", "kind": "training_capacity", "expr": "x_t_w[w] <= 3 * x_s_train[w] for each training period of 2 weeks", "attrs": "1 skilled can train up to 3 trainees over 2 weeks"},
+    {"id": "C4", "kind": "production_I", "expr": "production_I[w] = 10*(40*x_s_w[w] + 60*x_o_w[w] + 40*x_f_w[w])", "attrs": "Food I output: 10 kg/h per worker, 40h or 60h week"},
+    {"id": "C5", "kind": "production_II", "expr": "production_II[w] = 6*(40*x_s_w[w] + 60*x_o_w[w] + 40*x_f_w[w])", "attrs": "Food II output: 6 kg/h per worker, 40h or 60h week"},
+    {"id": "C6", "kind": "demand", "expr": "production_I[w] + d_I_w >= demand_I[w]", "attrs": "Food I demand must be met (with possible shortfall d_I_w)"},
+    {"id": "C7", "kind": "demand", "expr": "production_II[w] + d_II_w >= demand_II[w]", "attrs": "Food II demand must be met (with possible shortfall d_II_w)"},
+    {"id": "C8", "kind": "worker_transition", "expr": "x_f_w[w] = trained_workers_available[w]", "attrs": "Fully trained workers available = cumulative trainees finished training"}
+  ],
+  "relations": [
+    {"source": "x_s_w, x_o_w, x_f_w", "target": "W_s, W_f", "type": "uses_resource", "evidence": "declared", "detail": "Production decisions use skilled/fully-trained worker resources"},
+    {"source": "x_t_w", "target": "W_t", "type": "uses_resource", "evidence": "declared", "detail": "Training decisions consume trainee slots"},
+    {"source": "x_s_w, x_t_w", "target": "W_s", "type": "shares_resource", "evidence": "declared", "detail": "A skilled worker cannot both train and produce simultaneously"},
+    {"source": "x_t_w", "target": "x_f_w", "type": "precedes", "evidence": "declared", "detail": "Trainees become fully trained workers after 2 weeks of training"}
+  ],
+  "coupling_groups": [
+    {"type": "shared_bottleneck", "members": ["x_s_w", "x_o_w", "x_t_w", "x_f_w"], "resource": "W_s", "implication": "Aggregate capacity constraint needed across all worker allocation decisions"}
+  ]
+}

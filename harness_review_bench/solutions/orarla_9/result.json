@@ -1,0 +1,16 @@
+{
+  "status": "optimal",
+  "objective_value": 623.0,
+  "objective_bound": 623.0,
+  "runtime_seconds": 0.01221156120300293,
+  "variables": {
+    "trucks": -0.0,
+    "airplanes": -0.0,
+    "boats": -0.0,
+    "trains": 89.0,
+    "m_truck": -0.0,
+    "m_airplane": -0.0,
+    "m_boat": -0.0,
+    "m_train": 1.0
+  }
+}

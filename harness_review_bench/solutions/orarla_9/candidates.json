@@ -1,0 +1,56 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_binary_indicator",
+    "solver": "highs",
+    "name": "milp_binary_indicator",
+    "steps": [
+      "Define integer variables: t (trucks), a (airplanes), b (boats), n (trains), all >= 0.",
+      "Define binary indicator variables: m_t=1 if t>0, m_a=1 if a>0, m_b=1 if b>0, m_n=1 if n>0.",
+      "Link quantity to indicator via big-M: t <= M*m_t, t >= m_t (small positive), similarly for a, b, n. M = min(resource_upper_bound / resource_per_unit) ≈ 74 for trucks (wood), 41 for trains (steel).",
+      "Wood constraint: 12*t + 20*a + 15*b + 10*n <= 890.",
+      "Steel constraint: 6*t + 3*a + 5*b + 4*n <= 500.",
+      "Truck-train mutual exclusion: m_t + m_n <= 1 (if trucks, no trains).",
+      "Boat requires airplane: m_b <= m_a (if boats>0, airplanes>0).",
+      "Boats <= trains: b <= n.",
+      "Maximize: 5*t + 10*a + 8*b + 7*n.",
+      "Solve with HiGHS, integer variables for t,a,b,n; binary for m_t,m_a,m_b,m_n."
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_bigM_direct",
+    "solver": "highs",
+    "name": "milp_bigM_direct",
+    "steps": [
+      "Use 4 integer production variables: t, a, b, n >= 0.",
+      "Use 4 binary indicator variables: y_t, y_a, y_b, y_n (1 if corresponding product is made).",
+      "Big-M linking: t <= 100*y_t, a <= 100*y_a, b <= 100*y_b, n <= 100*y_n.",
+      "Resource wood: 12*t + 20*a + 15*b + 10*n <= 890.",
+      "Resource steel: 6*t + 3*a + 5*b + 4*n <= 500.",
+      "Conditional truck-train: y_t + y_n <= 1.",
+      "Conditional boat-airplane: y_b <= y_a.",
+      "Boat count <= train count: b <= n.",
+      "Objective: maximize 5*t + 10*a + 8*b + 7*n.",
+      "Same model structure, different big-M values (100) and no minimum quantity enforcement."
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_indicator_tightened",
+    "solver": "highs",
+    "name": "milp_indicator_tightened",
+    "steps": [
+      "Integer variables: t, a, b, n >= 0.",
+      "Binary indicators: m_t, m_a, m_b, m_n.",
+      "Tightened big-M: truck max from wood: t <= 74; from steel: t <= 83; so M_truck = 74. Train max: n <= 89 (wood), n <= 125 (steel) -> M_train = 89. Airplane max: a <= 44 (wood), a <= 166 (steel) -> M_a = 44. Boat max: b <= 59 (wood), b <= 100 (steel) -> M_b = 59.",
+      "Link: t <= M_truck*m_t, a <= M_a*m_a, b <= M_b*m_b, n <= M_train*m_n.",
+      "Wood: 12*t + 20*a + 15*b + 10*n <= 890.",
+      "Steel: 6*t + 3*a + 5*b + 4*n <= 500.",
+      "Mutual exclusion: m_t + m_n <= 1.",
+      "Boat needs airplane: m_b <= m_a.",
+      "Boats <= trains: b <= n.",
+      "Maximize: 5*t + 10*a + 8*b + 7*n."
+    ]
+  }
+]

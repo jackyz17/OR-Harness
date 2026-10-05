@@ -1,0 +1,7 @@
+{
+ "id": 2,
+ "question": "A fighter jet is a crucial combat tool, but to make it effective, enough trained pilots are required. Therefore, some fighter jets each year must be allocated exclusively for pilot training. The annual production of fighter jets is \\(a_j (j=1,2)\\), with \\(a_1=10\\) and \\(a_2=15\\). Each training jet can train 5 pilots per year, and each trained pilot can operate one combat jet in subsequent years. Assuming training starts in year 1 and continues for 2 years, how many trained pilots will be available in total by the end of year 2 to contribute to air defense?",
+ "answer": "125",
+ "difficulty": "Medium",
+ "category": "generic"
+}

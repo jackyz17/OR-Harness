@@ -1,0 +1,773 @@
+{
+ "result": {
+  "bank": "strategic",
+  "count": 7,
+  "entries": [
+   {
+    "entry_id": "se_d7b30fd6f261",
+    "strategy_id": "milp_labor_training",
+    "pattern": {
+     "predicates": {
+      "n_trainees_target": 50,
+      "n_weeks": 8,
+      "production_rates": {
+       "food_II_kg_per_h": 6,
+       "food_I_kg_per_h": 10
+      },
+      "schedule": {
+       "overtime_h": 60,
+       "standard_h": 40
+      },
+      "trainer_output_trainees_per_2wk": 3,
+      "trainer_production": "none",
+      "variable_types": "integer"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The milp_labor_training MILP for the 8-week labor training planning problem (50-trainee target, dedicated trainers producing 3 trainees per 2-week period, integer production/training variables) is FORMULATION-SENSITIVE: it succeeds (optimal status, all-integer, semantic probes passed) in ~20% of executions; the remaining ~80% fail with kFeasible AttributeError, non-integer domain violations, or illegal koptimal status — the same logical formulation can yield different solver outcomes depending on subtle implementation details. Success requires correct variable declaration structure across all weeks.",
+     "kind": "conditional_fact",
+     "subject": "milp_labor_training",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "n_trainees_target": 50,
+       "n_weeks": 8,
+       "production_rates": {
+        "food_II_kg_per_h": 6,
+        "food_I_kg_per_h": 10
+       },
+       "schedule": {
+        "overtime_h": 60,
+        "standard_h": 40
+       },
+       "trainer_output_trainees_per_2wk": 3,
+       "trainer_production": "none",
+       "variable_types": "integer"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_dfaccc25fac6",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_labor_training",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_648d7a8c1cc5",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "dropped",
+       "strategy_id": "milp_labor_training",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_8556ad49ec71",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "dropped",
+       "strategy_id": "milp_labor_training",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_78c80ca3fe88",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "dropped",
+       "strategy_id": "milp_labor_training",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_839f0a266ada",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "dropped",
+       "strategy_id": "milp_labor_training",
+       "task_id": "orarla_1"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_1"
+     ],
+     "strategy_ids": [
+      "milp_labor_training"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791084033.1216779
+   },
+   {
+    "entry_id": "se_3088f84ef612",
+    "strategy_id": "direct_calculation",
+    "pattern": {
+     "predicates": {
+      "description": "Simple linear arithmetic task: multiply given scalars, sum across periods, no optimization or search",
+      "task_type": "direct_arithmetic"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The direct_calculation arithmetic approach solves the orarla_2 task to optimal (objective=125.0, reference match) when executed without errors.",
+     "kind": "conditional_fact",
+     "subject": "direct_calculation",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "task_family": "orarla_2",
+       "task_type": "arithmetic_calculation"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_5927d2395b82",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "direct_calculation",
+       "task_id": "orarla_2"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_2"
+     ],
+     "strategy_ids": [
+      "direct_calculation"
+     ],
+     "family": "generic",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791084335.4433143
+   },
+   {
+    "entry_id": "se_72e9b7a98d44",
+    "strategy_id": "milp_aggregate_production_v2",
+    "pattern": {
+     "predicates": {
+      "description": "6-period aggregate production planning with hiring/firing/overtime, inventory/backlog balance, terminal constraints",
+      "task_family": "inventory_production_planning",
+      "variable_types": "integer_for_production_decisions"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The milp_aggregate_production_v2 cumulative supply/demand MILP formulation (integer produce/outsource/hire/fire/workforce/cum_supply/cum_demand, continuous inv/bo/regular_hours/overtime_hours, inv-bo balance constraint, terminal inv>=10000 and bo=0) achieves optimal on the 6-period aggregate production planning problem when it executes without model/API errors (exact objective match 10349920.0, all-integer declared variables, correct terminal conditions). Across 6 executions the strategy has an 83% failure rate due to AttributeError in model construction (changeObjectiveCoeff, mip_runtime, changeColIntegrality), so quality_hat should be updated from 0.00 to 0.17.",
+     "kind": "conditional_fact",
+     "subject": "milp_aggregate_production_v2",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "description": "6-period aggregate production planning with hiring/firing/overtime, inventory/backlog balance, terminal constraints",
+       "task_family": "inventory_production_planning",
+       "variable_types": "integer_for_production_decisions"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_05b67eee4dec",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      },
+      {
+       "execution_id": "ex_06681b9a7fe1",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      },
+      {
+       "execution_id": "ex_1f72b9a726e2",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      },
+      {
+       "execution_id": "ex_47985fd25173",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      },
+      {
+       "execution_id": "ex_6367943c0689",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      },
+      {
+       "execution_id": "ex_6782a168d556",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_aggregate_production_v2",
+       "task_id": "orarla_3"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_3"
+     ],
+     "strategy_ids": [
+      "milp_aggregate_production_v2"
+     ],
+     "family": "inventory",
+     "cell": "class=scheduling|rc[0.25,0.50]|tc[0.75,1.00]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791085880.5947256
+   },
+   {
+    "entry_id": "se_bd647a6c22ab",
+    "strategy_id": "milp_lot_sizing",
+    "pattern": {
+     "predicates": {
+      "description": "4-quarter 3-product lot-sizing with inventory/backlog, capacity constraints, and terminal conditions",
+      "task_family": "inventory_production_planning",
+      "variable_types": "integer_for_production_and_inventory"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The milp_lot_sizing multi-product lot-sizing formulation (integer production lots, inventory, backlog per product per quarter; flow-balance constraints; final-stock=150/backlog=0 terminal constraints; capacity 15000 h/qtr) achieves optimal on the 4-quarter 3-product inventory production planning problem when it executes without model or API errors, verified by exact reference objective match (10755.0) and all-integer declared variables.",
+     "kind": "conditional_fact",
+     "subject": "milp_lot_sizing",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "description": "4-quarter 3-product lot-sizing with inventory/backlog, capacity constraints, and terminal conditions",
+       "task_family": "inventory_production_planning",
+       "variable_types": "integer_for_production_and_inventory"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_6a24e63222cc",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "milp_lot_sizing",
+       "task_id": "orarla_6"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_6"
+     ],
+     "strategy_ids": [
+      "milp_lot_sizing"
+     ],
+     "family": "inventory",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791088024.7277942
+   },
+   {
+    "entry_id": "se_16ae57b92d61",
+    "strategy_id": "network_flow_transport",
+    "pattern": {
+     "predicates": {
+      "solver": "COPT",
+      "structure": "multi-warehouse multi-port supply-demand with distance-based arc costs",
+      "task_family": "transportation_transshipment",
+      "variable_type": "integer_flows"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The network_flow_transport min-cost transshipment formulation (source->warehouse->port->sink arcs, integer flow variables, arc cost = 30 * distance[w][p], capacity constraints at warehouses, demand satisfaction at ports) achieves optimal on warehouse-to-port transshipment problems when it executes without model or API errors, as verified by reference_status=optimal and exact reference_objective=904590.0 match.",
+     "kind": "conditional_fact",
+     "subject": "network_flow_transport",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "solver": "COPT",
+       "structure": "multi-warehouse multi-port supply-demand with distance-based arc costs",
+       "task_family": "transportation_transshipment",
+       "variable_type": "integer_flows"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_be0de80e7bc8",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "network_flow_transport",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_7"
+     ],
+     "strategy_ids": [
+      "network_flow_transport"
+     ],
+     "family": "inventory",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791088457.033291
+   },
+   {
+    "entry_id": "se_621929fbd0ea",
+    "strategy_id": "enumerate_assignment",
+    "pattern": {
+     "predicates": {
+      "task_family": "orarla_8",
+      "task_type": "combinatorial_assignment"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The enumerate_assignment strategy (enumerate all feasible assignments, evaluate objective for each, select best) solves the orarla_8 task to optimal (objective=14.0, reference match) when executed without errors.",
+     "kind": "conditional_fact",
+     "subject": "enumerate_assignment",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "task_family": "orarla_8",
+       "task_type": "combinatorial_assignment"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_da42d0c72e39",
+       "family": "scheduling",
+       "measurement_scope": "attempt",
+       "role": "strategy_a",
+       "strategy_id": "enumerate_assignment",
+       "task_id": "orarla_8"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_8"
+     ],
+     "strategy_ids": [
+      "enumerate_assignment"
+     ],
+     "family": "scheduling",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791089073.5359566
+   },
+   {
+    "entry_id": "se_161bf535d0fa",
+    "strategy_id": "network_flow_transport on orarla_7",
+    "pattern": {
+     "predicates": {
+      "domain": "integer flows required",
+      "solver": "copt",
+      "structure": "supply warehouses, demand ports, single commodity",
+      "task_type": "transportation / transshipment"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "unverified",
+     "purpose": null,
+     "claim": null,
+     "checks": [],
+     "assertions": [],
+     "evidence": [],
+     "conclusion": null,
+     "scope": {
+      "distinct_tasks": 1
+     },
+     "checked": null,
+     "not_covered": null,
+     "verified_at": null,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "When a transportation problem with supply-constrained warehouses and demand ports is formulated as a min-cost transshipment network (source->warehouse->port->sink) and solved with COPT (integer flows), the solver returns optimal status and matches the reference objective (904590)",
+     "kind": "conditional_fact",
+     "subject": "network_flow_transport on orarla_7",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "domain": "integer flows required",
+       "solver": "copt",
+       "structure": "supply warehouses, demand ports, single commodity",
+       "task_type": "transportation / transshipment"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_be0de80e7bc8",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "method_a",
+       "strategy_id": "network_flow_transport",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_7"
+     ],
+     "strategy_ids": [
+      "network_flow_transport"
+     ],
+     "family": "inventory",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791090748.9718468
+   }
+  ]
+ },
+ "summary": "7 entries in strategic bank. Entry track records show n_predictions, hit_rate, calibration_error, and consecutive_misses. Suspect / dormant statuses are the retirement CANDIDATES (`--status suspect|dormant`); retiring them is explicit (`orx retire`)."
+}

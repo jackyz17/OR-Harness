@@ -1,0 +1,220 @@
+{
+ "result": {
+  "applicability": "global_diagnostic",
+  "applicability_note": "these statistics carry NO strategy or problem-condition breakdown: they are a global diagnostic of the model's past error on this protocol, NOT a claim about the conditional bias of the candidate currently under consideration",
+  "calibration_version": "wm-calib/2",
+  "event_vocabulary_version": "wm-events/2",
+  "exclusions": {},
+  "groups": {
+   "strategy_outcome|Qwen3.8-27B|normalized_objective_gap|1-gap|attempt": {
+    "basis": "partially_measured",
+    "benefit_evidence": {
+     "evidence": "measured",
+     "min_distinct_episodes": 5,
+     "n_distinct_episodes": 8
+    },
+    "brier_evidence_by_event": {
+     "environment_failure": {
+      "evidence": "insufficient_evidence",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 4,
+      "reason": "4 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+     },
+     "implementation_failure": {
+      "evidence": "measured",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 8
+     },
+     "solver_reported_infeasible": {
+      "evidence": "insufficient_evidence",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 1,
+      "reason": "1 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+     },
+     "task_check_failed": {
+      "evidence": "insufficient_evidence",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 1,
+      "reason": "1 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+     },
+     "timeout": {
+      "evidence": "insufficient_evidence",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 1,
+      "reason": "1 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+     }
+    },
+    "correlated_predictions": 15,
+    "cost_evidence": {
+     "latency_s": {
+      "evidence": "measured",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 9
+     },
+     "llm_tokens": {
+      "evidence": "measured",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 9
+     },
+     "solver_runtime_s": {
+      "evidence": "measured",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 9
+     },
+     "tool_calls": {
+      "evidence": "measured",
+      "min_distinct_episodes": 5,
+      "n_distinct_episodes": 9
+     }
+    },
+    "interval_coverage": 0.384615,
+    "interval_evidence": {
+     "evidence": "measured",
+     "min_distinct_episodes": 5,
+     "n_distinct_episodes": 8
+    },
+    "mean_benefit_abs_error": 0.596154,
+    "mean_benefit_signed_error": 0.45,
+    "mean_brier_by_event": {
+     "environment_failure": 0.026729,
+     "implementation_failure": 0.246974,
+     "solver_reported_infeasible": 0.01,
+     "task_check_failed": 0.64,
+     "timeout": 0.0025
+    },
+    "mean_cost_log_error": {
+     "latency_s": 2.448038,
+     "llm_tokens": 3.221043,
+     "solver_runtime_s": 1.2992,
+     "tool_calls": 2.009265
+    },
+    "mean_cost_log_ratio": {
+     "latency_s": -2.310419,
+     "llm_tokens": 3.221043,
+     "solver_runtime_s": -1.168078,
+     "tool_calls": 2.009265
+    },
+    "mean_interval_width": 0.088462,
+    "mean_predicted_probability": {
+     "environment_failure": 0.141429,
+     "implementation_failure": 0.186842,
+     "solver_reported_infeasible": 0.1,
+     "task_check_failed": 0.2,
+     "timeout": 0.05
+    },
+    "n_brier_samples_by_event": {
+     "environment_failure": 7,
+     "implementation_failure": 19,
+     "solver_reported_infeasible": 1,
+     "task_check_failed": 1,
+     "timeout": 3
+    },
+    "n_distinct_episodes": 9,
+    "n_interval_samples": 13,
+    "n_samples": 24,
+    "note": "measured error/coverage statistics of past closed-episode evaluations; a record of what happened, never a promise that future predictions improve; some statistics rest on fewer distinct episodes than the threshold — see `*_evidence` and `under_sampled_statistics`: brier.environment_failure, brier.solver_reported_infeasible, brier.task_check_failed, brier.timeout",
+    "reliability": "measured_experience",
+    "scored_occurrence_rate": {
+     "environment_failure": 0.0,
+     "implementation_failure": 0.315789,
+     "solver_reported_infeasible": 0.0,
+     "task_check_failed": 1.0,
+     "timeout": 0.0
+    },
+    "under_sampled_statistics": [
+     "brier.environment_failure",
+     "brier.solver_reported_infeasible",
+     "brier.task_check_failed",
+     "brier.timeout"
+    ]
+   }
+  },
+  "min_samples": 5,
+  "min_samples_basis": "distinct (task_id, episode_id) pairs, applied PER STATISTIC (benefit, each cost dimension, interval, each risk event)",
+  "n_evaluated": 24,
+  "n_evaluations_total": 24,
+  "n_window_episodes": 10,
+  "note": "experience calibration of the strategy-outcome prediction service, from CLOSED episodes IN THE WINDOW only; grouped by model identity/metric/unit/scope, risk events scored per event name, and the sample threshold counts DISTINCT EPISODES — kept separate from the legacy knowledge-prediction reliability (a knowledge hit rate never proves OR prediction accuracy), and never a model weight or a fitted calibrator. `groups` counts prediction-observation PAIRS; `occurrence` counts real OBSERVATION UNITS. A sample whose answer was LATER confirmed not to satisfy the task is counted under exclusions.validity_corrected and leaves the means — the stored evaluation itself is never rewritten",
+  "occurrence": {
+   "budget_exhausted": {
+    "n_labelled_units": 0,
+    "n_not_occurred": 0,
+    "n_observation_units": 10,
+    "n_occurred": 0,
+    "n_unknown": 10,
+    "observation_unit": "episode",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": null
+   },
+   "environment_failure": {
+    "n_labelled_units": 25,
+    "n_not_occurred": 22,
+    "n_observation_units": 30,
+    "n_occurred": 3,
+    "n_unknown": 5,
+    "observation_unit": "execution",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": 0.12
+   },
+   "implementation_failure": {
+    "n_labelled_units": 25,
+    "n_not_occurred": 16,
+    "n_observation_units": 30,
+    "n_occurred": 9,
+    "n_unknown": 5,
+    "observation_unit": "execution",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": 0.36
+   },
+   "solver_reported_infeasible": {
+    "n_labelled_units": 30,
+    "n_not_occurred": 30,
+    "n_observation_units": 30,
+    "n_occurred": 0,
+    "n_unknown": 0,
+    "observation_unit": "execution",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": 0.0
+   },
+   "task_check_failed": {
+    "n_labelled_units": 10,
+    "n_not_occurred": 9,
+    "n_observation_units": 30,
+    "n_occurred": 1,
+    "n_unknown": 20,
+    "observation_unit": "execution",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": 0.1
+   },
+   "timeout": {
+    "n_labelled_units": 30,
+    "n_not_occurred": 30,
+    "n_observation_units": 30,
+    "n_occurred": 0,
+    "n_unknown": 0,
+    "observation_unit": "execution",
+    "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+    "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+    "unit_occurrence_rate": 0.0
+   }
+  },
+  "protocol": "wm-so/1",
+  "published_at": 1791090565.3959074,
+  "validity_corrections": [],
+  "window": {
+   "archive_max_file_bytes": 67108864,
+   "archive_max_total_bytes": 1073741824,
+   "archive_retention_days": 365.0,
+   "auto_archive_threshold": 200,
+   "late_check_grace_days": 30.0,
+   "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk",
+   "window": 50
+  }
+ },
+ "summary": "Strategy-outcome experience calibration: strategy_outcome|Qwen3.8-27B|normalized_objective_gap|1-gap|attempt: n=24 (9 episode(s)), benefit MAE=0.596154, signed=0.45, interval coverage=0.384615. A measured record of past closed episodes — not a promise that future predictions improve."
+}

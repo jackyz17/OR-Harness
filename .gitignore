@@ -52,5 +52,4 @@ OR_Agent_Cross_Memory_Induction_本轮讨论总结.md
 or_harness_home/
 .tmptest/
 
-# ── Local review benchmark data (not for the repo) ──
-harness_review_bench/
+# ── Local review benchmark data (now tracked: the orarla 10-task archive) ──

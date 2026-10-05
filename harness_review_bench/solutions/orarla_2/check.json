@@ -1,0 +1,30 @@
+{
+  "bases": [
+    {
+      "id": "b1",
+      "description": "total_pilots = pilots_year1 + pilots_year2",
+      "check": "variables.total_pilots == variables.pilots_year1 + variables.pilots_year2"
+    },
+    {
+      "id": "b2",
+      "description": "pilots_year1 = a1 × rate = 10 × 5 = 50",
+      "check": "variables.pilots_year1 == 50"
+    },
+    {
+      "id": "b3",
+      "description": "pilots_year2 = a2 × rate = 15 × 5 = 75",
+      "check": "variables.pilots_year2 == 75"
+    },
+    {
+      "id": "b4",
+      "description": "total = 50 + 75 = 125",
+      "check": "variables.total_pilots == 125"
+    },
+    {
+      "id": "b5",
+      "description": "objective_value matches total_pilots",
+      "check": "objective_value == 125"
+    }
+  ],
+  "reference_objective": 125
+}

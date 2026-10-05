@@ -1,0 +1,35 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_animal_farm",
+    "steps": [
+      "Decision variables: x_cow, x_sheep, x_chicken (integer, non-negative).",
+      "Profit per unit: cow=400, sheep=120, chicken=3.",
+      "Constraints: (1) Manure: 10*x_cow + 5*x_sheep + 3*x_chicken <= 800. (2) Total animals: x_cow + x_sheep + x_chicken <= 100. (3) Max chickens: x_chicken <= 50. (4) Min cows: x_cow >= 10. (5) Min sheep: x_sheep >= 20. (6) Non-negativity + integer.",
+      "Objective: maximize 400*x_cow + 120*x_sheep + 3*x_chicken.",
+      "Use HiGHS with integer variables."
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_animal_farm_lazy_bounds",
+    "steps": [
+      "Same variables and objective as milp_animal_farm.",
+      "Variables: x_cow (lb=10), x_sheep (lb=20), x_chicken (lb=0, ub=50).",
+      "Integer constraints via HighsVarType.kInteger.",
+      "Objective: maximize 400*x_cow + 120*x_sheep + 3*x_chicken.",
+      "Use HiGHS高层API: addVariable(lb, ub, obj, type, name) + addConstr."
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_animal_farm_lp_relax_round",
+    "steps": [
+      "First solve LP relaxation (continuous variables).",
+      "Then round each variable to nearest integer respecting bounds.",
+      "Check feasibility of rounded solution; if infeasible, adjust.",
+      "Profit coefficients: cow=400, sheep=120, chicken=3.",
+      "Objective: maximize profit."
+    ]
+  }
+]

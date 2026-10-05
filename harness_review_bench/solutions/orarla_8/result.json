@@ -1,0 +1,15 @@
+{
+  "status": "optimal",
+  "objective_value": 14,
+  "objective_bound": 14,
+  "runtime_seconds": 0.0,
+  "variables": {
+    "best_assignment": {
+      "II": "A",
+      "III": "B",
+      "IV": "C",
+      "V": "D"
+    },
+    "excluded_worker": "I"
+  }
+}

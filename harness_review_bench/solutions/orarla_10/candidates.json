@@ -1,0 +1,14 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_set_cover",
+    "solver": "pulp",
+    "params": {},
+    "steps": [
+      "Define binary variable x_i for each area i in {A,...,L}: x_i=1 if we open a store at area i",
+      "For each area j, add constraint: sum_{i in cover_set[j]} x_i >= 1 (each area must be covered)",
+      "Objective: minimize sum_i x_i (minimize number of stores)",
+      "Solve with MILP solver (PuLP with CBC backend, integer variables)"
+    ]
+  }
+]

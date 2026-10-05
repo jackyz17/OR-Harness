@@ -1,0 +1,31 @@
+{
+  "reference_objective": 10349920.0,
+  "tolerance": 1.0,
+  "reference_status": "optimal",
+  "integer": {
+    "variables": ["produce_1","produce_2","produce_3","produce_4","produce_5","produce_6","outsource_1","outsource_2","outsource_3","outsource_4","outsource_5","outsource_6","hire_1","hire_2","hire_3","hire_4","hire_5","hire_6","fire_1","fire_2","fire_3","fire_4","fire_5","fire_6","workforce_1","workforce_2","workforce_3","workforce_4","workforce_5","workforce_6","cum_supply_1","cum_supply_2","cum_supply_3","cum_supply_4","cum_supply_5","cum_supply_6","cum_demand_1","cum_demand_2","cum_demand_3","cum_demand_4","cum_demand_5","cum_demand_6"],
+    "tolerance": 1e-6
+  },
+  "recompute_objective": {
+    "coefficients": {
+      "produce_1": -90, "produce_2": -90, "produce_3": -90, "produce_4": -90, "produce_5": -90, "produce_6": -90,
+      "outsource_1": -200, "outsource_2": -200, "outsource_3": -200, "outsource_4": -200, "outsource_5": -200, "outsource_6": -200,
+      "hire_1": -5000, "hire_2": -5000, "hire_3": -5000, "hire_4": -5000, "hire_5": -5000, "hire_6": -5000,
+      "fire_1": -8000, "fire_2": -8000, "fire_3": -8000, "fire_4": -8000, "fire_5": -8000, "fire_6": -8000,
+      "rh_1": -30, "rh_2": -30, "rh_3": -30, "rh_4": -30, "rh_5": -30, "rh_6": -30,
+      "ot_1": -40, "ot_2": -40, "ot_3": -40, "ot_4": -40, "ot_5": -40, "ot_6": -40,
+      "inv_1": -15, "inv_2": -15, "inv_3": -15, "inv_4": -15, "inv_5": -15, "inv_6": -15,
+      "bo_1": -335, "bo_2": -335, "bo_3": -335, "bo_4": -335, "bo_5": -335, "bo_6": -335
+    },
+    "constant": 52350000,
+    "tolerance": 1.0
+  },
+  "semantic_probe": [
+    {"path": "execution_features.solution_variables.inv_6", "min": 10000},
+    {"path": "execution_features.solution_variables.bo_6", "equals": 0},
+    {"path": "execution_features.solution_variables.workforce_1", "min": 0},
+    {"path": "execution_features.solution_variables.produce_1", "min": 0},
+    {"path": "execution_features.solution_variables.ot_1", "min": 0},
+    {"path": "execution_features.solution_variables.ot_1", "max": 3120}
+  ]
+}

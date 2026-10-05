@@ -1,0 +1,62 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_8",
+    "episode_id": "ep1",
+    "strategy_id": "milp_assignment_selection",
+    "solver": "highs",
+    "method": {
+      "name": "milp_assignment_selection",
+      "steps": [
+        "Define workers W = {I, II, III, IV, V} and tasks T = {A, B, C, D}",
+        "Binary variable x[w,t] = 1 if worker w is assigned to task t, else 0",
+        "Binary variable y[w] = 1 if worker w is selected (used in any task), else 0",
+        "Objective: minimize sum(w in W, t in T) time[w,t] * x[w,t]",
+        "Each task assigned to exactly one worker: for all t in T, sum(w in W) x[w,t] = 1",
+        "Each worker does at most one task: for all w in W, sum(t in T) x[w,t] <= 1",
+        "Link selection and assignment: x[w,t] <= y[w] for all w,t",
+        "Exactly 4 workers selected: sum(w in W) y[w] = 4",
+        "All x binary, y binary; solve with MILP solver"
+      ]
+    },
+    "config": {"time_limit": 60}
+  },
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_8",
+    "episode_id": "ep1",
+    "strategy_id": "enumerate_assignment",
+    "solver": "highs",
+    "method": {
+      "name": "enumerate_assignment",
+      "steps": [
+        "Identify all C(5,4) = 5 ways to choose 4 workers out of 5",
+        "For each selection of 4 workers, solve the resulting 4x4 assignment problem",
+        "For each worker subset, enumerate all 4! = 24 permutations of task assignments; compute total hours",
+        "Select the worker subset and permutation with minimum total hours",
+        "Return the global minimum across all 5 worker subsets"
+      ]
+    },
+    "config": {"time_limit": 60}
+  },
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_8",
+    "episode_id": "ep1",
+    "strategy_id": "milp_assignment",
+    "solver": "highs",
+    "method": {
+      "name": "milp_assignment",
+      "steps": [
+        "Define workers W = {I, II, III, IV, V} and tasks T = {A, B, C, D}",
+        "Binary variable x[w,t] = 1 if worker w is assigned to task t, else 0",
+        "Objective: minimize sum(w in W, t in T) time[w,t] * x[w,t]",
+        "Each task assigned to exactly one worker: for all t in T, sum(w in W) x[w,t] = 1",
+        "Each worker assigned to at most one task: for all w in W, sum(t in T) x[w,t] <= 1",
+        "Exactly 4 assignments: sum(w in W, t in T) x[w,t] = 4",
+        "All x binary; solve with MILP solver"
+      ]
+    },
+    "config": {"time_limit": 60}
+  }
+]

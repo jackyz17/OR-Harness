@@ -1,0 +1,55 @@
+{
+  "task_id": "orarla_3",
+  "family": "inventory",
+  "difficulty": "Hard",
+  "text": "A company specializing in foldable tables needs to create an optimal production and human resources plan for a six-month period (January to June) to maximize its total net profit. The plan must detail monthly in-house production levels, outsourcing quantities, and workforce management (hiring/firing).\n\nInitial Conditions (at the start of January):\n- Initial Workforce: 1,000 employees\n- Initial Inventory: 15,000 units\n\nRevenue and Cost Structure:\n- Sales Price: 300 Yuan per unit sold.\n- Raw Material Cost: 90 Yuan per unit, applicable only to units produced in-house.\n- Outsourcing Cost: 200 Yuan per unit for finished tables acquired from a third-party supplier. This is an all-inclusive cost.\n- Inventory Holding Cost: 15 Yuan per unit for any inventory held at the end of a month.\n- Backorder Cost: 35 Yuan per unit for any unfulfilled demand (stockout) carried over to the next month.\n\nLabor and Production Parameters:\n- Labor Requirement: Each in-house unit requires 5 labor hours to produce.\n- Regular Labor: Each worker provides 160 regular working hours per month (8 hours/day * 20 days/month). The company pays a regular wage of 30 Yuan/hour for these 160 hours, regardless of full utilization.\n- Overtime Labor: Workers can perform overtime. Total overtime hours per month for the entire workforce cannot exceed 20 hours per worker. The overtime wage is 40 Yuan/hour.\n- Workforce Management: The company can hire or fire workers each month. The cost to hire a new worker is 5,000 Yuan, and the cost to fire a worker is 8,000 Yuan.\n\nDemand and Fulfillment Logic:\n- Unfulfilled demand from one month is back-ordered and must be met in subsequent months.\n- The company fulfills orders (both current demand and backorders) using available inventory from the previous month, current in-house production, and outsourced units.\n\nTerminal Condition (at the end of June):\n- The ending inventory must be at least 10,000 units.\n- All backorders must be cleared (i.e., ending backorders must be zero).\n\nForecasted Demand:\n| Month | January | February | March | April | May | June |\n|:---:|:---:|:---:|:---:|:---:|:---:|:---:|\n| Demand Forecast | 20,000 | 40,000 | 42,000 | 35,000 | 19,000 | 18,500 |\n\nBased on this information, formulate the optimal six-month operational plan.",
+  "coupling": {
+    "entities": [
+      {"name": "table", "kind": "product", "attrs": {"single_product": true}},
+      {"name": "month", "kind": "period", "attrs": {"months": ["jan","feb","mar","apr","may","jun"], "horizon": 6}},
+      {"name": "workforce", "kind": "resource", "attrs": {"unit": "workers"}},
+      {"name": "regular_labor", "kind": "resource", "attrs": {"unit": "hours"}},
+      {"name": "overtime_labor", "kind": "resource", "attrs": {"unit": "hours"}}
+    ],
+    "decisions": [
+      {"name": "produce", "kind": "production", "indexes": ["month"], "attrs": {"variable": "units produced in-house per month"}},
+      {"name": "outsource", "kind": "outsourcing", "indexes": ["month"], "attrs": {"variable": "units outsourced per month"}},
+      {"name": "hire", "kind": "hiring", "indexes": ["month"], "attrs": {"variable": "workers hired per month"}},
+      {"name": "fire", "kind": "firing", "indexes": ["month"], "attrs": {"variable": "workers fired per month"}},
+      {"name": "workforce", "kind": "workforce_level", "indexes": ["month"], "attrs": {"variable": "number of workers at start of month"}},
+      {"name": "inventory", "kind": "inventory", "indexes": ["month"], "attrs": {"variable": "ending inventory per month"}},
+      {"name": "backorder", "kind": "backorder", "indexes": ["month"], "attrs": {"variable": "ending backorder per month"}},
+      {"name": "regular_hours", "kind": "labor", "indexes": ["month"], "attrs": {"variable": "total regular labor hours per month"}},
+      {"name": "overtime_hours", "kind": "labor", "indexes": ["month"], "attrs": {"variable": "total overtime hours per month"}}
+    ],
+    "constraints": [
+      {"id": "C1", "kind": "workforce_balance", "expr": "workforce[month] = workforce[month-1] + hire[month] - fire[month]"},
+      {"id": "C2", "kind": "labor_capacity", "expr": "regular_hours[month] = 160 * workforce[month]"},
+      {"id": "C3", "kind": "overtime_capacity", "expr": "overtime_hours[month] <= 20 * workforce[month]"},
+      {"id": "C4", "kind": "production_labor", "expr": "5 * produce[month] <= regular_hours[month] + overtime_hours[month]"},
+      {"id": "C5", "kind": "inventory_balance", "expr": "inventory[month] = inventory[month-1] + produce[month] + outsource[month] - demand[month] - backorder[month]"},
+      {"id": "C6", "kind": "backorder_balance", "expr": "backorder[month] = backorder[month-1] + demand[month] - produce[month] - outsource[month] + inventory[month-1]"},
+      {"id": "C7", "kind": "terminal_inventory", "expr": "inventory[jun] >= 10000"},
+      {"id": "C8", "kind": "terminal_backorder", "expr": "backorder[jun] = 0"},
+      {"id": "C9", "kind": "non_negativity", "expr": "produce[month] >= 0, outsource[month] >= 0, hire[month] >= 0, fire[month] >= 0, inventory[month] >= 0, backorder[month] >= 0"},
+      {"id": "C10", "kind": "overtime_max", "expr": "overtime_hours[month] <= 20 * workforce[month]"}
+    ],
+    "relations": [
+      {"source": "produce", "target": "workforce", "type": "uses_resource", "evidence": "semantic", "detail": "production requires labor hours"},
+      {"source": "produce", "target": "regular_labor", "type": "uses_resource", "evidence": "semantic", "detail": "regular hours used for production"},
+      {"source": "produce", "target": "overtime_labor", "type": "uses_resource", "evidence": "semantic", "detail": "overtime hours used when regular insufficient"},
+      {"source": "hire", "target": "workforce", "type": "shares_resource", "evidence": "semantic", "detail": "hiring changes workforce level"},
+      {"source": "fire", "target": "workforce", "type": "shares_resource", "evidence": "semantic", "detail": "firing changes workforce level"},
+      {"source": "inventory", "target": "produce", "type": "precedes", "evidence": "structural", "detail": "inventory at end of month depends on production"},
+      {"source": "inventory", "target": "outsource", "type": "precedes", "evidence": "structural", "detail": "inventory at end of month depends on outsourcing"},
+      {"source": "backorder", "target": "produce", "type": "depends_on", "evidence": "structural", "detail": "backorder depends on unmet demand after production"},
+      {"source": "workforce", "target": "hire", "type": "flows_to", "evidence": "structural", "detail": "workforce increases with hiring"},
+      {"source": "workforce", "target": "fire", "type": "flows_to", "evidence": "structural", "detail": "workforce decreases with firing"}
+    ],
+    "coupling_groups": [
+      {"type": "temporal_propagation_chain", "members": ["inventory", "backorder", "workforce"], "resource": "month", "implication": "inventory and backorder levels propagate across months, coupled with workforce dynamics"},
+      {"type": "shared_bottleneck", "members": ["produce", "regular_hours", "overtime_hours"], "resource": "labor_hours", "implication": "production competes for limited regular and overtime labor hours"}
+    ]
+  },
+  "model": "SETS:\n i in Months = {1, 2, 3, 4, 5, 6}\nPARAMETERS:\n demand[1]=20000, demand[2]=40000, demand[3]=42000, demand[4]=35000, demand[5]=19000, demand[6]=18500\n W0=1000, I0=15000, B0=0\nVARIABLES:\n produce[i] continuous >= 0\n outsource[i] continuous >= 0\n hire[i] continuous >= 0\n fire[i] continuous >= 0\n workforce[i] continuous >= 0\n inventory[i] continuous >= 0\n backorder[i] continuous >= 0\n regular_hours[i] continuous >= 0\n overtime_hours[i] continuous >= 0\nOBJECTIVE:\n maximize sum(i, 300*(produce[i]+outsource[i]-inventory[i]+inventory[i-1]+backorder[i-1]-backorder[i]-demand[i]) - 90*produce[i] - 200*outsource[i] - 15*inventory[i] - 35*backorder[i] - 5000*hire[i] - 8000*fire[i] - 30*regular_hours[i] - 40*overtime_hours[i])\nCONSTRAINTS:\n C1: workforce[i] = workforce[i-1] + hire[i] - fire[i]  (workforce[0]=1000)\n C2: regular_hours[i] = 160 * workforce[i]\n C3: overtime_hours[i] <= 20 * workforce[i]\n C4: 5 * produce[i] <= regular_hours[i] + overtime_hours[i]\n C5: inventory[i] = inventory[i-1] + produce[i] + outsource[i] - demand[i] - backorder[i]  (inventory[0]=15000)\n C6: backorder[i] = backorder[i-1] + demand[i] - produce[i] - outsource[i] + inventory[i-1]  (backorder[0]=0)\n C7: inventory[6] >= 10000\n C8: backorder[6] = 0\n C9: produce[i] >= 0, outsource[i] >= 0, hire[i] >= 0, fire[i] >= 0, inventory[i] >= 0, backorder[i] >= 0, regular_hours[i] >= 0, overtime_hours[i] >= 0"
+}

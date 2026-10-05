@@ -1,0 +1,18 @@
+{
+  "status": "optimal",
+  "objective_value": 904590.0,
+  "objective_bound": 904590.0,
+  "runtime_seconds": 0.01592421531677246,
+  "solution": {
+    "x_Verona_Venice": 10.0,
+    "x_Perugia_Genoa": 7.0,
+    "x_Perugia_Venice": 5.0,
+    "x_Rome_Genoa": 13.0,
+    "x_Rome_Ancona": 1.0,
+    "x_Rome_Naples": 6.0,
+    "x_Pescara_Ancona": 24.0,
+    "x_Taranto_Bari": 18.0,
+    "x_Lamezia_Naples": 27.0,
+    "x_Lamezia_Bari": 3.0
+  }
+}

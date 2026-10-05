@@ -1,0 +1,7 @@
+{
+ "id": 8,
+ "question": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
+ "answer": "14",
+ "difficulty": "Medium",
+ "category": "scheduling"
+}

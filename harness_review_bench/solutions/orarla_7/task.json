@@ -1,0 +1,29 @@
+{
+  "task_id": "orarla_7",
+  "family": "inventory",
+  "text": "An Italian transportation company needs to move some empty containers from its 6 warehouses (located in Verona, Perugia, Rome, Pescara, Taranto, and Lamezia) to major national ports (Genoa, Venice, Ancona, Naples, Bari). The container inventory at the warehouses is as follows:\n\n|  | Empty Containers |\n|:---:|:---:|\n| Verona | 10 |\n| Perugia | 12 |\n| Rome | 20 |\n| Pescara | 24 |\n| Taranto | 18 |\n| Lamezia | 40 |\n\nThe demand at the ports is as follows:\n\n|  | Container Demand |\n|:---:|:---:|\n| Genoa | 20 |\n| Venice | 15 |\n| Ancona | 25 |\n| Naples | 33 |\n| Bari | 21 |\n\nThe transport is carried out by a fleet of trucks. The cost to transport each container is proportional to the distance traveled by the trucks, with a rate of 30 euros per kilometer. Each truck can carry up to 2 containers. The distances are as follows:\n\n|  | Genoa | Venice | Ancona | Naples | Bari |\n|:---:|:---:|:---:|:---:|:---:|:---:|\n| Verona | 290 km | 115 km | 355 km | 715 km | 810 km |\n| Perugia | 380 km | 340 km | 165 km | 380 km | 610 km |\n| Rome | 505 km | 530 km | 285 km | 220 km | 450 km |\n| Pescara | 655 km | 450 km | 155 km | 240 km | 315 km |\n| Taranto | 1010 km | 840 km | 550 km | 305 km | 95 km |\n| Lamezia | 1072 km | 1097 km | 747 km | 372 km | 333 km |\n\nWrite a mathematical program to find the minimum cost transportation policy and solve it using COPTPY.",
+  "model": "network_flow_transport",
+  "coupling": {
+    "entities": [
+      {"name": "Verona", "kind": "warehouse", "supply": 10},
+      {"name": "Perugia", "kind": "warehouse", "supply": 12},
+      {"name": "Rome", "kind": "warehouse", "supply": 20},
+      {"name": "Pescara", "kind": "warehouse", "supply": 24},
+      {"name": "Taranto", "kind": "warehouse", "supply": 18},
+      {"name": "Lamezia", "kind": "warehouse", "supply": 40},
+      {"name": "Genoa", "kind": "port", "demand": 20},
+      {"name": "Venice", "kind": "port", "demand": 15},
+      {"name": "Ancona", "kind": "port", "demand": 25},
+      {"name": "Naples", "kind": "port", "demand": 33},
+      {"name": "Bari", "kind": "port", "demand": 21}
+    ],
+    "decisions": [
+      {"name": "container flow x[w][p]", "kind": "flow", "indexes": ["warehouse", "port"], "attrs": {"domain": "nonnegative integer", "desc": "number of containers shipped from warehouse w to port p"}}
+    ],
+    "constraints": [
+      {"id": "supply limit at each warehouse", "kind": "supply", "expr": "sum_p x[w][p] <= supply[w] forall w", "attrs": {}},
+      {"id": "demand satisfaction at each port", "kind": "demand", "expr": "sum_w x[w][p] = demand[p] forall p", "attrs": {}}
+    ],
+    "relations": []
+  }
+}

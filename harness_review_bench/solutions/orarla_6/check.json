@@ -1,0 +1,8 @@
+{
+  "reference_objective": 10755,
+  "integer": {
+    "variables": ["x_I_1", "x_I_2", "x_I_3", "x_I_4", "x_II_1", "x_II_2", "x_II_3", "x_II_4", "x_III_1", "x_III_2", "x_III_3", "x_III_4"],
+    "tolerance": 0
+  },
+  "intent": "intermediate"
+}

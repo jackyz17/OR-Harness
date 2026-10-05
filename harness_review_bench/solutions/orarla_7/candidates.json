@@ -1,0 +1,58 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_7",
+    "episode_id": "ep1",
+    "strategy_id": "milp_transportation",
+    "solver": "copt",
+    "params": {},
+    "method": {
+      "name": "milp_transportation",
+      "steps": [
+        "Sets: warehouses W={Verona,Perugia,Rome,Pescara,Taranto,Lamezia}, ports P={Genoa,Venice,Ancona,Naples,Bari}",
+        "Parameters: supply[w]={10,12,20,24,18,40}, demand[p]={20,15,25,33,21}, cost_per_container[w][p]=30*distance[w][p] euros",
+        "Decision variables: x[w][p] = number of containers shipped from warehouse w to port p (integer, >=0)",
+        "Constraints: (1) Supply limit: sum_p x[w][p] <= supply[w] for all w; (2) Demand satisfaction: sum_w x[w][p] = demand[p] for all p",
+        "Objective: Minimize sum_{w,p} x[w][p] * cost_per_container[w][p]",
+        "Solve with COPTPY"
+      ]
+    }
+  },
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_7",
+    "episode_id": "ep1",
+    "strategy_id": "network_flow_transport",
+    "solver": "copt",
+    "params": {},
+    "method": {
+      "name": "network_flow_transport",
+      "steps": [
+        "Model as min-cost transshipment network: source -> warehouse nodes (capacity=supply) -> port nodes (demand) -> sink",
+        "Arc costs: 30 * distance[w][p] per container; arc capacities: unlimited",
+        "Single commodity flow: send exactly demand[p] units to each port p; don't exceed supply at any warehouse",
+        "Integer flows to respect container discreteness; objective = total transport cost",
+        "Solve with COPTPY"
+      ]
+    }
+  },
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_7",
+    "episode_id": "ep1",
+    "strategy_id": "milp_balanced_transport",
+    "solver": "copt",
+    "params": {},
+    "method": {
+      "name": "milp_balanced_transport",
+      "steps": [
+        "Introduce dummy port to absorb excess supply (total supply 124 > total demand 114, excess=10)",
+        "Full square matrix: 6 warehouses x 6 destinations (5 real ports + 1 dummy); dummy demand = 10",
+        "Cost to dummy port = 0 (unused containers stay put)",
+        "Decision: x[w][p] integer >=0; supply constraints sum_p x[w][p]=supply[w]; demand constraints sum_w x[w][p]=demand[p]",
+        "Objective: minimize sum_{w,p_real} x[w][p] * 30 * distance[w][p]",
+        "Solve with COPTPY"
+      ]
+    }
+  }
+]
