@@ -69,7 +69,6 @@ from or_harness.core.schema import is_finite_number as _finite
 from or_harness.core.schema import (
     task_check_block,
     task_check_state,
-    task_effective_quality,
 )
 from or_harness.world_model.attribution import (
     EVALUATION_DIMENSIONS,
@@ -102,6 +101,16 @@ CALIBRATION_SUMMARY_VERSION = "wm-calib/2"
 #: to mean "the solver reported an error", which is not a modelling
 #: verdict and was retired in v2.
 EVENT_VOCABULARY_VERSION = "wm-events/2"
+
+#: Version of the OBSERVATION RULES: how a prediction's declared metric is
+#: turned into a real observation. Bumped whenever a rule changes what an
+#: observed value MEANS, so samples measured under one rule are never
+#: pooled with another. ``wm-obs/2`` removes the task-check gate: a
+#: ``normalized_objective_gap`` observation is now ALWAYS the solver's own
+#: figure, and a failed task check is a SEPARATE fact carried alongside it
+#: rather than a rewrite of the quality number (which mixed two different
+#: measurements into one).
+OBSERVATION_RULE_VERSION = "wm-obs/2"
 
 #: Terminal states an episode may be closed under. Only ``completed``
 #: claims success; the others are honest endings, never dressed up.
@@ -865,7 +874,15 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             _observe_completion(summary, records)
         else:
             observed: List[float] = []
-            task_check_gated = 0
+            # The TASK-check outcome is a SEPARATE fact, never a rewrite of
+            # the quality observation. ``normalized_objective_gap`` measures
+            # how well the SOLVER solved the model it was given; a failed
+            # task check is a fact about the ANSWER satisfying the TASK and
+            # is carried alongside (see ``task_check`` in the summary). The
+            # two are different measurements and the same number is never
+            # silently made to mean both.
+            task_check_failed = 0
+            task_check_states: List[Optional[str]] = []
             for record in records:
                 quality = record.quality or {}
                 gap = quality.get("gap")
@@ -886,15 +903,11 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     continue
                 else:
                     continue
-                # TASK-CHECK GATE: an answer CONFIRMED not to satisfy the
-                # task is a zero-quality observation. The calibration
-                # channel compares the prediction against the TASK's real
-                # outcome, so a relaxed answer's solver-side optimum must
-                # not be scored as if the task had been solved.
-                effective = task_effective_quality(record, value)
-                if effective != value:
-                    task_check_gated += 1
-                observed.append(effective)
+                observed.append(value)
+                state = task_check_state(record)
+                task_check_states.append(state)
+                if state == "failed":
+                    task_check_failed += 1
             if observed:
                 # Window rule (declared BEFORE evaluation): the LAST
                 # in-scope attempt's qualified solution is the window's
@@ -910,13 +923,33 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     "n_observations": len(observed),
                     "all_observations": [round(v, 6) for v in observed],
                 }
-                if task_check_gated:
-                    summary.benefit["task_check_gated"] = task_check_gated
-                    summary.benefit["task_check_note"] = (
-                        f"{task_check_gated} in-scope observation(s) were "
-                        "set to 0.0 because a task-level check confirmed "
-                        "the answer does not satisfy the task: the solver's "
-                        "own optimality is not the task's outcome")
+                # The task check travels as its OWN fact next to the quality
+                # observation, so a reader comparing "predicted 0.8,
+                # observed 1.0" can also see the answer failed the task —
+                # without the failure silently rewriting the quality number.
+                if task_check_failed:
+                    summary.benefit["task_check"] = {
+                        "state": "failed",
+                        "n_failed": task_check_failed,
+                        "n_checked": len(task_check_states),
+                        "note": (
+                            f"{task_check_failed} in-scope observation(s) "
+                            "carried a task check that confirmed the answer "
+                            "does NOT satisfy the task. This is a SEPARATE "
+                            "fact about task validity, not a rewrite of the "
+                            "solver's own quality: the observed "
+                            "normalized_objective_gap stays what the solver "
+                            "achieved, and the task verdict is reported "
+                            "alongside it"),
+                    }
+                elif any(s == "passed" for s in task_check_states):
+                    summary.benefit["task_check"] = {
+                        "state": "passed",
+                        "n_checked": len(task_check_states),
+                        "note": ("the in-scope answer passed the declared "
+                                 "task check; the quality observation is "
+                                 "still the solver's own figure"),
+                    }
                 if "benefit" not in summary.eligibility:
                     summary.eligibility["benefit"] = {
                         "eligibility": "evaluable",
@@ -1389,6 +1422,12 @@ class StrategyPredictionEvaluation:
     #: the provider NAME, which is not a version.
     model_identity: str = "(unknown)"
     created_at: float = field(default_factory=time.time)
+    #: The OBSERVATION RULES version under which this evaluation's observed
+    #: values were derived (see :data:`OBSERVATION_RULE_VERSION`). A reader
+    #: compares it so samples measured under different rules are never
+    #: silently pooled; a legacy record that wrote none reads as
+    #: ``(unknown)`` rather than being assumed current.
+    observation_rule_version: str = "(unknown)"
     #: benefit / cost / risk / interval blocks, each with eligibility.
     benefit: Dict[str, Any] = field(default_factory=dict)
     cost: Dict[str, Any] = field(default_factory=dict)
@@ -1434,6 +1473,7 @@ class StrategyPredictionEvaluation:
             "episode_id": self.episode_id,
             "scope": self.scope,
             "model_identity": self.model_identity,
+            "observation_rule_version": self.observation_rule_version,
             "created_at": self.created_at,
             "state": self.state,
             "benefit": copy.deepcopy(self.benefit),
@@ -1508,6 +1548,8 @@ class StrategyPredictionEvaluation:
             episode_id=data.get("episode_id"),
             scope=str(data.get("scope", "attempt")),
             model_identity=str(data.get("model_identity") or "(unknown)"),
+            observation_rule_version=str(
+                data.get("observation_rule_version") or "(unknown)"),
             created_at=float(data.get("created_at", time.time())),
             state=str(data.get("state", "evaluated")),
             benefit=copy.deepcopy(dict(data.get("benefit") or {})),
@@ -1572,6 +1614,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
         episode_id=prediction.candidate.episode_id,
         scope=prediction.candidate.scope,
         model_identity=_prediction_model_identity(prediction),
+        observation_rule_version=OBSERVATION_RULE_VERSION,
     )
     # Per-DIMENSION attribution, not a blanket verdict. ``blocked`` names
     # only the comparisons an identity problem really invalidates; a
@@ -1664,14 +1707,20 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                      "the result was seen; signed_error = observed - "
                      "predicted (positive = under-predicted)"),
         }
-        # Carry the task-check gate through: a reader comparing "predicted
-        # 0.8, observed 0.0" must be able to see that the zero came from a
-        # CONFIRMED-wrong answer, not from a genuinely bad solve.
-        if summary.benefit.get("task_check_gated"):
-            evaluation.benefit["task_check_gated"] = \
-                summary.benefit["task_check_gated"]
-            evaluation.benefit["task_check_note"] = \
-                summary.benefit.get("task_check_note")
+        # The TASK-check outcome travels as its OWN fact next to the quality
+        # observation. It does NOT rewrite the observed value: a reader
+        # comparing "predicted 0.8, observed 1.0" must be able to see that
+        # the answer nonetheless failed the task — the outcome-dimension
+        # comparison is the solver's, the task verdict is separate.
+        if summary.benefit.get("task_check"):
+            evaluation.benefit["task_check"] = \
+                copy.deepcopy(summary.benefit["task_check"])
+        if benefit.interval is not None:
+            # The interval's OWN semantics travel with it, so coverage is
+            # read under the meaning the prediction declared.
+            evaluation.benefit["interval_kind"] = benefit.interval_kind
+            evaluation.benefit["interval_coverage"] = \
+                benefit.interval_coverage
         n_compared += 1
 
     # -- cost -----------------------------------------------------------------
@@ -1867,6 +1916,12 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "predicted_interval": [lo, hi],
                 "observed": observed,
                 "covered": bool(lo <= observed <= hi),
+                # The interval's OWN semantics travel with the block, so its
+                # coverage is read under the meaning the prediction declared
+                # (an outcome interval and a mean interval make different
+                # claims and are never averaged together).
+                "interval_kind": benefit.interval_kind,
+                "interval_coverage": benefit.interval_coverage,
                 # Width is reported alongside coverage: a "covered" verdict
                 # from a mile-wide interval is not the same evidence as one
                 # from a tight interval, and coverage alone cannot tell them
@@ -2355,6 +2410,11 @@ def episode_closeout_record(harness, task_id: str,
 #: rewritten atomically whenever the window changes.
 PUBLISHED_SUMMARY_KEY = "calibration_summary|published"
 
+#: Where the DERIVED paired-feedback block is stored at publish time, so the
+#: prediction read path serves it in one row lookup instead of re-deriving it
+#: from the window on every context build.
+PAIRED_FEEDBACK_KEY = "paired_feedback|published"
+
 
 def calibration_window(harness, policy: Optional[CalibrationPolicy] = None,
                        *, readonly: bool = False
@@ -2785,8 +2845,14 @@ def build_calibration_summary(harness, *,
         unit = str(benefit.get("unit") or "(none)")
         scope = str(evaluation.scope or "(none)")
         model_identity = str(evaluation.model_identity or "(unknown)")
+        # The observation-rules version is part of the grouping key: samples
+        # measured under different rules are DIFFERENT measurements and must
+        # never pool. A legacy evaluation that wrote none groups under
+        # ``(unknown)`` rather than being assumed current.
+        obs_rule = str(getattr(evaluation, "observation_rule_version",
+                               "") or "(unknown)")
         group_key = (f"strategy_outcome|{model_identity}|{metric}|{unit}"
-                     f"|{scope}")
+                     f"|{scope}|{obs_rule}")
         group = groups.setdefault(
             group_key, {
                 "n": 0, "all_episodes": set(),
@@ -2829,6 +2895,19 @@ def build_calibration_summary(harness, *,
                 1.0 if interval.get("covered") else 0.0)
             if interval.get("width") is not None:
                 group["interval_widths"].append(float(interval["width"]))
+        # Coverage is split by WHAT the interval was about: an outcome
+        # interval and a mean interval have different claimed coverage, so
+        # their hit rates are never averaged into one number. The interval's
+        # own block carries the declared kind (a bare range groups under
+        # ``(unstated)``, never relabelled).
+        ik = (evaluation.interval or {}).get("interval_kind")
+        if interval.get("eligibility") == "evaluable":
+            bucket = group.setdefault("interval_by_kind", {}).setdefault(
+                str(ik or "(unstated)"), {"covered": [], "widths": []})
+            bucket["covered"].append(
+                1.0 if interval.get("covered") else 0.0)
+            if interval.get("width") is not None:
+                bucket["widths"].append(float(interval["width"]))
         risk = evaluation.risk or {}
         for entry in risk.get("scored") or []:
             # PER-EVENT accounting: different event names are different
@@ -2926,6 +3005,17 @@ def build_calibration_summary(harness, *,
             "interval_coverage": _mean(group["interval_covered"]),
             "n_interval_samples": len(group["interval_covered"]),
             "mean_interval_width": _mean(group["interval_widths"]),
+            # Coverage split by interval KIND: an outcome interval and a
+            # mean interval make different claims, so their hit rates are
+            # reported separately and never pooled.
+            "interval_by_kind": {
+                kind: {
+                    "n": len(bucket["covered"]),
+                    "coverage": _mean(bucket["covered"]),
+                    "mean_width": _mean(bucket["widths"]),
+                }
+                for kind, bucket in sorted(
+                    (group.get("interval_by_kind") or {}).items())},
             "interval_evidence": interval_evidence,
             "mean_brier_by_event": {
                 event: _mean(values)
@@ -2993,6 +3083,7 @@ def build_calibration_summary(harness, *,
     return {
         "calibration_version": CALIBRATION_SUMMARY_VERSION,
         "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
+        "observation_rule_version": OBSERVATION_RULE_VERSION,
         "protocol": "wm-so/1",
         "min_samples": int(min_samples),
         "min_samples_basis": ("distinct (task_id, episode_id) pairs, "
@@ -3007,6 +3098,11 @@ def build_calibration_summary(harness, *,
         "validity_corrections": corrected,
         "groups": out_groups,
         "occurrence": occurrence,
+        # DETERMINISTIC rule reminders: the measured statistics turned into
+        # short "what to watch next time" notes. No model call, no fitted
+        # calibrator — a pure function of the groups above, so it is
+        # recomputable and never a second source of truth.
+        "reminders": _prediction_reminders(out_groups, min_samples),
         "applicability": "global_diagnostic",
         "applicability_note": (
             "these statistics carry NO strategy or problem-condition "
@@ -3051,6 +3147,102 @@ def publish_calibration_summary(harness, summary: Dict[str, Any],
                 (str(row["task_id"]), str(row["episode_id"] or "")))
 
 
+def publish_paired_feedback(harness, block: Dict[str, Any]) -> None:
+    """Store the DERIVED paired-feedback block (written at publish time)."""
+    with harness.store.transaction() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+            (PAIRED_FEEDBACK_KEY, harness.store.dumps(block)))
+
+
+def paired_feedback_for_context(harness, *,
+                                model_identity: Optional[str] = None
+                                ) -> Dict[str, Any]:
+    """The paired-feedback block a NEW prediction context reads.
+
+    A SINGLE-ROW read of the last published block — no window scan, no
+    history rebuild. This mirrors :func:`calibration_summary_for_context`:
+    the DERIVATION is O(window) and happens at publish time, so a prediction
+    read is O(1) however long the history is. When nothing has been
+    published the block is EMPTY with a note recording the gap, rather than
+    scanning the window to fill it (which would make a read path write).
+
+    ``model_identity`` filters the pairs to the ATTACHED provider's model,
+    exactly as the calibration summary is filtered: another model's past
+    predictions are not evidence about this one. ``None`` means no filter
+    was applied (and the block says so). The withheld count is reported, so
+    a withheld pair is distinguishable from an absent one.
+    """
+    row = harness.store.conn.execute(
+        "SELECT value FROM meta WHERE key=?",
+        (PAIRED_FEEDBACK_KEY,)).fetchone()
+    if row is None:
+        return {
+            "feedback_version": PAIRED_FEEDBACK_VERSION,
+            "n_pairs_total": 0,
+            "n_pairs_included": 0,
+            "n_pairs_omitted": 0,
+            "pairs": [],
+            "missing": ("no paired feedback has been published yet: no "
+                        "closed episode has been evaluated in this store, or "
+                        "the block predates this version. Run `orx "
+                        "calibration --rebuild` to publish one from the "
+                        "current window"),
+            "note": ("no published paired feedback is available; the context "
+                     "records the gap rather than scanning history to fill "
+                     "it"),
+        }
+    try:
+        block = harness.store.loads(row["value"])
+    except Exception:
+        return {"feedback_version": PAIRED_FEEDBACK_VERSION,
+                "pairs": [],
+                "note": "the stored paired-feedback block could not be read"}
+    if model_identity is None:
+        block = copy.deepcopy(block)
+        block["filtered"] = False
+        block["filter_note"] = (
+            "no model identity was supplied, so no filtering was applied: "
+            "these pairs may come from DIFFERENT models and must not be "
+            "read as this predictor's own record")
+        return block
+    return _filter_pairs_by_model(block, model_identity)
+
+
+def _filter_pairs_by_model(block: Dict[str, Any],
+                           model_identity: str) -> Dict[str, Any]:
+    """Keep only the pairs produced by the SAME model identity.
+
+    ``model_identity`` is the LABEL form, exactly as
+    :func:`_filter_calibration_by_model` expects. ``(unknown)`` pairs (a
+    legacy prediction with no recorded identity) are kept only when the
+    current identity is itself unknown.
+    """
+    filtered = copy.deepcopy(block)
+    kept: List[Dict[str, Any]] = []
+    withheld = 0
+    for pair in (block.get("pairs") or []):
+        if str(pair.get("model_identity") or "(unknown)") == \
+                str(model_identity):
+            kept.append(pair)
+        else:
+            withheld += 1
+    filtered["pairs"] = kept
+    filtered["filtered"] = True
+    filtered["model_identity"] = str(model_identity)
+    filtered["n_pairs_included"] = len(kept)
+    if withheld:
+        filtered["n_pairs_withheld"] = withheld
+        filtered["filter_note"] = (
+            f"{withheld} pair(s) from a different model identity were "
+            f"withheld: they describe another model's past predictions and "
+            f"are not evidence about {model_identity!r}")
+    else:
+        filtered["filter_note"] = (
+            f"every kept pair belongs to model identity {model_identity!r}")
+    return filtered
+
+
 def republish_calibration(harness, *,
                           policy: Optional[CalibrationPolicy] = None,
                           min_calibration_samples: int =
@@ -3068,6 +3260,12 @@ def republish_calibration(harness, *,
         harness, min_samples=min_calibration_samples, policy=policy)
     summary["published_at"] = time.time()
     publish_calibration_summary(harness, summary, window)
+    # The paired feedback is DERIVED here (the single publish point) and
+    # stored, so a prediction read serves it in O(1) instead of re-deriving
+    # it from the window on every context build.
+    pairs = build_paired_feedback(harness, policy=policy)
+    pairs["published_at"] = summary["published_at"]
+    publish_paired_feedback(harness, pairs)
     return summary
 
 
@@ -3221,13 +3419,18 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
     changed: Dict[str, Any] = {}
     stored_benefit = stored.benefit or {}
     derived_benefit = derived.benefit or {}
+    # A late TASK-CHECK verdict no longer rewrites the quality observation
+    # (the solver's own figure stands). It DOES move the separate
+    # ``task_check`` fact carried alongside it, so that movement is what is
+    # reported here — the sample keeps counting and the cost is preserved.
+    stored_check = (stored_benefit.get("task_check") or {}).get("state")
+    derived_check = (derived_benefit.get("task_check") or {}).get("state")
     if stored_benefit.get("observed") != derived_benefit.get("observed") \
-            or bool(stored_benefit.get("task_check_gated")) \
-            != bool(derived_benefit.get("task_check_gated")):
+            or stored_check != derived_check:
         changed["benefit"] = {
             "stored_observed": stored_benefit.get("observed"),
             "derived_observed": derived_benefit.get("observed"),
-            "task_check_gated": derived_benefit.get("task_check_gated"),
+            "task_check": derived_benefit.get("task_check"),
             "cost_preserved": True,
         }
     if (stored.risk or {}).get("scored") != (derived.risk or {}).get("scored"):
@@ -3407,6 +3610,7 @@ def calibration_summary_for_context(harness, *,
         return {
             "calibration_version": CALIBRATION_SUMMARY_VERSION,
             "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
+            "observation_rule_version": OBSERVATION_RULE_VERSION,
             "protocol": "wm-so/1",
             "window": policy.to_dict(),
             "n_window_episodes": 0,
@@ -3437,6 +3641,375 @@ def calibration_summary_for_context(harness, *,
             "read as this predictor's own error statistics")
         return summary
     return _filter_calibration_by_model(summary, model_identity)
+
+
+# ---------------------------------------------------------------------------
+# 5b. paired prediction-execution feedback (compact, per-episode)
+# ---------------------------------------------------------------------------
+
+#: Default character budget for the compact paired-feedback block a
+#: prediction context carries. Overridden by
+#: ``OR_HARNESS_PAIRED_FEEDBACK_CHARS``.
+DEFAULT_PAIRED_FEEDBACK_CHARS = 8000
+
+
+def _paired_feedback_budget() -> int:
+    return _env_int("OR_HARNESS_PAIRED_FEEDBACK_CHARS",
+                    DEFAULT_PAIRED_FEEDBACK_CHARS)
+
+
+def _compact_problem_conditions(evaluation, prediction) -> Dict[str, Any]:
+    """The KEY conditions of the problem a past pair was made under.
+
+    Derived from what the closed episode already recorded, NEVER from a live
+    profile read (which would let today's bank leak into a past pair). Kept
+    deliberately small and only what the record itself carries: the task id
+    and the family — a recognisable handle, not the whole joint
+    representation. The prediction's trace ``model_info`` may also carry a
+    ``cell_token`` when one was recorded; it is echoed verbatim when present.
+    """
+    conditions: Dict[str, Any] = {}
+    if getattr(evaluation, "task_id", None):
+        conditions["task_id"] = str(evaluation.task_id)
+    candidate = getattr(prediction, "candidate", None)
+    if candidate is not None and getattr(candidate, "strategy_id", None):
+        conditions["strategy_id"] = str(candidate.strategy_id)
+    cell = None
+    info = (getattr(getattr(prediction, "trace", None), "model_info", None)
+            or {})
+    if isinstance(info, dict) and info.get("cell_token"):
+        cell = str(info["cell_token"])
+    if cell:
+        conditions["cell"] = cell
+    return conditions
+
+
+def build_paired_feedback(
+        harness, *,
+        budget_chars: Optional[int] = None,
+        policy: Optional[CalibrationPolicy] = None,
+        ) -> Dict[str, Any]:
+    """DERIVE the compact per-episode prediction-execution pairs.
+
+    A DERIVED VIEW over the window's stored evaluations — no model call, no
+    re-scoring, no new storage. Each row is the paired facts of ONE past
+    decision: the conditions it was made under, the method planned, the
+    ORIGINAL prediction (read-only), the REAL observation, the per-field
+    difference, the task-check outcome, the scope, the missing or
+    not-comparable reasons and a source reference.
+
+    This is the EXPENSIVE, O(window) derivation. It is called at PUBLISH
+    time (see :func:`republish_calibration`), never from the prediction read
+    path: the read path serves the stored block so a prediction read stays
+    O(1) however long the history is (see
+    :func:`paired_feedback_for_context`).
+
+    What it deliberately does NOT do:
+
+    - it is NOT a top-k cut: every closed episode's pairs are included until
+      the character budget is reached, in window order (oldest first), and
+      the included/omitted counts are REPORTED rather than silently dropped;
+    - an UNEXECUTED candidate never appears (there is no real outcome to
+      pair it with, and none is fabricated);
+    - it does not filter by cell, strategy_id or verification state — a
+      failure and a cross-cell case are exactly the material a prediction
+      needs;
+    - a single unknown or not-comparable FIELD does not drop the row: the
+      other fields are still carried.
+
+    It returns a block with an empty ``pairs`` list and a note when there is
+    nothing to show (no closed episodes).
+    """
+    budget = budget_chars if budget_chars is not None else \
+        _paired_feedback_budget()
+    policy = policy or CalibrationPolicy.from_env()
+    window = calibration_window(harness, policy, readonly=True)
+    evaluations = _evaluations_for_window(harness, window)
+    rows: List[Dict[str, Any]] = []
+    n_total = 0
+    for stored_evaluation in evaluations:
+        evaluation, _ = _live_evaluation(harness, stored_evaluation)
+        if evaluation.state == "pending":
+            # A running scope has no real outcome: not a pair yet.
+            continue
+        prediction = harness.strategy_predictions.get(
+            stored_evaluation.prediction_id)
+        row = _paired_feedback_row(evaluation, prediction)
+        if row is None:
+            continue
+        n_total += 1
+        rows.append(row)
+
+    included: List[Dict[str, Any]] = []
+    used = 0
+    omitted = 0
+    for row in rows:
+        size = len(json.dumps(row, ensure_ascii=False, default=str))
+        if used + size > budget:
+            omitted += 1
+            continue
+        used += size
+        included.append(row)
+    out: Dict[str, Any] = {
+        "feedback_version": PAIRED_FEEDBACK_VERSION,
+        "n_pairs_total": n_total,
+        "n_pairs_included": len(included),
+        "n_pairs_omitted": omitted,
+        "budget_chars": budget,
+        "used_chars": used,
+        "basis": ("derived from CLOSED episodes' stored evaluations in the "
+                  "current window; no model call, no re-scoring, no new "
+                  "storage"),
+        "pairs": included,
+    }
+    if omitted:
+        out["omission_note"] = (
+            f"{omitted} pair(s) were omitted to stay within the character "
+            "budget after {len(included)} were included in window order; "
+            "they remain available through `orx calibration` and the "
+            "evaluation store — the omission is reported, never silent")
+    if not rows:
+        out["note"] = ("no closed-episode prediction-execution pairs exist "
+                       "in the window yet: a cold start carries no paired "
+                       "feedback (this is absent, not 'nothing matched')")
+    return out
+
+
+#: Version of the paired-feedback block schema.
+PAIRED_FEEDBACK_VERSION = "wm-pairs/1"
+
+#: Version of the deterministic rule-reminder block (Q2-ii): the measured
+#: statistics rendered as short "what to watch" notes. A pure function of
+#: the groups, bumped when the rendering rules change.
+REMINDER_VERSION = "wm-remind/1"
+
+
+def _prediction_reminders(out_groups: Dict[str, Any],
+                          min_samples: int) -> List[Dict[str, Any]]:
+    """Deterministic "next-time" reminders derived from the group statistics.
+
+    NOT a model-written lesson and NOT a fitted calibrator: a pure,
+    recomputable function of the measured groups. Each reminder states the
+    applicability it was derived under (the group's metric/unit/scope/
+    observation-rule identity), the OBSERVED bias (with its direction and
+    sample size), a concrete "watch this next time" instruction, and the
+    group key as its support reference. A group below the episode threshold
+    yields NO reminder (``insufficient_evidence`` is not a lesson), so a
+    reminder is never a claim made from one observation.
+
+    The DISTINCTION the plan requires is enforced here: the *observed bias*
+    is a fact (the mean signed error), the *instruction* is a derived
+    reminder — it carries ``kind="derived_reminder"`` and ``basis=
+    "measured_statistics"`` so a reader never mistakes it for an observation
+    or for the framework's own recommendation of a method.
+    """
+    reminders: List[Dict[str, Any]] = []
+    rec_id = 0
+    for key, group in sorted(out_groups.items()):
+        parts = str(key).split("|")
+        metric = parts[2] if len(parts) > 2 else "(none)"
+        unit = parts[3] if len(parts) > 3 else "(none)"
+        scope = parts[4] if len(parts) > 4 else "(none)"
+        obs_rule = parts[5] if len(parts) > 5 else "(unknown)"
+        applicability = {
+            "metric": metric, "unit": unit, "scope": scope,
+            "observation_rule_version": obs_rule,
+            "model_identity": parts[1] if len(parts) > 1 else "(unknown)",
+        }
+        distinct = group.get("n_distinct_episodes") or 0
+        if distinct < min_samples:
+            continue
+        # BENEFIT bias: directed signed error.
+        signed = group.get("mean_benefit_signed_error")
+        benefit_evidence = group.get("benefit_evidence") or {}
+        if signed is not None \
+                and benefit_evidence.get("evidence") == "measured":
+            n = benefit_evidence.get("n_distinct_episodes")
+            direction = ("UNDER-predicted" if signed > 0
+                         else "OVER-predicted" if signed < 0 else "unbiased")
+            if abs(float(signed)) > 1e-9:
+                rec_id += 1
+                reminders.append({
+                    "reminder_id": f"rem_{rec_id:03d}",
+                    "kind": "derived_reminder",
+                    "basis": "measured_statistics",
+                    "field": "benefit",
+                    "applicability": copy.deepcopy(applicability),
+                    "observed_bias": {
+                        "mean_signed_error": signed,
+                        "direction": direction,
+                        "n_distinct_episodes": n,
+                        "note": ("observed (fact): the mean directed error "
+                                 "of past predictions under this "
+                                 "applicability; positive = the real "
+                                 "outcome was historically BETTER"),
+                    },
+                    "watch_next_time": (
+                        f"under {metric}/{unit} at scope {scope}, past "
+                        f"predictions were {direction} by "
+                        f"{abs(float(signed)):.4f} on average over {n} "
+                        "distinct episode(s): adjust the value in that "
+                        "direction, or state "
+                        "unsupported_fields['benefit'] if the evidence "
+                        "does not justify a number"),
+                    "support": [key],
+                })
+        # COST bias per dimension: directed log-ratio.
+        cost_ratio = group.get("mean_cost_log_ratio") or {}
+        cost_evidence = group.get("cost_evidence") or {}
+        for dim, ratio in sorted(cost_ratio.items()):
+            verdict = (cost_evidence.get(dim) or {})
+            if ratio is None or verdict.get("evidence") != "measured":
+                continue
+            if abs(float(ratio)) <= 1e-9:
+                continue
+            n = verdict.get("n_distinct_episodes")
+            rec_id += 1
+            reminders.append({
+                "reminder_id": f"rem_{rec_id:03d}",
+                "kind": "derived_reminder",
+                "basis": "measured_statistics",
+                "field": f"cost.{dim}",
+                "applicability": copy.deepcopy(applicability),
+                "observed_bias": {
+                    "mean_log_ratio": ratio,
+                    "direction": ("UNDER-predicted" if ratio > 0
+                                  else "OVER-predicted"),
+                    "n_distinct_episodes": n,
+                    "note": ("observed (fact): mean log(actual/predicted) "
+                             "for this dimension; positive = real cost was "
+                             "historically HIGHER"),
+                },
+                "watch_next_time": (
+                    f"for cost dimension {dim}, past predictions were "
+                    f"{'UNDER' if ratio > 0 else 'OVER'}-predicted by "
+                    f"mean log-ratio {float(ratio):.4f} over {n} distinct "
+                    "episode(s): bias the estimate accordingly"),
+                "support": [key],
+            })
+        # INTERVAL coverage: a stated coverage that the data does not support
+        # is worth a reminder; a covered interval that is very wide is a
+        # different one.
+        for kind, bucket in sorted(
+                (group.get("interval_by_kind") or {}).items()):
+            if not bucket or not bucket.get("n"):
+                continue
+            coverage = bucket.get("coverage")
+            width = bucket.get("mean_width")
+            if coverage is None:
+                continue
+            rec_id += 1
+            reminders.append({
+                "reminder_id": f"rem_{rec_id:03d}",
+                "kind": "derived_reminder",
+                "basis": "measured_statistics",
+                "field": "interval",
+                "applicability": {**copy.deepcopy(applicability),
+                                  "interval_kind": kind},
+                "observed_bias": {
+                    "empirical_coverage": coverage,
+                    "n": bucket.get("n"),
+                    "mean_width": width,
+                    "note": ("observed (fact): the empirical hit rate of "
+                             "past intervals of this kind; compare it with "
+                             "the nominal coverage the prediction claimed"),
+                },
+                "watch_next_time": (
+                    f"past {kind} intervals covered the observed value "
+                    f"{float(coverage):.3f} of the time (n="
+                    f"{bucket.get('n')}, mean width {width}): check your "
+                    "stated interval_coverage against this, and split "
+                    "outcome vs mean intervals rather than mixing them"),
+                "support": [key],
+            })
+    return reminders
+
+
+def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
+    """ONE compact prediction-execution pair, or None when not a pair.
+
+    ``None`` for a prediction that was never bound to a real execution: an
+    unexecuted candidate has no real outcome, and none is fabricated.
+    """
+    if prediction is None:
+        return None
+    info = prediction.trace.model_info or {}
+    if not info.get("bound_action_id"):
+        return None
+    benefit = evaluation.benefit or {}
+    cost = evaluation.cost or {}
+    row: Dict[str, Any] = {
+        "evaluation_id": evaluation.evaluation_id,
+        "prediction_id": evaluation.prediction_id,
+        "task_id": evaluation.task_id,
+        "episode_id": evaluation.episode_id,
+        "scope": evaluation.scope,
+        # The predicting MODEL's identity travels with the pair: another
+        # model's past predictions are not evidence about THIS one, so the
+        # read path filters on it exactly as the calibration summary does.
+        "model_identity": getattr(evaluation, "model_identity", "(unknown)"),
+        "observation_rule_version": getattr(
+            evaluation, "observation_rule_version", None),
+        "conditions": _compact_problem_conditions(evaluation, prediction),
+        "task_check": copy.deepcopy(benefit.get("task_check")),
+    }
+    # The method that was planned, one line (planned vs actual when both
+    # exist). Never a paraphrase.
+    method = getattr(getattr(prediction, "candidate", None), "method", None)
+    if isinstance(method, dict) and method:
+        row["method_planned"] = {
+            "name": method.get("name"),
+            "n_steps": len(method.get("steps") or []),
+        }
+    # The ORIGINAL prediction (read-only) and the real observation, with the
+    # per-field difference. A field the prediction did not carry is simply
+    # absent — never a zero.
+    benefit_row: Dict[str, Any] = {}
+    if benefit.get("predicted") is not None:
+        benefit_row["predicted"] = benefit.get("predicted")
+        benefit_row["metric"] = benefit.get("metric")
+        # The interval's OWN semantics travel with the interval block, which
+        # carries the declared kind/coverage; fall back to the benefit copy
+        # for a legacy evaluation that has neither.
+        interval_block = evaluation.interval or {}
+        benefit_row["interval_kind"] = interval_block.get(
+            "interval_kind", benefit.get("interval_kind"))
+        benefit_row["interval_coverage"] = interval_block.get(
+            "interval_coverage", benefit.get("interval_coverage"))
+    if benefit.get("observed") is not None:
+        benefit_row["observed"] = benefit.get("observed")
+        benefit_row["signed_error"] = benefit.get("signed_error")
+    if benefit.get("eligibility"):
+        benefit_row["eligibility"] = benefit.get("eligibility")
+        if benefit.get("reason"):
+            benefit_row["reason"] = benefit.get("reason")
+    if benefit_row:
+        row["benefit"] = benefit_row
+    per_dim = cost.get("per_dim") or {}
+    if per_dim:
+        row["cost_log_ratio"] = {
+            dim: entry.get("log_ratio")
+            for dim, entry in per_dim.items()
+            if entry.get("log_ratio") is not None}
+    if cost.get("excluded"):
+        row["cost_excluded"] = dict(cost.get("excluded"))
+    # The attribution's blocked dimensions: WHY a field is not comparable.
+    # A row with a blocked field still carries every other field.
+    blocked = evaluation.attribution or {}
+    if blocked:
+        row["blocked_dimensions"] = {
+            dim: sorted({str(e.get("field")) for e in entries})
+            for dim, entries in blocked.items()}
+    if not row.get("benefit") and not row.get("cost_log_ratio") \
+            and not row.get("task_check"):
+        # Nothing at all to learn from: it is still a real pair (a failed
+        # call, an unobserved outcome), so it is carried with its
+        # exclusion reasons rather than dropped.
+        row["note"] = ("this pair carries no comparable field; the "
+                       "exclusion reasons above/below are the fact")
+        if evaluation.exclusion_reasons:
+            row["exclusion_reasons"] = list(evaluation.exclusion_reasons)
+    return row
 
 
 def _filter_calibration_by_model(summary: Dict[str, Any],

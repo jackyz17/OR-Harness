@@ -72,8 +72,10 @@ GOOD_PAYLOAD = {
 
 #: The calibration group key prefix for the stub provider: it reports no
 #: model name, so its identity is honestly ``(unknown)`` — never the
-#: provider name standing in for a version.
+#: provider name standing in for a version. The trailing observation-rules
+#: version is part of the key (samples under different rules never pool).
 GROUP_PREFIX = "strategy_outcome|(unknown)|"
+OBS_RULE = "|wm-obs/2"
 
 
 class StubProvider(WorldModelProvider):
@@ -578,7 +580,8 @@ class TestCalibrationChannel(M4Case):
         self.assertEqual(calibration["protocol"], "wm-so/1")
         self.assertEqual(calibration["n_evaluations_total"], 1)
         group = calibration["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         self.assertEqual(group["n_samples"], 1)
         # Below the default minimum: insufficient evidence, no figure.
         self.assertEqual(group["basis"], "insufficient_evidence")
@@ -626,7 +629,8 @@ class TestCalibrationChannel(M4Case):
         self.h.close_episode("t1", "ep1", min_calibration_samples=1)
         summary = self.h.calibration_summary(min_samples=1)
         group = summary["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         self.assertEqual(group["basis"], "measured")
         self.assertEqual(summary["min_samples"], 1)
         # The threshold is applied PER STATISTIC, not once for the group: a
@@ -1031,7 +1035,8 @@ class TestCalibrationGrouping(M4Case):
         self._close_with_predictions(n=5)
         summary = self.h.calibration_summary(min_samples=5)
         group = summary["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(group["n_distinct_episodes"], 1)
         self.assertEqual(group["correlated_predictions"], 4)
@@ -1047,9 +1052,9 @@ class TestCalibrationGrouping(M4Case):
         summary = self.h.calibration_summary()
         keys = set(summary["groups"])
         self.assertIn(GROUP_PREFIX + "normalized_objective_gap|1-gap"
-                      "|attempt", keys)
+                      "|attempt" + OBS_RULE, keys)
         self.assertIn(GROUP_PREFIX + "normalized_objective_gap|percent"
-                      "|attempt", keys)
+                      "|attempt" + OBS_RULE, keys)
 
     def test_brier_reported_per_event_name(self):
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
@@ -1071,7 +1076,8 @@ class TestCalibrationGrouping(M4Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary(min_samples=1)
         group = summary["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         # Per-event means, never one pooled Brier.
         self.assertIn("timeout", group["mean_brier_by_event"])
         self.assertIn("solver_reported_infeasible",
@@ -1091,7 +1097,8 @@ class TestCalibrationGrouping(M4Case):
                 n=1, task_id=f"task{index}", episode="ep1")
         summary = self.h.calibration_summary(min_samples=5)
         group = summary["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(
             group["n_distinct_episodes"], 5,
@@ -1109,7 +1116,8 @@ class TestCalibrationGrouping(M4Case):
         self._close_with_predictions(n=5, task_id="t1", episode="ep1")
         summary = self.h.calibration_summary(min_samples=2)
         group = summary["groups"][
-            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"]
+            GROUP_PREFIX + "normalized_objective_gap|1-gap|attempt"
+            + OBS_RULE]
         self.assertEqual(group["n_samples"], 5)
         self.assertEqual(group["n_distinct_episodes"], 1)
         self.assertEqual(group["basis"], "insufficient_evidence")

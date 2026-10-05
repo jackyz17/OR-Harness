@@ -522,13 +522,15 @@ class TestRepairTrajectoryIsReadable(TaskCheckCase):
 
 class TestLateCorrection(TaskCheckCase):
 
-    def test_late_check_corrects_the_benefit_and_keeps_the_cost(self):
-        """A check arriving AFTER close-out changes later use, not history.
+    def test_late_check_records_the_task_fact_and_keeps_the_quality(self):
+        """A check arriving AFTER close-out adds a SEPARATE task fact.
 
-        The corrected sample keeps COUNTING: only the benefit observation is
-        re-derived (to 0.0 — the answer does not satisfy the task), while the
-        measured COST is preserved. Dropping the whole evaluation would throw
-        away a real measurement."""
+        Under the observation rules (wm-obs/2) the solver's quality
+        observation is NOT rewritten by a task check: `normalized_objective_
+        gap` keeps meaning "how well the solver solved the model", and the
+        failed task check travels alongside it as its own fact. The
+        measured COST is likewise preserved, and the sample keeps
+        COUNTING."""
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
@@ -552,7 +554,7 @@ class TestLateCorrection(TaskCheckCase):
         # It is written through the API (the documented path), so the
         # published summary is REPUBLISHED as part of the correction — the
         # stored evaluation is untouched, but the summary a later context
-        # reads already reflects the correction.
+        # reads already reflects the new task fact.
         late = self.h.check_task_result(
             record.execution_id,
             {"reference_objective": 999.0})
@@ -562,7 +564,7 @@ class TestLateCorrection(TaskCheckCase):
         # The stored evaluation is NOT rewritten...
         self.assertEqual(self.h.get_strategy_evaluation(
             evaluation["evaluation_id"]), stored_before)
-        # ...and the sample still COUNTS, with the benefit re-derived to 0.0.
+        # ...and the sample still COUNTS, with the task fact re-derived.
         self.assertEqual(second_summary["n_evaluated"], 1)
         correction = second_summary["validity_corrections"][0]
         self.assertEqual(correction["kind"], "live_rederivation")
@@ -570,14 +572,21 @@ class TestLateCorrection(TaskCheckCase):
         self.assertTrue(correction["counted"])
         self.assertIn("cost_preserved",
                       correction["detail"]["benefit"])
-        # The benefit error is now |0.8 - 0.0| = 0.8, not |0.8 - 1.0| = 0.2.
+        # The QUALITY observation is UNCHANGED: the solver really did reach
+        # the optimum, and the failure is a SEPARATE task fact. So the
+        # benefit error stays |0.8 - 1.0| = 0.2, not |0.8 - 0.0| = 0.8.
         group_after = list(second_summary["groups"].values())[0]
-        self.assertEqual(group_after["mean_benefit_abs_error"], 0.8)
+        self.assertEqual(group_after["mean_benefit_abs_error"], 0.2)
+        # The task-check fact moved and is reported on the observation.
+        live = self.h.get_strategy_evaluation(evaluation["evaluation_id"])
+        self.assertEqual(
+            (live["benefit"].get("task_check") or {}).get("state"), None,
+            "the STORED evaluation keeps the facts known at close-out")
         # The COST measurement survives: the answer was wrong, but it really
         # did cost what it cost.
         self.assertEqual(group_after["mean_cost_log_error"],
                          group_before["mean_cost_log_error"])
-        # Statistics pick the corrected judgment up on the next read.
+        # The task verdict still governs the answer's validity for reuse.
         self.assertEqual(quality_score(self.h.bank.get(record.execution_id)),
                          0.0)
 
@@ -769,10 +778,14 @@ class TestFormalPathProducesEvaluation(TaskCheckCase):
         closed = self.h.close_episode("t1", "ep1")
         evaluation = closed["evaluations"][0]
         self.assertEqual(evaluation["state"], "evaluated")
-        # The calibration channel compares against the TASK's outcome: the
-        # disqualified answer is a 0.0 observation, not the solver's 1.0.
-        self.assertEqual(evaluation["benefit"]["observed"], 0.0)
-        self.assertIn("task_check_gated", evaluation["benefit"])
+        # The quality observation is the SOLVER's own figure (1.0: it
+        # reached the optimum of the model it was given); the failed task
+        # check is carried as a SEPARATE fact, never as a rewrite of the
+        # quality number.
+        self.assertEqual(evaluation["benefit"]["observed"], 1.0)
+        self.assertEqual(
+            (evaluation["benefit"].get("task_check") or {}).get("state"),
+            "failed")
         # And the close-out reports the task-check coverage explicitly.
         self.assertEqual(closed["task_checks"]["verdicts"], {"failed": 1})
         self.assertEqual(closed["task_checks"]["unchecked"], 0)

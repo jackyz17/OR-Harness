@@ -53,7 +53,8 @@ PAYLOAD = {
     "risk": {"events": [{"event": "timeout", "probability": 0.25}]},
 }
 
-GROUP = "strategy_outcome|(unknown)|normalized_objective_gap|1-gap|attempt"
+GROUP = ("strategy_outcome|(unknown)|normalized_objective_gap|1-gap"
+         "|attempt|wm-obs/2")
 
 
 def _task(task_id="t1", **coupling):
@@ -501,13 +502,15 @@ class TestWindowAndPublication(CalibrationV2Case):
         self.h.check_task_result(record.execution_id,
                                  {"reference_objective": 999.0})
         after = self.h.calibration_summary()
-        # The correction REPUBLISHED the summary, and the corrected benefit
-        # (0.0 — the answer does not satisfy the task) is what it reports.
+        # The correction REPUBLISHED the summary: a late TASK verdict moves
+        # the separate task-check fact, while the QUALITY observation stays
+        # the solver's own figure (Q1-a / wm-obs/2). So the benefit error is
+        # STILL |0.8 - 1.0| = 0.2.
         self.assertTrue(after["validity_corrections"])
         self.assertEqual(after["validity_corrections"][0]["fields"],
                          ["benefit"])
         group_after = list(after["groups"].values())[0]
-        self.assertEqual(group_after["mean_benefit_abs_error"], 0.8)
+        self.assertEqual(group_after["mean_benefit_abs_error"], 0.2)
         # The measured cost is preserved: a wrong answer still cost what it
         # cost, so the correction must not take that measurement with it.
         self.assertEqual(group_after["mean_cost_log_error"],
@@ -907,7 +910,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary()
         self.assertIn("strategy_outcome|model-a@v1|normalized_objective_gap"
-                      "|1-gap|attempt", summary["groups"])
+                      "|1-gap|attempt|wm-obs/2", summary["groups"])
         evaluation = h.strategy_prediction_evaluations(task_id="t1")[0]
         self.assertEqual(evaluation["model_identity"], "model-a@v1")
 
@@ -995,7 +998,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
                  self.h.store.dumps(stored)))
         rebuilt = self.h.calibration_summary(rebuild=True)
         self.assertIn("strategy_outcome|(unknown)|normalized_objective_gap"
-                      "|1-gap|attempt", rebuilt["groups"])
+                      "|1-gap|attempt|wm-obs/2", rebuilt["groups"])
 
     def test_no_published_summary_reports_missing(self):
         context = self.h.build_prediction_context(_task("t1"), "ep1")
@@ -1465,7 +1468,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         calibration = context.strategy_calibration
         self.assertIn(
             "strategy_outcome|model-a@v1|normalized_objective_gap|1-gap"
-            "|attempt", calibration["groups"])
+            "|attempt|wm-obs/2", calibration["groups"])
         self.assertTrue(calibration.get("filtered"))
         self.assertFalse(calibration.get("withheld_groups"))
 
@@ -1478,9 +1481,9 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         own = ("strategy_outcome|model-a@v1|normalized_objective_gap"
-               "|1-gap|attempt")
+               "|1-gap|attempt|wm-obs/2")
         legacy = ("strategy_outcome|(unknown)|normalized_objective_gap"
-                  "|1-gap|attempt")
+                  "|1-gap|attempt|wm-obs/2")
         publish_calibration_summary(
             h, {"groups": {own: {"n_samples": 3},
                            legacy: {"n_samples": 2}},
@@ -1498,7 +1501,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         publish_calibration_summary(
-            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt":
+            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/2":
                            {"n_samples": 1}},
                 "occurrence": {}, "exclusions": {}}, [])
         block = calibration_summary_for_context(h, model_identity=None)

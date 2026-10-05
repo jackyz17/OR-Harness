@@ -66,8 +66,11 @@ from or_harness.world_model.contracts import (
 )
 
 #: Version of the context SCHEMA. A reader that does not know this version
-#: must refuse the payload rather than guess at it.
-PREDICTION_CONTEXT_VERSION = "wm-context/1"
+#: must refuse the payload rather than guess at it. ``wm-context/2`` adds
+#: the paired prediction-execution feedback block and the deterministic
+#: prediction reminders; a v1 payload lacks them, so a v2 reader refuses it
+#: rather than reading the absence as "no pairs existed".
+PREDICTION_CONTEXT_VERSION = "wm-context/2"
 
 #: Version of the joint problem representation's shape.
 JOINT_REPRESENTATION_VERSION = "joint/1"
@@ -1320,6 +1323,23 @@ class PredictionContext:
     #: from ``reliability`` (the legacy knowledge-prediction table): a
     #: knowledge hit rate never proves OR prediction accuracy.
     strategy_calibration: Dict[str, Any] = field(default_factory=dict)
+    #: COMPACT prediction-execution PAIRS of closed episodes (M5), frozen at
+    #: build time. Distinct from ``strategy_calibration``: that block is the
+    #: GLOBAL aggregate statistic; this is the per-episode raw material a
+    #: prediction can learn a conditional lesson from. Derived from stored
+    #: evaluations — no model call, no new storage. An active episode never
+    #: sees its own not-yet-closed feedback (only closed episodes appear).
+    paired_feedback: Dict[str, Any] = field(default_factory=dict)
+    #: DETERMINISTIC rule reminders derived from ``strategy_calibration``
+    #: (Q2-ii): measured statistics rendered as "watch this next time"
+    #: notes. A pure function of the summary — never a model-written lesson,
+    #: and never a second source of truth.
+    prediction_reminders: List[Dict[str, Any]] = field(default_factory=list)
+    #: The compact follow-up state of ONLINE H+ (capability-gain) claims,
+    #: frozen at build time (M5 delayed supervision). `pending` is NOT a
+    #: failure; `effect_verified` is the only state that confirms a claim.
+    #: Explanatory only — it NEVER ranks candidates.
+    hplus_feedback: Dict[str, Any] = field(default_factory=dict)
     #: The frozen X/B + coverage + harness-condition blocks of the snapshot
     #: this context was built from, so a reused context can rebuild a
     #: snapshot that is BYTE-EQUIVALENT to the frozen one instead of taking a
@@ -1357,6 +1377,9 @@ class PredictionContext:
         self.knowledge_targets = copy.deepcopy(self.knowledge_targets)
         self.reliability = copy.deepcopy(self.reliability)
         self.strategy_calibration = copy.deepcopy(self.strategy_calibration)
+        self.paired_feedback = copy.deepcopy(self.paired_feedback)
+        self.prediction_reminders = copy.deepcopy(self.prediction_reminders)
+        self.hplus_feedback = copy.deepcopy(self.hplus_feedback)
         self.snapshot = copy.deepcopy(self.snapshot)
         self.cell_evidence = copy.deepcopy(self.cell_evidence)
         self.sources = dict(self.sources)
@@ -1411,6 +1434,11 @@ class PredictionContext:
             "execution_constraints": copy.deepcopy(self.execution_constraints),
             "strategy_outcome_calibration": copy.deepcopy(
                 self.strategy_calibration),
+            "prediction_execution_pairs": copy.deepcopy(
+                self.paired_feedback),
+            "prediction_reminders": copy.deepcopy(
+                self.prediction_reminders),
+            "hplus_feedback": copy.deepcopy(self.hplus_feedback),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
             "missing": _dedupe_lines(self.missing),
@@ -1441,6 +1469,10 @@ class PredictionContext:
             "knowledge_targets": copy.deepcopy(self.knowledge_targets),
             "reliability": copy.deepcopy(self.reliability),
             "strategy_calibration": copy.deepcopy(self.strategy_calibration),
+            "paired_feedback": copy.deepcopy(self.paired_feedback),
+            "prediction_reminders": copy.deepcopy(
+                self.prediction_reminders),
+            "hplus_feedback": copy.deepcopy(self.hplus_feedback),
             "snapshot": copy.deepcopy(self.snapshot),
             "cell_evidence": copy.deepcopy(self.cell_evidence),
             "sources": dict(self.sources),
@@ -1482,6 +1514,12 @@ class PredictionContext:
             reliability=copy.deepcopy(dict(data.get("reliability") or {})),
             strategy_calibration=copy.deepcopy(
                 dict(data.get("strategy_calibration") or {})),
+            paired_feedback=copy.deepcopy(
+                dict(data.get("paired_feedback") or {})),
+            prediction_reminders=copy.deepcopy(
+                list(data.get("prediction_reminders") or [])),
+            hplus_feedback=copy.deepcopy(
+                dict(data.get("hplus_feedback") or {})),
             snapshot=copy.deepcopy(dict(data.get("snapshot") or {})),
             cell_evidence=copy.deepcopy(dict(data.get("cell_evidence") or {})),
             sources={str(k): str(v) for k, v in
@@ -1604,6 +1642,9 @@ def build_context(
         knowledge_targets: Optional[Sequence[Any]] = None,
         reliability: Optional[Dict[str, Any]] = None,
         strategy_calibration: Optional[Dict[str, Any]] = None,
+        paired_feedback: Optional[Dict[str, Any]] = None,
+        prediction_reminders: Optional[Sequence[Dict[str, Any]]] = None,
+        hplus_feedback: Optional[Dict[str, Any]] = None,
         cell_evidence: Optional[Dict[str, Any]] = None,
         cir_source: Optional[str] = None,
         retrieval_bounding: Optional[Dict[str, Any]] = None,
@@ -1693,6 +1734,9 @@ def build_context(
         knowledge_targets=frozen_targets,
         reliability=copy.deepcopy(reliability or {}),
         strategy_calibration=copy.deepcopy(strategy_calibration or {}),
+        paired_feedback=copy.deepcopy(paired_feedback or {}),
+        prediction_reminders=copy.deepcopy(list(prediction_reminders or [])),
+        hplus_feedback=copy.deepcopy(hplus_feedback or {}),
         snapshot=snapshot_conditions(snapshot),
         cell_evidence=copy.deepcopy(cell_evidence or {}),
         sources={

@@ -151,6 +151,21 @@ BENEFIT_KINDS = ("effective_completion", "solution_quality",
 BASELINE_KINDS = ("no_knowledge", "conditional_stats", "current_entry",
                   "current_solution", "declared", "unknown")
 
+#: What an interval AROUND a benefit value MEANS, so a success-probability
+#: interval is never read as a single-execution label's interval and vice
+#: versa.
+#:
+#: - ``outcome``: a PREDICTIVE interval for ONE execution's observed value
+#:   (e.g. "this attempt's normalized quality lands in [0.7, 0.9]").
+#: - ``mean``: an interval for the MEAN of that value over repeated runs
+#:   (narrower than an outcome interval by construction; covering a single
+#:   observation is NOT its claim).
+#:
+#: ``None`` (the default) preserves the ORIGINAL semantics: a bare
+#: ``[lo, hi]`` range whose kind was never stated. It is never silently
+#: relabelled — an old prediction that carried no kind keeps ``None``.
+INTERVAL_KINDS = ("outcome", "mean")
+
 #: Where an uncertainty estimate came from. A model's self-reported
 #: confidence is recorded as such and is NEVER a calibrated probability.
 UNCERTAINTY_SOURCES = ("not_estimated", "framework_heuristic",
@@ -1061,6 +1076,13 @@ class BenefitEstimate:
     unit: str = ""
     value: Optional[float] = None
     interval: Optional[Tuple[float, float]] = None
+    #: WHAT the interval is about (see :data:`INTERVAL_KINDS`). ``None`` is
+    #: the legacy case: a range whose kind was never stated. Never
+    #: auto-filled, so an old prediction is not silently relabelled.
+    interval_kind: Optional[str] = None
+    #: The NOMINAL coverage level the interval claims (e.g. 0.9), when the
+    #: model stated one. ``None`` = not stated, never a default.
+    interval_coverage: Optional[float] = None
     baseline: Optional[BaselineStatement] = None
     feasible: Optional[bool] = None
     progress_shape: Optional[Dict[str, Any]] = None
@@ -1071,6 +1093,16 @@ class BenefitEstimate:
             raise ValueError(f"benefit kind must be one of {BENEFIT_KINDS}")
         if not self.metric:
             raise ValueError("benefit metric is required (what is measured)")
+        if self.interval_kind is not None \
+                and self.interval_kind not in INTERVAL_KINDS:
+            raise ValueError(
+                f"benefit interval_kind must be one of {INTERVAL_KINDS} "
+                f"or None (unstated); got {self.interval_kind!r}")
+        if self.interval_coverage is not None \
+                and not (0.0 < float(self.interval_coverage) < 1.0):
+            raise ValueError(
+                "benefit interval_coverage must be a nominal level in "
+                "(0, 1) when stated")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -1080,6 +1112,8 @@ class BenefitEstimate:
             "value": self.value,
             "interval": (list(self.interval)
                          if self.interval is not None else None),
+            "interval_kind": self.interval_kind,
+            "interval_coverage": self.interval_coverage,
             "baseline": (self.baseline.to_dict()
                          if self.baseline is not None else None),
             "feasible": self.feasible,
@@ -1093,6 +1127,8 @@ class BenefitEstimate:
             raise ValueError("BenefitEstimate must be a JSON object")
         raw_interval = data.get("interval")
         raw_baseline = data.get("baseline")
+        raw_kind = data.get("interval_kind")
+        raw_coverage = data.get("interval_coverage")
         return cls(
             kind=str(data.get("kind", "solution_quality")),
             metric=str(data.get("metric", "")),
@@ -1102,6 +1138,12 @@ class BenefitEstimate:
             interval=((float(raw_interval[0]), float(raw_interval[1]))
                       if isinstance(raw_interval, (list, tuple))
                       and len(raw_interval) == 2 else None),
+            # An UNKNOWN interval_kind string is preserved verbatim rather
+            # than dropped: a reader can still see the model stated one,
+            # and validation reports it instead of silently erasing it.
+            interval_kind=(str(raw_kind) if raw_kind else None),
+            interval_coverage=(float(raw_coverage)
+                               if raw_coverage is not None else None),
             baseline=(BaselineStatement.from_dict(raw_baseline)
                       if isinstance(raw_baseline, dict) else None),
             feasible=data.get("feasible"),

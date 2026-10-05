@@ -38,6 +38,7 @@ Design boundaries:
 from __future__ import annotations
 
 import copy
+import json
 import math
 import time
 from dataclasses import dataclass, field
@@ -2176,3 +2177,86 @@ def _all_traces(harness) -> List[Any]:
         return iter_capability_traces(harness)
     except Exception:  # noqa: BLE001
         return []
+
+
+#: Version of the H+ (capability-gain) feedback block a prediction context
+#: carries.
+HPLUS_FEEDBACK_VERSION = "wm-hplusfb/1"
+
+#: Max characters of the H+ feedback block sent to the provider. Bounded so
+#: a large trace history never dominates the request.
+HPLUS_FEEDBACK_CHARS = 3000
+
+
+def hplus_feedback_for_context(harness, *, budget_chars: int =
+                               HPLUS_FEEDBACK_CHARS) -> Dict[str, Any]:
+    """The compact H+ (capability-gain) follow-up state of ONLINE gains.
+
+    This closes the delayed-supervision loop: an online strategy-outcome
+    prediction that stated an H+ stance is archived (see
+    :func:`~or_harness.world_model.trace_archive
+    .archive_capability_gain`) and followed up along the REAL path. This
+    view makes that follow-up state visible to LATER predictions, so a model
+    can see how its own past H+ claims turned out.
+
+    Four states are kept APART, never collapsed:
+
+    * ``pending`` — the claim is archived but not yet bound to a real
+      execution (NOT a failure and NOT an improvement);
+    * ``bound`` — bound to a real execution, the later effect not yet
+      observable;
+    * ``verified`` / other effect states — a learning product exists and
+      the later effect evaluation has a verdict;
+    * ``effect_verified=False`` with a state — the effect was evaluated but
+      did NOT confirm (or was inconclusive).
+
+    Read-only and bounded: no model call, no re-prediction, no re-billing.
+    """
+    out: List[Dict[str, Any]] = []
+    used = 0
+    n_total = 0
+    for trace in _all_traces(harness):
+        # READ ONLY: the trace's stored live state is served as-is. This is
+        # a prediction READ path, so it must not write (``refresh_trace``
+        # advances the stored state and is only called from write paths such
+        # as ``inspect``). The stored state is kept current by those write
+        # paths, so no information is lost.
+        n_total += 1
+        row = {
+            "prediction_id": trace.prediction_id,
+            "assessment": str(getattr(trace, "assessment", "") or ""),
+            "claim": (trace.claim or "")[:160],
+            "state": trace.state,
+            "effect_state": trace.effect_state,
+            "effect_verified": bool(trace.effect_verified),
+            "strategy_id": trace.strategy_id,
+            "task_id": trace.task_id,
+        }
+        size = len(json.dumps(row, ensure_ascii=False, default=str))
+        if used + size > budget_chars:
+            break
+        used += size
+        out.append(row)
+    result: Dict[str, Any] = {
+        "feedback_version": HPLUS_FEEDBACK_VERSION,
+        "n_gains_total": n_total,
+        "n_included": len(out),
+        "n_pending": sum(1 for e in out if e["state"] == "pending"),
+        "n_bound": sum(1 for e in out if e["state"] == "bound"),
+        "n_effect_verified": sum(1 for e in out
+                                 if e["effect_verified"]),
+        "gains": out,
+        "basis": ("derived from the online capability-gain traces; the "
+                  "claim is the ORIGINAL one, never re-predicted"),
+        "note": ("an online H+ is EXPLANATORY: it never ranked the "
+                 "candidate and it is not capability evidence. `pending` "
+                 "means the real follow-up has not happened yet — it is "
+                 "NOT a failure, and a new trace is NOT an improvement. "
+                 "`effect_verified` is the only state that confirms the "
+                 "claim was borne out"),
+    }
+    if n_total == 0:
+        result["missing"] = ("no online capability-gain claim has been "
+                             "archived in this store: the block is EMPTY BY "
+                             "ABSENCE, not because every claim was 'none'")
+    return result

@@ -50,6 +50,7 @@ from or_harness.world_model.contracts import (
     CapabilityGain,
     EvidenceRef,
     ExpectedCost,
+    INTERVAL_KINDS,
     PredictionTrace,
     RiskEvent,
     RiskStatement,
@@ -196,7 +197,10 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "is present), \"unit\": the unit of the metric, \"value\": number — "
     "for kind=solution_quality this MUST be a normalized value in [0,1] "
     "(e.g. 1-gap); a raw objective value is NOT a solution_quality, "
-    "\"interval\": [lo, hi], \"baseline\": {\"kind\": one of "
+    "\"interval\": [lo, hi], \"interval_kind\": one of outcome|mean (WHAT "
+    "the range is about — \"outcome\" = this ONE run's value, \"mean\" = "
+    "the average over repeated runs), \"interval_coverage\": the nominal "
+    "coverage level you claim (e.g. 0.9), \"baseline\": {\"kind\": one of "
     "no_knowledge|conditional_stats|current_entry|current_solution|"
     "declared|unknown, \"value\": number, \"note\": text}, \"feasible\": "
     "boolean, \"notes\": [text]}. A value with no baseline is invalid.\n"
@@ -210,6 +214,14 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "your prediction is kept and reported, but it is NOT ranked on the "
     "comparison's single yardstick: an upside in a currency the comparison "
     "cannot read is never scored as zero.\n"
+    "  INTERVAL SEMANTICS: an interval must say WHAT it is about. "
+    "`interval_kind=\"outcome\"` covers ONE execution's observed value; "
+    "`interval_kind=\"mean\"` covers the average over repeated runs. A "
+    "success PROBABILITY (kind=effective_completion) is a mean over runs, "
+    "NOT a single 0/1 label — do not wrap it in a narrow `outcome` interval "
+    "and do not present a narrow probability range as if it bounded one "
+    "run. Reporting an interval without a kind leaves the semantics "
+    "unstated, and the framework will say so.\n"
     "- cost: object of the resource dimensions you have evidence for, each "
     "a non-negative number: {llm_tokens, tool_calls, solver_runtime_s, "
     "retries, latency_s}. Include ONLY dimensions you actually predict; an "
@@ -299,6 +311,32 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "  * these are measured PAST errors, not a promise about this "
     "prediction, and they carry NO per-strategy breakdown (they are a "
     "global diagnostic).\n"
+    "PAIRED FEEDBACK: the context may carry a `prediction_execution_pairs` "
+    "block: the compact, per-episode facts of how THIS model's past "
+    "predictions turned out. Each pair names the conditions, the planned "
+    "method, the ORIGINAL predicted value, the REAL observation, the "
+    "per-field difference (`signed_error` positive = the real outcome was "
+    "BETTER than predicted; `cost_log_ratio` positive = real cost was "
+    "HIGHER), the task-check outcome and any not-comparable reasons. Read "
+    "them as EVIDENCE about your own past accuracy under similar "
+    "conditions — successes AND failures are included, and a cross-cell or "
+    "cross-strategy-name case is still evidence about your bias. When a "
+    "pair's field is unknown or not comparable, that does NOT invalidate "
+    "its other fields. Do NOT read a pair as a menu: it is a record of what "
+    "was predicted and what happened, never a recommendation.\n"
+    "PREDICTION REMINDERS: a `prediction_reminders` block may carry "
+    "DETERMINISTIC 'watch this next time' notes derived from the measured "
+    "statistics above (never written by a model). Each states the "
+    "applicability it came from and the observed bias; apply it only where "
+    "its applicability matches the metric/scope you are predicting under, "
+    "and treat the observed bias as a measured FACT, the instruction as a "
+    "reminder.\n"
+    "CAPABILITY-GAIN FOLLOW-UP: a `hplus_feedback` block may describe how "
+    "earlier H+ claims turned out. `pending` means the real follow-up has "
+    "not happened yet — NOT a failure, and NOT an improvement. Only "
+    "`effect_verified` confirms a claim was borne out. If your own past "
+    "'expected' stances repeatedly failed to verify, be more conservative "
+    "about claiming a gain now.\n"
     "Do NOT fabricate evidence. If the context contains no relevant "
     "experience or knowledge for the candidate, say so in "
     "unsupported_fields and leave the numeric fields omitted. Output the "
@@ -367,6 +405,15 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
                                          "is predicted under the SAME "
                                          "convention, so the comparison "
                                          "reads one currency"),
+        "interval_semantics": ("an interval states WHAT it is about: "
+                               "`interval_kind='outcome'` bounds ONE run's "
+                               "value, `interval_kind='mean'` bounds the "
+                               "average over runs. A completion PROBABILITY "
+                               "is a mean over runs, never a single 0/1 "
+                               "label's interval; `interval_coverage` "
+                               "records the nominal level claimed. Omitting "
+                               "the kind leaves the range's meaning "
+                               "unstated and the close-out says so"),
     },
 }
 
@@ -466,7 +513,8 @@ def _filter_calibration_by_scope(calibration: Dict[str, Any],
                                  scope: str) -> Tuple[Dict[str, Any], List[str]]:
     """Keep only the calibration groups whose declared scope matches.
 
-    Group keys are ``strategy_outcome|<model>|<metric>|<unit>|<scope>``; a
+    Group keys are ``strategy_outcome|<model>|<metric>|<unit>|<scope>``
+    (a trailing ``|<observation_rule_version>`` part may be present); a
     group under a different scope measures a different unit (one attempt vs
     a whole strategy window), so its error statistics are not evidence
     about this candidate. Returns ``(filtered_calibration, withheld_keys)``.
@@ -537,6 +585,33 @@ def parse_strategy_outcome_payload(
             else:
                 problems.append("benefit.interval must be finite with "
                                 "lo<=hi")
+        # WHAT the interval is about and its NOMINAL coverage. Both are
+        # OPTIONAL and preserved as stated: an absent kind is the legacy
+        # "unstated" case, never auto-filled; an unknown kind string is kept
+        # verbatim so validation reports it instead of erasing it.
+        raw_interval_kind = raw_benefit.get("interval_kind")
+        interval_kind = (str(raw_interval_kind).strip().lower()
+                         if raw_interval_kind else None)
+        if interval is not None and interval_kind is None \
+                and kind == "effective_completion":
+            # A COMPLETION prediction is a probability of a 0/1 label; a
+            # narrow range around it is NOT a single-label interval. Say so
+            # in a note rather than refuse the payload — the number is still
+            # reported, and the observation channel stays the task check.
+            problems.append(
+                "benefit.interval is stated for kind='effective_completion' "
+                "without interval_kind: a success-PROBABILITY interval must "
+                "not be read as a single-execution 0/1 interval. State "
+                "interval_kind='mean' (a probability over runs) or omit the "
+                "interval")
+        raw_coverage = raw_benefit.get("interval_coverage")
+        interval_coverage = None
+        if raw_coverage is not None:
+            if _finite(raw_coverage) and 0.0 < float(raw_coverage) < 1.0:
+                interval_coverage = float(raw_coverage)
+            else:
+                problems.append("benefit.interval_coverage must be a "
+                                "nominal level in (0, 1)")
         baseline = None
         raw_baseline = raw_benefit.get("baseline")
         if isinstance(raw_baseline, dict):
@@ -561,7 +636,9 @@ def parse_strategy_outcome_payload(
                 kind=kind, metric=metric or "(unnamed metric)",
                 unit=str(raw_benefit.get("unit") or ""),
                 value=(float(value) if value is not None else None),
-                interval=interval, baseline=baseline, feasible=feasible,
+                interval=interval, interval_kind=interval_kind,
+                interval_coverage=interval_coverage,
+                baseline=baseline, feasible=feasible,
                 notes=[str(n) for n in (raw_benefit.get("notes") or [])])
         except ValueError as exc:
             problems.append(f"benefit: {exc}")
