@@ -1,167 +1,126 @@
-"""
-orarla_6: Production planning with inventory and backlog (multi-product, multi-period)
-Method: milp_inventory_backlog_multi
-Solver: HiGHS (high-level API)
-"""
-
 import json
+import time
 import highspy
 
-# ── Parameters ──────────────────────────────────────────────────────────────
-products = ["I", "II", "III"]
-quarters = [1, 2, 3, 4]
+# --- Parameters ---
+products = ['I', 'II', 'III']
+quarters = ['Q1', 'Q2', 'Q3', 'Q4']
+h = {'I': 2, 'II': 4, 'III': 3}
+c_delay = {'I': 20, 'II': 20, 'III': 10}
+c_hold = 5
+cap = 15000
+final_inv_req = 150
 
-demand = {
-    "I":   {1: 1500, 2: 1000, 3: 2000, 4: 1200},
-    "II":  {1: 1500, 2: 1500, 3: 1200, 4: 1500},
-    "III": {1: 1000, 2: 2000, 3: 1500, 4: 2500},
+d = {
+    ('I', 'Q1'): 1500, ('I', 'Q2'): 1000, ('I', 'Q3'): 2000, ('I', 'Q4'): 1200,
+    ('II', 'Q1'): 1500, ('II', 'Q2'): 1500, ('II', 'Q3'): 1200, ('II', 'Q4'): 1500,
+    ('III', 'Q1'): 1000, ('III', 'Q2'): 2000, ('III', 'Q3'): 1500, ('III', 'Q4'): 2500,
 }
+delay_weights = {'Q1': 4, 'Q2': 3, 'Q3': 2, 'Q4': 1}
 
-prod_hours = {"I": 2, "II": 4, "III": 3}
-backlog_cost = {"I": 20, "II": 20, "III": 10}
-inv_cost = 5
-capacity = 15000          # production hours per quarter
-final_stock = 150         # required ending inventory per product
-no_prod_I_q2 = True      # product I cannot be produced in Q2
+# --- Build model ---
+model = highspy.Highs()
+model.setOptionValue('time_limit', 60)
+model.setOptionValue('mip_rel_gap', 0)
+model.setOptionValue('mip_abs_gap', 0)
 
-# ── HiGHS model ────────────────────────────────────────────────────────────
-m = highspy.Highs()
-m.setOptionValue("output_flag", True)
-m.setOptionValue("log_to_console", True)
-
-# Decision variables: production, inventory, backlog per product per quarter
-# x[p][q]  – production
-# inv[p][q] – inventory (stock on hand)
-# back[p][q] – backlog (unfulfilled demand carried forward)
-
-x_var = {}    # production
-inv_var = {}  # inventory
-back_var = {} # backlog
-
-# Add production variables (integer, >= 0)
+# Decision variables: set objective at creation time
+produce = {}
+inventory = {}
+backlog = {}
 for p in products:
     for q in quarters:
-        name = f"x_{p}_{q}"
-        x_var[(p, q)] = m.addVariable(
-            lb=0.0,
-            ub=1e9,
-            obj=0.0,
-            type=highspy.HighsVarType.kInteger,
-            name=name,
-        )
+        produce[p, q] = model.addVariable(
+            0, float('inf'), 0.0,
+            highspy.HighsVarType.kInteger, f'produce_{p}_{q}')
+        inventory[p, q] = model.addVariable(
+            0, float('inf'), c_hold,
+            highspy.HighsVarType.kInteger, f'inventory_{p}_{q}')
+        backlog[p, q] = model.addVariable(
+            0, float('inf'), float(c_delay[p] * delay_weights[q]),
+            highspy.HighsVarType.kInteger, f'backlog_{p}_{q}')
 
-# Add inventory variables (integer, >= 0)
-for p in products:
-    for q in quarters:
-        name = f"inv_{p}_{q}"
-        inv_var[(p, q)] = m.addVariable(
-            lb=0.0,
-            ub=1e9,
-            obj=inv_cost,
-            type=highspy.HighsVarType.kInteger,
-            name=name,
-        )
-
-# Add backlog variables (integer, >= 0)
-for p in products:
-    for q in quarters:
-        name = f"back_{p}_{q}"
-        back_var[(p, q)] = m.addVariable(
-            lb=0.0,
-            ub=1e9,
-            obj=backlog_cost[p],
-            type=highspy.HighsVarType.kInteger,
-            name=name,
-        )
-
-# ── Constraints ────────────────────────────────────────────────────────────
-
-# 1. Flow balance: inv - back at q = inv - back at q-1 + x - demand
-#    Rearranged: inv[p][q] - back[p][q] - inv[p][q-1] + back[p][q-1] - x[p][q] = -demand[p][q]
-for p in products:
-    for q in quarters:
-        if q == 1:
-            # inv[p][1] - back[p][1] - x[p][1] = -demand[p][1]
-            expr = (inv_var[(p, 1)]
-                    - back_var[(p, 1)]
-                    - x_var[(p, 1)])
-            rhs = -demand[p][1]
-        else:
-            # inv[p][q] - back[p][q] - inv[p][q-1] + back[p][q-1] - x[p][q] = -demand[p][q]
-            expr = (inv_var[(p, q)]
-                    - back_var[(p, q)]
-                    - inv_var[(p, q-1)]
-                    + back_var[(p, q-1)]
-                    - x_var[(p, q)])
-            rhs = -demand[p][q]
-        m.addConstr(expr == rhs, name=f"flow_{p}_{q}")
-
-# 2. Final inventory = 150, final backlog = 0
-for p in products:
-    m.addConstr(inv_var[(p, 4)] == final_stock, name=f"final_inv_{p}")
-    m.addConstr(back_var[(p, 4)] == 0.0, name=f"final_back_{p}")
-
-# 3. Production capacity: sum_p x[p][q] * prod_hours[p] <= capacity
+# Capacity constraints per quarter
 for q in quarters:
-    expr = sum(x_var[(p, q)] * prod_hours[p] for p in products)
-    m.addConstr(expr <= capacity, name=f"capacity_{q}")
+    model.addConstr(h['I'] * produce['I', q] +
+                    h['II'] * produce['II', q] +
+                    h['III'] * produce['III', q] <= cap,
+                    f'C_cap_{q}')
 
-# 4. No product I in Q2
-if no_prod_I_q2:
-    m.addConstr(x_var[("I", 2)] == 0.0, name="no_I_Q2")
+# Product I cannot be produced in Q2
+model.addConstr(produce['I', 'Q2'] == 0, 'C_no_I_Q2')
 
-# ── Objective ──────────────────────────────────────────────────────────────
-# Already set obj on inv and back variables; production cost = 0
-m.changeObjectiveSense(highspy.ObjSense.kMinimize)
-
-# ── Solve ──────────────────────────────────────────────────────────────────
-status = m.run()
-optimal = m.getModelStatus() == highspy.HighsModelStatus.kOptimal
-
-# ── Extract solution ────────────────────────────────────────────────────────
-solution = m.getSolution()
-col_vals = solution.col_value
-
-def get_var_val(v):
-    return col_vals[v.index]
-
-result = {
-    "status": m.modelStatusToString(m.getModelStatus()),
-    "optimal": optimal,
-    "objective_value": m.getObjectiveValue(),
-    "objective_bound": None,
-    "runtime_seconds": m.getRunTime(),
-    "production": {p: {str(q): get_var_val(x_var[(p, q)]) for q in quarters} for p in products},
-    "inventory": {p: {str(q): get_var_val(inv_var[(p, q)]) for q in quarters} for p in products},
-    "backlog": {p: {str(q): get_var_val(back_var[(p, q)]) for q in quarters} for p in products},
-    "variables": {},
-}
-
-# Build variables dict for check
+# Inventory balance and backlog constraints
 for p in products:
-    for q in quarters:
-        result["variables"][f"x_{p}_{q}"] = get_var_val(x_var[(p, q)])
-        result["variables"][f"inv_{p}_{q}"] = get_var_val(inv_var[(p, q)])
-        result["variables"][f"back_{p}_{q}"] = get_var_val(back_var[(p, q)])
+    # Q1: inv = produce - demand + backlog; backlog >= demand - produce
+    model.addConstr(inventory[p, 'Q1'] == produce[p, 'Q1'] - d[p, 'Q1'] + backlog[p, 'Q1'],
+                    f'C_bal_{p}_Q1')
+    model.addConstr(backlog[p, 'Q1'] >= d[p, 'Q1'] - produce[p, 'Q1'], f'C_bl_{p}_Q1')
 
-# Objective bound = objective value when optimal
-result["objective_bound"] = result["objective_value"] if optimal else None
+    # Q2
+    model.addConstr(inventory[p, 'Q2'] == inventory[p, 'Q1'] + produce[p, 'Q2']
+                    - d[p, 'Q2'] + backlog[p, 'Q1'] - backlog[p, 'Q2'], f'C_bal_{p}_Q2')
+    model.addConstr(backlog[p, 'Q2'] >= backlog[p, 'Q1'] + d[p, 'Q1'] - produce[p, 'Q1']
+                    - inventory[p, 'Q2'], f'C_bl_{p}_Q2')
 
-# ── Write result ────────────────────────────────────────────────────────────
-with open("result.json", "w") as f:
-    json.dump(result, f, indent=2, default=int)
+    # Q3
+    model.addConstr(inventory[p, 'Q3'] == inventory[p, 'Q2'] + produce[p, 'Q3']
+                    - d[p, 'Q3'] + backlog[p, 'Q2'] - backlog[p, 'Q3'], f'C_bal_{p}_Q3')
+    model.addConstr(backlog[p, 'Q3'] >= backlog[p, 'Q2'] + d[p, 'Q2'] - produce[p, 'Q2']
+                    - inventory[p, 'Q3'], f'C_bl_{p}_Q3')
 
-print(f"\n=== RESULT ===")
-print(f"Status:     {result['status']}")
-print(f"Objective:  {result['objective_value']}")
-print(f"Bound:      {result['objective_bound']}")
-print(f"Runtime:    {result['runtime_seconds']:.3f}s")
-print("\nProduction (units/quarter):")
+    # Q4
+    model.addConstr(inventory[p, 'Q4'] == inventory[p, 'Q3'] + produce[p, 'Q4']
+                    - d[p, 'Q4'] + backlog[p, 'Q3'] - backlog[p, 'Q4'], f'C_bal_{p}_Q4')
+    model.addConstr(backlog[p, 'Q4'] >= backlog[p, 'Q3'] + d[p, 'Q3'] - produce[p, 'Q3']
+                    - inventory[p, 'Q4'], f'C_bl_{p}_Q4')
+
+# Final inventory >= 150
 for p in products:
-    print(f"  {p}: {[int(result['production'][p][str(q)]) for q in quarters]}")
-print("\nInventory (units/quarter-end):")
-for p in products:
-    print(f"  {p}: {[int(result['inventory'][p][str(q)]) for q in quarters]}")
-print("\nBacklog (units/quarter-end):")
-for p in products:
-    print(f"  {p}: {[int(result['backlog'][p][str(q)]) for q in quarters]}")
+    model.addConstr(inventory[p, 'Q4'] >= final_inv_req, f'C_final_{p}')
+
+model.changeObjectiveSense(highspy.ObjSense.kMinimize)
+
+# Solve
+t0 = time.time()
+model.run()
+t1 = time.time()
+runtime = t1 - t0
+
+sol = model.getSolution()
+ms = model.getModelStatus()
+st = ms.name
+info = model.getInfo()
+
+if 'optimal' in st.lower() or st == 'kOptimal':
+    objective = model.getObjectiveValue()
+    mip_gap = float(info.mip_gap) if hasattr(info, 'mip_gap') else 0.0
+    obj_bound = float(info.mip_dual_bound) if hasattr(info, 'mip_dual_bound') else objective
+
+    vars_out = {}
+    for p in products:
+        for q in quarters:
+            vars_out[f'produce_{p}_{q}'] = produce[p, q].index
+            vars_out[f'inventory_{p}_{q}'] = inventory[p, q].index
+            vars_out[f'backlog_{p}_{q}'] = backlog[p, q].index
+
+    result = {
+        'status': 'optimal',
+        'objective_value': objective,
+        'objective_bound': obj_bound,
+        'mip_gap': mip_gap,
+        'runtime_seconds': runtime,
+        'variables': {name: float(sol.col_value[idx]) for name, idx in vars_out.items()}
+    }
+else:
+    result = {
+        'status': st,
+        'objective_value': None,
+        'objective_bound': None,
+        'mip_gap': None,
+        'runtime_seconds': runtime,
+        'variables': {}
+    }
+
+with open('result.json', 'w') as f:
+    json.dump(result, f)

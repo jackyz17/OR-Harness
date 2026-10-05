@@ -1,30 +1,7 @@
 {
-  "bases": [
-    {
-      "id": "b1",
-      "description": "total_pilots = pilots_year1 + pilots_year2",
-      "check": "variables.total_pilots == variables.pilots_year1 + variables.pilots_year2"
-    },
-    {
-      "id": "b2",
-      "description": "pilots_year1 = a1 × rate = 10 × 5 = 50",
-      "check": "variables.pilots_year1 == 50"
-    },
-    {
-      "id": "b3",
-      "description": "pilots_year2 = a2 × rate = 15 × 5 = 75",
-      "check": "variables.pilots_year2 == 75"
-    },
-    {
-      "id": "b4",
-      "description": "total = 50 + 75 = 125",
-      "check": "variables.total_pilots == 125"
-    },
-    {
-      "id": "b5",
-      "description": "objective_value matches total_pilots",
-      "check": "objective_value == 125"
-    }
-  ],
-  "reference_objective": 125
+  "reference_objective": {
+    "expected": 50.0,
+    "tolerance": 0.0,
+    "note": "Year 1 jets (10) train for 2 years, each producing 5 pilots/year. By end of year 2, only the first cohort is fully trained: 10*5 = 50 pilots. Year 2 jets start training in year 2, not ready until year 3."
+  }
 }

@@ -1,209 +1,185 @@
-#!/usr/bin/env python3
 """
-ORClaw solve script for orarla_1: workforce training and production planning
-Method: milp_binary_week_selection
-Uses HiGHS high-level API (addVariable/addConstr)
+ORClaw task orarla_1: Workforce & Production Planning (FIXED v2)
+MILP formulation using HiGHS high-level API.
+Selected strategy: milp_time_indexed
 
-Key modeling decisions:
-- Backlog balance: backlog[t] >= backlog[t-1] + DEMAND[t] - prod[t]/RATE
-  (backlog accumulates when demand > supply; >= allows backlog to grow without bound)
-- All workers paid wages regardless of production (wages are fixed overhead)
-- Trainee wages: 120/wk for 2-week training, then 240/wk after
-- Overtime premium: 540/wk (extra 180 over base 360)
-- Penalty: backlog * penalty_rate per week (accumulates with backlog)
+Key fix: workforce constraint should be sp + st + ow + tr <= N0,
+where tr = trained workers available (cumulated from 2 weeks ago).
+The original model had sp + st + ow <= N0, which excluded trained workers
+from the workforce count, causing infeasibility in weeks 3-8.
+
+Also fix: trained workers' wage should be 240/week, but the training cost
+(nt[t] * 120 * 2 = nt[t] * 240) is correct.
 """
 
 import json
 import time
 import highspy
 
-# ── Data ──────────────────────────────────────────────────────────────────────
-WEEKS = list(range(1, 9))
-N = len(WEEKS)
+def solve():
+    h = highspy.Highs()
+    h.setOptionValue("log_to_console", True)
+    h.setOptionValue("time_limit", 60.0)
+    h.setOptionValue("mip_gap", 0.0)
+    h.setOptionValue("presolve", "on")
 
-INITIAL_SKILLED = 50
-MAX_TRAIN_CAPACITY = 150
-TARGET_TRAINEES = 50
+    # --- Parameters ---
+    T = 8  # weeks 0..7
+    DEMAND_I  = [10000, 10000, 12000, 12000, 16000, 16000, 20000, 20000]
+    DEMAND_II = [6000,  7200,  8400,  10800, 10800, 12000, 12000, 12000]
+    RATE_I  = 10.0   # kg per worker-hour
+    RATE_II =  6.0   # kg per worker-hour
+    STD_HRS = 40
+    OT_HRS  = 60
+    W_SKILL = 360.0  # skilled worker weekly wage
+    W_TRAIN = 120.0  # trainee weekly wage during training
+    W_TR    = 240.0  # trained worker weekly wage after training
+    W_OT    = 540.0  # overtime worker weekly wage (60h)
+    PEN_I   =   0.5  # yuan per kg per week backlog
+    PEN_II  =   0.6
+    N0      = 50     # initial skilled workers
 
-WAGE_SKILLED         = 360.0
-WAGE_OVERTIME        = 540.0
-WAGE_TRAINEE_DURING  = 120.0
-WAGE_TRAINEE_AFTER   = 240.0
+    # --- Variables ---
+    # sp[t]: skilled workers producing (integer)
+    # st[t]: skilled workers in training (2-week commitment, integer)
+    # ow[t]: overtime workers (integer, each works 60h)
+    # nt[t]: new trainees starting (integer, 2 weeks to become trained)
+    # tr[t]: trained workers available for production (integer, cumulated from nt[t-2])
+    # pI[t], pII[t]: production (continuous)
+    # bI[t], bII[t]: backlog at end of week (continuous)
 
-HOURS_PER_WEEK  = 40.0
-HOURS_OVERTIME  = 60.0
-PROD_RATE_I     = 10.0
-PROD_RATE_II    = 6.0
+    sp  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kInteger, f"sp_{t}")  for t in range(T)]
+    st  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kInteger, f"st_{t}")  for t in range(T)]
+    ow  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kInteger, f"ow_{t}")  for t in range(T)]
+    nt  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kInteger, f"nt_{t}")  for t in range(T)]
+    tr  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kInteger, f"tr_{t}")  for t in range(T)]
+    pI  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kContinuous, f"pI_{t}")  for t in range(T)]
+    pII = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kContinuous, f"pII_{t}") for t in range(T)]
+    bI  = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kContinuous, f"bI_{t}")  for t in range(T)]
+    bII = [h.addVariable(0.0, float('inf'), 0.0,
+              highspy.HighsVarType.kContinuous, f"bII_{t}") for t in range(T)]
 
-PENALTY_I  = 0.5
-PENALTY_II = 0.6
+    # --- Constraints ---
 
-DEMAND_I  = [10000.0, 10000.0, 12000.0, 12000.0, 16000.0, 16000.0, 20000.0, 20000.0]
-DEMAND_II = [6000.0, 7200.0, 8400.0, 10800.0, 10800.0, 12000.0, 12000.0, 12000.0]
+    # C1: Workforce balance (FIXED: includes tr)
+    # All workers (producing + training + overtime + trained) come from initial N0
+    for t in range(T):
+        h.addConstr(sp[t] + st[t] + ow[t] + tr[t] <= N0, f"wbalance_{t}")
 
-# ── Model ─────────────────────────────────────────────────────────────────────
-m = highspy.Highs()
-m.setOptionValue("output_flag", True)
-m.setOptionValue("log_to_console", True)
+    # C2: Training capacity: nt[t] <= 3 * st[t]
+    # (1 trainer handles up to 3 trainees in 2-week batch)
+    for t in range(T):
+        h.addConstr(nt[t] <= 3.0 * st[t], f"tcap_{t}")
 
-def idx(t): return t - 1
+    # C3: Trained worker accumulation: tr[t] = nt[t-2]
+    # Workers starting training at t-2 finish at t and become available
+    h.addConstr(tr[0] == 0.0, "tr_0")
+    if T > 1:
+        h.addConstr(tr[1] == 0.0, "tr_1")
+    for t in range(2, T):
+        h.addConstr(tr[t] - nt[t-2] == 0.0, f"tr_def_{t}")
 
-# ── Variables ─────────────────────────────────────────────────────────────────
-train          = []
-ot             = []
-prod_I         = []
-prod_II        = []
-backlog_I      = []
-backlog_II     = []
-trained_active = []
-u_b            = []
-v_b            = []
+    # C4: Total trained by week 8 >= 50
+    h.addConstr(sum(nt[t] for t in range(T)) >= 50.0, "total_trainees")
 
-for t in WEEKS:
-    i = idx(t)
-    train.append(         m.addVariable(0.0, float(MAX_TRAIN_CAPACITY), 0.0, highspy.HighsVarType.kInteger,   f"train_{t}"))
-    ot.append(            m.addVariable(0.0, float(INITIAL_SKILLED),    0.0, highspy.HighsVarType.kInteger,   f"ot_{t}"))
-    prod_I.append(        m.addVariable(0.0, float('inf'),              0.0, highspy.HighsVarType.kContinuous, f"prod_I_{t}"))
-    prod_II.append(       m.addVariable(0.0, float('inf'),              0.0, highspy.HighsVarType.kContinuous, f"prod_II_{t}"))
-    backlog_I.append(     m.addVariable(0.0, float('inf'),              0.0, highspy.HighsVarType.kContinuous, f"backlog_I_{t}"))
-    backlog_II.append(    m.addVariable(0.0, float('inf'),              0.0, highspy.HighsVarType.kContinuous, f"backlog_II_{t}"))
-    trained_active.append(m.addVariable(0.0, float(TARGET_TRAINEES),   0.0, highspy.HighsVarType.kInteger,   f"trained_active_{t}"))
-    u_b.append(           m.addVariable(0.0, 1.0,                      0.0, highspy.HighsVarType.kInteger,   f"u_{t}"))
-    v_b.append(           m.addVariable(0.0, 1.0,                      0.0, highspy.HighsVarType.kInteger,   f"v_{t}"))
+    # C5/C6: Production capacity (total worker-hours)
+    # Workers in training (st[t]) produce 0; trained workers (tr[t]) produce full 40h
+    # overtime workers (ow[t]) work 60h
+    for t in range(T):
+        hours = (sp[t] + tr[t]) * STD_HRS + ow[t] * OT_HRS
+        h.addConstr(pI[t]  <= hours * RATE_I,  f"cap_I_{t}")
+        h.addConstr(pII[t] <= hours * RATE_II, f"cap_II_{t}")
 
-# ── Constraints ───────────────────────────────────────────────────────────────
+    # C7/C8: Backlog balance for product I
+    h.addConstr(bI[0] == DEMAND_I[0] - pI[0], "bI_0")
+    for t in range(1, T):
+        h.addConstr(bI[t] == bI[t-1] + DEMAND_I[t] - pI[t], f"bI_{t}")
 
-# C1: Capacity
-# Available hours = 40*(50 - train - ot) + 60*ot + 40*trained
-# kg produced = prod_I/10 + prod_II/6
-for t in WEEKS:
-    i = idx(t)
-    avail = (HOURS_PER_WEEK * (INITIAL_SKILLED - train[i] - ot[i])
-             + HOURS_OVERTIME * ot[i]
-             + HOURS_PER_WEEK * trained_active[i])
-    m.addConstr(prod_I[i] / PROD_RATE_I + prod_II[i] / PROD_RATE_II <= avail, f"C1_{t}")
+    # C9/C10: Backlog balance for product II
+    h.addConstr(bII[0] == DEMAND_II[0] - pII[0], "bII_0")
+    for t in range(1, T):
+        h.addConstr(bII[t] == bII[t-1] + DEMAND_II[t] - pII[t], f"bII_{t}")
 
-# C2: Cannot train more than 50 skilled workers per week
-for t in WEEKS:
-    i = idx(t)
-    m.addConstr(train[i] <= INITIAL_SKILLED, f"C2_{t}")
+    # --- Objective ---
+    # Weekly costs:
+    #   Skilled producing:   sp[t] * W_SKILL
+    #   Skilled training:     st[t] * W_SKILL (trainers paid skilled wage)
+    #   Trained:             tr[t] * W_TR
+    #   Trainees (2 weeks):  nt[t] * W_TRAIN * 2  (= nt[t] * 240)
+    #   Overtime:            ow[t] * W_OT
+    #   Backlog penalty:     sum over t of bI[t]*PEN_I + bII[t]*PEN_II
 
-# C3: Overtime only for non-training skilled workers
-for t in WEEKS:
-    i = idx(t)
-    m.addConstr(ot[i] <= INITIAL_SKILLED - train[i], f"C3_{t}")
+    obj_expr = sum(
+        sp[t]  * W_SKILL +
+        st[t]  * W_SKILL +
+        tr[t]  * W_TR   +
+        nt[t]  * W_TRAIN * 2.0 +
+        ow[t]  * W_OT   +
+        bI[t]  * PEN_I  +
+        bII[t] * PEN_II
+        for t in range(T)
+    )
+    h.setObjective(obj_expr, highspy.ObjSense.kMinimize)
 
-# C4: Training flow
-# trained_active[t] = sum_{s=1}^{t-2} train[s]
-for t in WEEKS:
-    i = idx(t)
-    if t >= 3:
-        inflow = sum(train[idx(s)] for s in range(1, t - 1))
-        m.addConstr(trained_active[i] == inflow, f"C4_{t}")
-    else:
-        m.addConstr(trained_active[i] == 0, f"C4_{t}")
+    # --- Solve ---
+    solve_start = time.time()
+    status = h.run()
+    runtime = time.time() - solve_start
+    print(f"Solver run() returned: {status}")
 
-# C5: Demand balance for food I
-# backlog[t] >= backlog[t-1] + DEMAND_I[t] - prod_I[t]/10
-# backlog[0] = 0
-m.addConstr(backlog_I[0] == 0, "C5_init")
-for t in WEEKS:
-    i = idx(t)
-    if i == 0:
-        m.addConstr(backlog_I[0] >= DEMAND_I[0] - prod_I[0] / PROD_RATE_I, f"C5_I_{t}")
-    else:
-        m.addConstr(backlog_I[i] >= backlog_I[i - 1] + DEMAND_I[i] - prod_I[i] / PROD_RATE_I, f"C5_I_{t}")
+    model_status = h.getModelStatus()
+    info = h.getInfo()
 
-# C6: Demand balance for food II
-m.addConstr(backlog_II[0] == 0, "C6_init")
-for t in WEEKS:
-    i = idx(t)
-    if i == 0:
-        m.addConstr(backlog_II[0] >= DEMAND_II[0] - prod_II[0] / PROD_RATE_II, f"C6_II_{t}")
-    else:
-        m.addConstr(backlog_II[i] >= backlog_II[i - 1] + DEMAND_II[i] - prod_II[i] / PROD_RATE_II, f"C6_II_{t}")
+    mip_gap  = float(info.mip_gap) if info.mip_gap < float('inf') else 0.0
+    obj_val   = h.getObjectiveValue()
+    obj_bound = float(info.mip_dual_bound) if info.mip_dual_bound > -float('inf') else obj_val
 
-# C7: Training target
-m.addConstr(sum(train) == TARGET_TRAINEES, "C7_target")
+    print(f"Model status: {model_status}")
+    print(f"Objective: {obj_val:.4f}, Bound: {obj_bound:.4f}, Gap: {mip_gap:.6f}")
 
-# C8: Training capacity per 2-week window
-for t in range(1, N):
-    m.addConstr(train[idx(t)] + train[idx(t + 1)] <= MAX_TRAIN_CAPACITY, f"C8_{t}")
+    status_map = {
+        highspy.HighsModelStatus.kOptimal:     "optimal",
+        highspy.HighsModelStatus.kInfeasible:  "infeasible",
+        highspy.HighsModelStatus.kUnbounded:   "unbounded",
+        highspy.HighsModelStatus.kTimeLimit:    "timeout",
+    }
+    status_str = status_map.get(model_status, str(model_status))
 
-# C9/C10: Binary linking (optional - helps MIP solver)
-for t in WEEKS:
-    i = idx(t)
-    m.addConstr(train[i] <= float(INITIAL_SKILLED) * u_b[i], f"C9_{t}")
-    m.addConstr(ot[i] <= float(INITIAL_SKILLED) * v_b[i], f"C10_{t}")
+    sol = h.getSolution()
 
-# ── Objective ─────────────────────────────────────────────────────────────────
-# Total cost = wages (fixed) + trainee wages + penalty
-obj = 0.0
+    vars_dict = {}
+    for t in range(T):
+        vars_dict[f"sp_{t}"]  = sol.col_value[sp[t].index]
+        vars_dict[f"st_{t}"]  = sol.col_value[st[t].index]
+        vars_dict[f"ow_{t}"]  = sol.col_value[ow[t].index]
+        vars_dict[f"nt_{t}"]  = sol.col_value[nt[t].index]
+        vars_dict[f"tr_{t}"]  = sol.col_value[tr[t].index]
+        vars_dict[f"pI_{t}"]  = sol.col_value[pI[t].index]
+        vars_dict[f"pII_{t}"] = sol.col_value[pII[t].index]
+        vars_dict[f"bI_{t}"]  = sol.col_value[bI[t].index]
+        vars_dict[f"bII_{t}"] = sol.col_value[bII[t].index]
 
-# Wage costs (fixed overhead, all workers paid regardless of production)
-for t in WEEKS:
-    i = idx(t)
-    # Skilled workers not training or overtime
-    obj += WAGE_SKILLED * (INITIAL_SKILLED - train[i] - ot[i])
-    # Overtime premium
-    obj += (WAGE_OVERTIME - WAGE_SKILLED) * ot[i]
-    # Trained workers
-    obj += WAGE_TRAINEE_AFTER * trained_active[i]
+    result = {
+        "status":          status_str,
+        "objective_value":  obj_val,
+        "objective_bound": obj_bound,
+        "mip_gap":         mip_gap,
+        "runtime_seconds":  runtime,
+        "variables":        vars_dict,
+    }
 
-# Trainee during-training wages (120/wk for 2 weeks per trainee)
-for t in WEEKS:
-    i = idx(t)
-    obj += WAGE_TRAINEE_DURING * train[i]         # new trainees this week
-    if i > 0:
-        obj += WAGE_TRAINEE_DURING * train[i - 1]  # still in 2nd training week
+    with open("result.json", "w") as f:
+        json.dump(result, f, indent=2)
+    print("Result written to result.json")
+    return result
 
-# Backlog penalty (accumulates per week)
-for t in WEEKS:
-    i = idx(t)
-    obj += PENALTY_I * backlog_I[i]
-    obj += PENALTY_II * backlog_II[i]
-
-m.setObjective(obj, sense=highspy.ObjSense.kMinimize)
-
-# ── Solve ─────────────────────────────────────────────────────────────────────
-start_time = time.time()
-m.run()
-runtime = time.time() - start_time
-
-# ── Extract solution ──────────────────────────────────────────────────────────
-sol = m.getSolution()
-cv = sol.col_value
-ms = m.getModelStatus()
-
-result = {
-    "status": None,
-    "objective_value": None,
-    "objective_bound": None,
-    "runtime_seconds": runtime,
-    "variables": {}
-}
-
-if ms == highspy.HighsModelStatus.kOptimal or ms == highspy.HighsModelStatus.kFeasible:
-    result["status"] = "optimal" if ms == highspy.HighsModelStatus.kOptimal else "feasible"
-    result["objective_value"] = m.getObjectiveValue()
-    info = m.getInfo()
-    result["objective_bound"] = info.objective_function_value
-
-    for t in WEEKS:
-        i = idx(t)
-        result["variables"][f"train_{t}"]          = round(cv[train[i].index])
-        result["variables"][f"ot_{t}"]             = round(cv[ot[i].index])
-        result["variables"][f"prod_I_{t}"]         = round(cv[prod_I[i].index], 2)
-        result["variables"][f"prod_II_{t}"]        = round(cv[prod_II[i].index], 2)
-        result["variables"][f"backlog_I_{t}"]      = round(cv[backlog_I[i].index], 2)
-        result["variables"][f"backlog_II_{t}"]     = round(cv[backlog_II[i].index], 2)
-        result["variables"][f"trained_active_{t}"] = round(cv[trained_active[i].index])
-        result["variables"][f"u_{t}"]              = round(cv[u_b[i].index])
-        result["variables"][f"v_{t}"]              = round(cv[v_b[i].index])
-else:
-    result["status"] = "infeasible" if ms == highspy.HighsModelStatus.kInfeasible else "unknown"
-
-with open("result.json", "w") as f:
-    json.dump(result, f, indent=2)
-
-print(f"\nResult: {result['status']}, objective: {result['objective_value']}, runtime: {runtime:.2f}s")
+if __name__ == "__main__":
+    solve()

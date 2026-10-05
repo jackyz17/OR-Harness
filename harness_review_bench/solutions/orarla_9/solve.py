@@ -1,155 +1,104 @@
 """
-ORClaw solve for orarla_9: Haus Toys production planning (MILP with binary indicators).
-Strategy: milp_binary_indicator
-Solver: HiGHS (highspy 1.15+ high-level API)
+Haus Toys profit maximization - MILP formulation
+Method: milp_direct_integer
+
+Variables:
+  x_truck, x_airplane, x_boat, x_train: nonnegative integers
+  y: binary (1=make trucks, 0=make trains)
+
+Objective: maximize 5*x_truck + 10*x_airplane + 8*x_boat + 7*x_train
+
+Constraints:
+  Wood:   12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890
+  Steel:   6*x_truck +  3*x_airplane +  5*x_boat +  4*x_train <= 500
+  Truck+Train mutually exclusive via big-M:
+    x_truck <= 100*y
+    x_train <= 100*(1-y)
+  Boat requires airplane: x_boat <= x_airplane
+  Boat <= Train: x_boat <= x_train
 """
+
 import json
 import highspy
+import time
 
 def solve():
-    # Profits per unit
-    PROFIT = {"truck": 5, "airplane": 10, "boat": 8, "train": 7}
+    t_start = time.time()
 
-    # Resource consumption
-    WOOD = {"truck": 12, "airplane": 20, "boat": 15, "train": 10}
-    STEEL = {"truck": 6, "airplane": 3, "boat": 5, "train": 4}
+    m = highspy.Highs()
+    m.changeObjectiveSense(highspy.ObjSense.kMaximize)
 
-    # Resource availability
-    WOOD_AVAIL = 890
-    STEEL_AVAIL = 500
+    INF = highspy.kHighsInf
 
-    # Tightened big-M values (min over wood-bound and steel-bound maxima)
-    # Truck: wood→74, steel→83 → M_t=74
-    # Airplane: wood→44, steel→166 → M_a=44
-    # Boat: wood→59, steel→100 → M_b=59
-    # Train: wood→89, steel→125 → M_n=89
-    M = {"truck": 74, "airplane": 44, "boat": 59, "train": 89}
+    x_truck = m.addVariable(lb=0.0, ub=INF, obj=5.0, type=highspy.HighsVarType.kInteger, name="x_truck")
+    x_airplane = m.addVariable(lb=0.0, ub=INF, obj=10.0, type=highspy.HighsVarType.kInteger, name="x_airplane")
+    x_boat = m.addVariable(lb=0.0, ub=INF, obj=8.0, type=highspy.HighsVarType.kInteger, name="x_boat")
+    x_train = m.addVariable(lb=0.0, ub=INF, obj=7.0, type=highspy.HighsVarType.kInteger, name="x_train")
+    y = m.addVariable(lb=0.0, ub=1.0, obj=0.0, type=highspy.HighsVarType.kInteger, name="y")
 
-    h = highspy.Highs()
-    h.setOptionValue("output_flag", False)
-    h.setOptionValue("mip_rel_gap", 0.0)
-    h.setOptionValue("mip_abs_gap", 0.0)
+    # Wood: 12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890
+    m.addConstr(12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890.0, name="wood")
 
-    # Integer production variables
-    t = h.addVariable(lb=0.0, ub=float(M["truck"]), obj=PROFIT["truck"],
-                      type=highspy.HighsVarType.kInteger, name="truck")
-    a = h.addVariable(lb=0.0, ub=float(M["airplane"]), obj=PROFIT["airplane"],
-                      type=highspy.HighsVarType.kInteger, name="airplane")
-    b = h.addVariable(lb=0.0, ub=float(M["boat"]), obj=PROFIT["boat"],
-                      type=highspy.HighsVarType.kInteger, name="boat")
-    n = h.addVariable(lb=0.0, ub=float(M["train"]), obj=PROFIT["train"],
-                      type=highspy.HighsVarType.kInteger, name="train")
+    # Steel: 6*x_truck + 3*x_airplane + 5*x_boat + 4*x_train <= 500
+    m.addConstr(6*x_truck + 3*x_airplane + 5*x_boat + 4*x_train <= 500.0, name="steel")
 
-    # Binary indicator variables (1 if corresponding product is manufactured)
-    # Note: highspy has no kBinary; use kInteger with bounds [0,1]
-    m_t = h.addVariable(lb=0.0, ub=1.0, obj=0.0,
-                        type=highspy.HighsVarType.kInteger, name="m_truck")
-    m_a = h.addVariable(lb=0.0, ub=1.0, obj=0.0,
-                        type=highspy.HighsVarType.kInteger, name="m_airplane")
-    m_b = h.addVariable(lb=0.0, ub=1.0, obj=0.0,
-                        type=highspy.HighsVarType.kInteger, name="m_boat")
-    m_n = h.addVariable(lb=0.0, ub=1.0, obj=0.0,
-                        type=highspy.HighsVarType.kInteger, name="m_train")
+    # Mutual exclusion: x_truck <= 100*y  => x_truck - 100*y <= 0
+    m.addConstr(x_truck + (-100.0)*y <= 0.0, name="truck_y")
 
-    # Maximize profit
-    h.changeObjectiveSense(highspy.ObjSense.kMaximize)
+    # x_train <= 100*(1-y) => x_train + 100*y <= 100
+    m.addConstr(x_train + 100.0*y <= 100.0, name="train_y")
 
-    # Resource constraints
-    h.addConstr(t * WOOD["truck"] + a * WOOD["airplane"] + b * WOOD["boat"] + n * WOOD["train"]
-                <= WOOD_AVAIL, name="wood")
-    h.addConstr(t * STEEL["truck"] + a * STEEL["airplane"] + b * STEEL["boat"] + n * STEEL["train"]
-                <= STEEL_AVAIL, name="steel")
+    # Boat requires airplane: x_boat <= x_airplane => x_boat - x_airplane <= 0
+    m.addConstr(x_boat + (-1.0)*x_airplane <= 0.0, name="boat_airplane")
 
-    # Linking constraints: quantity <= M * indicator
-    h.addConstr(t <= M["truck"] * m_t, name="link_truck_ub")
-    h.addConstr(a <= M["airplane"] * m_a, name="link_airplane_ub")
-    h.addConstr(b <= M["boat"] * m_b, name="link_boat_ub")
-    h.addConstr(n <= M["train"] * m_n, name="link_train_ub")
+    # Boat <= Train: x_boat <= x_train => x_boat - x_train <= 0
+    m.addConstr(x_boat + (-1.0)*x_train <= 0.0, name="boat_train")
 
-    # Linking constraints: if indicator=1, quantity>=1 (minimum one unit)
-    h.addConstr(t >= m_t, name="link_truck_lb")
-    h.addConstr(a >= m_a, name="link_airplane_lb")
-    h.addConstr(b >= m_b, name="link_boat_lb")
-    h.addConstr(n >= m_n, name="link_train_lb")
+    status = m.run()
+    t_solve = time.time() - t_start
 
-    # Mutual exclusion: truck + train cannot both be manufactured
-    h.addConstr(m_t + m_n <= 1, name="mutual_exclusion_truck_train")
+    sol = m.getSolution()
+    model_status = m.getModelStatus()
 
-    # Conditional: if boat>0 then airplane>0 (m_b <= m_a)
-    h.addConstr(m_b <= m_a, name="boat_requires_airplane")
+    # Get solution values (use index-based access to be safe)
+    col_value = sol.col_value
 
-    # Boats cannot exceed trains
-    h.addConstr(b <= n, name="boats_le_trains")
+    x_truck_val = int(round(col_value[0]))
+    x_airplane_val = int(round(col_value[1]))
+    x_boat_val = int(round(col_value[2]))
+    x_train_val = int(round(col_value[3]))
+    y_val = int(round(col_value[4]))
 
-    # Solve
-    h.run()
-    status = h.getModelStatus()
-    sol = h.getSolution()
+    objective_value = m.getObjectiveValue()
 
-    col_val = sol.col_value
-    col_dual = sol.col_dual
-
-    # Extract variable values
-    def get_var(var):
-        return col_val[var.index]
-
-    trucks_val = get_var(t)
-    airplanes_val = get_var(a)
-    boats_val = get_var(b)
-    trains_val = get_var(n)
-    m_truck_val = get_var(m_t)
-    m_airplane_val = get_var(m_a)
-    m_boat_val = get_var(m_b)
-    m_train_val = get_var(m_n)
-
-    # Compute objective value
-    obj_val = (PROFIT["truck"] * trucks_val + PROFIT["airplane"] * airplanes_val +
-               PROFIT["boat"] * boats_val + PROFIT["train"] * trains_val)
-
-    # Get bound and runtime
-    mip_info = h.getInfo()
-    runtime = h.getRunTime()
-    objective_value = h.getObjectiveValue()
-    objective_bound = mip_info.mip_dual_bound
-
-    # Determine status
-    if status == highspy.HighsModelStatus.kOptimal:
+    if model_status == highspy.HighsModelStatus.kOptimal:
         status_str = "optimal"
-    elif status == highspy.HighsModelStatus.kMipBetter:
-        status_str = "mip_better"
-    elif status == highspy.HighsModelStatus.kMipOptimal:
-        status_str = "mip_optimal"
-    elif status == highspy.HighsModelStatus.kInfeasible:
+    elif model_status == highspy.HighsModelStatus.kMipOptimal:
+        status_str = "optimal"
+    elif model_status == highspy.HighsModelStatus.kInfeasible:
         status_str = "infeasible"
     else:
-        status_str = f"model_status_{status}"
+        status_str = f"status_{model_status.value}"
 
     result = {
         "status": status_str,
         "objective_value": objective_value,
-        "objective_bound": objective_bound,
-        "runtime_seconds": runtime,
-        "variables": {
-            "trucks": trucks_val,
-            "airplanes": airplanes_val,
-            "boats": boats_val,
-            "trains": trains_val,
-            "m_truck": m_truck_val,
-            "m_airplane": m_airplane_val,
-            "m_boat": m_boat_val,
-            "m_train": m_train_val
+        "objective_bound": objective_value if status_str == "optimal" else None,
+        "runtime_seconds": t_solve,
+        "solution_variables": {
+            "x_truck": x_truck_val,
+            "x_airplane": x_airplane_val,
+            "x_boat": x_boat_val,
+            "x_train": x_train_val,
+            "y": y_val
         }
     }
 
-    with open("result.json", "w") as f:
+    with open('result.json', 'w') as f:
         json.dump(result, f, indent=2)
 
-    print(f"Status: {status_str}")
-    print(f"Objective: {objective_value}")
-    print(f"Bound: {objective_bound}")
-    print(f"Runtime: {runtime}s")
-    print(f"Solution: trucks={trucks_val}, airplanes={airplanes_val}, boats={boats_val}, trains={trains_val}")
-    print(f"Indicators: m_truck={m_truck_val}, m_airplane={m_airplane_val}, m_boat={m_boat_val}, m_train={m_train_val}")
+    print(f"Result: {result}")
+    return result
 
 if __name__ == "__main__":
     solve()

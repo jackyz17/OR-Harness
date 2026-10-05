@@ -1,11 +1,11 @@
 {
   "status": "optimal",
   "objective_value": 30400.0,
-  "objective_bound": null,
-  "runtime_seconds": 0.017388105392456055,
+  "objective_bound": 30400.0,
+  "runtime_seconds": 0.015511035919189453,
   "solution": {
-    "x_cow": 70.0,
-    "x_sheep": 20.0,
-    "x_chicken": -0.0
+    "n_cows": 70,
+    "n_sheep": 20,
+    "n_chickens": 0
   }
 }

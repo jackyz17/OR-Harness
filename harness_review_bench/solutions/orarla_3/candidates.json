@@ -1,47 +1,53 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_aggregate_production",
-    "solver": "highs",
-    "config": {
-      "time_limit": 300,
-      "mip_gap": 0
-    },
+    "strategy_id": "milp_time_indexed_production",
+    "measurement_scope": "attempt",
+    "params": {"solver": "highs", "time_limit": 120, "mip_gap": 0},
     "method": {
-      "name": "milp_aggregate_production",
+      "name": "milp_time_indexed_production",
       "steps": [
-        "Decision variables (all integer for counting units): produce[t], outsource[t], hire[t], fire[t], workforce[t], inventory[t], backorder[t]; continuous: regular_hours[t], overtime_hours[t].",
-        "Workforce balance: workforce[t] = workforce[t-1] + hire[t] - fire[t]; workforce[0]=1000.",
-        "Regular hours: regular_hours[t] = 160 * workforce[t]; paid 30/hr regardless of utilization.",
-        "Overtime capacity: overtime_hours[t] <= 20 * workforce[t]; paid 40/hr.",
-        "Labor for production: 5 * produce[t] <= regular_hours[t] + overtime_hours[t].",
-        "Inventory balance: inventory[t] = inventory[t-1] + produce[t] + outsource[t] - demand[t] - backorder[t]; inventory[0]=15000.",
-        "Backorder: backorder[t] = max(0, demand[t] + backorder[t-1] - produce[t] - outsource[t] - inventory[t-1]).",
-        "Terminal: inventory[5] >= 10000, backorder[5] = 0.",
-        "Revenue: 300 * sold[t]; sold[t] = min(inventory[t-1] + produce[t] + outsource[t], demand[t] + backorder[t-1]).",
-        "Costs: raw_material 90*produce[t]; outsourcing 200*outsource[t]; holding 15*inventory[t]; backorder 35*backorder[t]; hire 5000*hire[t]; fire 8000*fire[t]; regular_wage 30*regular_hours[t]; overtime 40*overtime_hours[t].",
-        "Objective: maximize total net profit = sum_t (revenue - all costs)."
+        "Define decision variables for each month t: produce[t] (in-house units), outsource[t] (outsourced units), hire[t] (workers hired), fire[t] (workers fired), workforce[t] (end-of-month workforce), inv[t] (end-of-month inventory), bo[t] (end-of-month backorders), sell[t] (units sold).",
+        "All production/outsourcing/inventory/worker variables are integer (non-negative).",
+        "Workforce dynamics: workforce[t] = workforce[t-1] + hire[t] - fire[t] (January starts at 1000).",
+        "Labor capacity: produce[t] * 5 <= workforce[t] * 160 + workforce[t] * 20 (regular+overtime hours).",
+        "Inventory balance: inv[t] = inv[t-1] + produce[t] + outsource[t] - sell[t] (January starts at 15000).",
+        "Backorder balance: bo[t] = bo[t-1] + demand[t] - sell[t] (January starts at 0).",
+        "Sales bound: sell[t] <= inv[t-1] + produce[t] + outsource[t] + bo[t-1] (cannot sell more than available).",
+        "Terminal: inv['Jun'] >= 10000, bo['Jun'] = 0.",
+        "Revenue = 300 * sum(sell[t]); costs: raw material 90*produce[t], outsourcing 200*outsource[t], holding 15*inv[t], backorder 35*bo[t], regular wage 30*160*workforce[t], overtime 40*overtime_hours[t], hiring 5000*hire[t], firing 8000*fire[t]. Overtime hours = max(0, produce[t]*5 - workforce[t]*160) but <= workforce[t]*20.",
+        "Maximize total net profit = revenue - all costs."
       ]
     }
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_aggregate_production_v2",
-    "solver": "highs",
-    "config": {
-      "time_limit": 300,
-      "mip_gap": 0
-    },
+    "strategy_id": "milp_lot_sizing_aggregate",
+    "measurement_scope": "attempt",
+    "params": {"solver": "highs", "time_limit": 120, "mip_gap": 0},
     "method": {
-      "name": "milp_aggregate_production_v2",
+      "name": "milp_lot_sizing_aggregate",
       "steps": [
-        "Same as milp_aggregate_production but use explicit sold[t] and available[t] variables to linearize the min() fulfillment logic.",
-        "available[t] = inventory[t-1] + produce[t] + outsource[t]; requirement[t] = demand[t] + backorder[t-1];",
-        "sold[t] <= available[t]; sold[t] <= requirement[t]; sold[t] >= available[t] + requirement[t] - M*(1-y[t]) with binary y[t]; OR simpler: sold[t] = available[t] - max(0, available[t] - requirement[t]); inventory[t] = max(0, available[t] - requirement[t]); backorder[t] = max(0, requirement[t] - available[t]).",
-        "These max() linearizations use big-M or additional variables to stay MILP.",
-        "All other constraints same as v1.",
-        "Integer: produce, outsource, hire, fire, workforce, inventory, backorder, sold, y (if used).",
-        "Objective: maximize sum_t (300*sold[t] - 90*produce[t] - 200*outsource[t] - 15*inventory[t] - 35*backorder[t] - 5000*hire[t] - 8000*fire[t] - 30*regular_hours[t] - 40*overtime_hours[t])."
+        "Same time-indexed structure as milp_time_indexed_production, but linearize overtime using explicit ot[t] variable.",
+        "ot[t] = max(0, produce[t]*5 - workforce[t]*160), with ot[t] <= workforce[t]*20, and overtime_cost = 40*ot[t].",
+        "Regular cost = 30*160*workforce[t] per worker per month.",
+        "All other constraints (workforce dynamics, inventory/backorder balance, terminal) same as candidate 1.",
+        "Maximize profit."
+      ]
+    }
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_hiring_firing_decoupled",
+    "measurement_scope": "attempt",
+    "params": {"solver": "highs", "time_limit": 120, "mip_gap": 0},
+    "method": {
+      "name": "milp_hiring_firing_decoupled",
+      "steps": [
+        "Single MILP with overtime variable ot[t]: ot[t] >= produce[t]*5 - workforce[t]*160, ot[t] >= 0, ot[t] <= workforce[t]*20.",
+        "Regular cost = 30*160*workforce[t]; overtime cost = 40*ot[t]; total labor cost = regular + overtime.",
+        "Workforce dynamics, inventory/backorder balance, terminal constraints same as candidate 1.",
+        "Maximize profit."
       ]
     }
   }

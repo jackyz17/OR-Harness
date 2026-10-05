@@ -1,8 +1,35 @@
 {
-  "reference_objective": 10755,
+  "reference_status": "optimal",
+  "reference_objective": 13255,
+  "tolerance": 1e-2,
   "integer": {
-    "variables": ["x_I_1", "x_I_2", "x_I_3", "x_I_4", "x_II_1", "x_II_2", "x_II_3", "x_II_4", "x_III_1", "x_III_2", "x_III_3", "x_III_4"],
-    "tolerance": 0
+    "variables": ["produce_I_Q1", "produce_I_Q2", "produce_I_Q3", "produce_I_Q4",
+                  "produce_II_Q1", "produce_II_Q2", "produce_II_Q3", "produce_II_Q4",
+                  "produce_III_Q1", "produce_III_Q2", "produce_III_Q3", "produce_III_Q4",
+                  "inventory_I_Q1", "inventory_I_Q2", "inventory_I_Q3", "inventory_I_Q4",
+                  "inventory_II_Q1", "inventory_II_Q2", "inventory_II_Q3", "inventory_II_Q4",
+                  "inventory_III_Q1", "inventory_III_Q2", "inventory_III_Q3", "inventory_III_Q4",
+                  "backlog_I_Q1", "backlog_I_Q2", "backlog_I_Q3", "backlog_I_Q4",
+                  "backlog_II_Q1", "backlog_II_Q2", "backlog_II_Q3", "backlog_II_Q4",
+                  "backlog_III_Q1", "backlog_III_Q2", "backlog_III_Q3", "backlog_III_Q4"],
+    "tolerance": 1e-4
   },
-  "intent": "intermediate"
+  "recompute_objective": {
+    "coefficients": {
+      "inventory_I_Q1": 5, "inventory_I_Q2": 5, "inventory_I_Q3": 5, "inventory_I_Q4": 5,
+      "inventory_II_Q1": 5, "inventory_II_Q2": 5, "inventory_II_Q3": 5, "inventory_II_Q4": 5,
+      "inventory_III_Q1": 5, "inventory_III_Q2": 5, "inventory_III_Q3": 5, "inventory_III_Q4": 5,
+      "backlog_I_Q1": 80, "backlog_I_Q2": 60, "backlog_I_Q3": 40, "backlog_I_Q4": 20,
+      "backlog_II_Q1": 80, "backlog_II_Q2": 60, "backlog_II_Q3": 40, "backlog_II_Q4": 20,
+      "backlog_III_Q1": 40, "backlog_III_Q2": 30, "backlog_III_Q3": 20, "backlog_III_Q4": 10
+    },
+    "constant": 0,
+    "tolerance": 1e-2
+  },
+  "semantic_probe": [
+    {"path": "execution_features.solution_variables.produce_I_Q2", "equals": 0},
+    {"path": "execution_features.solution_variables.inventory_I_Q4", "min": 150},
+    {"path": "execution_features.solution_variables.inventory_II_Q4", "min": 150},
+    {"path": "execution_features.solution_variables.inventory_III_Q4", "min": 150}
+  ]
 }

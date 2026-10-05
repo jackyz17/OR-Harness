@@ -3,60 +3,56 @@
     "action_type": "execute_strategy",
     "task_id": "orarla_8",
     "episode_id": "ep1",
-    "strategy_id": "milp_assignment_selection",
+    "strategy_id": "milp_assignment_binary",
     "solver": "highs",
     "method": {
-      "name": "milp_assignment_selection",
+      "name": "milp_assignment_binary",
       "steps": [
-        "Define workers W = {I, II, III, IV, V} and tasks T = {A, B, C, D}",
-        "Binary variable x[w,t] = 1 if worker w is assigned to task t, else 0",
-        "Binary variable y[w] = 1 if worker w is selected (used in any task), else 0",
-        "Objective: minimize sum(w in W, t in T) time[w,t] * x[w,t]",
-        "Each task assigned to exactly one worker: for all t in T, sum(w in W) x[w,t] = 1",
-        "Each worker does at most one task: for all w in W, sum(t in T) x[w,t] <= 1",
-        "Link selection and assignment: x[w,t] <= y[w] for all w,t",
-        "Exactly 4 workers selected: sum(w in W) y[w] = 4",
-        "All x binary, y binary; solve with MILP solver"
+        "Define binary variables x[w,t] = 1 if worker w is assigned to task t, 0 otherwise",
+        "Constraint: each task gets exactly one worker (sum over workers = 1 for each task)",
+        "Constraint: each worker does at most one task (sum over tasks <= 1 for each worker)",
+        "Constraint: exactly 4 total assignments (cardinality constraint)",
+        "Constraint: binary bounds x[w,t] in {0, 1}",
+        "Objective: minimize sum of hours x[w,t] * hours[w,t]",
+        "Use HiGHS direct MILP with binary variables"
       ]
     },
-    "config": {"time_limit": 60}
+    "config": {}
   },
   {
     "action_type": "execute_strategy",
     "task_id": "orarla_8",
     "episode_id": "ep1",
-    "strategy_id": "enumerate_assignment",
+    "strategy_id": "enumerate_exclude_one",
     "solver": "highs",
     "method": {
-      "name": "enumerate_assignment",
+      "name": "enumerate_exclude_one",
       "steps": [
-        "Identify all C(5,4) = 5 ways to choose 4 workers out of 5",
-        "For each selection of 4 workers, solve the resulting 4x4 assignment problem",
-        "For each worker subset, enumerate all 4! = 24 permutations of task assignments; compute total hours",
-        "Select the worker subset and permutation with minimum total hours",
-        "Return the global minimum across all 5 worker subsets"
+        "Enumerate all 5 ways to exclude one worker (leave out I, II, III, IV, or V)",
+        "For each exclusion, solve a standard 4x4 assignment problem using Hungarian algorithm",
+        "Compute optimal total hours for each exclusion",
+        "Select the exclusion that yields minimum total hours"
       ]
     },
-    "config": {"time_limit": 60}
+    "config": {}
   },
   {
     "action_type": "execute_strategy",
     "task_id": "orarla_8",
     "episode_id": "ep1",
-    "strategy_id": "milp_assignment",
+    "strategy_id": "milp_direct_integer",
     "solver": "highs",
     "method": {
-      "name": "milp_assignment",
+      "name": "milp_direct_integer",
       "steps": [
-        "Define workers W = {I, II, III, IV, V} and tasks T = {A, B, C, D}",
-        "Binary variable x[w,t] = 1 if worker w is assigned to task t, else 0",
-        "Objective: minimize sum(w in W, t in T) time[w,t] * x[w,t]",
-        "Each task assigned to exactly one worker: for all t in T, sum(w in W) x[w,t] = 1",
-        "Each worker assigned to at most one task: for all w in W, sum(t in T) x[w,t] <= 1",
-        "Exactly 4 assignments: sum(w in W, t in T) x[w,t] = 4",
-        "All x binary; solve with MILP solver"
+        "Define binary decision variables y[w,t] for assignment",
+        "Add task coverage constraints: each task assigned to exactly 1 worker",
+        "Add worker capacity constraints: each worker at most 1 task",
+        "Add cardinality constraint: sum of all assignments = 4",
+        "Objective: minimize weighted sum of hours",
+        "Use HiGHS with all binary variables"
       ]
     },
-    "config": {"time_limit": 60}
+    "config": {}
   }
 ]

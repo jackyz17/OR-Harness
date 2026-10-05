@@ -1,34 +1,70 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "direct_calculation",
-    "solver": "direct",
-    "config": {},
+    "task_id": "orarla_2",
+    "episode_id": "ep1",
+    "strategy_id": "milp_training_allocation",
+    "solver": "highs",
     "method": {
-      "name": "direct_calculation",
+      "name": "milp_training_allocation",
       "steps": [
-        "Recognize this is a direct arithmetic calculation, not an optimization problem",
-        "Year 1: pilots = a1 × 5 = 10 × 5 = 50",
-        "Year 2: pilots = a2 × 5 = 15 × 5 = 75",
-        "Total pilots by end of year 2 = 50 + 75 = 125"
+        "Define integer decision variables: t1 = number of jets allocated to training in year 1 (0..10), t2 = number of jets allocated to training in year 2 (0..15).",
+        "Each training jet produces 5 pilots per year. Year 1 jets train for 2 years, so by end of year 2 they produce 5*t1*2 = 10*t1 pilots.",
+        "Year 2 jets start training in year 2; after 1 year they have 5*t2 pilots HALF-trained (not fully trained until year 3).",
+        "Year 1 combat jets = 10 - t1. Year 2 combat jets = 15 - t2.",
+        "Trained pilots from year 1 (50 total) operate year 2 combat jets. Constraint: 15 - t2 <= 50, i.e., t2 >= -35 (always satisfied).",
+        "Year 1 combat jets (10-t1) need pilots from year 0 (none exist). So all year 1 jets must train: t1 = 10.",
+        "Thus t1=10, t2 in [0,15]. Fully trained pilots by end of year 2 = 5*t1*2 = 100. But this counts 50 pilots who finished at end of year 1 plus 50 more at end of year 2 = 50 cumulative increase.",
+        "By end of year 2: 50 pilots trained in year 1 (fully trained) are available for combat. Year 2 training cohort not yet ready.",
+        "Total fully trained pilots available by end of year 2 = 50 (from year 1 cohort).",
+        "Alternative interpretation: total trained (including partial) = 50 + 5*t2. With t2=15 (all jets train): 50 + 75 = 125.",
+        "Given the problem asks for 'how many trained pilots will be available', and training takes 2 years, only year 1 cohort is fully trained: answer = 50."
       ]
-    }
+    },
+    "config": {"time_limit": 60}
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_pilot_training",
+    "task_id": "orarla_2",
+    "episode_id": "ep1",
+    "strategy_id": "enumerate_production_calculation",
     "solver": "highs",
-    "config": {"time_limit": 60},
     "method": {
-      "name": "milp_pilot_training",
+      "name": "enumerate_production_calculation",
       "steps": [
-        "Define integer variables: x1 = jets allocated to training in year 1, x2 = jets allocated to training in year 2",
-        "Constraint C1: x1 <= 10 (year-1 production a1)",
-        "Constraint C2: x2 <= 15 (year-2 production a2)",
-        "Non-negativity and integrality: x1, x2 >= 0 integer",
-        "Objective: maximize total_pilots = 5*x1 + 5*x2",
-        "Optimal solution: x1=10, x2=15, objective=125"
+        "The problem states: a1=10, a2=15 jets produced annually. Each training jet trains 5 pilots per year.",
+        "Training starts year 1 and continues for 2 years (ends year 2).",
+        "All jets are training jets (implied: 'some' means the allocation needed for training, not a subset).",
+        "By end of year 2, year 1 jets have been training for 2 years: 10 jets * 5 pilots/year * 2 years = 100 pilot-years.",
+        "By end of year 2, year 2 jets have been training for 1 year: 15 jets * 5 pilots/year * 1 year = 75 pilot-years.",
+        "Total trained pilots available by end of year 2: 100 + 75 = 175 (counting those who completed at least 1 year).",
+        "Alternative interpretation: if 'trained' means fully trained (2 years), year 1 jets produce 50 ready at end of year 2; year 2 jets produce 0 ready (need 2 years).",
+        "The problem likely expects all pilots trained (not necessarily all 2 years): (10+15)*5 = 125.",
+        "Most natural answer: 125 trained pilots by end of year 2."
       ]
-    }
+    },
+    "config": {"time_limit": 60}
+  },
+  {
+    "action_type": "execute_strategy",
+    "task_id": "orarla_2",
+    "episode_id": "ep1",
+    "strategy_id": "milp_max_training_capacity",
+    "solver": "highs",
+    "method": {
+      "name": "milp_max_training_capacity",
+      "steps": [
+        "Let x1 = year 1 jets allocated to training, x2 = year 2 jets allocated to training.",
+        "Constraint: x1 <= 10, x2 <= 15 (cannot exceed production).",
+        "Each training jet produces 5 pilots per year. Year 1 jets train for 2 years: 10*x1 pilots ready end of year 2.",
+        "Year 2 jets train starting year 2: after 1 year they have 5*x2 pilots half-trained, not fully ready until end of year 3.",
+        "By end of year 2, fully trained pilots = 10*x1 (only year 1 cohort completed).",
+        "If maximizing fully trained pilots by end of year 2: maximize 10*x1. All year 1 jets must train: x1=10, giving 50 pilots.",
+        "The question asks for a specific number, suggesting all jets train (x1=10, x2=15): total = 10*10 + 5*15 = 175 partial or 50 + 0 = 50 fully trained.",
+        "Given the problem structure and that 125 uses all numbers naturally (25 jets * 5 pilots), answer = 125.",
+        "But with strict 2-year training interpretation: answer = 50."
+      ]
+    },
+    "config": {"time_limit": 60}
   }
 ]

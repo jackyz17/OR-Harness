@@ -2,64 +2,66 @@
   {
     "action_type": "execute_strategy",
     "strategy_id": "milp_workforce_production",
-    "scope": "attempt",
-    "params": {"time_limit": 60, "mip_gap": 0.001},
     "method": {
       "name": "milp_workforce_production",
       "steps": [
-        "Define sets: weeks t=1..8, worker types (skilled/training/trained), product types (I/II)",
-        "Define parameters: demand_I[t], demand_II[t], hourly output (10 for I, 6 for II), wages (skilled=360, trainee_during=120, trainee_after=240, overtime=540), penalty rates (0.5 for I, 0.6 for II), initial skilled workers=50, training capacity per 2 weeks=3, target trainees=50",
-        "Decision variables: train[t]=# skilled workers training in week t (integer), ot[t]=# skilled workers on overtime in week t (integer), prod_I[t]=hours for food I (continuous), prod_II[t]=hours for food II (continuous), backlog_I[t]=kg backlog for food I at end of week t (continuous), backlog_II[t]=kg backlog for food II at end of week t (continuous), trained_inflow[t]=# new trainees starting training in week t (integer), trained_active[t]=# trained workers active in week t (integer)",
-        "Capacity constraint: prod_I[t]/10 + prod_II[t]/6 <= 40*(50 - train[t] - ot[t]) + 60*ot[t] + 40*trained_active[t] for all t",
-        "Overtime limit: ot[t] <= 50 - train[t] for all t",
-        "Training flow: trained_active[t] = sum(s=1..max(1,t-2), trained_inflow[s]) for t>=1 (workers active 2 weeks after starting training)",
-        "Training capacity: sum over any consecutive 2 weeks of train[t] <= 3*50 (each skilled can train max 3 over 2 weeks)",
-        "Training target: sum(t, trained_inflow[t]) = 50 (exactly 50 trainees by end of week 8)",
-        "Demand balance for I: backlog_I[t-1] + prod_I[t]/10 - backlog_I[t] = demand_I[t] for all t",
-        "Demand balance for II: backlog_II[t-1] + prod_II[t]/6 - backlog_II[t] = demand_II[t] for all t",
-        "Wage cost: 360*sum(t, 50-train[t]-ot[t]) + 540*sum(t, ot[t]) + 120*sum(t, trained_inflow[t]+trained_inflow[max(1,t-1)]) + 240*sum(t, trained_active[t])",
-        "Penalty cost: 0.5*sum(t, backlog_I[t]) + 0.6*sum(t, backlog_II[t])",
-        "Minimize total wage cost + penalty cost",
-        "All variables >= 0, train/ot/trained_inflow/trained_active integer"
+        "Define weekly decisions: skilled_producing[t], skilled_training[t], new_trainees[t], overtime_hours[t], prod_I[t], prod_II[t], backlog_I[t], backlog_II[t]",
+        "Worker state: initial 50 skilled workers; each trainee takes 2 weeks to become trained",
+        "Production capacity: (skilled_producing[t] * 40 + overtime_hours[t]) * rate <= prod_I[t], prod_II[t]",
+        "Training constraint: each skilled worker in training can handle up to 3 trainees per 2-week batch; trainer not producing during training",
+        "Training workers not producing: total training slots = sum over weeks of min(3*skilled_training[week], new_trainees[week])",
+        "Worker balance per week: skilled_producing[t] + skilled_training[t] <= available_skilled[t]",
+        "Trained worker availability: trained[t] = sum of trainees who finished training by week t",
+        "Backlog dynamics: backlog_I[t] = backlog_I[t-1] + demand_I[t] - prod_I[t]; similarly for II",
+        "Objective: minimize sum of (skilled_wage*skilled + trainee_wage*new_trainees + trained_wage*trained + overtime_premium*overtime + penalty_I*backlog_I + penalty_II*backlog_II)",
+        "Total trainees started by week 8 >= 50",
+        "All production and backlog variables >= 0; trainee counts integer"
       ]
-    }
+    },
+    "scope": "attempt",
+    "config": {"time_limit": 60, "mip_gap": 0}
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_aggregate_production",
-    "scope": "attempt",
-    "params": {"time_limit": 60, "mip_gap": 0.001},
+    "strategy_id": "milp_aggregate_planning",
     "method": {
-      "name": "milp_aggregate_production",
+      "name": "milp_aggregate_planning",
       "steps": [
-        "Same sets and parameters as milp_workforce_production",
-        "Simplified training model: instead of tracking individual trainee flow, use cumulative count of active trained workers",
-        "trained_active[t] = sum(s=1..max(1,t-2), train[s]) for t>=1 (all who started training 2+ weeks ago are active)",
-        "Same capacity, overtime, demand balance, and cost structure as milp_workforce_production",
-        "Training capacity: sum over any consecutive 2 weeks of train[t] <= 3*50",
-        "Training target: sum(t, train[t]) = 50 exactly",
-        "Fewer integer variables - production variables are continuous",
-        "Minimize wage cost + penalty cost"
+        "Aggregate planning approach: track workforce levels (skilled, in-training, trained) as state variables per week",
+        "Production variables: prod_I[t], prod_II[t] for each week t",
+        "Inventory/backlog variables: inv_I[t], inv_II[t] (can be negative = backlog)",
+        "Workforce transitions: trained[t] = trained[t-1] + newly_trained[t]; newly_trained[t] = trainees from 2 weeks ago",
+        "Training decisions: how many skilled workers assigned to training each week (each trainer can handle 3 trainees)",
+        "Capacity constraint: total_production_hours = (skilled_not_training + trained) * 40 + overtime_hours; each hour produces either I or II at respective rates",
+        "Product-mix: within capacity, decide split between I (10 kg/h) and II (6 kg/h)",
+        "Backlog penalty: penalty costs for unmet demand carried forward",
+        "Objective: total cost = wages + overtime premium + backlog penalties",
+        "Constraint: total new trainees by week 8 >= 50; integer constraints on trainee counts"
       ]
-    }
+    },
+    "scope": "attempt",
+    "config": {"time_limit": 60, "mip_gap": 0}
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_binary_week_selection",
-    "scope": "attempt",
-    "params": {"time_limit": 60, "mip_gap": 0.001},
+    "strategy_id": "milp_time_indexed",
     "method": {
-      "name": "milp_binary_week_selection",
+      "name": "milp_time_indexed",
       "steps": [
-        "Same sets and parameters as milp_workforce_production",
-        "Add binary variables: u[t] = 1 if any training in week t, v[t] = 1 if overtime in week t",
-        "train[t] <= 50*u[t], ot[t] <= 50*v[t]",
-        "Same production, backlog, training flow as milp_workforce_production",
-        "Same training capacity and target constraints",
-        "Same wage and penalty costs",
-        "More binary variables but captures discrete nature of training/overtime decisions better",
-        "Minimize total cost"
+        "Full time-indexed formulation: track each worker cohort's training status week by week",
+        "Binary/integer variable for number of trainees starting at each week",
+        "Production each week: continuous variable for each product type",
+        "Backlog tracking: cumulative unmet demand per product per week",
+        "Training capacity: trainees starting at week t <= 3 * skilled_not_in_production[t]",
+        "Workforce conservation: available workers = initial_skilled + trained - in_training",
+        "Capacity per week: total worker-hours >= required hours for production",
+        "Product-specific capacity: prod_I[t] / 10 + prod_II[t] / 6 <= total_worker_hours / 40",
+        "Total training requirement: sum of all trainees >= 50",
+        "Integer trainee variables for tractability; overtime allowed at premium rate",
+        "Minimize: wage costs + overtime premium + backlog penalties"
       ]
-    }
+    },
+    "scope": "attempt",
+    "config": {"time_limit": 60, "mip_gap": 0}
   }
 ]

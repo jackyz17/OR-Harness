@@ -1,21 +1,30 @@
 {
-  "task_id": "orarla_10",
-  "check": {
-    "minimum_stores": 3,
-    "open_areas": ["A", "I", "J"],
-    "coverage_verification": {
-      "A": ["A", "C", "E", "G", "H", "I"],
-      "B": ["B", "H", "I"],
-      "C": ["A", "C", "G", "H", "I"],
-      "D": ["D", "J"],
-      "E": ["A", "E", "G"],
-      "F": ["F", "J", "K"],
-      "G": ["A", "C", "E", "G"],
-      "H": ["A", "B", "C", "H", "I"],
-      "I": ["A", "B", "C", "H", "I"],
-      "J": ["D", "F", "J", "K", "L"],
-      "K": ["F", "J", "K", "L"],
-      "L": ["J", "K", "L"]
+  "basis": [
+    {
+      "name": "cover_constraint",
+      "description": "Each of the 12 areas A-L must be within 800m of at least one store location. Verify that for the reported store locations, every area A-L appears in the coverage set of at least one chosen store.",
+      "check_type": "cover",
+      "coverage_data": {
+        "A": ["A", "C", "E", "G", "H", "I"],
+        "B": ["B", "H", "I"],
+        "C": ["A", "C", "G", "H", "I"],
+        "D": ["D", "J"],
+        "E": ["A", "E", "G"],
+        "F": ["F", "J", "K"],
+        "G": ["A", "C", "E", "G"],
+        "H": ["A", "B", "C", "H", "I"],
+        "I": ["A", "B", "C", "H", "I"],
+        "J": ["D", "F", "J", "K", "L"],
+        "K": ["F", "J", "K", "L"],
+        "L": ["J", "K", "L"]
+      }
+    },
+    {
+      "name": "binary_nature",
+      "description": "Store location variables x_i are binary (0 or 1).",
+      "check_type": "bounds",
+      "variables": ["x_A", "x_B", "x_C", "x_D", "x_E", "x_F", "x_G", "x_H", "x_I", "x_J", "x_K", "x_L"]
     }
-  }
+  ],
+  "reference_objective": null
 }

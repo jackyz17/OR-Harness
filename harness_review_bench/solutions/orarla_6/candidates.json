@@ -2,59 +2,41 @@
   {
     "action_type": "execute_strategy",
     "task_id": "orarla_6",
-    "episode_id": "ep1",
-    "strategy_id": "milp_lot_sizing",
+    "strategy_id": "milp_production_inventory_backlog",
     "solver": "highs",
-    "params": {},
     "method": {
-      "name": "milp_lot_sizing",
+      "name": "milp_production_inventory_backlog",
       "steps": [
-        "Define sets: products {I, II, III}, quarters {1,2,3,4}",
-        "Parameters: demand[p][q] from Table 1-10, prod_hours[p] in {2,4,3}, capacity=15000 h/qtr, backlog_cost[p] in {20,20,10}, inv_cost=5, final_stock=150, no initial stock, I cannot be produced in Q2",
-        "Decision variables: x[p][q] = units of product p produced in quarter q (integer, >=0), inv[p][q] = inventory of product p at end of quarter q (integer, >=0), back[p][q] = backlog of product p at end of quarter q (integer, >=0)",
-        "Constraints: (1) Flow balance per product per quarter: x[p][q] + inv[p][q-1] - back[p][q-1] = demand[p][q] + inv[p][q] - back[p][q]; initial inv/back at q=0 = 0; (2) Final stock: inv[p][4] = 150; back[p][4] = 0; (3) Capacity: sum_p x[p][q]*prod_hours[p] <= 15000 for all q; (4) No product I in Q2: x[I][2] = 0",
-        "Objective: Minimize sum_pq back[p][q]*backlog_cost[p] + sum_pq inv[p][q]*5",
-        "Solve with HiGHS integer optimization"
+        "Define integer production variables for each product (I,II,III) in each quarter (Q1-Q4), non-negative inventory variables, and non-negative backlog variables.",
+        "Capacity constraint per quarter: 2*prod_I[q] + 4*prod_II[q] + 3*prod_III[q] <= 15000.",
+        "Zero production for product I in Q2.",
+        "Inventory balance: inv[p,q] = inv[p,q-1] + prod[p,q] - demand[p,q] + backlog[p,q-1] - backlog[p,q]. Initial inv at Q1 start = 0.",
+        "Backlog penalty accumulated: each unit of backlog at end of quarter q has been delayed q quarters, so total backlog delay cost = 20*(1*bl[I,Q1]+2*bl[I,Q2]+3*bl[I,Q3]+4*bl[I,Q4]) + same pattern for II + 10*(1*bl[III,Q1]+...+4*bl[III,Q4]).",
+        "Holding cost: 5*sum over all inv[p,q].",
+        "Final inventory >= 150 for each product at end of Q4.",
+        "Use HiGHS high-level API (addVariable/addConstr/getSolution) to solve as MILP with integer production variables."
       ]
-    }
+    },
+    "config": {"time_limit": 60}
   },
   {
     "action_type": "execute_strategy",
     "task_id": "orarla_6",
-    "episode_id": "ep1",
-    "strategy_id": "milp_inventory_backlog_multi",
+    "strategy_id": "milp_time_indexed_aggregate_cost",
     "solver": "highs",
-    "params": {},
     "method": {
-      "name": "milp_inventory_backlog_multi",
+      "name": "milp_time_indexed_aggregate_cost",
       "steps": [
-        "Define sets and parameters same as milp_lot_sizing",
-        "Decision variables: x[p][q] production, i[p][q] inventory, b[p][q] backlog (all integer >=0); additional variable s[p][q] net stock = i - b for tracking",
-        "Per-quarter per-product stock dynamics: s[p][q] = s[p][q-1] + x[p][q] - demand[p][q]; s[p][4]=150; s[p][q-1]+x[p][q]-demand[p][q] >= -M*b[p][q] and <= i[p][q] to decompose into inventory and backlog",
-        "Alternative simpler formulation: separate inventory and backlog as independent non-negative variables with auxiliary constraints ensuring only one is positive at a time (or both allowed if partial deliveries permitted)",
-        "Same capacity and no-I-in-Q2 constraints as milp_lot_sizing",
-        "Objective: minimize sum_pq i[p][q]*5 + sum_pq b[p][q]*backlog_cost[p]",
-        "Solve with HiGHS integer optimization"
+        "Use aggregate cost approach: define effective backlog cost rate per quarter that accumulates delay penalty.",
+        "Production variables for each product in each quarter, non-negative integer.",
+        "Inventory balance per product per quarter: ending_inv = beginning_inv + production - demand. If ending_inv < 0, treat absolute value as backlog.",
+        "Use indicator constraints or SOS to separate positive inventory (holding) from negative inventory (backlog).",
+        "Quarter-specific backlog penalty rates: Q1 delay=20/10 per unit, Q2 delay=40/20, Q3 delay=60/30, Q4 delay=80/40 for I,II/III.",
+        "Holding cost 5 per unit per quarter on positive inventory only.",
+        "End-of-quarter inventory >= 150 for each product.",
+        "HiGHS MILP with integer production variables."
       ]
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "task_id": "orarla_6",
-    "episode_id": "ep1",
-    "strategy_id": "milp_compact_production",
-    "solver": "highs",
-    "params": {},
-    "method": {
-      "name": "milp_compact_production",
-      "steps": [
-        "Compact formulation: minimize sum_pq (5*inv[p][q] + back[p][q]*comp_cost[p]) subject to",
-        "Production capacity: sum_p x[p][q]*hours[p] <= 15000; x[I][2]=0",
-        "Inventory flow: inv[p][q] = inv[p][q-1] + x[p][q] - demand[p][q] + back[p][q] - back[p][q-1] (accounts for unmet demand becoming backlog)",
-        "Initial: inv[p][0]=0, back[p][0]=0; Final: inv[p][4]=150, back[p][4]=0",
-        "All variables non-negative integers; back[p][q] and inv[p][q] are separate variables",
-        "Solve with HiGHS"
-      ]
-    }
+    },
+    "config": {"time_limit": 60}
   }
 ]

@@ -1,0 +1,13 @@
+=== orarla 10-problem benchmark  (home=/home/ubuntu/.openclaw/workspace/bench_orarla/home) ===
+    orarla_1  obj=130119.99999999965  ref=219816.0  check=unchecked  correct=N  (execs=5)
+    orarla_2  obj=50.0  ref=125.0  check=passed  correct=N  (execs=5)
+    orarla_3  obj=10349920.0  ref=10349920.0  check=passed  correct=Y  (execs=4)
+    orarla_4  obj=30400.0  ref=30400.0  check=passed  correct=Y  (execs=5)
+    orarla_5  obj=18.7  ref=18.6943  check=failed  correct=N  (execs=4)
+    orarla_6  obj=13255.0  ref=10755.0  check=passed  correct=N  (execs=2)
+    orarla_7  obj=904590.0  ref=904590.0  check=passed  correct=Y  (execs=3)
+    orarla_8  obj=14  ref=14.0  check=passed  correct=Y  (execs=1)
+    orarla_9  obj=623.0  ref=623.0  check=passed  correct=Y  (execs=2)
+   orarla_10  obj=None  ref=3.0  check=none  correct=N  (execs=0)
+accuracy(objective==reference): 5/10 = 0.500
+task_check states: {'unchecked': 1, 'passed': 7, 'failed': 1, 'none': 1}

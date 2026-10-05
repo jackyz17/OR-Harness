@@ -1,29 +1,55 @@
 {
   "task_id": "orarla_8",
   "family": "scheduling",
+  "difficulty": "medium",
   "text": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The Hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
   "coupling": {
     "entities": [
-      {"name": "I", "kind": "worker"},
-      {"name": "II", "kind": "worker"},
-      {"name": "III", "kind": "worker"},
-      {"name": "IV", "kind": "worker"},
-      {"name": "V", "kind": "worker"},
-      {"name": "A", "kind": "task"},
-      {"name": "B", "kind": "task"},
-      {"name": "C", "kind": "task"},
-      {"name": "D", "kind": "task"}
+      {"name": "worker_I", "kind": "worker", "attrs": {"id": "I"}},
+      {"name": "worker_II", "kind": "worker", "attrs": {"id": "II"}},
+      {"name": "worker_III", "kind": "worker", "attrs": {"id": "III"}},
+      {"name": "worker_IV", "kind": "worker", "attrs": {"id": "IV"}},
+      {"name": "worker_V", "kind": "worker", "attrs": {"id": "V"}},
+      {"name": "task_A", "kind": "task", "attrs": {"id": "A"}},
+      {"name": "task_B", "kind": "task", "attrs": {"id": "B"}},
+      {"name": "task_C", "kind": "task", "attrs": {"id": "C"}},
+      {"name": "task_D", "kind": "task", "attrs": {"id": "D"}}
     ],
     "decisions": [
-      {"name": "assign", "kind": "allocation", "description": "Assign exactly 4 workers to 4 tasks (one worker per task, one task per worker)"}
+      {
+        "name": "assign_worker_to_task",
+        "kind": "assignment",
+        "indexes": ["worker", "task"],
+        "attrs": {"selected_workers": 4, "total_tasks": 4}
+      }
     ],
-    "relations": []
+    "constraints": [
+      {"id": "C1", "kind": "assignment", "expr": "each_task_assigned_once: sum(worker, x[worker,task]) = 1 for each task"},
+      {"id": "C2", "kind": "at_most_one", "expr": "one_task_per_worker: sum(task, x[worker,task]) <= 1 for each worker"},
+      {"id": "C3", "kind": "cardinality", "expr": "exactly_4_workers: sum(worker, sum(task, x[worker,task])) = 4"},
+      {"id": "C4", "kind": "binary", "expr": "x[worker,task] is binary"}
+    ],
+    "relations": [
+      {"source": "assign_worker_to_task", "target": "task_A", "type": "assigns_to", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "task_B", "type": "assigns_to", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "task_C", "type": "assigns_to", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "task_D", "type": "assigns_to", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "worker_I", "type": "uses_worker", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "worker_II", "type": "uses_worker", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "worker_III", "type": "uses_worker", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "worker_IV", "type": "uses_worker", "evidence": "declared"},
+      {"source": "assign_worker_to_task", "target": "worker_V", "type": "uses_worker", "evidence": "declared"}
+    ],
+    "coupling_groups": [
+      {"type": "assignment_matching", "members": ["assign_worker_to_task"], "resource": "worker_V", "implication": "must exclude exactly one worker to assign 4 tasks to 4 workers"}
+    ],
+    "issues": []
   },
   "model": {
-    "sets": "workers = [I, II, III, IV, V]\ntasks = [A, B, C, D]",
-    "parameters": "time[workers,tasks] = [[9,4,3,7],[4,6,5,6],[5,4,7,5],[7,5,2,3],[10,6,7,4]]",
-    "variables": "x[workers,tasks] binary",
-    "objective": "minimize sum(w in workers, t in tasks) time[w,t] * x[w,t]",
-    "constraints": "C1: sum(w in workers) x[w,t] = 1  for t in tasks\nC2: sum(t in tasks) x[w,t] <= 1  for w in workers\nC3: sum(w in workers, t in tasks) x[w,t] = 4"
+    "sets": "i in Workers = {I, II, III, IV, V}\nj in Tasks = {A, B, C, D}",
+    "parameters": "hours[i,j]",
+    "variables": "x[i,j] binary",
+    "objective": "minimize sum(i, sum(j, hours[i,j] * x[i,j]))",
+    "constraints": "C1: sum(i, x[i,j]) = 1 for each j\nC2: sum(j, x[i,j]) <= 1 for each i\nC3: sum(i, sum(j, x[i,j])) = 4"
   }
 }

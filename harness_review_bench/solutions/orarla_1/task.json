@@ -1,286 +1,46 @@
 {
   "task_id": "orarla_1",
   "family": "planning",
-  "difficulty": "medium",
-  "text": "A factory produces two types of food, I and II, and currently has 50 skilled workers. It is known that one skilled worker can produce $10 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food I or $6 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food II. According to contract bookings, the weekly demand for these two foods will rise sharply, as shown in Table 1-11. Therefore, the factory has decided to train 50 new workers by the end of the 8th week. It is known that a worker works $40 \\ \\mathrm{h}$ per week, and a skilled worker can train up to three new workers in two weeks (during the training period, both the skilled worker and the trainees do not participate in production). The weekly wage of a skilled worker is 360 yuan, the weekly wage of a trainee during the training period is 120 yuan, and after training, the wage is 240 yuan per week, with the same production efficiency as skilled workers. During the transition period of training, many skilled workers are willing to work overtime, and the factory has decided to arrange some workers to work $60 \\ \\mathrm{h}$ per week, with a weekly wage of 540 yuan. If the booked food cannot be delivered on time, the compensation fee for each week of delay per $ \\ \\mathrm{kg}$ is 0.5 yuan for food I and 0.6 yuan for food II. Under these conditions, how should the factory make comprehensive arrangements to minimize the total cost?\n\nTable 1-11:\n| Week | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |\n| I    | 10000 | 10000 | 12000 | 12000 | 16000 | 16000 | 20000 | 20000 |\n| II   | 6000 | 7200 | 8400 | 10800 | 10800 | 12000 | 12000 | 12000 |",
+  "text": "A factory produces two types of food, I and II, and currently has 50 skilled workers. It is known that one skilled worker can produce $10 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food I or $6 \\ \\mathrm{kg} / \\ \\mathrm{h}$ of food II. According to contract bookings, the weekly demand for these two foods will rise sharply, as shown in Table 1-11. Therefore, the factory has decided to train 50 new workers by the end of the 8th week. It is known that a worker works $40 \\ \\mathrm{h} per week, and a skilled worker can train up to three new workers in two weeks (during the training period, both the skilled worker and the trainees do not participate in production). The weekly wage of a skilled worker is 360 yuan, the weekly wage of a trainee during the training period is 120 yuan, and after training, the wage is 240 yuan per week, with the same production efficiency as skilled workers. During the transition period of training, many skilled workers are willing to work overtime, and the factory has decided to arrange some workers to work $60 \\ \\mathrm{h} per week, with a weekly wage of 540 yuan. If the booked food cannot be delivered on time, the compensation fee for each week of delay per kg is 0.5 yuan for food I and 0.6 yuan for food II. Under these conditions, how should the factory make comprehensive arrangements to minimize the total cost?\n\nTable 1-11\n\n| Week | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |\n|------|---|---|---|---|---|---|---|---|\n| I    | 10000 | 10000  | 12000  | 12000  | 16000  | 16000  | 20000  | 20000  |\n| II   | 6000 | 7200 | 8400 | 10800 | 10800 | 12000  | 12000  | 12000  |",
   "coupling": {
     "entities": [
-      {
-        "id": "skilled_worker",
-        "name": "Skilled Worker",
-        "kind": "resource",
-        "attrs": {
-          "count": 50,
-          "hourly_output_I": 10,
-          "hourly_output_II": 6,
-          "hours_per_week": 40,
-          "weekly_wage": 360,
-          "can_train": 3,
-          "training_weeks": 2
-        }
-      },
-      {
-        "id": "trainee",
-        "name": "Trainee",
-        "kind": "resource",
-        "attrs": {
-          "count_target": 50,
-          "training_weeks": 2,
-          "weekly_wage_during_training": 120,
-          "weekly_wage_after": 240,
-          "hourly_output_I": 10,
-          "hourly_output_II": 6
-        }
-      },
-      {
-        "id": "food_I",
-        "name": "Food Type I",
-        "kind": "product",
-        "attrs": {
-          "penalty_per_kg_per_week": 0.5
-        }
-      },
-      {
-        "id": "food_II",
-        "name": "Food Type II",
-        "kind": "product",
-        "attrs": {
-          "penalty_per_kg_per_week": 0.6
-        }
-      },
-      {
-        "id": "week",
-        "name": "Week",
-        "kind": "period",
-        "attrs": {
-          "horizon": 8
-        }
-      }
+      {"name": "SkilledWorker", "kind": "worker", "attrs": {"role": "trainer", "production_rate_I": "10 kg/h", "production_rate_II": "6 kg/h", "wage": 360}},
+      {"name": "Trainee", "kind": "worker", "attrs": {"role": "in_training", "training_weeks": 2, "wage_during_training": 120, "wage_after_training": 240}},
+      {"name": "FoodI", "kind": "product", "attrs": {"penalty_per_kg_per_week": 0.5}},
+      {"name": "FoodII", "kind": "product", "attrs": {"penalty_per_kg_per_week": 0.6}},
+      {"name": "Week", "kind": "period", "attrs": {"count": 8}}
     ],
     "decisions": [
-      {
-        "id": "d_train",
-        "name": "Training workers per week",
-        "kind": "allocation",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Number of skilled workers assigned to training in week t (they do not produce)"
-        }
-      },
-      {
-        "id": "d_overtime",
-        "name": "Overtime workers per week",
-        "kind": "allocation",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Number of skilled workers working 60h/week overtime in week t"
-        }
-      },
-      {
-        "id": "d_hours_I",
-        "name": "Production hours for food I",
-        "kind": "production",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Total worker-hours allocated to food I production in week t"
-        }
-      },
-      {
-        "id": "d_hours_II",
-        "name": "Production hours for food II",
-        "kind": "production",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Total worker-hours allocated to food II production in week t"
-        }
-      },
-      {
-        "id": "d_backlog_I",
-        "name": "Backlog of food I",
-        "kind": "inventory",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Unmet demand for food I at end of week t (accumulates penalty)"
-        }
-      },
-      {
-        "id": "d_backlog_II",
-        "name": "Backlog of food II",
-        "kind": "inventory",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Unmet demand for food II at end of week t (accumulates penalty)"
-        }
-      },
-      {
-        "id": "d_trained_active",
-        "name": "Active trained workers",
-        "kind": "allocation",
-        "indexes": [
-          "week"
-        ],
-        "attrs": {
-          "desc": "Number of trained workers who have completed training and are working in week t"
-        }
-      }
+      {"name": "SkilledWorking", "kind": "allocation", "indexes": ["Week"], "attrs": {"desc": "number of skilled workers assigned to production in week t"}},
+      {"name": "OvertimeWorking", "kind": "allocation", "indexes": ["Week"], "attrs": {"desc": "number of workers on 60h overtime in week t"}},
+      {"name": "NewTrainees", "kind": "allocation", "indexes": ["Week"], "attrs": {"desc": "number of new trainees starting training in week t"}},
+      {"name": "ProductionI", "kind": "production", "indexes": ["Week"], "attrs": {"desc": "kg of Food I produced in week t"}},
+      {"name": "ProductionII", "kind": "production", "indexes": ["Week"], "attrs": {"desc": "kg of Food II produced in week t"}},
+      {"name": "BacklogI", "kind": "inventory", "indexes": ["Week"], "attrs": {"desc": "cumulative kg of Food I delayed at end of week t"}},
+      {"name": "BacklogII", "kind": "inventory", "indexes": ["Week"], "attrs": {"desc": "cumulative kg of Food II delayed at end of week t"}}
     ],
     "constraints": [
-      {
-        "id": "C1",
-        "kind": "capacity",
-        "expr": "d_hours_I[t] + d_hours_II[t] <= 40 * (50 - d_train[t] - d_overtime[t]) + 60 * d_overtime[t] + 40 * d_trained_active[t]  for all t",
-        "attrs": {
-          "desc": "Total production hours cannot exceed available worker-hours"
-        }
-      },
-      {
-        "id": "C2",
-        "kind": "temporal",
-        "expr": "d_train[t] <= 50 for all t",
-        "attrs": {
-          "desc": "Cannot train more skilled workers than available"
-        }
-      },
-      {
-        "id": "C3",
-        "kind": "temporal",
-        "expr": "d_overtime[t] <= 50 - d_train[t] for all t",
-        "attrs": {
-          "desc": "Overtime only for non-training skilled workers"
-        }
-      },
-      {
-        "id": "C4",
-        "kind": "training_flow",
-        "expr": "d_trained_active[t] = sum of trainees who finished training by week t",
-        "attrs": {
-          "desc": "Trainees become active after 2-week training"
-        }
-      },
-      {
-        "id": "C5",
-        "kind": "demand_balance",
-        "expr": "d_hours_I[t] / 10 + d_backlog_I[t-1] - d_backlog_I[t] = demand_I[t]  for all t",
-        "attrs": {
-          "desc": "Food I supply meets demand or incurs backlog"
-        }
-      },
-      {
-        "id": "C6",
-        "kind": "demand_balance",
-        "expr": "d_hours_II[t] / 6 + d_backlog_II[t-1] - d_backlog_II[t] = demand_II[t]  for all t",
-        "attrs": {
-          "desc": "Food II supply meets demand or incurs backlog"
-        }
-      },
-      {
-        "id": "C7",
-        "kind": "training_target",
-        "expr": "sum(t, d_train[t]) >= 50",
-        "attrs": {
-          "desc": "Must train 50 new workers by end of week 8"
-        }
-      },
-      {
-        "id": "C8",
-        "kind": "training_capacity",
-        "expr": "d_train[t] + d_train[t+1] <= 3 * 50  for t=1..7",
-        "attrs": {
-          "desc": "Each skilled worker can train up to 3 trainees in 2 weeks"
-        }
-      },
-      {
-        "id": "C9",
-        "kind": "nonnegativity",
-        "expr": "d_train, d_overtime, d_hours_I, d_hours_II, d_backlog_I, d_backlog_II, d_trained_active >= 0",
-        "attrs": {
-          "desc": "All variables nonnegative"
-        }
-      }
+      {"id": "C1", "kind": "capacity", "expr": "ProductionI[t] <= (SkilledWorking[t] * 40 + OvertimeWorking[t] * 60) * 10"},
+      {"id": "C2", "kind": "capacity", "expr": "ProductionII[t] <= (SkilledWorking[t] * 40 + OvertimeWorking[t] * 60) * 6"},
+      {"id": "C3", "kind": "balance", "expr": "BacklogI[t] = BacklogI[t-1] + DemandI[t] - ProductionI[t]"},
+      {"id": "C4", "kind": "balance", "expr": "BacklogII[t] = BacklogII[t-1] + DemandII[t] - ProductionII[t]"},
+      {"id": "C5", "kind": "resource", "expr": "SkilledWorking[t] + NewTrainees[t] + floor(NewTrainees[t]/3)*0 + OvertimeWorking[t] <= 50 + TrainedAvailable[t]"},
+      {"id": "C6", "kind": "training_batch", "expr": "Each batch of 3 trainees requires 1 skilled worker not producing for 2 weeks"},
+      {"id": "C7", "kind": "total_training", "expr": "sum(t, NewTrainees[t]) >= 50"},
+      {"id": "C8", "kind": "nonnegativity", "expr": "BacklogI[t] >= 0, BacklogII[t] >= 0"}
     ],
     "relations": [
-      {
-        "source": "d_train",
-        "target": "skilled_worker",
-        "type": "uses_resource",
-        "evidence": "semantic",
-        "detail": "Skilled workers in training do not produce"
-      },
-      {
-        "source": "d_hours_I",
-        "target": "food_I",
-        "type": "produces",
-        "evidence": "semantic",
-        "detail": "Each hour produces 10kg of food I"
-      },
-      {
-        "source": "d_hours_II",
-        "target": "food_II",
-        "type": "produces",
-        "evidence": "semantic",
-        "detail": "Each hour produces 6kg of food II"
-      },
-      {
-        "source": "d_backlog_I",
-        "target": "food_I",
-        "type": "penalizes",
-        "evidence": "semantic",
-        "detail": "Delay penalty 0.5 yuan/kg/week"
-      },
-      {
-        "source": "d_backlog_II",
-        "target": "food_II",
-        "type": "penalizes",
-        "evidence": "semantic",
-        "detail": "Delay penalty 0.6 yuan/kg/week"
-      },
-      {
-        "source": "d_overtime",
-        "target": "skilled_worker",
-        "type": "extends_hours",
-        "evidence": "semantic",
-        "detail": "Overtime workers work 60h instead of 40h at 540 yuan/week"
-      }
+      {"source": "ProductionI", "target": "SkilledWorker", "type": "uses_resource", "evidence": "structural", "detail": ""},
+      {"source": "ProductionII", "target": "SkilledWorker", "type": "uses_resource", "evidence": "structural", "detail": ""},
+      {"source": "NewTrainees", "target": "Trainee", "type": "produces", "evidence": "structural", "detail": ""},
+      {"source": "ProductionI", "target": "FoodI", "type": "produces", "evidence": "structural", "detail": ""},
+      {"source": "ProductionII", "target": "FoodII", "type": "produces", "evidence": "structural", "detail": ""},
+      {"source": "BacklogI", "target": "FoodI", "type": "inventory", "evidence": "structural", "detail": ""},
+      {"source": "BacklogII", "target": "FoodII", "type": "inventory", "evidence": "structural", "detail": ""}
     ],
     "coupling_groups": [
-      {
-        "type": "shared_bottleneck",
-        "members": [
-          "d_hours_I",
-          "d_hours_II"
-        ],
-        "resource": "skilled_worker",
-        "implication": "Hours allocated to food I and II compete for the same worker pool"
-      },
-      {
-        "type": "temporal_propagation_chain",
-        "members": [
-          "d_backlog_I",
-          "d_backlog_II"
-        ],
-        "implication": "Backlog accumulates week to week, increasing penalty"
-      },
-      {
-        "type": "cross_stage_coupling",
-        "members": [
-          "d_train",
-          "d_trained_active"
-        ],
-        "implication": "Training decisions now affect production capacity in future weeks"
-      }
-    ],
-    "issues": []
-  }
+      {"type": "shared_bottleneck", "members": ["ProductionI", "ProductionII"], "resource": "SkilledWorker", "implication": "Both products compete for the same worker hours; an aggregate capacity constraint should cover both"}
+    ]
+  },
+  "model": "SETS:\n t in Week = {0,1,2,3,4,5,6,7}\nPARAMETERS:\n DEMAND_I[t]\n DEMAND_II[t]\n RATE_I = 10\n RATE_II = 6\n STD_HRS = 40\n OT_HRS = 60\n W_SKILL = 360\n W_TRAIN = 120\n W_TR = 240\n W_OT = 540\n PEN_I = 0.5\n PEN_II = 0.6\n N0 = 50\nVARIABLES:\n sp[t] integer >= 0\n st[t] integer >= 0\n ow[t] integer >= 0\n nt[t] integer >= 0\n tr[t] integer >= 0\n pI[t] continuous >= 0\n pII[t] continuous >= 0\n bI[t] continuous >= 0\n bII[t] continuous >= 0\nOBJECTIVE:\n minimize sum(t, sp[t]*360 + st[t]*360 + tr[t]*240 + nt[t]*240 + ow[t]*540 + bI[t]*0.5 + bII[t]*0.6)\nCONSTRAINTS:\n C1: sum(t, nt[t]) >= 50\n C2: sp[t] + st[t] + ow[t] <= 50\n C3: nt[t] <= 3 * st[t]\n C4: tr[0] = 0\n C5: tr[1] = 0\n C6: tr[t] = nt[t-2]\n C7: bI[0] = DEMAND_I[0] - pI[0]\n C8: bI[t] = bI[t-1] + DEMAND_I[t] - pI[t]\n C9: bII[0] = DEMAND_II[0] - pII[0]\n C10: bII[t] = bII[t-1] + DEMAND_II[t] - pII[t]\n C11: pI[t] <= (sp[t] + tr[t]) * 40 * RATE_I + ow[t] * OT_HRS * RATE_I\n C12: pII[t] <= (sp[t] + tr[t]) * 40 * RATE_II + ow[t] * OT_HRS * RATE_II"
 }

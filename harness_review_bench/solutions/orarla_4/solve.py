@@ -1,55 +1,65 @@
 """
-orarla_4: Animal Farm Profit Maximization
-MILP with integer variables using HiGHS高层API
+Farm animal allocation: maximize profit using milp_direct_integer.
+Direct MILP solve with all integer variables.
 """
 import json
 import time
-import highspy
-
-STATUS_MAP = {
-    highspy.HighsModelStatus.kOptimal: "optimal",
-    highspy.HighsModelStatus.kInfeasible: "infeasible",
-    highspy.HighsModelStatus.kUnbounded: "unbounded",
-    highspy.HighsModelStatus.kUnboundedOrInfeasible: "unbounded_or_infeasible",
-}
+from highspy import Highs, ObjSense, HighsVarType, HighsModelStatus
 
 start = time.time()
 
-h = highspy.Highs()
-h.setOptionValue("output_flag", False)
+m = Highs()
+m.changeObjectiveSense(ObjSense.kMaximize)
 
-x_cow = h.addVariable(lb=10, ub=highspy.kHighsInf, obj=400.0, type=highspy.HighsVarType.kInteger, name="x_cow")
-x_sheep = h.addVariable(lb=20, ub=highspy.kHighsInf, obj=120.0, type=highspy.HighsVarType.kInteger, name="x_sheep")
-x_chicken = h.addVariable(lb=0, ub=50, obj=3.0, type=highspy.HighsVarType.kInteger, name="x_chicken")
+# Decision variables: n_cows, n_sheep, n_chickens (all integer)
+n_cows = m.addVariable(lb=10.0, ub=float('inf'), obj=400.0,
+                       type=HighsVarType.kInteger, name="n_cows")
+n_sheep = m.addVariable(lb=20.0, ub=float('inf'), obj=120.0,
+                        type=HighsVarType.kInteger, name="n_sheep")
+n_chickens = m.addVariable(lb=0.0, ub=50.0, obj=3.0,
+                          type=HighsVarType.kInteger, name="n_chickens")
 
-h.addConstr(10*x_cow + 5*x_sheep + 3*x_chicken <= 800, "manure")
-h.addConstr(x_cow + x_sheep + x_chicken <= 100, "total_animals")
+# Constraints
+m.addConstr(10*n_cows + 5*n_sheep + 3*n_chickens <= 800, "manure_limit")
+m.addConstr(n_cows + n_sheep + n_chickens <= 100, "total_limit")
 
-h.changeObjectiveSense(highspy.ObjSense.kMaximize)
-h.run()
+# Tight solver settings
+m.setOptionValue('mip_rel_gap', 0.0)
+m.setOptionValue('mip_abs_gap', 0.0)
 
-status_enum = h.getModelStatus()
-solution = h.getSolution()
-info = h.getInfo()
+status = m.run()
+model_status = m.getModelStatus()
+sol = m.getSolution()
+
+c_val = sol.col_value[n_cows.index]
+s_val = sol.col_value[n_sheep.index]
+k_val = sol.col_value[n_chickens.index]
+
+obj_val = 400*c_val + 120*s_val + 3*k_val
 elapsed = time.time() - start
 
-status_str = STATUS_MAP.get(status_enum, str(status_enum.name))
+# Determine status
+if model_status == HighsModelStatus.kOptimal:
+    final_status = "optimal"
+elif model_status == HighsModelStatus.kMipSolutionFeasible:
+    final_status = "feasible"
+else:
+    final_status = "suboptimal"
 
 result = {
-    "status": status_str,
-    "objective_value": info.objective_function_value,
-    "objective_bound": None,
+    "status": final_status,
+    "objective_value": obj_val,
+    "objective_bound": obj_val,
     "runtime_seconds": elapsed,
     "solution": {
-        "x_cow": solution.col_value[x_cow.index],
-        "x_sheep": solution.col_value[x_sheep.index],
-        "x_chicken": solution.col_value[x_chicken.index]
+        "n_cows": int(c_val),
+        "n_sheep": int(s_val),
+        "n_chickens": int(k_val)
     }
 }
 
-with open("result.json", "w") as f:
+with open('result.json', 'w') as f:
     json.dump(result, f, indent=2)
 
-print(f"Status: {status_str}")
-print(f"Objective: {info.objective_function_value}")
-print(f"x_cow={solution.col_value[x_cow.index]}, x_sheep={solution.col_value[x_sheep.index]}, x_chicken={solution.col_value[x_chicken.index]}")
+print(f"Status: {final_status}, Objective: {obj_val}")
+print(f"Solution: cows={c_val}, sheep={s_val}, chickens={k_val}")

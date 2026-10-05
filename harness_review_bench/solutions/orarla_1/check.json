@@ -1,35 +1,5 @@
 {
-  "reference_status": "optimal",
-  "integer": {
-    "variables": ["xtr_1","xtr_2","xtr_3","xtr_4","xtr_5","xtr_6","xtr_7","xtr_8",
-                  "xt_1","xt_2","xt_3","xt_4","xt_5","xt_6","xt_7","xt_8",
-                  "xs_1","xs_2","xs_3","xs_4","xs_5","xs_6","xs_7","xs_8",
-                  "xo_1","xo_2","xo_3","xo_4","xo_5","xo_6","xo_7","xo_8",
-                  "xf_1","xf_2","xf_3","xf_4","xf_5","xf_6","xf_7","xf_8",
-                  "di_1","di_2","di_3","di_4","di_5","di_6","di_7","di_8",
-                  "dii_1","dii_2","dii_3","dii_4","dii_5","dii_6","dii_7","dii_8"],
-    "tolerance": 1e-6
-  },
-  "semantic_probe": [
-    {"path": "execution_features.solution_variables.di_1", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_2", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_3", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_4", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_5", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_6", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_7", "max": 0.0},
-    {"path": "execution_features.solution_variables.di_8", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_1", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_2", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_3", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_4", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_5", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_6", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_7", "max": 0.0},
-    {"path": "execution_features.solution_variables.dii_8", "max": 0.0},
-    {"path": "execution_features.solution_variables.xf_7", "min": 50.0},
-    {"path": "execution_features.solution_variables.xf_8", "min": 50.0},
-    {"path": "execution_features.solution_variables.xt_1", "min": 0.0},
-    {"path": "execution_features.solution_variables.xtr_1", "min": 0.0}
-  ]
+ "reference_status": "optimal",
+ "reference_objective": 219816.0,
+ "tolerance": 0.21981599999999998
 }

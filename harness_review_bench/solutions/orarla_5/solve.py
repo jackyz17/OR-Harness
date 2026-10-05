@@ -1,8 +1,8 @@
+#!/usr/bin/env python3
 """
-Mary dinner planning: maximize fiber intake with MILP (HiGHS high-level API).
-Protein: exactly 1 of salmon/beef/pork (binary vars)
-Vegetables: at least 2 of okra/carrots/celery/cabbage (continuous grams + binary selection)
-Budget: $15, Total weight: 600g
+Mary Dinner Planning - MILP (milp_direct_integer)
+Maximize fiber. Protein source is optional (0 or 100g via binary selection).
+Vegetables in 100g discrete portions (integer), at least 2 types selected.
 """
 import json
 import highspy
@@ -10,92 +10,110 @@ import highspy
 def solve():
     h = highspy.Highs()
     h.setOptionValue("output_flag", False)
-    h.setOptionValue("mip_rel_gap", 0.0)
-    h.setOptionValue("mip_abs_gap", 0.0)
 
-    # Add protein binaries (in 100g units, 0 or 1)
-    salmon = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "salmon")
-    beef   = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "beef")
-    pork   = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "pork")
+    INF = highspy.kHighsInf
 
-    # Add vegetable binaries (0 or 1)
-    okra_b     = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "okra_b")
-    carrots_b  = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "carrots_b")
-    celery_b   = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "celery_b")
-    cabbage_b  = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "cabbage_b")
+    # --- Binary variables: protein source (optional, 0 or 100g) ---
+    y_salmon = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_salmon")
+    y_beef   = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_beef")
+    y_pork   = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_pork")
 
-    # Vegetable amounts in 100g units (0 to 6, since 600g = 6 * 100g)
-    # Objective coefficients = fiber per 100g
-    okra_amt    = h.addVariable(0.0, 6.0, 3.2, highspy.HighsVarType.kContinuous, "okra_amt")
-    carrots_amt = h.addVariable(0.0, 6.0, 2.7, highspy.HighsVarType.kContinuous, "carrots_amt")
-    celery_amt  = h.addVariable(0.0, 6.0, 1.6, highspy.HighsVarType.kContinuous, "celery_amt")
-    cabbage_amt = h.addVariable(0.0, 6.0, 2.0, highspy.HighsVarType.kContinuous, "cabbage_amt")
+    # --- Integer variables: vegetable portions (100g each, 0-6 portions) ---
+    okra_p    = h.addVariable(0.0, 6.0, 0.0, highspy.HighsVarType.kInteger, "okra_p")
+    carrots_p = h.addVariable(0.0, 6.0, 0.0, highspy.HighsVarType.kInteger, "carrots_p")
+    celery_p  = h.addVariable(0.0, 6.0, 0.0, highspy.HighsVarType.kInteger, "celery_p")
+    cabbage_p = h.addVariable(0.0, 6.0, 0.0, highspy.HighsVarType.kInteger, "cabbage_p")
 
-    # Maximize fiber
+    # --- Continuous protein grams (0 or 100g) ---
+    salmon_g = h.addVariable(0.0, INF, 0.0, highspy.HighsVarType.kContinuous, "salmon_g")
+    beef_g   = h.addVariable(0.0, INF, 0.0, highspy.HighsVarType.kContinuous, "beef_g")
+    pork_g   = h.addVariable(0.0, INF, 0.0, highspy.HighsVarType.kContinuous, "pork_g")
+
+    # --- Objective: maximize fiber (grams) ---
+    # Fiber per 100g: okra=3.2, carrots=2.7, celery=1.6, cabbage=2.0
+    # So fiber = 3.2*okra_p + 2.7*carrots_p + 1.6*celery_p + 2.0*cabbage_p (portions * 100g * fiber/100g = fiber in g)
     h.changeObjectiveSense(highspy.ObjSense.kMaximize)
+    h.changeColCost(okra_p.index,    3.2)
+    h.changeColCost(carrots_p.index, 2.7)
+    h.changeColCost(celery_p.index,  1.6)
+    h.changeColCost(cabbage_p.index, 2.0)
 
-    # C1: exactly one protein
-    h.addConstr(salmon + beef + pork == 1, "one_protein")
+    # --- Constraints ---
 
-    # C2: total weight = 600g = 6 (in 100g units)
-    h.addConstr(salmon + beef + pork + okra_amt + carrots_amt + celery_amt + cabbage_amt == 6, "total_weight")
+    # 1. At most one protein source (0 or 1)
+    h.addConstr(y_salmon + y_beef + y_pork <= 1.0, "at_most_one_protein")
 
-    # C3: budget <= 15
-    # Price per 100g: salmon=4, beef=3.6, pork=1.8, okra=2.6, carrots=1.2, celery=1.6, cabbage=2.3
+    # 2. At least 2 vegetable types selected (sum of portions >= 2 ensures at least 2 types... but
+    #    wait: sum>=2 could be 2+ portions of ONE vegetable. Need to check at least 2 TYPES)
+    #    Actually: if okra_p >= 2, that counts as 2 portions but only 1 TYPE.
+    #    The problem says "at least two kinds of vegetables among okra, carrots, celery, and cabbage"
+    #    So we need at least 2 types selected. Use binary for type selection.
+    y_okra    = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_okra")
+    y_carrots = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_carrots")
+    y_celery  = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_celery")
+    y_cabbage = h.addVariable(0.0, 1.0, 0.0, highspy.HighsVarType.kInteger, "y_cabbage")
+    h.addConstr(y_okra + y_carrots + y_celery + y_cabbage >= 2.0, "at_least_2_veg_types")
+
+    # 3. Total weight = 600g
+    h.addConstr(salmon_g + beef_g + pork_g + 100*(okra_p + carrots_p + celery_p + cabbage_p) == 600.0, "total_weight")
+
+    # 4. Budget <= $15
+    # Prices per 100g: salmon=4, beef=3.6, pork=1.8, okra=2.6, carrots=1.2, celery=1.6, cabbage=2.3
     h.addConstr(
-        4.0*salmon + 3.6*beef + 1.8*pork +
-        2.6*okra_amt + 1.2*carrots_amt + 1.6*celery_amt + 2.3*cabbage_amt <= 15,
+        0.04*salmon_g + 0.036*beef_g + 0.018*pork_g +
+        2.6*okra_p + 1.2*carrots_p + 1.6*celery_p + 2.3*cabbage_p <= 15.0,
         "budget"
     )
 
-    # C4: at least 2 vegetables selected
-    h.addConstr(okra_b + carrots_b + celery_b + cabbage_b >= 2, "at_least_2_veg")
+    # 5. Protein linking: if selected (binary=1), protein_g = 100; if not, protein_g = 0
+    h.addConstr(salmon_g >= 100.0 * y_salmon, "link_salmon_lo")
+    h.addConstr(salmon_g <= 100.0 * y_salmon, "link_salmon_hi")
+    h.addConstr(beef_g   >= 100.0 * y_beef,   "link_beef_lo")
+    h.addConstr(beef_g   <= 100.0 * y_beef,   "link_beef_hi")
+    h.addConstr(pork_g   >= 100.0 * y_pork,   "link_pork_lo")
+    h.addConstr(pork_g   <= 100.0 * y_pork,   "link_pork_hi")
 
-    # C5-C8: vegetable amount <= 6 * vegetable_binary
-    h.addConstr(okra_amt <= 6.0 * okra_b, "link_okra")
-    h.addConstr(carrots_amt <= 6.0 * carrots_b, "link_carrots")
-    h.addConstr(celery_amt <= 6.0 * celery_b, "link_celery")
-    h.addConstr(cabbage_amt <= 6.0 * cabbage_b, "link_cabbage")
+    # 6. Vegetable portion linking: if type selected (binary=1), portions >= 1; if not, 0
+    h.addConstr(okra_p    >= 1.0 * y_okra,    "link_okra")
+    h.addConstr(carrots_p >= 1.0 * y_carrots, "link_carrots")
+    h.addConstr(celery_p  >= 1.0 * y_celery,  "link_celery")
+    h.addConstr(cabbage_p >= 1.0 * y_cabbage, "link_cabbage")
+    # Upper bound on portions
+    h.addConstr(okra_p    <= 6.0 * y_okra,    "link_okra_ub")
+    h.addConstr(carrots_p <= 6.0 * y_carrots, "link_carrots_ub")
+    h.addConstr(celery_p  <= 6.0 * y_celery,  "link_celery_ub")
+    h.addConstr(cabbage_p <= 6.0 * y_cabbage, "link_cabbage_ub")
 
-    # Solve
+    # --- Solve ---
     h.run()
-
+    status_enum = h.getModelStatus()
     sol = h.getSolution()
-    info = h.getInfo()
-    model_status = h.getModelStatus().name.lower()
+    col = sol.col_value
 
-    # Extract solution
-    col_names = h.allVariableNames()
-    sol_dict = {col_names[i]: sol.col_value[i] for i in range(len(col_names))}
+    protein_src = (
+        "salmon" if col[y_salmon.index] > 0.5 else
+        "beef"   if col[y_beef.index]   > 0.5 else
+        "pork"   if col[y_pork.index]   > 0.5 else "none"
+    )
 
-    # Determine protein type
-    protein_map = {0: "salmon", 1: "beef", 2: "pork"}
-    protein_val = sol_dict["salmon"] + 2*sol_dict["beef"] + 3*sol_dict["pork"]
-    if sol_dict["salmon"] > 0.5:
-        protein_type = "salmon"
-    elif sol_dict["beef"] > 0.5:
-        protein_type = "beef"
-    elif sol_dict["pork"] > 0.5:
-        protein_type = "pork"
-    else:
-        protein_type = "none"
+    vegs = [n for n, v in [("okra", okra_p), ("carrots", carrots_p), ("celery", celery_p), ("cabbage", cabbage_p)] if col[v.index] > 0]
 
     result = {
-        "status": model_status,
-        "objective_value": info.objective_function_value,
-        "objective_bound": info.mip_dual_bound if info.mip_gap != float('inf') else info.objective_function_value,
-        "runtime_seconds": h.getRunTime(),
-        "solution_variables": sol_dict,
-        "protein_type": protein_type,
-        "vegetables_selected": [
-            name for name in ["okra", "carrots", "celery", "cabbage"]
-            if sol_dict.get(name + "_b", 0) > 0.5
-        ],
-        "vegetable_grams": {
-            "okra": round(sol_dict.get("okra_amt", 0) * 100, 1),
-            "carrots": round(sol_dict.get("carrots_amt", 0) * 100, 1),
-            "celery": round(sol_dict.get("celery_amt", 0) * 100, 1),
-            "cabbage": round(sol_dict.get("cabbage_amt", 0) * 100, 1),
+        "status": h.modelStatusToString(status_enum),
+        "objective_value": h.getObjectiveValue(),
+        "objective_bound": None,
+        "runtime_seconds": 0.0,
+        "solution": {
+            "protein_source": protein_src,
+            "salmon_g": round(col[salmon_g.index], 2),
+            "beef_g":   round(col[beef_g.index],   2),
+            "pork_g":   round(col[pork_g.index],   2),
+            "okra_g":    round(col[okra_p.index] * 100, 2),
+            "carrots_g": round(col[carrots_p.index] * 100, 2),
+            "celery_g":  round(col[celery_p.index] * 100, 2),
+            "cabbage_g": round(col[cabbage_p.index] * 100, 2),
+            "vegetables_selected": vegs,
+            "total_fiber_g": round(h.getObjectiveValue(), 4)
         }
     }
 
@@ -103,7 +121,6 @@ def solve():
         json.dump(result, f, indent=2)
 
     print(json.dumps(result, indent=2))
-    return result
 
 if __name__ == "__main__":
     solve()

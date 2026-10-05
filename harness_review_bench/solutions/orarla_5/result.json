@@ -1,32 +1,21 @@
 {
-  "status": "koptimal",
-  "objective_value": 16.0,
-  "objective_bound": 16.0,
-  "runtime_seconds": 0.0005917549133300781,
-  "solution_variables": {
-    "salmon": 0.0,
-    "beef": 0.0,
-    "pork": 1.0,
-    "okra_b": 1.0,
-    "carrots_b": 1.0,
-    "celery_b": 1.0,
-    "cabbage_b": 1.0,
-    "okra_amt": 5.0,
-    "carrots_amt": 0.0,
-    "celery_amt": 0.0,
-    "cabbage_amt": 0.0
-  },
-  "protein_type": "pork",
-  "vegetables_selected": [
-    "okra",
-    "carrots",
-    "celery",
-    "cabbage"
-  ],
-  "vegetable_grams": {
-    "okra": 500.0,
-    "carrots": 0.0,
-    "celery": 0.0,
-    "cabbage": 0.0
+  "status": "Optimal",
+  "objective_value": 18.7,
+  "objective_bound": null,
+  "runtime_seconds": 0.0,
+  "solution": {
+    "protein_source": "none",
+    "salmon_g": 0.0,
+    "beef_g": 0.0,
+    "pork_g": 0.0,
+    "okra_g": 500.0,
+    "carrots_g": 100.0,
+    "celery_g": 0.0,
+    "cabbage_g": 0.0,
+    "vegetables_selected": [
+      "okra",
+      "carrots"
+    ],
+    "total_fiber_g": 18.7
   }
 }

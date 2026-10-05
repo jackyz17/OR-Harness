@@ -1,17 +1,53 @@
 [
   {
-    "name": "milp_meal_fiber",
     "action_type": "execute_strategy",
-    "strategy_id": "milp_meal_fiber",
+    "strategy_id": "milp_direct_integer",
     "solver": "highs",
-    "method": {
-      "name": "milp_meal_fiber",
-      "steps": [
-        "Define binary variables for protein selection (y_salmon, y_beef, y_pork) and vegetable selection (y_okra, y_carrots, y_celery, y_cabbage).",
-        "Define continuous variables for vegetable amounts (in 100g units, 0-6 range).",
-        "Objective: maximize fiber = 3.2*okra_amt + 2.7*carrots_amt + 1.6*celery_amt + 2.0*cabbage_amt.",
-        "Constraints: budget<=15, weight=6 (600g), exactly one protein, at least 2 vegetables, amount<=6*binary for each vegetable."
-      ]
-    }
+    "params": {},
+    "name": "milp_direct_integer",
+    "steps": [
+      "Binary variables y_salmon, y_beef, y_pork to select exactly one protein source",
+      "Binary variables y_okra, y_carrots, y_celery, y_cabbage to select at least two vegetables",
+      "Continuous variables for grams of each food (non-negative)",
+      "Link protein selection binary to protein grams: protein_grams <= M * y_X for each protein",
+      "Link vegetable selection binary to vegetable grams: veg_grams >= 100 * y_veg (minimum 100g if selected)",
+      "Objective: maximize total fiber = 3.2*okra + 2.7*carrots + 1.6*celery + 2*cabbage (scaled per 100g)",
+      "Constraints: total weight = 600g, budget <= $15, at least 2 vegetables selected",
+      "Use HiGHS highs API: addVariable/addConstr/getSolution. All food-gram vars are continuous (non-negative, can be fractional grams)",
+      "Write result to result.json with status/objective_value/objective_bound/runtime_seconds/solution"
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "cp_sat_vegetable_protein",
+    "solver": "ortools",
+    "params": {},
+    "name": "cp_sat_vegetable_protein",
+    "steps": [
+      "Use OR-Tools CP-SAT: boolean variables for protein choice (exactly one of salmon/beef/pork)",
+      "Boolean variables for vegetable selection (at least 2 of okra/carrots/celery/cabbage)",
+      "Integer variables for grams of each food (0-600, step 1 for grams precision)",
+      "Constraints: total grams=600, budget constraint, selection constraints",
+      "Objective: maximize fiber content",
+      "CP-SAT is robust to the highspy API issues that plagued milp_direct_integer",
+      "Write result to result.json with status/objective_value/objective_bound/runtime_seconds/solution"
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_binary_then_continuous",
+    "solver": "highs",
+    "params": {},
+    "name": "milp_binary_then_continuous",
+    "steps": [
+      "Stage 1: Use binary variables to select protein source and at least 2 vegetables via big-M constraints",
+      "Stage 2: Once selections fixed, solve continuous allocation problem (linear program) for optimal grams",
+      "Binary y_salmon/y_beef/y_pork with sum=1 for protein; binary y_okra/y_carrots/y_celery/y_cabbage with sum>=2 for vegetables",
+      "Link binary selections to gram variables with big-M: grams <= 600*y for each food",
+      "Objective: maximize fiber; Constraints: total=600g, budget<=15, selection constraints",
+      "Two-phase: first solve MILP for selections, then LP for grams given selections",
+      "Use HiGHS API: addVariable/addConstr/getSolution",
+      "Write result to result.json with status/objective_value/objective_bound/runtime_seconds/solution"
+    ]
   }
 ]

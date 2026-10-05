@@ -1,41 +1,19 @@
 {
   "task_id": "orarla_10",
   "family": "inventory",
-  "text": "A convenience supermarket is planning to open several chain stores in a newly built residential area in the northwest suburb of the city. For shopping convenience, the distance from any residential area to one of the chain stores should not exceed 800 m. Table 5-1 shows the new residential areas and the residential areas within a radius of 800 m from each of them. Question: What is the minimum number of chain stores the supermarket needs to build among the mentioned residential areas, and in which residential areas should they be built?\n\n| Area Code | Residential Areas within 800 m Radius |\n|-----------|---------------------------------------------------|\n| A         | A, C, E, G, H, I                                  |\n| B         | B, H, I                                           |\n| C         | A, C, G, H, I                                     |\n| D         | D, J                                              |\n| E         | A, E, G                                           |\n| F         | F, J, K                                           |\n| G         | A, C, E, G                                        |\n| H         | A, B, C, H, I                                     |\n| I         | A, B, C, H, I                                     |\n| J         | D, F, J, K, L                                     |\n| K         | F, J, K, L                                        |\n| L         | J, K, L                                           |",
-  "model": {
-    "type": "milp",
-    "method": "milp_set_cover",
-    "variables": {
-      "x_A": {"type": "binary", "label": "Open store at area A"},
-      "x_B": {"type": "binary", "label": "Open store at area B"},
-      "x_C": {"type": "binary", "label": "Open store at area C"},
-      "x_D": {"type": "binary", "label": "Open store at area D"},
-      "x_E": {"type": "binary", "label": "Open store at area E"},
-      "x_F": {"type": "binary", "label": "Open store at area F"},
-      "x_G": {"type": "binary", "label": "Open store at area G"},
-      "x_H": {"type": "binary", "label": "Open store at area H"},
-      "x_I": {"type": "binary", "label": "Open store at area I"},
-      "x_J": {"type": "binary", "label": "Open store at area J"},
-      "x_K": {"type": "binary", "label": "Open store at area K"},
-      "x_L": {"type": "binary", "label": "Open store at area L"}
-    },
-    "constraints": {
-      "cover_A": "x_A + x_C + x_E + x_G + x_H + x_I >= 1",
-      "cover_B": "x_B + x_H + x_I >= 1",
-      "cover_C": "x_A + x_C + x_G + x_H + x_I >= 1",
-      "cover_D": "x_D + x_J >= 1",
-      "cover_E": "x_A + x_E + x_G >= 1",
-      "cover_F": "x_F + x_J + x_K >= 1",
-      "cover_G": "x_A + x_C + x_E + x_G >= 1",
-      "cover_H": "x_A + x_B + x_C + x_H + x_I >= 1",
-      "cover_I": "x_A + x_B + x_C + x_H + x_I >= 1",
-      "cover_J": "x_D + x_F + x_J + x_K + x_L >= 1",
-      "cover_K": "x_F + x_J + x_K + x_L >= 1",
-      "cover_L": "x_J + x_K + x_L >= 1"
-    },
-    "objective": {
-      "sense": "minimize",
-      "expr": "x_A + x_B + x_C + x_D + x_E + x_F + x_G + x_H + x_I + x_J + x_K + x_L"
-    }
-  }
+  "text": "A convenience supermarket is planning to open several chain stores in a newly built residential area in the northwest suburb of the city. For shopping convenience, the distance from any residential area to one of the chain stores should not exceed $800 \\mathrm{~m}$. Table 5-1 shows the new residential areas and the residential areas within a radius of $800 \\mathrm{~m}$ from each of them. Question: What is the minimum number of chain stores the supermarket needs to build among the mentioned residential areas, and in which residential areas should they be built?\n\n| Area Code | Residential Areas within 800 m Radius |\n|-----------|---------------------------------------------------|\n| A         | A, C, E, G, H, I                                  |\n| B         | B, H, I                                           |\n| C         | A, C, G, H, I                                     |\n| D         | D, J                                              |\n| E         | A, E, G                                           |\n| F         | F, J, K                                           |\n| G         | A, C, E, G                                        |\n| H         | A, B, C, H, I                                     |\n| I         | A, B, C, H, I                                     |\n| J         | D, F, J, K, L                                     |\n| K         | F, J, K, L                                        |\n| L         | J, K, L                                           |",
+  "coupling": {
+    "entities": ["A","B","C","D","E","F","G","H","I","J","K","L"],
+    "decisions": [
+      {"name": "store_location", "type": "binary", "domains": {"location": ["A","B","C","D","E","F","G","H","I","J","K","L"]}, "description": "1 if a chain store is built at location X, else 0"}
+    ],
+    "constraints": [
+      {"name": "cover", "relation": "for_all", "variables": {"area": "entities"}, "expression": "sum of store_location[loc] for all loc in within_800m[area] >= 1", "description": "Each residential area must be within 800m of at least one store (including possibly itself)"},
+      {"name": "binary", "relation": "for_all", "variables": {"location": "entities"}, "expression": "store_location[location] in {0, 1}"}
+    ],
+    "relations": [
+      {"name": "within_800m", "type": "mapping", "from": "entities", "to": "power_set(entities)", "value": {"A":["A","C","E","G","H","I"],"B":["B","H","I"],"C":["A","C","G","H","I"],"D":["D","J"],"E":["A","E","G"],"F":["F","J","K"],"G":["A","C","E","G"],"H":["A","B","C","H","I"],"I":["A","B","C","H","I"],"J":["D","F","J","K","L"],"K":["F","J","K","L"],"L":["J","K","L"]}}
+    ]
+  },
+  "model": "milp_set_cover"
 }

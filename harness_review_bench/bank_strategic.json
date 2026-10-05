@@ -1,26 +1,16 @@
 {
  "result": {
   "bank": "strategic",
-  "count": 7,
+  "count": 9,
   "entries": [
    {
-    "entry_id": "se_d7b30fd6f261",
-    "strategy_id": "milp_labor_training",
+    "entry_id": "se_926041a1a149",
+    "strategy_id": "milp_training_allocation on orarla_2",
     "pattern": {
      "predicates": {
-      "n_trainees_target": 50,
-      "n_weeks": 8,
-      "production_rates": {
-       "food_II_kg_per_h": 6,
-       "food_I_kg_per_h": 10
-      },
-      "schedule": {
-       "overtime_h": 60,
-       "standard_h": 40
-      },
-      "trainer_output_trainees_per_2wk": 3,
-      "trainer_production": "none",
-      "variable_types": "integer"
+      "problem_type": "temporal production-allocation integer MILP",
+      "solver": "highspy 1.15",
+      "task_check": "passed"
      }
     },
     "expected": {
@@ -57,177 +47,118 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "refuted",
+     "purpose": "relation",
+     "claim": "When a temporal production-allocation MILP (integer t1,t2 with multi-year pilot training dynamics) uses highspy 1.15, environment errors and model API errors do NOT indicate model incorrectness — fixing the API calls resolves execution while keeping the formulation intact, and the corrected solve reaches optimal=50 which passes reference_objective check.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_55445861aa9c",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_probe",
+       "execution_id": "ex_55445861aa9c",
+       "expected": 50.0,
+       "found": false,
+       "mode": "equals",
+       "observed": null,
+       "ok": false,
+       "path": "outcome.objective",
+       "role_records": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "strategy_a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": 50.0,
+       "kind": "probe",
+       "path": "outcome.objective",
+       "roles": [
+        "strategy_a"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_55445861aa9c"
+     ],
+     "conclusion": "the claim did not hold on real evidence: probe 'outcome.objective' failed on ex_55445861aa9c",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_55445861aa9c",
+        "role": "strategy_a",
+        "strategy_id": "milp_training_allocation",
+        "task_id": "orarla_2"
+       }
+      ],
+      "roles": [
+       "strategy_a"
+      ],
+      "tasks": [
+       "orarla_2"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "strategy_a"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_55445861aa9c"
+      ],
+      "tasks": [
+       "orarla_2"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791167558.2164204,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "The milp_labor_training MILP for the 8-week labor training planning problem (50-trainee target, dedicated trainers producing 3 trainees per 2-week period, integer production/training variables) is FORMULATION-SENSITIVE: it succeeds (optimal status, all-integer, semantic probes passed) in ~20% of executions; the remaining ~80% fail with kFeasible AttributeError, non-integer domain violations, or illegal koptimal status — the same logical formulation can yield different solver outcomes depending on subtle implementation details. Success requires correct variable declaration structure across all weeks.",
+     "text": "When a temporal production-allocation MILP (integer t1,t2 with multi-year pilot training dynamics) uses highspy 1.15, environment errors and model API errors do NOT indicate model incorrectness — fixing the API calls resolves execution while keeping the formulation intact, and the corrected solve reaches optimal=50 which passes reference_objective check.",
      "kind": "conditional_fact",
-     "subject": "milp_labor_training",
+     "subject": "milp_training_allocation on orarla_2",
      "conditions": {
       "note": null,
       "predicates": {
-       "n_trainees_target": 50,
-       "n_weeks": 8,
-       "production_rates": {
-        "food_II_kg_per_h": 6,
-        "food_I_kg_per_h": 10
-       },
-       "schedule": {
-        "overtime_h": 60,
-        "standard_h": 40
-       },
-       "trainer_output_trainees_per_2wk": 3,
-       "trainer_production": "none",
-       "variable_types": "integer"
+       "problem_type": "temporal production-allocation integer MILP",
+       "solver": "highspy 1.15",
+       "task_check": "passed"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_dfaccc25fac6",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_labor_training",
-       "task_id": "orarla_1"
-      },
-      {
-       "execution_id": "ex_648d7a8c1cc5",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "dropped",
-       "strategy_id": "milp_labor_training",
-       "task_id": "orarla_1"
-      },
-      {
-       "execution_id": "ex_8556ad49ec71",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "dropped",
-       "strategy_id": "milp_labor_training",
-       "task_id": "orarla_1"
-      },
-      {
-       "execution_id": "ex_78c80ca3fe88",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "dropped",
-       "strategy_id": "milp_labor_training",
-       "task_id": "orarla_1"
-      },
-      {
-       "execution_id": "ex_839f0a266ada",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "dropped",
-       "strategy_id": "milp_labor_training",
-       "task_id": "orarla_1"
-      }
-     ],
-     "method": null,
-     "tasks": [
-      "orarla_1"
-     ],
-     "strategy_ids": [
-      "milp_labor_training"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
-    },
-    "relations": [],
-    "last_consulted_at": null,
-    "created_at": 1791084033.1216779
-   },
-   {
-    "entry_id": "se_3088f84ef612",
-    "strategy_id": "direct_calculation",
-    "pattern": {
-     "predicates": {
-      "description": "Simple linear arithmetic task: multiply given scalars, sum across periods, no optimization or search",
-      "task_type": "direct_arithmetic"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
-     "scope": {
-      "distinct_tasks": 1
-     },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "The direct_calculation arithmetic approach solves the orarla_2 task to optimal (objective=125.0, reference match) when executed without errors.",
-     "kind": "conditional_fact",
-     "subject": "direct_calculation",
-     "conditions": {
-      "note": null,
-      "predicates": {
-       "task_family": "orarla_2",
-       "task_type": "arithmetic_calculation"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_5927d2395b82",
+       "execution_id": "ex_55445861aa9c",
        "family": "generic",
        "measurement_scope": "attempt",
        "role": "strategy_a",
-       "strategy_id": "direct_calculation",
+       "strategy_id": "milp_training_allocation",
        "task_id": "orarla_2"
       }
      ],
@@ -236,23 +167,23 @@
       "orarla_2"
      ],
      "strategy_ids": [
-      "direct_calculation"
+      "milp_training_allocation"
      ],
      "family": "generic",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791084335.4433143
+    "created_at": 1791167542.7606363
    },
    {
-    "entry_id": "se_72e9b7a98d44",
-    "strategy_id": "milp_aggregate_production_v2",
+    "entry_id": "se_3be154292829",
+    "strategy_id": "milp_hiring_firing_decoupled on orarla_3",
     "pattern": {
      "predicates": {
-      "description": "6-period aggregate production planning with hiring/firing/overtime, inventory/backlog balance, terminal constraints",
-      "task_family": "inventory_production_planning",
-      "variable_types": "integer_for_production_decisions"
+      "error_class": "model",
+      "error_message_contains": "HighsModelStatus",
+      "to_string_attribute": "missing"
      }
     },
     "expected": {
@@ -289,81 +220,114 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "verified",
+     "purpose": "relation",
+     "claim": "When milp_hiring_firing_decoupled throws AttributeError from HighsModelStatus.to_string, retrying the same code without modification can recover to optimal solution",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_ce3b5183c74e",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "recovered_attempt"
+       ],
+       "status": "optimal"
+      }
+     ],
+     "evidence": [
+      "ex_dde2c6b05f43",
+      "ex_ce3b5183c74e"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_dde2c6b05f43",
+        "role": "failed_attempt",
+        "strategy_id": "milp_hiring_firing_decoupled",
+        "task_id": "orarla_3"
+       },
+       {
+        "execution_id": "ex_ce3b5183c74e",
+        "role": "recovered_attempt",
+        "strategy_id": "milp_hiring_firing_decoupled",
+        "task_id": "orarla_3"
+       }
+      ],
+      "roles": [
+       "failed_attempt",
+       "recovered_attempt"
+      ],
+      "tasks": [
+       "orarla_3"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "recovered_attempt"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_dde2c6b05f43",
+       "ex_ce3b5183c74e"
+      ],
+      "tasks": [
+       "orarla_3"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791168395.4406927,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "The milp_aggregate_production_v2 cumulative supply/demand MILP formulation (integer produce/outsource/hire/fire/workforce/cum_supply/cum_demand, continuous inv/bo/regular_hours/overtime_hours, inv-bo balance constraint, terminal inv>=10000 and bo=0) achieves optimal on the 6-period aggregate production planning problem when it executes without model/API errors (exact objective match 10349920.0, all-integer declared variables, correct terminal conditions). Across 6 executions the strategy has an 83% failure rate due to AttributeError in model construction (changeObjectiveCoeff, mip_runtime, changeColIntegrality), so quality_hat should be updated from 0.00 to 0.17.",
+     "text": "When milp_hiring_firing_decoupled throws AttributeError from HighsModelStatus.to_string, retrying the same code without modification can recover to optimal solution",
      "kind": "conditional_fact",
-     "subject": "milp_aggregate_production_v2",
+     "subject": "milp_hiring_firing_decoupled on orarla_3",
      "conditions": {
       "note": null,
       "predicates": {
-       "description": "6-period aggregate production planning with hiring/firing/overtime, inventory/backlog balance, terminal constraints",
-       "task_family": "inventory_production_planning",
-       "variable_types": "integer_for_production_decisions"
+       "error_class": "model",
+       "error_message_contains": "HighsModelStatus",
+       "to_string_attribute": "missing"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_05b67eee4dec",
+       "execution_id": "ex_dde2c6b05f43",
        "family": "inventory",
        "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
+       "role": "failed_attempt",
+       "strategy_id": "milp_hiring_firing_decoupled",
        "task_id": "orarla_3"
       },
       {
-       "execution_id": "ex_06681b9a7fe1",
+       "execution_id": "ex_ce3b5183c74e",
        "family": "inventory",
        "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_1f72b9a726e2",
-       "family": "inventory",
-       "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_47985fd25173",
-       "family": "inventory",
-       "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_6367943c0689",
-       "family": "inventory",
-       "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_6782a168d556",
-       "family": "inventory",
-       "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "milp_aggregate_production_v2",
+       "role": "recovered_attempt",
+       "strategy_id": "milp_hiring_firing_decoupled",
        "task_id": "orarla_3"
       }
      ],
@@ -372,23 +336,29 @@
       "orarla_3"
      ],
      "strategy_ids": [
-      "milp_aggregate_production_v2"
+      "milp_hiring_firing_decoupled"
      ],
      "family": "inventory",
-     "cell": "class=scheduling|rc[0.25,0.50]|tc[0.75,1.00]|rx[0.00,0.25]"
+     "cell": "class=scheduling|rc[0.00,0.25]|tc[0.75,1.00]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791085880.5947256
+    "created_at": 1791168395.4407601
    },
    {
-    "entry_id": "se_bd647a6c22ab",
-    "strategy_id": "milp_lot_sizing",
+    "entry_id": "se_1b3c8b970bde",
+    "strategy_id": "highspy_API_recovery",
     "pattern": {
      "predicates": {
-      "description": "4-quarter 3-product lot-sizing with inventory/backlog, capacity constraints, and terminal conditions",
-      "task_family": "inventory_production_planning",
-      "variable_types": "integer_for_production_and_inventory"
+      "error_classes": [
+       "NameError",
+       "ImportError",
+       "TypeError",
+       "AttributeError"
+      ],
+      "solver": "highspy",
+      "strategy": "milp_direct_integer",
+      "task": "orarla_4"
      }
     },
     "expected": {
@@ -425,41 +395,574 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "verified",
+     "purpose": "relation",
+     "claim": "When LLM-generated HiGHS/highspy MILP code uses incorrect API symbols (ObjSense, ModelStatus, vartype kwarg, setMipRelGap) for orarla_4, correcting to the proper highspy 1.15 API (HighsModelStatus, positional vartype in addVariable, changeMipRelGap) converts error to optimal solution (status=optimal, objective=30400.0). All 5 attempts use milp_direct_integer; API correction is the intervention.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_d7ffbd7b090d",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "optimal"
+       ],
+       "status": "optimal"
+      }
+     ],
+     "evidence": [
+      "ex_007eea460439",
+      "ex_1eb04cc75317",
+      "ex_493264b8353d",
+      "ex_e7d9bac9846f",
+      "ex_d7ffbd7b090d"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_007eea460439",
+        "role": "error_A",
+        "strategy_id": "milp_lp_relaxation_then_round",
+        "task_id": "orarla_4"
+       },
+       {
+        "execution_id": "ex_1eb04cc75317",
+        "role": "error_B",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_4"
+       },
+       {
+        "execution_id": "ex_493264b8353d",
+        "role": "error_C",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_4"
+       },
+       {
+        "execution_id": "ex_e7d9bac9846f",
+        "role": "error_D",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_4"
+       },
+       {
+        "execution_id": "ex_d7ffbd7b090d",
+        "role": "optimal",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_4"
+       }
+      ],
+      "roles": [
+       "error_A",
+       "error_B",
+       "error_C",
+       "error_D",
+       "optimal"
+      ],
+      "tasks": [
+       "orarla_4"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "optimal"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_007eea460439",
+       "ex_1eb04cc75317",
+       "ex_493264b8353d",
+       "ex_e7d9bac9846f",
+       "ex_d7ffbd7b090d"
+      ],
+      "tasks": [
+       "orarla_4"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791169123.9509945,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "The milp_lot_sizing multi-product lot-sizing formulation (integer production lots, inventory, backlog per product per quarter; flow-balance constraints; final-stock=150/backlog=0 terminal constraints; capacity 15000 h/qtr) achieves optimal on the 4-quarter 3-product inventory production planning problem when it executes without model or API errors, verified by exact reference objective match (10755.0) and all-integer declared variables.",
+     "text": "When LLM-generated HiGHS/highspy MILP code uses incorrect API symbols (ObjSense, ModelStatus, vartype kwarg, setMipRelGap) for orarla_4, correcting to the proper highspy 1.15 API (HighsModelStatus, positional vartype in addVariable, changeMipRelGap) converts error to optimal solution (status=optimal, objective=30400.0). All 5 attempts use milp_direct_integer; API correction is the intervention.",
      "kind": "conditional_fact",
-     "subject": "milp_lot_sizing",
+     "subject": "highspy_API_recovery",
      "conditions": {
       "note": null,
       "predicates": {
-       "description": "4-quarter 3-product lot-sizing with inventory/backlog, capacity constraints, and terminal conditions",
-       "task_family": "inventory_production_planning",
-       "variable_types": "integer_for_production_and_inventory"
+       "error_classes": [
+        "NameError",
+        "ImportError",
+        "TypeError",
+        "AttributeError"
+       ],
+       "solver": "highspy",
+       "strategy": "milp_direct_integer",
+       "task": "orarla_4"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_6a24e63222cc",
-       "family": "inventory",
+       "execution_id": "ex_007eea460439",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "error_A",
+       "strategy_id": "milp_lp_relaxation_then_round",
+       "task_id": "orarla_4"
+      },
+      {
+       "execution_id": "ex_1eb04cc75317",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "error_B",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_4"
+      },
+      {
+       "execution_id": "ex_493264b8353d",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "error_C",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_4"
+      },
+      {
+       "execution_id": "ex_e7d9bac9846f",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "error_D",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_4"
+      },
+      {
+       "execution_id": "ex_d7ffbd7b090d",
+       "family": "generic",
+       "measurement_scope": "attempt",
+       "role": "optimal",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_4"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_4"
+     ],
+     "strategy_ids": [
+      "milp_direct_integer",
+      "milp_lp_relaxation_then_round"
+     ],
+     "family": "generic",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791169105.1589773
+   },
+   {
+    "entry_id": "se_2de4ec75579d",
+    "strategy_id": "orarla_5",
+    "pattern": {
+     "predicates": {
+      "family": "planning",
+      "outcome_status": "optimal",
+      "problem_class": "unknown",
+      "task_check_state": "failed"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "When milp_direct_integer (or variant strategies on same task) reports solver-optimal but task_check fails on reference_objective, it indicates model-task mismatch: the solver is optimizing a wrong formulation, and all strategy variants converge to the same biased basin (ex_8473a6cc=18.7 vs ref 18.6943, ex_8473a1c9=18.99 vs ref 18.6943). Solver-optimality is not a proxy for model correctness on planning-class tasks with unknown problem_class.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_8473a1c9cf39",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_a6cc2761d98c",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_86b334b1b65c",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_metric_complete",
+       "measured_a": [
+        false
+       ],
+       "measured_b": [],
+       "metric": "objective",
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "strategy_a",
+        "strategy_b",
+        "strategy_c"
+       ],
+       "status": "optimal"
+      },
+      {
+       "aggregation": "mean",
+       "direction": "min",
+       "kind": "comparison",
+       "metric": "objective",
+       "min_gap": 0.005,
+       "mode": "absolute",
+       "roles_a": [
+        "strategy_a"
+       ],
+       "roles_b": []
+      }
+     ],
+     "evidence": [
+      "ex_8473a1c9cf39",
+      "ex_a6cc2761d98c",
+      "ex_86b334b1b65c"
+     ],
+     "conclusion": "an assertion could not be decided: objective is not measured on every referenced record — a mean over a subset is a partial observation, not a claim",
+     "scope": {
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status",
+       "comparison"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_8473a1c9cf39",
+        "role": "strategy_a",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_5"
+       },
+       {
+        "execution_id": "ex_a6cc2761d98c",
+        "role": "strategy_b",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_5"
+       },
+       {
+        "execution_id": "ex_86b334b1b65c",
+        "role": "strategy_c",
+        "strategy_id": "milp_binary_then_continuous",
+        "task_id": "orarla_5"
+       }
+      ],
+      "roles": [
+       "strategy_a",
+       "strategy_b",
+       "strategy_c"
+      ],
+      "tasks": [
+       "orarla_5"
+      ]
+     },
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "strategy_a",
+         "strategy_b",
+         "strategy_c"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_8473a1c9cf39",
+       "ex_a6cc2761d98c",
+       "ex_86b334b1b65c"
+      ],
+      "tasks": [
+       "orarla_5"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791171334.490815,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "When milp_direct_integer (or variant strategies on same task) reports solver-optimal but task_check fails on reference_objective, it indicates model-task mismatch: the solver is optimizing a wrong formulation, and all strategy variants converge to the same biased basin (ex_8473a6cc=18.7 vs ref 18.6943, ex_8473a1c9=18.99 vs ref 18.6943). Solver-optimality is not a proxy for model correctness on planning-class tasks with unknown problem_class.",
+     "kind": "conditional_fact",
+     "subject": "orarla_5",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "family": "planning",
+       "outcome_status": "optimal",
+       "problem_class": "unknown",
+       "task_check_state": "failed"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_8473a1c9cf39",
+       "family": "planning",
        "measurement_scope": "attempt",
        "role": "strategy_a",
-       "strategy_id": "milp_lot_sizing",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_5"
+      },
+      {
+       "execution_id": "ex_a6cc2761d98c",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "strategy_b",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_5"
+      },
+      {
+       "execution_id": "ex_86b334b1b65c",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "strategy_c",
+       "strategy_id": "milp_binary_then_continuous",
+       "task_id": "orarla_5"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_5"
+     ],
+     "strategy_ids": [
+      "milp_binary_then_continuous",
+      "milp_direct_integer"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791171334.4908948
+   },
+   {
+    "entry_id": "se_5ff13b763846",
+    "strategy_id": "milp_production_inventory_backlog on orarla_6",
+    "pattern": {
+     "predicates": {
+      "error_type": "ModuleNotFoundError",
+      "failure_class": "environment",
+      "same_strategy_on_retry": true,
+      "task_check_passed_on_recovery": true
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "verified",
+     "purpose": "relation",
+     "claim": "When a production/inventory/backlog MILP solve fails with an environment error (ModuleNotFoundError), retrying the exact same strategy after the environment is corrected recovers to optimal without any model or code changes.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_162a2b376be7",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "recovered_attempt"
+       ],
+       "status": "optimal"
+      }
+     ],
+     "evidence": [
+      "ex_c694d87b758f",
+      "ex_162a2b376be7"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
+     "scope": {
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_c694d87b758f",
+        "role": "failed_attempt",
+        "strategy_id": "milp_production_inventory_backlog",
+        "task_id": "orarla_6"
+       },
+       {
+        "execution_id": "ex_162a2b376be7",
+        "role": "recovered_attempt",
+        "strategy_id": "milp_production_inventory_backlog",
+        "task_id": "orarla_6"
+       }
+      ],
+      "roles": [
+       "failed_attempt",
+       "recovered_attempt"
+      ],
+      "tasks": [
+       "orarla_6"
+      ]
+     },
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "recovered_attempt"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_c694d87b758f",
+       "ex_162a2b376be7"
+      ],
+      "tasks": [
+       "orarla_6"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791171996.6480737,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "When a production/inventory/backlog MILP solve fails with an environment error (ModuleNotFoundError), retrying the exact same strategy after the environment is corrected recovers to optimal without any model or code changes.",
+     "kind": "conditional_fact",
+     "subject": "milp_production_inventory_backlog on orarla_6",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "error_type": "ModuleNotFoundError",
+       "failure_class": "environment",
+       "same_strategy_on_retry": true,
+       "task_check_passed_on_recovery": true
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_c694d87b758f",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "failed_attempt",
+       "strategy_id": "milp_production_inventory_backlog",
+       "task_id": "orarla_6"
+      },
+      {
+       "execution_id": "ex_162a2b376be7",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "recovered_attempt",
+       "strategy_id": "milp_production_inventory_backlog",
        "task_id": "orarla_6"
       }
      ],
@@ -468,24 +971,25 @@
       "orarla_6"
      ],
      "strategy_ids": [
-      "milp_lot_sizing"
+      "milp_production_inventory_backlog"
      ],
      "family": "inventory",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+     "cell": "class=unknown|rc[0.50,0.75]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791088024.7277942
+    "created_at": 1791171996.6481311
    },
    {
-    "entry_id": "se_16ae57b92d61",
-    "strategy_id": "network_flow_transport",
+    "entry_id": "se_96bb132168e5",
+    "strategy_id": "orarla_7 / milp_transport_integer",
     "pattern": {
      "predicates": {
-      "solver": "COPT",
-      "structure": "multi-warehouse multi-port supply-demand with distance-based arc costs",
-      "task_family": "transportation_transshipment",
-      "variable_type": "integer_flows"
+      "error_class": "environment",
+      "error_type": "ModuleNotFoundError",
+      "solver_after": "ortools",
+      "solver_before": "highs",
+      "task_check_after": "passed"
      }
     },
     "expected": {
@@ -522,42 +1026,116 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "verified",
+     "purpose": "relation",
+     "claim": "When highs solver raises ModuleNotFoundError for a transport-integer task, switching the solver backend to ortools (CP-SAT) resolves the environment failure and returns optimal on the same model.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_f4f6507582f5",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "recovered_ortools"
+       ],
+       "status": "optimal"
+      }
+     ],
+     "evidence": [
+      "ex_b8403c32804b",
+      "ex_f4f6507582f5"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_b8403c32804b",
+        "role": "failed_highs",
+        "strategy_id": "milp_transport_integer",
+        "task_id": "orarla_7"
+       },
+       {
+        "execution_id": "ex_f4f6507582f5",
+        "role": "recovered_ortools",
+        "strategy_id": "milp_transport_integer",
+        "task_id": "orarla_7"
+       }
+      ],
+      "roles": [
+       "failed_highs",
+       "recovered_ortools"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "recovered_ortools"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_b8403c32804b",
+       "ex_f4f6507582f5"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791173169.2887864,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "The network_flow_transport min-cost transshipment formulation (source->warehouse->port->sink arcs, integer flow variables, arc cost = 30 * distance[w][p], capacity constraints at warehouses, demand satisfaction at ports) achieves optimal on warehouse-to-port transshipment problems when it executes without model or API errors, as verified by reference_status=optimal and exact reference_objective=904590.0 match.",
+     "text": "When highs solver raises ModuleNotFoundError for a transport-integer task, switching the solver backend to ortools (CP-SAT) resolves the environment failure and returns optimal on the same model.",
      "kind": "conditional_fact",
-     "subject": "network_flow_transport",
+     "subject": "orarla_7 / milp_transport_integer",
      "conditions": {
       "note": null,
       "predicates": {
-       "solver": "COPT",
-       "structure": "multi-warehouse multi-port supply-demand with distance-based arc costs",
-       "task_family": "transportation_transshipment",
-       "variable_type": "integer_flows"
+       "error_class": "environment",
+       "error_type": "ModuleNotFoundError",
+       "solver_after": "ortools",
+       "solver_before": "highs",
+       "task_check_after": "passed"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_be0de80e7bc8",
+       "execution_id": "ex_b8403c32804b",
        "family": "inventory",
        "measurement_scope": "attempt",
-       "role": "strategy_a",
-       "strategy_id": "network_flow_transport",
+       "role": "failed_highs",
+       "strategy_id": "milp_transport_integer",
+       "task_id": "orarla_7"
+      },
+      {
+       "execution_id": "ex_f4f6507582f5",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "recovered_ortools",
+       "strategy_id": "milp_transport_integer",
        "task_id": "orarla_7"
       }
      ],
@@ -566,22 +1144,25 @@
       "orarla_7"
      ],
      "strategy_ids": [
-      "network_flow_transport"
+      "milp_transport_integer"
      ],
      "family": "inventory",
      "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791088457.033291
+    "created_at": 1791173169.28885
    },
    {
-    "entry_id": "se_621929fbd0ea",
-    "strategy_id": "enumerate_assignment",
+    "entry_id": "se_cefac66cf855",
+    "strategy_id": "orarla_7 / milp_transport_integer via ortools",
     "pattern": {
      "predicates": {
-      "task_family": "orarla_8",
-      "task_type": "combinatorial_assignment"
+      "outcome_conflict": "infeasible vs optimal",
+      "same_solver": true,
+      "same_strategy": true,
+      "task_check_optimal": "passed",
+      "transport_balanced": true
      }
     },
     "expected": {
@@ -618,40 +1199,327 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On a balanced transportation-integer problem (supply=demand), the same strategy and solver (ortools CP-SAT) can report infeasible on one attempt and optimal on another. Infeasibility here reflects a modeling error in the infeasible attempt (likely a constraint was omitted or misinterpreted, e.g. the per-truck capacity note), not an inherently infeasible instance. The optimal solution (objective=904590) confirms the problem IS feasible.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_f4f6507582f5",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_metric_complete",
+       "measured_a": [
+        false
+       ],
+       "measured_b": [],
+       "metric": "objective",
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "optimal_attempt"
+       ],
+       "status": "optimal"
+      },
+      {
+       "direction": "max",
+       "kind": "comparison",
+       "metric": "objective",
+       "mode": "absolute",
+       "roles_a": [
+        "optimal_attempt"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_21f9e988aca5",
+      "ex_f4f6507582f5"
+     ],
+     "conclusion": "an assertion could not be decided: objective is not measured on every referenced record — a mean over a subset is a partial observation, not a claim",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status",
+       "comparison"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_21f9e988aca5",
+        "role": "infeasible_attempt",
+        "strategy_id": "milp_transport_integer",
+        "task_id": "orarla_7"
+       },
+       {
+        "execution_id": "ex_f4f6507582f5",
+        "role": "optimal_attempt",
+        "strategy_id": "milp_transport_integer",
+        "task_id": "orarla_7"
+       }
+      ],
+      "roles": [
+       "infeasible_attempt",
+       "optimal_attempt"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "optimal_attempt"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_21f9e988aca5",
+       "ex_f4f6507582f5"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791173224.3050866,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "The enumerate_assignment strategy (enumerate all feasible assignments, evaluate objective for each, select best) solves the orarla_8 task to optimal (objective=14.0, reference match) when executed without errors.",
+     "text": "On a balanced transportation-integer problem (supply=demand), the same strategy and solver (ortools CP-SAT) can report infeasible on one attempt and optimal on another. Infeasibility here reflects a modeling error in the infeasible attempt (likely a constraint was omitted or misinterpreted, e.g. the per-truck capacity note), not an inherently infeasible instance. The optimal solution (objective=904590) confirms the problem IS feasible.",
      "kind": "conditional_fact",
-     "subject": "enumerate_assignment",
+     "subject": "orarla_7 / milp_transport_integer via ortools",
      "conditions": {
       "note": null,
       "predicates": {
-       "task_family": "orarla_8",
-       "task_type": "combinatorial_assignment"
+       "outcome_conflict": "infeasible vs optimal",
+       "same_solver": true,
+       "same_strategy": true,
+       "task_check_optimal": "passed",
+       "transport_balanced": true
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_da42d0c72e39",
+       "execution_id": "ex_21f9e988aca5",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "infeasible_attempt",
+       "strategy_id": "milp_transport_integer",
+       "task_id": "orarla_7"
+      },
+      {
+       "execution_id": "ex_f4f6507582f5",
+       "family": "inventory",
+       "measurement_scope": "attempt",
+       "role": "optimal_attempt",
+       "strategy_id": "milp_transport_integer",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": null,
+     "tasks": [
+      "orarla_7"
+     ],
+     "strategy_ids": [
+      "milp_transport_integer"
+     ],
+     "family": "inventory",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791173224.3051496
+   },
+   {
+    "entry_id": "se_541cf3070d11",
+    "strategy_id": "enumerate_exclude_one on cardinality-constrained assignment (pick n-1 of n workers)",
+    "pattern": {
+     "predicates": {
+      "algorithm_per_exclusion": "Hungarian / linear-sum assignment",
+      "constraint_structure": "assignment (each task once) + at_most_one (each worker at most once) + cardinality (exactly n-1 workers selected)",
+      "n_tasks": 4,
+      "n_workers": 5,
+      "selection": "exactly 4 workers (n-1)",
+      "task_check": "passed",
+      "variables": "binary x[worker,task]"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "refuted",
+     "purpose": "relation",
+     "claim": "For a worker-task assignment problem with binary x[worker,task] where exactly (n-1) workers must be assigned to (n-1) tasks (one task per worker, each task covered once), enumerating all n possible single-worker exclusions and solving each resulting (n-1)×(n-1) assignment subproblem via the Hungarian algorithm yields the global optimum.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_ebc069091457",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_probe",
+       "execution_id": "ex_ebc069091457",
+       "expected": 0.0,
+       "found": false,
+       "mode": "equals",
+       "observed": null,
+       "ok": false,
+       "path": "outcome.gap",
+       "role_records": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "strategy_a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": 0.0,
+       "kind": "probe",
+       "path": "outcome.gap",
+       "roles": [
+        "strategy_a"
+       ]
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "strategy_a"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_ebc069091457"
+     ],
+     "conclusion": "the claim did not hold on real evidence: probe 'outcome.gap' failed on ex_ebc069091457",
+     "scope": {
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status",
+       "probe",
+       "probe"
+      ],
+      "assertions_unchecked": [
+       2
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_ebc069091457",
+        "role": "strategy_a",
+        "strategy_id": "enumerate_exclude_one",
+        "task_id": "orarla_8"
+       }
+      ],
+      "roles": [
+       "strategy_a"
+      ],
+      "tasks": [
+       "orarla_8"
+      ]
+     },
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "strategy_a"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_ebc069091457"
+      ],
+      "tasks": [
+       "orarla_8"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791173780.4135506,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "For a worker-task assignment problem with binary x[worker,task] where exactly (n-1) workers must be assigned to (n-1) tasks (one task per worker, each task covered once), enumerating all n possible single-worker exclusions and solving each resulting (n-1)×(n-1) assignment subproblem via the Hungarian algorithm yields the global optimum.",
+     "kind": "conditional_fact",
+     "subject": "enumerate_exclude_one on cardinality-constrained assignment (pick n-1 of n workers)",
+     "conditions": {
+      "note": null,
+      "predicates": {
+       "algorithm_per_exclusion": "Hungarian / linear-sum assignment",
+       "constraint_structure": "assignment (each task once) + at_most_one (each worker at most once) + cardinality (exactly n-1 workers selected)",
+       "n_tasks": 4,
+       "n_workers": 5,
+       "selection": "exactly 4 workers (n-1)",
+       "task_check": "passed",
+       "variables": "binary x[worker,task]"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_ebc069091457",
        "family": "scheduling",
        "measurement_scope": "attempt",
        "role": "strategy_a",
-       "strategy_id": "enumerate_assignment",
+       "strategy_id": "enumerate_exclude_one",
        "task_id": "orarla_8"
       }
      ],
@@ -660,24 +1528,23 @@
       "orarla_8"
      ],
      "strategy_ids": [
-      "enumerate_assignment"
+      "enumerate_exclude_one"
      ],
      "family": "scheduling",
      "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791089073.5359566
+    "created_at": 1791173780.4136333
    },
    {
-    "entry_id": "se_161bf535d0fa",
-    "strategy_id": "network_flow_transport on orarla_7",
+    "entry_id": "se_9baddc1c0fbf",
+    "strategy_id": "highspy API compatibility in milp_direct_integer",
     "pattern": {
      "predicates": {
-      "domain": "integer flows required",
-      "solver": "copt",
-      "structure": "supply warehouses, demand ports, single commodity",
-      "task_type": "transportation / transshipment"
+      "objective_sense": "maximize",
+      "solver": "highspy >= 1.15",
+      "strategy": "milp_direct_integer"
      }
     },
     "expected": {
@@ -714,60 +1581,153 @@
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "unverified",
-     "purpose": null,
-     "claim": null,
-     "checks": [],
-     "assertions": [],
-     "evidence": [],
-     "conclusion": null,
+     "state": "refuted",
+     "purpose": "relation",
+     "claim": "When milp_direct_integer uses highspy >= 1.15, calling setObjectiveSense raises AttributeError; the correct API is changeObjectiveSense with ObjSense.kMaximize/kMinimize",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_44acce1f7d0b",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_probe",
+       "execution_id": "ex_579168d1f3b7",
+       "expected": "error",
+       "found": false,
+       "mode": "equals",
+       "observed": null,
+       "ok": false,
+       "path": "outcome.status",
+       "role_records": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "success_case"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "error",
+       "kind": "probe",
+       "path": "outcome.status",
+       "roles": [
+        "error_case"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_579168d1f3b7",
+      "ex_44acce1f7d0b"
+     ],
+     "conclusion": "the claim did not hold on real evidence: probe 'outcome.status' failed on ex_579168d1f3b7",
      "scope": {
-      "distinct_tasks": 1
+      "assertions_checked": [
+       0
+      ],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_579168d1f3b7",
+        "role": "error_case",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_9"
+       },
+       {
+        "execution_id": "ex_44acce1f7d0b",
+        "role": "success_case",
+        "strategy_id": "milp_direct_integer",
+        "task_id": "orarla_9"
+       }
+      ],
+      "roles": [
+       "error_case",
+       "success_case"
+      ],
+      "tasks": [
+       "orarla_9"
+      ]
      },
-     "checked": null,
-     "not_covered": null,
-     "verified_at": null,
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "success_case"
+        ],
+        "status": "optimal"
+       }
+      ],
+      "execution_ids": [
+       "ex_579168d1f3b7",
+       "ex_44acce1f7d0b"
+      ],
+      "tasks": [
+       "orarla_9"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791174533.2410457,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "When a transportation problem with supply-constrained warehouses and demand ports is formulated as a min-cost transshipment network (source->warehouse->port->sink) and solved with COPT (integer flows), the solver returns optimal status and matches the reference objective (904590)",
+     "text": "When milp_direct_integer uses highspy >= 1.15, calling setObjectiveSense raises AttributeError; the correct API is changeObjectiveSense with ObjSense.kMaximize/kMinimize",
      "kind": "conditional_fact",
-     "subject": "network_flow_transport on orarla_7",
+     "subject": "highspy API compatibility in milp_direct_integer",
      "conditions": {
       "note": null,
       "predicates": {
-       "domain": "integer flows required",
-       "solver": "copt",
-       "structure": "supply warehouses, demand ports, single commodity",
-       "task_type": "transportation / transshipment"
+       "objective_sense": "maximize",
+       "solver": "highspy >= 1.15",
+       "strategy": "milp_direct_integer"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_be0de80e7bc8",
-       "family": "inventory",
+       "execution_id": "ex_579168d1f3b7",
+       "family": "planning",
        "measurement_scope": "attempt",
-       "role": "method_a",
-       "strategy_id": "network_flow_transport",
-       "task_id": "orarla_7"
+       "role": "error_case",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_9"
+      },
+      {
+       "execution_id": "ex_44acce1f7d0b",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "success_case",
+       "strategy_id": "milp_direct_integer",
+       "task_id": "orarla_9"
       }
      ],
      "method": null,
      "tasks": [
-      "orarla_7"
+      "orarla_9"
      ],
      "strategy_ids": [
-      "network_flow_transport"
+      "milp_direct_integer"
      ],
-     "family": "inventory",
+     "family": "planning",
      "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791090748.9718468
+    "created_at": 1791174533.241107
    }
   ]
  },
- "summary": "7 entries in strategic bank. Entry track records show n_predictions, hit_rate, calibration_error, and consecutive_misses. Suspect / dormant statuses are the retirement CANDIDATES (`--status suspect|dormant`); retiring them is explicit (`orx retire`)."
+ "summary": "9 entries in strategic bank. Entry track records show n_predictions, hit_rate, calibration_error, and consecutive_misses. Suspect / dormant statuses are the retirement CANDIDATES (`--status suspect|dormant`); retiring them is explicit (`orx retire`)."
 }

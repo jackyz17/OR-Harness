@@ -1,66 +1,24 @@
 {
   "task_id": "orarla_2",
   "family": "generic",
+  "difficulty": "Medium",
   "text": "A fighter jet is a crucial combat tool, but to make it effective, enough trained pilots are required. Therefore, some fighter jets each year must be allocated exclusively for pilot training. The annual production of fighter jets is a_j (j=1,2), with a1=10 and a2=15. Each training jet can train 5 pilots per year, and each trained pilot can operate one combat jet in subsequent years. Assuming training starts in year 1 and continues for 2 years, how many trained pilots will be available in total by the end of year 2 to contribute to air defense?",
-  "coupling": {
-    "entities": [
-      {"name": "year1", "kind": "period", "attrs": {"description": "Year 1 production period"}},
-      {"name": "year2", "kind": "period", "attrs": {"description": "Year 2 production period"}},
-      {"name": "training_jet", "kind": "resource", "attrs": {"description": "Fighter jet allocated to pilot training"}},
-      {"name": "trained_pilot", "kind": "output", "attrs": {"description": "Pilot who has completed training and can operate a combat jet"}}
-    ],
-    "decisions": [
-      {
-        "name": "x1",
-        "kind": "allocation",
-        "indexes": ["year1"],
-        "attrs": {"description": "Number of jets allocated to training in year 1", "domain": "non-negative integer"}
-      },
-      {
-        "name": "x2",
-        "kind": "allocation",
-        "indexes": ["year2"],
-        "attrs": {"description": "Number of jets allocated to training in year 2", "domain": "non-negative integer"}
-      }
-    ],
-    "constraints": [
-      {
-        "id": "C1",
-        "kind": "capacity",
-        "expr": "x1 <= 10",
-        "attrs": {"description": "Training jets in year 1 cannot exceed year-1 production (a1=10)"}
-      },
-      {
-        "id": "C2",
-        "kind": "capacity",
-        "expr": "x2 <= 15",
-        "attrs": {"description": "Training jets in year 2 cannot exceed year-2 production (a2=15)"}
-      }
-    ],
-    "relations": [
-      {
-        "source": "x1",
-        "target": "trained_pilot",
-        "type": "produces",
-        "evidence": "semantic",
-        "detail": "Each training jet in year 1 produces 5 pilots"
-      },
-      {
-        "source": "x2",
-        "target": "trained_pilot",
-        "type": "produces",
-        "evidence": "semantic",
-        "detail": "Each training jet in year 2 produces 5 pilots"
-      }
-    ],
-    "coupling_groups": [],
-    "issues": []
-  },
   "model": {
-    "sets": "",
-    "parameters": "a1 = 10\na2 = 15\nrate = 5",
-    "variables": "x1 integer >= 0\nx2 integer >= 0",
-    "objective": "maximize total_pilots = 5*x1 + 5*x2",
-    "constraints": "C1: x1 <= 10\nC2: x2 <= 15"
+    "kind": "milp",
+    "formulation": "milp_training_allocation",
+    "variables": {
+      "t1": {"type": "integer", "lb": 0, "ub": 10, "description": "jets allocated to training in year 1"},
+      "t2": {"type": "integer", "lb": 0, "ub": 15, "description": "jets allocated to training in year 2"}
+    },
+    "constraints": [
+      "t1 <= 10",
+      "t2 <= 15",
+      "t1 >= 10  (year 1 jets must train since no year 0 pilots exist for combat jets)"
+    ],
+    "objective": {
+      "sense": "maximize",
+      "expr": "5 * t1 * 2",
+      "note": "Year 1 jets train for 2 years, producing 5 pilots per jet per year. By end of year 2, the first cohort (50 pilots) is fully trained and available. Year 2 cohort not yet ready."
+    }
   }
 }
