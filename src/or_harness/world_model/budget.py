@@ -379,12 +379,29 @@ class BudgetLedger:
         """Budget view: declaration + consumption + honest status.
 
         ``budget`` (optional, per CostVector dimension) may come from the
-        caller or from a previously declared episode budget."""
+        caller or from a previously declared episode budget.
+
+        Beyond the single ``status``, the view reports WHAT was exceeded and
+        on which SCOPE (``exceeded_dims`` with ``scope`` ∈ ``episode`` /
+        ``per_attempt``), so a caller deciding whether to STOP THE EPISODE
+        can tell an episode-level overrun from a single slow attempt:
+
+        - ``episode_exhausted`` — at least one EPISODE-scoped cumulative
+          dimension (llm_tokens / tool_calls / solver_runtime_s / retries)
+          is over its limit. This is what stops the whole task.
+        - ``attempt_limited`` — only a PER-ATTEMPT dimension (latency_s) is
+          over its limit. A single slow attempt is a failure to keep, not a
+          reason to forbid every future attempt.
+
+        A single ``exceeded`` status is therefore NOT enough to stop a task:
+        an attempt-level overrun must not permanently block retries.
+        """
         consumption = self.consumption(task_id, episode_id)
         if budget is None:
             budget = {}
         budget = {d: float(v) for d, v in budget.items()
                   if d in COST_DIMENSIONS}
+        exceeded_dims: List[Dict[str, Any]] = []
         if not budget:
             status = "no_budget_declared"
         else:
@@ -394,22 +411,32 @@ class BudgetLedger:
             # measured and others did not) makes the verdict unconfirmed.
             declared_unknown = [d for d in budget
                                 if d in consumption["unknown_dims"]]
-            exceeded = any(
-                d in budget and consumption["n_measured"].get(d, 0) > 0
-                and consumption["total_cost"].get(d) is not None
-                and consumption["total_cost"][d] > budget[d]
-                for d in COST_DIMENSIONS)
+            # EPISODE-scoped cumulative dimensions: a measured total over
+            # the declared limit.
+            for d in COST_DIMENSIONS:
+                if d not in budget or d == "latency_s":
+                    continue
+                if consumption["n_measured"].get(d, 0) > 0 \
+                        and consumption["total_cost"].get(d) is not None \
+                        and consumption["total_cost"][d] > budget[d]:
+                    exceeded_dims.append({
+                        "dimension": d, "scope": "episode",
+                        "limit": budget[d],
+                        "observed": consumption["total_cost"][d]})
             # latency_s is never summed (attempts may overlap), so a
             # declared latency budget is judged PER ATTEMPT: any single
-            # measured attempt latency over the limit exceeds the budget.
-            if not exceeded and "latency_s" in budget:
+            # measured attempt latency over the limit is exceeded, and the
+            # offending attempt is named.
+            if "latency_s" in budget:
                 limit = budget["latency_s"]
                 for attempt in consumption["attempts"]:
                     latency = (attempt.get("cost") or {}).get("latency_s")
                     if latency is not None and latency > limit:
-                        exceeded = True
-                        break
-            if exceeded:
+                        exceeded_dims.append({
+                            "dimension": "latency_s", "scope": "per_attempt",
+                            "limit": limit, "observed": latency,
+                            "execution_id": attempt.get("execution_id")})
+            if exceeded_dims:
                 status = "exceeded"
             elif declared_unknown:
                 # Known spend within limits but a declared dimension is
@@ -417,11 +444,20 @@ class BudgetLedger:
                 status = "unconfirmed"
             else:
                 status = "ok"
+        episode_exhausted = any(d["scope"] == "episode"
+                                for d in exceeded_dims)
+        attempt_limited = (bool(exceeded_dims) and not episode_exhausted)
         return {
             "task_id": task_id,
             "episode_id": episode_id,
             "budget": budget or None,
             "status": status,
+            "exceeded_dims": exceeded_dims,
+            # The STOP decision reads these, never the bare status: only an
+            # EPISODE-scoped overrun halts the task; an attempt-level overrun
+            # is a failure to keep and retry around.
+            "episode_exhausted": episode_exhausted,
+            "attempt_limited": attempt_limited,
             "consumption": consumption,
             "status_note": {
                 "no_budget_declared": "no budget declared: consumption is "
@@ -432,6 +468,8 @@ class BudgetLedger:
                                "but some cost dimensions are unknown — "
                                "actual remaining budget is NOT confirmed",
                 "exceeded": "a measured dimension exceeds the declared "
-                            "budget",
+                            "budget (see exceeded_dims for the dimension "
+                            "and scope: only an episode-scoped overrun stops "
+                            "the task)",
             }[status],
         }

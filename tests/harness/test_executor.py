@@ -298,6 +298,54 @@ class TestCostMeasurementHonesty(ExecutorCase):
         self.assertEqual(fast.run(cpu, self.work, solver="mock").status, "timeout")
         self.assertEqual(fast.run(stall, self.work, solver="mock").status, "timeout")
 
+    def test_timeout_terminates_the_process_group(self):
+        """A timeout kills the WHOLE process group: a grandchild the script
+        spawned must not survive the attempt.
+
+        The sandbox blocks the script from importing ``subprocess``
+        directly, so this test exercises the cleanup primitive itself: a
+        child that starts a new session spawns a sleeper, and
+        ``_terminate_tree`` must kill both — proven by the grandchild's pid
+        no longer being alive."""
+        import os
+        import signal
+        import subprocess
+        import sys
+        import time
+        from or_harness.execution.executor import _terminate_tree
+        if os.name != "posix":
+            self.skipTest("process groups are POSIX-only")
+        pidfile = self.work / "grandchild.pid"
+        # A parent that spawns a long sleeper (the grandchild) and then waits.
+        parent = self.write("spawner.py", f"""
+            import subprocess, sys, time
+            gc = subprocess.Popen([sys.executable, "-c",
+                                   "import time; time.sleep(60)"])
+            open({str(pidfile)!r}, "w").write(str(gc.pid))
+            time.sleep(60)
+        """)
+        proc = subprocess.Popen([sys.executable, str(parent)],
+                                start_new_session=True)
+        # Wait for the grandchild pid to appear, then terminate the tree.
+        for _ in range(100):
+            if pidfile.exists() and pidfile.read_text().strip():
+                break
+            time.sleep(0.05)
+        grandchild_pid = int(pidfile.read_text().strip())
+        _terminate_tree(proc)
+        proc.wait(timeout=10)
+        # The grandchild must be gone (its own process, in the child's group).
+        gone = False
+        for _ in range(100):
+            try:
+                os.kill(grandchild_pid, 0)
+            except ProcessLookupError:
+                gone = True
+                break
+            time.sleep(0.05)
+        self.assertTrue(gone, "the spawned solver grandchild survived the "
+                              "timeout — the process group was not killed")
+
     def test_signal_kill_is_explained(self):
         """A bare 'missing result.json' says nothing about why."""
         from or_harness.execution.executor import _exit_note

@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from or_harness.api import ORHarness, PREDICTION_MODES
 from or_harness.core.coupling import CIRFormatError
 from or_harness.core.schema import ExecutionRecord
-from or_harness.core.storage import StorageError
+from or_harness.core.storage import BudgetExhausted, StorageError
 
 
 def _emit(result: Dict[str, Any], summary: str) -> int:
@@ -521,6 +521,16 @@ def cmd_execute(args) -> int:
                                method=method,
                                adapted_from=adapted_from,
                                adaptation=getattr(args, "adaptation", None))
+        except BudgetExhausted as exc:
+            # The task is STOPPED: refused BEFORE anything ran, so no
+            # prediction was spent and no cost was incurred. This is an
+            # OPERATING condition (the host's finish path), not a failure
+            # of an attempt — report it plainly and do not suggest a retry.
+            return _fail(
+                f"task stopped before this attempt started: {exc}. No cost "
+                "was incurred. Finish the episode (record the host stop with "
+                "`orx record --session ...`, then `orx close-episode "
+                "--terminal budget_exhausted`), or clear it deliberately.")
         except ValueError as exc:
             # A prediction-driven precondition failure (unknown prediction,
             # a changed problem, a contradictory explicit argument, a
@@ -603,9 +613,38 @@ def cmd_execute(args) -> int:
         h.close()
 
 
+def _record_session(h, args) -> int:
+    """Handle `orx record --session` (the host's post-cancel archive step)."""
+    if not getattr(args, "reason", None):
+        return _fail("--session requires --reason (the host's stated cause)")
+    cost = None
+    if getattr(args, "override", None):
+        cost = _parse_dimension_pairs(args.override)
+    task_id = getattr(args, "task", None)
+    if not task_id:
+        return _fail("--session requires --task")
+    result = h.record_session(
+        task_id, episode_id=getattr(args, "episode", None),
+        reason=args.reason, cancelled=bool(getattr(args, "cancelled", False)),
+        attempted_execution_id=getattr(args, "attempted_execution", None),
+        cost=cost)
+    shapes = ", ".join(x["shape"] for x in result["recorded"]) or "none"
+    summary = (f"Session stop recorded for task {task_id}: "
+               f"{result['termination']['reason']}. Archived as {shapes}. "
+               "The episode is now marked terminated — no new solving work "
+               "will start; finish it with `orx close-episode --terminal "
+               "budget_exhausted`.")
+    if result["already_recorded"]:
+        summary = (f"Session stop for task {task_id} was already recorded; "
+                   "nothing was written twice.")
+    return _emit(result, summary)
+
+
 def cmd_record(args) -> int:
     h = _harness(args)
     try:
+        if getattr(args, "session", False):
+            return _record_session(h, args)
         if args.discard_staged:
             staged = h.bank.get_pending(args.discard_staged)
             if staged is None:
@@ -1398,8 +1437,15 @@ def cmd_predict_strategy(args) -> int:
             if context is None:
                 return _fail(f"unknown context_id {args.context!r}")
         cir = _load_json_arg(args.cir) if args.cir else None
-        prediction = h.predict_strategy_outcome(
-            task, candidate, args.episode, context=context, cir=cir)
+        try:
+            prediction = h.predict_strategy_outcome(
+                task, candidate, args.episode, context=context, cir=cir)
+        except BudgetExhausted as exc:
+            return _fail(
+                f"task stopped before this prediction started: {exc}. No "
+                "model call was made. Finish the episode (record the host "
+                "stop with `orx record --session ...`, then `orx "
+                "close-episode --terminal budget_exhausted`).")
         result = {"prediction": prediction.to_dict(),
                   "prediction_id": prediction.prediction_id}
         info = prediction.trace.model_info
@@ -2612,6 +2658,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--execution", default=None,
                    help="execution JSON literal/file (or the JSON printed by execute)")
     p.add_argument("--record-file", default=None)
+    p.add_argument("--task", default=None,
+                   help="with --session: the task id whose session stopped")
+    p.add_argument("--episode", default=None,
+                   help="with --session: the episode the stop belongs to")
     p.add_argument("--from-staged", default=None, metavar="EXECUTION_ID",
                    help="record a staged execution verbatim (the honest path "
                         "for backfilling a failed attempt — no re-typing)")
@@ -2683,6 +2733,24 @@ def build_parser() -> argparse.ArgumentParser:
                         "integrity of the evidence depends on honesty here. "
                         "A value the record already carries is never "
                         "overwritten")
+    p.add_argument("--session", action="store_true", dest="session",
+                   help="record a SESSION-LEVEL stop (host cancel / hard "
+                        "budget stop) instead of an execution: archive the "
+                        "real termination and cost, mark the episode "
+                        "terminated so no new solving work starts, and let "
+                        "close-episode proceed. Use ONLY after the host has "
+                        "CONFIRMED the process is gone — this records the "
+                        "stop, it does not cancel anything")
+    p.add_argument("--reason", default=None, metavar="TEXT",
+                   help="with --session: the host's stated cause, verbatim "
+                        "(e.g. 'tool_calls reached 100'); kept as the fact, "
+                        "never re-derived from a numeric comparison")
+    p.add_argument("--cancelled", action="store_true",
+                   help="with --session: the host actively cancelled the run "
+                        "(vs it exited on its own)")
+    p.add_argument("--attempted-execution", default=None, metavar="EXECUTION_ID",
+                   help="with --session: the staged attempt the stop affected, "
+                        "when one exists (annotated, not rewritten)")
     p.set_defaults(func=cmd_record)
 
     p = sub.add_parser(

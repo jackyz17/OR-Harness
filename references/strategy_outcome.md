@@ -160,12 +160,61 @@ A socket timeout bounds ONE blocking operation, not the whole request, so the ca
 
 **Cost accounting.** The model calls are REAL spend: charged once to the decision action as own cost (failed calls included), reported in `planning_cost`, never part of any candidate's utility. Candidate execution costs are PREDICTED values. Missing usage stays unknown — never free.
 
-## 4. Associating the real execution (before it runs)
+## 4. Budgets, stops, and archiving an interrupted run
+
+**A declared budget caps SOLVING, and the stop is the HOST's.** `orx budget --task T [--episode E] --declare 'dim=value,...'` declares (and replaces) a task/episode budget. It is a cap over real consumption, not a promise: the framework REFUSES to START new solving work once a budget is spent, but it does not itself kill a running process.
+
+**Dimensions and scope.** Supported dimensions are `llm_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`. The first four accumulate over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). `latency_s` is NEVER summed — attempts may overlap — so it is judged PER ATTEMPT.
+
+**Four honest states** (`orx budget` prints `result.status`):
+
+| State | Meaning |
+|---|---|
+| `no_budget_declared` | consumption is aggregated but not judged |
+| `ok` | every declared dimension measured and within the limit |
+| `unconfirmed` | known spend within the limit, but a declared dimension is UNKNOWN — actual remaining budget is NOT confirmed |
+| `exceeded` | a measured dimension is over the limit |
+
+`unconfirmed` is **not** "within budget": a declared dimension that no record measured leaves the true remaining budget unknown. Never read it as headroom.
+
+**Two kinds of overrun, two different responses.** The view reports `exceeded_dims` (each with its `scope`) plus two booleans:
+
+- **`episode_exhausted`** — an EPISODE-scoped cumulative dimension is over the limit. This STOPS the task: `execute` and `predict-strategy` refuse to start new work (they raise `BudgetExhausted` before any action, prediction or sandbox touch).
+- **`attempt_limited`** — only `latency_s` on one attempt is over. This is a FAILURE to keep (the attempt stays recorded with its cost) and a RETRY is allowed: one slow attempt must never permanently block the rest of the task.
+
+The gate reads the SCOPE, never the bare `exceeded` status.
+
+**Reaching a cap is a stop even when the number is AT the limit.** A 100-tool-call cap refuses the 101st call, so the recorded count can be exactly 100 — never `> 100`. The stop is therefore carried by the HOST's own reason, recorded as an episode-termination mark; the ledger is not asked to infer it from a numeric comparison.
+
+**The host cancels; the framework archives.** When the host has confirmed the process is gone (it cancelled it, or it exited), it records the stop:
+
+```bash
+orx record --session --task T --episode E \
+    --reason "tool_calls reached 100" --cancelled \
+    [--attempted-execution EX_ID] [--override llm_tokens=...,tool_calls=...]
+```
+
+This archives the REAL termination, in one of three honest shapes, never fabricating a solve result:
+
+1. an already-STAGED attempt (named with `--attempted-execution`) is ANNOTATED (`session_interrupted`) — its observed cost and partial result are not rewritten;
+2. a `running` execute action with no staged fact (a kill that landed BEFORE staging) is ended as an honest interruption (`status="failed"`, `outcome.interrupted=true`, result marked `unobservable`) — the cost incurred is kept;
+3. NO execute attempt at all (the session spent its budget editing code / calling the world model) is recorded as a non-execution `finish_task` action — no `execute_strategy` is invented.
+
+In every case the reason is the HOST's stated cause, verbatim, and an episode-termination mark is written so a later `execute`/`predict-strategy` refuses new work for the task. Re-recording the SAME stop is IDEMPOTENT (nothing is written twice).
+
+**Finishing is never gated.** `record`, `check-task`, `record --session`, archiving and `close-episode` do NOT go through the solve gate — the host's finish path must complete even after a stop. After the stop is recorded the interrupted action is no longer `running`, so `close-episode --terminal budget_exhausted` evaluates instead of returning `pending`. The stop does not rewrite observed quality/cost and does not turn a benefit into 0: what could be observed is kept, what could not is marked interrupted/unknown.
+
+**A budget does not replace the solver's/executor's own limits.** The executor's per-attempt wall clock (`timeout_seconds`) and a script's own solver time limit still apply and are separate: one bounds a single attempt's EXECUTION, the other caps the whole solution's SPEND. They are not the same default and must not be copied from one to the other. `latency_s` (what is MEASURED) is likewise not the same as `timeout_seconds` (what is ALLOWED).
+
+**The two session caps of this deployment live in the HOST, not here.** This repo provides the gate, the interruption archive and the close-out; the host owns the hard cut and the cancel. For the OpenClaw deployment (100 tool calls, 1800 s session wall clock, and the cancel→record→close sequence) see [`docs/openclaw_budget_deployment.md`](../docs/openclaw_budget_deployment.md).
+
+Unexecuted candidates keep `unexecuted`/`unassociated` semantics: no counterfactual truth is fabricated from the winner's result. After the real execution you may build a NEW current context and re-plan — that updates facts and decision inputs; it is not in-task parameter learning, calibration or knowledge induction. A STOPPED run is a recorded interruption, never a completed outcome: its truth enters calibration only where the field was actually observed.
+
+## 5. Associating the real execution (before it runs)
 
 ```bash
 # the ordinary flow: the association is established BEFORE the run
 orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace ws
-
 # the manual/recovery path, for an action that already ran
 orx bind-strategy --prediction PREDICTION_ID --action ACTION_ID
 ```
@@ -187,7 +236,7 @@ The window-level error aggregation and the episode close-out are **implemented**
 
 Unexecuted candidates keep `unexecuted`/`unassociated` semantics: no counterfactual truth is fabricated from the winner's result. After the real execution you may build a NEW current context and re-plan — that updates facts and decision inputs; it is not in-task parameter learning, calibration or knowledge induction.
 
-## 5. Compatibility
+## 6. Compatibility
 
 - The legacy `predict_outcome` Python API is kept for READING existing records (the contract reader, the record-time knowledge verdicts, `inspect --bank predictions`). No agent-facing entry point uses it, and the horizon=2 rollout is gone.
 - Old `OutcomePrediction` records remain readable; the new predictions live in their own `contract_predictions` log table (created idempotently, no schema-version move).

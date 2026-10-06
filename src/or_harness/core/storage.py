@@ -204,6 +204,27 @@ class StorageError(Exception):
     """Raised on malformed payloads or storage-level integrity problems."""
 
 
+class BudgetExhausted(Exception):
+    """Raised when a task's EPISODE budget is spent and NEW solving work is
+    refused (or the host recorded a cancel for the episode).
+
+    It is a distinct type — not a StorageError — because it is an OPERATING
+    condition, not a defect: the caller (host loop) catches it to STOP the
+    task, then runs its finish path (archive, close, offline induction). The
+    structured ``view`` carries which dimension and scope was exceeded, so
+    the message is never a bare "over budget".
+
+    It is raised ONLY for an episode-scoped overrun. A single attempt whose
+    latency exceeded its own limit does NOT raise this: that attempt is a
+    failure to keep, and a retry is allowed.
+    """
+
+    def __init__(self, message: str,
+                 view: Optional[Dict[str, Any]] = None) -> None:
+        super().__init__(message)
+        self.view = view or {}
+
+
 class Store:
     """A single SQLite file holding both memory layers plus the cold archive.
 

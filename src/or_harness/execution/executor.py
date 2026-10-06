@@ -174,6 +174,28 @@ def _method_receipt(workspace: Path,
     return {"method": method, "action_id": str(action_id)}
 
 
+def _terminate_tree(proc: "subprocess.Popen") -> None:
+    """Terminate a child AND everything it spawned.
+
+    The child runs in its own session (``start_new_session``), so its pgid
+    equals its pid; signalling the GROUP reaches the solve script and any
+    solver subprocess it launched. On a platform without process groups we
+    fall back to killing just the child, and never raise: a cleanup that
+    fails must not turn a timeout into an unhandled error.
+    """
+    import signal
+    try:
+        if os.name == "posix":
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                return
+            except (ProcessLookupError, PermissionError):
+                pass
+        proc.kill()
+    except (ProcessLookupError, OSError):
+        pass
+
+
 def _resource_limits(cpu_seconds: int, memory_bytes: int, file_bytes: int):
     def apply_limits() -> None:
         try:
@@ -330,16 +352,31 @@ class SafePythonExecutor:
             kwargs["preexec_fn"] = _resource_limits(
                 max(2, self.timeout_seconds + 5), 2 * 1024 * 1024 * 1024,
                 64 * 1024 * 1024)
+        # Run in its OWN session (process group) so a timeout or a cancel can
+        # terminate the WHOLE tree: a solve script that spawns a solver
+        # subprocess would otherwise leave that grandchild running after the
+        # harness moved on ("the session stopped, the solver kept going").
+        # ``start_new_session`` gives the child a new pgid == its pid, which
+        # is what :func:`_terminate_tree` signals.
+        popen_kwargs: Dict[str, Any] = {
+            "cwd": str(workspace), "env": env,
+            "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+        if os.name == "posix":
+            popen_kwargs["start_new_session"] = True
+        popen_kwargs.update(kwargs)
+        proc = subprocess.Popen(
+            [sys.executable, str(code_path)], **popen_kwargs)
         try:
-            proc = subprocess.run(
-                [sys.executable, str(code_path)],
-                cwd=str(workspace), env=env, capture_output=True,
-                timeout=self.timeout_seconds, **kwargs)
+            stdout_b, stderr_b = proc.communicate(
+                timeout=self.timeout_seconds)
         except subprocess.TimeoutExpired:
-            # A timeout still leaves whatever the script managed to write:
-            # the config receipt is read back on the failure path too, so
-            # a run that set its key parameters before hitting the wall
-            # clock can still report the configuration that was in force.
+            # Kill the WHOLE process group (the script AND anything it
+            # spawned), then reap whatever the script managed to write.
+            _terminate_tree(proc)
+            try:
+                stdout_b, stderr_b = proc.communicate(timeout=10.0)
+            except subprocess.TimeoutExpired:
+                stdout_b, stderr_b = b"", b""
             return ExecutionOutcome(
                 status="timeout", solver=solver,
                 wall_seconds=time.monotonic() - start,
@@ -349,6 +386,14 @@ class SafePythonExecutor:
                 method_report=_method_receipt(workspace, action_id),
                 stale_result_cleared=stale_cleared)
         wall = time.monotonic() - start
+
+        class _Completed:
+            """Minimal subprocess.CompletedProcess-shaped shim, so the
+            existing body reads stdout/stderr/returncode unchanged."""
+            returncode = proc.returncode
+            stdout = stdout_b
+            stderr = stderr_b
+        proc = _Completed()
         stdout = _clip(proc.stdout.decode("utf-8", "replace"), self.max_stdout_chars)
         stderr = _clip(proc.stderr.decode("utf-8", "replace"), self.max_stderr_chars)
         if proc.returncode != 0 or not result_path.exists():

@@ -976,11 +976,13 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04")
+        # Declared AFTER the run: this test checks the LABEL for a budget
+        # exceeded by real consumption, not the start gate.
+        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")

@@ -32,7 +32,7 @@ from or_harness.core.schema import (
     task_check_block,
     task_check_state,
 )
-from or_harness.core.storage import StorageError, Store, resolve_home
+from or_harness.core.storage import BudgetExhausted, StorageError, Store, resolve_home
 from or_harness.execution.executor import SafePythonExecutor
 from or_harness.profiling.profiler import derivation_report, profile_task
 from or_harness.strategy.embedding_index import (
@@ -1512,6 +1512,12 @@ class ORHarness:
         from or_harness.world_model.strategy_prediction import (
             StrategyOutcomeService,
         )
+        # The budget gate: a stopped task must not spend a NEW model call.
+        # Placed before the candidate is normalized so a refusal touches
+        # nothing — no context build, no provider call, no persistence.
+        gate = self._budget_gate(str(task.get("task_id", "")), episode_id)
+        if not gate["allowed"]:
+            raise BudgetExhausted(gate["reason"], gate.get("view"))
         if isinstance(candidate, ActionSpec):
             candidate_ref = CandidateRef.from_action_spec(candidate)
         elif isinstance(candidate, dict):
@@ -3077,6 +3083,63 @@ class ORHarness:
             budget = self._load_budget(task_id, episode_id)
         return self.budget.view(task_id, episode_id, budget=budget)
 
+    def _budget_gate(self, task_id: str,
+                     episode_id: Optional[str] = None) -> Dict[str, Any]:
+        """Whether NEW solving work may start under the declared budget.
+
+        The gate is SCOPE-AWARE, not a bare status check. Only an
+        EPISODE-scoped overrun (a cumulative dimension over its limit, or an
+        explicitly recorded episode-termination mark) stops the task; an
+        ATTEMPT-scoped overrun (``latency_s`` on one attempt) is a failure to
+        KEEP and retry around, never a reason to forbid every future attempt.
+        ``unconfirmed`` is allowed: "not known to exceed" is not "exceeded".
+
+        Returns ``{"allowed": bool, "reason": str, "view": ...}``. An
+        ``allowed=False`` result is a live, structured refusal — callers must
+        not create an action, claim a prediction, or touch the sandbox.
+        """
+        declared = self._load_budget(task_id, episode_id)
+        view = self.budget.view(task_id, episode_id, budget=declared)
+        # An explicit episode-termination mark (written by the host when it
+        # cancelled the same task, e.g. the 100-tool-call stop) is the
+        # authoritative signal even when the ledger's numbers do not by
+        # themselves read "over the limit" — reaching the cap and refusing
+        # the NEXT call leaves the count exactly AT the limit, not above it.
+        # A task-level mark (no episode) also stops any episode of that task:
+        # the stop is about the TASK's session, not one episode id.
+        term = self._episode_termination(task_id, episode_id)
+        if term is None and episode_id is not None:
+            term = self._episode_termination(task_id, None)
+        if term is not None:
+            return {"allowed": False, "view": view,
+                    "reason": ("episode terminated: "
+                               + (term.get("reason") or "budget/host stop")),
+                    "termination": term}
+        if view.get("episode_exhausted"):
+            dims = ", ".join(d["dimension"] for d in view["exceeded_dims"]
+                             if d["scope"] == "episode")
+            return {"allowed": False, "view": view,
+                    "reason": (f"declared budget exhausted on episode-scoped "
+                               f"dimension(s): {dims}")}
+        return {"allowed": True, "view": view, "termination": None}
+
+    def _episode_termination(self, task_id: str,
+                             episode_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """A recorded episode-termination mark, or None.
+
+        Written by :meth:`record_session` when the host confirms a cancel.
+        It survives the process that wrote it (stored in meta) so a fresh CLI
+        invocation's gate sees the same stop."""
+        row = self.store.conn.execute(
+            "SELECT value FROM meta WHERE key=?",
+            (f"episode_termination|{task_id}|{episode_id or ''}",)).fetchone()
+        if row is None:
+            return None
+        try:
+            return self.store.loads(row["value"])
+        except Exception:
+            return None
+
     # -- unified action contract ------------------------------------------------
 
     def begin_action(self, action_type: str, task: Dict[str, Any],
@@ -3274,6 +3337,10 @@ class ORHarness:
         because the caller-supplied task JSON differs).
         """
         task_id = str(task.get("task_id", ""))
+        # The budget gate: a stopped task must not spend a NEW model call.
+        gate = self._budget_gate(task_id, episode_id)
+        if not gate["allowed"]:
+            raise BudgetExhausted(gate["reason"], gate.get("view"))
         adjusted: Dict[str, Any] = {}
         if action_spec.task_id != task_id:
             adjusted["task_id"] = {"spec": action_spec.task_id,
@@ -5380,6 +5447,16 @@ class ORHarness:
             strategy_id = candidate.strategy_id
             solver = candidate.solver or solver
             episode_id = candidate.episode_id
+        # ---- (1b) THE BUDGET GATE -----------------------------------------
+        # A stopped task must not start NEW solving work. Only an
+        # EPISODE-scoped overrun (or a recorded host cancel) refuses here:
+        # an attempt-level overrun is a failure to keep and retry around.
+        # The refusal happens BEFORE the action exists, so it consumes no
+        # prediction and no budget. Close-out, checks and archiving are NOT
+        # routed through this gate — the host's finish work is never blocked.
+        gate = self._budget_gate(str(task.get("task_id", "")), episode_id)
+        if not gate["allowed"]:
+            raise BudgetExhausted(gate["reason"], gate.get("view"))
         if not str(strategy_id or "").strip():
             raise ValueError(
                 "strategy_id is required: the record must name the method "
@@ -5922,6 +5999,146 @@ class ORHarness:
         if unrecorded:
             result["unrecorded_staged_executions"] = unrecorded
         return result
+
+    def record_session(self, task_id: str,
+                       episode_id: Optional[str] = None, *,
+                       reason: str, cancelled: bool = False,
+                       attempted_execution_id: Optional[str] = None,
+                       cost: Optional[Dict[str, float]] = None,
+                       ) -> Dict[str, Any]:
+        """Archive a SESSION-LEVEL stop (host cancel / hard budget stop).
+
+        Called by the HOST after it has CONFIRMED the working process is
+        gone (it cancelled it, or it exited). The framework does NOT cancel
+        anything here — it records the interruption as a real fact, so the
+        episode can be closed and calibrated without fabricating an outcome.
+
+        Three shapes, decided by what actually exists:
+
+        1. An already-STAGED attempt (``attempted_execution_id`` names a
+           staged execution) -> the attempt fact already exists: nothing is
+           rewritten, and the session stop is recorded as an annotation
+           (``session_interrupted``) on it. Its observed cost and partial
+           result stay as they are.
+        2. A ``running`` execute action with NO staged fact (a kill that
+           landed BEFORE staging) -> that action is ended as an honest
+           interruption (``status="failed"``, ``outcome.interrupted=True``)
+           and the session cost is recorded; result fields that could not be
+           observed are marked ``unobservable`` — the real cost is kept, no
+           solve result is invented.
+        3. NO execute attempt at all (the session spent its budget editing
+           code / calling the world model) -> a non-execution action records
+           the real termination and cost. No ``execute_strategy`` is created.
+
+        In every shape the reason carries the HOST's stated cause verbatim
+        (e.g. "tool_calls reached 100"), and an ``episode_termination`` mark
+        is written so a later :meth:`_budget_gate` refuses new solving work
+        for this task — reaching a cap and refusing the NEXT call leaves the
+        count AT the limit, so the stop cannot be inferred from ``> limit``.
+
+        IDEMPOTENT: re-recording the SAME termination (same reason/cancel/
+        cost) returns the stored mark and writes nothing twice, so a retried
+        archive never double-counts.
+
+        Read-only with respect to the budget gate: this is the FINISH path
+        the host runs after stopping; it is never gated.
+        """
+        key = f"episode_termination|{task_id}|{episode_id or ''}"
+        fingerprint = {
+            "reason": str(reason), "cancelled": bool(cancelled),
+            "attempted_execution_id": attempted_execution_id,
+            "cost": ({d: float(v) for d, v in (cost or {}).items()}
+                     if cost else None),
+        }
+        existing = self._episode_termination(task_id, episode_id)
+        recorded: List[Dict[str, Any]] = []
+
+        # IDEMPOTENT REPLAY runs FIRST: if the SAME stop was already
+        # recorded, return the stored mark and write nothing (a repeated
+        # archive — e.g. the host retries — must not spawn a second
+        # terminal action or double-count its cost).
+        if existing is not None and existing.get("fingerprint") == fingerprint:
+            self._annotate_staged_interruption(attempted_execution_id,
+                                               fingerprint, recorded)
+            return {"termination": existing, "recorded": recorded,
+                    "already_recorded": True}
+
+        # (1) A staged attempt already carries the fact.
+        if self._annotate_staged_interruption(attempted_execution_id,
+                                              fingerprint, recorded) is None:
+            # (2) A running execute action with no staged fact, or (3) none.
+            running = [a for a in self.actions.query(
+                task_id=task_id, episode_id=episode_id, status="running")
+                if a.action_type == "execute_strategy"]
+            cost_vector = self._cost_from_dict(cost)
+            if running:
+                for act in running:
+                    self.actions.end_action(
+                        act.action_id, status="failed",
+                        outcome={"interrupted": True,
+                                 "reason": fingerprint["reason"],
+                                 "cancelled": fingerprint["cancelled"],
+                                 "result": "unobservable",
+                                 "note": ("the run was stopped before its "
+                                          "result could be observed; the "
+                                          "cost incurred is kept, no solve "
+                                          "result is fabricated")},
+                        cost=cost_vector)
+                    recorded.append({"action_id": act.action_id,
+                                     "shape": "running_action_interrupted"})
+            else:
+                # (3) No attempt: record the real termination + cost as a
+                # non-execution action, never a fabricated execution.
+                report = self.actions.report_action(
+                    "finish_task", task_id, episode_id,
+                    status="failed",
+                    outcome={"session_termination": True,
+                             "reason": fingerprint["reason"],
+                             "cancelled": fingerprint["cancelled"],
+                             "no_execution_attempt": True,
+                             "note": ("the session ended without an execute "
+                                      "attempt: the real spend is recorded, "
+                                      "no solve execution is invented")},
+                    cost=cost_vector)
+                recorded.append({"action_id": report.action_id,
+                                 "shape": "session_only_terminal"})
+
+        mark = {"task_id": task_id, "episode_id": episode_id,
+                "reason": fingerprint["reason"],
+                "cancelled": fingerprint["cancelled"],
+                "attempted_execution_id": attempted_execution_id,
+                "cost": fingerprint["cost"],
+                "recorded_at": time.time(),
+                "fingerprint": fingerprint}
+        with self.store.transaction() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                (key, self.store.dumps(mark)))
+        return {"termination": mark, "recorded": recorded,
+                "already_recorded": False}
+
+    def _annotate_staged_interruption(
+            self, attempted_execution_id: Optional[str],
+            fingerprint: Dict[str, Any],
+            recorded: List[Dict[str, Any]]) -> Optional[str]:
+        """Annotate a STAGED attempt with the session stop, when one exists.
+
+        Returns the execution id when a staged fact was annotated (so the
+        caller stops there), or None when there is no staged attempt to
+        annotate."""
+        if not attempted_execution_id:
+            return None
+        staged = self.bank.get_pending(attempted_execution_id)
+        if staged is None:
+            return None
+        self.bank.annotate_features(attempted_execution_id, {
+            "session_interrupted": {
+                "reason": fingerprint["reason"],
+                "cancelled": fingerprint["cancelled"],
+            }})
+        recorded.append({"execution_id": attempted_execution_id,
+                         "shape": "staged_attempt_annotated"})
+        return attempted_execution_id
 
     def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
                dry_run: bool = False, force: bool = False,

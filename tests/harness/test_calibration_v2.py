@@ -365,12 +365,15 @@ class TestBudgetScope(CalibrationV2Case):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04",
                    "scope": "strategy_window",
                    "window_id": "win::t1::ep1::S04"}, "ep1")
         record = self.solve(task, strategy="S04")
+        # Declared AFTER the run: this test evaluates the LABEL given a
+        # budget exceeded by real consumption; the start gate (which would
+        # refuse new work once the budget is spent) is out of scope here.
+        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
@@ -393,11 +396,13 @@ class TestBudgetScope(CalibrationV2Case):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04")
+        # Declared AFTER the run (see the sibling test): the label is what
+        # is under test, not the (separately covered) start gate.
+        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
