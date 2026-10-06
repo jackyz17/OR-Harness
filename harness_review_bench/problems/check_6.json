@@ -1,5 +1,5 @@
 {
  "reference_status": "optimal",
- "reference_objective": 10755.0,
- "tolerance": 0.010754999999999999
+ "reference_objective": 10000.0,
+ "tolerance": 0.01
 }

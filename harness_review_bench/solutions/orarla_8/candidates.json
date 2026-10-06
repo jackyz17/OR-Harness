@@ -1,58 +1,29 @@
 [
   {
     "action_type": "execute_strategy",
-    "task_id": "orarla_8",
-    "episode_id": "ep1",
-    "strategy_id": "milp_assignment_binary",
-    "solver": "highs",
-    "method": {
-      "name": "milp_assignment_binary",
-      "steps": [
-        "Define binary variables x[w,t] = 1 if worker w is assigned to task t, 0 otherwise",
-        "Constraint: each task gets exactly one worker (sum over workers = 1 for each task)",
-        "Constraint: each worker does at most one task (sum over tasks <= 1 for each worker)",
-        "Constraint: exactly 4 total assignments (cardinality constraint)",
-        "Constraint: binary bounds x[w,t] in {0, 1}",
-        "Objective: minimize sum of hours x[w,t] * hours[w,t]",
-        "Use HiGHS direct MILP with binary variables"
-      ]
-    },
-    "config": {}
+    "strategy_id": "ilp_cbc",
+    "solver": "pulp",
+    "steps": [
+      "Define integer variables X, Y using PuLP (LpProblem minimize).",
+      "Set objective: 10*X + 20*Y (LpProblem +=).",
+      "Add constraint: X + Y <= 5000.",
+      "Add constraint: 2*X + 3*Y >= 10000.",
+      "Declare X, Y as Integer (cat='Integer').",
+      "Solve with CBC (default PuLP solver).",
+      "Read solution values and write result.json."
+    ],
+    "key_insight": "Direct ILP: two integer variables, two linear constraints, corner-point optimal. PuLP with CBC is the solver."
   },
   {
     "action_type": "execute_strategy",
-    "task_id": "orarla_8",
-    "episode_id": "ep1",
-    "strategy_id": "enumerate_exclude_one",
-    "solver": "highs",
-    "method": {
-      "name": "enumerate_exclude_one",
-      "steps": [
-        "Enumerate all 5 ways to exclude one worker (leave out I, II, III, IV, or V)",
-        "For each exclusion, solve a standard 4x4 assignment problem using Hungarian algorithm",
-        "Compute optimal total hours for each exclusion",
-        "Select the exclusion that yields minimum total hours"
-      ]
-    },
-    "config": {}
-  },
-  {
-    "action_type": "execute_strategy",
-    "task_id": "orarla_8",
-    "episode_id": "ep1",
-    "strategy_id": "milp_direct_integer",
-    "solver": "highs",
-    "method": {
-      "name": "milp_direct_integer",
-      "steps": [
-        "Define binary decision variables y[w,t] for assignment",
-        "Add task coverage constraints: each task assigned to exactly 1 worker",
-        "Add worker capacity constraints: each worker at most 1 task",
-        "Add cardinality constraint: sum of all assignments = 4",
-        "Objective: minimize weighted sum of hours",
-        "Use HiGHS with all binary variables"
-      ]
-    },
-    "config": {}
+    "strategy_id": "enumeration_with_constraints",
+    "solver": "python",
+    "steps": [
+      "Reduce search space using constraint analysis: Y >= ceil((10000 - 2*X)/3) and Y <= 5000 - X.",
+      "For each candidate Y in feasible range, check if X = 5000 - Y is valid (non-negative integer).",
+      "Evaluate cost = 10*X + 20*Y for valid pairs, pick minimum.",
+      "Write result.json with optimal cost."
+    ],
+    "key_insight": "Analytical reduction: given X+Y=5000 from budget, effectiveness constraint reduces to 2D search. Only Y needs enumeration since X is determined by budget. O(1666) iterations, pure Python."
   }
 ]

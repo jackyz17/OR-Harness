@@ -1,126 +1,99 @@
+#!/usr/bin/env python3
+"""
+solve.py for orarla_6 - Marketing Budget Allocation (ILP)
+Method: HiGHS MILP (highspy)
+
+min 10*X + 20*Y
+s.t. X + Y <= 1000       (total budget)
+     2*X + 3*Y >= 2000   (effectiveness constraint)
+     X >= 0, Y >= 0
+     X, Y integer (budget units are indivisible)
+"""
 import json
 import time
+import os
 import highspy
 
-# --- Parameters ---
-products = ['I', 'II', 'III']
-quarters = ['Q1', 'Q2', 'Q3', 'Q4']
-h = {'I': 2, 'II': 4, 'III': 3}
-c_delay = {'I': 20, 'II': 20, 'III': 10}
-c_hold = 5
-cap = 15000
-final_inv_req = 150
-
-d = {
-    ('I', 'Q1'): 1500, ('I', 'Q2'): 1000, ('I', 'Q3'): 2000, ('I', 'Q4'): 1200,
-    ('II', 'Q1'): 1500, ('II', 'Q2'): 1500, ('II', 'Q3'): 1200, ('II', 'Q4'): 1500,
-    ('III', 'Q1'): 1000, ('III', 'Q2'): 2000, ('III', 'Q3'): 1500, ('III', 'Q4'): 2500,
-}
-delay_weights = {'Q1': 4, 'Q2': 3, 'Q3': 2, 'Q4': 1}
-
-# --- Build model ---
-model = highspy.Highs()
-model.setOptionValue('time_limit', 60)
-model.setOptionValue('mip_rel_gap', 0)
-model.setOptionValue('mip_abs_gap', 0)
-
-# Decision variables: set objective at creation time
-produce = {}
-inventory = {}
-backlog = {}
-for p in products:
-    for q in quarters:
-        produce[p, q] = model.addVariable(
-            0, float('inf'), 0.0,
-            highspy.HighsVarType.kInteger, f'produce_{p}_{q}')
-        inventory[p, q] = model.addVariable(
-            0, float('inf'), c_hold,
-            highspy.HighsVarType.kInteger, f'inventory_{p}_{q}')
-        backlog[p, q] = model.addVariable(
-            0, float('inf'), float(c_delay[p] * delay_weights[q]),
-            highspy.HighsVarType.kInteger, f'backlog_{p}_{q}')
-
-# Capacity constraints per quarter
-for q in quarters:
-    model.addConstr(h['I'] * produce['I', q] +
-                    h['II'] * produce['II', q] +
-                    h['III'] * produce['III', q] <= cap,
-                    f'C_cap_{q}')
-
-# Product I cannot be produced in Q2
-model.addConstr(produce['I', 'Q2'] == 0, 'C_no_I_Q2')
-
-# Inventory balance and backlog constraints
-for p in products:
-    # Q1: inv = produce - demand + backlog; backlog >= demand - produce
-    model.addConstr(inventory[p, 'Q1'] == produce[p, 'Q1'] - d[p, 'Q1'] + backlog[p, 'Q1'],
-                    f'C_bal_{p}_Q1')
-    model.addConstr(backlog[p, 'Q1'] >= d[p, 'Q1'] - produce[p, 'Q1'], f'C_bl_{p}_Q1')
-
-    # Q2
-    model.addConstr(inventory[p, 'Q2'] == inventory[p, 'Q1'] + produce[p, 'Q2']
-                    - d[p, 'Q2'] + backlog[p, 'Q1'] - backlog[p, 'Q2'], f'C_bal_{p}_Q2')
-    model.addConstr(backlog[p, 'Q2'] >= backlog[p, 'Q1'] + d[p, 'Q1'] - produce[p, 'Q1']
-                    - inventory[p, 'Q2'], f'C_bl_{p}_Q2')
-
-    # Q3
-    model.addConstr(inventory[p, 'Q3'] == inventory[p, 'Q2'] + produce[p, 'Q3']
-                    - d[p, 'Q3'] + backlog[p, 'Q2'] - backlog[p, 'Q3'], f'C_bal_{p}_Q3')
-    model.addConstr(backlog[p, 'Q3'] >= backlog[p, 'Q2'] + d[p, 'Q2'] - produce[p, 'Q2']
-                    - inventory[p, 'Q3'], f'C_bl_{p}_Q3')
-
-    # Q4
-    model.addConstr(inventory[p, 'Q4'] == inventory[p, 'Q3'] + produce[p, 'Q4']
-                    - d[p, 'Q4'] + backlog[p, 'Q3'] - backlog[p, 'Q4'], f'C_bal_{p}_Q4')
-    model.addConstr(backlog[p, 'Q4'] >= backlog[p, 'Q3'] + d[p, 'Q3'] - produce[p, 'Q3']
-                    - inventory[p, 'Q4'], f'C_bl_{p}_Q4')
-
-# Final inventory >= 150
-for p in products:
-    model.addConstr(inventory[p, 'Q4'] >= final_inv_req, f'C_final_{p}')
-
-model.changeObjectiveSense(highspy.ObjSense.kMinimize)
-
-# Solve
-t0 = time.time()
-model.run()
-t1 = time.time()
-runtime = t1 - t0
-
-sol = model.getSolution()
-ms = model.getModelStatus()
-st = ms.name
-info = model.getInfo()
-
-if 'optimal' in st.lower() or st == 'kOptimal':
-    objective = model.getObjectiveValue()
-    mip_gap = float(info.mip_gap) if hasattr(info, 'mip_gap') else 0.0
-    obj_bound = float(info.mip_dual_bound) if hasattr(info, 'mip_dual_bound') else objective
-
-    vars_out = {}
-    for p in products:
-        for q in quarters:
-            vars_out[f'produce_{p}_{q}'] = produce[p, q].index
-            vars_out[f'inventory_{p}_{q}'] = inventory[p, q].index
-            vars_out[f'backlog_{p}_{q}'] = backlog[p, q].index
-
+def solve():
+    t0 = time.time()
+    
+    # Create HiGHS model
+    h = highspy.Highs()
+    h.setOptionValue("mip_rel_gap", 0.0)
+    h.setOptionValue("mip_abs_gap", 0.0)
+    h.setOptionValue("log_to_console", False)
+    
+    # Add variables: X (budget for channel X), Y (budget for channel Y)
+    # Both are non-negative integers
+    # Objective: min 10*X + 20*Y
+    x = h.addVariable(lb=0.0, ub=float('inf'), obj=10.0, type=highspy.HighsVarType.kInteger, name="X")
+    y = h.addVariable(lb=0.0, ub=float('inf'), obj=20.0, type=highspy.HighsVarType.kInteger, name="Y")
+    
+    # Constraint 1: X + Y <= 1000 (total budget limit)
+    h.addConstr(x + y <= 1000.0, "budget_limit")
+    
+    # Constraint 2: 2*X + 3*Y >= 2000 (effectiveness requirement)
+    h.addConstr(2*x + 3*y >= 2000.0, "effectiveness")
+    
+    # Set minimize (default is minimize for Highs)
+    h.changeObjectiveSense(highspy.ObjSense.kMinimize)
+    
+    # Solve
+    status = h.run()
+    runtime = time.time() - t0
+    
+    # Extract solution
+    solution = h.getSolution()
+    model_status = h.getModelStatus()
+    
+    # Get variable values
+    X_val = solution.col_value[x.index]
+    Y_val = solution.col_value[y.index]
+    
+    # Get objective value
+    objective_value = h.getObjectiveValue()
+    
+    # Get info
+    info = h.getInfo()
+    objective_bound = info.mip_dual_bound if hasattr(info, 'mip_dual_bound') and info.mip_dual_bound is not None else None
+    mip_gap = info.mip_gap if hasattr(info, 'mip_gap') and info.mip_gap is not None else None
+    
+    # Determine status
+    if model_status == highspy.HighsModelStatus.kOptimal:
+        status_str = "optimal"
+    elif model_status == highspy.HighsModelStatus.kInfeasible:
+        status_str = "infeasible"
+    elif model_status == highspy.HighsModelStatus.kUnbounded:
+        status_str = "unbounded"
+    else:
+        status_str = f"model_status_{model_status}"
+    
     result = {
-        'status': 'optimal',
-        'objective_value': objective,
-        'objective_bound': obj_bound,
-        'mip_gap': mip_gap,
-        'runtime_seconds': runtime,
-        'variables': {name: float(sol.col_value[idx]) for name, idx in vars_out.items()}
+        "status": status_str,
+        "objective_value": round(objective_value) if objective_value is not None else None,
+        "objective_bound": objective_bound,
+        "mip_gap": mip_gap,
+        "runtime_seconds": round(runtime, 4),
+        "variables": {
+            "X": X_val,
+            "Y": Y_val
+        },
+        "method_performed": {
+            "name": "HiGHS_MILP",
+            "solver": "highspy",
+            "action_id": os.environ.get("OR_ACTION_ID", "unknown")
+        }
     }
-else:
-    result = {
-        'status': st,
-        'objective_value': None,
-        'objective_bound': None,
-        'mip_gap': None,
-        'runtime_seconds': runtime,
-        'variables': {}
-    }
+    
+    with open("result.json", "w") as f:
+        json.dump(result, f, indent=2)
+    
+    print(f"Status: {status_str}")
+    print(f"Objective: {objective_value}")
+    print(f"X={X_val}, Y={Y_val}")
+    print(f"Runtime: {runtime:.4f}s")
+    
+    return result
 
-with open('result.json', 'w') as f:
-    json.dump(result, f)
+if __name__ == "__main__":
+    solve()

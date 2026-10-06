@@ -1,42 +1,41 @@
 [
   {
-    "action_type": "execute_strategy",
-    "task_id": "orarla_6",
-    "strategy_id": "milp_production_inventory_backlog",
-    "solver": "highs",
-    "method": {
-      "name": "milp_production_inventory_backlog",
-      "steps": [
-        "Define integer production variables for each product (I,II,III) in each quarter (Q1-Q4), non-negative inventory variables, and non-negative backlog variables.",
-        "Capacity constraint per quarter: 2*prod_I[q] + 4*prod_II[q] + 3*prod_III[q] <= 15000.",
-        "Zero production for product I in Q2.",
-        "Inventory balance: inv[p,q] = inv[p,q-1] + prod[p,q] - demand[p,q] + backlog[p,q-1] - backlog[p,q]. Initial inv at Q1 start = 0.",
-        "Backlog penalty accumulated: each unit of backlog at end of quarter q has been delayed q quarters, so total backlog delay cost = 20*(1*bl[I,Q1]+2*bl[I,Q2]+3*bl[I,Q3]+4*bl[I,Q4]) + same pattern for II + 10*(1*bl[III,Q1]+...+4*bl[III,Q4]).",
-        "Holding cost: 5*sum over all inv[p,q].",
-        "Final inventory >= 150 for each product at end of Q4.",
-        "Use HiGHS high-level API (addVariable/addConstr/getSolution) to solve as MILP with integer production variables."
-      ]
-    },
-    "config": {"time_limit": 60}
+    "action_type": "model",
+    "name": "HiGHS_MILP",
+    "steps": [
+      "用 HiGHS Python API (highspy) 建立 MILP 模型",
+      "变量：X, Y 为整数，下界 0",
+      "约束1: X + Y <= 1000 (总预算)",
+      "约束2: 2*X + 3*Y >= 2000 (效果门槛)",
+      "目标: minimize 10*X + 20*Y",
+      "调用 highs.Options.mip_rel_gap=0 确保精确解",
+      "求解并提取最优目标值和变量"
+    ],
+    "key_insight": "简单两变量 ILP，直接用 HiGHS 求解器即可，mip_rel_gap=0 保证精确"
   },
   {
-    "action_type": "execute_strategy",
-    "task_id": "orarla_6",
-    "strategy_id": "milp_time_indexed_aggregate_cost",
-    "solver": "highs",
-    "method": {
-      "name": "milp_time_indexed_aggregate_cost",
-      "steps": [
-        "Use aggregate cost approach: define effective backlog cost rate per quarter that accumulates delay penalty.",
-        "Production variables for each product in each quarter, non-negative integer.",
-        "Inventory balance per product per quarter: ending_inv = beginning_inv + production - demand. If ending_inv < 0, treat absolute value as backlog.",
-        "Use indicator constraints or SOS to separate positive inventory (holding) from negative inventory (backlog).",
-        "Quarter-specific backlog penalty rates: Q1 delay=20/10 per unit, Q2 delay=40/20, Q3 delay=60/30, Q4 delay=80/40 for I,II/III.",
-        "Holding cost 5 per unit per quarter on positive inventory only.",
-        "End-of-quarter inventory >= 150 for each product.",
-        "HiGHS MILP with integer production variables."
-      ]
-    },
-    "config": {"time_limit": 60}
+    "action_type": "model",
+    "name": "PuLP_CBC",
+    "steps": [
+      "用 PuLP 建立 ILP 模型",
+      "变量 X, Y = LpVariable('X'/'Y', lowBound=0, cat='Integer')",
+      "约束: X + Y <= 1000, 2*X + 3*Y >= 2000",
+      "目标: 10*X + 20*Y 最小化",
+      "调用 solver PULP_CBC_CMD 求解",
+      "提取 status, objective, variables"
+    ],
+    "key_insight": "PuLP 是更高级别 API，底层用 CBC 求解器，同样精确"
+  },
+  {
+    "action_type": "model",
+    "name": "BruteForce_Enumeration",
+    "steps": [
+      "分析约束: X+Y<=1000, 2X+3Y>=2000, X,Y>=0 整数",
+      "从 Y=0 到 Y=667 枚举 (2*0+3*Y>=2000 => Y>=667)",
+      "对每对 (X,Y) 检查约束，计算成本 10X+20Y",
+      "取成本最小的可行解",
+      "记录最优解和成本"
+    ],
+    "key_insight": "问题规模极小，枚举只需约 668 步，必然找到全局最优"
   }
 ]

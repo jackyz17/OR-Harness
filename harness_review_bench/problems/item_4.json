@@ -1,7 +1,7 @@
 {
  "id": 4,
- "question": "A farmer needs to decide how many cows, sheep, and chickens to raise in order to achieve maximum profit. The farmer can sell cows, sheep, and chickens for $500, $200, and $8 each, respectively. The feed costs for each cow, sheep, and chicken are $100, $80, and $5, respectively. The profit is the difference between the selling price and the feed cost. Each cow, sheep, and chicken produces 10, 5, and 3 units of manure per day, respectively. Due to the limited time the farm staff has for cleaning the farm each day, they can handle up to 800 units of manure. Additionally, because of the limited farm size, the farmer can raise at most 50 chickens. Furthermore, the farmer must have at least 10 cows to meet customer demand. The farmer must also raise at least 20 sheep. Finally, the total number of animals cannot exceed 100.",
- "answer": "30400.0",
- "difficulty": "Easy",
- "category": "generic"
+ "question": "A marketing firm is planning the distribution of resources between two campaigns: X and Y. The total resources allocated to both campaigns cannot exceed 1000 units due to budget constraints. Furthermore, due to the differing demands of each campaign, the resources allocated to campaign X must be at least twice as many as those allocated to campaign Y plus an additional 300 units.\\n\\nThe costs associated with each unit of resource for campaigns X and Y are 4 and 3 units respectively. Given that the allocations for both campaigns must be whole numbers due to indivisible nature of the resources, and all constraints must be satisfied: What is the minimum total cost required for this allocation strategy? Provide your answer rounded to nearest whole number.",
+ "answer": "1200",
+ "difficulty": null,
+ "category": "planning"
 }

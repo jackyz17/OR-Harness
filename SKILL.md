@@ -113,32 +113,31 @@ Per-step rules you must not skip:
 
 ## 5. Offline operations
 
-Induction never runs automatically and never inside an episode. `induce` is the only place knowledge changes, and `accept-capability` is the only command that runs a maintenance operation. `record` does NOT interpret the fact it stored — it emits no induction labels; YOU read the material and decide.
+Induction never runs automatically and never inside an episode. `induce --relation` is the only place knowledge changes, and `accept-capability` is the only command that runs a maintenance operation. `record` does NOT interpret the fact it stored — it emits no induction labels; YOU read the material and decide.
 
-**Direct route** — read a batch, then abstract the knowledge yourself:
+**Direct route** — read a batch, then form the new strategy yourself:
 
 ```text
-orx review-material      ->  YOU read the batch and form the claim
-   (induction-candidates      (condition -> how -> consequence -> boundary)
-    is an optional cell        ->  orx induce --relation '{...}'
-    lead, not a precondition)
+orx induction-material   ->  YOU read the batch and form the new strategy
+                              (condition -> how -> consequence -> boundary)
+                              ->  orx induce --relation '{...}'
 ```
 
-`review-material` is the ONLY material entry point: it reads a BATCH of completed tasks STRAIGHT from the evidence bank — no detector candidate, no sample-count gate — so new, failed, cross-cell and cross-method-name material all reach you. It is COMPACT by design (the full CIR, profile and solution vector stay on the record, re-readable by id) and keeps EVERY attempt of a task, with the `changes` against the previous attempt (code hash, planned method), the recorded `code_hash`, the task check and its reference provenance. When too much material is present, pass `budget.next_cursor` back as `--cursor` to read the next (older) batch. `induction-candidates` / `induction-material` are an OPTIONAL structural-cell lead; they are never a precondition for reading.
+`induction-material` is the ONLY material entry point: it reads a BATCH of completed tasks STRAIGHT from the evidence bank — no candidate, no sample-count gate — so new, failed, cross-cell and cross-method-name material all reach you. It is COMPACT by design (the full CIR, profile and solution vector stay on the record, re-readable by id) and keeps EVERY attempt of a task, with the `changes` against the previous attempt (code hash, planned method), the recorded `code_hash`, the task check and its reference provenance. When too much material is present, pass `budget.next_cursor` back as `--cursor` to read the next (older) batch.
 
-**You form the claim** and submit it; the framework checks what you wrote, derives the identity, and returns `result.relations[].publication`. The framework reports what the evidence CARRIES (`material_report`: a performed method? a passed check? what is `missing`) — that is a REPORT, not an admission verdict; you decide what to abstract. A planned method never masquerades as a performed one.
+**You form the new strategy** and submit it; the framework checks what you wrote, derives the identity, and returns `result.relations[].publication`. The framework reports what the evidence CARRIES (`method.basis`: a performed method? a plan only? nothing?) — that is a REPORT, not an admission verdict; you decide what to abstract. A planned method never masquerades as a performed one.
 
-**Trigger conditions, sample counts and names are LEADS, not bars.** Whether a cell holds many tasks, whether two runs share a `strategy_id` — none decides what you may READ; they only shape how STRONG a claim its evidence can later support. A single execution is reviewable material like any other (a thin cell is a `cell_observation` with an `admission_note`, never hidden); a repeated run of ONE task is repetition, not cross-task support (`review-material` marks `independent_task: false`). Where a claim ASSERTS a benefit (faster / higher quality / cheaper), the corresponding comparison evidence is required at VERIFICATION — not as a gate on seeing the material.
+**Trigger conditions, sample counts and names are LEADS, not bars.** Whether a cell holds many tasks, whether two runs share a `strategy_id` — none decides what you may READ; they only shape how STRONG a strategy its evidence can later support. A single execution is readable material like any other; a repeated run of ONE task is repetition, not cross-task support (`induction-material` marks `independent_task: false`). Different tasks, strategy ids and cells may be cited TOGETHER — there is no same-name / same-cell bar. Where a strategy ASSERTS a benefit (faster / higher quality / cheaper), the corresponding comparison evidence is required at VERIFICATION — not as a gate on seeing the material.
 
-**Aim for TRANSFERABLE claims, not one-task facts.** A TRANSFERABLE claim needs the SAME mechanism observed on **≥2 independent tasks**. `review-material` reports `cross_task_hint` (how many distinct tasks this batch spans, and the history count) precisely so you look ACROSS tasks instead of restating one. A one-task `conditional_fact` is legitimate ONLY when you genuinely mean a fact about that one task — reaching for it to keep a per-task habit is the thing to avoid. Failures, cross-cell and cross-name material are the raw material for a transferable claim: read them and ask what mechanism RECURS.
+**Aim for TRANSFERABLE strategies, not one-task facts.** A TRANSFERABLE new strategy needs the SAME mechanism observed on **≥2 independent tasks**. `induction-material` reports `cross_task_hint` (how many distinct tasks this batch spans, and the history count) precisely so you look ACROSS tasks instead of restating one. A one-task `conditional_fact` is legitimate ONLY when you genuinely mean a fact about that one task — reaching for it to keep a per-task habit is the thing to avoid. Failures, cross-cell and cross-name material are the raw material for a transferable strategy: read them and ask what mechanism RECURS. This task is not obliged to produce an entry: no new value means no submission.
 
-**A claim must match its evidence.** An assertion whose probe PATH does not resolve is reported `insufficient` (a typo is NOT a refutation); `code_unchanged` (all cited records share one `solver.code_hash`) backs a "the code was not changed" claim — an `optimal` status never does. A claim whose text names a strategy its evidence does not carry is reported, not silently passed.
+**A strategy must match its evidence.** An assertion whose probe PATH does not resolve is reported `insufficient` (a typo is NOT a refutation); `code_unchanged` (all cited records share one `solver.code_hash`) backs a "the code was not changed" strategy — an `optimal` status alone never does. A strategy whose text names a method its evidence does not carry is reported, not silently passed: an `optimal` answer or a passed task check is NOT a proof the whole method explanation holds.
 
-**The grouping anchor is the derived problem class, not the `family` label.** Evidence is grouped by what the model IS, so two tasks carrying different `family` words but the same structure are comparable. The framework keeps NO strategy directory and does not merge method names for you. Merging is by CONTENT: the same method under different names may be combined, and one name may yield several distinct claims.
+**The grouping anchor is the derived problem class, not the `family` label.** Evidence is grouped by what the model IS, so two tasks carrying different `family` words but the same structure are comparable. The framework keeps NO strategy directory and does not merge method names for you. Merging is by CONTENT: the same method under different names may be combined, and one name may yield several distinct strategies.
 
 **Applicability is only ever "definitely applies".** A predicate condition the framework cannot EVALUATE is NEVER defaulted to satisfied: recall reports such a hit as `unknown` with the exact keys it could not check, distinct from `conflicts`.
 
-**Run this after closing a batch of episodes.** Induction will not run itself — `orx review-material` is the step that shows you what the closed episodes now entitle you to claim. Skipping it is why a solved batch can leave the strategic bank empty while the evidence bank is full. A single repeated case is not forced into knowledge: read more batches (`--cursor`) to find the cross-task mechanism, and drafting a claim that is not yet publishable is the honest outcome.
+**Run this after closing a batch of episodes.** Induction will not run itself — `orx induction-material` is the step that shows you what the closed episodes now entitle you to claim. Skipping it is why a solved batch can leave the strategic bank empty while the evidence bank is full. A single repeated case is not forced into knowledge: read more batches (`--cursor`) to find the cross-task mechanism, and leaving the strategy unsubmitted when it adds nothing is the honest outcome.
 
 **Prediction route** — price the operation first, when the decision is worth the model call:
 
@@ -147,9 +146,9 @@ orx predict-capability -> orx compare-capability -> accept- / reject-capability
                                                           -> (later) evaluate-capability
 ```
 
-`compare-capability` returns `result.recommendation` (`accept`/`defer`) plus every candidate it could not rank. **Use ONE route per decision, never both** — accepting already ran the operation, so calling `induce` again for the same decision is a second write. `evaluate-capability` is a separate, later judgement over REAL later tasks: it is the only thing that can support "the harness got stronger".
+`compare-capability` returns `result.recommendation` (`accept`/`defer`) plus every candidate it could not rank. **Use ONE route per decision, never both** — accepting already ran the declared operation, so submitting the same strategy again is a second write. An `induce`/`revise` candidate must DECLARE the strategies it forms (in `operation.config['relations']`); there is no statistical fallback that would write a cell mean instead. `evaluate-capability` is a separate, later judgement over REAL later tasks: it is the only thing that can support "the harness got stronger", and a saved or verified strategy is never itself a proven capability gain.
 
-Material fields, applicability and the claim format: [references/induction.md](references/induction.md).
+Material fields, applicability and the strategy format: [references/induction.md](references/induction.md).
 
 ## 6. Who decides what
 
@@ -158,7 +157,7 @@ Material fields, applicability and the claim format: [references/induction.md](r
 | Stages every attempt (success and failure), measures `latency_s`/`solver_runtime_s`, proves a first attempt's `retries=0` | the candidate methods, their `method` description, and which one to run |
 | Binds the prediction to the real run; keeps `config_observed` and `config_unknown` apart | the real token/tool-call figures and their SOURCE |
 | Evaluates every bound prediction at `close-episode` and publishes the calibration | the check bases you can honestly support, and the `--terminal` state |
-| Re-derives a late task check; excludes or includes samples by evidence eligibility | whether to consolidate offline, and which knowledge claim to submit |
+| Re-derives a late task check; excludes or includes samples by evidence eligibility | whether to consolidate offline, and which new strategy to submit |
 | Bounds the evidence window — eviction is a reference expiring, never a refutation | whether a result is good enough, whether to retry, and on what grounds |
 
 ## 7. Read when needed
@@ -171,7 +170,7 @@ One hop, no chains: the workflow above is complete on its own, and the rest is a
 | You are writing or fixing a model, a CIR, or `solve.py` | [references/modeling.md](references/modeling.md) |
 | A prediction is `not valid`, a field is missing, or you are comparing candidates | [references/strategy_outcome.md](references/strategy_outcome.md) |
 | You are closing an episode, reading the calibration, or handling a late verdict | [references/episode_closeout.md](references/episode_closeout.md) |
-| You are deciding whether to induce, or submitting a knowledge claim | [references/induction.md](references/induction.md) |
+| You are deciding whether to induce, or submitting a new strategy | [references/induction.md](references/induction.md) |
 | You are setting or hitting a task budget, or archiving a stopped run | [references/strategy_outcome.md](references/strategy_outcome.md) |
 | You want to know what a prediction was conditioned on | [references/prediction_context.md](references/prediction_context.md) |
 | You need a protocol field, a status value, or a legacy mapping | [references/world_model_contract.md](references/world_model_contract.md) |

@@ -307,24 +307,18 @@ class TestBackfillConsistency(HarnessTestCase):
             stored.execution_features["cost_feedback"]
             ["per_dimension"]["llm_tokens"]["actual"], 1000.0)
 
-    def test_re_induction_refreshes_cost(self):
-        """Acceptance 6b: cost changed after induction -> the next explicit
-        induction refreshes the expected cost (the induction update-join
-        only — no induction refactoring)."""
+    def test_backfill_refreshes_the_cost_statistics(self):
+        """Acceptance 6b (converged form): cost changed after recording ->
+        the evidence STATISTICS reflect the new cost, which is what the
+        prediction ladder reads. No statistical entry is written (the
+        statistical induction path is gone); the fact layer is the source."""
         self._seed_and_snapshot(tokens=100.0)
-        first = self.h.induce(strategy_id="S01")
-        entry_id = first["results"][0]["created"]
-        entry = self.h.sbank.get(entry_id)
-        self.assertAlmostEqual(entry.expected_cost_hat.llm_tokens, 100.0)
         for i in range(2):
             self.h.bank.update_cost(f"ex_s{i}", llm_tokens=1000.0,
                                     source="agent_observed")
-        again = self.h.induce(strategy_id="S01")
-        updated = again["results"][0].get("updated")
-        self.assertEqual(updated, entry_id)
-        entry = self.h.sbank.get(entry_id)
-        self.assertAlmostEqual(entry.expected_cost_hat.llm_tokens, 1000.0)
-        self.assertEqual(entry.cost_support_n.get("llm_tokens"), 2)
+        snapshot = self.h.predict_cost(_task("t_re"), "S01")
+        self.assertEqual(snapshot.source, "stats")
+        self.assertAlmostEqual(snapshot.expected_cost.llm_tokens, 1000.0)
 
 
 class TestFrozenSnapshotAndBaseline(HarnessTestCase):
@@ -505,8 +499,9 @@ class TestRecordPositionalCompatibility(HarnessTestCase):
 
 
 class TestSupportRefresh(HarnessTestCase):
-    """Identical means with more measured samples must still refresh the
-    entry's per-dimension support (and thus the prediction snapshot's)."""
+    """Identical means with more measured samples: the evidence STATISTICS
+    must report the increased per-dimension support, which is what the
+    prediction snapshot reads."""
 
     def setUp(self):
         super().setUp()
@@ -525,19 +520,16 @@ class TestSupportRefresh(HarnessTestCase):
             cost_measured=("tool_calls", "solver_runtime_s", "retries",
                            "latency_s")))
 
-    def test_support_change_triggers_re_induction(self):
+    def test_support_change_is_visible_in_the_statistics(self):
         self._seed()
-        first = self.h.induce(strategy_id="S01")
-        entry_id = first["results"][0]["created"]
-        entry = self.h.sbank.get(entry_id)
-        self.assertEqual(entry.cost_support_n["llm_tokens"], 1)
-        # Same mean (100), one more measured sample.
+        profile = self.h.profile(_task("t_sup"))
+        cell = self.h.stats.for_profile(profile)["S01"]
+        self.assertEqual(cell.n_measured["llm_tokens"], 1)
+        # Same mean path: one more measured sample of the same dimension.
         self.h.bank.update_cost("ex_two", llm_tokens=100.0,
-                            source="agent_observed")
-        again = self.h.induce(strategy_id="S01")
-        self.assertEqual(again["results"][0].get("updated"), entry_id)
-        entry = self.h.sbank.get(entry_id)
-        self.assertEqual(entry.cost_support_n["llm_tokens"], 2)
+                                source="agent_observed")
+        cell = self.h.stats.for_profile(profile)["S01"]
+        self.assertEqual(cell.n_measured["llm_tokens"], 2)
         snapshot = self.h.predict_cost(_task("t_sup"), "S01")
         self.assertEqual(snapshot.support_per_dim["llm_tokens"], 2)
 

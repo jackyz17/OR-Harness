@@ -357,13 +357,15 @@ class TestKnowledgeSurvives(EvidenceWindowCase):
         records = [self.solve(_task(f"k{i}"), strategy="S04",
                               episode_id="ep1", tag=f"k{i}")
                    for i in range(2)]
-        verify = {"purpose": "rule",
-                  "claim": "S04 solves routing tasks with optimal status",
-                  "check": {"reference_status": "optimal"},
-                  "executions": records}
-        self.h.induce(strategy_id="S04",
-                      execution_ids=[r.execution_id for r in records],
-                      verify=verify)
+        claim = {
+            "subject": "S04",
+            "claim": "S04 solves routing tasks with optimal status",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in records]}
+        self.h.induce(
+            relations=[claim],
+            verify={"claim": claim["claim"], "check": {"assertions": [
+                {"kind": "status", "roles": ["e"], "status": "optimal"}]}})
         entry = next(e for e in self.h.sbank.list()
                      if e.strategy_id == "S04")
         self.assertEqual(entry.verification.get("state"), "verified")
@@ -380,9 +382,13 @@ class TestKnowledgeSurvives(EvidenceWindowCase):
                      for item in recall.get("recommendations", [])}
         self.assertIn(entry.entry_id, entry_ids)
         # A NEW piece of evidence can still revise it.
-        self.solve(_task("k9"), strategy="S04", episode_id="ep1", tag="k9")
-        revised = self.h.induce(strategy_id="S04")
-        self.assertTrue(revised["results"])
+        new = self.solve(_task("k9"), strategy="S04", episode_id="ep1",
+                         tag="k9")
+        revised = self.h.induce(relations=[{
+            "subject": "S04",
+            "claim": "S04 solves routing tasks with optimal status",
+            "evidence": [{"execution_id": new.execution_id, "role": "e"}]}])
+        self.assertTrue(revised["relations"][0]["saved"])
 
 
 # ---------------------------------------------------------------------------

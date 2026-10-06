@@ -183,7 +183,7 @@ from or_harness.world_model.capability_evolution import (
     CAPABILITY_EVOLUTION_SYSTEM_PROMPT,
     CapabilityEvolutionService,
     build_capability_evolution_request,
-    learning_material_for_bundle,
+    learning_material_for_evidence,
     parse_capability_evolution_payload,
 )
 from or_harness.world_model.maintenance_decision import (
@@ -260,7 +260,7 @@ __all__ = [
     "CAPABILITY_EVOLUTION_SYSTEM_PROMPT",
     "CapabilityEvolutionService",
     "build_capability_evolution_request",
-    "learning_material_for_bundle",
+    "learning_material_for_evidence",
     "parse_capability_evolution_payload",
     # offline-improvement decision and two-stage capability feedback (M5)
     "CAPABILITY_EFFECT_VERSION",

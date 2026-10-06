@@ -1,74 +1,20 @@
 {
   "task_id": "orarla_7",
-  "family": "inventory",
-  "text": "An Italian transportation company needs to move some empty containers from its 6 warehouses (located in Verona, Perugia, Rome, Pescara, Taranto, and Lamezia) to major national ports (Genoa, Venice, Ancona, Naples, Bari). The container inventory at the warehouses is as follows:\n\n|  | Empty Containers |\n|:---:|:---:|\n| Verona | 10 |\n| Perugia | 12 |\n| Rome | 20 |\n| Pescara | 24 |\n| Taranto | 18 |\n| Lamezia | 40 |\n\nThe demand at the ports is as follows:\n\n|  | Container Demand |\n|:---:|:---:|\n| Genoa | 20 |\n| Venice | 15 |\n| Ancona | 25 |\n| Naples | 33 |\n| Bari | 21 |\n\nThe transport is carried out by a fleet of trucks. The cost to transport each container is proportional to the distance traveled by the trucks, with a rate of 30 euros per kilometer. Each truck can carry up to 2 containers. The distances are as follows:\n\n|  | Genoa | Venice | Ancona | Naples | Bari |\n|:---:|:---:|:---:|:---:|:---:|:---:|\n| Verona | 290 km | 115 km | 355 km | 715 km | 810 km |\n| Perugia | 380 km | 340 km | 165 km | 380 km | 610 km |\n| Rome | 505 km | 530 km | 285 km | 220 km | 450 km |\n| Pescara | 655 km | 450 km | 155 km | 240 km | 315 km |\n| Taranto | 1010 km | 840 km | 550 km | 305 km | 95 km |\n| Lamezia | 1072 km | 1097 km | 747 km | 372 km | 333 km |\n\nWrite a mathematical program to find the minimum cost transportation policy and solve it using COPTPY.",
+  "family": "planning",
+  "text": "A marketing manager is planning a new campaign and has two channels to choose from, $X$ and $Y$. Both channels have different costs per unit of effectiveness: $5 for channel $X$ and $3 for channel $Y$. The total effectiveness score, calculated as the sum of the units allocated to each channel, must be at least 1000 points. Furthermore, the difference in units between channel X and twice that of channel Y should not exceed 500 units to maintain a balanced strategy. Given these constraints and aiming to minimize the total cost (assuming both X and Y are integers due to budget limitations), what would be the minimum cost needed for this campaign? Provide your answer rounded to the nearest dollar.",
   "coupling": {
     "entities": [
-      {"name": "Verona", "kind": "warehouse", "attrs": {"supply": 10}},
-      {"name": "Perugia", "kind": "warehouse", "attrs": {"supply": 12}},
-      {"name": "Rome", "kind": "warehouse", "attrs": {"supply": 20}},
-      {"name": "Pescara", "kind": "warehouse", "attrs": {"supply": 24}},
-      {"name": "Taranto", "kind": "warehouse", "attrs": {"supply": 18}},
-      {"name": "Lamezia", "kind": "warehouse", "attrs": {"supply": 40}},
-      {"name": "Genoa", "kind": "port", "attrs": {"demand": 20}},
-      {"name": "Venice", "kind": "port", "attrs": {"demand": 15}},
-      {"name": "Ancona", "kind": "port", "attrs": {"demand": 25}},
-      {"name": "Naples", "kind": "port", "attrs": {"demand": 33}},
-      {"name": "Bari", "kind": "port", "attrs": {"demand": 21}}
+      {"id": "X", "type": "channel", "desc": "Channel X allocation (integer units)"},
+      {"id": "Y", "type": "channel", "desc": "Channel Y allocation (integer units)"}
     ],
     "decisions": [
-      {"name": "x_VG", "kind": "transport", "indexes": ["Verona", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_VVe", "kind": "transport", "indexes": ["Verona", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_VA", "kind": "transport", "indexes": ["Verona", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_VN", "kind": "transport", "indexes": ["Verona", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_VB", "kind": "transport", "indexes": ["Verona", "Bari"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PG", "kind": "transport", "indexes": ["Perugia", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PVe", "kind": "transport", "indexes": ["Perugia", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PA", "kind": "transport", "indexes": ["Perugia", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PN", "kind": "transport", "indexes": ["Perugia", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PB", "kind": "transport", "indexes": ["Perugia", "Bari"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_RG", "kind": "transport", "indexes": ["Rome", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_RVe", "kind": "transport", "indexes": ["Rome", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_RA", "kind": "transport", "indexes": ["Rome", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_RN", "kind": "transport", "indexes": ["Rome", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_RB", "kind": "transport", "indexes": ["Rome", "Bari"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PeG", "kind": "transport", "indexes": ["Pescara", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PeVe", "kind": "transport", "indexes": ["Pescara", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PeA", "kind": "transport", "indexes": ["Pescara", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PeN", "kind": "transport", "indexes": ["Pescara", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_PeB", "kind": "transport", "indexes": ["Pescara", "Bari"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_TG", "kind": "transport", "indexes": ["Taranto", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_TVe", "kind": "transport", "indexes": ["Taranto", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_TA", "kind": "transport", "indexes": ["Taranto", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_TN", "kind": "transport", "indexes": ["Taranto", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_TB", "kind": "transport", "indexes": ["Taranto", "Bari"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_LG", "kind": "transport", "indexes": ["Lamezia", "Genoa"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_LVe", "kind": "transport", "indexes": ["Lamezia", "Venice"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_LA", "kind": "transport", "indexes": ["Lamezia", "Ancona"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_LN", "kind": "transport", "indexes": ["Lamezia", "Naples"], "attrs": {"cost_per_km": 30}},
-      {"name": "x_LB", "kind": "transport", "indexes": ["Lamezia", "Bari"], "attrs": {"cost_per_km": 30}}
-    ],
-    "constraints": [
-      {"id": "C1", "kind": "supply", "expr": "x_VG + x_VVe + x_VA + x_VN + x_VB = 10", "attrs": {"entity": "Verona"}},
-      {"id": "C2", "kind": "supply", "expr": "x_PG + x_PVe + x_PA + x_PN + x_PB = 12", "attrs": {"entity": "Perugia"}},
-      {"id": "C3", "kind": "supply", "expr": "x_RG + x_RVe + x_RA + x_RN + x_RB = 20", "attrs": {"entity": "Rome"}},
-      {"id": "C4", "kind": "supply", "expr": "x_PeG + x_PeVe + x_PeA + x_PeN + x_PeB = 24", "attrs": {"entity": "Pescara"}},
-      {"id": "C5", "kind": "supply", "expr": "x_TG + x_TVe + x_TA + x_TN + x_TB = 18", "attrs": {"entity": "Taranto"}},
-      {"id": "C6", "kind": "supply", "expr": "x_LG + x_LVe + x_LA + x_LN + x_LB = 40", "attrs": {"entity": "Lamezia"}},
-      {"id": "C7", "kind": "demand", "expr": "x_VG + x_PG + x_RG + x_PeG + x_TG + x_LG = 20", "attrs": {"entity": "Genoa"}},
-      {"id": "C8", "kind": "demand", "expr": "x_VVe + x_PVe + x_RVe + x_PeVe + x_TVe + x_LVe = 15", "attrs": {"entity": "Venice"}},
-      {"id": "C9", "kind": "demand", "expr": "x_VA + x_PA + x_RA + x_PeA + x_TA + x_LA = 25", "attrs": {"entity": "Ancona"}},
-      {"id": "C10", "kind": "demand", "expr": "x_VN + x_PN + x_RN + x_PeN + x_TN + x_LN = 33", "attrs": {"entity": "Naples"}},
-      {"id": "C11", "kind": "demand", "expr": "x_VB + x_PB + x_RB + x_PeB + x_TB + x_LB = 21", "attrs": {"entity": "Bari"}},
-      {"id": "C12", "kind": "truck_capacity", "expr": "note: each truck carries up to 2 containers; cost = 30 EUR/km", "attrs": {}}
+      {"id": "alloc", "type": "resource_allocation", "desc": "Allocate units to channels X and Y", "entities": ["X", "Y"]}
     ],
     "relations": [
-      {"source": "Verona", "target": "x_VG", "type": "uses_resource", "evidence": "semantic"},
-      {"source": "x_VG", "target": "Genoa", "type": "flows_to", "evidence": "semantic"}
-    ],
-    "coupling_groups": [
-      {"type": "shared_bottleneck", "members": ["x_VG", "x_VVe", "x_VA", "x_VN", "x_VB"], "resource": "Verona supply", "implication": "aggregate supply at each warehouse"},
-      {"type": "route_convergence", "members": ["x_VG", "x_PG", "x_RG", "x_PeG", "x_TG", "x_LG"], "resource": "Genoa demand", "implication": "all flows converge at port Genoa"}
+      {"id": "effort", "type": "min_total", "expr": "X + Y", "ref": 1000, "sense": ">="},
+      {"id": "balance", "type": "bound_diff", "expr": "X - 2*Y", "ref": 500, "sense": "<="},
+      {"id": "cost", "type": "minimize", "expr": "5*X + 3*Y", "desc": "total cost"}
     ]
-  }
+  },
+  "model": null
 }

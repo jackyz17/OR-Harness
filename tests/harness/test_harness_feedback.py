@@ -331,11 +331,11 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             h.close()
 
     def test_induce_does_not_invent_method_vocabulary(self):
-        """Induction forms a CLAIM; it does not describe the method.
+        """A submitted strategy becomes a CLAIM; the framework does not
+        describe the method's vocabulary (strategy_type/actions/fallback).
 
-        There is no directory to copy strategy_type/actions/fallback from, so
-        an induced entry reports them as unrecorded — which is what the memory
-        really knows.
+        There is no directory to copy them from, so a claim entry reports
+        them as unrecorded — which is what the memory really knows.
         """
         h = ORHarness(home=self.home)
         try:
@@ -343,8 +343,11 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_enc{i}", task_id=f"te{i}",
                     strategy_id="S01", gap=0.05))
-            result = h.induce(strategy_id="S01")
-            entry = h.sbank.get(result["results"][0]["created"])
+            result = h.induce(relations=[{
+                "subject": "S01", "claim": "S01 decomposes the problem",
+                "evidence": [{"execution_id": "ex_enc0", "role": "evidence"},
+                             {"execution_id": "ex_enc1", "role": "evidence"}]}])
+            entry = h.sbank.get(result["relations"][0]["saved"])
             self.assertIsNone(entry.strategy_type)
             self.assertEqual(entry.actions, [])
             self.assertIsNone(entry.fallback_strategy_id)
@@ -365,7 +368,10 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_keep{i}", task_id=f"tk{i}",
                     strategy_id="S01", gap=0.05))
-            h.induce(strategy_id="S01")
+            h.induce(relations=[{
+                "subject": "S02", "claim": "a different subject",
+                "evidence": [{"execution_id": "ex_keep0", "role": "e"},
+                             {"execution_id": "ex_keep1", "role": "e"}]}])
             kept = h.sbank.get("se_keep")
             self.assertEqual(kept.strategy_type, "execution")
             self.assertEqual(kept.actions, ["harness-custom"])
@@ -380,9 +386,11 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_rb{i}", task_id=f"tr{i}",
                     strategy_id="S01", gap=0.05))
-            result = h.induce(strategy_id="S01")
-            created = result["results"][0]["created"]
-            entry = h.sbank.get(created)
+            result = h.induce(relations=[{
+                "subject": "S01", "claim": "S01 decomposes the problem",
+                "evidence": [{"execution_id": "ex_rb0", "role": "e"},
+                             {"execution_id": "ex_rb1", "role": "e"}]}])
+            entry = h.sbank.get(result["relations"][0]["saved"])
             self.assertIsNone(entry.strategy_type)
         finally:
             h.close()

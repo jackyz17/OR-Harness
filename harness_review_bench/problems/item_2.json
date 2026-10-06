@@ -1,7 +1,7 @@
 {
  "id": 2,
- "question": "A fighter jet is a crucial combat tool, but to make it effective, enough trained pilots are required. Therefore, some fighter jets each year must be allocated exclusively for pilot training. The annual production of fighter jets is \\(a_j (j=1,2)\\), with \\(a_1=10\\) and \\(a_2=15\\). Each training jet can train 5 pilots per year, and each trained pilot can operate one combat jet in subsequent years. Assuming training starts in year 1 and continues for 2 years, how many trained pilots will be available in total by the end of year 2 to contribute to air defense?",
- "answer": "125",
- "difficulty": "Medium",
- "category": "generic"
+ "question": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
+ "answer": "8350",
+ "difficulty": null,
+ "category": "planning"
 }

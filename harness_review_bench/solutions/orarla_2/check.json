@@ -1,7 +1,5 @@
 {
-  "reference_objective": {
-    "expected": 50.0,
-    "tolerance": 0.0,
-    "note": "Year 1 jets (10) train for 2 years, each producing 5 pilots/year. By end of year 2, only the first cohort is fully trained: 10*5 = 50 pilots. Year 2 jets start training in year 2, not ready until year 3."
-  }
+ "reference_status": "optimal",
+ "reference_objective": 8350.0,
+ "tolerance": 0.00835
 }

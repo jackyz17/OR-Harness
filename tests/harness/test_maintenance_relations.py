@@ -91,21 +91,18 @@ class MaintenanceCase(HarnessTestCase):
                 method_actual=INTEGER_CAR_METHOD))
 
     def _accept(self, operation):
-        # The prediction is scoped to the evidence behind a bundle the
-        # framework builds from the seeded executions (the operation alone
-        # declares no scope, and an unscoped acceptance is refused).
-        bundles = [b for b in self.h.induction_candidates()
-                   if b.get("strategy_id") == operation.get("strategy_id")
-                   and b.get("kind") == "new_claim"]
-        self.assertTrue(bundles, "the seeded evidence must form a bundle")
-        # The framework's frozen, quality-safe saving: 1.5s per task over a
-        # 5-task window against a 0.2s one-time cost — net positive.
+        # The prediction is scoped to the evidence behind the seeded
+        # executions. The operation alone declares no scope, and an unscoped
+        # acceptance is refused, so the frozen evidence scope is read
+        # directly from the executions (there is no candidate generator).
+        scope = {"execution_ids": ["ex1", "ex2"], "tasks": ["T0", "T1"],
+                 "strategy_id": "S-decompose", "family": "routing"}
         provider = StubProvider()
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
         prediction = h.predict_capability_evolution(
-            operation, task=dict(TASK), bundle=bundles[0],
+            operation, task=dict(TASK), evidence_scope=scope,
             horizon="next 5 tasks", horizon_tasks=5)
         recommendation = h.compare_capability_evolution(
             [prediction.prediction_id], horizon_tasks=5)
@@ -182,7 +179,7 @@ class TestKnowledgeDeltaCoversRelations(MaintenanceCase):
 class TestMaterialReport(MaintenanceCase):
     def test_a_method_less_cell_reports_its_missing_content(self):
         """A cell clearing the count gate does NOT turn a name and a mean
-        into a technique. The material report names the missing content
+        into a technique. The batch material names the missing content
         (``method_performed``) rather than asserting a technique."""
         for i in range(2):
             self.h.bank.append(ExecutionRecord(
@@ -193,18 +190,12 @@ class TestMaterialReport(MaintenanceCase):
                 quality={"feasible": True, "objective": 200.0, "gap": 0.0,
                          "status": "optimal"},
                 solver={"name": "highs"}))
-        bundles = [b for b in self.h.induction_candidates()
-                   if b["strategy_id"] == "S-decompose"]
-        self.assertTrue(bundles, "the cell must clear the sample-count gate")
-        for bundle in bundles:
-            self.assertEqual(bundle["kind"], "new_claim")
-            self.assertNotIn("purpose", bundle)
-            report = self.h.induction_material(
-                bundle_id=bundle["bundle_id"])["material"][0][
-                    "material_report"]
-            self.assertEqual(report["basis"], "none")
-            self.assertTrue(any("method_performed" in m
-                                for m in report["missing"]))
+        material = self.h.induction_material(strategy_id="S-decompose")
+        self.assertEqual(material["count"], 2)
+        for entry in material["material"]:
+            self.assertEqual(entry["method"]["basis"], "none")
+            self.assertIsNone(entry["method"]["planned"])
+            self.assertIsNone(entry["method"]["actual"])
 
 
 class TestRetiredVectorIsRemoved(MaintenanceCase):

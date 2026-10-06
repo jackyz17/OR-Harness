@@ -24,26 +24,38 @@ class TestCostPredictionLoop(HarnessTestCase):
         self.h = ORHarness(home=self.home)
 
     def _entry_with_cost(self, tokens_hat=1500.0):
-        self.h.bank.append(self.make_record(
-            execution_id="ex_c1", task_id="tc1", strategy_id="S01",
-            cost=CostVector(llm_tokens=tokens_hat, tool_calls=2,
-                            solver_runtime_s=1.0, retries=0, latency_s=1.0),
-            cost_measured=MEASURED_ALL))
-        self.h.bank.append(self.make_record(
-            execution_id="ex_c2", task_id="tc2", strategy_id="S01",
-            cost=CostVector(llm_tokens=tokens_hat, tool_calls=2,
-                            solver_runtime_s=1.0, retries=0, latency_s=1.0),
-            cost_measured=MEASURED_ALL))
-        # Admission check: the entry under test must be PUBLISHED knowledge
-        # before it may serve a prediction (an unverified candidate is
-        # recorded but not published).
-        verify = {"purpose": "rule", "claim": "S01 holds in this cell",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_cv",
-                                                  task_id="tc_verify",
-                                                  strategy_id="S01")]}
-        result = self.h.induce(strategy_id="S01", verify=verify)
-        return result["results"][0]["created"]
+        recs = []
+        for i in (1, 2):
+            rec = self.make_record(
+                execution_id=f"ex_c{i}", task_id=f"tc{i}", strategy_id="S01",
+                cost=CostVector(llm_tokens=tokens_hat, tool_calls=2,
+                                solver_runtime_s=1.0, retries=0, latency_s=1.0),
+                cost_measured=MEASURED_ALL)
+            self.h.bank.append(rec)
+            recs.append(rec)
+        # The entry under test is a STATISTICAL cost claim: built directly
+        # (the statistical induction path is gone; a claim entry is
+        # claim-only and carries no cost estimate). It is verified so it is
+        # PUBLISHED knowledge before it may serve a prediction.
+        from or_harness.core.schema import StrategicEntry, evidence_predicates
+        predicates = evidence_predicates(recs, family="routing")
+        entry = StrategicEntry(
+            entry_id=StrategicEntry.new_id(),
+            strategy_id="S01",
+            pattern={"predicates": predicates},
+            expected_quality_hat=1.0,
+            quality_interval=(0.5, 1.0),
+            expected_cost_hat=CostVector(
+                llm_tokens=tokens_hat, tool_calls=2, solver_runtime_s=1.0,
+                retries=0, latency_s=1.0, measured=set(MEASURED_ALL)),
+            cost_interval={d: (0.5, 2.0) for d in MEASURED_ALL},
+            cost_support_n={d: 2 for d in MEASURED_ALL},
+            support_n=2,
+            verification={"state": "verified", "claim": "S01 holds",
+                          "conclusion": "check passed"},
+        )
+        self.h.sbank.add(entry)
+        return entry.entry_id
 
     def _task(self, task_id):
         return {"task_id": task_id, "family": "routing",
@@ -112,7 +124,7 @@ class TestCostPredictionLoop(HarnessTestCase):
 
     def test_quality_misses_demote_at_next_induce(self):
         """Quality misses accumulate as EVIDENCE online and demote the entry
-        at the next offline induction — never during record."""
+        at the next offline knowledge write — never during record."""
         entry_id = self._entry_with_cost(tokens_hat=1500.0)
         for i in range(3):
             rec = self.make_record(task_id=f"tq{i}", strategy_id="S01", gap=0.9,
@@ -124,7 +136,11 @@ class TestCostPredictionLoop(HarnessTestCase):
             self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")
             self.assertEqual(
                 self.h.sbank.get(entry_id).prediction_track.consecutive_misses, 0)
-        result = self.h.induce(strategy_id="S01")
+        # The lifecycle replay runs as part of the next knowledge write.
+        result = self.h.induce(relations=[{
+            "subject": "S01", "claim": "S01 holds in this cell",
+            "evidence": [{"execution_id": "ex_c1", "role": "evidence"},
+                         {"execution_id": "ex_c2", "role": "evidence"}]}])
         entry = self.h.sbank.get(entry_id)
         self.assertEqual(entry.status, "suspect")
         revisions = [r for r in result["revisions"] if r["entry_id"] == entry_id]

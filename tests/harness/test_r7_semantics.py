@@ -172,19 +172,19 @@ class TestReviewMaterialCursor(HarnessTestCase):
             h.record(self.make_record(
                 execution_id=f"ex_cursor_{i}", task_id=f"T_{i}",
                 strategy_id="S", profile=_profile(f"T_{i}")))
-        old = os.environ.get("OR_HARNESS_REVIEW_MATERIAL_CHARS")
-        os.environ["OR_HARNESS_REVIEW_MATERIAL_CHARS"] = "2800"
+        old = os.environ.get("OR_HARNESS_INDUCTION_MATERIAL_CHARS")
+        os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = "2800"
         try:
-            first = h.review_material()
+            first = h.induction_material()
             self.assertTrue(first["budget"]["truncated_by_budget"])
             cursor = first["budget"]["next_cursor"]
             self.assertIsNotNone(cursor)
-            second = h.review_material(cursor=cursor)
+            second = h.induction_material(cursor=cursor)
         finally:
             if old is None:
-                os.environ.pop("OR_HARNESS_REVIEW_MATERIAL_CHARS", None)
+                os.environ.pop("OR_HARNESS_INDUCTION_MATERIAL_CHARS", None)
             else:
-                os.environ["OR_HARNESS_REVIEW_MATERIAL_CHARS"] = old
+                os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = old
         first_ids = {m["execution_id"] for m in first["material"]}
         second_ids = {m["execution_id"] for m in second["material"]}
         # The cursor advances to OLDER material — no overlap with the first.
@@ -200,7 +200,7 @@ class TestReviewMaterialCursor(HarnessTestCase):
                                  strategy_id="S", profile=_profile("T"))
         later.created_at = h.bank.get("ex_v1").created_at + 10
         h.record(later)
-        result = h.review_material(task_id="T")
+        result = h.induction_material(task_id="T")
         entry = next(m for m in result["material"]
                      if m["execution_id"] == "ex_v2")
         self.assertIn("code_hash", entry["outcome"])
@@ -215,7 +215,7 @@ class TestReviewMaterialCursor(HarnessTestCase):
         # One task only: the hint must warn against a one-task claim.
         h.record(self.make_record(execution_id="ex_solo", task_id="T_solo",
                                   strategy_id="S", profile=_profile("T_solo")))
-        solo = h.review_material()
+        solo = h.induction_material()
         hint = solo["cross_task_hint"]
         self.assertEqual(hint["n_distinct_tasks_in_batch"], 1)
         self.assertIn("1 task only", hint["note"])
@@ -225,7 +225,7 @@ class TestReviewMaterialCursor(HarnessTestCase):
             h.record(self.make_record(
                 execution_id=f"ex_pair_{i}", task_id=f"T_pair_{i}",
                 strategy_id="S", profile=_profile(f"T_pair_{i}")))
-        pair = h.review_material()
+        pair = h.induction_material()
         hint = pair["cross_task_hint"]
         self.assertGreaterEqual(hint["n_distinct_tasks_in_batch"], 2)
         self.assertIn("look for a mechanism that recurs", hint["note"])

@@ -84,6 +84,25 @@ class ClaimCase(HarnessTestCase):
         return {"purpose": "relation",
                 "check": {"assertions": claim["check"]["assertions"]}}
 
+    def statistical_entry(self, strategy_id, predicates=None):
+        """A statistical (claim-less) entry, built directly.
+
+        Induction no longer writes a strategic entry from a cell's means —
+        knowledge is only written from an agent-formed strategy — but the
+        StrategicBank still holds statistical entries (from a migration or a
+        harness) and they must not merge with a claim entry. This builds one
+        without going through the removed statistical path."""
+        return StrategicEntry(
+            entry_id=StrategicEntry.new_id(),
+            strategy_id=strategy_id,
+            pattern={"predicates": dict(
+                predicates or {"family": "scheduling",
+                               "temporal_coupling": [0.5, 1.0]})},
+            expected_quality_hat=0.5,
+            quality_interval=(0.0, 1.0),
+            support_n=2,
+        )
+
 
 class TestClaimGeneration(ClaimCase):
     """Generation: cross-task evidence forms a NEW knowledge object, with no
@@ -414,6 +433,30 @@ class TestClaimRevision(ClaimCase):
         self.engine.submit_relation(self.cross_period_claim())
         self.assertEqual(self.sbank.count(), 1)
 
+    def test_explicit_target_entry_id_revises_that_entry(self):
+        """A revision can name the entry to change directly, instead of
+        re-deriving it from subject + cell + kind."""
+        self.seed_cross_period()
+        claim = self.cross_period_claim()
+        first = self.engine.submit_relation(claim,
+                                            verify=self.verify_payload(claim))
+        revised = dict(self.cross_period_claim(),
+                       claim="revised text entirely", target_entry_id=first["saved"])
+        out = self.engine.submit_relation(revised)
+        self.assertEqual(out["saved"], first["saved"])
+        self.assertEqual(self.sbank.count(), 1)
+
+    def test_unknown_target_entry_id_is_refused(self):
+        """An explicit target that does not exist is refused, never silently
+        turned into a different edit or a new entry."""
+        self.seed_cross_period()
+        claim = dict(self.cross_period_claim(),
+                     target_entry_id="se_does_not_exist")
+        out = self.engine.submit_relation(claim)
+        self.assertIsNone(out.get("saved"))
+        self.assertIn("unknown target_entry_id", out["skipped"])
+        self.assertEqual(self.sbank.count(), 0)
+
     def test_two_claims_under_one_subject_stay_independent(self):
         """#8: two independent claims must NOT share an entry, and a
         verification on one must never leak to the other."""
@@ -442,8 +485,8 @@ class TestClaimRevision(ClaimCase):
         are DIFFERENT knowledge objects: the claim must not attach to the
         statistical entry or inherit its verdict."""
         self.seed_cross_period()
-        self.engine.induce(self.profile("T1"), "S01")
-        stats_entry = self.sbank.list(strategy_id="S01")[0]
+        stats_entry = self.statistical_entry("S01")
+        self.sbank.add(stats_entry)
         claim = self.cross_period_claim()
         claim["subject"] = "S01"
         out = self.engine.submit_relation(
@@ -484,7 +527,7 @@ class TestClaimRecall(ClaimCase):
         """A statistical entry for the same strategy is unverified; the
         verified claim is a SEPARATE entry and must still be recalled."""
         self.seed_cross_period()
-        self.engine.induce(self.profile("T1"), "S01")
+        self.sbank.add(self.statistical_entry("S01"))
         claim = self.cross_period_claim()
         claim["subject"] = "S01"
         self.engine.submit_relation(claim, verify=self.verify_payload(claim))

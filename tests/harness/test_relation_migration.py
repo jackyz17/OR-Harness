@@ -291,9 +291,11 @@ class TestMigrationPathAfter(HarnessTestCase):
         self.assertTrue(hits)
         self.assertIn("keep the cross-period state",
                       hits[0]["knowledge"]["claim"]["text"])
-        # A statistical induce / revise over the bank does not touch it.
+        # A knowledge write that does not name this claim leaves it alone.
         before = self.h.sbank.get(entry.entry_id).to_dict()
-        self.h.induce(all_=True)
+        self.h.induce(relations=[{
+            "subject": "principle:unrelated", "claim": "x",
+            "evidence": [{"execution_id": "ex_unknown", "role": "e"}]}])
         after = self.h.sbank.get(entry.entry_id).to_dict()
         self.assertEqual(before["claim"], after["claim"])
         self.assertEqual(before["verification"], after["verification"])

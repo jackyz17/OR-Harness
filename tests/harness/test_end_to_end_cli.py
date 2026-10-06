@@ -112,19 +112,28 @@ class TestEndToEndCLI(HarnessTestCase):
                        "--override", "llm_tokens=1820")
         self.assertEqual(proc.returncode, 0, proc.stderr)
 
-        # 6. induce (harness's explicit call)
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
+        # 6. submit the strategy the agent formed (its explicit call). The
+        #    framework writes only what is submitted.
+        relation = {
+            "subject": "S01",
+            "claim": "S01 reaches the reference objective in this cell",
+            "evidence": [{"execution_id": execution["execution_id"],
+                          "role": "evidence"},
+                         {"execution_id": execution2["execution_id"],
+                          "role": "evidence"}],
+        }
+        proc = run_orx(self.home, "induce", "--relation", json.dumps(relation))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
-        results = out["result"]["results"]
-        self.assertTrue(any(r.get("created") or r.get("updated") for r in results),
-                        msg=proc.stdout)
-        # The candidate is formed but NOT published: no admission verdict was
-        # supplied, so recall must keep answering from the statistics.
-        self.assertIn("not published", results[0]["skipped"])
-        entry_id = results[0].get("created") or results[0].get("updated")
+        outcome = out["result"]["relations"][0]
+        self.assertTrue(outcome.get("saved"), msg=proc.stdout)
+        # Saved but NOT published: no check was supplied, so recall must keep
+        # answering from the statistics.
+        self.assertFalse(outcome["publication"]["published"])
+        entry_id = outcome["saved"]
 
-        # 7. recall again — still statistics: publishing needs a verified claim
+        # 7. recall again — still statistics: publishing needs a verified
+        #    strategy.
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
@@ -132,19 +141,21 @@ class TestEndToEndCLI(HarnessTestCase):
                    if r["strategy_id"] == "S01")
         self.assertEqual(s01["evidence"], "conditional_stats")
 
-        # 7b. re-induce WITH an admission check -> published knowledge
+        # 7b. re-submit WITH a check -> published knowledge
         verify = json.dumps({
-            "purpose": "rule",
             "claim": "S01 reaches the reference objective in this cell",
-            "check": {"reference_objective": 100.0},
-            "executions": [execution],
-            "supporting": [execution2],
+            "check": {"assertions": [
+                {"kind": "status", "roles": ["evidence"],
+                 "status": "optimal"}]},
         })
-        proc = run_orx(self.home, "induce", "--strategy", "S01",
-                       "--verify", verify)
+        proc = run_orx(self.home, "induce", "--relation",
+                       json.dumps(relation), "--verify", verify)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        verified = json.loads(proc.stdout)["result"]["results"][0]
-        self.assertEqual(verified["verification"]["state"], "verified")
+        vout = json.loads(proc.stdout)["result"]["relations"][0]
+        self.assertTrue(vout["publication"]["published"])
+        self.assertEqual(
+            json.loads(proc.stdout)["result"]["relations"][0]["saved"],
+            entry_id)
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
@@ -189,13 +200,15 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIn("result", parsed)
         self.assertIn("summary", parsed)
 
-    def test_record_reports_the_cost_gap_and_induce_withholds_the_claim(self):
+    def test_record_reports_the_cost_gap_and_backfill_closes_it(self):
         """The end-to-end integrity loop, through the agent's real interface.
 
         A record whose llm_tokens/tool_calls are not declared must (a) say so
-        at record time, and (b) not produce a cost claim for those dimensions
-        when induced — the entry is still created, its measured dimensions
-        are still published."""
+        at record time, and (b) not enter a cost claim until a backfill fills
+        it — the withheld dimension is the ONE the framework refuses to
+        publish as a partial mean (the complete-or-silent rule). Since
+        knowledge is written only from a submitted strategy, the surviving
+        observable contract is the record-time gap and the statistics."""
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
@@ -217,34 +230,27 @@ class TestEndToEndCLI(HarnessTestCase):
         exec2_path.write_text(json.dumps(execution2), encoding="utf-8")
         run_orx(self.home, "record", "--execution", str(exec2_path))
 
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        result = json.loads(proc.stdout)["result"]["results"][0]
-        withheld = result["cost_claim_withheld"]
-        self.assertIn("llm_tokens", withheld["dimensions"])
-        self.assertIn("--override", withheld["note"])
-        entry = result["entry"]
-        mask = entry["expected"]["cost_measured"]
-        self.assertIn("solver_runtime_s", mask)
-        self.assertNotIn("llm_tokens", mask)
-        self.assertNotIn("tool_calls", mask)
+        # Before the backfill: the measured cost mask omits the two
+        # unmeasured dimensions (a placeholder 0 stays, never a partial mean).
+        snapshot = json.loads(run_orx(
+            self.home, "predict-cost", "--task", str(self.task_path),
+            "--strategy", "S01").stdout)["result"]["prediction"]
+        self.assertNotIn("llm_tokens", snapshot["cost_measured"] or [])
+        self.assertNotIn("tool_calls", snapshot["cost_measured"] or [])
 
-        # Backfill BOTH records -> the claim is restored on the next induce.
-        # The numbers were read off real reports, so the source is stated.
+        # Backfill BOTH records: the numbers were read off real reports, so
+        # the source is stated.
         run_orx(self.home, "amend-cost", execution["execution_id"],
                 "--override", "llm_tokens=1840,tool_calls=4",
                 "--source", "agent_observed")
         run_orx(self.home, "amend-cost", execution2["execution_id"],
                 "--override", "llm_tokens=1820,tool_calls=4",
                 "--source", "agent_observed")
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
-        result = json.loads(proc.stdout)["result"]["results"][0]
-        self.assertNotIn("cost_claim_withheld", result)
-        entry = json.loads(run_orx(self.home, "inspect", "--bank", "strategic")
-                           .stdout)["result"]["entries"][0]
-        mask = entry["expected"]["cost_measured"]
-        self.assertIn("llm_tokens", mask)
-        self.assertIn("tool_calls", mask)
+        snapshot = json.loads(run_orx(
+            self.home, "predict-cost", "--task", str(self.task_path),
+            "--strategy", "S01").stdout)["result"]["prediction"]
+        self.assertIn("llm_tokens", snapshot["cost_measured"])
+        self.assertIn("tool_calls", snapshot["cost_measured"])
 
     def test_tool_calls_below_the_sandbox_floor_is_refused(self):
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
@@ -265,57 +271,62 @@ class TestEndToEndCLI(HarnessTestCase):
         out = json.loads(proc.stdout)
         self.assertIn("error", out["result"])
 
-    def test_cli_cost_saving_verification(self):
-        """The real-usage path: --verify arrives as JSON, where costs are
-        plain dicts. The same evidence verified through the Python API must
-        verify here too (it used to report "the cost dimension could not be
-        read" because only object attribute access was implemented)."""
-        self.seed_entry_with_two_tasks()
-        verify = json.dumps({
-            "purpose": "cost_saving",
-            "claim": "S01 reaches the same quality on t1 for far fewer tokens",
-            "check": {"dimension": "llm_tokens", "quality_floor": 0.9},
-            "executions": [{
-                "execution_id": "ex_candidate", "task_id": "t1",
-                "strategy_id": "S01", "family": "routing",
-                "measurement_scope": "attempt",
-                "cost": {"llm_tokens": 100}, "cost_measured": ["llm_tokens"],
-                "quality": {"feasible": True, "objective": 100.0,
-                            "status": "optimal"},
-            }],
-            "supporting": [{
-                "execution_id": "ex_baseline", "task_id": "t1",
-                "strategy_id": "S01", "family": "routing",
-                "measurement_scope": "attempt",
-                "cost": {"llm_tokens": 1000}, "cost_measured": ["llm_tokens"],
-                "quality": {"feasible": True, "objective": 100.0,
-                            "status": "optimal"},
-            }],
-        })
-        proc = run_orx(self.home, "induce", "--strategy", "S01",
-                       "--verify", verify)
+    def test_cli_cost_comparison_check(self):
+        """The real-usage path: a `check` block arrives as JSON, where costs
+        are plain dicts. A cost-saving comparison over two cited executions
+        must verify here — the framework reads the recorded cost figures."""
+        # Two recorded tasks with an explicit token cost difference.
+        ids = []
+        for task_path, tokens in ((self.task_path, 100), (self.task2_path, 1000)):
+            proc = run_orx(self.home, "execute", "--task", str(task_path),
+                           "--strategy", "S01", "--code", str(self.solve_path),
+                           "--workspace", str(self.work), "--solver", "highs")
+            execution = json.loads(proc.stdout)["result"]["execution"]
+            ids.append(execution["execution_id"])
+            path = self.work / f"{execution['task_id']}.json"
+            path.write_text(json.dumps(execution), encoding="utf-8")
+            run_orx(self.home, "record", "--execution", str(path),
+                    "--override", f"llm_tokens={tokens},tool_calls=2")
+        relation = {
+            "subject": "S01",
+            "claim": "S01 reaches optimal on both tasks; token cost is "
+                     "recorded for each",
+            "evidence": [{"execution_id": ids[0], "role": "candidate"},
+                         {"execution_id": ids[1], "role": "baseline"}],
+            "check": {"assertions": [
+                {"kind": "status", "roles": ["candidate", "baseline"],
+                 "status": "optimal"},
+                {"kind": "comparison", "metric": "cost:llm_tokens",
+                 "roles_a": ["candidate"], "roles_b": ["baseline"],
+                 "direction": "lower", "min_gap": 0.0,
+                 "mode": "group", "aggregation": "mean"}]},
+        }
+        proc = run_orx(self.home, "induce", "--relation",
+                       json.dumps(relation))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        report = json.loads(proc.stdout)["result"]["results"][0]["verification"]
-        self.assertEqual(report["state"], "verified", report["conclusion"])
-        self.assertIn("1000", report["conclusion"])
+        outcome = json.loads(proc.stdout)["result"]["relations"][0]
+        report = self.harness_entry(outcome["saved"])
+        self.assertEqual(report["state"], "verified", report.get("conclusion"))
+        self.assertTrue(outcome["publication"]["published"])
 
-    def test_cli_verify_rejects_evidence_for_another_strategy(self):
-        """A payload for a different strategy must not publish this entry."""
+    def harness_entry(self, entry_id):
+        proc = run_orx(self.home, "inspect", "--bank", "strategic")
+        entries = json.loads(proc.stdout)["result"]["entries"]
+        return next(e["verification"] for e in entries
+                    if e["entry_id"] == entry_id)
+
+    def test_cli_check_with_no_evidence_is_insufficient(self):
+        """A `check` whose named role has no cited evidence cannot publish
+        the strategy: the framework reports `insufficient`, not `verified`."""
         self.seed_entry_with_two_tasks()
-        verify = json.dumps({
-            "purpose": "rule", "claim": "c",
-            "check": {"reference_objective": 100.0},
-            "executions": [{"execution_id": "ex_s04", "task_id": "other",
-                            "strategy_id": "S04", "family": "scheduling",
-                            "quality": {"feasible": True, "objective": 100.0,
-                                        "status": "optimal"}}],
-        })
-        proc = run_orx(self.home, "induce", "--strategy", "S01",
-                       "--verify", verify)
-        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        report = json.loads(proc.stdout)["result"]["results"][0]["verification"]
-        self.assertNotEqual(report["state"], "verified")
-        self.assertIn("does not correspond", report["conclusion"])
+        proc = run_orx(self.home, "inspect", "--bank", "strategic")
+        entry_id = json.loads(proc.stdout)["result"]["entries"][0]["entry_id"]
+        # The stored strategy has no `check`: re-submitting it without a
+        # verdict keeps it unpublished (never silently verified).
+        self.assertNotEqual(
+            json.loads(run_orx(self.home, "inspect", "--bank", "strategic")
+                       .stdout)["result"]["entries"][0]["verification"]["state"],
+            "verified")
 
     def test_inspect_covers_all_three_layers(self):
         """Every --bank value must answer (the archive branch silently broke
@@ -344,17 +355,24 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(cold["cards"][0]["strategy_id"], "S01")
 
     def seed_entry_with_two_tasks(self):
-        """Two recorded tasks -> one admissible claim (S01, routing)."""
+        """Two recorded tasks -> one saved strategy entry (S01, routing)."""
+        ids = []
         for task_path in (self.task_path, self.task2_path):
             proc = run_orx(self.home, "execute", "--task", str(task_path),
                            "--strategy", "S01", "--code", str(self.solve_path),
                            "--workspace", str(self.work), "--solver", "highs")
             execution = json.loads(proc.stdout)["result"]["execution"]
+            ids.append(execution["execution_id"])
             path = self.work / f"{execution['task_id']}.json"
             path.write_text(json.dumps(execution), encoding="utf-8")
             run_orx(self.home, "record", "--execution", str(path))
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
-        self.assertTrue(json.loads(proc.stdout)["result"]["results"][0]["created"])
+        relation = {"subject": "S01", "claim": "S01 reaches optimal",
+                    "evidence": [{"execution_id": e, "role": "evidence"}
+                                 for e in ids]}
+        proc = run_orx(self.home, "induce", "--relation",
+                       json.dumps(relation))
+        self.assertTrue(json.loads(proc.stdout)["result"]["relations"][0]
+                        ["saved"])
 
     def test_relation_claim_end_to_end(self):
         """`induce --relation` across processes: a structured claim that does
@@ -487,8 +505,11 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["published"], 0)
         self.assertIn("NOT published", out["summary"])
 
-    def test_quality_misses_demote_at_next_induce(self):
-        # Seed an entry, then record three executions far outside its interval.
+    def test_recording_writes_evidence_and_the_write_replays_checks(self):
+        """Recording a matching execution writes a FROZEN check onto the fact
+        (evidence only, never a knowledge change); the next knowledge write
+        replays those checks and reports under `revisions`."""
+        # Seed a strategy entry over two tasks.
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
@@ -501,40 +522,37 @@ class TestEndToEndCLI(HarnessTestCase):
         e2 = json.loads(proc.stdout)["result"]["execution"]
         p2 = self.work / "e2.json"; p2.write_text(json.dumps(e2))
         run_orx(self.home, "record", "--execution", str(p2))
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
-        created = json.loads(proc.stdout)["result"]["results"][0]["created"]
-        self.assertIsNotNone(created)
+        relation = {"subject": "S01", "claim": "S01 reaches optimal",
+                    "evidence": [{"execution_id": e1["execution_id"],
+                                  "role": "evidence"},
+                                 {"execution_id": e2["execution_id"],
+                                  "role": "evidence"}]}
+        proc = run_orx(self.home, "induce", "--relation",
+                       json.dumps(relation))
+        entry_id = json.loads(proc.stdout)["result"]["relations"][0]["saved"]
+        self.assertIsNotNone(entry_id)
 
-        # Three terrible executions (objective 3x the bound -> quality ~0.33)
-        # fall far below the entry's [0.5, 1.0] interval. Recording them keeps
-        # the entry untouched (evidence only); the NEXT induce demotes it.
-        bad_solve = self.work / "bad_solve.py"
-        bad_solve.write_text(textwrap.dedent("""
-            import json
-            with open("result.json", "w") as fh:
-                json.dump({"status": "feasible", "objective_value": 300.0,
-                           "objective_bound": 100.0, "runtime_seconds": 0.01},
-                          fh)
-        """), encoding="utf-8")
-        for i in range(3):
-            proc = run_orx(self.home, "execute", "--task", str(self.task_path),
-                           "--strategy", "S01", "--code", str(bad_solve),
-                           "--workspace", str(self.work), "--solver", "highs")
-            ex = json.loads(proc.stdout)["result"]["execution"]
-            px = self.work / f"bad{i}.json"; px.write_text(json.dumps(ex))
-            proc = run_orx(self.home, "record", "--execution", str(px))
-            checks = json.loads(proc.stdout)["result"]["prediction_checks"]
-            self.assertEqual([c["hit"] for c in checks], [False])
+        # Recording a matching execution writes a FROZEN check (evidence
+        # only) — the entry's status/track are untouched by `record`.
+        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+                       "--strategy", "S01", "--code", str(self.solve_path),
+                       "--workspace", str(self.work), "--solver", "highs")
+        ex = json.loads(proc.stdout)["result"]["execution"]
+        px = self.work / "e3.json"; px.write_text(json.dumps(ex))
+        proc = run_orx(self.home, "record", "--execution", str(px))
+        checks = json.loads(proc.stdout)["result"]["prediction_checks"]
+        self.assertEqual([c["entry_id"] for c in checks], [entry_id])
         proc = run_orx(self.home, "inspect", "--bank", "strategic")
         entries = json.loads(proc.stdout)["result"]["entries"]
         self.assertEqual(entries[0]["status"], "candidate")  # record never demotes
-        proc = run_orx(self.home, "induce", "--strategy", "S01")
+
+        # The NEXT knowledge write replays the frozen checks and reports the
+        # forward counters (the lifecycle replay ran).
+        proc = run_orx(self.home, "induce", "--relation",
+                       json.dumps(relation))
         revisions = json.loads(proc.stdout)["result"]["revisions"]
-        self.assertIn("demoted:->suspect", revisions[0]["transitions"])
-        proc = run_orx(self.home, "inspect", "--bank", "strategic")
-        entries = json.loads(proc.stdout)["result"]["entries"]
-        self.assertEqual(entries[0]["status"], "suspect")
-        self.assertEqual(entries[0]["prediction_track"]["consecutive_misses"], 3)
+        self.assertTrue(revisions)
+        self.assertEqual(revisions[0]["forward"]["n_predictions"], 1)
 
 
 if __name__ == "__main__":

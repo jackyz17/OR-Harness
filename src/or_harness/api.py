@@ -2130,6 +2130,7 @@ class ORHarness:
             *,
             task: Optional[Dict[str, Any]] = None,
             bundle: Optional[Dict[str, Any]] = None,
+            evidence_scope: Optional[Dict[str, Any]] = None,
             experience_scope: Optional[ExperienceScope] = None,
             task_targeting: Optional[TaskTargeting] = None,
             baseline: Optional[BaselineStatement] = None,
@@ -2153,6 +2154,14 @@ class ORHarness:
         expected future-performance changes, the predicted LEARNING cost,
         degradation risk, uncertainty and what would verify it.
 
+        The scope/target/baseline may be supplied directly, or built from
+        ``evidence_scope`` — a mapping naming the executions the operation
+        would consume (plus the tasks/family/cell/strategy it speaks about,
+        and an ``entry_before`` snapshot for a revision) — which is FROZEN
+        here so the prediction is answerable against a real scope. There is
+        no candidate generator: the scope is read from the evidence, not
+        produced by the framework.
+
         Three things stay separate and this method only produces the first:
         a prediction is MADE here; the real maintenance FACT is bound later
         (``bind_capability_maintenance``); the capability EFFECT is judged
@@ -2165,24 +2174,28 @@ class ORHarness:
         failed call is a persisted failure with whatever usage it consumed.
         """
         from or_harness.world_model.capability_evolution import (
-            learning_material_for_bundle,
+            learning_material_for_evidence,
         )
         if isinstance(operation, dict):
             operation = LearningOperation.from_dict(operation)
-        if experience_scope is None and bundle is not None:
-            experience_scope = self._scope_from_bundle(bundle)
-        if task_targeting is None and bundle is not None:
-            task_targeting = self._targeting_from_bundle(bundle)
-        if baseline is None and bundle is not None:
-            baseline = self._baseline_from_bundle(bundle)
+        raw_scope = evidence_scope if evidence_scope is not None else bundle
+        frozen_scope = (self._evidence_scope_snapshot(raw_scope)
+                        if raw_scope is not None else None)
+        if experience_scope is None and frozen_scope is not None:
+            experience_scope = self._scope_from_snapshot(frozen_scope)
+        if task_targeting is None and frozen_scope is not None:
+            task_targeting = self._targeting_from_snapshot(frozen_scope)
+        if baseline is None and frozen_scope is not None:
+            baseline = self._baseline_from_snapshot(frozen_scope)
         # The per-metric references the framework FREEZES: a change is only
         # measurable against a yardstick taken on ITS OWN metric, so the
-        # bundle's frozen statistics are published keyed by metric. The
+        # scope's frozen statistics are published keyed by metric. The
         # model may cite one of these; it may not set its own.
         baselines_by_metric = dict(baselines_by_metric or {})
         if not baselines_by_metric:
-            if bundle is not None:
-                baselines_by_metric = self._baselines_from_bundle(bundle)
+            if frozen_scope is not None:
+                baselines_by_metric = self._baselines_from_snapshot(
+                    frozen_scope)
             elif baseline is not None:
                 metric = baseline.metric or "normalized_solution_quality"
                 baselines_by_metric = {metric: baseline}
@@ -2206,8 +2219,8 @@ class ORHarness:
         # do share an input.
         if not evidence.version:
             evidence.version = self._evidence_version(evidence)
-        material = (learning_material_for_bundle(self, bundle)
-                    if bundle is not None else None)
+        material = (learning_material_for_evidence(self, frozen_scope)
+                    if frozen_scope is not None else None)
         service = self.capability_predictions
         prediction = service.predict(
             evidence, operation, experience_scope=experience_scope,
@@ -2245,61 +2258,157 @@ class ORHarness:
         return "cev_" + hashlib.sha256(
             blob.encode("utf-8")).hexdigest()[:16]
 
-    @staticmethod
-    def _scope_from_bundle(bundle: Dict[str, Any]) -> ExperienceScope:
-        """The exact experience scope a candidate bundle rests on."""
-        return ExperienceScope(
-            execution_ids=[str(e) for e in
-                           (bundle.get("execution_ids") or [])],
-            task_ids=[str(t) for t in
-                      (bundle.get("tasks")
-                       or bundle.get("task_ids") or [])],
-            family=(str(bundle["family"]) if bundle.get("family") else None),
-            cell_token=(str(bundle["cell_token"])
-                        if bundle.get("cell_token") else None),
-            note="the candidate bundle's own evidence scope")
+    def _evidence_scope_snapshot(self, raw: Dict[str, Any]
+                                 ) -> Dict[str, Any]:
+        """Freeze an ``evidence_scope`` / ``bundle`` mapping into a scope.
+
+        The external ``--bundle`` contract is preserved (a mapping naming
+        ``execution_ids``, and optionally ``tasks``/``family``/``cell_token``/
+        ``strategy_id``/``entry_before``): a scope with no explicit
+        ``mean_quality``/``mean_cost`` is enriched from the REAL records of
+        its executions, so a prediction is measured against a frozen
+        reference rather than against numbers the caller typed. A snapshot
+        with no executions keeps whatever it was given.
+        """
+        data = dict(raw) if isinstance(raw, dict) else {}
+        execution_ids = [str(e) for e in (data.get("execution_ids") or [])]
+        # A frozen scope needs a stable, non-empty id: the caller's
+        # ``bundle_id`` / ``scope_id`` when given, otherwise a content digest
+        # of the execution set (the same evidence yields the same id).
+        scope_id = str(data.get("bundle_id") or data.get("scope_id") or "")
+        if not scope_id:
+            import hashlib
+            blob = json.dumps(sorted(execution_ids), separators=(",", ":"))
+            scope_id = "es_" + hashlib.sha256(
+                blob.encode("utf-8")).hexdigest()[:16]
+        data["scope_id"] = scope_id
+        if not execution_ids:
+            return data
+        records = []
+        for execution_id in execution_ids:
+            record = self._bank_get_pending_or_record(execution_id)
+            if record is not None:
+                records.append(record)
+        if not records:
+            return data
+        if data.get("tasks") is None:
+            data["tasks"] = sorted({r.task_id for r in records if r.task_id})
+        data.setdefault("strategy_id",
+                        records[0].strategy_id if len(
+                            {r.strategy_id for r in records}) == 1 else None)
+        profile = records[0].profile_snapshot
+        if data.get("family") is None and profile is not None:
+            data["family"] = profile.family
+        stats = self._scope_stats(records)
+        if stats:
+            # Fill only what the caller did NOT supply: an explicitly frozen
+            # baseline is respected, and the computed values are a fallback,
+            # not an override.
+            data.setdefault("mean_quality", stats["mean_quality"])
+            data.setdefault("mean_cost", stats["mean_cost"])
+            data.setdefault("cost_measured", stats["cost_measured"])
+            data.setdefault("failure_rate", stats["failure_rate"])
+            data.setdefault("n_supporting", stats["n_supporting"])
+        data["frozen"] = True
+        return data
+
+    def _bank_get_pending_or_record(self, execution_id: str):
+        return (self.bank.get_pending(execution_id)
+                or self.bank.get(execution_id))
 
     @staticmethod
-    def _targeting_from_bundle(bundle: Dict[str, Any]
-                               ) -> TaskTargeting:
-        """The task types a candidate bundle's claim speaks about."""
+    def _scope_stats(records: Sequence[Any]) -> Optional[Dict[str, Any]]:
+        """Frozen quality / cost / failure statistics of an evidence scope."""
+        if not records:
+            return None
+        qualities = []
+        for r in records:
+            q = r.quality or {}
+            if not q.get("feasible", False):
+                qualities.append(0.0)
+                continue
+            gap = q.get("gap")
+            if gap is None:
+                qualities.append(1.0 if q.get("status") == "optimal" else 0.5)
+            else:
+                qualities.append(max(0.0, min(1.0, 1.0 - float(gap))))
+        mean_quality = sum(qualities) / len(qualities)
+        dims: Dict[str, List[float]] = {}
+        for r in records:
+            cost = r.cost
+            for dim in (cost.measured or set()):
+                dims.setdefault(dim, []).append(float(getattr(cost, dim)))
+        mean_cost = {d: round(sum(vs) / len(vs), 6)
+                     for d, vs in dims.items()
+                     if len(vs) == len(records)}
+        failures = sum(1 for r in records
+                       if not (r.quality or {}).get("feasible", False))
+        return {
+            "mean_quality": round(mean_quality, 6),
+            "mean_cost": mean_cost,
+            "cost_measured": sorted(mean_cost),
+            "failure_rate": round(failures / len(records), 6),
+            "n_supporting": len(records),
+        }
+
+    @staticmethod
+    def _scope_from_snapshot(snapshot: Dict[str, Any]) -> ExperienceScope:
+        """The exact experience scope a frozen evidence snapshot rests on."""
+        return ExperienceScope(
+            execution_ids=[str(e) for e in
+                           (snapshot.get("execution_ids") or [])],
+            task_ids=[str(t) for t in
+                      (snapshot.get("tasks")
+                       or snapshot.get("task_ids") or [])],
+            family=(str(snapshot["family"]) if snapshot.get("family")
+                    else None),
+            cell_token=(str(snapshot["cell_token"])
+                        if snapshot.get("cell_token") else None),
+            note="the frozen evidence scope's own executions")
+
+    @staticmethod
+    def _targeting_from_snapshot(snapshot: Dict[str, Any]
+                                 ) -> TaskTargeting:
+        """The task types a frozen evidence scope speaks about."""
         return TaskTargeting(
-            description=(f"tasks of family {bundle.get('family')!r} "
+            description=(f"tasks of family {snapshot.get('family')!r} "
                          f"matching the cell of strategy "
-                         f"{bundle.get('strategy_id')!r}"),
-            family=(str(bundle["family"]) if bundle.get("family") else None),
-            cell_token=(str(bundle["cell_token"])
-                        if bundle.get("cell_token") else None),
+                         f"{snapshot.get('strategy_id')!r}"),
+            family=(str(snapshot["family"]) if snapshot.get("family")
+                    else None),
+            cell_token=(str(snapshot["cell_token"])
+                        if snapshot.get("cell_token") else None),
         )
 
     @staticmethod
-    def _baseline_from_bundle(bundle: Dict[str, Any]
-                              ) -> BaselineStatement:
-        """The frozen baseline a candidate bundle is measured against.
+    def _baseline_from_snapshot(snapshot: Dict[str, Any]
+                                ) -> BaselineStatement:
+        """The frozen baseline an evidence scope is measured against.
 
-        The bundle's OWN frozen statistics are the reference: a prediction
+        The scope's OWN frozen statistics are the reference: a prediction
         about improving on them is falsifiable; a prediction with no
         reference is not.
         """
-        value = bundle.get("mean_quality")
+        value = snapshot.get("mean_quality")
         return BaselineStatement(
             kind="conditional_stats",
             value=(float(value) if value is not None else None),
-            ref=EvidenceRef(ref_type="candidate_bundle",
-                            ref_id=str(bundle.get("bundle_id", ""))),
+            ref=EvidenceRef(ref_type="evidence_scope",
+                            ref_id=str(snapshot.get("scope_id", ""))),
             metric="normalized_solution_quality",
-            note=("the bundle's frozen mean quality over its supporting "
-                  "executions: the reference the predicted change is "
-                  "measured against, frozen before the operation runs"),
+            note=("the evidence scope's frozen mean quality over its "
+                  "supporting executions: the reference the predicted "
+                  "change is measured against, frozen before the operation "
+                  "runs"),
         )
 
     @classmethod
-    def _baselines_from_bundle(cls, bundle: Dict[str, Any]
-                               ) -> Dict[str, BaselineStatement]:
-        """The per-metric frozen references a candidate bundle supplies.
+    def _baselines_from_snapshot(cls, snapshot: Dict[str, Any]
+                                 ) -> Dict[str, BaselineStatement]:
+        """The per-metric frozen references an evidence scope supplies.
 
         A reference is only meaningful for the metric it was taken on: the
-        bundle's mean quality says nothing about solver seconds, and a
+        scope's mean quality says nothing about solver seconds, and a
         per-dimension cost means nothing for a quality change. Keying them
         by metric is what stops one metric's yardstick from being silently
         applied to another.
@@ -2313,10 +2422,10 @@ class ORHarness:
         token count.
         """
         out: Dict[str, BaselineStatement] = {}
-        quality = cls._baseline_from_bundle(bundle)
+        quality = cls._baseline_from_snapshot(snapshot)
         if quality.value is not None:
             out["normalized_solution_quality"] = quality
-        mean_cost = bundle.get("mean_cost") or {}
+        mean_cost = snapshot.get("mean_cost") or {}
         for dim, value in mean_cost.items():
             if value is None:
                 continue
@@ -2328,11 +2437,11 @@ class ORHarness:
             out[cls.baseline_key_for_cost_dim(dim)] = BaselineStatement(
                 kind="conditional_stats",
                 value=numeric,
-                ref=EvidenceRef(ref_type="candidate_bundle",
-                                ref_id=str(bundle.get("bundle_id", ""))),
+                ref=EvidenceRef(ref_type="evidence_scope",
+                                ref_id=str(snapshot.get("scope_id", ""))),
                 metric="resource_cost",
                 unit=unit,
-                note=(f"the bundle's frozen mean {dim} over its supporting "
+                note=(f"the scope's frozen mean {dim} over its supporting "
                       "executions: frozen before the operation runs"))
         return out
 
@@ -2467,20 +2576,19 @@ class ORHarness:
 
     @staticmethod
     def _declared_operation_relations(prediction) -> List[Dict[str, Any]]:
-        """The relation claims a maintenance operation DECLARES, if any.
+        """The strategies a maintenance operation DECLARES, if any.
 
-        A capability candidate may carry the relations its operation forms
+        A capability candidate MUST carry the relations its operation forms
         in ``operation.config["relations"]`` — that is where the outer agent
-        puts the method it wants written. The prediction preserves the whole
-        candidate, so the declared claims travel with it. Reading them here
-        is what makes "accept the recommendation" run the operation it
-        actually declared instead of a generic statistical induction.
+        puts the strategy it wants written. The prediction preserves the
+        whole candidate, so the declared strategies travel with it. Reading
+        them here is what makes "accept the recommendation" run the operation
+        it actually declared; there is NO statistical fallback.
 
         Each entry follows the ``induce --relation`` payload (``claim``,
-        ``evidence``, optional ``subject``/``conditions``/``kind``). An
-        evidence entry that names a ``bundle_id`` is left as written — the
-        relation path expands it — so a candidate formed from a displayed
-        bundle cites exactly the executions it was shown.
+        ``evidence``, optional ``subject``/``conditions``/``kind``). Evidence
+        is cited by explicit ``execution_id`` — there is no ``bundle_id`` to
+        expand, because there is no candidate generator.
         """
         candidate = getattr(prediction, "candidate_operation", None)
         if candidate is None:
@@ -2592,22 +2700,25 @@ class ORHarness:
                           },
                           "execution_ids": execution_ids}
             else:
-                # An operation may DECLARE the relations it forms: the
-                # candidate is where the agent put the method it wants
-                # written, and the prediction carries that candidate in
-                # full. Dropping it here (running a bare statistical
-                # induction instead) is exactly how an accepted maintenance
-                # recommendation produced a cell mean and no technique.
+                # An operation must DECLARE the relations it forms: the
+                # candidate is where the agent put the strategy it wants
+                # written. There is NO statistical fallback — running a bare
+                # cell-statistics induction here is exactly how an accepted
+                # maintenance recommendation produced a cell mean and no
+                # technique. A candidate that declares nothing is refused
+                # rather than silently converted into a different operation.
                 declared = self._declared_operation_relations(prediction)
-                if declared:
-                    result = self.induce(relations=declared, verify=verify,
-                                         notes=notes, force=force,
-                                         strategy_id=strategy_id)
-                else:
-                    result = self.induce(strategy_id=strategy_id,
-                                         verify=verify, notes=notes,
-                                         force=force,
-                                         execution_ids=execution_ids)
+                if not declared:
+                    raise ValueError(
+                        "the accepted operation declares NO relations: an "
+                        "induce/revise candidate must carry the strategies "
+                        "it forms in operation.config['relations']. The "
+                        "framework no longer falls back to statistical "
+                        "induction, which would write a cell mean and no "
+                        "technique. Refine the candidate and re-predict.")
+                result = self.induce(relations=declared, verify=verify,
+                                     notes=notes, force=force,
+                                     strategy_id=strategy_id)
         except Exception:
             self.actions.end_action(
                 adoption.action_id, status="failed",
@@ -4522,104 +4633,41 @@ class ORHarness:
             "this decision never evaluated. Use the prediction id "
             "`plan-next` returned for THIS decision, or pass --chosen")
 
-    # -- world-model M4: offline maintenance assessment ----------------------
+    # -- world-model M4: the offline induction material entry point ----------
 
-    def induction_candidates(self) -> List[Dict[str, Any]]:
-        """Form traceable induction candidate bundles from current evidence.
-
-        Two sources: the online detectors' own persisted hints (contrast,
-        recovery, reproduction, reversal — with their cross-execution
-        evidence intact) and structural cells with sufficient evidence
-        (>=2 executions from >=2 tasks). Each bundle also carries the
-        METHOD material of its evidence. Returns frozen candidate bundles —
-        no dynamic re-querying."""
-        from or_harness.world_model.maintenance import (
-            build_induction_candidates,
-        )
-        bundles = build_induction_candidates(self)
-        return [b.to_dict() for b in bundles]
-
-    def induction_material(self, *, bundle_id: Optional[str] = None,
-                           strategy_id: Optional[str] = None
+    def induction_material(self, *, strategy_id: Optional[str] = None,
+                           task_id: Optional[str] = None,
+                           limit: Optional[int] = None,
+                           cursor: Optional[str] = None
                            ) -> Dict[str, Any]:
-        """Organize the READABLE material for a structural-cell LEAD.
+        """Organize a BATCH of completed tasks as induction material.
 
-        This is a LEAD view over a structural cell (``orx
-        induction-candidates``); the DEFAULT material entry point is
-        ``orx review-material``, which reads the batch directly. The
-        framework gathers the evidence (the methods recorded, the outcome and
-        the task-check state) so the OUTER AGENT can read it, compare, and
-        form a claim in its own words. The framework does not summarize the
-        material into a claim and never invokes a model.
+        The ONE material entry point: it reads the Experience Bank directly
+        and needs NO candidate and NO sample-count gate, so new, failed,
+        cross-cell and cross-method-name material all reach the agent. The
+        framework gathers the evidence (the methods actually performed, the
+        outcomes, the failures, the costs, the before/after changes, the
+        same-task attempt chains, the sources needed to re-read raw material,
+        and the existing strategies a reader might extend, merge or revise)
+        so the OUTER AGENT can read it, compare and form a strategy in its
+        own words. The framework does not summarize the material into a
+        strategy, never invokes a model, and emits NO candidate verdict.
 
-        ``bundle_id`` selects one candidate; ``strategy_id`` filters the
-        candidate list. Each candidate reports its ``material_report`` — a
-        list of what the evidence CARRIES (a performed method? a passed
-        task check?) and what is ``missing``. It is a report, not an
-        admission verdict: the agent decides what (if anything) to abstract.
+        Scope filters (all optional) narrow the batch: ``strategy_id`` /
+        ``task_id`` to one strategy or task, ``limit`` to the newest N
+        attempts, ``cursor`` to continue with material OLDER than a previous
+        batch's ``budget.next_cursor``. The character budget
+        (``OR_HARNESS_INDUCTION_MATERIAL_CHARS``) bounds how much travels and
+        REPORTS eviction — a page is never taken for the whole bank.
+
+        Read-only: nothing is written and no strategy is formed here.
         """
         from or_harness.world_model.maintenance import (
-            build_induction_candidates,
+            build_induction_material,
         )
-        bundles = build_induction_candidates(self)
-        if bundle_id is not None:
-            bundles = [b for b in bundles if b.bundle_id == str(bundle_id)]
-            if not bundles:
-                raise StorageError(
-                    f"unknown induction bundle {bundle_id!r}: candidates are "
-                    "rebuilt from current evidence and are transient — call "
-                    "`orx induction-candidates` to list the live ones")
-        if strategy_id is not None:
-            bundles = [b for b in bundles
-                       if b.strategy_id == str(strategy_id)]
-        material: List[Dict[str, Any]] = []
-        for bundle in bundles:
-            payload = bundle.to_dict()
-            payload["material_report"] = bundle.material_report()
-            # The verification state of each cited execution, so the agent
-            # reads the material knowing what was checked and what was not.
-            for entry in payload.get("methods") or []:
-                rec = self.bank.get(entry.get("execution_id"))
-                if rec is None:
-                    continue
-                entry["outcome"] = {
-                    "status": rec.quality.get("status"),
-                    "feasible": rec.quality.get("feasible"),
-                    "objective": rec.quality.get("objective"),
-                    "code_hash": (rec.solver or {}).get("code_hash"),
-                }
-                entry["task_check"] = rec.execution_features.get("task_check")
-                entry["failures"] = [f.to_dict() for f in rec.failures]
-                entry["source"] = rec.source
-                entry["measurement_scope"] = rec.measurement_scope
-            material.append(payload)
-        return {"count": len(material), "material": material}
-
-    def review_material(self, *, strategy_id: Optional[str] = None,
-                        task_id: Optional[str] = None,
-                        limit: Optional[int] = None,
-                        cursor: Optional[str] = None
-                        ) -> Dict[str, Any]:
-        """Organize a BATCH of completed tasks for offline review.
-
-        This is the independent MATERIAL entry point: it reads the Experience
-        Bank directly and needs NO detector candidate and NO sample-count
-        gate, so new, failed, cross-cell and cross-method-name material all
-        reach the reviewer. Success AND failure are included; a missing field
-        is reported as ``unknown`` rather than dropping the rest of the fact.
-
-        Read-only: nothing is written and no claim is formed here. The
-        character budget (``OR_HARNESS_REVIEW_MATERIAL_CHARS``) bounds how
-        much material travels and REPORTS eviction; when material is omitted,
-        ``budget.next_cursor`` reads the next (older) batch — pass it back as
-        ``cursor`` so a long history is walked in distinct batches instead of
-        the same newest records being re-shown.
-        """
-        from or_harness.world_model.maintenance import build_review_material
-        return build_review_material(self, strategy_id=strategy_id,
-                                     task_id=task_id, limit=limit,
-                                     cursor=cursor)
-
+        return build_induction_material(self, strategy_id=strategy_id,
+                                        task_id=task_id, limit=limit,
+                                        cursor=cursor)
 
     # -- world-model M3: bounded planning ------------------------------------
     def profile(self, task: Dict[str, Any],
@@ -6140,144 +6188,68 @@ class ORHarness:
                          "shape": "staged_attempt_annotated"})
         return attempted_execution_id
 
-    def induce(self, *, strategy_id: Optional[str] = None, all_: bool = False,
-               dry_run: bool = False, force: bool = False,
+    def induce(self, *, dry_run: bool = False, force: bool = False,
                notes: Optional[List[str]] = None,
                verify: Optional[Dict[str, Any]] = None,
-               execution_ids: Optional[Sequence[str]] = None,
-               family: Optional[str] = None,
-               cell: Optional[str] = None,
+               strategy_id: Optional[str] = None,
                relations: Optional[Sequence[Dict[str, Any]]] = None
                ) -> Dict[str, Any]:
-        """Consolidate Execution Evidence into Strategic Knowledge.
+        """Submit new strategies / strategy revisions as STRUCTURED claims.
 
-        Input = facts (ExecutionRecord rows, source="executed"); output =
-        derived StrategicEntry commitments (expected quality/cost/failure
-        risk). This is where knowledge changes: recording only accumulates
-        evidence, and `induce` (i) forms candidates from the statistics of
-        each structural cell, (ii) creates/refreshes entries, and (iii)
-        REVISES existing entries from the frozen forward checks recorded on
-        the facts — promotion (n>=5, hit rate>=0.7), demotion (3 consecutive
-        misses), dormancy wakeup — reported under ``revisions``. Cost feedback
-        never alters entry state.
-        Once an entry exists its validity does not depend on the survival of
-        the supporting evidence rows. An entry's ``strategy_type`` /
-        ``actions`` / ``fallback_strategy_id`` are whatever the harness (or a
-        migration) put there — the framework fills in NONE of them, because a
-        built-in directory is not evidence about the method that actually
-        ran. Missing content stays missing and is visible as missing.
+        This is the ONE place knowledge changes. There is no statistical
+        path that writes a strategy from a cell's means: the framework will
+        not turn a strategy name and a mean into a technique. Instead the
+        agent reads the material (``orx induction-material``) and submits a
+        structured strategy (condition -> how -> consequence -> boundary) with
+        the executions that established it, using ``relations``.
 
-        Induction is not limited to restating one cell's means. A COMPARISON
-        against other evidence (another strategy in the same cell, or the
-        same strategy in another cell) is submitted as a STRUCTURED CLAIM
-        with the executions that established it — read the material with
-        ``orx induction-material`` and use ``--relation``. The statistical
-        path records no free-text contrast: a sentence the framework cannot
-        check is not knowledge. ONE entry is ONE claim.
+        Each ``relations`` entry references real executions with a ROLE and
+        declares what is checkable. The framework derives the evidence
+        identity (tasks, family, cell, strategy ids) from the recorded facts —
+        a caller submits only ids and roles, never a second identity. It
+        saves the new strategy and (with a ``check`` block or ``verify``)
+        computes its verdict. There is NO strategy-id requirement: a claim's
+        own optional ``subject`` names a free-form subject (e.g.
+        ``principle:cross_period_state``) so cross-task knowledge that belongs
+        to no single strategy still has a create/save/verify/recall path.
 
-        ``verify`` carries the harness's admission check for the candidate
-        this call forms (see ``InductionEngine.induce``); the verdict is
-        computed by the framework from real executions. Without it the entry
-        is ``unverified`` and is not published as strategic knowledge —
-        recall falls back to the raw conditional statistics.
+        Different tasks, strategy ids and cells may be cited TOGETHER — there
+        is no "same method name / same cell" bar. Whether a shared mechanism
+        exists is the agent's judgment from the content; the framework
+        REPORTS the distinct-task count and lets the publication gate speak.
+        A transaction is not created by splicing two tasks together to reach
+        a count.
 
-        ``family`` / ``cell`` narrow the target set so a verification check
-        applies ONLY to the structural unit it was written for. ``--verify``
-        is per-claim, and one payload applied to every cell of a strategy
-        would cross-contaminate families (an allocation check overwriting a
-        scheduling verdict). ``family`` selects one family's targets;
-        ``cell`` selects one structural cell (family + coupling tokens) and
-        implies its family. Both are applied to ``_induction_targets`` and
-        compose with ``strategy_id``.
+        ``notes`` are harness-written applicability notes (free text): kept
+        for the reader, never scored.
 
-        ``relations`` submits STRUCTURED relation claims (see
-        :meth:`InductionEngine.submit_relation`). Each references real
-        executions with a role and declares what is checkable; the framework
-        derives the evidence identity, saves the relation and (with
-        ``verify``) computes its verdict. A relation does NOT require a
-        strategy id at all: its own optional ``subject`` names a free-form
-        subject (e.g. ``principle:cross_period_state``) so cross-task
-        knowledge that does not belong to one strategy still has a
-        create/save/verify/recall path. Submitting relations performs NO
-        statistical induction — pass ``strategy_id`` separately when a
-        statistical claim should also be refreshed.
+        Submitting NO relations writes nothing and says so — the framework
+        never runs a statistical induction behind the agent's back.
         """
-        # RELATIONS ARE A KNOWLEDGE WRITE LIKE ANY OTHER. They are a separate
-        # knowledge SHAPE (their own verification, no strategy required, no
-        # statistical admission gate), but the write must be traceable the
-        # same way a statistical induction is: a maintenance action with PRE
-        # and POST knowledge state, a knowledge delta, an index result and
-        # the same M6 feedback. Skipping that bookkeeping made relation
-        # knowledge the only write that left no trace in the action history
-        # and no delta — the asymmetry this closes. Submitting relations
-        # performs NO statistical induction, so this returns here.
-        if relations:
-            maintenance = None
-            if not dry_run:
-                maintenance = self._begin_induce_action(strategy_id, False)
-                self.actions.amend_action_params(
-                    maintenance["action_id"], knowledge_shape="relations")
-            try:
-                result = self._submit_relations(
-                    relations, dry_run=dry_run, force=force, verify=verify)
-            except Exception:
-                if maintenance is not None:
-                    import traceback
-                    self.actions.end_action(
-                        maintenance["action_id"], status="failed",
-                        outcome={"error": traceback.format_exc(limit=3)})
-                raise
-            if maintenance is not None:
-                result["action"] = self._end_induce_action(maintenance, result)
-                # Surface the transition at the TOP level too, so a caller
-                # (and ``accept_capability_operation``) reads the same
-                # ``business_result`` / ``knowledge_delta`` shape it reads
-                # from a statistical induction — one contract, whichever
-                # shape of knowledge was written.
-                result.setdefault("business_result",
-                                  result["action"]["business_result"])
-                result.setdefault("knowledge_delta",
-                                  result["action"]["knowledge_delta"])
-                result.setdefault("knowledge_after",
-                                  result["action"]["knowledge_after"])
-            if not dry_run:
-                result["index_sync"] = self.index_sync.sync_entries()
-                try:
-                    consolidation = self.evaluate_knowledge_consolidation(
-                        result, strategy_id=strategy_id)
-                    if consolidation:
-                        result["knowledge_feedback"] = consolidation
-                except Exception as exc:  # never fail a real write for this
-                    result["knowledge_feedback_error"] = (
-                        f"{type(exc).__name__}: {exc}")
-            return result
-        # The maintenance action begins BEFORE induction runs: the PRE
-        # snapshot freezes the knowledge state as it was, so the recorded
-        # transition shows what the induction actually changed. Dry-run
-        # persists nothing (no action, no snapshots).
+        if not relations:
+            return {
+                "relations": [],
+                "saved": 0,
+                "published": 0,
+                "skipped": ("no relations were submitted: knowledge is only "
+                            "written from an agent-formed strategy "
+                            "(`induce --relation`). Read the material with "
+                            "`orx induction-material`, then submit the "
+                            "strategy you formed."),
+            }
+        # A relation write is a knowledge write like any other: it gets a
+        # maintenance action with PRE and POST knowledge state, a knowledge
+        # delta, an index result and the same M6 feedback.
         maintenance = None
         if not dry_run:
-            maintenance = self._begin_induce_action(strategy_id, all_)
+            maintenance = self._begin_induce_action(strategy_id, False)
+            self.actions.amend_action_params(
+                maintenance["action_id"], knowledge_shape="relations")
         try:
-            targets = self._induction_targets(strategy_id, all_,
-                                              family=family, cell=cell)
-            results = []
-            for profile, sid in targets:
-                results.append(self.induction.induce(
-                    profile, sid, dry_run=dry_run, force=force,
-                    notes=notes, verify=verify,
-                    execution_ids=execution_ids))
-            result: Dict[str, Any] = {"results": results}
-            if targets:
-                # Offline revision of the entries this call covers:
-                # lifecycle state is re-derived from the frozen checks
-                # on the facts.
-                result["revisions"] = self.induction.revise(
-                    strategy_id=strategy_id, dry_run=dry_run)
+            result = self._submit_relations(
+                relations, dry_run=dry_run, force=force, verify=verify,
+                notes=notes)
         except Exception:
-            # An induction that crashed still happened: end the action as
-            # failed with the error, so the maintenance history keeps the
-            # attempt (and its pre state) instead of silently losing it.
             if maintenance is not None:
                 import traceback
                 self.actions.end_action(
@@ -6286,31 +6258,49 @@ class ORHarness:
             raise
         if maintenance is not None:
             result["action"] = self._end_induce_action(maintenance, result)
-        # Knowledge changed, so the knowledge documents changed: refresh
-        # their index items (best effort, never blocking). A dry run writes
-        # nothing at all — a rehearsal must not touch the index either.
+            # Surface the transition at the TOP level too, so a caller (and
+            # ``accept_capability_operation``) reads the same
+            # ``business_result`` / ``knowledge_delta`` shape on every write.
+            result.setdefault("business_result",
+                              result["action"]["business_result"])
+            result.setdefault("knowledge_delta",
+                              result["action"]["knowledge_delta"])
+            result.setdefault("knowledge_after",
+                              result["action"]["knowledge_after"])
+            # Offline LIFECYCLE maintenance: the entries this write covers
+            # have their frozen forward checks replayed (promotion, demotion,
+            # dormancy wakeup). This is management of EXISTING knowledge, not
+            # a new strategy.
+            try:
+                result["revisions"] = self.induction.revise(
+                    strategy_id=strategy_id)
+            except Exception as exc:  # never fail a real write for this
+                result["revisions_error"] = f"{type(exc).__name__}: {exc}"
         if not dry_run:
             result["index_sync"] = self.index_sync.sync_entries()
-            # M6 slow channel: the knowledge predictions of the ORDINARY
-            # actions whose evidence this induction consolidated are judged
-            # now, against what the induction actually changed. Running it
-            # after the knowledge delta exists is what makes the verdict
-            # speak about a real transition rather than a rehearsal.
+            # The consolidation-stage feedback is scoped to the EVIDENCE this
+            # write actually consolidated: the executions the submitted
+            # strategies cite. That is the relation-path equivalent of the
+            # statistical path's ``execution_ids``.
+            cited: List[str] = []
+            for relation in relations or []:
+                for item in (relation.get("evidence") or []):
+                    if isinstance(item, dict) and item.get("execution_id"):
+                        cited.append(str(item["execution_id"]))
             try:
-                scope_ids = execution_ids or result.get("execution_ids") \
-                    or []
                 consolidation = self.evaluate_knowledge_consolidation(
-                    result, scope_ids, strategy_id=strategy_id)
+                    result, cited, strategy_id=strategy_id)
                 if consolidation:
                     result["knowledge_feedback"] = consolidation
-            except Exception as exc:  # never fail a real induction for this
+            except Exception as exc:  # never fail a real write for this
                 result["knowledge_feedback_error"] = (
                     f"{type(exc).__name__}: {exc}")
         return result
 
     def _submit_relations(self, relations: Sequence[Dict[str, Any]], *,
                           dry_run: bool, force: bool,
-                          verify: Optional[Dict[str, Any]]
+                          verify: Optional[Dict[str, Any]],
+                          notes: Optional[List[str]] = None
                           ) -> Dict[str, Any]:
         """Save (and optionally verify) structured relation claims.
 
@@ -6325,27 +6315,19 @@ class ORHarness:
 
         Nothing here is fabricated: the evidence identity (tasks, family,
         cell, strategy ids) is derived from the recorded facts, and the
-        verification is computed by the framework from those facts.
-
-        An evidence entry may cite a candidate ``bundle_id`` (as printed by
-        ``orx induction-candidates`` / ``orx induction-material``) instead of
-        listing execution ids: the bundle's frozen evidence set is expanded
-        into the citation, so a claim formed from a displayed candidate cites
-        exactly the executions it was shown.
+        verification is computed by the framework from those facts. Evidence
+        is cited by explicit execution id and role — the framework no longer
+        expands a ``bundle_id`` citation, because there is no candidate
+        generator to resolve one.
         """
         results = []
         created: List[str] = []
         for raw in relations:
             relation = dict(raw)
-            expanded = self._expand_relation_bundle_refs(relation)
-            if expanded.get("problem"):
-                results.append({"saved": None,
-                                "skipped": expanded["problem"]})
-                continue
             try:
                 outcome = self.induction.submit_relation(
-                    expanded["relation"], dry_run=dry_run, force=force,
-                    verify=verify)
+                    relation, dry_run=dry_run, force=force,
+                    verify=verify, notes=notes)
             except ValueError as exc:
                 outcome = {"saved": None, "skipped": f"invalid relation: {exc}"}
             results.append(outcome)
@@ -6355,8 +6337,7 @@ class ORHarness:
         index_sync = None
         if not dry_run:
             # The index result is REPORTED, not discarded: a deferred
-            # embedding is a real state the caller must be able to see, and
-            # the statistical path already reports it the same way.
+            # embedding is a real state the caller must be able to see.
             index_sync = self.index_sync.sync_entries()
         saved = len([r for r in results
                      if r.get("saved") or r.get("created_entry")])
@@ -6367,54 +6348,13 @@ class ORHarness:
                               if (r.get("publication") or {}).get("published")]),
         }
         # A dry run writes nothing, index included — and does not report an
-        # index result it never produced (the statistical path omits the key
-        # too, so the two shapes stay identical).
+        # index result it never produced.
         if not dry_run:
             out["index_sync"] = index_sync
         return out
 
-    def _expand_relation_bundle_refs(self, relation: Dict[str, Any]
-                                     ) -> Dict[str, Any]:
-        """Expand ``bundle_id`` citations in a relation's evidence list.
-
-        The bundle is rebuilt from current evidence (candidates are not
-        persisted), resolved the same way ``--bundle`` resolves it. Every
-        non-bundle entry passes through unchanged; a bundle-wide role applies
-        to each expanded execution.
-        """
-        evidence = relation.get("evidence")
-        if not isinstance(evidence, list):
-            return {"relation": relation, "problem": None}
-        needs_expansion = any(isinstance(item, dict) and item.get("bundle_id")
-                              for item in evidence)
-        if not needs_expansion:
-            return {"relation": relation, "problem": None}
-        from or_harness.world_model.maintenance import (
-            build_induction_candidates,
-        )
-        by_id = {b.bundle_id: b for b in build_induction_candidates(self)}
-        expanded: List[Dict[str, Any]] = []
-        for item in evidence:
-            if not (isinstance(item, dict) and item.get("bundle_id")):
-                expanded.append(item)
-                continue
-            bundle = by_id.get(str(item["bundle_id"]))
-            if bundle is None:
-                return {"relation": relation,
-                        "problem": (f"unknown induction bundle "
-                                    f"{item['bundle_id']!r}: candidates are "
-                                    "rebuilt from current evidence — list "
-                                    "the live ones with `orx "
-                                    "induction-candidates`")}
-            role = item.get("role") or "evidence"
-            for eid in bundle.execution_ids:
-                expanded.append({"execution_id": eid, "role": role})
-        relation = dict(relation)
-        relation["evidence"] = expanded
-        return {"relation": relation, "problem": None}
-
     def _begin_induce_action(self, strategy_id: Optional[str],
-                             all_: bool) -> Dict[str, Any]:
+                             all_: bool = False) -> Dict[str, Any]:
         """Begin the maintenance-scope induce action with a real PRE        snapshot: the knowledge state (entries + verification layers) as it
         stood BEFORE induction."""
         episode_id = f"maint_{int(time.time())}"
@@ -7122,44 +7062,6 @@ class ORHarness:
         prior += [p for p in self.bank.pending(task_id=record.task_id)
                   if p.execution_id != record.execution_id and _is_failed(p)]
         return prior
-
-    def _induction_targets(self, strategy_id: Optional[str], all_: bool,
-                           family: Optional[str] = None,
-                           cell: Optional[str] = None):
-        """One induction target per (structural group, strategy).
-
-        The group is DERIVED from each record's own profile snapshot rather
-        than read from the stored index column: legacy rows carry the old
-        index format, and letting that decide targets would make the facts
-        invisible to induction.
-
-        ``family`` narrows to one family; ``cell`` narrows to one structural
-        cell (a full ``group_key`` token). ``cell`` is compared against the
-        record's DERIVED key, so it works regardless of the stored index
-        format. Passing either widens the implicit ``--all`` scope: naming a
-        unit is itself an explicit selection, so it does not also require
-        ``--all``."""
-        explicit_unit = family is not None or cell is not None
-        targets = []
-        seen = set()
-        for rec in self.bank.all():
-            if rec.source != "executed" or rec.measurement_scope != "attempt":
-                continue
-            if strategy_id and rec.strategy_id != strategy_id:
-                continue
-            derived = group_key(rec.profile_snapshot)
-            if family is not None and rec.profile_snapshot.family != family:
-                continue
-            if cell is not None and derived != cell:
-                continue
-            key = (derived, rec.strategy_id)
-            if key in seen:
-                continue
-            if not all_ and strategy_id is None and not explicit_unit:
-                continue
-            seen.add(key)
-            targets.append((rec.profile_snapshot, rec.strategy_id))
-        return targets
 
     # -- task-result checks (solver success vs. task correctness) ---------------
 

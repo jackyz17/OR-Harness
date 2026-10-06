@@ -307,23 +307,28 @@ class TestHistoryRemainsReadable(NoCatalogCase):
         record = h.execute(TASK, "S01", str(self.solve_path), str(self.work),
                            solver="highs")
         h.record(record)
-        h.induce(strategy_id="S01")
-        # Recall, prediction and inspect all still work.
+        # Recall, prediction and inspect all still work without any write.
         self.assertEqual(
             h.recall(TASK)["recommendations"][0]["strategy_id"], "S01")
         self.assertEqual(h.predict_cost(TASK, "S01").source, "stats")
         self.assertEqual(
             h.inspect(bank="experience")["records"][0]["strategy_id"], "S01")
 
-    def test_legacy_entry_content_is_not_rewritten_or_invented(self):
-        """An entry's recorded content is preserved as-is, and an entry that
-        recorded none reports none."""
+    def test_submitted_strategy_content_is_not_rewritten_or_invented(self):
+        """A submitted strategy's recorded content is preserved as-is, and an
+        entry that recorded none reports none."""
         h = self.harness()
-        h.bank.append(self.make_record(execution_id="ex_old", task_id="t1",
-                                       strategy_id="S01"))
-        h.bank.append(self.make_record(execution_id="ex_old2", task_id="t2",
-                                       strategy_id="S01"))
-        created = h.induce(strategy_id="S01")["results"][0]["created"]
+        r1 = self.make_record(execution_id="ex_old", task_id="t1",
+                              strategy_id="S01")
+        r2 = self.make_record(execution_id="ex_old2", task_id="t2",
+                              strategy_id="S01")
+        h.bank.append(r1)
+        h.bank.append(r2)
+        created = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": "ex_old", "role": "e"},
+                         {"execution_id": "ex_old2", "role": "e"}]}
+        ])["relations"][0]["saved"]
         entry = h.sbank.get(created)
         # Nothing was invented: the memory never recorded a method type.
         self.assertIsNone(entry.strategy_type)

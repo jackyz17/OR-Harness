@@ -234,9 +234,9 @@ class TestDocumentedResultKeys(DocumentedKeysCase):
         self.assert_required("inspect", self.run_cli(
             "inspect", "--bank", "capability"))
 
-    def test_induction_candidates(self):
-        self.assert_required("induction-candidates",
-                             self.run_cli("induction-candidates"))
+    def test_induction_material(self):
+        self.assert_required("induction-material",
+                             self.run_cli("induction-material"))
 
 
 class TestTheMapStaysHonest(unittest.TestCase):

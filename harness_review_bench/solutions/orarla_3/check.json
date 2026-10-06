@@ -1,27 +1,5 @@
 {
-  "reference_objective": null,
-  "reference_status": "optimal",
-  "integer": {
-    "variables": ["produce_Jan","produce_Feb","produce_Mar","produce_Apr","produce_May","produce_Jun","outsource_Jan","outsource_Feb","outsource_Mar","outsource_Apr","outsource_May","outsource_Jun","hire_Jan","hire_Feb","hire_Mar","hire_Apr","hire_May","hire_Jun","fire_Jan","fire_Feb","fire_Mar","fire_Apr","fire_May","fire_Jun","workforce_Jan","workforce_Feb","workforce_Mar","workforce_Apr","workforce_May","workforce_Jun","inv_Jan","inv_Feb","inv_Mar","inv_Apr","inv_May","inv_Jun","bo_Jan","bo_Feb","bo_Mar","bo_Apr","bo_May","bo_Jun","sell_Jan","sell_Feb","sell_Mar","sell_Apr","sell_May","sell_Jun"],
-    "tolerance": 1e-6
-  },
-  "recompute_objective": {
-    "coefficients": {
-      "sell_Jan": 300, "sell_Feb": 300, "sell_Mar": 300, "sell_Apr": 300, "sell_May": 300, "sell_Jun": 300,
-      "produce_Jan": -90, "produce_Feb": -90, "produce_Mar": -90, "produce_Apr": -90, "produce_May": -90, "produce_Jun": -90,
-      "outsource_Jan": -200, "outsource_Feb": -200, "outsource_Mar": -200, "outsource_Apr": -200, "outsource_May": -200, "outsource_Jun": -200,
-      "inv_Jan": -15, "inv_Feb": -15, "inv_Mar": -15, "inv_Apr": -15, "inv_May": -15, "inv_Jun": -15,
-      "bo_Jan": -35, "bo_Feb": -35, "bo_Mar": -35, "bo_Apr": -35, "bo_May": -35, "bo_Jun": -35,
-      "workforce_Jan": -4800, "workforce_Feb": -4800, "workforce_Mar": -4800, "workforce_Apr": -4800, "workforce_May": -4800, "workforce_Jun": -4800,
-      "ot_Jan": -40, "ot_Feb": -40, "ot_Mar": -40, "ot_Apr": -40, "ot_May": -40, "ot_Jun": -40,
-      "hire_Jan": -5000, "hire_Feb": -5000, "hire_Mar": -5000, "hire_Apr": -5000, "hire_May": -5000, "hire_Jun": -5000,
-      "fire_Jan": -8000, "fire_Feb": -8000, "fire_Mar": -8000, "fire_Apr": -8000, "fire_May": -8000, "fire_Jun": -8000
-    },
-    "constant": 0,
-    "tolerance": 1e-3
-  },
-  "semantic_probe": [
-    {"path": "execution_features.solution_variables.inv_Jun", "min": 10000},
-    {"path": "execution_features.solution_variables.bo_Jun", "equals": 0}
-  ]
+ "reference_status": "optimal",
+ "reference_objective": 168.0,
+ "tolerance": 0.000168
 }

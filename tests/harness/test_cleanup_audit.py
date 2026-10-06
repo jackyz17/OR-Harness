@@ -22,11 +22,12 @@ from or_harness.world_model import maintenance
 
 
 class TestRemovedInterfaces(HarnessTestCase):
-    def test_induce_engine_has_no_relations_parameter(self):
-        """A parameter that was never read is gone, not documented."""
-        params = inspect.signature(InductionEngine.induce).parameters
-        self.assertNotIn("relations", params)
-        self.assertNotIn("peer_evidence", params)
+    def test_induce_engine_has_one_write_entry(self):
+        """The engine writes knowledge through ONE public path —
+        ``submit_relation`` — and no longer carries a statistical ``induce``
+        with dead parameters."""
+        self.assertTrue(hasattr(InductionEngine, "submit_relation"))
+        self.assertFalse(hasattr(InductionEngine, "induce"))
 
     def test_index_sync_has_no_forget_entry(self):
         self.assertFalse(hasattr(IndexSynchronizer, "forget_entry"))

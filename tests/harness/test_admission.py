@@ -364,6 +364,9 @@ class TestVerificationChecks(HarnessTestCase):
 
 
 class TestPublishingGate(HarnessTestCase):
+    """The publishing gate on the CLAIM path (the statistical path is gone:
+    knowledge is only written from an agent-formed strategy)."""
+
     def setUp(self):
         super().setUp()
         self.h = ORHarness(home=self.home)
@@ -382,70 +385,80 @@ class TestPublishingGate(HarnessTestCase):
             last = rec
         return last
 
-    def test_unverified_candidate_is_not_published(self):
+    def _claim(self, strategy="S01", extra=()):
+        evidence = [{"execution_id": f"ex_{strategy}_0", "role": "evidence"},
+                    {"execution_id": f"ex_{strategy}_1", "role": "evidence"}]
+        evidence.extend(extra)
+        return {"subject": strategy,
+                "claim": f"{strategy} holds in this cell",
+                "evidence": evidence}
+
+    def test_unverified_claim_is_not_published(self):
         self._seed_two_tasks()
-        result = self.h.induce(strategy_id="S01")["results"][0]
-        self.assertIsNotNone(result.get("created"))
-        self.assertIn("not published", result["skipped"])
-        entry = self.h.sbank.get(result["created"])
+        result = self.h.induce(relations=[self._claim()])
+        outcome = result["relations"][0]
+        self.assertIsNotNone(outcome.get("saved"))
+        self.assertFalse(outcome["publication"]["published"])
+        entry = self.h.sbank.get(outcome["saved"])
         self.assertEqual(entry.verification_state, "unverified")
         # Recall does not present it as strategic knowledge...
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "conditional_stats")
-        # ...and it cannot drive a prediction either (the second door): the
-        # snapshot falls back down the provenance ladder instead of quoting
-        # the unpublished entry.
-        snapshot = self.h.predict_cost({"task_id": "q", "family": "routing"},
-                                       "S01")
-        self.assertNotEqual(snapshot.source, "entry")
-        self.assertNotIn(entry.entry_id, snapshot.evidence_refs)
 
-    def test_verified_candidate_is_published(self):
+    def test_verified_claim_is_published(self):
         self._seed_two_tasks()
-        verify = {"purpose": "rule", "claim": "S01 holds in this cell",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_v",
-                                                  task_id="t_verify")]}
-        result = self.h.induce(strategy_id="S01", verify=verify)["results"][0]
-        entry = self.h.sbank.get(result["created"])
+        claim = self._claim()
+        verify = {"claim": "S01 holds in this cell",
+                  "check": {"assertions": [
+                      {"kind": "status", "roles": ["evidence"],
+                       "status": "optimal"}]}}
+        result = self.h.induce(relations=[claim], verify=verify)
+        outcome = result["relations"][0]
+        entry = self.h.sbank.get(outcome["saved"])
         self.assertEqual(entry.verification_state, "verified")
-        self.assertNotIn("skipped", result)
+        self.assertTrue(outcome["publication"]["published"])
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
 
-    def test_refuted_candidate_is_not_published(self):
+    def test_refuted_claim_is_not_published(self):
         self._seed_two_tasks()
-        verify = {"purpose": "rule", "claim": "S01 reaches objective 100",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_v",
-                                                  task_id="t_verify",
-                                                  objective=999.0)]}
-        result = self.h.induce(strategy_id="S01", verify=verify)["results"][0]
-        entry = self.h.sbank.get(result["created"])
-        self.assertEqual(entry.verification_state, "refuted")
-        recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
-        s01 = next(r for r in recs if r.strategy_id == "S01")
-        self.assertEqual(s01.evidence, "conditional_stats")
+        claim = self._claim()
+        verify = {"claim": "S01 holds in this cell",
+                  "check": {"assertions": [
+                      {"kind": "status", "roles": ["evidence"],
+                       "status": "optimal"}]}}
+        # A counterexample on a THIRD task refutes the claim.
+        self.h.bank.append(self.make_record(execution_id="ex_bad",
+                                            task_id="t_bad", strategy_id="S01",
+                                            status="infeasible",
+                                            feasible=False))
+        claim["evidence"].append({"execution_id": "ex_bad", "role": "evidence"})
+        result = self.h.induce(relations=[claim], verify=verify)
+        entry = self.h.sbank.get(result["relations"][0]["saved"])
+        self.assertNotEqual(entry.verification_state, "verified")
+        self.assertFalse(result["relations"][0]["publication"]["published"])
 
     def test_insufficient_evidence_does_not_masquerade_as_verified(self):
         self._seed_two_tasks()
-        verify = {"purpose": "rule", "claim": "S01 holds elsewhere",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_v",
-                                                  task_id="t_verify",
-                                                  feasible=False,
-                                                  status="error",
-                                                  objective=None)]}
-        result = self.h.induce(strategy_id="S01", verify=verify)["results"][0]
-        entry = self.h.sbank.get(result["created"])
+        claim = self._claim()
+        # The check names a role/status that no cited execution satisfies.
+        verify = {"claim": "x", "check": {"assertions": [
+            {"kind": "status", "roles": ["evidence"], "status": "optimal"}]}}
+        self.h.bank.append(self.make_record(execution_id="ex_bad2",
+                                            task_id="t_bad2", strategy_id="S01",
+                                            feasible=False, status="error"))
+        claim["evidence"] = [{"execution_id": "ex_bad2", "role": "evidence"}]
+        result = self.h.induce(relations=[claim], verify=verify)
+        entry = self.h.sbank.get(result["relations"][0]["saved"])
         self.assertEqual(entry.verification_state, "insufficient_evidence")
         self.assertFalse(entry.is_published)
 
     def test_offline_view_can_still_return_candidates(self):
         self._seed_two_tasks()
-        entry_id = self.h.induce(strategy_id="S01")["results"][0]["created"]
+        result = self.h.induce(relations=[self._claim()])
+        entry_id = result["relations"][0]["saved"]
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5,
                                       include_unverified=True)
         s01 = next(r for r in recs if r.strategy_id == "S01")
@@ -453,17 +466,20 @@ class TestPublishingGate(HarnessTestCase):
         self.assertIn(entry_id, s01.evidence_refs)
 
     def test_reinducing_without_a_verdict_keeps_the_verdict(self):
-        """Refreshing statistics must not silently demote a verified claim."""
+        """Re-submitting the SAME claim without a fresh verdict must not
+        silently demote it."""
         self._seed_two_tasks()
-        verify = {"purpose": "rule", "claim": "c",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_v",
-                                                  task_id="t_verify")]}
-        entry_id = self.h.induce(strategy_id="S01", verify=verify)["results"][0]["created"]
-        self.h.bank.append(self.make_record(execution_id="ex_more", task_id="t3",
-                                            strategy_id="S01", gap=0.05))
-        self.h.induce(strategy_id="S01")
-        self.assertEqual(self.h.sbank.get(entry_id).verification_state, "verified")
+        claim = self._claim()
+        verify = {"claim": "c", "check": {"assertions": [
+            {"kind": "status", "roles": ["evidence"], "status": "optimal"}]}}
+        first = self.h.induce(relations=[claim], verify=verify)
+        entry_id = first["relations"][0]["saved"]
+        self.assertEqual(self.h.sbank.get(entry_id).verification_state,
+                         "verified")
+        # Re-submit identically, no verdict: the verdict stands.
+        self.h.induce(relations=[claim])
+        self.assertEqual(self.h.sbank.get(entry_id).verification_state,
+                         "verified")
 
     def test_gating_publishing_does_not_block_execution(self):
         """Gating publishing must not stop the harness from trying.

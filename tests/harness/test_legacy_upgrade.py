@@ -78,19 +78,23 @@ class TestLegacyDatabaseUpgrade(HarnessTestCase):
         finally:
             h.close()
 
-    def test_induction_reuses_the_legacy_entry(self):
-        """The legacy entry's cell (rc[0.25,0.50]) is re-induced: the same
-        knowledge object is refreshed, not duplicated."""
+    def test_legacy_entry_stays_readable_and_unique(self):
+        """A legacy entry's content is preserved as-is and a knowledge write
+        that does not name it creates nothing over it."""
         h = ORHarness(home=self.home)
         try:
             before = {e.entry_id for e in h.sbank.list()}
             entry = h.sbank.list()[0]
-            profile = next(r.profile_snapshot for r in h.bank.all()
-                           if group_key(r.profile_snapshot).endswith("rc[0.25,0.50]|tc[0.00,0.25]|rx[0.75,1.00]"))
-            out = h.induce(strategy_id="S01")["results"]
-            touched = [r for r in out if r.get("created") or r.get("updated")]
-            self.assertTrue(touched)
-            self.assertEqual({e.entry_id for e in h.sbank.list()}, before)
+            # A write citing executions of a DIFFERENT subject leaves the
+            # legacy entry alone; the memory is not rewritten.
+            out = h.induce(relations=[{
+                "subject": "principle:unrelated", "claim": "x",
+                "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                             for r in h.bank.all()]}])
+            self.assertTrue(out["relations"][0]["saved"])
+            # The legacy entry is untouched.
+            self.assertIsNotNone(h.sbank.get(entry.entry_id))
+            self.assertIn(entry.entry_id, {e.entry_id for e in h.sbank.list()})
             self.assertEqual(h.sbank.get(entry.entry_id).predicates["family"],
                              "routing")
         finally:
@@ -150,9 +154,14 @@ class TestLegacy121e29aUpgrade(HarnessTestCase):
             self.assertEqual(len(h.bank.query(group_l1=key)), 2)
             self.assertEqual(len(h.stats.evidence(profile, "S01")), 2)
             self.assertEqual(h.stats.for_profile(profile)["S01"].n, 2)
-            # Induction is no longer blind to this evidence.
-            out = h.induce(strategy_id="S01")["results"][0]
-            self.assertIsNotNone(out.get("created") or out.get("updated"))
+            # The evidence is real and recorded; a knowledge write citing it
+            # reaches exactly it (the legacy facts are not invisible).
+            from or_harness.strategy.stats import quality_score
+            out = h.induce(relations=[{
+                "subject": "S01", "claim": "the legacy facts demonstrate S01",
+                "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                             for r in records]}])
+            self.assertTrue(out["relations"][0]["saved"])
         finally:
             h.close()
 

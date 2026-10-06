@@ -1,26 +1,18 @@
 {
   "status": "optimal",
-  "objective_value": 3.0,
-  "objective_bound": 3.0,
-  "runtime_seconds": 0.0011601448059082031,
+  "objective_value": 40020,
+  "objective_bound": 40020,
+  "mip_gap": 0.0,
+  "runtime_seconds": 0.0003285408020019531,
   "variables": {
-    "x_A": 1.0,
-    "x_B": 0.0,
-    "x_C": 0.0,
-    "x_D": 0.0,
-    "x_E": 0.0,
-    "x_F": 0.0,
-    "x_G": 0.0,
-    "x_H": 0.0,
-    "x_I": 1.0,
-    "x_J": 1.0,
-    "x_K": 0.0,
-    "x_L": 0.0
+    "X": 0,
+    "Y": 667
   },
-  "stores_selected": [
-    "A",
-    "I",
-    "J"
-  ],
-  "num_stores": 3
+  "method_performed": {
+    "name": "enumeration_with_constraints",
+    "planned": "LP relaxation analysis + constrained enumeration over Y in [0,667]",
+    "actual": "Analytical + enumeration: Y in [0,667], X = max(0, ceil((20000-30Y)/10)), pick minimum cost",
+    "action_id": "ac_e59954ec9044",
+    "basis": "chosen from plan-next sp_15df0ba220ac"
+  }
 }

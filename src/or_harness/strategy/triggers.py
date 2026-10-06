@@ -4,7 +4,7 @@ The framework does NOT decide what a recorded execution MEANS. It no longer
 manufactures induction labels from online pattern detectors
 (``strategy_contrast`` / ``intervention_recovery`` /
 ``structural_reproduction`` / ``advantage_reversal``) — the outer agent reads
-the recorded material (``orx review-material``) and abstracts the method
+the recorded material (``orx induction-material``) and forms the strategy
 itself. What remains here is purely FACTUAL and recomputable:
 
 - :func:`classify_failure` — is a failed run an ENVIRONMENT problem (the

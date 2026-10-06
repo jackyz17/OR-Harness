@@ -1037,11 +1037,9 @@ def cmd_induce(args) -> int:
                 if not isinstance(parsed, dict):
                     return _fail("--relation must be a JSON object", 2)
                 relations.append(parsed)
-        result = h.induce(strategy_id=args.strategy, all_=args.all,
-                          dry_run=args.dry_run,
-                          force=args.force, notes=notes, verify=verify,
-                          family=getattr(args, "family", None),
-                          cell=getattr(args, "cell", None),
+        result = h.induce(dry_run=args.dry_run, force=args.force,
+                          notes=notes, verify=verify,
+                          strategy_id=getattr(args, "strategy", None),
                           relations=relations)
         return _emit(result, _summarize_induce(result, args))
     finally:
@@ -1051,41 +1049,13 @@ def cmd_induce(args) -> int:
 def _summarize_induce(result: Dict[str, Any], args) -> str:
     if getattr(args, "relation", None):
         return _summarize_relations(result)
-    created = [r for r in result.get("results", []) if r.get("created")]
-    revised = [r for r in result.get("results", []) if r.get("updated")]
-    skipped = [r for r in result.get("results", []) if r.get("skipped")]
-    parts = []
-    if created:
-        parts.append(f"Created {len(created)} entries: "
-                     + ", ".join(r["created"] for r in created))
-    if revised:
-        parts.append(f"Refreshed {len(revised)} entries: "
-                     + ", ".join(r["updated"] for r in revised))
-    if skipped:
-        parts.append(f"Skipped {len(skipped)}: {skipped[0]['skipped']}")
-    scope = []
-    if getattr(args, "family", None):
-        scope.append(f"family={args.family}")
-    if getattr(args, "cell", None):
-        scope.append(f"cell={args.cell}")
-    if scope:
-        parts.append("Scoped to " + ", ".join(scope) + ".")
-    transitions = [rev for rev in (result.get("revisions") or [])
-                   if rev.get("transitions")]
-    for rev in transitions:
-        parts.append(f"Revision on {rev['entry_id']} ({rev['strategy_id']}): "
-                     f"{', '.join(rev['transitions'])} — from "
-                     f"{rev['forward']['n_predictions']} frozen check(s), "
-                     f"{rev['forward']['consecutive_misses']} consecutive "
-                     "miss(es)")
-    if not parts:
-        parts.append("Nothing to induce.")
-    action = result.get("action") or {}
-    if action.get("action_id"):
-        parts.append(f"Induction action {action['action_id']} recorded in "
-                     f"the maintenance scope (business result: "
-                     f"{action.get('business_result', 'unknown')}).")
-    return " ".join(parts)
+    # No relations submitted: the framework did NOT run a statistical
+    # induction. Report that honestly rather than implying work happened.
+    if result.get("skipped"):
+        return ("No strategy was submitted: knowledge is only written from a "
+                "strategy you form (`induce --relation`). Read the material "
+                "with `orx induction-material`, then submit the strategy.")
+    return "Nothing to induce."
 
 
 def _summarize_relations(result: Dict[str, Any]) -> str:
@@ -1121,83 +1091,20 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
-def cmd_induction_candidates(args) -> int:
-    """Scan the bank for structural-cell LEADS (no model call).
-
-    This is a LEAD view: per structural cell, the frozen evidence scope the
-    capability predictor (``predict-capability --bundle``) consumes. The
-    DEFAULT material entry point is ``orx review-material``; this command is
-    for when you want a cell's evidence packaged for a capability prediction.
-    It makes no model call and changes no knowledge."""
-    h = _harness(args)
-    try:
-        bundles = h.induction_candidates()
-        if not bundles:
-            return _emit(
-                {"count": 0, "candidates": []},
-                "No structural-cell candidates yet — record some executions. "
-                "To READ material for a claim, use `orx review-material`, "
-                "which needs no candidate at all.")
-        return _emit(
-            {"count": len(bundles), "candidates": bundles},
-            f"Found {len(bundles)} structural-cell lead(s). Each bundle "
-            "carries its own frozen evidence scope; pass one to "
-            "`orx predict-capability --bundle` to price the operation "
-            "before committing to it.")
-    finally:
-        h.close()
-
-
 def cmd_induction_material(args) -> int:
-    """Organize the READABLE material for a structural-cell LEAD.
+    """Read a BATCH of completed tasks as induction material (no model call).
 
-    A LEAD view over a structural cell: the recorded methods, the outcome
-    and the task-check state, so YOU (the outer agent) can read it and form
-    a claim in your own words. The default material entry point is
-    ``orx review-material``. This calls no model, writes nothing, and does
-    not invent a technique: each candidate reports what its evidence CARRIES
-    and what is ``missing`` — a report, not an admission verdict."""
+    The ONE material entry point: it reads the Experience Bank directly and
+    needs no candidate and no sample-count gate, so a batch that fires
+    neither (distinct tasks, a failed-only cell, a single run) is still
+    visible. Success and failure material are both included, and a missing
+    field is marked rather than dropped. Read it, form the new strategy
+    (condition -> how -> consequence -> boundary), and submit it with
+    ``orx induce --relation`` — the framework checks what you submit, it
+    does not write the technique for you."""
     h = _harness(args)
     try:
         result = h.induction_material(
-            bundle_id=args.bundle, strategy_id=args.strategy)
-        if not result["count"]:
-            return _emit(result,
-                         "No structural-cell material: no candidate "
-                         "currently has supporting evidence. Use "
-                         "`orx review-material` to read a batch directly.")
-        parts = []
-        for item in result["material"]:
-            report = item["material_report"]
-            line = (f"{item['bundle_id']} [{item['kind']}] "
-                    f"{item['strategy_id'] or '(unnamed)'} "
-                    f"n={item['n_supporting']} tasks={len(item['tasks'])} "
-                    f"basis={report.get('basis')}")
-            if item.get("admission_note"):
-                line += f" [not-admissible: {item['admission_note']}]"
-            if report.get("missing"):
-                line += " (missing: " + ", ".join(report["missing"]) + ")"
-            parts.append(line)
-        return _emit(result, " | ".join(parts)
-                     + ". Read the material, compare the evidence, and "
-                       "submit a claim with `orx induce --relation` — the "
-                       "framework checks what you submit, it does not "
-                       "write the technique for you.")
-    finally:
-        h.close()
-
-
-def cmd_review_material(args) -> int:
-    """Read a BATCH of completed tasks for offline review (no model call).
-
-    The independent MATERIAL entry point: it reads the Experience Bank
-    directly and needs no detector candidate and no sample-count gate, so a
-    batch that fires neither (distinct tasks, a failed-only cell, a single
-    run) is still visible for review. Success and failure material are both
-    included, and a missing field is marked rather than dropped."""
-    h = _harness(args)
-    try:
-        result = h.review_material(
             strategy_id=getattr(args, "strategy", None),
             task_id=getattr(args, "task", None),
             limit=getattr(args, "limit", None),
@@ -1205,7 +1112,7 @@ def cmd_review_material(args) -> int:
         if not result["count"]:
             return _emit(
                 result,
-                "No completed tasks to review: record and close some "
+                "No completed tasks to read: record and close some "
                 "episodes first (successes and failures both count).")
         budget = result["budget"]
         summary = (f"Read {result['count']} of {result['total_completed']} "
@@ -1223,15 +1130,15 @@ def cmd_review_material(args) -> int:
                             "the next (older) batch")
             else:
                 summary += ("; narrow the scope or raise "
-                            "OR_HARNESS_REVIEW_MATERIAL_CHARS")
+                            "OR_HARNESS_INDUCTION_MATERIAL_CHARS")
             summary += "."
         if budget["truncated_by_limit"]:
             summary += (" --limit kept only the newest attempts; more "
                         "completed material exists.")
-        summary += (f" A TRANSFERABLE claim needs the same mechanism on >=2 "
-                    f"independent tasks (this batch spans "
+        summary += (f" A TRANSFERABLE new strategy needs the same mechanism on "
+                    f">=2 independent tasks (this batch spans "
                     f"{result['cross_task_hint']['n_distinct_tasks_in_batch']}"
-                    "). Form a claim (condition -> how -> consequence -> "
+                    "). Form the strategy (condition -> how -> consequence -> "
                     "boundary) and submit it with `orx induce --relation`.")
         return _emit(result, summary)
     finally:
@@ -1770,9 +1677,9 @@ def cmd_predict_capability(args) -> int:
         task = _load_json_arg(args.task) if args.task else None
         bundle = _load_json_arg(args.bundle) if args.bundle else None
         if bundle is not None and not isinstance(bundle, dict):
-            return _fail("--bundle must be a JSON object (a candidate "
-                         "bundle from `orx assess-induction "
-                         "--candidates-only`)")
+            return _fail("--bundle must be a JSON object naming the "
+                         "executions the operation would consume, e.g. "
+                         "{'execution_ids': ['ex1', 'ex2']}")
         budget = _load_json_arg(args.budget) if args.budget else None
         prediction = h.predict_capability_evolution(
             operation, task=task, bundle=bundle,
@@ -2845,61 +2752,56 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_amend_cost)
 
     p = sub.add_parser(
-        "induce", help="consolidate facts into strategic entries",
-        epilog=("Creating an entry requires >=2 supporting executions from "
-                ">=2 distinct task_ids: repeating one task is repetition, not "
-                "reproduction. Refreshing an existing entry is never gated. "
-                "Publishing is separate: an entry becomes strategic knowledge "
-                "only once --verify renders 'verified'."))
-    p.add_argument("--strategy", default=None)
-    p.add_argument("--all", action="store_true")
-
-    p.add_argument("--dry-run", action="store_true")
+        "induce", help="submit new strategies / strategy revisions",
+        epilog=("Knowledge is ONLY written from a strategy YOU form: read "
+                "the material with `orx induction-material`, then submit the "
+                "strategy with --relation. The framework derives the evidence "
+                "identity, checks the declared `check` block, and stores the "
+                "result — it never turns a cell's means into a technique and "
+                "has no statistical fallback."))
+    p.add_argument("--strategy", default=None,
+                   help="the strategy id the submitted relation belongs to "
+                        "(optional: a relation may carry its own free-form "
+                        "`subject` instead)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="report what would be written without writing it")
     p.add_argument("--force", action="store_true",
                    help="lift the cold-archive veto: the card blocking this "
                         "pattern is REMOVED, then induction proceeds "
                         "(reserve it for genuine environment drift — the "
                         "lift is one-time, no need to repeat it)")
     p.add_argument("--note", action="append", default=None, metavar="TEXT",
-                   help="applicability note to attach to the entries this call "
-                        "creates/refreshes (free text, kept for the reader, "
-                        "never scored; repeatable)")
+                   help="applicability note to attach to the entries this "
+                        "call creates/refreshes (free text, kept for the "
+                        "reader, never scored; repeatable)")
     p.add_argument("--verify", default=None, metavar="JSON",
-                   help="admission check for the candidate this call forms: "
-                        "{\"purpose\": \"rule|repair|cost_saving\", \"claim\": "
-                        "TEXT, \"check\": {\"reference_status\" | "
-                        "\"reference_objective\" | \"semantic_probe\" | "
-                        "\"dimension\"+\"quality_floor\"}, \"executions\": "
-                        "[...], \"supporting\": [...]}. The framework evaluates "
-                        "those checks on the executions you supply; "
-                        "feasibility alone is not a check, and without a "
-                        "verdict the entry is NOT published. The check applies "
-                        "ONLY to the targets this call selects — narrow with "
-                        "--family/--cell so one claim never overwrites another "
-                        "unit's verdict")
-    p.add_argument("--family", default=None,
-                   help="restrict induction to ONE family (implies --all "
-                        "scope: naming a unit is an explicit selection)")
-    p.add_argument("--cell", default=None, metavar="GROUP_KEY",
-                   help="restrict induction to ONE structural cell (the full "
-                        "group_key token, e.g. 'family=routing|rc[..]|..'); "
-                        "implies its family and --all scope")
+                   help="optional admission check for the submitted "
+                        "strategy: {\"claim\": TEXT, \"check\": "
+                        "{\"assertions\": [...]}, \"executions\": [...]}. The "
+                        "framework evaluates the declared checks on the "
+                        "executions you cite; the embedded `check` block "
+                        "inside a --relation is the SAME mechanism. Supplying "
+                        "BOTH is a CONFLICT — --verify wins and the embedded "
+                        "check is reported as overridden, never silently "
+                        "merged")
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
-                   help="submit a STRUCTURED relation claim (repeatable). "
+                   help="submit a STRUCTURED strategy (repeatable). "
                         "{\"claim\": TEXT, \"evidence\": [{\"execution_id\": "
                         "ID, \"role\": ROLE}, ...], \"subject\": NAME?, "
+                        "\"target_entry_id\": ID?, "
                         "\"conditions\": {\"predicates\": {...}, \"note\": "
                         "TEXT}?, \"check\": {\"assertions\": [...]}?, "
                         "\"kind\": NAME?}. The role names the part each "
-                        "referenced execution plays in THIS claim "
+                        "referenced execution plays in THIS strategy "
                         "(dropped/preserved, before/after, strategy_a, ...); "
-                        "tasks/family/strategy ids are DERIVED from the "
-                        "recorded facts. An optional free-form 'subject' "
+                        "tasks/family/cell/strategy ids are DERIVED from the "
+                        "recorded facts — different names and cells may be "
+                        "cited together. An optional free-form 'subject' "
                         "(e.g. 'principle:cross_period_state') carries a "
-                        "claim that belongs to no strategy id. The "
-                        "relation is published on its OWN verification plus "
-                        ">=2 independent tasks — it never publishes the host "
-                        "entry's statistical claim")
+                        "strategy that belongs to no single strategy id; an "
+                        "optional 'target_entry_id' REVISES that entry "
+                        "unambiguously. The strategy is published on its OWN "
+                        "verification plus >=2 independent tasks")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
@@ -3079,9 +2981,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task", default=None,
                    help="task JSON (literal or file) scoping the capability "
                         "evidence; optional")
-    p.add_argument("--bundle", default=None,
-                   help="candidate bundle JSON from `orx assess-induction "
-                        "--candidates-only` (literal or file). Supplies the "
+    p.add_argument("--bundle", default=None, metavar="EVIDENCE_SCOPE_JSON",
+                   help="frozen evidence scope JSON (literal or file) naming "
+                        "the executions the operation would consume, e.g. "
+                        "{'execution_ids': ['ex1', 'ex2']}. Supplies the "
                         "experience scope, the task targeting and the frozen "
                         "baseline, and its REAL evidence content is sent to "
                         "the provider")
@@ -3270,36 +3173,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_choose_next)
 
     p = sub.add_parser(
-        "induction-candidates",
-        help="scan the REAL bank for structural-cell LEADS (frozen evidence, "
-             "no model call). This is a lead view — the default material "
-             "entry point is `review-material`; the bundle is what "
-             "`predict-capability --bundle` consumes")
-    p.set_defaults(func=cmd_induction_candidates)
-
-    p = sub.add_parser(
         "induction-material",
-        help="organize the READABLE material for a structural-cell LEAD: the "
-             "recorded methods, the outcome and the task-check state. Read "
-             "it, then submit a claim with `orx induce --relation`. The "
-             "default material entry point is `review-material`. No model "
-             "call, no writes")
-    p.add_argument("--bundle", default=None, metavar="BUNDLE_ID",
-                   help="read the material of ONE candidate (default: every "
-                        "candidate). Pass the id `orx induction-candidates` "
-                        "printed")
-    p.add_argument("--strategy", default=None,
-                   help="restrict to candidates about one strategy id")
-    p.set_defaults(func=cmd_induction_material)
-
-    p = sub.add_parser(
-        "review-material",
-        help="read a BATCH of completed tasks for offline review WITHOUT a "
-             "detector candidate or a sample-count gate. Success, failure, "
-             "cross-cell and cross-method-name material are all included; "
-             "a missing field is marked, never dropped. No model call, no "
-             "writes — read it, then submit a claim with "
-             "`orx induce --relation`")
+        help="read a BATCH of completed tasks as induction material WITHOUT "
+             "a candidate or a sample-count gate. This task and related "
+             "history, the methods performed, the failures, the costs, the "
+             "before/after changes and the existing strategies are all "
+             "included; a missing field is marked, never dropped. Read it, "
+             "then submit the strategy you form with `orx induce --relation`. "
+             "No model call, no writes")
     p.add_argument("--strategy", default=None,
                    help="restrict the batch to one strategy id")
     p.add_argument("--task", default=None,
@@ -3310,7 +3191,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="continue with material OLDER than this cursor "
                         "(pass budget.next_cursor from a previous call) so a "
                         "long history is read in distinct batches")
-    p.set_defaults(func=cmd_review_material)
+    p.set_defaults(func=cmd_induction_material)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)

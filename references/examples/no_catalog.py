@@ -161,7 +161,7 @@ def main() -> int:
         print(f"recorded: {outcome['recorded']}")
         print("-> recording accumulates EVIDENCE; it changes no knowledge and "
               "emits no induction labels — read the material yourself with "
-              "`orx review-material`")
+              "`orx induction-material`")
 
         # ------------------------------------------------------------------
         step(7, "recall again: the method is now a candidate, because it ran")
@@ -183,17 +183,27 @@ def main() -> int:
         # ------------------------------------------------------------------
         step(8, "the content that travels is the ENTRY's own, never a menu's")
         # ------------------------------------------------------------------
-        # A claim needs evidence from >=2 INDEPENDENT tasks: repeating one
-        # task is repetition, not reproduction. So the agent runs the method
-        # once more on a second task of the same structural cell.
+        # A transferable strategy needs the SAME mechanism on >=2 INDEPENDENT
+        # tasks: repeating one task is repetition, not reproduction. So the
+        # agent runs the method once more on a second task of the same cell.
         second_task = dict(TASK, task_id="demo_empty_2")
         second = h.execute(second_task, METHOD, str(solve_path), str(work),
                            solver="highs", episode_id="ep2")
         h.record(second, override={"llm_tokens": 1900, "tool_calls": 9})
-        induced = h.induce(strategy_id=METHOD)
-        created = induced["results"][0].get("created")
-        print(f"induction result: created={created} "
-              f"skipped={induced['results'][0].get('skipped')!r}")
+        # The framework writes only the strategy the agent submits.
+        strategy = {
+            "subject": METHOD,
+            "claim": f"{METHOD} reaches the reference objective in this cell",
+            "evidence": [{"execution_id": record.execution_id,
+                          "role": "evidence"},
+                         {"execution_id": second.execution_id,
+                          "role": "evidence"}],
+        }
+        induced = h.induce(relations=[strategy])
+        outcome = induced["relations"][0]
+        created = outcome.get("created_entry") or outcome.get("saved")
+        print(f"induction result: saved={created} "
+              f"skipped={outcome.get('skipped')!r}")
         entries = [h.sbank.get(created)]
         print(f"entries for {METHOD}: {[e.entry_id for e in entries]}")
         for entry in entries:
@@ -203,22 +213,23 @@ def main() -> int:
             assert entry.strategy_type is None and entry.actions == []
         print("-> the framework recorded that it does NOT know the method's "
               "type/actions; it did not copy them from anywhere")
-        # Publishing needs an ADMISSION check the framework computes from real
-        # executions — a claim about future tasks needs independent evidence,
-        # which is what the second task provided.
+        # Publishing needs a check the framework computes from real
+        # executions — a strategy about future tasks needs independent
+        # evidence, which is what the second task provided.
         verify = {
-            "purpose": "rule",
             "claim": f"{METHOD} reaches the reference objective in this cell",
-            "check": {"reference_objective": 10755.0},
-            "executions": [h.bank.get(record.execution_id).to_dict()],
-            "supporting": [h.bank.get(second.execution_id).to_dict()],
+            "check": {"assertions": [
+                {"kind": "status", "roles": ["evidence"],
+                 "status": "optimal"}]},
         }
-        verified = h.induce(strategy_id=METHOD, verify=verify)["results"][0]
+        verified = h.induce(relations=[strategy], verify=verify)
+        vout = verified["relations"][0]
         print(f"admission verdict: "
-              f"{(verified.get('verification') or {}).get('state')}")
-        assert (verified.get("verification") or {}).get("state") == "verified"
+              f"{(h.sbank.get(vout['saved']).verification or {}).get('state')}")
+        assert (h.sbank.get(vout["saved"]).verification
+                or {}).get("state") == "verified"
         # A harness that DOES know can say so, and that is what travels.
-        entry = h.sbank.get(verified.get("created") or verified.get("updated"))
+        entry = h.sbank.get(vout["saved"])
         entry.strategy_type = "decomposition"
         entry.actions = ["solve the LP relaxation",
                          "round and repair deterministically"]

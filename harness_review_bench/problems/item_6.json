@@ -1,7 +1,7 @@
 {
  "id": 6,
- "question": "The contract reservations for the next year for products I, II, and III of a certain factory in each quarter are shown in Table 1-10.\n\nTable 1-10\n| Product | 1    | 2    | 3    | 4    |\n|---------|------|------|------|------|\n| I       | 1500 | 1000 | 2000 | 1200 |\n| II      | 1500 | 1500 | 1200 | 1500 |\n| III     | 1000 | 2000 | 1500 | 2500 |\n\nAt the beginning of the first quarter, there is no inventory for these three products, and it is required to have 150 units in stock for each product by the end of the fourth quarter. It is known that the factory has 15,000 production hours per quarter, and each unit of products I, II, and III requires 2, 4, and 3 hours respectively. Due to a change in equipment, product I cannot be produced in the second quarter. It is stipulated that if the products cannot be delivered on time, a compensation of 20 yuan per unit per quarter delay is required for products I and II, while for product III, the compensation is 10 yuan. Additionally, for products produced but not delivered in the current quarter, the inventory cost is 5 yuan per unit per quarter. How should the factory schedule production to minimize the total cost of compensation and inventory?",
- "answer": "10755.00",
- "difficulty": "Hard",
- "category": "inventory"
+ "question": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of \\$1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel $X$ is \\$10 and for channel $Y$ is \\$20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.",
+ "answer": "10000",
+ "difficulty": null,
+ "category": "planning"
 }

@@ -1,16 +1,5 @@
 {
-  "reference_objective": 14,
-  "integer": {
-    "variables": ["x_I_A", "x_I_B", "x_I_C", "x_I_D", "x_II_A", "x_II_B", "x_II_C", "x_II_D", "x_III_A", "x_III_B", "x_III_C", "x_III_D", "x_IV_A", "x_IV_B", "x_IV_C", "x_IV_D", "x_V_A", "x_V_B", "x_V_C", "x_V_D"]
-  },
-  "recompute_objective": {
-    "description": "Recompute objective from solution variables",
-    "coefficients": {
-      "x_I_A": 9, "x_I_B": 4, "x_I_C": 3, "x_I_D": 7,
-      "x_II_A": 4, "x_II_B": 6, "x_II_C": 5, "x_II_D": 6,
-      "x_III_A": 5, "x_III_B": 4, "x_III_C": 7, "x_III_D": 5,
-      "x_IV_A": 7, "x_IV_B": 5, "x_IV_C": 2, "x_IV_D": 3,
-      "x_V_A": 10, "x_V_B": 6, "x_V_C": 7, "x_V_D": 4
-    }
-  }
+ "reference_status": "optimal",
+ "reference_objective": 50000.0,
+ "tolerance": 0.049999999999999996
 }

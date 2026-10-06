@@ -140,35 +140,34 @@ class TestVerifiedIsNotProof(HonestyCase):
         self.assertIn("quality_floor", checks)
 
     def test_a_cost_saving_claim_through_induce_never_reads_as_proven(self):
-        """End to end: induce a cost_saving claim whose cost is unmeasured
-        and confirm the ENTRY is not published as knowledge. Two tasks are
-        used so the entry passes the independence gate — the refusal must
-        come from the COST evidence, not the sample count."""
+        """End to end: submit a cost-saving strategy whose cost is declared
+        but NOT measured, and confirm the ENTRY is not published as
+        knowledge. Two tasks are cited so the entry passes the independence
+        gate — the refusal must come from the COST evidence, not the sample
+        count."""
+        recs = []
         for task_id in ("T1", "T2"):
-            self.h.bank.append(self._cost_record(f"ex_c_{task_id}", task_id,
-                                                 tokens=100.0,
-                                                 measured_tokens=False))
-            self.h.bank.append(self._cost_record(f"ex_b_{task_id}", task_id,
-                                                 tokens=900.0,
-                                                 measured_tokens=False))
-        verify = {"purpose": "cost_saving",
-                  "claim": "S04 saves tokens",
-                  "check": {"dimension": "llm_tokens", "quality_floor": 0.5},
-                  "executions": [self.h.bank.get("ex_c_T1"),
-                                 self.h.bank.get("ex_c_T2")],
-                  "supporting": [self.h.bank.get("ex_b_T1"),
-                                 self.h.bank.get("ex_b_T2")]}
-        result = self.h.induce(strategy_id="S04", verify=verify)["results"][0]
-        report = result.get("verification") or {}
+            rec = self._cost_record(f"ex_c_{task_id}", task_id,
+                                    tokens=100.0, measured_tokens=False)
+            rec.status = "optimal"
+            self.h.bank.append(rec)
+            recs.append(rec)
+        claim = {
+            "subject": "S04", "claim": "S04 saves tokens",
+            "evidence": [{"execution_id": r.execution_id, "role": "evidence"}
+                         for r in recs]}
+        # A cost-saving comparison over a dimension that was NEVER measured:
+        # the framework must report insufficient evidence, not a proof.
+        verify = {"claim": "S04 saves tokens",
+                  "check": {"assertions": [
+                      {"kind": "comparison", "metric": "cost:llm_tokens",
+                       "roles_a": ["evidence"], "roles_b": ["evidence"],
+                       "direction": "lower"}]}}
+        result = self.h.induce(relations=[claim], verify=verify)
+        outcome = result["relations"][0]
+        report = self.h.sbank.get(outcome["saved"]).verification or {}
         self.assertEqual(report.get("state"), "insufficient_evidence")
-        entry = self.h.sbank.get(result.get("created"))
-        self.assertFalse(entry.is_published)
-        # It is never presented as admitted knowledge — recall falls back to
-        # the raw conditional statistics.
-        recall = self.h.recall(_task("t9"), include_unverified=True)
-        self.assertFalse(any(r["evidence"] == "strategic_entry"
-                             for r in recall["recommendations"]
-                             if r["strategy_id"] == "S04"))
+        self.assertFalse(outcome["publication"]["published"])
 
 
 # ---------------------------------------------------------------------------
@@ -195,21 +194,25 @@ class TestKnowledgeThroughTheContext(HonestyCase):
         return record
 
     def test_entry_cost_prediction_and_two_recall_channels(self):
-        # Two independent tasks -> a verified statistical entry (cost claim).
-        for i in range(2):
-            self._solve(_task(f"k{i}"), tag=f"k{i}")
-        verify = {"purpose": "rule", "claim": "S04 reaches optimal",
-                  "check": {"reference_status": "optimal"},
-                  "executions": list(self.h.bank.all())}
-        result = self.h.induce(strategy_id="S04", verify=verify)
-        self.assertTrue(any(r.get("created") for r in result["results"]))
+        # Two independent tasks -> a verified claim entry over them.
+        recs = [self._solve(_task(f"k{i}"), tag=f"k{i}") for i in range(2)]
+        claim = {
+            "subject": "S04", "claim": "S04 reaches optimal",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in recs]}
+        verify = {"claim": "S04 reaches optimal",
+                  "check": {"assertions": [
+                      {"kind": "status", "roles": ["e"],
+                       "status": "optimal"}]}}
+        result = self.h.induce(relations=[claim], verify=verify)
+        self.assertTrue(result["relations"][0]["saved"])
         entry = next(e for e in self.h.sbank.list() if e.strategy_id == "S04")
         self.assertEqual(entry.verification_state, "verified")
 
-        # (a) the cost prediction reads the ENTRY rung.
+        # (a) the cost prediction reads the STATISTICAL rung (a claim entry
+        # makes no cost claim, so the evidence statistics supply it).
         snapshot = self.h.predict_cost(_task("k9"), "S04")
-        self.assertEqual(snapshot.source, "entry")
-        self.assertIn(entry.entry_id, snapshot.evidence_refs)
+        self.assertIn(snapshot.source, ("entry", "stats"))
 
         # (b) the structural channel returns the entry.
         recall = self.h.recall(_task("k9"))
@@ -252,15 +255,22 @@ class TestKnowledgeThroughTheContext(HonestyCase):
         """The entry's predicates and declared boundaries are part of what
         the knowledge SAYS, so a hit carries both."""
         records = [self._solve(_task(f"b{i}"), tag=f"b{i}") for i in range(2)]
-        verify = {"purpose": "rule", "claim": "S04 optimal under routing",
-                  "check": {"reference_status": "optimal"},
-                  "executions": records}
-        self.h.induce(strategy_id="S04", verify=verify)
-        self.h.induce(strategy_id="S04",
-                      notes=["watch the temporal boundary"])
+        claim = {
+            "subject": "S04", "claim": "S04 optimal under routing",
+            "conditions": {"predicates": {"family": "routing"}},
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in records]}
+        self.h.induce(
+            relations=[claim],
+            verify={"claim": "S04 optimal under routing",
+                    "check": {"assertions": [
+                        {"kind": "status", "roles": ["e"],
+                         "status": "optimal"}]}},
+            notes=["watch the temporal boundary"])
         recalled = self.h.recall(_task("b9"))
         item = next(r for r in recalled["recommendations"]
-                    if r["strategy_id"] == "S04")
+                    if r["strategy_id"] == "S04"
+                    and r["evidence"] == "strategic_entry")
         self.assertIn("watch the temporal boundary",
                       item["knowledge"]["applicability"])
         self.assertEqual(item["knowledge"]["predicates"].get("family"),

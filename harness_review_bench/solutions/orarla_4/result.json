@@ -1,11 +1,23 @@
 {
   "status": "optimal",
-  "objective_value": 30400.0,
-  "objective_bound": 30400.0,
-  "runtime_seconds": 0.015511035919189453,
-  "solution": {
-    "n_cows": 70,
-    "n_sheep": 20,
-    "n_chickens": 0
+  "objective_value": 1200,
+  "objective_exact": 1200,
+  "variables": {
+    "X": 300,
+    "Y": 0
+  },
+  "mip_gap": 0.0,
+  "runtime_seconds": 3.5e-05,
+  "method_performed": {
+    "name": "enumeration_with_constraints",
+    "solver": "brute_force",
+    "steps": [
+      "From X >= 2Y + 300 and X + Y <= 1000, derive Y <= 233",
+      "Enumerate Y from 0 to 233, compute minimal feasible X = max(2Y+300, 0)",
+      "Verify X + Y <= 1000; pick minimum cost = 4X + 3Y",
+      "Write result to result.json with status/objective_value/variables"
+    ],
+    "action_id": "ac_9088345f81e6",
+    "deviation": "Switched from scipy.optimize.milp (res.x=None, solver failed in sandbox) to direct enumeration; problem is small enough (Y<=233) for O(n) scan"
   }
 }

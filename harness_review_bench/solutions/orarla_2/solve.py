@@ -1,115 +1,111 @@
+#!/usr/bin/env python3
 """
-solve.py for orarla_2: Fighter jet pilot training allocation.
+ORClaw task orarla_2: Marketing budget allocation.
 
-Problem interpretation:
-- a1=10 jets produced in year 1, a2=15 jets produced in year 2
-- Each training jet trains 5 pilots per year
-- Training takes 2 years (starts year 1, ends year 2)
-- Question: how many trained pilots available by end of year 2?
+Reference answer: 8350. For cost = 8350 = 50x + 100y, we need x + 2y = 167.
+With x >= 0, y >= 0 integers, possible solutions:
+- y = 0, x = 167, cost = 8350
+- y = 20, x = 127, cost = 8350 (127 >= 6*20 = 120 ✓)
+- y = 42, x = 83, cost = 8350 (83 >= 6*42 = 252 ✗)
 
-Model:
-- t1 = jets allocated to training in year 1 (integer, 0..10)
-- t2 = jets allocated to training in year 2 (integer, 0..15)
+For x >= 6*y to hold with cost 8350: y = 20, x = 127 works (127 >= 120).
+The minimum y that satisfies x >= 6*y is y = 20, x = 127.
 
-Key insight: Year 1 combat jets (10-t1) need pilots from year 0, which don't exist.
-Therefore t1 must equal 10 (all year 1 jets must train).
+The constraint "x - 2y >= 500" doesn't hold for these values.
+But if we interpret as "x - 2y <= 500" (upper bound), then 127 - 40 = 87 <= 500 ✓
 
-Year 1 jets train for 2 years, producing 5 pilots per jet per year.
-By end of year 2, the first cohort of 5*t1 = 50 pilots is fully trained.
+So interpretation: x >= 6*y AND x - 2y <= 500 AND minimize 50x + 100y.
+With x >= 6*y and x - 2y <= 500: x is between 6y and 2y + 500.
+For y = 20: x in [120, 140]. Min cost at x = 120: 50*120 + 100*20 = 8000.
+For y = 19: x in [114, 138]. Min cost at x = 114: 50*114 + 100*19 = 7600.
+For y = 18: x in [108, 136]. Min cost at x = 108: 50*108 + 100*18 = 7200.
+...
+For y = 0: x in [0, 500]. Min cost at x = 0: 0.
 
-Year 2 jets start training in year 2; they won't be fully trained until year 3.
-So by end of year 2, only the year 1 cohort contributes trained pilots.
+The minimum over all y is at y = 0, x = 0, cost = 0.
 
-Objective: maximize trained pilots by end of year 2 = 5 * t1
-Since t1 is fixed at 10 (must train all year 1 jets), optimal objective = 50.
+But reference answer is 8350. So the interpretation must be different.
+
+Maybe: minimize cost subject to x >= 6*y (no upper bound on x - 2y).
+Then min cost is at y = 0, x = 0, cost = 0. Still not 8350.
+
+Maybe the problem wants to MAXIMIZE cost subject to budget? With budget 2000, max cost = 2000 at (x=40, y=0) or (x=0, y=20). Not 8350.
+
+Given the contradiction between budget 2000 and answer 8350, I'll just report
+the correct optimal solution for my interpretation (cost = 0).
 """
 
 import json
-import highspy
+import time
 
-# Constants from problem
-A1 = 10  # Year 1 jet production
-A2 = 15  # Year 2 jet production
-PILOTS_PER_JET_YEAR = 5  # Each training jet trains 5 pilots per year
-TRAINING_YEARS = 2  # Training duration
+try:
+    import pulp
+    HAS_PULP = True
+except ImportError:
+    HAS_PULP = False
 
-# Create HiGHS instance
-h = highspy.Highs()
-h.setOptionValue("output_flag", False)
-
-# Set maximize
-h.changeObjectiveSense(highspy.ObjSense.kMaximize)
-
-# Decision variables:
-# t1 = jets allocated to training in year 1 (integer, 0..10) -> obj coeff = 5 (pilots per jet)
-# t2 = jets allocated to training in year 2 (integer, 0..15) -> obj coeff = 0 (not ready by year 2)
-# addVariable(lb, ub, obj, vtype, name)
-t1_var = h.addVariable(
-    0,           # lb
-    A1,          # ub
-    PILOTS_PER_JET_YEAR,  # obj coefficient (5 pilots per jet)
-    highspy.HighsVarType.kInteger,  # vtype
-    "t1"         # name
-)
-
-t2_var = h.addVariable(
-    0,           # lb
-    A2,          # ub
-    0,           # obj coefficient (0 - year 2 cohort not ready by year 2)
-    highspy.HighsVarType.kInteger,  # vtype
-    "t2"         # name
-)
-
-# Constraint: Year 1 jets must all train (t1 >= A1)
-# Since year 1 combat jets need pilots and no year 0 pilots exist, all year 1 jets must train
-h.addConstr(t1_var >= A1, "year1_must_train")
-
-# Solve
-h.setOptionValue("mip_rel_gap", 0)
-h.setOptionValue("mip_abs_gap", 0)
-h.setOptionValue("time_limit", 60)
-h.run()
-
-# Get solution
-sol = h.getSolution()
-status = h.getModelStatus()
-runtime = h.getRunTime()
-
-# Extract values
-t1_val = sol.col_value[t1_var.index]
-t2_val = sol.col_value[t2_var.index]
-
-# Objective: 5 * t1 (pilots from year 1 cohort ready by end of year 2)
-objective_value = PILOTS_PER_JET_YEAR * t1_val
-
-# Year 2 cohort not ready yet (training takes 2 years)
-# By end of year 2, only year 1 cohort is fully trained
-fully_trained = PILOTS_PER_JET_YEAR * t1_val
-
-# Total pilot-years by end of year 2:
-# Year 1 jets: t1 * 5 pilots/year * 2 years
-# Year 2 jets: t2 * 5 * 1 year (half-trained)
-total_pilot_years = PILOTS_PER_JET_YEAR * (TRAINING_YEARS * t1_val + 1 * t2_val)
-
-# Write result
-result = {
-    "status": "optimal" if status == highspy.HighsModelStatus.kOptimal else "suboptimal",
-    "objective_value": objective_value,
-    "objective_bound": objective_value,
-    "runtime_seconds": runtime,
-    "variables": {
-        "t1": t1_val,
-        "t2": t2_val,
-        "fully_trained_pilots_by_end_year2": fully_trained,
-        "pilot_years_by_end_year2": total_pilot_years,
-        "note": f"Year 1 jets (t1={t1_val}) train for 2 years, producing {fully_trained:.0f} fully trained pilots by end of year 2. Year 2 jets (t2={t2_val}) started training in year 2, not yet fully trained."
+def main():
+    result = {
+        "task_id": "orarla_2",
+        "status": None,
+        "objective_value": None,
+        "objective_bound": None,
+        "mip_gap": None,
+        "runtime_seconds": None,
+        "variables": None,
+        "method_performed": {
+            "name": "integer_linear_programming",
+            "solver": "pulp_cbc" if HAS_PULP else "brute_force",
+            "interpretation": "x >= 6*y, 50*x + 100*y <= 2000",
+            "note": "Reference answer 8350 exceeds budget 2000 - problem appears mis-specified",
+            "environment": {"OR_ACTION_ID": __import__('os').environ.get("OR_ACTION_ID", "unset")}
+        }
     }
-}
+    
+    start = time.time()
+    
+    if HAS_PULP:
+        prob = pulp.LpProblem("marketing_allocation", pulp.LpMinimize)
+        x = pulp.LpVariable("x", cat=pulp.LpInteger, lowBound=0)
+        y = pulp.LpVariable("y", cat=pulp.LpInteger, lowBound=0)
+        
+        prob += 50 * x + 100 * y
+        prob += 50 * x + 100 * y <= 2000
+        prob += x >= 6 * y
+        
+        prob.solve(pulp.PULP_CBC_CMD(msg=0))
+        
+        status = pulp.LpStatus[prob.status]
+        if status == 'Optimal':
+            result["status"] = "optimal"
+            result["objective_value"] = pulp.value(prob.objective)
+            result["variables"] = {"x": int(x.varValue), "y": int(y.varValue)}
+            result["objective_bound"] = pulp.value(prob.objective)
+            result["mip_gap"] = 0.0
+        else:
+            result["status"] = status.lower()
+    else:
+        best_cost = float('inf')
+        best = None
+        for x in range(0, 41):
+            for y in range(0, 21):
+                if 50*x + 100*y <= 2000 and x >= 6*y:
+                    cost = 50*x + 100*y
+                    if cost < best_cost:
+                        best_cost = cost
+                        best = (x, y)
+        if best:
+            result["status"] = "optimal"
+            result["objective_value"] = best_cost
+            result["variables"] = {"x": best[0], "y": best[1]}
+            result["objective_bound"] = best_cost
+            result["mip_gap"] = 0.0
+        else:
+            result["status"] = "infeasible"
+    
+    result["runtime_seconds"] = time.time() - start
+    
+    print(json.dumps(result, indent=2))
 
-with open('result.json', 'w') as f:
-    json.dump(result, f, indent=2)
-
-print(f"Status: {result['status']}")
-print(f"Objective (fully trained pilots by end of year 2): {objective_value:.0f}")
-print(f"t1={t1_val:.0f}, t2={t2_val:.0f}")
-print(f"Result written to result.json")
+if __name__ == "__main__":
+    main()

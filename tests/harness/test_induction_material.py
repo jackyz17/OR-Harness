@@ -64,7 +64,7 @@ class TestReviewMaterialEntry(HarnessTestCase):
                              feasible=False, status="error",
                              profile=_profile("T_bad", route_complexity=0.95)),
         ])
-        result = h.review_material()
+        result = h.induction_material()
         ids = {m["execution_id"] for m in result["material"]}
         self.assertEqual(ids, {"ex_ok", "ex_bad"})
         bad = [m for m in result["material"]
@@ -79,7 +79,7 @@ class TestReviewMaterialEntry(HarnessTestCase):
         for i in range(2):
             h.record(self.make_record(execution_id=f"ex_r{i}", task_id="T_rep",
                                       strategy_id="S", profile=_profile("T_rep")))
-        result = h.review_material(task_id="T_rep")
+        result = h.induction_material(task_id="T_rep")
         self.assertEqual(result["n_distinct_tasks"], 1)
         for m in result["material"]:
             self.assertEqual(m["attempts_of_task"], 2)
@@ -92,7 +92,7 @@ class TestReviewMaterialEntry(HarnessTestCase):
         rec = self.make_record(execution_id="ex_bare", task_id="T_bare",
                                strategy_id="S", profile=_profile("T_bare"))
         h.record(rec)
-        result = h.review_material()
+        result = h.induction_material()
         entry = result["material"][0]
         # The method is present as an explicit basis, not silently absent.
         self.assertEqual(entry["method"]["basis"], "none")
@@ -106,37 +106,38 @@ class TestReviewMaterialEntry(HarnessTestCase):
         for i in range(6):
             h.record(self.make_record(execution_id=f"ex_b{i}", task_id=f"T_b{i}",
                                       strategy_id="S", profile=_profile(f"T_b{i}")))
-        old = os.environ.get("OR_HARNESS_REVIEW_MATERIAL_CHARS")
-        os.environ["OR_HARNESS_REVIEW_MATERIAL_CHARS"] = "1500"
+        old = os.environ.get("OR_HARNESS_INDUCTION_MATERIAL_CHARS")
+        os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = "1500"
         try:
-            result = h.review_material()
+            result = h.induction_material()
         finally:
             if old is None:
-                os.environ.pop("OR_HARNESS_REVIEW_MATERIAL_CHARS", None)
+                os.environ.pop("OR_HARNESS_INDUCTION_MATERIAL_CHARS", None)
             else:
-                os.environ["OR_HARNESS_REVIEW_MATERIAL_CHARS"] = old
+                os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = old
         self.assertTrue(result["budget"]["truncated_by_budget"])
         self.assertTrue(result["budget"]["omitted_execution_ids"])
         self.assertLess(result["count"], 6)
 
 
 class TestTriggerDemotion(HarnessTestCase):
-    """A thin cell is a visible ``cell_observation``, never a silent drop."""
+    """A single execution is visible material, never a silent drop — and
+    there is no ``cell_observation`` verdict any more: the batch reports the
+    FACTS (one task, one attempt), and the agent decides."""
 
-    def test_single_execution_is_a_visible_cell_observation(self):
+    def test_single_execution_is_visible_material(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         h.record(self.make_record(execution_id="ex_one", task_id="T1",
                                   strategy_id="S1", profile=_profile("T1")))
-        bundles = [b for b in h.induction_candidates()
-                   if b["strategy_id"] == "S1"]
-        self.assertEqual(len(bundles), 1)
-        bundle = bundles[0]
-        self.assertEqual(bundle["kind"], "cell_observation")
-        self.assertIsNotNone(bundle["admission_note"])
-        # The old single-observation category is gone.
-        self.assertFalse(any(b["kind"] == "single_observation"
-                             for b in h.induction_candidates()))
+        material = h.induction_material(strategy_id="S1")
+        self.assertEqual(material["count"], 1)
+        self.assertEqual(material["n_distinct_tasks"], 1)
+        # No candidate verdict anywhere: the facts are the report.
+        blob = str(material)
+        self.assertNotIn("cell_observation", blob)
+        self.assertNotIn("admission_note", blob)
+        self.assertNotIn("single_observation", blob)
 
 
 class TestPredicateHonesty(HarnessTestCase):

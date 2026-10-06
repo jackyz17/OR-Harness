@@ -1,23 +1,18 @@
 {
   "task_id": "orarla_5",
-  "name": "Mary Dinner Planning",
   "family": "planning",
-  "text": "Mary is planning her dinner tonight. Every 100 grams of okra contains 3.2 grams of fiber, every 100 grams of carrots contains 2.7 grams of fiber, every 100 grams of celery contains 1.6 grams of fiber, and every 100 grams of cabbage contains 2 grams of fiber. How many grams of each type of food should Mary buy to maximize her fiber intake?\n\nShe is considering choosing one among salmon, beef, and pork as a protein source.\n\nShe also considers choosing at least two kinds of vegetables among okra, carrots, celery, and cabbage.\n\nThe price of salmon is $4 per 100 grams, beef is $3.6 per 100 grams, pork is $1.8 per 100 grams. The price of okra is $2.6 per 100 grams, carrots are $1.2 per 100 grams, celery is $1.6 per 100 grams, and cabbage is $2.3 per 100 grams. Mary has a budget of $15 for this meal.\n\nThe total food intake should be 600 grams.",
-  "coupling": {
-    "entities": [
-      {"name": "protein_source", "kind": "choice", "candidates": ["salmon", "beef", "pork"]},
-      {"name": "vegetables", "kind": "set", "candidates": ["okra", "carrots", "celery", "cabbage"], "min_select": 2}
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, of at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel $X$ is $200 and for channel $Y$ is $150$, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints.",
+  "model": {
+    "type": "MILP",
+    "objective": {"type": "minimize", "expression": "x + y"},
+    "variables": [
+      {"name": "x", "lb": 0, "ub": null, "type": "integer"},
+      {"name": "y", "lb": 0, "ub": null, "type": "integer"}
     ],
-    "decisions": [
-      {"name": "protein_grams", "type": "continuous", "unit": "grams"},
-      {"name": "okra_grams", "type": "continuous", "unit": "grams"},
-      {"name": "carrots_grams", "type": "continuous", "unit": "grams"},
-      {"name": "celery_grams", "type": "continuous", "unit": "grams"},
-      {"name": "cabbage_grams", "type": "continuous", "unit": "grams"}
-    ],
-    "constraints": [],
-    "relations": [],
-    "coupling_groups": []
-  },
-  "model": "MILP: binary y_salmon/y_beef/y_pork (sum=1); binary y_okra/y_carrots/y_celery/y_cabbage (sum>=2); continuous grams for all foods. protein_grams = salmon+beef+pork. big-M link: protein_g <= 600*y_protein; veg_g >= 100*y_veg, veg_g <= 600*y_veg. total_weight=600. budget: 0.036*salmon + 0.036*beef + 0.018*pork + 0.026*okra + 0.012*carrots + 0.016*celery + 0.023*cabbage <= 15. Objective: maximize fiber = 0.032*okra + 0.027*carrots + 0.016*celery + 0.02*cabbage."
+    "constraints": [
+      {"name": "effectiveness", "expression": "3*x + 4*y >= 12000"},
+      {"name": "balance", "expression": "5*x - 2*y <= 10000"},
+      {"name": "budget", "expression": "x + y <= 5000"}
+    ]
+  }
 }

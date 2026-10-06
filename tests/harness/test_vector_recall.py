@@ -723,15 +723,23 @@ class TestIndexSyncDiscipline(VectorCase):
         self.assertIn("rebuild-index", out["reason"])
 
     def test_induce_syncs_entries_and_dry_run_does_not(self):
+        records = []
         for task_id in ("t1", "t2"):
-            self.solve(_task(task_id, description=REQ_A))
-        result = self.h.induce(all_=True, verify={
-            "purpose": "rule", "claim": "construction works here",
-            "check": {"reference_status": "optimal"}})
+            records.append(self.solve(_task(task_id, description=REQ_A)))
+        claim = {
+            "subject": "S04", "claim": "construction works here",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in records]}
+        result = self.h.induce(
+            relations=[claim],
+            verify={"claim": "construction works here",
+                    "check": {"assertions": [
+                        {"kind": "status", "roles": ["e"],
+                         "status": "optimal"}]}})
         self.assertIn("index_sync", result)
         self.assertEqual(result["index_sync"]["state"], "synced")
         before = len(self.h.embedding_index.items(LAYER_STRATEGIC))
-        dry = self.h.induce(all_=True, dry_run=True)
+        dry = self.h.induce(relations=[claim], dry_run=True)
         self.assertNotIn("index_sync", dry)
         self.assertEqual(len(self.h.embedding_index.items(LAYER_STRATEGIC)),
                          before)

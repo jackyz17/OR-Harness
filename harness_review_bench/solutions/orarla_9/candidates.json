@@ -1,57 +1,49 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_direct_integer",
+    "task_id": "orarla_9",
+    "strategy_id": "milp_highs_integer",
+    "solver": "highs",
+    "measurement_scope": "attempt",
+    "params": {"time_limit": 60, "mip_rel_gap": 0.0},
     "method": {
-      "name": "milp_direct_integer",
+      "name": "Integer MILP with HiGHS (highspy native API)",
       "steps": [
-        "Define 4 integer decision variables: x_truck, x_airplane, x_boat, x_train (nonnegative integers)",
-        "Objective: maximize 5*x_truck + 10*x_airplane + 8*x_boat + 7*x_train",
-        "Constraint 1 (wood): 12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890",
-        "Constraint 2 (steel): 6*x_truck + 3*x_airplane + 5*x_boat + 4*x_train <= 500",
-        "Constraint 3 (no truck+train together): introduce binary y ∈ {0,1}; x_truck <= M*y, x_train <= M*(1-y) for large M (e.g. M=100)",
-        "Constraint 4 (boat requires airplane): x_boat <= x_airplane",
-        "Constraint 5 (boat <= train): x_boat <= x_train",
-        "Use HiGHS MILP solver, retrieve integer optimal solution"
-      ]
+        "Declare two integer variables: Ad1 >= 0, Ad2 >= 0 using highspy addVariable().",
+        "Constraint 1 (effectiveness): addConstr(Ad1 + Ad2 >= 50).",
+        "Constraint 2 (audience fatigue): addConstr(4*Ad1 + 6*Ad2 <= 300).",
+        "Set objective: minimize 5*Ad1 + 3*Ad2.",
+        "Set mip_rel_gap=0 and mip_abs_gap=0 for exact optimal integer solution.",
+        "Solve with highs.solve(), read col_value from getSolution().",
+        "Write result.json with status/objective_value/objective_bound/mip_gap/runtime_seconds/variables and method_performed."
+      ],
+      "why": "HiGHS is a dedicated MILP solver (not a modeling-layer fallback); integer variables ensure budgets are whole dollars; mip_rel_gap=0 guarantees optimality; highspy API avoids PuLP's environment/file-access issues seen in recall.",
+      "fallback": "If HiGHS returns non-optimal status, verify constraints and re-solve with tighter gap."
     },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+    "adapted_from": null,
+    "adaptation": null
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_binary_selection",
+    "task_id": "orarla_9",
+    "strategy_id": "ilp_pulp_cbc",
+    "solver": "pulp",
+    "measurement_scope": "attempt",
+    "params": {"time_limit": 60},
     "method": {
-      "name": "milp_binary_selection",
+      "name": "Integer LP via PuLP modeling layer with CBC backend",
       "steps": [
-        "Define 4 production variables: x_truck, x_airplane, x_boat, x_train (nonnegative integers)",
-        "Define 4 binary selection variables: s_truck, s_airplane, s_boat, s_train ∈ {0,1}",
-        "Objective: maximize 5*x_truck + 10*x_airplane + 8*x_boat + 7*x_train",
-        "Resource constraints: wood <= 890, steel <= 500",
-        "Link production to selection via big-M: x_i <= M_i * s_i for each product",
-        "Mutual exclusion truck/train: s_truck + s_train <= 1",
-        "Boat requires airplane: s_boat <= s_airplane",
-        "Boat <= train: x_boat <= x_train",
-        "Use HiGHS MILP solver"
-      ]
+        "Use PuLP LpProblem with LpMinimize objective: 5*Ad1 + 3*Ad2.",
+        "Declare Ad1, Ad2 as LpVariable('Ad1'/ 'Ad2', lowBound=0, cat='Integer').",
+        "Add constraints: Ad1 + Ad2 >= 50; 4*Ad1 + 6*Ad2 <= 300.",
+        "Set pulp.lpSum form where appropriate.",
+        "Solve with CBC solver (default).",
+        "Write result.json with same schema as HiGHS candidate."
+      ],
+      "why": "Alternative solver family; PuLP is a well-known modeling layer; CBC is a robust open-source MILP solver. Provides diversity in case HiGHS has an issue.",
+      "fallback": "If PuLP fails with environment error, fall back to HiGHS."
     },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "milp_lp_relaxation_then_round",
-    "method": {
-      "name": "milp_lp_relaxation_then_round",
-      "steps": [
-        "Solve LP relaxation (continuous variables) of the full MILP",
-        "Round integer variables to nearest integers while maintaining constraints",
-        "Apply logical constraints: if truck>0 then train=0, if boat>0 then airplane>0, boat<=train",
-        "Use simple rounding with constraint repair for feasibility",
-        "Evaluate rounded solution and report"
-      ]
-    },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+    "adapted_from": "ex_2da6fea25921, ex_b2380ae6c90b",
+    "adaptation": "Adapting ILP approach from similar advertising-budget tasks (orarla_2, orarla_5); but using HiGHS instead of PuLP to avoid environment issues noted in recall."
   }
 ]

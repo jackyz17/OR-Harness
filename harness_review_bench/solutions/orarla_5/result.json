@@ -1,21 +1,16 @@
 {
   "status": "Optimal",
-  "objective_value": 18.7,
+  "objective_value": 3000.0,
   "objective_bound": null,
-  "runtime_seconds": 0.0,
-  "solution": {
-    "protein_source": "none",
-    "salmon_g": 0.0,
-    "beef_g": 0.0,
-    "pork_g": 0.0,
-    "okra_g": 500.0,
-    "carrots_g": 100.0,
-    "celery_g": 0.0,
-    "cabbage_g": 0.0,
-    "vegetables_selected": [
-      "okra",
-      "carrots"
-    ],
-    "total_fiber_g": 18.7
+  "mip_gap": null,
+  "runtime_seconds": null,
+  "variables": {
+    "x": 0.0,
+    "y": 3000.0
+  },
+  "method_performed": {
+    "name": "LP_ilp_pulp_cbc",
+    "source": "PuLP CBC solver",
+    "action_id": "ac_fd24bb8766ae"
   }
 }

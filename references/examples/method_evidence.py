@@ -1,4 +1,4 @@
-"""Runnable example: method evidence -> material -> claim -> recall.
+"""Runnable example: method evidence -> material -> new strategy -> recall.
 
 The gap this example demonstrates: two layers of memory need different kinds
 of content. Execution Evidence must record what a single attempt ACTUALLY
@@ -11,21 +11,18 @@ The chain it walks:
    performed (a ``method_performed`` receipt stamped with the action id), and
    an earlier failed attempt reports a DIFFERENT one. The plan and the
    performed method are kept apart: the record never promotes a plan to fact.
-2. **the same-solver fix is detected** — the failed attempt and the
-   successful one used the SAME solver, but their methods differ, so
-   ``intervention_recovery`` fires. A plain retry with no change evidence
-   would not.
-3. **material, then a claim** — ``induction_material`` shows the methods, the
-   change and what followed; the outer agent (here, a scripted stand-in)
-   reads it and writes the "condition -> how -> consequence -> boundary"
-   claim, submitting it as a knowledge claim.
-4. **an honest refusal to invent** — a second candidate whose evidence
-   reports NO method is reported ``insufficient``, and submitting a claim
+2. **the material names the method content** — ``induction_material`` shows
+   each attempt's `method.basis` (`performed` / `planned_only` / `none`) and
+   its outcomes; the outer agent (here, a scripted stand-in) reads it and
+   writes the "condition -> how -> consequence -> boundary" strategy.
+3. **the write is checked and auditable** — the submission records a
+   maintenance action with a knowledge delta, its declared `check` is
+   evaluated, and the published strategy reaches recall from an INDEPENDENT
+   task.
+4. **an honest refusal to invent** — a second batch whose evidence reports NO
+   method is readable (`method.basis == "none"`), and submitting a strategy
    from it carries a `material` warning: the framework will not turn a mean
    into a technique.
-5. **the write is auditable and reachable** — the claim submission records
-   a maintenance action with a knowledge delta, and the published claim
-   reaches recall from an INDEPENDENT task.
 
 It runs with no model, no network and no API key — the deterministic offline
 hashing backend is injected.
@@ -48,7 +45,7 @@ from or_harness.strategy.embedding_index import (  # noqa: E402
     LocalHashEmbeddingBackend,
 )
 
-#: The condition the claim is about: high temporal coupling needs the
+#: The condition the strategy is about: high temporal coupling needs the
 #: cross-period state carried across the decomposition.
 TASK_BASE = {
     "task_id": "schedule",
@@ -120,7 +117,7 @@ def main() -> int:
             t1 = dict(TASK_BASE, task_id="T1")
             failed = _run(h, t1, FAILED_METHOD, feasible=False, slot="f")
             fixed = _run(h, t1, FIXED_METHOD, feasible=True, slot="s")
-            # A second independent task so the claim can be published
+            # A second independent task so the strategy can be published
             # (the publication gate needs >=2 distinct tasks).
             t2 = dict(TASK_BASE, task_id="T2")
             fixed2 = _run(h, t2, FIXED_METHOD, feasible=True, slot="t")
@@ -132,37 +129,21 @@ def main() -> int:
                   "script's receipt, never from the plan.\n")
 
             print("=" * 72)
-            print("2. the same-solver fix is DETECTED (not a plain retry)")
+            print("2. read the material, then form the strategy")
             print("=" * 72)
-            hints = h.bank.get(fixed.execution_id).execution_features.get(
-                "induction_hints") or []
-            recovery = [x for x in hints
-                        if x["pattern"] == "intervention_recovery"]
-            assert recovery, "expected a same-solver intervention hint"
-            change = recovery[0]["evidence"]["change"]
-            print(f"pattern   : {recovery[0]['pattern']}")
-            print(f"change    : {change['kind']} "
-                  f"({change['from_method']['name']} -> "
-                  f"{change['to_method']['name']})")
-            print("A retry that reports the SAME method would not fire: the "
-                  "change must be visible.\n")
-
-            print("=" * 72)
-            print("3. read the material, then write the claim")
-            print("=" * 72)
-            material = h.induction_material(pattern="intervention_recovery")
-            assert material["count"], "expected a recovery candidate"
-            item = material["material"][0]
-            print(f"candidate {item['bundle_id']}")
-            print(f"material  : {item['material_state']['state']}")
-            for m in item["methods"]:
-                label = (m.get("actual") or {}).get("name") or "(no method)"
-                print(f"  {m['execution_id']}: {label}")
-            # The claim: conditions -> method -> consequence -> boundary.
+            material = h.induction_material(strategy_id="S-decompose")
+            assert material["count"], "expected the batch of attempts"
+            print(f"batch spans {material['n_distinct_tasks']} task(s)")
+            for m in material["material"]:
+                label = (m["method"]["actual"] or {}).get("name") or \
+                    "(no method)"
+                print(f"  {m['execution_id']}: {m['method']['basis']} / "
+                      f"{label}")
+            # The strategy: conditions -> method -> consequence -> boundary.
             # The evidence spans TWO independent tasks (the failed attempt on
             # T1 and the fixed method on T2), which is what the publication
             # gate needs; the framework DERIVES the identity from the facts.
-            claim_payload = {
+            strategy = {
                 "subject": "principle:cross_period_state",
                 "claim": ("when temporal coupling is high, the cross-period "
                           "state must be carried across the decomposition; "
@@ -178,11 +159,10 @@ def main() -> int:
                               "role": "preserved"}],
                 "kind": "intervention_recovery",
             }
-            # Check what the claim declares: the preserved role finishes
-            # optimal, and quality is materially higher than the dropped
-            # role. The framework evaluates these over the cited facts.
+            # The declared check: the preserved role finishes optimal, and
+            # quality is materially higher than the dropped role. The
+            # framework evaluates these over the cited facts.
             verify = {
-                "purpose": "relation",
                 "check": {"assertions": [
                     {"kind": "status", "roles": ["preserved"],
                      "status": "optimal"},
@@ -192,7 +172,7 @@ def main() -> int:
                      "mode": "group", "aggregation": "mean"},
                 ]},
             }
-            result = h.induce(relations=[claim_payload], verify=verify)
+            result = h.induce(relations=[strategy], verify=verify)
             outcome = result["relations"][0]
             print(f"saved     : {outcome.get('saved')}")
             print(f"publication: {outcome['publication']}")
@@ -203,9 +183,9 @@ def main() -> int:
             print(f"delta     : created={delta['entries_created']}\n")
 
             print("=" * 72)
-            print("4. a candidate with NO method is refused, not invented")
+            print("3. a batch with NO method is readable but not invented")
             print("=" * 72)
-            # A separate, method-less cell: two tasks, records with no method.
+            # A separate, method-less batch: two tasks, records with no method.
             from or_harness.core.schema import ExecutionRecord
             for i in range(2):
                 rec = ExecutionRecord(
@@ -218,43 +198,42 @@ def main() -> int:
                         family="routing")),
                     quality={"feasible": True, "objective": 10.0,
                              "gap": 0.0, "status": "optimal"},
+                    solver={"name": "highs"},
                 )
                 h.record(rec)
             bare = h.induction_material(strategy_id="S-plain")
             if bare["count"]:
-                state = bare["material"][0]["material_state"]
-                print(f"material_state: {state['state']}")
-                print(f"reason        : {state['reason']}")
-                # Submitting a claim from it still saves, with a warning.
-                ids = [m["execution_id"] for m in bare["material"][0]["methods"]]
+                print(f"method.basis: {bare['material'][0]['method']['basis']}")
+                # Submitting a strategy from it still saves, with a warning.
+                ids = [m["execution_id"] for m in bare["material"]]
                 warned = h.induce(relations=[{
                     "subject": "principle:no_method",
                     "claim": "S-plain works well on routing",
                     "evidence": [{"execution_id": e, "role": "evidence"}
                                  for e in ids]}])
                 warning = warned["relations"][0].get("material")
-                print(f"claim saved   : "
+                print(f"strategy saved: "
                       f"{bool(warned['relations'][0].get('saved'))}")
                 print(f"warning       : {warning['reason'][:110]}...")
             print()
 
             print("=" * 72)
-            print("5. the verified claim reaches recall from a NEW task")
+            print("4. the verified strategy reaches recall from a NEW task")
             print("=" * 72)
             recall = h.recall(dict(TASK_BASE, task_id="T4"))
             hits = [r for r in recall.get("recommendations", [])
                     if (r.get("knowledge") or {}).get("claim")]
-            print(f"recommendations carrying a claim: {len(hits)}")
+            print(f"recommendations carrying a strategy: {len(hits)}")
             for item in hits:
                 knowledge = item["knowledge"]
                 claim = knowledge.get("claim") or {}
                 print(f"  entry     : {knowledge.get('entry_id')}")
-                print(f"  claim     : {str(claim.get('text'))[:66]}...")
+                print(f"  strategy  : {str(claim.get('text'))[:66]}...")
                 print(f"  state     : {knowledge.get('verification_state')}")
                 print(f"  tasks     : {claim.get('tasks')}")
                 print(f"  evidence  : "
                       f"{[e['execution_id'] for e in claim.get('evidence', [])]}")
-            print("\nThe claim is quoted from accumulated evidence on OTHER "
+            print("\nThe strategy is quoted from accumulated evidence on OTHER "
                   "tasks, with the entry's own verification state and a "
                   "citable evidence list — not from a mean.")
             return 0

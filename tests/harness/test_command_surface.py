@@ -199,14 +199,15 @@ class TestNoDoublePrediction(Base):
 
 
 # ---------------------------------------------------------------------------
-# 3  the candidate evidence package survives
+# 3  the frozen evidence scope is read directly (no candidate generator)
 # ---------------------------------------------------------------------------
 
 
-class TestCandidateEvidencePackage(Base):
-    def test_scan_produces_what_predict_capability_consumes(self):
-        """`induction-candidates` is the ONLY M4 responsibility that had to
-        survive: `predict-capability --bundle` consumes its output."""
+class TestEvidenceScopeForCapabilityPackage(Base):
+    def test_a_frozen_scope_is_what_predict_capability_consumes(self):
+        """The evidence package a capability prediction consumes is now the
+        frozen scope read DIRECTLY from the evidence, not a candidate bundle
+        produced by a generator."""
         provider = CountingProvider()
         h = self.make_harness(provider)
         for task_id in ("t1", "t2"):
@@ -214,28 +215,28 @@ class TestCandidateEvidencePackage(Base):
                                str(self.script), str(self._work),
                                solver="highs", episode_id=f"e_{task_id}")
             h.record(record)
-        bundles = h.induction_candidates()
-        self.assertEqual(len(bundles), 1)
-        bundle = bundles[0]
-        # The bundle carries a real, frozen scope — not just a name.
-        self.assertTrue(bundle["execution_ids"])
-        self.assertEqual(bundle["tasks"], ["t1", "t2"])
+        ids = ["t1_exec", "t2_exec"]
+        # The material is the batch read; the scope is the executions.
+        material = h.induction_material()
+        self.assertEqual(material["n_distinct_tasks"], 2)
+        execution_ids = sorted(m["execution_id"] for m in material["material"])
+        scope = {"execution_ids": execution_ids,
+                 "tasks": ["t1", "t2"], "strategy_id": "S01"}
 
-        # And it really is consumable: the prediction is scoped to it.
         calls_before = len(provider.requests)
         prediction = h.predict_capability_evolution(
             {"operation_type": "induce", "strategy_id": "S01"},
-            bundle=bundle, horizon="next 5 tasks", horizon_tasks=5)
+            evidence_scope=scope, horizon="next 5 tasks", horizon_tasks=5)
         self.assertEqual(len(provider.requests), calls_before + 1)
         self.assertEqual(sorted(prediction.experience_scope.execution_ids),
-                         sorted(bundle["execution_ids"]))
+                         execution_ids)
 
-    def test_scan_makes_no_model_call(self):
+    def test_induction_material_makes_no_model_call(self):
         provider = CountingProvider()
         h = self.make_harness(provider)
-        self.run_cli(["induction-candidates"])
+        self.run_cli(["induction-material"])
         self.assertEqual(provider.requests, [],
-                         "the evidence scan is a bank read, never a call")
+                         "the material read is a bank read, never a call")
 
 
 # ---------------------------------------------------------------------------
@@ -358,10 +359,24 @@ class TestAutomaticBindingIsSafe(Base):
                                str(self.script), str(self._work),
                                solver="highs", episode_id=f"e_{task_id}")
             h.record(record)
+        execution_ids = sorted(
+            m["execution_id"] for m in
+            h.induction_material()["material"])
+        # The accepted operation must DECLARE the relations it forms: there
+        # is no statistical fallback.
+        operation = {
+            "operation_type": "induce", "strategy_id": "S01",
+            "description": "record the decomposition",
+            "config": {"relations": [{
+                "subject": "S01",
+                "claim": "S01 decomposes the load problem",
+                "evidence": [{"execution_id": e, "role": "e"}
+                             for e in execution_ids]}]},
+        }
         prediction = h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S01",
-             "scope": {"execution_ids": ["ex1", "ex2"]}},
-            bundle=h.induction_candidates()[0],
+            operation,
+            evidence_scope={"execution_ids": execution_ids,
+                            "tasks": ["t1", "t2"], "strategy_id": "S01"},
             horizon="next 5 tasks", horizon_tasks=5)
         recommendation = {
             "recommendation": "accept",

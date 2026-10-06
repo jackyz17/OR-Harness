@@ -102,22 +102,15 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "conditional": {"state", "prediction_source"},
     },
     "induce": {
-        "required": {"results"},
-        "conditional": {"relations", "revisions", "action", "created",
-                        "updated", "skipped", "cost_claim_withheld"},
-    },
-    "induction-candidates": {
-        "required": {"candidates"},
-        "conditional": {"count"},
+        "required": {"relations"},
+        "conditional": {"action", "saved", "published", "business_result",
+                        "knowledge_delta", "revisions", "skipped",
+                        "index_sync"},
     },
     "induction-material": {
-        "required": set(),
-        "conditional": {"material", "bundle_id", "evidence"},
-    },
-    "review-material": {
         "required": {"count", "material", "existing_knowledge", "budget"},
         "conditional": {"tasks", "n_distinct_tasks", "check_states",
-                        "total_completed", "n_attempts"},
+                        "total_completed", "n_attempts", "cross_task_hint"},
     },
     "predict-capability": {
         "required": {"prediction_id"},

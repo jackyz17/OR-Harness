@@ -1,43 +1,20 @@
 {
   "task_id": "orarla_9",
   "family": "planning",
-  "text": "Haus Toys can manufacture and sell toy trucks, toy airplanes, toy boats, and toy trains. The profit for each truck sold is $5, each airplane $10, each boat $8, and each train $7. How many types of toys should Haus Toys manufacture to maximize profits?\n\nThere are 890 units of wood available. Each truck requires 12 units, each airplane 20 units, each boat 15 units, and each train 10 units.\n\nThere are 500 units of steel available. Each airplane requires 3 units, each boat 5 units, each train 4 units, and each truck 6 units.\n\nIf Haus Toys manufactures trucks, they will not manufacture trains.\n\nHowever, if they manufacture boats, they will also manufacture airplanes.\n\nThe number of toy boats manufactured cannot exceed the number of toy trains manufactured.",
+  "text": "A marketing manager is planning the distribution of advertising budget between two advertising channels, Ad1 and Ad2 for an upcoming campaign. The total effort from both channels combined must yield a minimum effectiveness score of at least 50 points. Additionally, to prevent audience fatigue, the combined effort of these channels calculated as 4 times the budget for Ad1 plus 6 times the budget for Ad2 should not exceed 300 points. Given that the cost per unit of effectiveness for Ad1 is $5 and for Ad2 is $3 and considering that budgets can only be allocated in whole dollars (Ad1, Ad2 are integers), find the minimum total cost in dollars required to meet all constraints while achieving the objectives.",
   "coupling": {
     "entities": [
-      {"name": "Truck", "kind": "product", "attrs": {"profit": 5, "wood": 12, "steel": 6}},
-      {"name": "Airplane", "kind": "product", "attrs": {"profit": 10, "wood": 20, "steel": 3}},
-      {"name": "Boat", "kind": "product", "attrs": {"profit": 8, "wood": 15, "steel": 5}},
-      {"name": "Train", "kind": "product", "attrs": {"profit": 7, "wood": 10, "steel": 4}},
-      {"name": "Wood", "kind": "resource", "attrs": {"available": 890}},
-      {"name": "Steel", "kind": "resource", "attrs": {"available": 500}}
+      {"name": "Ad1", "kind": "budget_variable", "attrs": {"domain": "integer", "lb": 0}},
+      {"name": "Ad2", "kind": "budget_variable", "attrs": {"domain": "integer", "lb": 0}}
     ],
     "decisions": [
-      {"name": "x_truck", "kind": "production", "indexes": [], "attrs": {"desc": "number of trucks manufactured", "domain": "nonnegative_integer"}},
-      {"name": "x_airplane", "kind": "production", "indexes": [], "attrs": {"desc": "number of airplanes manufactured", "domain": "nonnegative_integer"}},
-      {"name": "x_boat", "kind": "production", "indexes": [], "attrs": {"desc": "number of boats manufactured", "domain": "nonnegative_integer"}},
-      {"name": "x_train", "kind": "production", "indexes": [], "attrs": {"desc": "number of trains manufactured", "domain": "nonnegative_integer"}}
+      {"name": "Ad1", "kind": "budget", "indexes": [], "attrs": {"lb": 0, "integer": true}},
+      {"name": "Ad2", "kind": "budget", "indexes": [], "attrs": {"lb": 0, "integer": true}}
     ],
     "constraints": [
-      {"id": "wood_limit", "kind": "resource", "expr": "12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890"},
-      {"id": "steel_limit", "kind": "resource", "expr": "6*x_truck + 3*x_airplane + 5*x_boat + 4*x_train <= 500"},
-      {"id": "no_truck_train", "kind": "conditional", "expr": "x_truck + x_train <= 0", "note": "if trucks>0 then trains=0; needs big-M: x_truck <= M*y, x_train <= M*(1-y)"},
-      {"id": "boat_requires_airplane", "kind": "conditional", "expr": "x_boat <= x_airplane"},
-      {"id": "boat_le_train", "kind": "comparison", "expr": "x_boat <= x_train"}
-    ],
-    "relations": [
-      {"source": "x_truck", "target": "Truck", "type": "produces", "evidence": "structural", "detail": ""},
-      {"source": "x_airplane", "target": "Airplane", "type": "produces", "evidence": "structural", "detail": ""},
-      {"source": "x_boat", "target": "Boat", "type": "produces", "evidence": "structural", "detail": ""},
-      {"source": "x_train", "target": "Train", "type": "produces", "evidence": "structural", "detail": ""},
-      {"source": "x_truck", "target": "Wood", "type": "consumes", "evidence": "structural", "detail": "12 units per truck"},
-      {"source": "x_airplane", "target": "Wood", "type": "consumes", "evidence": "structural", "detail": "20 units per airplane"},
-      {"source": "x_boat", "target": "Wood", "type": "consumes", "evidence": "structural", "detail": "15 units per boat"},
-      {"source": "x_train", "target": "Wood", "type": "consumes", "evidence": "structural", "detail": "10 units per train"},
-      {"source": "x_truck", "target": "Steel", "type": "consumes", "evidence": "structural", "detail": "6 units per truck"},
-      {"source": "x_airplane", "target": "Steel", "type": "consumes", "evidence": "structural", "detail": "3 units per airplane"},
-      {"source": "x_boat", "target": "Steel", "type": "consumes", "evidence": "structural", "detail": "5 units per boat"},
-      {"source": "x_train", "target": "Steel", "type": "consumes", "evidence": "structural", "detail": "4 units per train"}
+      {"id": "C1", "kind": "effectiveness", "expr": "Ad1 + Ad2 >= 50", "attrs": {}},
+      {"id": "C2", "kind": "audience_fatigue", "expr": "4*Ad1 + 6*Ad2 <= 300", "attrs": {}}
     ]
   },
-  "model": "MAXIMIZE 5*x_truck + 10*x_airplane + 8*x_boat + 7*x_train\nSUBJECT TO\n  wood: 12*x_truck + 20*x_airplane + 15*x_boat + 10*x_train <= 890\n  steel: 6*x_truck + 3*x_airplane + 5*x_boat + 4*x_train <= 500\n  truck_train_exclude: x_truck <= 100*y  (y binary)\n  truck_train_exclude2: x_train <= 100*(1-y)\n  boat_airplane: x_boat <= x_airplane\n  boat_train: x_boat <= x_train\nVARIABLES\n  x_truck, x_airplane, x_boat, x_train integer >= 0\n  y binary"
+  "model": "VARIABLES:\n Ad1 integer >= 0\n Ad2 integer >= 0\nOBJECTIVE:\n minimize 5*Ad1 + 3*Ad2\nCONSTRAINTS:\n C1: Ad1 + Ad2 >= 50\n C2: 4*Ad1 + 6*Ad2 <= 300"
 }

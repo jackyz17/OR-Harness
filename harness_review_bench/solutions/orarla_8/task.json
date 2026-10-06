@@ -1,55 +1,7 @@
 {
   "task_id": "orarla_8",
-  "family": "scheduling",
-  "difficulty": "medium",
-  "text": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The Hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
-  "coupling": {
-    "entities": [
-      {"name": "worker_I", "kind": "worker", "attrs": {"id": "I"}},
-      {"name": "worker_II", "kind": "worker", "attrs": {"id": "II"}},
-      {"name": "worker_III", "kind": "worker", "attrs": {"id": "III"}},
-      {"name": "worker_IV", "kind": "worker", "attrs": {"id": "IV"}},
-      {"name": "worker_V", "kind": "worker", "attrs": {"id": "V"}},
-      {"name": "task_A", "kind": "task", "attrs": {"id": "A"}},
-      {"name": "task_B", "kind": "task", "attrs": {"id": "B"}},
-      {"name": "task_C", "kind": "task", "attrs": {"id": "C"}},
-      {"name": "task_D", "kind": "task", "attrs": {"id": "D"}}
-    ],
-    "decisions": [
-      {
-        "name": "assign_worker_to_task",
-        "kind": "assignment",
-        "indexes": ["worker", "task"],
-        "attrs": {"selected_workers": 4, "total_tasks": 4}
-      }
-    ],
-    "constraints": [
-      {"id": "C1", "kind": "assignment", "expr": "each_task_assigned_once: sum(worker, x[worker,task]) = 1 for each task"},
-      {"id": "C2", "kind": "at_most_one", "expr": "one_task_per_worker: sum(task, x[worker,task]) <= 1 for each worker"},
-      {"id": "C3", "kind": "cardinality", "expr": "exactly_4_workers: sum(worker, sum(task, x[worker,task])) = 4"},
-      {"id": "C4", "kind": "binary", "expr": "x[worker,task] is binary"}
-    ],
-    "relations": [
-      {"source": "assign_worker_to_task", "target": "task_A", "type": "assigns_to", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "task_B", "type": "assigns_to", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "task_C", "type": "assigns_to", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "task_D", "type": "assigns_to", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "worker_I", "type": "uses_worker", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "worker_II", "type": "uses_worker", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "worker_III", "type": "uses_worker", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "worker_IV", "type": "uses_worker", "evidence": "declared"},
-      {"source": "assign_worker_to_task", "target": "worker_V", "type": "uses_worker", "evidence": "declared"}
-    ],
-    "coupling_groups": [
-      {"type": "assignment_matching", "members": ["assign_worker_to_task"], "resource": "worker_V", "implication": "must exclude exactly one worker to assign 4 tasks to 4 workers"}
-    ],
-    "issues": []
-  },
-  "model": {
-    "sets": "i in Workers = {I, II, III, IV, V}\nj in Tasks = {A, B, C, D}",
-    "parameters": "hours[i,j]",
-    "variables": "x[i,j] binary",
-    "objective": "minimize sum(i, sum(j, hours[i,j] * x[i,j]))",
-    "constraints": "C1: sum(i, x[i,j]) = 1 for each j\nC2: sum(j, x[i,j]) <= 1 for each i\nC3: sum(i, sum(j, x[i,j])) = 4"
-  }
+  "name": "orarla_8",
+  "family": "planning",
+  "text": "A marketing manager is planning the distribution of resources between two different marketing strategies, X and Y. The total resources available for both strategies combined cannot exceed 5000 units due to budget constraints. To meet the company's reach and frequency objectives, the combined effort from these strategies must yield a minimum effectiveness score calculated as twice the resources allocated to strategy X plus thrice those allocated to strategy Y, with a minimum threshold of 10000 points. Each unit of resource in strategy X and Y has associated costs of 10 and 20 units respectively. The manager aims to minimize the total cost while meeting all these requirements (X,Y are integers). What is the minimum total cost in units, rounded to the nearest whole number?",
+  "model": "min 10*X + 20*Y\ns.t. X + Y <= 5000\n     2*X + 3*Y >= 10000\n     X, Y >= 0, integer"
 }

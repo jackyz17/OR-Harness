@@ -1,48 +1,22 @@
 {
   "task_id": "orarla_3",
-  "family": "inventory",
-  "text": "A company specializing in foldable tables needs to create an optimal production and human resources plan for a six-month period (January to June) to maximize its total net profit. The plan must detail monthly in-house production levels, outsourcing quantities, and workforce management (hiring/firing).\n\n**Initial Conditions (at the start of January):**\n- Initial Workforce: 1,000 employees\n- Initial Inventory: 15,000 units\n\n**Revenue and Cost Structure:**\n- **Sales Price:** 300 Yuan per unit sold.\n- **Raw Material Cost:** 90 Yuan per unit, applicable *only* to units produced in-house.\n- **Outsourcing Cost:** 200 Yuan per unit for finished tables acquired from a third-party supplier. This is an all-inclusive cost.\n- **Inventory Holding Cost:** 15 Yuan per unit for any inventory held at the end of a month.\n- **Backorder Cost:** 35 Yuan per unit for any unfulfilled demand (stockout) carried over to the next month.\n\n**Labor and Production Parameters:**\n- **Labor Requirement:** Each in-house unit requires 5 labor hours to produce.\n- **Regular Labor:** Each worker provides 160 regular working hours per month (8 hours/day * 20 days/month). The company pays a regular wage of 30 Yuan/hour for these 160 hours, regardless of full utilization.\n- **Overtime Labor:** Workers can perform overtime. Total overtime hours per month for the entire workforce cannot exceed 20 hours per worker. The overtime wage is 40 Yuan/hour.\n- **Workforce Management:** The company can hire or fire workers each month. The cost to hire a new worker is 5,000 Yuan, and the cost to fire a worker is 8,000 Yuan.\n\n**Demand and Fulfillment Logic:**\n- Unfulfilled demand from one month is back-ordered and must be met in subsequent months.\n- The company fulfills orders (both current demand and backorders) using available inventory from the previous month, current in-house production, and outsourced units.\n\n**Terminal Condition (at the end of June):**\n- The ending inventory must be at least 10,000 units.\n- All backorders must be cleared (i.e., ending backorders must be zero).\n\n**Forecasted Demand:**\n| Month | January | February | March | April | May | June |\n|:---:|:---:|:---:|:---:|:---:|:---:|:---:|\n| Demand Forecast | 20,000 | 40,000 | 42,000 | 35,000 | 19,000 | 18,500 |\n\nBased on this information, formulate the optimal six-month operational plan.",
-  "coupling": {
-    "entities": [
-      {"name": "month", "kind": "period", "attrs": {"index_set": ["Jan","Feb","Mar","Apr","May","Jun"]}},
-      {"name": "worker", "kind": "resource", "attrs": {"unit": "person"}},
-      {"name": "inv_level", "kind": "stock", "attrs": {"unit": "units"}},
-      {"name": "bo_level", "kind": "stock", "attrs": {"unit": "units"}},
-      {"name": "labor_hours", "kind": "resource", "attrs": {"unit": "hours"}},
-      {"name": "demand", "kind": "requirement", "attrs": {"unit": "units"}}
-    ],
-    "decisions": [
-      {"name": "produce", "kind": "production", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "units"}},
-      {"name": "outsource", "kind": "outsourcing", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "units"}},
-      {"name": "hire", "kind": "hiring", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "workers"}},
-      {"name": "fire", "kind": "firing", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "workers"}},
-      {"name": "workforce", "kind": "workforce_level", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "workers"}},
-      {"name": "inv_level", "kind": "inventory_level", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "units"}},
-      {"name": "bo_level", "kind": "backorder_level", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "units"}},
-      {"name": "sell", "kind": "sales", "indexes": ["month"], "attrs": {"variable_type": "integer", "lower": 0, "unit": "units"}}
-    ],
+  "family": "planning",
+  "text": "A marketing manager is planning a campaign with two main strategies: advertising and promotion. The manager has determined that the effectiveness of the campaign, measured in impact points, must be at least 100 and can be calculated as twice the amount spent on advertising plus three times the amount spent on promotion. Additionally, to maintain a balanced strategy, the spending on advertising cannot exceed that on promotion by more than $50$. Given that each unit of money spent on advertising contributes $4$ impact points and each unit spent on promotion contributes $5$ impact points, how much should the manager spend in total to achieve the minimum required effectiveness while adhering to these constraints (Advertising and Promotion are integers)? Please provide your answer rounded to the nearest dollar.",
+  "model": {
+    "type": "ILP",
+    "variables": {
+      "A": {"lb": 0, "ub": null, "type": "integer", "description": "Dollars spent on advertising"},
+      "P": {"lb": 0, "ub": null, "type": "integer", "description": "Dollars spent on promotion"}
+    },
+    "objective": {
+      "sense": "minimize",
+      "expr": "A + P",
+      "description": "Minimize total spending"
+    },
     "constraints": [
-      {"id": "C1", "kind": "workforce_balance", "expr": "workforce[t] = workforce[t-1] + hire[t] - fire[t]", "attrs": {"note": "workforce dynamics; workforce[Jan]=1000"}},
-      {"id": "C2", "kind": "labor_capacity", "expr": "produce[t]*5 <= workforce[t]*160 + ot[t]", "attrs": {"note": "regular+overtime hours; ot[t]<=workforce[t]*20"}},
-      {"id": "C3", "kind": "inventory_balance", "expr": "inv[t] = inv[t-1] + produce[t] + outsource[t] - sell[t]", "attrs": {"note": "inv[Jan]=15000"}},
-      {"id": "C4", "kind": "backorder_balance", "expr": "bo[t] = bo[t-1] + demand[t] - sell[t]", "attrs": {"note": "bo[Jan]=0; demand=[20000,40000,42000,35000,19000,18500]"}},
-      {"id": "C5", "kind": "sales_availability", "expr": "sell[t] <= inv[t-1] + produce[t] + outsource[t] + bo[t-1]", "attrs": {"note": "sales cannot exceed available supply"}},
-      {"id": "C6", "kind": "terminal_inventory", "expr": "inv['Jun'] >= 10000", "attrs": {"note": "ending inventory >= 10000"}},
-      {"id": "C7", "kind": "terminal_backorder", "expr": "bo['Jun'] = 0", "attrs": {"note": "ending backorder = 0"}}
+      {"expr": "4*A + 5*P", "sense": ">=", "rhs": 100, "description": "Minimum effectiveness 100 impact points"},
+      {"expr": "A - P", "sense": "<=", "rhs": 50, "description": "Advertising cannot exceed promotion by more than $50"}
     ],
-    "relations": [
-      {"source": "produce", "target": "labor_hours", "type": "uses_resource", "evidence": "semantic", "detail": "5 labor hours per unit"},
-      {"source": "workforce", "target": "labor_hours", "type": "provides_resource", "evidence": "semantic", "detail": "160 regular + 20 overtime per worker per month"},
-      {"source": "produce", "target": "inv_level", "type": "flows_to", "evidence": "structural"},
-      {"source": "outsource", "target": "inv_level", "type": "flows_to", "evidence": "structural"},
-      {"source": "sell", "target": "inv_level", "type": "depletes", "evidence": "structural"},
-      {"source": "hire", "target": "workforce", "type": "increases", "evidence": "structural"},
-      {"source": "fire", "target": "workforce", "type": "decreases", "evidence": "structural"}
-    ],
-    "coupling_groups": [
-      {"type": "temporal_propagation_chain", "members": ["inv_level", "bo_level", "workforce"], "resource": "month", "implication": "state variables propagate month-to-month"},
-      {"type": "shared_bottleneck", "members": ["produce", "hire", "fire"], "resource": "workforce", "implication": "production and workforce decisions compete for worker resource"}
-    ]
-  },
-  "model": "SETS:\n  t in Months = {Jan,Feb,Mar,Apr,May,Jun}\nPARAMETERS:\n  demand[t] = [20000, 40000, 42000, 35000, 19000, 18500]\n  initial_inv = 15000\n  initial_workforce = 1000\n  initial_bo = 0\n  sell_price = 300\n  raw_mat_cost = 90\n  outsource_cost = 200\n  hold_cost = 15\n  backorder_cost = 35\n  regular_wage = 30\n  overtime_wage = 40\n  regular_hours = 160\n  max_ot_per_worker = 20\n  labor_hours_per_unit = 5\n  hire_cost = 5000\n  fire_cost = 8000\nVARIABLES:\n  produce[t]   integer >= 0   (in-house production)\n  outsource[t] integer >= 0   (outsourced units)\n  hire[t]     integer >= 0   (workers hired)\n  fire[t]     integer >= 0   (workers fired)\n  workforce[t] integer >= 0   (workforce level)\n  inv[t]      integer >= 0   (inventory level)\n  bo[t]       integer >= 0   (backorders)\n  sell[t]     integer >= 0   (units sold)\n  ot[t]       continuous >= 0 (overtime hours)\nOBJECTIVE:\n  maximize sum(t, 300*sell[t] - 90*produce[t] - 200*outsource[t] - 15*inv[t] - 35*bo[t]\n                         - 4800*workforce[t] - 40*ot[t] - 5000*hire[t] - 8000*fire[t])\nCONSTRAINTS:\n  C1: workforce[Jan] = 1000 + hire[Jan] - fire[Jan]\n  C1b: workforce[t] = workforce[t-1] + hire[t] - fire[t]  for t=Feb..Jun\n  C2: produce[t]*5 <= workforce[t]*160 + ot[t]  for all t\n  C2b: ot[t] <= workforce[t]*20  for all t\n  C3: inv[Jan] = 15000 + produce[Jan] + outsource[Jan] - sell[Jan]\n  C3b: inv[t] = inv[t-1] + produce[t] + outsource[t] - sell[t]  for t=Feb..Jun\n  C4: bo[Jan] = 0 + demand[Jan] - sell[Jan]\n  C4b: bo[t] = bo[t-1] + demand[t] - sell[t]  for t=Feb..Jun\n  C5: sell[Jan] <= 15000 + produce[Jan] + outsource[Jan]\n  C5b: sell[t] <= inv[t-1] + produce[t] + outsource[t] + bo[t-1]  for t=Feb..Jun\n  C6: inv[Jun] >= 10000\n  C7: bo[Jun] = 0"
+    "solver": "scipy.optimize.milp"
+  }
 }

@@ -58,94 +58,15 @@ class _Case(HarnessTestCase):
             conn.close()
 
 
-class TestDryRunWritesNothing(_Case):
-    """All rehearsal paths must be read-only — including the ones that used to
-    write: a force-lift of a cold-archive veto removed the card even when the
-    call was a --dry-run."""
-
-    def _retired_entry(self):
-        self.add("ex_a", "ta")
-        self.add("ex_b", "tb")
-        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
-        entry = self.h.sbank.get(created)
-        entry.status = "suspect"
-        self.h.sbank.update(entry)
-        self.h.sbank.retire(created, reason="bad generalization")
-        return created
-
-    def test_force_dry_run_keeps_the_archive_card(self):
-        self._retired_entry()
-        self.assertEqual(len(self.h.sbank.cold_archive()), 1)
-        before = self.snapshot()
-        out = self.h.induce(strategy_id="S01", dry_run=True, force=True)
-        self.assertEqual(len(self.h.sbank.cold_archive()), 1,
-                         "a rehearsal must not lift the veto")
-        self.assertEqual(self.snapshot(), before)
-        self.assertIn("would_create", out["results"][0])
-
-    def test_force_dry_run_reports_the_intended_lift(self):
-        self._retired_entry()
-        out = self.h.induce(strategy_id="S01", dry_run=True, force=True)
-        self.assertNotIn("vetoed", out["results"][0])
-        self.assertIn("would_create", out["results"][0])
-
-    def test_plain_dry_run_writes_nothing(self):
-        self.add("ex_a", "ta")
-        self.add("ex_b", "tb")
-        before = self.snapshot()
-        self.h.induce(strategy_id="S01", dry_run=True)
-        self.assertEqual(self.snapshot(), before)
-
-    def test_all_dry_run_writes_nothing(self):
-        self.add("ex_a", "ta")
-        self.add("ex_b", "tb")
-        self.h.induce(strategy_id="S01")
-        before = self.snapshot()
-        out = self.h.induce(all_=True, dry_run=True)
-        self.assertIn("results", out)
-        self.assertEqual(self.snapshot(), before)
-
-    def test_all_force_dry_run_writes_nothing(self):
-        self._retired_entry()
-        before = self.snapshot()
-        self.h.induct_all_probe = self.h.induce(all_=True, dry_run=True,
-                                                force=True)
-        self.assertIn("results", self.h.induct_all_probe)
-        self.assertEqual(self.snapshot(), before)
-
-
 class TestEvidenceScope(_Case):
     """One membership rule for every count: executed + attempt-scope + the
     target's structural cell. A task-scope total used to stand in for an
-    independent attempt observation AND stretch the claim's range."""
+    independent attempt observation AND stretch the claim's range.
 
-    def test_task_scope_cannot_be_an_independent_task(self):
-        """Two attempts of one task plus a task-scope row for a SECOND task
-        must NOT satisfy the >=2-task bar (the task-scope row was counted as
-        an independent task while being excluded from the statistics). The
-        framework no longer BLOCKS creation on the count; it DRAFTS the entry
-        and reports the single-task fact, so the entry is never published as
-        transferable knowledge."""
-        self.add("ex_p1", "same", rc=0.20)
-        self.add("ex_p2", "same", rc=0.20)
-        self.add("ex_ts", "other", rc=0.20, scope="task")
-        result = self.h.induce(strategy_id="S01")["results"][0]
-        entry = self.h.sbank.get(result["created"])
-        # The task-scope row does not count: only "same" is a real task.
-        self.assertEqual(entry.predicates["family"],
-                         self.make_profile(problem_id="same").family)
-        self.assertIn("single_task_note", result)
-        self.assertNotIn("other", result["single_task_note"])
-        self.assertFalse(result["entry"]["verification"]["state"] == "verified")
-
-    def test_task_scope_never_enters_the_range(self):
-        self.add("ex_p1", "ta", rc=0.20)
-        self.add("ex_p2", "tb", rc=0.22)
-        self.add("ex_ts", "tc", rc=0.95, scope="task")
-        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
-        entry = self.h.sbank.get(created)
-        self.assertEqual(entry.predicates["resource_coupling"], [0.0, 0.25])
-        self.assertEqual(entry.support_n, 2)
+    The statistical PATH that consumed these counts is gone (knowledge is
+    only written from an agent-formed strategy), but the underlying
+    ``ConditionalStats.evidence`` membership rule — which recall and the world
+    model still read — must keep excluding task-scope totals."""
 
     def test_task_scope_never_counts_toward_evidence(self):
         self.add("ex_p1", "ta")
@@ -153,76 +74,6 @@ class TestEvidenceScope(_Case):
         self.add("ex_ts", "tc", scope="task")
         profile = self.make_profile(problem_id="ta")
         self.assertEqual(len(self.h.stats.evidence(profile, "S01")), 2)
-
-
-class TestDormantDedup(_Case):
-    """A dormant claim used to be invisible to the dedup pass, so induction
-    created a NEW entry and then revise woke the OLD one: two entries for one
-    knowledge object."""
-
-    def _dormant_entry(self):
-        self.add("ex_a", "ta")
-        self.add("ex_b", "tb")
-        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
-        entry = self.h.sbank.get(created)
-        entry.status = "dormant"
-        self.h.sbank.update(entry)
-        return created
-
-    def test_new_evidence_reuses_the_dormant_entry_id(self):
-        created = self._dormant_entry()
-        self.add("ex_c", "tc")
-        result = self.h.induce(strategy_id="S01")["results"][0]
-        self.assertIsNone(result.get("created"))
-        self.assertEqual(result.get("updated"), created)
-        self.assertEqual(self.h.sbank.count(), 1)
-
-    def test_dormant_entry_is_not_woken_by_a_no_op_refresh(self):
-        """Re-inducing identical evidence must not flip the status: waking is
-        the offline decision, made when the evidence actually changed."""
-        created = self._dormant_entry()
-        self.h.induce(strategy_id="S01")
-        self.assertEqual(self.h.sbank.get(created).status, "dormant")
-
-    def test_full_call_chain_leaves_one_entry(self):
-        created = self._dormant_entry()
-        self.add("ex_c", "tc")
-        self.h.induce(strategy_id="S01")
-        self.assertEqual([e.entry_id for e in self.h.sbank.list()], [created])
-
-
-class TestPrecision(_Case):
-    def test_reloaded_entry_still_matches_its_supporting_task(self):
-        """Precision must survive the persistence round trip, not just live
-        in memory (``to_dict`` feeds the payload)."""
-        third = 1.0 / 3.0
-        self.add("ex_t1", "ta", rc=third)
-        self.add("ex_t2", "tb", rc=third)
-        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
-        # Reopen the bank from disk: a fresh object, same payload.
-        self.h.close()
-        h2 = ORHarness(home=self.home)
-        try:
-            entry = h2.sbank.get(created)
-            profile = self.make_profile(problem_id="q", resource_coupling=third)
-            self.assertTrue(entry.matches(profile))
-            self.assertEqual(len(h2.stats.evidence(profile, "S01")), 2)
-            h2.induce(strategy_id="S01")
-            self.assertEqual(h2.sbank.count(), 1)
-        finally:
-            h2.close()
-
-    def test_pattern_hash_is_stable_across_reload(self):
-        self.add("ex_t1", "ta")
-        self.add("ex_t2", "tb")
-        created = self.h.induce(strategy_id="S01")["results"][0]["created"]
-        before = self.h.sbank.get(created).predicates
-        self.h.close()
-        h2 = ORHarness(home=self.home)
-        try:
-            self.assertEqual(h2.sbank.get(created).predicates, before)
-        finally:
-            h2.close()
 
 
 class TestBindOutcomeByExecutionId(_Case):
@@ -294,51 +145,6 @@ class TestTaskTextField(_Case):
         self.assertIn("long form", joined)
 
 
-class TestInduceCellScope(_Case):
-    """Defect: `induce --verify` applied one admission payload to EVERY cell
-    of a strategy, so a check written for one family overwrote another
-    family's verdict."""
-
-    def _seed_two_families(self):
-        self.add("ex_r1", "tr1", family="routing")
-        self.add("ex_r2", "tr2", family="routing")
-        self.add("ex_a1", "ta1", family="allocation")
-        self.add("ex_a2", "ta2", family="allocation")
-
-    def test_family_filter_selects_only_that_family(self):
-        self._seed_two_families()
-        targets = self.h._induction_targets("S01", False, family="allocation")
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0][0].family, "allocation")
-
-    def test_cell_filter_selects_exactly_one_cell(self):
-        self._seed_two_families()
-        routing = [r for r in self.h.bank.all()
-                   if r.profile_snapshot.family == "routing"][0]
-        targets = self.h._induction_targets(
-            "S01", False, cell=group_key(routing.profile_snapshot))
-        self.assertEqual(len(targets), 1)
-        self.assertEqual(targets[0][0].family, "routing")
-
-    def test_scoped_verify_does_not_touch_other_families(self):
-        self._seed_two_families()
-        verify = {"purpose": "rule", "claim": "S01 holds here",
-                  "check": {"reference_objective": 100.0},
-                  "executions": [self.make_record(execution_id="ex_v",
-                                                  task_id="t_verify")]}
-        self.h.induce(strategy_id="S01", verify=verify, family="routing")
-        # Every entry this scoped call created belongs to routing only — the
-        # allocation cell was never a target, so no allocation entry exists.
-        self.assertGreaterEqual(self.h.sbank.count(), 1)
-        for entry in self.h.sbank.list():
-            self.assertEqual(entry.predicates["family"], "routing")
-    def test_naming_a_unit_implies_all_scope(self):
-        self._seed_two_families()
-        # No --all and no --strategy, but an explicit family: still selected.
-        targets = self.h._induction_targets(None, False, family="routing")
-        self.assertEqual(len(targets), 1)
-
-
 class TestEvidenceExclusion(_Case):
     """Defect: a wrong execution fact could not be withdrawn (the bank is
     append-only), so it kept polluting statistics. Exclusion must preserve
@@ -347,7 +153,8 @@ class TestEvidenceExclusion(_Case):
     def _seed_and_induce(self):
         self.add("ex_bad", "t1", tokens=99999)
         self.add("ex_good", "t2", tokens=100)
-        return self.h.induce(strategy_id="S01")
+        # The facts are enough: exclusion/statistics do not need induction.
+        return {"results": []}
 
     def test_excluded_fact_leaves_the_statistics(self):
         self._seed_and_induce()

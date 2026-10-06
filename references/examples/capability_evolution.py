@@ -266,7 +266,12 @@ def _local_http_check(home):
         h = ORHarness(home=home, world_model=provider,
                       embedding=LocalHashEmbeddingBackend())
         prediction = h.predict_capability_evolution(
-            {"operation_type": "induce", "strategy_id": "S04"},
+            {"operation_type": "induce", "strategy_id": "S04",
+             "description": "record the decomposition strategy",
+             "config": {"relations": [{
+                 "subject": "S04",
+                 "claim": "S04 decomposes the load problem",
+                 "evidence": [{"execution_id": "ex_http", "role": "e"}]}]}},
             task=_task("http_check"), horizon="the next matching task",
             horizon_tasks=1,
             # A fresh home has no candidate bundle, so the framework's
@@ -294,21 +299,35 @@ def main() -> int:
 
     # ------------------------------------------------------------------
     print("=" * 72)
-    print("1. Real closed experience -> a REAL candidate bundle")
+    print("1. Real closed experience -> a frozen evidence scope")
     print("=" * 72)
     tasks = ["m5_a", "m5_b", "m5_c"]
     _seed_evidence(h, tasks)
-    bundles = h.induction_candidates()
-    print(f"candidates built       : {len(bundles)}")
-    assert bundles, ("the seeded evidence must produce a real candidate "
-                     "bundle through the existing induction-pattern scan")
-    bundle = bundles[0]
-    print(f"bundle                 : {bundle['bundle_id']} "
-          f"({bundle['kind']}, strategy {bundle['strategy_id']})")
-    print(f"scope                  : {len(bundle['execution_ids'])} "
-          f"execution(s) over {len(bundle['tasks'])} task(s)")
-    print(f"frozen baseline        : mean_quality="
-          f"{bundle['mean_quality']}")
+    material = h.induction_material(strategy_id="S04")
+    print(f"attempts read          : {material['count']}")
+    assert material["count"], "the seeded evidence must be readable"
+    execution_ids = sorted(m["execution_id"] for m in material["material"])
+    # The operation declares the strategy it would write; the accepted path
+    # runs exactly it (there is no statistical fallback).
+    bundle = {"execution_ids": execution_ids,
+              "tasks": material["tasks"], "strategy_id": "S04"}
+    print(f"scope                  : {len(execution_ids)} execution(s) over "
+          f"{material['n_distinct_tasks']} task(s)")
+
+    def _op():
+        """The operation the agent would carry out: it DECLARES the strategy
+        it forms, so accepting it runs exactly that (no statistical
+        fallback)."""
+        return {
+            "operation_type": "induce", "strategy_id": "S04",
+            "description": "record the decomposition strategy",
+            "config": {"relations": [{
+                "subject": "S04",
+                "claim": "S04 decomposes the load problem and links load to "
+                         "capacity",
+                "evidence": [{"execution_id": e, "role": "evidence"}
+                             for e in execution_ids]}]},
+        }
 
     # ------------------------------------------------------------------
     print()
@@ -335,7 +354,7 @@ def main() -> int:
     print("3. Predictions under a FIXED rule, and the honest branches")
     print("=" * 72)
     big = h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     print(f"prediction             : {big.prediction_id} "
@@ -372,7 +391,7 @@ def main() -> int:
     small_h = ORHarness(home=home, world_model=small_provider,
                         embedding=backend)
     small = small_h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     small_h.close()
@@ -407,7 +426,7 @@ def main() -> int:
     risky_h = ORHarness(home=home, world_model=risky_provider,
                         embedding=backend)
     risky = risky_h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     risky_h.close()
@@ -429,7 +448,7 @@ def main() -> int:
     quality_h = ORHarness(home=home, world_model=quality_provider,
                           embedding=backend)
     quality_only = quality_h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     quality_h.close()
@@ -551,7 +570,7 @@ def main() -> int:
     empty_h = ORHarness(home=home, world_model=empty_provider,
                         embedding=backend)
     empty = empty_h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     empty_h.close()
@@ -587,7 +606,7 @@ def main() -> int:
     contradicted_h = ORHarness(home=home, world_model=contradicted_provider,
                                embedding=backend)
     contradicted = contradicted_h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     contradicted_h.close()
@@ -614,7 +633,7 @@ def main() -> int:
 
     # A candidate that was NEVER accepted: no fact, no fabricated result.
     never = h.predict_capability_evolution(
-        {"operation_type": "induce", "strategy_id": "S04"},
+        _op(),
         task=_task("m5_a"), bundle=bundle,
         horizon="the next matching task", horizon_tasks=1)
     unbound = h.bind_capability_maintenance(never.prediction_id)

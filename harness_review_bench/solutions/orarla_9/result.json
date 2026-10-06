@@ -1,13 +1,19 @@
 {
   "status": "optimal",
-  "objective_value": 623.0,
-  "objective_bound": 623.0,
-  "runtime_seconds": 0.013315677642822266,
-  "solution_variables": {
-    "x_truck": 0,
-    "x_airplane": 0,
-    "x_boat": 0,
-    "x_train": 89,
-    "y": 0
+  "solver_status": "HighsStatus.kOk",
+  "objective_value": 150.0,
+  "objective_bound": null,
+  "mip_gap": 0.0,
+  "runtime_seconds": 0.017806,
+  "variables": {
+    "Ad1": -0.0,
+    "Ad2": 50.0
+  },
+  "method_performed": {
+    "action_id": "ac_39e3c1a7b915",
+    "name": "Integer MILP with HiGHS (highspy native API)",
+    "solver": "highspy",
+    "solver_version": "1.15.1",
+    "model": "minimize 5*Ad1 + 3*Ad2 | Ad1+Ad2>=50, 4*Ad1+6*Ad2<=300 | Ad1,Ad2 integer>=0"
   }
 }

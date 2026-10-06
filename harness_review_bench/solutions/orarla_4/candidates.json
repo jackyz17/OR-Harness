@@ -1,35 +1,40 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_direct_integer",
+    "name": "scipy_milp_integer",
+    "solver": "scipy.optimize.milp",
+    "params": {},
     "method": {
-      "name": "milp_direct_integer",
-      "steps": [
-        "Formulate as MILP: 3 integer variables (n_cows, n_sheep, n_chickens >= 0, integer)",
-        "Objective: maximize 400*n_cows + 120*n_sheep + 3*n_chickens",
-        "Constraints: manure <= 800, n_chickens <= 50, n_cows >= 10, n_sheep >= 20, total <= 100",
-        "Declare all variables as HighsVarType.kInteger from start",
-        "Use HiGHS highs API: addVariable/addConstr/getSolution",
-        "Write result to result.json with status/objective_value/objective_bound/runtime_seconds/solution"
-      ]
+      "planned": {
+        "name": "scipy_milp_integer",
+        "solver": "scipy.optimize.milp",
+        "steps": [
+          "Formulate as MILP: min 4X + 3Y subject to X + Y <= 1000, X >= 2Y + 300, X,Y integers >= 0",
+          "Use scipy.optimize.milp with bounds=(0, inf), constraints=linear inequalities, integrality=1",
+          "Extract optimal X, Y and compute objective = 4*X + 3*Y",
+          "Write result to result.json with status/objective_value/variables"
+        ]
+      }
     },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+    "key_idea": "Two-variable bounded ILP; scipy.optimize.milp handles mixed-integer directly via integrality constraint; efficient for small variable count"
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_lp_relaxation_then_round",
+    "name": "enumeration_with_constraints",
+    "solver": "brute_force",
+    "params": {},
     "method": {
-      "name": "milp_lp_relaxation_then_round",
-      "steps": [
-        "Phase 1: solve LP relaxation with continuous variables",
-        "Phase 2: round integer variables to nearest integers respecting constraints",
-        "Phase 3: local search / repair to ensure all constraints satisfied",
-        "Use HiGHS highs API for Phase 1 solve",
-        "Write result to result.json with status/objective_value/objective_bound/runtime_seconds/solution"
-      ]
+      "planned": {
+        "name": "enumeration_with_constraints",
+        "solver": "brute_force",
+        "steps": [
+          "From X >= 2Y + 300 and X + Y <= 1000, derive bounds: Y <= (1000-300)/3 = 233, X >= 2Y+300",
+          "Enumerate Y from 0 to 233, compute minimal feasible X for each Y",
+          "For each feasible (X,Y), compute cost = 4X + 3Y and pick minimum",
+          "Because cost coefficients 4>3, minimizing X minimizes cost; exploit constraint tight bounds to prune"
+        ]
+      }
     },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+    "key_idea": "Direct enumeration with tight bounds derived from constraints; leverages monotonicity to prune efficiently"
   }
 ]

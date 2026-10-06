@@ -1,21 +1,20 @@
 # Induction: scope, material, and validation
 
-Read this page when you are deciding whether to induce, working out why a candidate was skipped, or submitting a knowledge claim.
+Read this page when you are deciding whether to induce, working out why a submission was skipped, or submitting a new strategy.
 
 ## The offline flow
 
 ```text
 completed episodes
-  review-material                 read a BATCH straight from the evidence bank
-        |                         (no model call, no detector, no count gate):
+  induction-material              read a BATCH straight from the evidence bank
+        |                         (no model call, no candidate, no count gate):
         |                         success / failure / cross-cell / cross-name
         |                         all visible, retries marked non-independent
-        |                         -- the DEFAULT material entry point
-  (optional lead)                 induction-candidates freeze cell packages;
-        |                         induction-material reads one
-        v   material_report.missing non-empty = record how the work was
-        |   done; the framework does not abstract it for you
-  (you form the claim: condition -> how -> consequence -> boundary)
+        |                         -- the ONLY material entry point
+        v   method.basis / missing   a plan, a performed method, or nothing:
+        |   (no material_report)     record how the work was done; the
+        |                            framework does not abstract it for you
+  (you form the new strategy: condition -> how -> consequence -> boundary)
         |
   induce --relation               submit it; the framework checks what you wrote
         |
@@ -23,13 +22,14 @@ completed episodes
         |                         declare the relations it forms in the
         |                         operation's config — accept runs them
   compare-capability              one recommendation, or defer
-  accept-capability               EXPLICIT accept — runs the operation it
-        |                         DECLARED (relations, or a statistical
-        |                         refresh when none were declared) and binds
-        |                         the maintenance fact itself
+  accept-capability               EXPLICIT accept — runs the relations the
+        |                         operation DECLARED and binds the
+        |                         maintenance fact itself. There is NO
+        |                         statistical fallback: a candidate that
+        |                         declares no relations is refused
         v
-  induce                          the only place knowledge changes:
-        |                         creates/refreshes the claim, replays the
+  induce --relation               the ONLY place knowledge changes: creates
+        |                         or revises the strategy entry, replays the
         |                         frozen checks, publishes what was verified
         v
   later real tasks accumulate
@@ -37,27 +37,27 @@ completed episodes
   evaluate-capability             did it help? (TASK-EPISODES, work after it)
 ```
 
-**Read first, gate later.** The material you review comes from ONE place: `orx review-material` reads a BATCH of completed tasks straight from the evidence bank — no detector candidate and no sample-count gate. Success, failure, cross-cell and cross-method-name material all reach you, and a repeated run of one task is marked `independent_task: false` so repetition is never mistaken for cross-task support. `induction-candidates` / `induction-material` are an OPTIONAL cell LEAD worth a second look — they never decide what you may read.
+**Read first, gate later.** The material you review comes from ONE place: `orx induction-material` reads a BATCH of completed tasks straight from the evidence bank — no candidate and no sample-count gate. Success, failure, cross-cell and cross-method-name material all reach you, and a repeated run of one task is marked `independent_task: false` so repetition is never mistaken for cross-task support. There is no separate "lead" command: the batch IS the material.
 
-**Entry conditions gate PUBLICATION, not visibility.** Creating a statistical entry needs ≥2 executions from ≥2 distinct `task_id`s in the same structural cell; publishing one needs a passed admission check as well. A thin cell (fewer than 2 executions) or a single task's repeated runs still APPEAR — as `kind="cell_observation"` with an `admission_note` — because its material is reviewable even though a transferable claim is not yet admissible from it. There is NO separate "single observation" trigger category: a lone verified execution is simply a thin cell, and the same principle covers every case — induction may come from one or many executions, and the evidence COUNT constrains the claim's STRENGTH, never whether the material may be seen.
+**"At least two tasks" gates PUBLICATION, not visibility.** A transferable strategy needs the same mechanism on ≥2 distinct `task_id`s, and it must also pass its declared check to be published. But the material is VISIBLE from the first execution: the batch reports every attempt with its facts, and the distinct-task count (`cross_task_hint`) is a FACT you weigh, never a bar on what you may read or cite. Different tasks, strategy ids and cells may be cited TOGETHER — the framework no longer requires a shared method name or a shared cell.
 
-**What `record` tells you.** `record` does NOT interpret the fact it stored: it emits no induction labels and no hints. Deciding what a fact MEANS is your job — read the material with `orx review-material`; `induce` is your explicit call, and you may induct from your own business knowledge with no lead at all. (Old records may still carry an `execution_features.induction_hints` key left by the retired detectors; nothing reads it any more.)
+**What `record` tells you.** `record` does NOT interpret the fact it stored: it emits no induction labels and no hints. Deciding what a fact MEANS is your job — read the material with `orx induction-material`; `induce --relation` is your explicit call, and you may induce from your own business knowledge with no evidence of your own at all. (Old records may still carry an `execution_features.induction_hints` key left by the retired detectors; nothing reads it any more.)
 
-**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt (stamped with the attempt's `OR_ACTION_ID`) records what ACTUALLY ran, and the receipt's steps appear in the record's trajectory. Nothing promotes the plan to a fact: an unobserved performance stays `None`. Method evidence is not limited to `method_performed` either — the code, model or trajectory associated with an execution can be inspected too, keeping its source and determinism; but a PLAN alone never counts as a performed method. `review-material` (or, for a lead, `induction-material`) is what you read before writing a claim.
+**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt (stamped with the attempt's `OR_ACTION_ID`) records what ACTUALLY ran, and the receipt's steps appear in the record's trajectory. Nothing promotes the plan to a fact: an unobserved performance stays `None`. Method evidence is not limited to `method_performed` either — the code, model or trajectory associated with an execution can be inspected too, keeping its source and determinism; but a PLAN alone never counts as a performed method. `induction-material` is what you read before writing a strategy.
 
 Induction is the part of OR-Harness most worth understanding correctly. It answers: "given the facts accumulated so far, which generalizations am I entitled to commit to?"
 
 ## The material you read (no framework interpretation)
 
-The framework organizes the recorded facts; it does not decide what they mean. `orx review-material` is the entry point: per attempt it gives you the problem SHAPE (a count-based CIR/profile summary — the full representation stays on the record), the method (`planned`/`actual` with `basis`), the `changes` against the previous same-task attempt (code hash, planned method), the outcome (status / objective / gap / executed `code_hash`), the task check with its `reference_source`, the failures, the trajectory tail and the cost. Every attempt of a task is kept (each failure with its own cost) and grouped under `task_chains`, so a same-task retry is never read as cross-task support.
+The framework organizes the recorded facts; it does not decide what they mean. `orx induction-material` is the entry point: per attempt it gives you the problem SHAPE (a count-based CIR/profile summary — the full representation stays on the record), the method (`planned`/`actual` with `basis`: `performed` / `planned_only` / `none`), the `changes` against the previous same-task attempt (code hash, planned method), the outcome (status / objective / gap / executed `code_hash`), the task check with its `reference_source`, the failures, the trajectory tail and the cost. Every attempt of a task is kept (each failure with its own cost) and grouped under `task_chains`, so a same-task retry is never read as cross-task support.
 
-**Key questions to answer yourself:** what STRUCTURE recurred, what METHOD was applied, WHY it helped, and where its cost and failure boundary lie. The framework does not fit your answer into a fixed pattern catalogue, and it does not name "patterns" for you.
+**Key questions to answer yourself:** what STRUCTURE recurred, what METHOD was applied, WHY it helped, and where its cost and failure boundary lie. The framework does not fit your answer into a fixed pattern catalogue, and it does not name "patterns" for you. The four angles below are yours to use, not detectors the framework runs.
 
-**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt records what ACTUALLY ran. Nothing promotes the plan to a fact: an unobserved performance stays `None`. `review-material` is what you read before writing a claim.
+**The method is the missing half of the evidence.** `execute --method '<json>'` (or a candidate's `method`) records the PLAN; the solve script's optional `method_performed` receipt records what ACTUALLY ran. Nothing promotes the plan to a fact: an unobserved performance stays `None`. `induction-material` is what you read before writing a strategy.
 
-**Leads point; they do not admit.** A cell clearing a sample count, two runs sharing a `strategy_id` — none of these is a precondition for reading material or a bar on what you may abstract. They shape how strong a claim its evidence can later support ("at least two tasks" is a PUBLICATION bar for TRANSFER, not a gate on material). Where a claim asserts a benefit — faster, higher quality, cheaper — the matching COMPARISON evidence is required at VERIFICATION, not as a precondition for review.
+**Nothing is admitted for you.** A cell clearing a sample count, two runs sharing a `strategy_id` — none of these is a precondition for reading material or a bar on what you may abstract. They shape how strong a strategy its evidence can later support ("at least two tasks" is a PUBLICATION bar for TRANSFER, not a gate on material). Where a strategy asserts a benefit — faster, higher quality, cheaper — the matching COMPARISON evidence is required at VERIFICATION, not as a precondition for review.
 
-**A claim must match its evidence.** An assertion whose probe PATH does not resolve is reported `insufficient` — a typo is not a refutation. `code_unchanged` (every cited record shares one `solver.code_hash`) backs a "the code was not changed" claim; an `optimal` status never does. A claim whose text names a strategy its evidence does not carry is reported.
+**A strategy must match its evidence.** An assertion whose probe PATH does not resolve is reported `insufficient` — a typo is not a refutation. `code_unchanged` (every cited record shares one `solver.code_hash`) backs a "the code was not changed" strategy; an `optimal` status alone never does. A strategy whose text names a method its evidence does not carry is reported.
 
 ## Applicability: problem class + structural cell
 
@@ -85,7 +85,7 @@ Counterexamples need no special machinery: a miss inside the claimed cell is a m
 
 The framework does NOT decide whether evidence is "enough to create a claim": that is your judgment, made from the material. `induce` creates or refreshes a DRAFT entry from whatever attempt-scope evidence a structural cell holds, and the entry's `verification` (not a sample count) decides whether it is PUBLISHED.
 
-**A single task is not transferable.** An entry created from fewer than 2 distinct `task_id`s is a DRAFT: the outcome carries a `single_task_note`, and its `publication` reports `published: false` until it is verified over ≥2 independent tasks. The evidence is never refused — it is kept as a candidate and recall still answers from it — but repetition of one task never becomes transferable knowledge.
+**A single task is not transferable.** An entry citing fewer than 2 distinct `task_id`s is SAVED but its `publication` reports `published: false` until it is verified over ≥2 independent tasks. The evidence is never refused — recall still answers from it — but repetition of one task never becomes transferable knowledge.
 
 **Only a cold-archive card blocks creation.** A standing card for the same (strategy, predicates) pattern is reported before anything else (lift it with `--force` when the environment has genuinely drifted). Dedup considers **dormant** entries, and once a claim exists any new matching evidence refreshes it, however repetitive.
 
@@ -154,42 +154,37 @@ Prediction intervals are honest to sample size: with n=2 the floor width is 0.50
 ## Ability boundaries
 
 - The framework organizes recorded FACTS and computes declared checks. It does not interpret what a fact means, does not name patterns, and does not derive a technique from numbers or a strategy name.
-- The material report (`material_report`) is a report, not an admission verdict: it names what the evidence CARRIES (`performed` / `planned_only` / `none`) and what is `missing`; you decide what to abstract.
-- A claim must match its evidence: a probe PATH that does not resolve is `insufficient` (never a refutation); `code_unchanged` backs a "the code was not changed" claim from the recorded `solver.code_hash`; and a text-vs-evidence mismatch is reported.
+- The material reports what the evidence CARRIES (`method.basis`: `performed` / `planned_only` / `none`) and what is `missing`; you decide what to abstract. There is no `material_report` object and no admission verdict.
+- A strategy must match its evidence: a probe PATH that does not resolve is `insufficient` (never a refutation); `code_unchanged` backs a "the code was not changed" strategy from the recorded `solver.code_hash`; and a text-vs-evidence mismatch is reported.
 
 ## Reading the material
 
-Semantic induction is a division of labour: the framework organizes the material and checks what you submit; YOU read the material and write the claim.
+Semantic induction is a division of labour: the framework organizes the material and checks what you submit; YOU read the material and write the new strategy.
 
-**`orx review-material [--strategy S] [--task T] [--limit N]` is the default.** It reads a BATCH of completed tasks straight from the evidence bank and returns, per attempt:
+**`orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C]` is the ONLY material entry point.** It reads a BATCH of completed tasks straight from the evidence bank and returns, per attempt:
 
 - `task_text` — an excerpt of the task semantics (or an explicit `unknown` marker when the version is not retained — never a fabricated summary);
-- `profile` / `cir` — the identity measured BEFORE modeling, and the coupling structure if one was built (frozen, never rewritten after the solve);
+- `problem.profile` / `problem.cir` — the identity measured BEFORE modeling, and the coupling structure if one was built (frozen, never rewritten after the solve);
 - `method` — `planned` vs `actual` with a `basis` of `performed` > `planned_only` > `none`, plus `trajectory`;
 - `outcome`, `task_check` (a SEPARATE fact from the solver's own status; absent reads as `never_checked`, never a pass), `failures`, `cost`;
 - `attempts_of_task` / `independent_task` — how many attempts share this `task_id`, so a same-task RETRY is never read as cross-task support;
-- `existing_knowledge` — the entries this batch's strategies already have, so you can see whether to add, revise, merge or leave alone;
-- a `budget` block (chars used / limit / omitted ids) — eviction is REPORTED, never silent.
+- `existing_knowledge` — the entries that COULD relate to this batch (by strategy id, by cited evidence, or by overlapping family), each with its stated claim, predicates and verification state, so you can see whether to add, revise, merge or leave alone;
+- `task_chains` — the full chronological attempt chain per task;
+- a `budget` block (chars used / limit / omitted ids / `next_cursor`) — eviction is REPORTED, never silent. Pass `budget.next_cursor` back as `--cursor` to read the next (older) page.
 
-Missing fields are marked `unknown` individually; one unknown field never drops the rest of the fact. Scope filters and `--limit` narrow the batch, and `OR_HARNESS_REVIEW_MATERIAL_CHARS` bounds its size — growth trends toward batching, never toward material that is permanently invisible.
+Missing fields are marked `unknown` individually; one unknown field never drops the rest of the fact. Scope filters and `--limit` narrow the batch, and `OR_HARNESS_INDUCTION_MATERIAL_CHARS` bounds its size — growth trends toward batching and PAGING, never toward material that is permanently invisible, and never toward a bigger one-shot default.
 
-**`orx induction-material [--bundle BUNDLE_ID] [--strategy S]` is the optional LEAD** for a structural-cell candidate. It returns, for each candidate, the recorded evidence a claim can rest on:
+Submitting a strategy whose evidence reports no method (and which declares none) still saves the strategy — you may legitimately state the method in your own words — but the outcome carries a `material` warning saying the framework did not and will not derive a technique from the numbers, so the strategy's basis is visible as numbers-based.
 
-- `methods[]` — per execution, its `planned` method, the method it reports as actually `performed`, and the trajectory steps that really happened;
-- `outcome` / `task_check` / `failures` per execution — what followed, and what was actually checked;
-- `material_report` — a REPORT, not an admission verdict: `basis` names the strongest method content present (`performed` / `planned_only` / `none`), the counts are stated, and `missing` lists the absent content (`method_performed`, `task_check`). The framework does not decide whether "there is enough to abstract" — you read the material and decide. It never derives a technique from numbers: record how the work was actually done (the script's `method_performed` receipt is the observation; `execute --method` is only the plan).
+Evidence is cited by explicit `execution_id`; there is no `bundle_id` citation to expand (there is no candidate generator).
 
-**`unavailable` means the premise no longer holds.** A candidate whose evidence lost a required side (an exclusion, a later `check-task` that refuted it) is reported with the reason rather than presented. An execution cited by a lead can also leave the evidence window entirely; the candidate is reported `unavailable` (honest, not silently upgraded) rather than a claim on a stale premise.
-
-Submitting a relation whose evidence reports no method (and whose own claim declares none) still saves the claim — you may legitimately state the method in your own words — but the outcome carries a `material` warning saying the framework did not and will not derive a technique from the numbers, so the claim's basis is visible as numbers-based.
-
-You may cite a candidate directly: an evidence entry `{"bundle_id": "cb_...", "role": "..."}` is expanded into that bundle's frozen execution set. Bundle ids are content-addressed, so the id `induction-candidates` printed still names the same candidate on the next call.
-
-## Knowledge claims (`induce --relation`)
+## New strategies (`induce --relation`)
 
 Not every lesson is one strategy's statistics. "When temporal coupling is high, a temporal decomposition must keep its cross-period state" is knowledge about a **structural condition paired with a choice and its consequence** — it may belong to no strategy id at all, and a mean plus a free-text remark cannot carry it.
 
-**The unit of knowledge is the ENTRY, and one entry is ONE claim.** A second independent claim is a second entry; there is no host lookup, no embedded claim list, and no shared verdict. `induce --relation '<json>'` submits one claim:
+A new strategy is a reusable modeling, decomposition, search, checking or repair technique — not necessarily the whole plan of one execution and not necessarily one solver. It carries: the structure and conditions it applies to; the concrete method; a grounded explanation and expected effect; its cost, risks and boundary; and its supporting evidence, counterexamples and anything still unverified.
+
+**The unit of knowledge is the ENTRY, and one entry is ONE strategy.** A second independent strategy is a second entry; there is no host lookup, no embedded claim list, and no shared verdict. `induce --relation '<json>'` submits one strategy or strategy revision:
 
 ```json
 {"subject": "principle:cross_period_state",
@@ -203,90 +198,92 @@ Not every lesson is one strategy's statistics. "When temporal coupling is high, 
  "kind": "rule"}
 ```
 
-**Where the checks live — one of two equivalent spellings.** The declared checks may sit INSIDE the relation (the `"check"` block above, as shown) OR in a standalone `--verify` payload (`{"purpose": "relation", "claim": "...", "check": {"assertions": [...]}}`). Both are read; an embedded `check` is NEVER silently ignored. If you supply BOTH, `--verify` wins and the outcome records `check_note.check_source: "verify_arg"` plus a note that the embedded block was overridden — a conflict is reported, never swallowed. Verify a claim before trusting it: a claim whose checks were not read is not a verified claim.
+**Where the checks live.** The declared checks sit INSIDE the relation (the `"check"` block above). A standalone `--verify` payload (`{"claim": "...", "check": {"assertions": [...]}}`) is the SAME mechanism and is accepted for callers that keep the check separate; an embedded `check` is NEVER silently ignored. If you supply BOTH they are a CONFLICT: `--verify` wins and the outcome records `check_note.check_source: "verify_arg"` plus a note that the embedded block was overridden — never merged. Verify a strategy before trusting it: one whose checks were not read is not a verified strategy.
+
+**Different tasks, strategy ids and cells may be cited TOGETHER.** There is no "same method name" or "same cell" requirement: whether a shared mechanism exists is YOUR judgment from the content. The framework reports the distinct-task count and lets the publication gate speak — it does not splice evidence to reach a count, and a single-task observation is not dressed up as a rule.
 
 **Only evaluable predicates decide applicability.** `conditions.predicates` may carry keys the framework can EVALUATE (`family`, `resource_coupling`, `temporal_coupling`, `route_complexity`) and keys it cannot (`problem_class`, `task_family`, `structure`, any free-text key). A key the framework cannot evaluate is NEVER treated as satisfied: recall reports the hit as `unknown` (undecided, with the exact unsupported keys) rather than `applies`. Put what matters in the structural predicates the framework can check, and read `unknown` as "test this", not "this applies".
 
-An evidence entry may instead be `{"bundle_id": "cb_...", "role": "..."}` — see `induction-material`.
+A submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge delta (`entries_created` / `entry_changes`), the index result, and the same knowledge feedback. Re-submitting the same strategy revises that entry, not a duplicate.
 
-A claim submission is a knowledge WRITE like any other: it records a maintenance action with the pre state, a knowledge delta (`entries_created` / `entry_changes`), the index result, and the same knowledge feedback. Re-submitting the same claim revises that entry, not a duplicate.
-
-- **`evidence` + `role` is the anchor.** Every reference names a recorded execution and the part it plays in *this* claim. Roles are free strings (`dropped`/`preserved`, `before`/`after`, `strategy_a`, `violation`/`satisfying`, …) — they are not a taxonomy, and nothing forces your claim into one of the four trigger patterns. `kind` is an optional note about what prompted the claim.
+- **`evidence` + `role` is the anchor.** Every reference names a recorded execution and the part it plays in *this* strategy. Roles are free strings (`dropped`/`preserved`, `before`/`after`, `strategy_a`, `violation`/`satisfying`, …) — they are not a taxonomy, and nothing forces your strategy into one of the four observation angles. `kind` is an optional note about what prompted it.
 - **Identity is derived, never submitted.** Tasks, family, structural cell and strategy ids are read off the recorded facts. You supply ids and roles only, so the same evidence cannot acquire two contradictory identities.
-- **`subject` is optional.** With no subject, the evidence's single strategy names the entry; with a subject, that free-form name is the entry's `strategy_id` (e.g. `principle:cross_period_state`). An entry that states a claim but has no statistical support (`support_n = 0`) is a **claim-only entry**: it makes no quality/cost/failure claim, and its publication is decided by its single `verification` block alone.
+- **`subject` is optional.** With no subject, the evidence's single strategy names the entry; with a subject, that free-form name is the entry's `strategy_id` (e.g. `principle:cross_period_state`). An entry that states a strategy but has no statistical support (`support_n = 0`) is a **strategy-only entry**: it makes no quality/cost/failure claim, and its publication is decided by its single `verification` block alone.
 - **`conditions`** are the applicability predicates; when omitted they are read off the evidence's own structural cell.
-- **One entry, one identity.** The entry a submission revises is found by `strategy_id` + structural cell + `kind`. Two independent claims under one subject (a different cell, or a different kind) are separate entries, and neither inherits the other's verification. A claim and a statistical claim under the same strategy id are also separate: the claim never attaches to the statistical entry.
+- **One entry, one identity.** The entry a submission revises is found by `strategy_id` + structural cell + `kind`. Two independent strategies under one subject (a different cell, or a different kind) are separate entries, and neither inherits the other's verification. A strategy and a statistical claim under the same strategy id are also separate: the strategy never attaches to the statistical entry.
 
-### What the framework checks (`--verify` with `purpose: relation`)
+### What the framework checks (the `check` block)
 
-The framework computes **only what your structured declaration makes computable** — it does not parse the claim sentence and does not promise to notice that a sentence overreaches its evidence. Each assertion carries its own semantics:
+The framework computes **only what your structured declaration makes computable** — it does not parse the strategy sentence and does not promise to notice that a sentence overreaches its evidence. Each assertion carries its own semantics:
 
 | Assertion | Checks | Applies to |
 |---|---|---|
-| `{"kind": "probe", "roles": [...], "path": "quality.feasible", "equals"/"min"/"max"/"in": ...}` | every record of those roles satisfies the probe (the framework reads the dotted path itself) | any claim |
-| `{"kind": "status", "roles": [...], "status": "optimal"}` | every record of those roles finished with that status | any claim |
-| `{"kind": "comparison", "metric": "quality"\|"cost:<dim>"\|"<dotted.path>", "roles_a": [...], "roles_b": [...], "direction": "higher"\|"lower", "min_gap": 0.1, "mode": "paired"\|"group", "aggregation": "all"\|"mean"}` | the declared difference between the two role groups | numerical claims |
+| `{"kind": "probe", "roles": [...], "path": "quality.feasible", "equals"/"min"/"max"/"in": ...}` | every record of those roles satisfies the probe (the framework reads the dotted path itself) | any strategy |
+| `{"kind": "status", "roles": [...], "status": "optimal"}` | every record of those roles finished with that status | any strategy |
+| `{"kind": "comparison", "metric": "quality"\|"cost:<dim>"\|"<dotted.path>", "roles_a": [...], "roles_b": [...], "direction": "higher"\|"lower", "min_gap": 0.1, "mode": "paired"\|"group", "aggregation": "all"\|"mean"}` | the declared difference between the two role groups | numerical strategies |
+| `{"kind": "code_unchanged", "roles": [...]}` | every cited record shares one `solver.code_hash` (an `optimal` status never backs it) | "the code was not changed" |
 
-**Pairing is a property of the assertion, not of the batch.** `mode: "paired"` compares only records that share a `task_id`, one per side; records with no counterpart are listed as `unpaired_execution_ids` in the scope and are **not** mixed into the statistic. `mode: "group"` compares the two sides' means over a metric every referenced record measured (a metric measured on only some records is `insufficient_evidence`, never a subset mean dressed up as a claim). A claim may declare one paired and one group assertion — each is evaluated over its own scope.
+**Pairing is a property of the assertion, not of the batch.** `mode: "paired"` compares only records that share a `task_id`, one per side; records with no counterpart are listed as `unpaired_execution_ids` in the scope and are **not** mixed into the statistic. `mode: "group"` compares the two sides' means over a metric every referenced record measured (a metric measured on only some records is `insufficient_evidence`, never a subset mean dressed up as a strategy). A strategy may declare one paired and one group assertion — each is evaluated over its own scope.
 
 **`aggregation` decides how an unfavourable sample is treated:**
-- `"all"` — every pair must meet the direction and gap. One comparable counterexample refutes the claim. Use it when you are asserting "on every such task".
+- `"all"` — every pair must meet the direction and gap. One comparable counterexample refutes the strategy. Use it when you are asserting "on every such task".
 - `"mean"` — the batch mean must meet the direction and gap. A single negative pair does not refute it. Use it when you are asserting "on average across this batch".
 
 **Only the declared parts are covered, and the block says so.** "Quality is higher **and** tokens are lower" needs a `quality` assertion *and* a `cost:llm_tokens` assertion; declare only the first and the verification scope records the cost part as unchecked. The verdict is never extended to parts you did not declare.
 
-**What `verified` means — and what it does not.** Every declared assertion held over the referenced evidence: "no violation was found **within this scope**". It is NOT a proof that the natural-language claim is correct, causal, or broadly general. The verification block carries both `checked` (the assertions, executions and tasks the verdict covered) and `not_covered` (that explicit limitation), plus `scope` naming the executions, tasks, roles, and which assertions were checked and unchecked. Verdicts: `verified` / `insufficient_evidence` (nothing computable declared, a metric unmeasured, no counterpart, evidence unusable — **not** a refutation) / `refuted` (an assertion ran on real evidence and failed).
+**What `verified` means — and what it does not.** Every declared assertion held over the referenced evidence: "no violation was found **within this scope**". It is NOT a proof that the natural-language strategy is correct, causal, or broadly general. The verification block carries both `checked` (the assertions, executions and tasks the verdict covered) and `not_covered` (that explicit limitation), plus `scope` naming the executions, tasks, roles, and which assertions were checked and unchecked. Verdicts: `verified` / `insufficient_evidence` (nothing computable declared, a metric unmeasured, no counterpart, evidence unusable — **not** a refutation) / `refuted` (an assertion ran on real evidence and failed). An `optimal` status or a passed task check alone proves NOTHING about the whole strategy.
 
 ### Publication: two conditions
 
 1. the entry's verdict is `verified` and not stale;
 2. its verification scope covers **≥2 distinct tasks**.
 
-Condition 2 is the independence rule the statistical gate uses: a single-task repair is a verified **fact about that task**; transferring it to future tasks is a knowledge claim and needs independent evidence. A single-task claim is still **saved** (and verifiable as that fact) — it is simply not published, and `publication.reasons` says exactly why.
+Condition 2 is the independence rule: a single-task repair is a verified **fact about that task**; transferring it to future tasks is a knowledge strategy and needs independent evidence. A single-task strategy is still **saved** (and verifiable as that fact) — it is simply not published, and `publication.reasons` says exactly why. The distinct-task count is computed from the evidence the strategy ACTUALLY cites — never padded by same-name or same-cell conditions.
 
 ### Revision
 
-Re-submitting the same identity (`strategy_id` + cell + `kind`) **revises** that entry.
+Re-submitting the same identity (`strategy_id` + cell + `kind`) **revises** that entry. To target a specific existing entry unambiguously, name its id with `"target_entry_id": "se_..."` — a substantive edit then does not have to re-derive the target from subject + cell + kind. An unknown id is REFUSED rather than silently revising a different entry (or creating a new one).
 
-- A **substantive** change (claim text, conditions, evidence set, method) with no fresh verification marks the previous verdict `stale_after_revision` — the old check no longer covers the new claim.
+- A **substantive** change (strategy text, conditions, evidence set, method) with no fresh verification marks the previous verdict `stale_after_revision` — the old check no longer covers the new strategy.
 - A **fresh** verification wins outright: it was computed over the incoming evidence, so it is neither kept nor marked stale.
 - An **identical** re-submission keeps the verdict.
 
-A claim must still be checked against CURRENT real evidence when it is created or substantively revised: an old source id expiring (the evidence window) never blocks a later update, and never by itself backs a revised claim.
+When two existing strategies are near-duplicates, MERGE them (revise one to cover both and retire the other) rather than creating a third near-identical entry. A strategy must still be checked against CURRENT real evidence when it is created or substantively revised: an old source id expiring (the evidence window) never blocks a later update, and never by itself backs a revised strategy.
 
-### Reading claims back
+### Reading strategies back
 
-A published claim reaches you through the **ordinary recommendation path** (`recall().recommendations[]`): its entry is an admitted entry, so it appears with its expected effect and, under `knowledge`, its verification state and stated claim. There is no separate knowledge section — one claim, one retrieval channel.
+A published strategy reaches you through the **ordinary recommendation path** (`recall().recommendations[]`): its entry is an admitted entry, so it appears with its expected effect and, under `knowledge`, its verification state and stated strategy. There is no separate knowledge section — one strategy, one retrieval channel.
 
-Unpublished claims are the ones that would not survive that filter: `recall().held_claims[]` carries them (a claim-only entry whose `strategy_id` is a free-form subject, or an entry not yet verified), each with its verification state, plus `newer_evidence_since_verification` — matching executions recorded after the verdict, a visibility annotation rather than a lifecycle state. `--include-unverified` fills this section with refuted/stale claims too, clearly labelled.
+Unpublished strategies are the ones that would not survive that filter: `recall().held_claims[]` carries them (a strategy-only entry whose `strategy_id` is a free-form subject, or an entry not yet verified), each with its verification state, plus `newer_evidence_since_verification` — matching executions recorded after the verdict, a visibility annotation rather than a lifecycle state. `--include-unverified` fills this section with refuted/stale strategies too, clearly labelled.
 
-> Legacy note: a store written before knowledge was unified may still carry per-entry `relations` lists. `orx migrate-relations` converts each relation into its OWN claim entry, with its verification copied verbatim; it is idempotent and a `--dry-run` writes nothing. `recall` reads migrated claims through the ordinary path.
+> Legacy note: a store written before knowledge was unified may still carry per-entry `relations` lists. `orx migrate-relations` converts each relation into its OWN entry, with its verification copied verbatim; it is idempotent and a `--dry-run` writes nothing. `recall` reads migrated strategies through the ordinary path.
 
-## Relation vs statistical admission (do not blur)
+## Statistical evidence vs a submitted strategy (do not blur)
 
-| | Statistical claim | Knowledge claim |
+| | Statistical evidence (computed) | Submitted strategy (agent-formed) |
 |---|---|---|
-| Where it lives | the entry's interval fields + its `verification` block | the entry's `claim` block + the SAME `verification` block |
-| Checks | `rule` / `repair` / `cost_saving` over one strategy's executions | `relation` assertions over explicitly referenced evidence with roles |
-| Gate | ≥2 tasks + ≥2 executions in the cell | own verdict + ≥2 tasks in the claim's verification scope |
-| Publication | `is_publishable(entry)` | the same single rule (verified + not stale + ≥2 tasks) |
-| Independence | one evidence set owns one entry | one claim owns one entry |
+| Where it lives | the fact layer; read via `ConditionalStats` (recall, world model) | the entry's `claim` block + its `verification` block |
+| Who writes it | NOBODY — the framework never writes a technique from it | the agent, via `induce --relation` |
+| Checks | — | the `check` block's assertions over explicitly referenced evidence with roles |
+| Gate | — | own verdict + ≥2 tasks in the strategy's verification scope |
+| Publication | — | verified + not stale + ≥2 tasks |
+| Independence | one evidence cell supports a prediction | one strategy owns one entry |
 
 ## Peer evidence as phrasing (`--peer-strategy` / `--peer-cell`)
 
-REMOVED. Naming another strategy or cell used to write one contrast line under the entry's `risk_conditions`. That was a sentence the framework could not check, and the observable form of the same observation is a knowledge claim — submit it with `--relation` (below), citing the executions on both sides. Existing entries that already carry such text keep it; nothing writes new ones.
+REMOVED. Naming another strategy or cell used to write one contrast line under the entry's `risk_conditions`. That was a sentence the framework could not check, and the observable form of the same observation is a submitted strategy — submit it with `--relation`, citing the executions on both sides. Existing entries that already carry such text keep it; nothing writes new ones.
 
 ## Applicability notes
 
-`induce --note "TEXT"` (repeatable) attaches free text to the entries that call creates or refreshes. Notes are stored verbatim, shown by `inspect`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact.
+`induce --relation ... --note "TEXT"` (repeatable) attaches free text to the entry that call creates or revises. Notes are stored verbatim, shown by `inspect` and in a recall hit's `knowledge.applicability`, and sit outside scoring — they are your phrasing for your own future reading, not a validated fact.
 
 ## Cold archive (anti-resurrection)
 
-Retired entries leave cards in the cold archive (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `induce --force` LIFTS the veto — it removes the card and then proceeds, so your environment-drift judgment is made once rather than repeated on every induction. Reserve it for genuine drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data. New SUPPORT or a counterexample is likewise a reason to re-review (with `--force` when a card stands): the card blocks the SAME failed generalization, not new evidence.
+Retired entries leave cards in the cold archive (~200 B: pattern hash, predicates, outcome, reason, evidence summary). Before creating any entry, induction checks the archive: the same (strategy, predicates) evidence cannot resurrect the same failed generalization. `induce --relation --force` LIFTS the veto — it removes the card and then proceeds, so your environment-drift judgment is made once rather than repeated on every submission. Reserve it for genuine drift (new solver version, changed problem distribution), which is exactly the situation where yesterday's failure is today's stale data. New SUPPORT or a counterexample is likewise a reason to re-review (with `--force` when a card stands): the card blocks the SAME failed generalization, not new evidence.
 
 ## Worked contrasts
 
-Three short contrasts between what NOT to submit and what to submit, all from the same kind of batch `review-material` returns.
+Three short contrasts between what NOT to submit and what to submit, all from the same kind of batch `induction-material` returns.
 
 **1. Execution summary → reusable technique.** A summary reads:
 
@@ -298,10 +295,10 @@ That is a fact about one run, not transferable knowledge: it names a task, not a
 
 Submit it with `kind="rule"` (or `conditional_fact` ONLY if you truly mean a fact about the one task, not a rule), `evidence` naming the dropped and preserved runs, and a `check` whose assertions state the comparison.
 
-**2. When to REVISE old knowledge.** An existing entry claims a method is faster in this cell. A new `review-material` batch shows a later task where it was slower (`independent_task: true`). Do NOT just add another entry: re-submit the SAME identity (`subject` + cell + `kind`) with the widened or narrowed condition and a FRESH `check`. A substantive change marks the old verdict `stale_after_revision` until the new one lands; a fresh verdict replaces it outright.
+**2. When to REVISE old knowledge.** An existing entry claims a method is faster in this cell. A new `induction-material` batch shows a later task where it was slower (`independent_task: true`). Do NOT just add another entry: re-submit the SAME identity (`subject` + cell + `kind`, or the entry id) with the widened or narrowed condition and a FRESH `check`. A substantive change marks the old verdict `stale_after_revision` until the new one lands; a fresh verdict replaces it outright. If a near-duplicate entry already exists, MERGE rather than create a third.
 
-**3. When NOT to induce.** The batch carries no method content (a name and a mean), or the only "evidence" is two runs of ONE task (repetition — `independent_task: false`), or the claim would rest on a semantic predicate the framework cannot evaluate. In all three the honest outcome is NO new entry: record how the work was actually done (or make the retry a distinct task if it truly is one), and wait for independent evidence. Deleting a task number or renaming a label is not abstraction — the CONTENT has to earn the claim.
+**3. When NOT to induce.** The batch carries no method content (a name and a mean), or the only "evidence" is two runs of ONE task (repetition — `independent_task: false`), or the strategy would rest on a semantic predicate the framework cannot evaluate. In all three the honest outcome is NO new entry: record how the work was actually done (or make the retry a distinct task if it truly is one), and wait for independent evidence. Deleting a task number or renaming a label is not abstraction — the CONTENT has to earn the strategy.
 
-**4. A claim must not overreach its evidence.** A text that says "the code was unchanged" needs a `code_unchanged` assertion over the cited records (an `optimal` status never backs it); a text that names one strategy needs evidence carrying THAT strategy. Submit the claim you can back, and report the part you cannot (`unsupported_fields` / a narrower `scope_note`) instead of leaning on a disclaimer.
+**4. A strategy must not overreach its evidence.** A text that says "the code was unchanged" needs a `code_unchanged` assertion over the cited records (an `optimal` status never backs it); a text that names one method needs evidence carrying THAT method. Submit the strategy you can back, and report the part you cannot instead of leaning on a disclaimer.
 
 These examples prove the FLOW (read → form → verify → publish → recall); they make no claim about generalization or solving quality beyond the conditions the cited evidence covers.

@@ -1,1 +1,16 @@
-{"status": "optimal", "objective_value": 13255.0, "objective_bound": 13255.0, "mip_gap": 0.0, "runtime_seconds": 0.04966115951538086, "variables": {"produce_I_Q1": 2500.0, "inventory_I_Q1": 1000.0, "backlog_I_Q1": 0.0, "produce_I_Q2": 0.0, "inventory_I_Q2": 0.0, "backlog_I_Q2": 0.0, "produce_I_Q3": 3000.0, "inventory_I_Q3": 1000.0, "backlog_I_Q3": 0.0, "produce_I_Q4": 350.0, "inventory_I_Q4": 150.0, "backlog_I_Q4": 0.0, "produce_II_Q1": 1500.0, "inventory_II_Q1": 0.0, "backlog_II_Q1": 0.0, "produce_II_Q2": 1638.0, "inventory_II_Q2": 138.0, "backlog_II_Q2": 0.0, "produce_II_Q3": 1125.0, "inventory_II_Q3": 63.0, "backlog_II_Q3": 0.0, "produce_II_Q4": 1587.0, "inventory_II_Q4": 150.0, "backlog_II_Q4": 0.0, "produce_III_Q1": 1000.0, "inventory_III_Q1": 0.0, "backlog_III_Q1": 0.0, "produce_III_Q2": 2000.0, "inventory_III_Q2": 0.0, "backlog_III_Q2": 0.0, "produce_III_Q3": 1500.0, "inventory_III_Q3": 0.0, "backlog_III_Q3": 0.0, "produce_III_Q4": 2650.0, "inventory_III_Q4": 150.0, "backlog_III_Q4": 0.0}}
+{
+  "status": "optimal",
+  "objective_value": 10000,
+  "objective_bound": 10000.0,
+  "mip_gap": 0.0,
+  "runtime_seconds": 0.0219,
+  "variables": {
+    "X": 1000.0,
+    "Y": 0.0
+  },
+  "method_performed": {
+    "name": "HiGHS_MILP",
+    "solver": "highspy",
+    "action_id": "unknown"
+  }
+}

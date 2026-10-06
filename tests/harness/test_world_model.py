@@ -367,67 +367,58 @@ class TestVerifiedKnowledgeView(HarnessTestCase):
         clean = self._entry({"state": "verified"})
         self.assertTrue(is_publishable(clean))
 
-    def test_substantive_revision_marks_stale(self):
-        """An induced entry whose claim substantively changes without a
-        fresh verdict loses publishability until re-verified."""
+    def test_revision_without_a_fresh_verdict_marks_stale(self):
+        """A claim revised substantively without a fresh verdict loses
+        publishability until re-verified (the claim path's stale rule)."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-        # Two tasks, same cell, strategy S01.
         for task_id in ("t1", "t2"):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        # First induction WITH a verification verdict.
-        result = h.induce(strategy_id="S01", verify={
-            "purpose": "rule", "claim": "S01 solves routing",
-            "check": {"reference_status": "optimal"},
-            "executions": [r.to_dict() for r in h.bank.query()],
-        })
-        entry_id = result["results"][0]["created"]
-        self.assertEqual(h.sbank.get(entry_id).verification_state,
-                         "verified")
+        base = {"subject": "S01",
+                "claim": "S01 solves routing",
+                "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                             for r in h.bank.query()]}
+        verify = {"claim": "S01 solves routing",
+                  "check": {"assertions": [
+                      {"kind": "status", "roles": ["e"],
+                       "status": "optimal"}]}}
+        first = h.induce(relations=[base], verify=verify)
+        entry_id = first["relations"][0]["saved"]
+        self.assertEqual(h.sbank.get(entry_id).verification_state, "verified")
         self.assertTrue(is_publishable(h.sbank.get(entry_id)))
-        # New evidence that MOVES the claim (a failure: quality drops).
-        rec = self.make_record(task_id="t3", strategy_id="S01",
-                               profile=self.make_profile(problem_id="t3"),
-                               feasible=False, status="error")
-        h.bank.append(rec)
-        h.induce(strategy_id="S01")
+        # A substantive change (text) WITHOUT a fresh verdict -> stale.
+        changed = dict(base, claim="S01 solves routing AND packing")
+        h.induce(relations=[changed])
         entry = h.sbank.get(entry_id)
         self.assertTrue(entry.verification.get("stale_after_revision"))
         self.assertFalse(is_publishable(entry))
-        # Re-verify (on the executions that can support the claim — the
-        # failed t3 execution honestly yields insufficient_evidence for an
-        # optimal-status check): publishable again.
-        h.induce(strategy_id="S01", verify={
-            "purpose": "rule", "claim": "S01 solves routing",
-            "check": {"reference_status": "optimal"},
-            "executions": [r.to_dict() for r in h.bank.query()
-                           if r.quality.get("status") == "optimal"],
-        })
+        # Re-verify -> publishable again.
+        h.induce(relations=[changed], verify={
+            "claim": "S01 solves routing AND packing",
+            "check": {"assertions": [
+                {"kind": "status", "roles": ["e"], "status": "optimal"}]}})
         entry = h.sbank.get(entry_id)
         self.assertFalse(entry.verification.get("stale_after_revision"))
         self.assertTrue(is_publishable(entry))
 
-    def test_support_growth_alone_does_not_stale(self):
-        """More evidence for the SAME claim only sharpens it."""
+    def test_identical_resubmission_keeps_the_verdict(self):
+        """Re-submitting the SAME claim does not stale it."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         for task_id in ("t1", "t2"):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        result = h.induce(strategy_id="S01", verify={
-            "purpose": "rule", "claim": "c",
-            "check": {"reference_status": "optimal"},
-            "executions": [r.to_dict() for r in h.bank.query()],
-        })
-        entry_id = result["results"][0]["created"]
-        # A third task with the SAME quality profile (no claim change).
-        h.bank.append(self.make_record(
-            task_id="t3", strategy_id="S01",
-            profile=self.make_profile(problem_id="t3")))
-        h.induce(strategy_id="S01")
+        base = {"subject": "S01", "claim": "c",
+                "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                             for r in h.bank.query()]}
+        verify = {"claim": "c", "check": {"assertions": [
+            {"kind": "status", "roles": ["e"], "status": "optimal"}]}}
+        first = h.induce(relations=[base], verify=verify)
+        entry_id = first["relations"][0]["saved"]
+        h.induce(relations=[base])
         entry = h.sbank.get(entry_id)
         self.assertFalse(entry.verification.get("stale_after_revision"))
         self.assertTrue(is_publishable(entry))
@@ -488,50 +479,47 @@ class TestHarnessIntegration(HarnessTestCase):
         self.assertEqual(action.source, "agent_reported")
         self.assertEqual(action.outcome["strategy_id"], "S04")
 
-    def test_induce_action_in_maintenance_scope(self):
+    def test_relation_action_in_maintenance_scope(self):
         h = self._harness()
         for task_id in ("t1", "t2"):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        result = h.induce(strategy_id="S01")
+        ids = [r.execution_id for r in h.bank.query()]
+        result = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 solves routing",
+            "evidence": [{"execution_id": e, "role": "e"} for e in ids]}])
         action_info = result["action"]
         action = h.actions.get(action_info["action_id"])
         self.assertEqual(action.task_id, MAINTENANCE_TASK_ID)
         self.assertTrue(action.episode_id.startswith("maint_"))
-        # Without --verify the entry is an unverified candidate: the
-        # business label says so (candidates are NOT knowledge growth).
+        # Without a verdict the entry is a saved-but-unpublished claim: the
+        # business label says so (unpublished is NOT knowledge growth).
         self.assertEqual(action_info["business_result"],
-                         "created_unverified")
+                         "relation_created_unpublished")
         # The action carries the real pre-knowledge state and the delta.
         self.assertIn("knowledge_before", action.params)
         self.assertIn("knowledge_delta", action.outcome)
-        # Refused induction (single task) is no_valid_entry, not failed.
-        h2 = ORHarness(home=self.home + "_2")
-        self.addCleanup(h2.close)
-        h2.bank.append(self.make_record(task_id="only", strategy_id="S01"))
-        refused = h2.induce(strategy_id="S01")
-        self.assertEqual(refused["action"]["business_result"], "refused")
-        self.assertEqual(
-            h2.actions.get(refused["action"]["action_id"]).status,
-            "no_valid_entry")
 
     def test_induce_crash_still_records_action(self):
-        """An induction that raises still leaves a failed action with its
-        pre state — the attempt is never silently lost."""
+        """A knowledge write that raises still leaves a failed action with
+        its pre state — the attempt is never silently lost."""
         h = self._harness()
         for task_id in ("t1", "t2"):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        original = h.induction.induce
+        ids = [r.execution_id for r in h.bank.query()]
+        original = h.induction.submit_relation
 
         def boom(*a, **k):
             raise RuntimeError("simulated induction crash")
 
-        h.induction.induce = boom
+        h.induction.submit_relation = boom
         with self.assertRaises(RuntimeError):
-            h.induce(strategy_id="S01")
+            h.induce(relations=[{
+                "subject": "S01", "claim": "x",
+                "evidence": [{"execution_id": e, "role": "e"} for e in ids]}])
         failed = h.actions.query(action_type="induce")
         self.assertEqual(len(failed), 1)
         self.assertEqual(failed[0].status, "failed")
@@ -544,7 +532,11 @@ class TestHarnessIntegration(HarnessTestCase):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        h.induce(strategy_id="S01", dry_run=True)
+        ids = [r.execution_id for r in h.bank.query()]
+        h.induce(relations=[{
+            "subject": "S01", "claim": "x",
+            "evidence": [{"execution_id": e, "role": "e"} for e in ids]}],
+            dry_run=True)
         self.assertEqual(h.actions.query(action_type="induce"), [])
         self.assertEqual(h.snapshots(), [])
 
@@ -880,7 +872,7 @@ class TestBugfixRegressions(HarnessTestCase):
         self.assertEqual(view["consumption"]["total_cost"]["llm_tokens"],
                          100.0)
 
-    def test_induce_records_full_knowledge_after_and_diff(self):
+    def test_relation_action_records_full_knowledge_after_and_diff(self):
         """P1 (round 2): the induce action's outcome carries the full
         after-state and a per-entry diff, so the transition is
         reconstructible from the frozen record."""
@@ -889,28 +881,24 @@ class TestBugfixRegressions(HarnessTestCase):
             h.bank.append(self.make_record(
                 task_id=task_id, strategy_id="S01",
                 profile=self.make_profile(problem_id=task_id)))
-        first = h.induce(strategy_id="S01")
-        entry_id = first["results"][0]["created"]
-        # New evidence that MOVES the expected quality (a failure).
-        h.bank.append(self.make_record(
-            task_id="t3", strategy_id="S01",
-            profile=self.make_profile(problem_id="t3"),
-            feasible=False, status="error"))
-        second = h.induce(strategy_id="S01")
+        ids = [r.execution_id for r in h.bank.query()]
+        base = {"subject": "S01", "claim": "first text",
+                "evidence": [{"execution_id": e, "role": "e"} for e in ids]}
+        first = h.induce(relations=[base])
+        entry_id = first["relations"][0]["saved"]
+        # A substantive change to the claim text (a real knowledge move).
+        second = h.induce(relations=[dict(base, claim="second text")])
         action = h.actions.get(second["action"]["action_id"])
-        # Full after-state present with the modified values.
+        # Full after-state present with the modified claim text.
         after = action.outcome["knowledge_after"]
         self.assertIn("entries", after)
         moved = next(e for e in after["entries"]
                      if e["entry_id"] == entry_id)
-        self.assertLess(moved["expected_quality_hat"], 1.0)
-        # Per-entry diff shows the changed field with before/after values.
+        self.assertIsNotNone(moved.get("claim"))
+        # Per-entry diff shows the changed claim text with before/after.
         changes = action.outcome["knowledge_delta"]["entry_changes"]
         change = next(c for c in changes if c["entry_id"] == entry_id)
-        self.assertIn("expected_quality_hat", change["changed"])
-        field = change["changed"]["expected_quality_hat"]
-        self.assertEqual(field["before"], 1.0)
-        self.assertLess(field["after"], 1.0)
+        self.assertIn("claim", change["changed"])
 
 
 class TestLegacyCompatibility(HarnessTestCase):

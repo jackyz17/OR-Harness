@@ -1,192 +1,24 @@
 {
   "task_id": "orarla_6",
-  "family": "inventory",
+  "family": "planning",
+  "text": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel $X$ is $10 and for channel $Y$ is $20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.",
   "coupling": {
     "entities": [
-      {
-        "name": "I",
-        "kind": "product",
-        "attrs": {
-          "hours_per_unit": 2,
-          "delay_compensation": 20,
-          "holding_cost": 5
-        }
-      },
-      {
-        "name": "II",
-        "kind": "product",
-        "attrs": {
-          "hours_per_unit": 4,
-          "delay_compensation": 20,
-          "holding_cost": 5
-        }
-      },
-      {
-        "name": "III",
-        "kind": "product",
-        "attrs": {
-          "hours_per_unit": 3,
-          "delay_compensation": 10,
-          "holding_cost": 5
-        }
-      },
-      {
-        "name": "Q1",
-        "kind": "quarter",
-        "attrs": {
-          "index": 1
-        }
-      },
-      {
-        "name": "Q2",
-        "kind": "quarter",
-        "attrs": {
-          "index": 2
-        }
-      },
-      {
-        "name": "Q3",
-        "kind": "quarter",
-        "attrs": {
-          "index": 3
-        }
-      },
-      {
-        "name": "Q4",
-        "kind": "quarter",
-        "attrs": {
-          "index": 4
-        }
-      },
-      {
-        "name": "factory",
-        "kind": "resource",
-        "attrs": {
-          "hours_per_quarter": 15000
-        }
-      }
+      {"id": "channel_x", "name": "Channel X", "type": "advertising_channel"},
+      {"id": "channel_y", "name": "Channel Y", "type": "advertising_channel"}
     ],
     "decisions": [
-      {
-        "name": "produce",
-        "kind": "production",
-        "indexes": [
-          "product",
-          "quarter"
-        ],
-        "attrs": {
-          "lower": 0,
-          "integer": true
-        }
-      },
-      {
-        "name": "inventory",
-        "kind": "inventory",
-        "indexes": [
-          "product",
-          "quarter"
-        ],
-        "attrs": {
-          "lower": 0,
-          "integer": true
-        }
-      },
-      {
-        "name": "backlog",
-        "kind": "backlog",
-        "indexes": [
-          "product",
-          "quarter"
-        ],
-        "attrs": {
-          "lower": 0,
-          "integer": true
-        }
-      }
-    ],
-    "constraints": [
-      {
-        "id": "C1",
-        "kind": "capacity",
-        "expr": "sum(product, hours_per_unit[product] * produce[product, q]) <= 15000",
-        "detail": "Production hours per quarter cannot exceed 15000"
-      },
-      {
-        "id": "C2",
-        "kind": "temporal",
-        "expr": "produce[I, Q2] = 0",
-        "detail": "Product I cannot be produced in Q2 due to equipment change"
-      },
-      {
-        "id": "C3",
-        "kind": "balance",
-        "expr": "inventory[p, q] = inventory[p, q-1] + produce[p, q] - demand[p, q] - backlog[p, q] + backlog[p, q-1]",
-        "detail": "Inventory balance: ending = beginning + production - demand - backlog increase + backlog decrease"
-      },
-      {
-        "id": "C4",
-        "kind": "initial",
-        "expr": "inventory[p, Q1-1] = 0",
-        "detail": "No inventory at beginning of Q1 (initial condition)"
-      },
-      {
-        "id": "C5",
-        "kind": "final",
-        "expr": "inventory[p, Q4] >= 150",
-        "detail": "At least 150 units in stock at end of Q4 for each product"
-      },
-      {
-        "id": "C6",
-        "kind": "nonneg_backlog",
-        "expr": "backlog[p, q] >= 0",
-        "detail": "Backlog cannot be negative (it's a quantity of delayed delivery)"
-      }
+      {"id": "X", "name": "Budget allocation to channel X", "type": "integer", "domain": "non-negative", "entity": "channel_x"},
+      {"id": "Y", "name": "Budget allocation to channel Y", "type": "integer", "domain": "non-negative", "entity": "channel_y"}
     ],
     "relations": [
-      {
-        "source": "produce",
-        "target": "factory",
-        "type": "uses_resource",
-        "evidence": "semantic",
-        "detail": "Production uses factory hours"
-      },
-      {
-        "source": "produce",
-        "target": "inventory",
-        "type": "flows_to",
-        "evidence": "semantic",
-        "detail": "Production flows into inventory"
-      },
-      {
-        "source": "backlog",
-        "target": "inventory",
-        "type": "competes_for",
-        "evidence": "structural",
-        "detail": "Backlog and inventory both draw from production"
-      }
-    ],
-    "coupling_groups": [
-      {
-        "type": "shared_bottleneck",
-        "members": [
-          "produce[I,q]",
-          "produce[II,q]",
-          "produce[III,q]"
-        ],
-        "resource": "factory",
-        "implication": "Single capacity constraint links all product production in each quarter"
-      },
-      {
-        "type": "temporal_propagation_chain",
-        "members": [
-          "inventory[p,q]",
-          "inventory[p,q+1]"
-        ],
-        "resource": null,
-        "implication": "Inventory levels across quarters are linked through balance constraints"
-      }
+      {"id": "budget_limit", "type": "constraint", "description": "Total budget ≤ 1000", "expression": "X + Y <= 1000"},
+      {"id": "effectiveness", "type": "constraint", "description": "Effectiveness score ≥ 2000", "expression": "2*X + 3*Y >= 2000"},
+      {"id": "total_cost", "type": "objective", "description": "Minimize total cost", "expression": "10*X + 20*Y"}
     ]
   },
-  "text": "The contract reservations for the next year for products I, II, and III of a certain factory in each quarter are shown in Table 1-10.\n\nTable 1-10\n| Product | 1    | 2    | 3    | 4    |\n|---------|------|------|------|------|\n| I       | 1500 | 1000 | 2000 | 1200 |\n| II      | 1500 | 1500 | 1200 | 1500 |\n| III     | 1000 | 2000 | 1500 | 2500 |\n\nAt the beginning of the first quarter, there is no inventory for these three products, and it is required to have 150 units in stock for each product by the end of the fourth quarter. It is known that the factory has 15,000 production hours per quarter, and each unit of products I, II, and III requires 2, 4, and 3 hours respectively. Due to a change in equipment, product I cannot be produced in the second quarter. It is stipulated that if the products cannot be delivered on time, a compensation of 20 yuan per unit per quarter delay is required for products I and II, while for product III, the compensation is 10 yuan. Additionally, for products produced but not delivered in the current quarter, the inventory cost is 5 yuan per unit per quarter. How should the factory schedule production to minimize the total cost of compensation and inventory?",
-  "model": "\nSETS:\n i in Products = {I, II, III}\n q in Quarters = {Q1, Q2, Q3, Q4}\nPARAMETERS:\n h[i] = {I:2, II:4, III:3}\n cap = 15000\n d[i,q] = {I.Q1:1500, I.Q2:1000, I.Q3:2000, I.Q4:1200, II.Q1:1500, II.Q2:1500, II.Q3:1200, II.Q4:1500, III.Q1:1000, III.Q2:2000, III.Q3:1500, III.Q4:2500}\n c_delay[i] = {I:20, II:20, III:10}\n c_hold = 5\n final_inv = 150\n delay_weights[q] = {Q1:4, Q2:3, Q3:2, Q4:1}\nVARIABLES:\n produce[i,q] integer >= 0\n inventory[i,q] integer >= 0\n backlog[i,q] integer >= 0\nOBJECTIVE:\n minimize sum(i, sum(q, c_hold*inventory[i,q] + c_delay[i]*delay_weights[q]*backlog[i,q]))\nCONSTRAINTS:\n C1: sum(i, h[i]*produce[i,Q1]) <= cap\n C2: sum(i, h[i]*produce[i,Q2]) <= cap\n C3: sum(i, h[i]*produce[i,Q3]) <= cap\n C4: sum(i, h[i]*produce[i,Q4]) <= cap\n C5: produce[I,Q2] = 0\n C6: inventory[I,Q1] = produce[I,Q1] - d[I,Q1] + backlog[I,Q1]\n C7: backlog[I,Q1] >= -inventory[I,Q1]\n C8: inventory[I,Q2] = inventory[I,Q1] + produce[I,Q2] - d[I,Q2] + backlog[I,Q1] - backlog[I,Q2]\n C9: backlog[I,Q2] >= backlog[I,Q1] - inventory[I,Q2]\n C10: inventory[I,Q3] = inventory[I,Q2] + produce[I,Q3] - d[I,Q3] + backlog[I,Q2] - backlog[I,Q3]\n C11: backlog[I,Q3] >= backlog[I,Q2] - inventory[I,Q3]\n C12: inventory[I,Q4] = inventory[I,Q3] + produce[I,Q4] - d[I,Q4] + backlog[I,Q3] - backlog[I,Q4]\n C13: backlog[I,Q4] >= backlog[I,Q3] - inventory[I,Q4]\n C14: inventory[II,Q1] = produce[II,Q1] - d[II,Q1] + backlog[II,Q1]\n C15: backlog[II,Q1] >= -inventory[II,Q1]\n C16: inventory[II,Q2] = inventory[II,Q1] + produce[II,Q2] - d[II,Q2] + backlog[II,Q1] - backlog[II,Q2]\n C17: backlog[II,Q2] >= backlog[II,Q1] - inventory[II,Q2]\n C18: inventory[II,Q3] = inventory[II,Q2] + produce[II,Q3] - d[II,Q3] + backlog[II,Q2] - backlog[II,Q3]\n C19: backlog[II,Q3] >= backlog[II,Q2] - inventory[II,Q3]\n C20: inventory[II,Q4] = inventory[II,Q3] + produce[II,Q4] - d[II,Q4] + backlog[II,Q3] - backlog[II,Q4]\n C21: backlog[II,Q4] >= backlog[II,Q3] - inventory[II,Q4]\n C22: inventory[III,Q1] = produce[III,Q1] - d[III,Q1] + backlog[III,Q1]\n C23: backlog[III,Q1] >= -inventory[III,Q1]\n C24: inventory[III,Q2] = inventory[III,Q1] + produce[III,Q2] - d[III,Q2] + backlog[III,Q1] - backlog[III,Q2]\n C25: backlog[III,Q2] >= backlog[III,Q1] - inventory[III,Q2]\n C26: inventory[III,Q3] = inventory[III,Q2] + produce[III,Q3] - d[III,Q3] + backlog[III,Q2] - backlog[III,Q3]\n C27: backlog[III,Q3] >= backlog[III,Q2] - inventory[III,Q3]\n C28: inventory[III,Q4] = inventory[III,Q3] + produce[III,Q4] - d[III,Q4] + backlog[III,Q3] - backlog[III,Q4]\n C29: backlog[III,Q4] >= backlog[III,Q3] - inventory[III,Q4]\n C30: inventory[I,Q4] >= final_inv\n C31: inventory[II,Q4] >= final_inv\n C32: inventory[III,Q4] >= final_inv\n"
+  "model": {
+    "name": "HiGHS_MILP",
+    "formulation": "min 10*X + 20*Y, s.t. X+Y<=1000, 2X+3Y>=2000, X>=0, Y>=0, X,Y integer"
+  }
 }

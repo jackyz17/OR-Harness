@@ -1,51 +1,50 @@
-"""Induction: consolidate episodic facts into calibrated commitments.
+"""Induction: submit agent-formed strategies as structured knowledge.
 
 The core question of induction is "what does the evidence entitle me to
-claim?" — a claim's applicability is read off the very executions that
+claim?" — a strategy's applicability is read off the very executions that
 support it: the family they came from, and the structural cell those
-executions occupy. Nothing is quantized into fixed bins by hand and nothing
-has to be manually widened: a claim's cell is what its evidence demonstrated,
-and in-scope failures are what pull it back down.
+executions occupy. Nothing is guessed from a mean: the agent READS the
+material (``ORHarness.induction_material`` — the methods actually performed,
+the outcomes, the failures, the before/after changes, the same-task attempt
+chains, the existing strategies) and submits the strategy in its own words.
 
-Entries are never born validated. Predictions are verified by future
-executions (forward validation), not by self-test on training data. Those
-verifications happen offline: recording freezes each check onto the fact, and
-``revise`` replays them at induction time — promotion, demotion, and dormancy
-wakeup all live here, never in the record chain. Quality checks are isolated
-by strategy and scope, and cost deviations stay on the facts as evidence.
+ONE entry is ONE strategy: :meth:`InductionEngine.submit_relation` either
+creates a new entry or revises an existing one under the same derived
+identity, and two independent strategies never share an entry. There is NO
+statistical path that turns a cell's means into a technique — the framework
+will not derive a method from a strategy name and a number. This is the only
+place knowledge changes.
 
-Admission is gated, revision is not: creating a claim takes two independent
-tasks (three runs of one instance generalize about that instance), while an
-entry that already exists is refreshed by any new matching evidence.
+A strategy is a reusable modelling, decomposition, search, checking or
+repair technique — not necessarily the whole plan of one execution and not
+necessarily one solver. It carries: the structure and conditions it applies
+to; the concrete method; a grounded explanation and expected effect; its
+cost, risks and boundary; and its supporting evidence, counterexamples and
+anything still unverified.
 
-Induction is not limited to restating one cell's statistics. The patterns
-worth generalizing are claims ACROSS evidence — how strategies compare
-under one structural condition (``strategy_contrast``), what changed after an
-intervention (``intervention_recovery``), whether a pattern recurs in an
-independent family (``structural_reproduction``), and where a strategy's
-advantage reverses (``advantage_reversal``). The detectors live in
-:mod:`or_harness.strategy.triggers` and fire online; their persisted hints
-carry the cross-execution evidence into the offline candidates
-(``or_harness.world_model.maintenance``). A claim about such a pattern is
-submitted as a STRUCTURED CLAIM (:meth:`InductionEngine.submit_relation`)
-with the evidence that established it — the statistical path below never
-phrases a contrast into free text. ONE entry is ONE claim: it either creates
-a new entry or revises an existing one under the same identity, and two
-independent claims never share an entry.
+Publication is a SEPARATE gate from saving. A strategy is saved and may be
+verified as a fact about the tasks it cites, but a TRANSFERABLE strategy
+needs the same mechanism observed on >= ``CLAIM_MIN_TASKS`` independent
+tasks (distinct ``task_id``). Different tasks, strategy ids and cells may be
+cited TOGETHER — there is no same-name / same-cell requirement. A single
+observation that is verified publishes only as a ``conditional_fact`` stamped
+``single_observation`` / ``transferability: unproven``; it never masquerades
+as a rule. The distinct-task count is computed from the evidence the strategy
+ACTUALLY cites, never padded.
 
-The only LLM injection point is phrasing: the harness may attach free-text
-applicability notes, which are kept for the reader and never scored.
+The four observation angles — method contrast, recovery after an
+intervention, structural reproduction, advantage reversal — are THINKING AIDS
+in the guidance, not detectors the framework runs (the old detectors are
+gone). The only LLM injection point is phrasing: the harness may attach
+free-text applicability notes, which are kept for the reader and never
+scored.
 
-SEMANTIC INDUCTION is organized, not performed, here. The framework gathers
-the material (``ORHarness.induction_material``: the methods actually used, the
-two sides of a comparison, what followed, the outcome and check state), the
-outer agent reads it and forms the "condition -> how -> consequence ->
-boundary" claim in its own words, and
-:meth:`InductionEngine.submit_relation` + :func:`verify_relation` check what
-was submitted. Nothing invents a method: when the cited evidence reports no
-method at all (and the claim declares none),
-:func:`relation_material_gate` REPORTS that in the outcome — the claim is
-saved as written, and the framework never derives a technique from a mean.
+Verification is the CHECK block inside a submitted strategy (the embedded
+``check`` — the same shape a separate ``--verify`` payload carries). The
+framework evaluates the declared, computable checks; the agent is
+responsible for whether the method explanation and the evidence agree. When
+BOTH an embedded ``check`` and a separate ``--verify`` are supplied they are
+a CONFLICT, reported, never silently merged.
 """
 
 from __future__ import annotations
@@ -54,38 +53,20 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
     CLAIM_MIN_TASKS,
-    COST_DIMENSIONS,
     CostVector,
     ExecutionRecord,
     GROUPING_FEATURES,
     PredictionTrack,
-    ProblemProfile,
     StrategicEntry,
     empty_verification,
     evidence_predicates,
     group_key,
-    min_interval_width,
     normalize_claim,
-    predicates_cover,
     validate_claim,
 )
-from or_harness.strategy.stats import ConditionalStats, GroupStats
+from or_harness.strategy.stats import ConditionalStats
 from or_harness.strategy.strategic_bank import StrategicBank, apply_transitions
-from or_harness.strategy.verification import (
-    VERIFIED,
-    verify_candidate,
-    verify_relation,
-)
-
-#: v1 cost interval: multiplicative band around the point estimate. Actual
-#: cost within [0.5x, 2.0x] of the prediction counts as a hit.
-COST_INTERVAL_BAND = (0.5, 2.0)
-
-#: Reported whenever a candidate is formed without an admission verdict: the
-#: entry exists (and collects forward checks) but is not published knowledge.
-UNVERIFIED_NOTE = ("recorded as an unverified candidate: not published as "
-                   "strategic knowledge — recall falls back to conditional "
-                   "statistics until an admission check passes")
+from or_harness.strategy.verification import verify_relation
 
 #: A method description counts as substance when it names the steps actually
 #: taken. The gate below refuses a claim that rests on evidence which reports
@@ -162,9 +143,9 @@ def relation_material_gate(relation: Dict[str, Any],
 
     It fires only when NO cited execution reports a method AND the relation
     declares no ``method`` field of its own. The corresponding hard
-    guarantee is elsewhere: the framework's own (statistical) induction
-    writes no method prose at all, and ``induction_material`` marks such a
-    candidate ``insufficient`` so the agent is told what is missing.
+    guarantee is elsewhere: the framework never writes method prose itself,
+    and ``induction-material`` marks a batch whose evidence reports no method
+    as ``missing: method_performed`` so the agent is told what to go read.
     """
     if any(_has_method_content(rec) for rec in records):
         return None
@@ -191,244 +172,12 @@ class InductionEngine:
         self.stats = stats
         self.sbank = sbank
 
-    # -- consolidation -----------------------------------------------------------
-
-    def induce(self, profile: ProblemProfile, strategy_id: str, *,
-               notes: Optional[List[str]] = None,
-               dry_run: bool = False, force: bool = False,
-               verify: Optional[Dict[str, Any]] = None,
-               execution_ids: Optional[Sequence[str]] = None
-               ) -> Dict[str, Any]:
-        """Create or refresh the entry for (strategy, evidence set).
-
-        Guard rails:
-        - cold-archive veto (anti-resurrection): a retired pattern is refused
-          unless ``force``, and ``force`` LIFTS the veto (removes the card)
-          so the harness's judgment is made once, not repeated every round;
-          a veto reports before the admission gate — it is the real blocker;
-        - honest intervals: width floored by sample size;
-        - no restatement-only entries: if an equally-wide or wider entry
-          already covers the pattern with the same prediction, this is a no-op.
-
-        Creating a claim also requires INDEPENDENT evidence: at least two
-        distinct tasks. Repeating one task is repetition, not reproduction —
-        it can still refresh a claim that already exists, but it cannot
-        create one.
-
-        The claim's predicates are read off the supporting records
-        (:func:`evidence_predicates`), so refreshing with new evidence is what
-        widens (or narrows) its applicability.
-
-        ``notes`` are harness-written applicability notes (free text): kept on
-        the entry for the reader, never scored. A CONTRAST against other
-        evidence is not written here as prose any more: it is a relation
-        claim, submitted through :meth:`submit_relation` with the evidence
-        that established it (see ``orx induction-material`` for the material
-        to read). The statistical path stays statistics.
-
-        ``verify`` optionally carries the harness's offline admission check
-        ``{"purpose", "claim", "check", "executions", "supporting"}``; the
-        framework computes the verdict from real executions
-        (:mod:`or_harness.strategy.verification`). Without it the entry is
-        created ``unverified`` — a candidate that is NOT published as
-        strategic knowledge.
-        """
-        if execution_ids is not None:
-            # Explicit evidence scope (M4 bundle adoption): restrict to
-            # the specified execution IDs — no silent scope widening.
-            allowed = set(execution_ids)
-            records = [r for r in self.stats.evidence(profile, strategy_id)
-                       if r.execution_id in allowed]
-        else:
-            records = self.stats.evidence(profile, strategy_id)
-        cell = self.stats.aggregate(group_key(profile), strategy_id, records)
-        if cell.n < 2:
-            return {"created": None, "skipped": "fewer than 2 supporting executions",
-                    "cell": cell.to_dict()}
-        predicates = evidence_predicates(
-            records, family=profile.family)
-        existing = self._find_existing(strategy_id, predicates,
-                                       include_dormant=True)
-        veto = self.sbank.archive_vetoes(strategy_id, predicates)
-        if veto is not None:
-            if not force:
-                return {"created": None,
-                        "vetoed": {"pattern_hash": veto.pattern_hash,
-                                   "reason": veto.reason},
-                        "skipped": "cold-archive veto (use --force to override)"}
-            # The harness judged the environment drifted: lift the veto.
-            # A rehearsal must not write — the lift happens only for real.
-            if not dry_run:
-                self.sbank.revive(veto.pattern_hash, force=True)
-            else:
-                veto = None
-        tasks = sorted({r.task_id for r in records})
-        # The framework does NOT decide whether one task's evidence is
-        # "enough to create a claim": that is a judgment the agent makes from
-        # the material. What the framework DOES report is the fact a reader
-        # needs to weigh the claim — how many distinct tasks the evidence
-        # spans — and a single-task claim is DRAFTED as a candidate (it is not
-        # published as transferable knowledge; see ``_claim_publication`` and
-        # the entry's ``verification`` scope). Creating the entry is never
-        # blocked on a sample count.
-        single_task_note = None
-        if existing is None and len(tasks) < 2:
-            single_task_note = (
-                f"all {cell.n} supporting observations come from "
-                f"{len(tasks)} task {tasks}: the entry is DRAFTED as a "
-                "candidate and is NOT publishable as transferable knowledge "
-                "until it is verified over >=2 independent tasks")
-
-        quality_hat = cell.mean_quality
-        lo, hi = self._honest_interval(cell)
-        fail_prob = cell.fail_rate
-        # Cost claims are COMPLETE-OR-SILENT. A dimension enters the entry's
-        # cost claim only when EVERY supporting record measured it: a mean
-        # over a subset ("3 of 4 records reported tokens") is a partial
-        # observation dressed up as a full claim, and downstream that number
-        # feeds strategy selection and world-model prediction as if it were
-        # the whole truth. A dimension short of the full count is withheld —
-        # the entry is still created, its quality claim and its other cost
-        # dimensions are unaffected, and the withheld dimension simply reads
-        # as unknown until the missing records are backfilled
-        # (``orx record --override`` amends already-recorded facts in place).
-        # The interval key set doubles as the entry's measured-dimension mask.
-        complete_dims = cell.complete_dims()
-        measured_cost_interval = {d: band for d, band in
-                                  self._cost_interval().items()
-                                  if d in complete_dims}
-        withheld = {d: {"n_measured": int(cell.n_measured.get(d, 0)),
-                        "n": int(cell.n)}
-                    for d in COST_DIMENSIONS if d not in complete_dims}
-        # A cost vector carrying ONLY the complete dimensions: an incomplete
-        # dimension keeps a placeholder zero and stays out of the mask, so no
-        # consumer can read a partial mean as a measured value.
-        cost_hat = CostVector(
-            **{d: (float(getattr(cell.mean_cost, d)) if d in complete_dims
-                   else 0.0) for d in COST_DIMENSIONS},
-            measured=set(complete_dims))
-        note_texts = [str(n).strip() for n in (notes or []) if str(n).strip()]
-        verification, verification_note = self._run_verification(
-            verify, dry_run, strategy_id=strategy_id, profile=profile)
-
-        if existing is not None:
-            changed = (abs(existing.expected_quality_hat - quality_hat) > 0.02
-                       or existing.support_n != cell.n
-                       or existing.predicates != predicates
-                       or abs(existing.failure_prob - fail_prob) > 0.02
-                       or verification is not None
-                       or self._cost_estimates_changed(existing, cost_hat,
-                                                       measured_cost_interval,
-                                                       cell.n_measured))
-            if not changed and not note_texts:
-                return {"created": None,
-                        "skipped": f"entry {existing.entry_id} already encodes this "
-                                   "evidence (restatement-only entries are forbidden)",
-                        "entry_id": existing.entry_id}
-            if dry_run:
-                out = {"created": None, "would_update": existing.entry_id,
-                       "cell": cell.to_dict()}
-                self._note_withheld(out, withheld, cell)
-                if verification is not None:
-                    out["verification"] = verification
-                return out
-            # Substantive-revision check: when the CLAIM changes (predicates
-            # or expected estimates beyond tolerance) without a fresh
-            # admission verdict, the old verification no longer covers the
-            # new claim — mark it stale rather than silently re-publishing
-            # a revised claim under an old check. Pure support-count
-            # growth does NOT trigger this: more evidence for the same
-            # claim only sharpens it. Cost SUPPORT growth alone (same
-            # point estimates, more measured samples) is likewise not a
-            # claim change.
-            cost_claim_changed = self._cost_estimates_changed(
-                existing, cost_hat, measured_cost_interval, None)
-            substantive = (existing.predicates != predicates
-                           or abs(existing.expected_quality_hat
-                                   - quality_hat) > 0.02
-                           or abs(existing.failure_prob - fail_prob) > 0.02
-                           or cost_claim_changed)
-            existing.pattern = {"predicates": predicates}
-            existing.expected_quality_hat = quality_hat
-            existing.quality_interval = (lo, hi)
-            existing.expected_cost_hat = cost_hat
-            existing.cost_interval = measured_cost_interval
-            existing.cost_support_n = dict(cell.n_measured)
-            existing.failure_prob = fail_prob
-            existing.support_n = cell.n
-            existing.provenance = cell.execution_ids[:50]
-            if verification is not None:
-                existing.verification = verification
-            elif substantive and existing.verification_state == "verified":
-                existing.verification = dict(existing.verification)
-                existing.verification["stale_after_revision"] = True
-                existing.verification["stale_reason"] = (
-                    "claim substantively revised (predicates or expected "
-                    "estimates) without a fresh admission verdict; "
-                    "re-verify with induce --verify to re-publish")
-            if note_texts:
-                existing.applicability.extend(note_texts)
-            self.sbank.update(existing)
-            out = {"updated": existing.entry_id, "cell": cell.to_dict(),
-                   "predicates": predicates,
-                   "notes_added": len(note_texts)}
-            self._note_withheld(out, withheld, cell)
-            if substantive and verification is None \
-                    and existing.verification_state == "verified":
-                out["verification_stale"] = True
-            if verification is not None:
-                out["verification"] = verification
-            if verification_note is not None:
-                out["skipped"] = verification_note
-            return out
-
-        if dry_run:
-            out: Dict[str, Any] = {"would_create": {"strategy_id": strategy_id,
-                                                    "predicates": predicates},
-                                   "cell": cell.to_dict()}
-            self._note_withheld(out, withheld, cell)
-            if verification is not None:
-                out["verification"] = verification
-            return out
-        entry = StrategicEntry(
-            entry_id=StrategicEntry.new_id(),
-            strategy_id=strategy_id,
-            pattern={"predicates": predicates},
-            expected_quality_hat=quality_hat,
-            quality_interval=(lo, hi),
-            expected_cost_hat=cost_hat,
-            cost_interval=measured_cost_interval,
-            cost_support_n=dict(cell.n_measured),
-            failure_prob=fail_prob,
-            applicability=note_texts,
-            fallback_strategy_id=None,
-            provenance=cell.execution_ids[:50],
-            support_n=cell.n,
-            verification=(verification if verification is not None
-                          else empty_verification()),
-        )
-        self.sbank.add(entry)
-        out = {"created": entry.entry_id, "entry": entry.to_dict(),
-               "predicates": predicates, "cell": cell.to_dict()}
-        self._note_withheld(out, withheld, cell)
-        if single_task_note is not None:
-            out["single_task_note"] = single_task_note
-        if verification is not None:
-            out["verification"] = verification
-        if verification_note is not None:
-            out["skipped"] = verification_note
-        elif verification is None:
-            # No verdict supplied: the entry is recorded as a candidate but
-            # is NOT published, and the caller is told exactly that instead
-            # of having to infer it from an empty field.
-            out["skipped"] = UNVERIFIED_NOTE
-        return out
-
     # -- knowledge claims (ONE claim per entry) ---------------------------------
 
     def submit_relation(self, raw: Dict[str, Any], *,
                         dry_run: bool = False, force: bool = False,
-                        verify: Optional[Dict[str, Any]] = None
+                        verify: Optional[Dict[str, Any]] = None,
+                        notes: Optional[List[str]] = None
                         ) -> Dict[str, Any]:
         """Create or refresh ONE knowledge CLAIM as a standalone entry.
 
@@ -518,8 +267,23 @@ class InductionEngine:
         effective_subject = subject
         if not effective_subject and len(resolved["strategy_ids"]) == 1:
             effective_subject = resolved["strategy_ids"][0]
-        entry = self._find_claim_entry(effective_subject or "claim",
-                                       predicates, claim.get("kind"))
+        # An EXPLICIT ``target_entry_id`` names the entry to revise
+        # unambiguously: a substantive edit does not have to re-derive the
+        # target from subject + cell + kind. When it does not match, the
+        # submission REFUSES rather than silently revising a different entry
+        # (or creating a new one under a name the caller did not intend).
+        target_entry_id = raw.get("target_entry_id")
+        entry = None
+        if target_entry_id:
+            entry = self.sbank.get(str(target_entry_id))
+            if entry is None:
+                return {"saved": None, "skipped": (
+                    f"unknown target_entry_id {target_entry_id!r}: a revision "
+                    "must name an existing entry (or omit it to create/refresh "
+                    "by identity)")}
+        else:
+            entry = self._find_claim_entry(effective_subject or "claim",
+                                           predicates, claim.get("kind"))
         if dry_run:
             return {"saved": None,
                     "would_" + ("update" if entry is not None else "create"):
@@ -532,7 +296,7 @@ class InductionEngine:
                                                                        verification)}
         if entry is None:
             entry = self._new_claim_entry(
-                effective_subject or "claim", predicates)
+                effective_subject or "claim", predicates, records)
             veto = self._claim_veto(entry)
             if veto is not None:
                 if not force:
@@ -544,6 +308,8 @@ class InductionEngine:
                 self.sbank.revive(veto["pattern_hash"], force=True)
             entry.claim = claim
             entry.verification = verification
+            entry.applicability = [str(n).strip() for n in (notes or [])
+                                   if str(n).strip()]
             self.sbank.add(entry)
             return {"saved": entry.entry_id, "created_entry": entry.entry_id,
                     "entry": entry.to_dict(), "claim": claim,
@@ -558,6 +324,10 @@ class InductionEngine:
             fresh_verdict=bool(verify))
         entry.claim = merged
         entry.verification = verification if verify else stale
+        entry.provenance = [r.execution_id for r in records][:50]
+        new_notes = [str(n).strip() for n in (notes or []) if str(n).strip()]
+        if new_notes:
+            entry.applicability = list(entry.applicability or []) + new_notes
         self.sbank.update(entry)
         return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
                 "claim": merged,
@@ -606,8 +376,17 @@ class InductionEngine:
                 "problem": None}
 
     def _new_claim_entry(self, subject: Optional[str],
-                         predicates: Dict[str, Any]) -> StrategicEntry:
-        """A knowledge entry for a claim with no strategy host."""
+                         predicates: Dict[str, Any],
+                         records: Sequence[ExecutionRecord] = ()
+                         ) -> StrategicEntry:
+        """A knowledge entry for a claim with no strategy host.
+
+        A claim is a METHOD explanation (condition -> how -> consequence ->
+        boundary), NOT a statistical quality/cost claim: the entry is
+        ``claim_only`` (``support_n == 0``) and makes no expected-value claim.
+        The cited executions' statistics stay readable through
+        ``ConditionalStats`` (which the world model still reads); they are not
+        dressed up as an entry estimate here."""
         return StrategicEntry(
             entry_id=StrategicEntry.new_id(),
             strategy_id=str(subject or "claim"),
@@ -617,6 +396,7 @@ class InductionEngine:
             expected_cost_hat=CostVector(measured=set()),
             failure_prob=0.0,
             support_n=0,
+            provenance=[r.execution_id for r in records][:50],
             verification=empty_verification(),
             claim=None,
         )
@@ -771,62 +551,6 @@ class InductionEngine:
                            "into a rule or supersedes it")
         return out
 
-
-    @staticmethod
-    def _note_withheld(out: Dict[str, Any], withheld: Dict[str, Dict[str, int]],
-                       cell: GroupStats) -> None:
-        """Attach the incomplete-dimension report to an induce outcome.
-
-        Silence would leave the harness believing its entry carries a cost
-        claim it does not. The report names the missing dimensions, how many
-        records supported them, and how to close the gap — the fix is a
-        backfill (``record --override`` amends an already-recorded fact), so
-        nothing has to be re-run."""
-        if not withheld:
-            return
-        out["cost_claim_withheld"] = {
-            "dimensions": withheld,
-            "supporting_executions": list(cell.execution_ids[:50]),
-            "note": ("these dimensions were measured on only some supporting "
-                     "records, so no cost claim was written for them (a mean "
-                     "over a subset is a partial observation, not a claim). "
-                     "Backfill the missing records with `orx amend-cost "
-                     "<execution_id> --override <dim>=<value>` (amends in "
-                     "place, idempotent) and re-run induce; the claim is "
-                     "withheld, not refused"),
-        }
-
-    def _run_verification(self, verify: Optional[Dict[str, Any]],
-                          dry_run: bool, *, strategy_id: str,
-                          profile: ProblemProfile
-                          ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-        """Compute the admission verdict from real executions.
-
-        Nothing is executed here and nothing is written: the harness hands in
-        the executions it already produced (or intends to), and the framework
-        applies the declared check. Returning ``None`` preserves whatever the
-        entry already carries — re-inducing from the same evidence must not
-        silently demote a verified claim back to unverified.
-
-        The candidate's identity is passed in, so ONE payload can never be
-        reused across induction targets: evidence for another strategy or
-        family reports as not corresponding rather than verifying this
-        candidate by accident."""
-        if not verify:
-            return None, None
-        report = verify_candidate(
-            verify.get("purpose"), str(verify.get("claim", "")),
-            check=verify.get("check"),
-            executions=verify.get("executions") or (),
-            supporting=verify.get("supporting") or (),
-            strategy_id=strategy_id, family=profile.family)
-        state = report.get("state")
-        note = None
-        if state != VERIFIED:
-            note = (f"candidate is {state}: not published as strategic "
-                    "knowledge — " + str(report.get("conclusion", "")))
-        return report, note
-
     # -- offline revalidation --------------------------------------------------
 
     def revise(self, strategy_id: Optional[str] = None, *,
@@ -850,6 +574,10 @@ class InductionEngine:
         - a dormant entry wakes when matching evidence is newer than its
           recency mark (``last_consulted_at`` or ``created_at``) — the same
           mark dormancy aging uses.
+
+        This is lifecycle maintenance of EXISTING knowledge (a management
+        ability), not statistical induction; it writes no new strategy. It
+        runs as part of the ``induce`` knowledge write.
 
         ``dry_run`` returns the same report without writing anything.
         """
@@ -879,7 +607,8 @@ class InductionEngine:
                             "n_hits": track.n_hits,
                             "hit_rate": round(track.hit_rate, 4),
                             "consecutive_misses": track.consecutive_misses,
-                            "calibration_error": round(track.calibration_error, 4)},
+                            "calibration_error": round(track.calibration_error,
+                                                       4)},
                 "misses": [c["execution_id"] for c in checks if not c["hit"]],
                 "transitions": list(transitions),
             }
@@ -929,86 +658,6 @@ class InductionEngine:
                          abs(check["observed"] - check["predicted"]))
         return track
 
-    def _cost_estimates_changed(self, existing: StrategicEntry,
-                                new_hat: CostVector,
-                                new_interval: Dict[str, Tuple[float, float]],
-                                new_support: Optional[Dict[str, int]] = None
-                                ) -> bool:
-        """True when the entry's cost estimate needs refreshing: the measured
-        dimension set changed, any measured dimension's point estimate moved
-        materially (relative to its previous magnitude), or any dimension's
-        effective sample size changed (identical means with more measured
-        samples still raise the entry's — and its predictions' — support).
-        This is the induction update-connection only — no induction
-        refactoring."""
-        if set(existing.cost_interval.keys()) != set(new_interval.keys()):
-            return True
-        if new_support is not None and dict(existing.cost_support_n) != dict(new_support):
-            return True
-        for dim in new_interval:
-            old = getattr(existing.expected_cost_hat, dim)
-            new = getattr(new_hat, dim)
-            if abs(old - new) > 0.02 * max(abs(old), 1.0):
-                return True
-        return False
-
-    # -- internals -----------------------------------------------------------------
-
-    @staticmethod
-    def _cost_interval() -> Dict[str, Tuple[float, float]]:
-        """v1: fixed multiplicative band per dimension."""
-        from or_harness.core.schema import COST_DIMENSIONS
-        return {d: COST_INTERVAL_BAND for d in COST_DIMENSIONS}
-
-    @staticmethod
-    def _honest_interval(cell: GroupStats) -> Tuple[float, float]:
-        """Interval honest to sample size: never narrower than the floor for
-        n, centered on the observed mean, spread by the observed std.
-
-        Full precision — this value is persisted (``StrategicEntry.to_dict``
-        feeds the payload) and used for matching decisions, so rounding here
-        would only move the defect to disk. Human-facing summaries round."""
-        spread = max(cell.std_quality, min_interval_width(cell.n) / 2.0)
-        lo = max(0.0, cell.mean_quality - spread)
-        hi = min(1.0, cell.mean_quality + spread)
-        if hi - lo < min_interval_width(cell.n):
-            hi = min(1.0, lo + min_interval_width(cell.n))
-            lo = max(0.0, hi - min_interval_width(cell.n))
-        return (lo, hi)
-
-    def _find_existing(self, strategy_id: str,
-                       predicates: Dict[str, Any],
-                       *, include_dormant: bool = True) -> Optional[StrategicEntry]:
-        """The entry this evidence belongs to, if any.
-
-        - an entry whose predicates already cover the new ones (the
-          restatement case, including a family-free pattern a harness wrote);
-        - otherwise the entry of the same (family, structural cell) evidence
-          set: one evidence set owns exactly one claim, so growing evidence
-          REFRESHES that claim instead of spawning a second one.
-
-        Dormant entries are INCLUDED by default. Excluding them meant a
-        dormant claim was invisible to the dedup pass, so induction created a
-        fresh entry and then ``revise`` woke the old one — two entries for one
-        knowledge object. Waking it and refreshing it are offline decisions
-        made here, on the same entry id."""
-        covering = self._find_covering(strategy_id, predicates,
-                                       include_dormant=include_dormant)
-        if covering is not None:
-            return covering
-        # Otherwise: the entry of the SAME CELL. Matching on the family alone
-        # was the defect that merged structurally opposite regions (the fallback
-        # below used to accept any entry naming the same family, so the second
-        # cell "refreshed" the first cell's claim). The cell is fully described
-        # by (family, the grouping-dimension predicates), so that is what is
-        # compared — including the unknown bucket.
-        if predicates.get("family") is None:
-            return None
-        for entry in self.sbank.list(strategy_id=strategy_id,
-                                     include_dormant=include_dormant):
-            if self._same_cell(entry.predicates, predicates):
-                return entry
-        return None
 
     @staticmethod
     def _same_cell(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
@@ -1019,13 +668,4 @@ class InductionEngine:
             if a.get(f) != b.get(f):
                 return False
         return True
-
-    def _find_covering(self, strategy_id: str,
-                       predicates: Dict[str, Any],
-                       *, include_dormant: bool = True) -> Optional[StrategicEntry]:
-        for entry in self.sbank.list(strategy_id=strategy_id,
-                                     include_dormant=include_dormant):
-            if predicates_cover(entry.predicates, predicates):
-                return entry
-        return None
 

@@ -309,10 +309,23 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
                 "memory_executions": harness.bank.count(),
             })
             if (index + 1) % induce_every == 0:
-                harness.induce(all_=True)
+                _consolidate(harness)
     finally:
         harness.close()
     return metrics
+
+
+def _consolidate(harness: ORHarness) -> None:
+    """Offline consolidation step of a run.
+
+    Recording alone is the evidence channel: the selector already reads the
+    conditional statistics over the recorded facts, so an ablation run needs
+    no knowledge write to learn. Induction (``induce --relation``) is the
+    agent's offline step and requires an agent-formed strategy; a batch runner
+    has none, so it deliberately writes nothing rather than fabricating a
+    technique from a cell's means.
+    """
+    return None
 
 
 def _warmup(harness: ORHarness, workdir: Path) -> None:
@@ -333,7 +346,7 @@ def _warmup(harness: ORHarness, workdir: Path) -> None:
             harness.record(record,
                            override={"llm_tokens": 1500.0 * law["cost_scale"],
                                      "tool_calls": 3.0})
-    harness.induce(all_=True)
+    _consolidate(harness)
 
 
 def run_ablation(output_dir: str, n_tasks: int = 30, seed: int = 7,

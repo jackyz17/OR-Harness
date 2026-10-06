@@ -559,8 +559,12 @@ class TestDelayedFeedbackLoop(Base):
                                 solver="highs", episode_id="ep2")
         h.bind_outcome(cons_pred.prediction_id, cons_record.action_id)
         h.record(cons_record, override={"llm_tokens": 1500.0})
-        self.seed(h, "t2")
-        induced = h.induce(strategy_id="S01", all_=True)
+        t2 = self.seed(h, "t2")
+        induced = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": cons_record.execution_id,
+                          "role": "e"},
+                         {"execution_id": t2.execution_id, "role": "e"}]}])
         self.assertIn("knowledge_feedback", induced,
                       "induce must evaluate the consolidation-stage "
                       "prediction — this is the loop M6 exists to close")
@@ -836,9 +840,13 @@ class TestPublicationGateUntouched(Base):
         """A33: a prediction's verdict never flips an entry's standing."""
         from or_harness.strategy.selector import is_publishable
         h = self.make_harness()
-        self.seed(h, "t1")
-        self.seed(h, "t2")
-        h.induce(strategy_id="S01", all_=True)
+        r1 = self.seed(h, "t1")
+        r2 = self.seed(h, "t2")
+        h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": r1.execution_id, "role": "e"},
+                         {"execution_id": r2.execution_id, "role": "e"}]}])
+        self.assertTrue(h.sbank.list())
         for entry in h.sbank.list():
             block = entry.verification or {}
             if block and block.get("state") != "verified":
@@ -848,17 +856,17 @@ class TestPublicationGateUntouched(Base):
         """A32: the pre-existing exception is preserved, not silently
         changed into 'unverified means unpublishable'.
 
-        Note: creating an entry needs >=2 independent tasks, so the fixture
-        seeds TWO. An earlier version seeded one, `induce` created nothing,
-        and the assertion below was silently skipped by the `if entries:`
-        guard — a vacuous test that this one no longer is."""
+        The fixture writes a real claim entry (>=2 independent tasks)."""
         from or_harness.strategy.selector import is_publishable
         harness = self.make_harness()
-        self.seed(harness, "t1")
-        self.seed(harness, "t2")
-        harness.induce(strategy_id="S01", all_=True)
+        r1 = self.seed(harness, "t1")
+        r2 = self.seed(harness, "t2")
+        harness.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": r1.execution_id, "role": "e"},
+                         {"execution_id": r2.execution_id, "role": "e"}]}])
         entries = harness.sbank.list()
-        self.assertTrue(entries, "induce must have created an entry")
+        self.assertTrue(entries, "the write must have created an entry")
         legacy = entries[0]
         legacy.verification = {}
         self.assertTrue(is_publishable(legacy),

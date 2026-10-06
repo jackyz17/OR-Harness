@@ -136,6 +136,29 @@ def _bundle(bundle_id="cb_1", kind="new_claim", strategy_id="S04",
     }
 
 
+def _operation(strategy_id="S04", execution_ids=("ex1", "ex2"),
+               operation_type="induce"):
+    """An offline learning operation that DECLARES the relation it forms.
+
+    The accepted path has no statistical fallback: an induce/revise
+    candidate must carry the strategy it forms in
+    ``config['relations']``, so the real operation write always names a
+    technique rather than a cell mean."""
+    return {
+        "operation_type": operation_type,
+        "strategy_id": strategy_id,
+        "description": "record the decomposition strategy",
+        "config": {"relations": [{
+            "subject": strategy_id,
+            "claim": (f"{strategy_id} decomposes the problem and links "
+                      "load to capacity"),
+            "conditions": {"predicates": {"family": "routing"}},
+            "evidence": [{"execution_id": e, "role": "evidence"}
+                         for e in execution_ids],
+        }]},
+    }
+
+
 class StubProvider(WorldModelProvider):
     """A stub provider returning a fixed payload, recording requests."""
 
@@ -179,10 +202,10 @@ class M5Case(HarnessTestCase):
             home=self.home, world_model=provider, embedding=self.backend)
         if h is not self.h:
             self.addCleanup(h.close)
+        b = bundle if bundle is not None else _bundle()
         prediction = h.predict_capability_evolution(
-            operation or {"operation_type": "induce", "strategy_id": "S04"},
-            bundle=bundle if bundle is not None else _bundle(),
-            horizon=horizon, horizon_tasks=horizon_tasks)
+            operation or _operation(b["strategy_id"], b["execution_ids"]),
+            bundle=b, horizon=horizon, horizon_tasks=horizon_tasks)
         return h, prediction
     def seed_executions(self, strategy="S04", tasks=("t1", "t2")):
         """Real executed records matching the bundle's scope."""
@@ -1546,7 +1569,11 @@ class TestReviewRoundFixes(M5Case):
         """The dispatched operation matches the prediction: a 'retire'
         candidate removes an entry instead of creating one."""
         self.seed_executions()
-        self.h.induce(strategy_id="S04")
+        # A real entry to retire, written through the claim path.
+        self.h.induce(relations=[{
+            "subject": "S04", "claim": "S04 decomposes the problem",
+            "evidence": [{"execution_id": "ex1", "role": "e"},
+                         {"execution_id": "ex2", "role": "e"}]}])
         entries = self.h.sbank.list()
         self.assertTrue(entries, "the fixture needs a real entry to retire")
         entry_id = entries[0].entry_id
@@ -2089,7 +2116,10 @@ class TestReviewRoundTwo(M5Case):
 
     def test_a_successful_retirement_counts_as_a_knowledge_change(self):
         self.seed_executions()
-        self.h.induce(strategy_id="S04")
+        self.h.induce(relations=[{
+            "subject": "S04", "claim": "S04 decomposes the problem",
+            "evidence": [{"execution_id": "ex1", "role": "e"},
+                         {"execution_id": "ex2", "role": "e"}]}])
         entries = self.h.sbank.list()
         self.assertTrue(entries)
         entry_id = entries[0].entry_id

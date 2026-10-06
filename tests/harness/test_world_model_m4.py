@@ -1,15 +1,16 @@
-"""M4 maintenance tests: induction candidate bundling (the evidence
-package M5 consumes) and its CLI entry point.
+"""M4 maintenance tests: the offline induction-material entry point, and the
+capability predictor's frozen evidence scope.
 
 All tests use controlled scripted providers — nothing here claims real-LLM
 behaviour.
 
-The M4 VALUE-ASSESSMENT chain (``assess_induction`` / ``accept_induction``
-/ ``reject_induction`` / ``bind_induction_outcome``) was REMOVED: the M5
-two-stage capability feedback asks the same question with a real horizon
-and a real effect gate, and the removed chain's slow verdict could not
-establish anything the effect evaluation cannot. What stays here — and is
-what M5 actually depends on — is the frozen candidate BUNDLE.
+The candidate BUNDLE generator (``induction-candidates`` /
+``induction_candidates()``) was REMOVED: the framework no longer turns a
+cell's counts into a candidate, and a claim can no longer cite a bundle. The
+capability predictor still consumes a FROZEN evidence scope, but it is read
+from the evidence directly (a mapping naming the executions) rather than
+produced by a generator. What stays here — and is what M5 depends on — is a
+frozen evidence scope.
 """
 
 import io
@@ -23,9 +24,6 @@ from tests.harness.helpers import HarnessTestCase  # noqa: E402
 
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.strategy.strategic_bank import StrategicEntry  # noqa: E402
-from or_harness.world_model.maintenance import (  # noqa: E402
-    InductionCandidateBundle,
-)
 
 
 def _profile(problem_id="t1", family="routing", **coupling):
@@ -42,106 +40,64 @@ def _profile(problem_id="t1", family="routing", **coupling):
     )
 
 
-class TestM4CandidateBundling(HarnessTestCase):
-    """M4-A: candidate bundle construction from real evidence."""
+class TestM4InductionMaterial(HarnessTestCase):
+    """M4-A: the material reads a batch of REAL evidence with no gate."""
 
-    def test_bundle_requires_independent_evidence(self):
-        """A ``new_claim`` bundle forms only when >=2 executions exist across
-        >=2 distinct tasks. A thin cell / single repeated task is still
-        VISIBLE (as ``cell_observation``) but is NOT a publishable claim."""
+    def test_material_needs_no_independent_evidence(self):
+        """The material is visible from the FIRST execution: independent-task
+        count is a fact it REPORTS, never a gate on what may be read."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-
-        # 1. Single execution: a visible THIN cell, not a publishable claim.
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
                                        profile=_profile()))
-        bundles = h.induction_candidates()
-        self.assertEqual([b["kind"] for b in bundles], ["cell_observation"])
-        self.assertIsNotNone(bundles[0]["admission_note"])
+        material = h.induction_material()
+        self.assertEqual(material["count"], 1)
+        self.assertEqual(material["n_distinct_tasks"], 1)
+        self.assertEqual(material["material"][0]["strategy_id"], "S01")
 
-        # 2. Repeated execution on the SAME task: n=2 but tasks=1 — still a
-        #     visible thin cell, still NOT a publishable claim.
+    def test_material_reports_the_facts_a_reader_needs(self):
+        """Across two distinct tasks the material reports the real tasks,
+        the same-task attempt chains, the outcomes and the existing
+        knowledge — with no ``new_claim`` / ``cell_observation`` verdict."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        prof = _profile()
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
-                                       profile=_profile()))
-        bundles = h.induction_candidates()
-        self.assertEqual([b["kind"] for b in bundles], ["cell_observation"])
-        self.assertIn("single task", bundles[0]["admission_note"])
-
-        # 3. Independent execution on task t2: n=2, tasks=2 => a new_claim
-        #    bundle forms, carrying all three unique executions.
+                                       profile=prof))
         h.bank.append(self.make_record(task_id="t2", strategy_id="S01",
-                                       profile=_profile()))
-        bundles = h.induction_candidates()
-        self.assertEqual(len(bundles), 1)
-        b = bundles[0]
-        self.assertEqual(b["kind"], "new_claim")
-        self.assertEqual(b["strategy_id"], "S01")
-        self.assertEqual(b["family"], "routing")
-        self.assertEqual(b["tasks"], ["t1", "t2"])
-        self.assertEqual(b["n_supporting"], 3)  # all 3 unique executions
-        self.assertTrue(b["trigger_reasons"])
+                                       profile=prof))
+        material = h.induction_material()
+        self.assertEqual(sorted(material["tasks"]), ["t1", "t2"])
+        self.assertEqual(material["n_distinct_tasks"], 2)
+        self.assertEqual(sorted(material["task_chains"]), ["t1", "t2"])
+        self.assertIn("existing_knowledge", material)
+        self.assertNotIn("candidates", material)
+        blob = str(material)
+        self.assertNotIn("cell_observation", blob)
+        self.assertNotIn("bundle_id", blob)
 
-    def test_bundle_distinguishes_new_and_revision(self):
-        """A bundle for a cell covered by an existing StrategicEntry is
-        labelled as a revision candidate with the entry reference preserved."""
+    def test_existing_knowledge_is_offered_for_revision(self):
+        """An existing entry matching the batch is surfaced, so the agent can
+        extend, merge or revise it instead of creating a near-duplicate."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-
-        # Pre-populate an existing StrategicEntry.
-        prof = _profile(problem_id="t1", resource_coupling=0.35)
         entry = StrategicEntry(
             entry_id=StrategicEntry.new_id(),
             strategy_id="S01",
-            pattern={"predicates": {"family": "routing",
-                                    "resource_coupling": [0.25, 0.5]}},
+            pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.5,
             verification={"state": "verified", "claim": "x"})
         h.sbank.add(entry)
-
-        # Add evidence that has drifted from the entry's claim.
-        h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
-                                       status="optimal", objective=95.0,
-                                       gap=0.05, profile=prof))
-        h.bank.append(self.make_record(task_id="t2", strategy_id="S01",
-                                       status="optimal", objective=95.0,
-                                       gap=0.05, profile=prof))
-        bundles = h.induction_candidates()
-        self.assertEqual(len(bundles), 1)
-        b = bundles[0]
-        self.assertEqual(b["kind"], "revision")
-        self.assertEqual(b["target_entry_id"], entry.entry_id)
-        self.assertIsNotNone(b["entry_before"])
-
-    def test_hypothetical_and_future_records_excluded(self):
-        """Hypothetical executions and dynamically added future records do
-        NOT alter an already-formed bundle."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
                                        profile=_profile()))
-        h.bank.append(self.make_record(task_id="t2", strategy_id="S01",
-                                       profile=_profile()))
-        bundle_dict = h.induction_candidates()[0]
-        bundle = InductionCandidateBundle.from_dict(bundle_dict)
-
-        # Later: new execution arrives. The frozen bundle does NOT change.
-        h.bank.append(self.make_record(task_id="t3", strategy_id="S01",
-                                       profile=_profile()))
-        self.assertEqual(bundle.n_supporting, 2)
-        self.assertEqual(bundle.tasks, ["t1", "t2"])
+        material = h.induction_material()
+        ids = {k["entry_id"] for k in material["existing_knowledge"]}
+        self.assertIn(entry.entry_id, ids)
 
 
-
-
-
-
-class TestInductionCandidatesCli(HarnessTestCase):
-    """The scan is reachable as its own command and makes no model call.
-
-    This is the evidence-package generator: ``predict-capability --bundle``
-    consumes what it returns, so losing it would remove the only way to
-    scope a capability prediction to a frozen evidence set.
-    """
+class TestRemovedInductionCandidatesCli(HarnessTestCase):
+    """The removed candidate command must not linger as a silently-different
+    command: an agent that learned it gets a usage error, not a surprise."""
 
     def _run(self, argv):
         from or_harness import cli
@@ -154,29 +110,17 @@ class TestInductionCandidatesCli(HarnessTestCase):
             sys.stdout = old
         return code, buffer.getvalue()
 
-    def test_scan_needs_no_provider_and_reports_the_evidence(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        h.bank.append(self.make_record(task_id="t1", strategy_id="S01",
-                                       profile=_profile()))
-        h.bank.append(self.make_record(task_id="t2", strategy_id="S01",
-                                       profile=_profile()))
-        code, out = self._run(["induction-candidates"])
-        self.assertEqual(code, 0)
-        self.assertIn("1 structural-cell lead(s)", out)
-        self.assertIn("S01", out)
-        # The bundle is a real, frozen evidence scope — not just a name.
-        self.assertIn("execution_ids", out)
+    def test_old_candidate_command_is_gone(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(["induction-candidates"])
+        self.assertEqual(ctx.exception.code, 2)
 
-    def test_empty_bank_reports_the_gate_not_an_error(self):
-        code, out = self._run(["induction-candidates"])
-        self.assertEqual(code, 0)
-        self.assertIn("No structural-cell candidates", out)
+    def test_old_review_material_command_is_gone(self):
+        with self.assertRaises(SystemExit) as ctx:
+            self._run(["review-material"])
+        self.assertEqual(ctx.exception.code, 2)
 
     def test_old_assessment_command_is_gone(self):
-        """The removed chain must not linger as a silently-different
-        command: an agent that learned `assess-induction` gets a usage
-        error, not a surprise."""
         with self.assertRaises(SystemExit) as ctx:
             self._run(["assess-induction", "--candidates-only"])
         self.assertEqual(ctx.exception.code, 2)

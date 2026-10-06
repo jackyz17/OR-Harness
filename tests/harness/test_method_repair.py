@@ -95,10 +95,10 @@ class TestMaterialReportNamesWhatItCarries(RepairCase):
                 method_planned=PER_BOX_METHOD))
         material = h.induction_material(strategy_id="S-plan")
         self.assertTrue(material["count"])
-        report = material["material"][0]["material_report"]
-        self.assertEqual(report["basis"], "planned_only")
-        self.assertTrue(any("method_performed" in m
-                            for m in report["missing"]))
+        entry = material["material"][0]
+        self.assertEqual(entry["method"]["basis"], "planned_only")
+        self.assertIsNotNone(entry["method"]["planned"])
+        self.assertIsNone(entry["method"]["actual"])
 
     def test_performed_method_reports_performed_basis(self):
         h = self.harness()
@@ -111,10 +111,9 @@ class TestMaterialReportNamesWhatItCarries(RepairCase):
                 solver={"name": "highs"},
                 method_actual=INTEGER_CAR_METHOD))
         material = h.induction_material(strategy_id="S-perf")
-        report = material["material"][0]["material_report"]
-        self.assertEqual(report["basis"], "performed")
-        self.assertFalse(any("method_performed" in m
-                             for m in report["missing"]))
+        entry = material["material"][0]
+        self.assertEqual(entry["method"]["basis"], "performed")
+        self.assertIsNotNone(entry["method"]["actual"])
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +166,7 @@ class TestExcludedExecutionLeavesEvidence(RepairCase):
                          objective=10.0, method=INTEGER_CAR_METHOD,
                          task_id=f"X{i}", strategy_id="S-x")
         h.exclude_execution("x0", reason="wrong fact")
-        material = h.review_material(strategy_id="S-x")
+        material = h.induction_material(strategy_id="S-x")
         ids = {m["execution_id"] for m in material["material"]}
         self.assertNotIn("x0", ids)
         self.assertIn("x1", ids)

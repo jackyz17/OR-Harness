@@ -1,12 +1,12 @@
-"""Offline induction: detector hints reach the candidate bundle, and a
-candidate's METHOD material is readable.
+"""Offline induction: recording writes EVIDENCE only, the material is read
+directly, and a relation submission is a traceable knowledge write.
 
-The gap this closes: the four detectors fired ONLINE (at record time) and
-their evidence was returned to the caller and then thrown away, so the
-offline candidate builder re-derived candidates from bare counts and never
-saw the detector's cross-execution references. These tests pin the joined
-chain: detect -> persist the hint -> reuse it offline -> carry the method
-material -> refuse to abstract a technique from a name and a mean.
+The gap this pinned: the framework used to build induction CANDIDATES from
+counts and let a claim cite a bundle. That generator is gone — the outer
+agent reads a BATCH of completed tasks (``induction-material``, no candidate,
+no sample-count gate) and submits the strategy itself. These tests pin the
+converged chain: record -> material (a batch, never a candidate verdict) ->
+``induce --relation`` -> a maintenance action with a real knowledge delta.
 """
 import io
 import json
@@ -42,7 +42,7 @@ def _profile(problem_id="t1", family="routing", **coupling):
 class TestNoAutomaticHints(HarnessTestCase):
     """Recording no longer produces or persists induction labels: the
     framework does not interpret the fact it just stored. The material is
-    read later with ``review-material`` and the agent abstracts it."""
+    read later with ``induction-material`` and the agent abstracts it."""
 
     def test_record_does_not_produce_hints(self):
         h = ORHarness(home=self.home)
@@ -61,23 +61,11 @@ class TestNoAutomaticHints(HarnessTestCase):
         self.assertNotIn("induction_hints", stored.execution_features)
 
 
-class TestCellCandidates(HarnessTestCase):
-    """The candidate builder produces structural-cell LEADS only."""
+class TestInductionMaterialEntry(HarnessTestCase):
+    """The material reads a BATCH of completed tasks — no candidate, no
+    sample-count gate, no ``new_claim`` / ``cell_observation`` verdict."""
 
-    def _run_cli(self, h, argv):
-        from or_harness import cli
-        buffer = io.StringIO()
-        old = sys.stdout
-        sys.stdout = buffer
-        try:
-            code = cli.main(["--home", self.home] + argv)
-        finally:
-            sys.stdout = old
-        return code, buffer.getvalue()
-
-    def test_only_cell_kinds_are_emitted(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
+    def _seed(self, h):
         cheap = CostVector(llm_tokens=100, solver_runtime_s=1.0,
                            measured={"llm_tokens", "solver_runtime_s"})
         for prefix, sid, gap in (("a", "S01", 0.40), ("b", "S04", 0.02)):
@@ -86,43 +74,74 @@ class TestCellCandidates(HarnessTestCase):
                     execution_id=f"{prefix}_{i}", task_id=f"{prefix}{i}",
                     strategy_id=sid, gap=gap, cost=cheap,
                     profile=_profile(f"{prefix}{i}", resource_coupling=0.30)))
-        bundles = h.induction_candidates()
-        self.assertTrue(bundles)
-        kinds = {b["kind"] for b in bundles}
-        self.assertTrue(kinds <= {"new_claim", "revision",
-                                  "cell_observation"})
-        for b in bundles:
-            self.assertNotIn("pattern", b)
-            self.assertNotIn("purpose", b)
+        return h
 
-    def test_a_candidate_carrying_no_method_is_reported(self):
-        """No execution reports a method: the material report NAMES the
-        missing content rather than inventing a technique from a name and a
-        mean. It is a report, not an admission verdict."""
+    def test_material_reads_a_batch_with_no_candidate_verdict(self):
+        h = self._seed(ORHarness(home=self.home))
+        self.addCleanup(h.close)
+        material = h.induction_material()
+        self.assertEqual(material["count"], 4)
+        self.assertEqual(material["n_distinct_tasks"], 4)
+        # No candidate-shaped keys anywhere: this is FACTS, not a verdict.
+        blob = json.dumps(material)
+        for forbidden in ("new_claim", "cell_observation", "bundle_id",
+                          "admission_note", "material_report"):
+            self.assertNotIn(forbidden, blob)
+        # Cross-task affordance reports the real distinct-task count.
+        hint = material["cross_task_hint"]
+        self.assertEqual(hint["n_distinct_tasks_in_batch"], 4)
+        self.assertGreaterEqual(hint["distinct_tasks_across_history"], 4)
+
+    def test_a_batch_with_no_method_is_still_readable(self):
+        """A batch whose evidence reports no method is VISIBLE, not hidden:
+        the missing field is what the agent goes and reads/records — it is
+        never an admission verdict."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         for i in range(2):
             h.record(self.make_record(task_id=f"t{i}", strategy_id="S01",
                                       profile=_profile(f"t{i}")))
-        bundles = h.induction_candidates()
-        self.assertTrue(bundles)
         material = h.induction_material()
-        self.assertTrue(material["material"])
-        for item in material["material"]:
-            report = item["material_report"]
-            self.assertFalse(report["basis"] == "performed")
-            self.assertTrue(any("method_performed" in m
-                                for m in report["missing"]))
-        code, out = self._run_cli(h, ["induction-material"])
-        self.assertEqual(code, 0)
-        self.assertIn("missing", out)
+        self.assertEqual(material["count"], 2)
+        for entry in material["material"]:
+            self.assertEqual(entry["method"]["basis"], "none")
+            self.assertIsNone(entry["method"]["planned"])
+            self.assertIsNone(entry["method"]["actual"])
 
-    def test_unknown_bundle_is_refused(self):
-        from or_harness.core.storage import StorageError
+    def test_paging_walks_the_whole_history(self):
+        """A page never stands in for the bank: the cursor reads OLDER
+        material, so a long history is walked in distinct batches."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-        with self.assertRaises(StorageError):
-            h.induction_material(bundle_id="cb_does_not_exist")
+        for i in range(6):
+            rec = self.make_record(execution_id=f"p{i}", task_id=f"T{i}",
+                                   strategy_id="S01",
+                                   profile=_profile(f"T{i}"))
+            rec.created_at = 1000.0 + i      # distinct, increasing
+            h.record(rec)
+        seen = set()
+        cursor = None
+        for _ in range(20):
+            page = h.induction_material(limit=2, cursor=cursor)
+            if not page["material"]:
+                break
+            seen.update(m["execution_id"] for m in page["material"])
+            if len(page["material"]) < 2:
+                break
+            cursor = page["material"][0]["cursor"]  # oldest entry returned
+        self.assertEqual(seen, {f"p{i}" for i in range(6)})
+
+    def test_cli_help_points_at_the_converged_flow(self):
+        from or_harness import cli
+        buffer = io.StringIO()
+        old = sys.stdout
+        sys.stdout = buffer
+        try:
+            code = cli.main(["--home", self.home, "induction-material"])
+        finally:
+            sys.stdout = old
+        self.assertEqual(code, 0)
+        self.assertIn("induce --relation", buffer.getvalue())
 
 
 class TestRetainedFactsReachable(unittest.TestCase):
@@ -133,9 +152,8 @@ class TestRetainedFactsReachable(unittest.TestCase):
 
 class TestRelationWriteBookkeeping(HarnessTestCase):
     """A relation submission is a knowledge WRITE, so it must be traceable
-    exactly like a statistical induction: a maintenance action with a PRE
-    state, a knowledge delta, and the index result. It must also not be
-    counted twice."""
+    with a maintenance action carrying a PRE state, a knowledge delta and the
+    index result."""
 
     def _seed(self, h, method=False):
         ids = []
@@ -167,25 +185,20 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
                          for eid in ids],
         }
         result = h.induce(relations=[relation])
-        # A maintenance action was recorded with the relation shape.
         self.assertIn("action", result)
         action = h.actions.get(result["action"]["action_id"])
         self.assertIsNotNone(action)
         self.assertEqual(action.action_type, "induce")
         self.assertEqual(action.params.get("knowledge_shape"), "relations")
         self.assertEqual(action.status, "completed")
-        # The delta names the created entry and reports a real transition.
         delta = result["action"]["knowledge_delta"]
         self.assertTrue(delta["entries_created"])
         self.assertEqual(delta["entry_count_before"], 0)
         self.assertEqual(delta["entry_count_after"], 1)
         self.assertEqual(len(h.actions.query()), before_actions + 1)
-        # The index result is REPORTED, not discarded.
         self.assertIn("index_sync", result)
 
     def test_the_relation_write_is_not_counted_twice(self):
-        """Two identical submissions produce two actions but ONE entry, and
-        the second reports 'updated', never a second creation."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         ids = self._seed(h)
@@ -218,8 +231,20 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self.assertEqual(len(h.actions.query()), before_actions)
         self.assertEqual(h.sbank.count(), before_entries)
 
+    def test_submitting_no_relation_writes_nothing_and_says_so(self):
+        """The framework never runs a statistical induction behind the
+        agent's back: no relations means no write, reported honestly."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        self._seed(h)
+        before = (len(h.actions.query()), h.sbank.count())
+        result = h.induce()
+        self.assertEqual(result["saved"], 0)
+        self.assertIn("relations", result["skipped"])
+        self.assertEqual((len(h.actions.query()), h.sbank.count()), before)
+
     def test_a_method_less_relation_is_reported_not_refused(self):
-        """The material report is a WARNING: the claim is saved, and the
+        """The material report is a WARNING: the strategy is saved, and the
         outcome says the framework did not (and will not) derive a technique
         from the numbers."""
         h = ORHarness(home=self.home)
@@ -246,26 +271,10 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
                          for eid in ids]}])
         self.assertIsNone(result["relations"][0]["material"])
 
-    def test_a_claim_may_cite_a_bundle_instead_of_execution_ids(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        self._seed(h)
-        bundles = h.induction_candidates()
-        self.assertTrue(bundles)
-        bundle = max(bundles, key=lambda b: len(b["execution_ids"]))
-        bundle_id = bundle["bundle_id"]
-        self.assertEqual(len(bundle["execution_ids"]), 3)
-        result = h.induce(relations=[{
-            "subject": "principle:from_bundle",
-            "claim": "the bundle's evidence supports this",
-            "evidence": [{"bundle_id": bundle_id, "role": "preserved"}]}])
-        outcome = result["relations"][0]
-        self.assertIsNotNone(outcome.get("saved"))
-        # Every execution in the bundle was cited.
-        stored = h.sbank.get(outcome["saved"]).claim
-        self.assertEqual(len(stored["evidence"]), 3)
-
-    def test_an_unknown_bundle_is_refused_with_a_reason(self):
+    def test_a_bundle_citation_is_no_longer_supported(self):
+        """There is no candidate generator to resolve a ``bundle_id``: the
+        evidence must be cited by explicit execution id, and a bundle-shaped
+        citation is refused with a reason rather than silently resolved."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         self._seed(h)
@@ -273,103 +282,12 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
             "subject": "principle:bad_bundle",
             "claim": "x",
             "evidence": [{"bundle_id": "cb_missing", "role": "preserved"}]}])
-        self.assertIn("unknown induction bundle",
-                      result["relations"][0]["skipped"])
-
-
-class TestColdStartObservation(HarnessTestCase):
-    """A lone verified execution is no longer a special trigger CATEGORY: it
-    is simply a THIN CELL, reported by the same cell path with an
-    ``admission_note`` that says a transferable claim is not yet admissible.
-    Its material is ALWAYS visible (the sample count limits what a claim may
-    assert, never what may be read)."""
-
-    def _verified(self, h, task_id, method_name, strategy_id=None):
-        rec = self.make_record(execution_id=f"ex_{task_id}", task_id=task_id,
-                               strategy_id=strategy_id or f"s_{task_id}",
-                               profile=_profile(task_id))
-        rec.method_planned = {"name": method_name, "steps": ["do the thing"]}
-        h.record(rec)
-        h.check_task_result(rec.execution_id, {"reference_objective": 100.0})
-        return rec
-
-    def test_verified_distinct_task_is_a_visible_thin_cell(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        # Three DISTINCT cold-start tasks, each its own method, each
-        # verified: no contrast/repair/reproduction fires, yet each is real,
-        # VISIBLE material — a thin ``cell_observation``, not a silent drop.
-        for i in range(3):
-            self._verified(h, f"t{i}", f"method-{i}")
-        bundles = h.induction_candidates()
-        obs = [b for b in bundles if b["kind"] == "cell_observation"]
-        self.assertEqual(len(obs), 3)
-        for b in obs:
-            self.assertEqual(len(b["execution_ids"]), 1)
-            self.assertIsNotNone(b.get("admission_note"))
-            self.assertIn("admissible", b["admission_note"])
-        # The material report names what the evidence carries: a plan plus a
-        # passed check, with no performed method recorded.
-        material = h.induction_material()
-        reports = {m["bundle_id"]: m["material_report"]
-                   for m in material["material"]}
-        for b in obs:
-            self.assertEqual(reports[b["bundle_id"]]["basis"],
-                             "planned_only")
-
-    def test_unverified_or_methodless_record_is_visible_but_insufficient(self):
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        # No task check -> not verified.
-        rec = self.make_record(execution_id="ex_nv", task_id="t_nv",
-                               strategy_id="s_nv", profile=_profile("t_nv"))
-        rec.method_planned = {"name": "m", "steps": ["x"]}
-        h.record(rec)
-        # Verified but no method content -> not abstractable.
-        rec2 = self.make_record(execution_id="ex_nm", task_id="t_nm",
-                                strategy_id="s_nm", profile=_profile("t_nm"))
-        h.record(rec2)
-        h.check_task_result("ex_nm", {"reference_objective": 100.0})
-        bundles = h.induction_candidates()
-        # Both are VISIBLE thin cells (material is never hidden), but the
-        # methodless/unverified one reports its missing content so nothing
-        # is invented from a name and a mean.
-        ids = {b["strategy_id"] for b in bundles
-               if b["kind"] == "cell_observation"}
-        self.assertEqual(ids, {"s_nv", "s_nm"})
-        material = h.induction_material()
-        reports = {m["strategy_id"]: m["material_report"]
-                   for m in material["material"]}
-        self.assertEqual(reports["s_nm"]["basis"], "none")
-        self.assertTrue(any("method_performed" in x
-                            for x in reports["s_nm"]["missing"]))
-
-    def test_repeated_runs_of_one_task_are_not_independent(self):
-        """Two runs of ONE task are repetition, not reproduction: the cell is
-        visible but its ``admission_note`` says so — never disguised as
-        cross-task support."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        # Two runs of the SAME task (distinct execution ids) — a retry.
-        for i in range(2):
-            rec = self.make_record(execution_id=f"ex_c_same_{i}",
-                                   task_id="c_same", strategy_id="s_shared",
-                                   profile=_profile("c_same"))
-            rec.method_planned = {"name": "same-method",
-                                  "steps": ["do the thing"]}
-            h.record(rec)
-            h.check_task_result(rec.execution_id,
-                                {"reference_objective": 100.0})
-        bundles = [b for b in h.induction_candidates()
-                   if b["strategy_id"] == "s_shared"]
-        self.assertTrue(bundles)
-        cell = bundles[0]
-        self.assertEqual(cell["kind"], "cell_observation")
-        self.assertIn("single task", cell["admission_note"])
+        skipped = result["relations"][0]["skipped"]
+        self.assertIn("execution_id", skipped)
 
 
 class TestConditionalFactPublication(HarnessTestCase):
-    """W4: a ``conditional_fact`` claim publishes on ONE verified
+    """W4: a ``conditional_fact`` strategy publishes on ONE verified
     observation, but is stamped unproven — the fact/transfer distinction."""
 
     def test_single_observation_fact_publishes_but_is_unproven(self):
@@ -401,7 +319,7 @@ class TestConditionalFactPublication(HarnessTestCase):
         self.assertTrue(is_publishable(h.sbank.get(rel["saved"])))
 
     def test_transferable_claim_still_needs_two_tasks(self):
-        """The rule is NOT relaxed for transferable (non-fact) claims."""
+        """The rule is NOT relaxed for transferable (non-fact) strategies."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         rec = self.make_record(execution_id="ex_two", task_id="T1",

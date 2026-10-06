@@ -246,9 +246,16 @@ def build_capability_evolution_request(
     return request
 
 
-def learning_material_for_bundle(harness, bundle: Any
-                                 ) -> Dict[str, Any]:
-    """The REAL content a candidate bundle would consolidate.
+def learning_material_for_evidence(harness, evidence_scope: Any
+                                   ) -> Dict[str, Any]:
+    """The REAL content a candidate operation would consolidate.
+
+    ``evidence_scope`` is the FROZEN evidence scope the operation would
+    consume — a mapping naming ``execution_ids`` (and, optionally, the
+    ``tasks`` / ``family`` / ``cell_token`` / ``strategy_id`` it speaks
+    about, plus a ``entry_before`` snapshot for a revision). It is supplied
+    by the caller or built internally from the evidence itself; it is NOT
+    produced by any candidate generator (there is none).
 
     The provider must condition on actual evidence, not on ids: this reads
     the scope's execution records (quality, cost, status, failure classes)
@@ -262,10 +269,11 @@ def learning_material_for_bundle(harness, bundle: Any
         "note": ("the real evidence content the candidate operation would "
                  "consolidate; ids alone are not material"),
     }
-    if bundle is None:
-        material["note"] += " (no candidate bundle was supplied)"
+    if evidence_scope is None:
+        material["note"] += " (no evidence scope was supplied)"
         return material
-    data = bundle.to_dict() if hasattr(bundle, "to_dict") else dict(bundle)
+    data = (evidence_scope.to_dict() if hasattr(evidence_scope, "to_dict")
+            else dict(evidence_scope))
     material["candidate_kind"] = data.get("kind")
     material["strategy_id"] = data.get("strategy_id")
     material["family"] = data.get("family")
@@ -320,6 +328,10 @@ def learning_material_for_bundle(harness, bundle: Any
                      "not against the entry's later value"),
         }
     return material
+
+#: Backwards-compatible alias for the former name. The material is read from
+#: an explicit evidence scope now; there is no candidate generator.
+learning_material_for_bundle = learning_material_for_evidence
 
 
 def _frozen_baseline_for(

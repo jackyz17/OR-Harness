@@ -1,49 +1,18 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_set_cover",
-    "solver": "highs",
-    "config": {},
+    "task_id": "orarla_10",
+    "episode_id": "ep1",
+    "strategy_id": "enumeration_with_constraints",
+    "solver": null,
+    "params": {},
+    "measurement_scope": "attempt",
     "method": {
-      "name": "milp_set_cover",
+      "name": "enumeration_with_constraints",
       "steps": [
-        "Define binary decision variables x_A, x_B, ..., x_L where x_i = 1 if a store is built at location i, else 0",
-        "Objective: minimize sum(x_i) for i in {A,B,C,D,E,F,G,H,I,J,K,L}",
-        "Constraint for each area: sum of x_j for all j in within_800m[area] >= 1 (each area must be covered)",
-        "Use HiGHS MILP solver with binary variables",
-        "Retrieve optimal solution: stores at locations where x_i = 1"
-      ]
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "enumerate_min_subset",
-    "solver": "enumerate",
-    "config": {},
-    "method": {
-      "name": "enumerate_min_subset",
-      "steps": [
-        "Use brute-force enumeration: try k=1,2,3,... locations",
-        "For each k, generate all C(12,k) combinations of potential store locations",
-        "For each combination, check if all 12 areas are covered",
-        "Stop at the smallest k that yields a valid covering",
-        "Return the first valid combination found at that k"
-      ]
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "greedy_set_cover",
-    "solver": "greedy",
-    "config": {},
-    "method": {
-      "name": "greedy_set_cover",
-      "steps": [
-        "Initialize all areas as uncovered",
-        "Repeat until all areas covered: pick the location that covers the most currently-uncovered areas, break ties arbitrarily",
-        "Add that location to the store set",
-        "Mark all areas covered by the new store as covered",
-        "Return the set of selected locations (approximate, not guaranteed optimal)"
+        "1. Solve LP relaxation: minimize 50X+60Y subject to X+Y<=5000, 10X+30Y>=20000, X>=0, Y>=0 (continuous).",
+        "2. Enumerate integer pairs (X,Y) in feasible region; prune using constraints.",
+        "3. Compute cost for each feasible integer pair; pick minimum."
       ]
     }
   }

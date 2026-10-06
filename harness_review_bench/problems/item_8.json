@@ -1,7 +1,7 @@
 {
  "id": 8,
- "question": "Now, we need to determine 4 out of 5 workers to complete one of the four tasks respectively. Due to each worker's different technical specialties, the time required for them to complete each task varies. The hours required by each worker to complete each task are shown in Table 5-2.\n\nTable 5-2\n| Worker | $A$ | $B$ | $C$ | $D$ |\n|--------|-----|-----|-----|-----|\n| I      | 9   | 4   | 3   | 7   |\n| II     | 4   | 6   | 5   | 6   |\n| III    | 5   | 4   | 7   | 5   |\n| IV     | 7   | 5   | 2   | 3   |\n| V      | 10  | 6   | 7   | 4   |\n\nTry to find a job assignment plan that minimizes the total working hours.",
- "answer": "14",
- "difficulty": "Medium",
- "category": "scheduling"
+ "question": "A marketing manager is planning the distribution of resources between two different marketing strategies, X and Y. The total resources available for both strategies combined cannot exceed 5000 units due to budget constraints. To meet the company's reach and frequency objectives, the combined effort from these strategies must yield a minimum effectiveness score calculated as twice the resources allocated to strategy X plus thrice those allocated to strategy Y, with a minimum threshold of 10000 points. Each unit of resource in strategy X and Y has associated costs of 10 and 20 units respectively. The manager aims to minimize the total cost while meeting all these requirements (X,Y are integers). What is the minimum total cost in units, rounded to the nearest whole number?",
+ "answer": "50000",
+ "difficulty": null,
+ "category": "planning"
 }

@@ -180,7 +180,10 @@ class TestNoCreditWithoutExecution(Base):
         for p in predictions:
             self.assertIsNone(p.bound_action_id)
         self.seed(h, "t2")
-        result = h.induce(strategy_id="S01", all_=True)
+        result = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in h.bank.all()]}])
         self.assertNotIn("knowledge_feedback", result,
                          "no unexecuted prediction may be evaluated")
         for p in predictions:
@@ -223,8 +226,10 @@ class TestNoCreditWithoutExecution(Base):
         self.seed(h, "t2")
         # An explicit scope naming a DIFFERENT execution only.
         other = self.seed(h, "t3")
-        result = h.induce(strategy_id="S01", all_=True,
-                          execution_ids=[other.execution_id])
+        result = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": other.execution_id,
+                          "role": "e"}]}])
         feedback = (result.get("knowledge_feedback") or {})
         self.assertNotIn(prediction.prediction_id, feedback,
                          "an execution outside the named scope must not "
@@ -237,7 +242,10 @@ class TestNoCreditWithoutExecution(Base):
         self.seed(h, "t1")
         prediction, rec = self.executed_prediction(h, "t1")
         self.seed(h, "t2")
-        h.induce(strategy_id="S01", all_=True)
+        h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in h.bank.all()]}])
         verdict = stage_verdict(h.get_prediction(prediction.prediction_id),
                                 0, STAGE_CONSOLIDATION)
         self.assertIsNotNone(verdict)
@@ -332,9 +340,12 @@ class TestFeedbackStagesIndependent(Base):
             change="candidate_forms", horizon="after_consolidation"))
         self.seed(h, "t1")
         prediction, rec = self.executed_prediction(h, "t1")
-        # Threshold-free: this induction runs for the predicted strategy over
-        # its own recorded evidence.
-        result = h.induce(strategy_id="S01", all_=False)
+        # Threshold-free: this write runs for the predicted strategy over
+        # its own recorded evidence (the relation cites it).
+        result = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": rec.execution_id,
+                          "role": "e"}]}])
         feedback = result.get("knowledge_feedback") or {}
         verdict = stage_verdict(h.get_prediction(prediction.prediction_id),
                                 0, STAGE_CONSOLIDATION)
@@ -342,9 +353,8 @@ class TestFeedbackStagesIndependent(Base):
         self.assertIsNotNone(verdict, "the opportunity must be resolved")
         self.assertEqual(verdict["status"], "fulfilled")
         # The entry formed is a DRAFT: a single task is not transferable.
-        created = h.sbank.get(result["results"][0]["created"])
+        created = h.sbank.get(result["relations"][0]["saved"])
         self.assertFalse(is_publishable(created))
-        self.assertIn("single_task_note", result["results"][0])
 
     def test_induction_that_changed_nothing_is_missed(self):
         """When an induction runs over a strategy whose cell is ALREADY
@@ -356,14 +366,20 @@ class TestFeedbackStagesIndependent(Base):
         # Two distinct tasks form a publishable entry first.
         self.seed(h, "t1")
         self.seed(h, "t2")
-        h.induce(strategy_id="S01", all_=True)
+        h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": r.execution_id, "role": "e"}
+                         for r in h.bank.all()]}])
         prediction = h.predict_outcome(TASK, ActionSpec(
             "execute_strategy", "t1", strategy_id="S01"), "ep1")
         rec = h.execute(TASK, "S01", str(self.script), str(self.work),
                         solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, rec.action_id)
-        # A scoped induction over the SAME covered cell: no new entry.
-        result = h.induce(strategy_id="S01", all_=False)
+        # A scoped write over the SAME covered cell: no new entry.
+        result = h.induce(relations=[{
+            "subject": "S01", "claim": "S01 works here",
+            "evidence": [{"execution_id": rec.execution_id,
+                          "role": "e"}]}])
         verdict = stage_verdict(h.get_prediction(prediction.prediction_id),
                                 0, STAGE_CONSOLIDATION)
         if verdict is not None and verdict["status"] == "missed":
@@ -613,17 +629,15 @@ class TestCapabilityFeedbackUsable(Base):
                 "leftover would be worse than no entry point at all")
 
     def test_candidate_scan_still_produces_the_evidence_package(self):
-        """The one M4 responsibility that survives — and that M5 depends on
-        — is the frozen candidate bundle."""
-        h = self.make_harness(ScriptedProvider())
+        """The evidence package a capability prediction consumes is the
+        frozen scope read directly from the material (no candidate
+        generator)."""
+        h = self.make_harness()
         self.seed(h, "t1")
-        self.seed(h, "t2")
-        bundles = h.induction_candidates()
-        self.assertTrue(bundles, "two tasks of evidence must yield a bundle")
-        bundle = bundles[0]
-        self.assertEqual(bundle["strategy_id"], "S01")
-        self.assertEqual(bundle["tasks"], ["t1", "t2"])
-        self.assertTrue(bundle["execution_ids"])
+        material = h.induction_material()
+        self.assertTrue(material["count"])
+        scope_ids = sorted(m["execution_id"] for m in material["material"])
+        self.assertTrue(scope_ids)
 
     def test_binding_the_fact_never_verifies_the_effect(self):
         """DEFECT 6's real discipline, in its surviving form: recording
@@ -632,8 +646,8 @@ class TestCapabilityFeedbackUsable(Base):
         h = self.make_harness(ScriptedProvider())
         prediction = h.predict_capability_evolution(
             {"operation_type": "induce", "strategy_id": "S01",
-             "description": "consolidate S01",
-             "scope": {"execution_ids": ["ex1", "ex2"]}},
+             "description": "consolidate S01"},
+            evidence_scope={"execution_ids": ["ex1", "ex2"]},
             horizon="next 10 tasks", horizon_tasks=10)
         # No operation was accepted, so there is no fact to bind — and
         # certainly no verified effect.

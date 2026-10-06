@@ -1,67 +1,26 @@
 [
   {
+    "id": "cand1",
     "action_type": "execute_strategy",
-    "strategy_id": "milp_workforce_production",
+    "name": "PuLP_CBC_ILP",
+    "steps": "Use PuLP library to formulate integer linear program: X and Y as LpVariable integer non-negative, objective 50*X + 30*Y minimized, constraints X+Y<=1000, X-Y>=200, X<=700, Y<=500. Solve with CBC solver.",
+    "key_insight": "Direct ILP formulation with CBC solver; straightforward for small 2-variable problem.",
     "method": {
-      "name": "milp_workforce_production",
-      "steps": [
-        "Define weekly decisions: skilled_producing[t], skilled_training[t], new_trainees[t], overtime_hours[t], prod_I[t], prod_II[t], backlog_I[t], backlog_II[t]",
-        "Worker state: initial 50 skilled workers; each trainee takes 2 weeks to become trained",
-        "Production capacity: (skilled_producing[t] * 40 + overtime_hours[t]) * rate <= prod_I[t], prod_II[t]",
-        "Training constraint: each skilled worker in training can handle up to 3 trainees per 2-week batch; trainer not producing during training",
-        "Training workers not producing: total training slots = sum over weeks of min(3*skilled_training[week], new_trainees[week])",
-        "Worker balance per week: skilled_producing[t] + skilled_training[t] <= available_skilled[t]",
-        "Trained worker availability: trained[t] = sum of trainees who finished training by week t",
-        "Backlog dynamics: backlog_I[t] = backlog_I[t-1] + demand_I[t] - prod_I[t]; similarly for II",
-        "Objective: minimize sum of (skilled_wage*skilled + trainee_wage*new_trainees + trained_wage*trained + overtime_premium*overtime + penalty_I*backlog_I + penalty_II*backlog_II)",
-        "Total trainees started by week 8 >= 50",
-        "All production and backlog variables >= 0; trainee counts integer"
-      ]
-    },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+      "solver": "pulp",
+      "solver_config": {"solver": "PULP_CBC_CMD"},
+      "formulation": "standard_linear"
+    }
   },
   {
+    "id": "cand2",
     "action_type": "execute_strategy",
-    "strategy_id": "milp_aggregate_planning",
+    "name": "ORTools_CPSAT",
+    "steps": "Use OR-Tools CP-SAT solver: define IntVar for X and Y with domains [0,700] and [0,500], add linear constraints X+Y<=1000, X-Y>=200, set minimize objective 50*X+30*Y, solve.",
+    "key_insight": "CP-SAT is a constraint programming SAT solver; may have different performance characteristics on small problems.",
     "method": {
-      "name": "milp_aggregate_planning",
-      "steps": [
-        "Aggregate planning approach: track workforce levels (skilled, in-training, trained) as state variables per week",
-        "Production variables: prod_I[t], prod_II[t] for each week t",
-        "Inventory/backlog variables: inv_I[t], inv_II[t] (can be negative = backlog)",
-        "Workforce transitions: trained[t] = trained[t-1] + newly_trained[t]; newly_trained[t] = trainees from 2 weeks ago",
-        "Training decisions: how many skilled workers assigned to training each week (each trainer can handle 3 trainees)",
-        "Capacity constraint: total_production_hours = (skilled_not_training + trained) * 40 + overtime_hours; each hour produces either I or II at respective rates",
-        "Product-mix: within capacity, decide split between I (10 kg/h) and II (6 kg/h)",
-        "Backlog penalty: penalty costs for unmet demand carried forward",
-        "Objective: total cost = wages + overtime premium + backlog penalties",
-        "Constraint: total new trainees by week 8 >= 50; integer constraints on trainee counts"
-      ]
-    },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "milp_time_indexed",
-    "method": {
-      "name": "milp_time_indexed",
-      "steps": [
-        "Full time-indexed formulation: track each worker cohort's training status week by week",
-        "Binary/integer variable for number of trainees starting at each week",
-        "Production each week: continuous variable for each product type",
-        "Backlog tracking: cumulative unmet demand per product per week",
-        "Training capacity: trainees starting at week t <= 3 * skilled_not_in_production[t]",
-        "Workforce conservation: available workers = initial_skilled + trained - in_training",
-        "Capacity per week: total worker-hours >= required hours for production",
-        "Product-specific capacity: prod_I[t] / 10 + prod_II[t] / 6 <= total_worker_hours / 40",
-        "Total training requirement: sum of all trainees >= 50",
-        "Integer trainee variables for tractability; overtime allowed at premium rate",
-        "Minimize: wage costs + overtime premium + backlog penalties"
-      ]
-    },
-    "scope": "attempt",
-    "config": {"time_limit": 60, "mip_gap": 0}
+      "solver": "ortools",
+      "solver_config": {"optimizer": "cp-sat"},
+      "formulation": "cp_sat_linear"
+    }
   }
 ]
