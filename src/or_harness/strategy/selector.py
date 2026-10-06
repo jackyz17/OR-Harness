@@ -514,6 +514,10 @@ def is_publishable(entry: StrategicEntry) -> bool:
     """Whether an entry may be presented as published strategic knowledge.
 
     - ``verified``: yes — the claim passed its admission check.
+    - ``fact_checked``: yes ONLY for a ``conditional_fact`` (a single
+      observation). The framework read the cited FACTS but no computable
+      assertion was declared, so a transfer claim published from it alone
+      would dress a fact read up as a proven generalization.
     - NO verification block at all: yes — this is a legacy entry written
       before admission verification existed. Refusing to use it would
       silently discard accumulated knowledge; it stays usable and its missing
@@ -532,4 +536,9 @@ def is_publishable(entry: StrategicEntry) -> bool:
         return True
     if block.get("stale_after_revision"):
         return False
-    return block.get("state") == "verified"
+    state = block.get("state")
+    if state == "verified":
+        return True
+    return (state == "fact_checked"
+            and str((entry.claim or {}).get("kind") or "")
+            == "conditional_fact")

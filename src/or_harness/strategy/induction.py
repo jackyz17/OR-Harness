@@ -247,17 +247,26 @@ class InductionEngine:
         if not predicates:
             predicates = evidence_predicates(
                 records, family=resolved["family"] or None)
-        # Verification (optional): the entry's OWN verdict, covering the
-        # declared checks over the cited evidence.
+        # Verification: the entry's OWN verdict, covering the declared
+        # checks over the cited evidence. With NO declared check the facts
+        # are still READ (``fact_checked``) rather than left ``unverified``:
+        # that is what lets a single-observation fact be published and
+        # recalled WITHOUT the agent hand-writing an assertion, while a
+        # transfer claim still needs a declared comparison. An explicit
+        # ``verify`` payload with no assertions is treated the same way.
+        declared_assertions = ((verify or {}).get("check") or {}).get(
+            "assertions")
         if verify:
             report = verify_relation(
                 str(verify.get("claim") or claim["text"]),
                 evidence=verify.get("executions") or records,
                 roles=claim["evidence"],
-                assertions=(verify.get("check") or {}).get("assertions"))
+                assertions=declared_assertions)
             verification = report
         else:
-            verification = empty_verification()
+            verification = verify_relation(
+                claim["text"], evidence=records,
+                roles=claim["evidence"], assertions=None)
         verification["scope"] = dict(verification.get("scope") or {})
         verification["scope"].setdefault("distinct_tasks", len(claim["tasks"]))
 
@@ -488,14 +497,26 @@ class InductionEngine:
             or {str(t) for t in (claim.get("tasks") or []) if str(t)}
         kind = str(claim.get("kind") or "")
         single_fact = kind == "conditional_fact"
+        # ``fact_checked`` publishes ONLY a single observation (a
+        # conditional fact). A rule/transfer claim published from facts
+        # ALONE would dress a fact read up as a proven generalization.
+        published_state = state in ("verified",) or (
+            state == "fact_checked" and single_fact)
         reasons: List[str] = []
-        if state != "verified":
-            reasons.append(f"verification state is {state!r}")
+        if not published_state:
+            if state == "fact_checked":
+                reasons.append(
+                    "fact_checked covers a single observation only; a "
+                    "transfer claim needs a declared assertion "
+                    "(comparison/code_unchanged/probe) or a "
+                    "`conditional_fact` kind")
+            else:
+                reasons.append(f"verification state is {state!r}")
         if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
             reasons.append(
                 f"verification covers {len(tasks)} task(s); a transferable "
                 f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks")
-        out = {"published": state == "verified"
+        out = {"published": published_state
                              and (single_fact or len(tasks) >= CLAIM_MIN_TASKS),
                "state": state, "distinct_tasks": len(tasks),
                "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
@@ -508,16 +529,19 @@ class InductionEngine:
     def _claim_publication(entry: StrategicEntry) -> Dict[str, Any]:
         """Why a claim-bearing entry is (or is not) publishable.
 
-        Two publication rules, by claim KIND:
+        Three publication rules, by claim KIND and verdict:
 
         * ``conditional_fact`` — a verified statement about the evidence it
           cites, INCLUDING a single observation ("under this structure, this
           method produced a checked-correct answer"). It publishes with ONE
-          task, but it is stamped ``support_scope: single_observation`` and
+          task from a ``verified`` OR a ``fact_checked`` verdict, but it is
+          stamped ``support_scope: single_observation`` and
           ``transferability: unproven`` so no reader mistakes it for a rule.
-        * everything else — a TRANSFERABLE claim, which needs
-          >= ``CLAIM_MIN_TASKS`` independent tasks: one task's observation is
-          not transferable knowledge.
+        * a TRANSFER claim (every other kind) with a ``verified`` verdict —
+          needs >= ``CLAIM_MIN_TASKS`` independent tasks.
+        * a TRANSFER claim with only ``fact_checked`` — NOT published: the
+          facts were read, but a transfer conclusion needs a declared
+          assertion. The reason says which.
         """
         state = str((entry.verification or {}).get("state") or "unverified")
         block = entry.verification or {}
@@ -526,10 +550,22 @@ class InductionEngine:
         tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
             or {str(t) for t in (claim.get("tasks") or []) if str(t)}
         single_fact = str(claim.get("kind") or "") == "conditional_fact"
+        # ``fact_checked`` can publish a single observation, never a transfer
+        # claim: the framework read the FACTS, which is not the same as
+        # proving a generalization.
+        published_state = state == "verified" or (
+            state == "fact_checked" and single_fact)
         reasons: List[str] = []
         if block.get("stale_after_revision"):
             reasons.append("the claim was revised without a fresh verification")
-        elif state != "verified":
+        elif state == "fact_checked" and not single_fact:
+            reasons.append(
+                "verification is fact_checked (the facts were READ): a "
+                "transfer claim published from that alone would dress a "
+                "fact read up as a proven generalization. Declare a "
+                "comparison/code_unchanged/probe assertion, or state the "
+                "claim as a `conditional_fact` single observation")
+        elif not published_state:
             reasons.append(f"verification state is {state!r}")
         if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
             reasons.append(
@@ -537,7 +573,7 @@ class InductionEngine:
                 f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks "
                 "(a single-task repair is a verified fact about that task, "
                 "not yet knowledge)")
-        out = {"published": (state == "verified"
+        out = {"published": (published_state
                              and not block.get("stale_after_revision")
                              and (single_fact or len(tasks) >= CLAIM_MIN_TASKS)),
                "state": state, "distinct_tasks": len(tasks),

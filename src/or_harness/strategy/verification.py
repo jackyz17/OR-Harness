@@ -60,6 +60,10 @@ RESULT_SIMILARITY_TOLERANCE = 0.02
 VERIFIED = "verified"
 INSUFFICIENT = "insufficient_evidence"
 REFUTED = "refuted"
+#: The cited FACTS were read (status, task check, code hash, failure classes,
+#: method basis) but no computable assertion was declared. Weaker than
+#: ``verified``: it publishes a SINGLE observation, never a transfer claim.
+FACT_CHECKED = "fact_checked"
 
 #: Provenance of a check. Only a FRAMEWORK check can carry a `verified`
 #: verdict: a bare boolean the harness asserts cannot be re-derived by the
@@ -204,11 +208,18 @@ def _copy_for_score(fact: Dict[str, Any]):
 # ---------------------------------------------------------------------------
 
 def _resolve(payload: Any, path: str) -> Tuple[bool, Any]:
-    """Resolve a dotted path inside a record payload."""
+    """Resolve a dotted path inside a record payload.
+
+    A dotted component that is an integer indexes a LIST (``failures.0.
+    error_class``), so a probe can address one failure's class — a path a
+    real claim uses and which the string-only walker could not resolve."""
     current = payload
     for part in path.split("."):
         if isinstance(current, dict) and part in current:
             current = current[part]
+        elif isinstance(current, list) and part.isdigit() \
+                and int(part) < len(current):
+            current = current[int(part)]
         else:
             return False, None
     return True, current
@@ -246,9 +257,23 @@ def _evaluate_probe(fact: Dict[str, Any], probe: Dict[str, Any]) -> Dict[str, An
     path = str(probe.get("path", ""))
     payload = fact.get("payload") or {}
     found, observed = _resolve(payload, path)
+    path_note = None
+    if not found and payload.get("execution_features") is not None:
+        # A path a caller reads from the induction material (which reports
+        # ``task_check`` and ``method`` at the TOP level) lives under
+        # ``execution_features`` on the RECORD. Retry there, and only when it
+        # resolves EXACTLY there — a deterministic rehoming, never a guess.
+        alt = f"execution_features.{path}"
+        alt_found, alt_observed = _resolve(payload, alt)
+        if alt_found:
+            found, observed = alt_found, alt_observed
+            path_note = (f"the path {path!r} is recorded under "
+                         f"{alt!r} on the record; read it there")
     result: Dict[str, Any] = {"check": "semantic_probe", "source": FRAMEWORK,
                               "path": path, "found": found,
                               "observed": observed}
+    if path_note:
+        result["path_note"] = path_note
     if not found:
         result["ok"] = None
         result["error"] = (f"the path {path!r} does not resolve in this "
@@ -1038,10 +1063,16 @@ def _assertion_checks(assertion: Dict[str, Any],
                                "b": {"execution_id": fact_b["execution_id"],
                                      "value": value_b}})
                 if value_a is None or value_b is None:
+                    hint = ""
+                    if metric in ("code_hash",) or "hash" in metric:
+                        hint = (" — a code-hash COMPARISON is not a numeric "
+                                "metric; use a `code_unchanged` assertion to "
+                                "state 'the code was unchanged', or a `probe` "
+                                "to compare a field")
                     return INSUFFICIENT, (f"{metric} is not measurable on both "
                                           f"sides of task {task_id} — an "
                                           "unmeasured metric cannot be "
-                                          "compared")
+                                          "compared" + hint)
                 deltas.append(value_a - value_b)
             if aggregation == AGGREGATION_MEAN:
                 mean_delta = sum(deltas) / len(deltas)
@@ -1128,6 +1159,170 @@ def _pair_by_task(side_a: List[Dict[str, Any]],
     return pairs, unpaired
 
 
+def _normalize_assertion(raw: Any,
+                         role_of: Dict[str, str]) -> Dict[str, Any]:
+    """Normalize ONE assertion to the ONE shape the framework evaluates.
+
+    Deterministic conversions only, each of which the r9 material showed a
+    hand-written claim using:
+
+    * a SINGLE-KEY wrapper (``{"status": {"roles": [...], "status": ...}}``)
+      is unwrapped — the outer key NAMES the kind, the inner object is the
+      assertion body;
+    * ``assertion_type`` is an accepted ALIAS for ``kind``;
+    * a ``roles`` list written with EXECUTION IDS instead of the declared
+      role names is resolved to those roles (the evidence already declares
+      the part each execution plays), so a claim that named its evidence
+      directly is not reported as "a named role has no evidence";
+    * a bare-string ``roles``/``roles_a``/``roles_b`` becomes a one-element
+      list.
+
+    It does NOT invent semantics: a kind the framework cannot compute stays
+    that way (and is reported), and an unknown role that is NOT an execution
+    id is left untouched so the existing scope error still fires.
+    """
+    assertion = dict(raw) if isinstance(raw, dict) else {}
+    # Unwrap ``{"<kind>": {...}}`` when the outer key names a known kind and
+    # the payload is the body (a wrapping mistake actually observed).
+    if len(assertion) == 1:
+        outer, inner = next(iter(assertion.items()))
+        if outer in _KNOWN_ASSERTION_KINDS and isinstance(inner, dict):
+            assertion = dict(inner)
+            assertion.setdefault("kind", outer)
+    if not assertion.get("kind") and assertion.get("assertion_type"):
+        assertion["kind"] = assertion["assertion_type"]
+    assertion.pop("assertion_type", None)
+
+    def _resolve_roles(value: Any) -> Any:
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return value
+        out: List[str] = []
+        for item in value:
+            name = str(item)
+            # An execution id where a ROLE name belongs: map it to the role
+            # the evidence declares for that execution.
+            out.append(role_of.get(name, name))
+        return out
+
+    for key in ("roles", "roles_a", "roles_b"):
+        if key in assertion:
+            assertion[key] = _resolve_roles(assertion[key])
+    return assertion
+
+
+#: Kinds the framework understands, used only to recognise a single-key
+#: wrapper (never to broaden what is computed).
+_KNOWN_ASSERTION_KINDS = (ASSERTION_PROBE, ASSERTION_STATUS,
+                          ASSERTION_COMPARISON, ASSERTION_CODE_UNCHANGED)
+
+
+def _fact_check_report(claim: str, records: List[Dict[str, Any]],
+                       scope: Dict[str, Any],
+                       role_of: Dict[str, str]) -> Dict[str, Any]:
+    """The NO-ASSERTION verdict: what the framework read from the evidence.
+
+    When a claim declares no computable assertion, the framework still reads
+    the FACTS the cited executions carry — their status, task check, code
+    hash, failure classes and method basis — and reports them. That is a
+    ``fact_checked`` verdict: the facts were read and recorded, NOT a proof
+    of the natural-language claim. It exists so an agent that writes no
+    assertion can still have a single-observation fact published, while a
+    transfer claim still needs a declared comparison.
+    """
+    checks: List[Dict[str, Any]] = []
+    basis_reported = False
+    hashes: Dict[str, List[str]] = {}
+    for fact in records:
+        quality = fact.get("quality") or {}
+        payload = fact.get("payload") or {}
+        code_hash = fact.get("code_hash")
+        if code_hash is not None:
+            hashes.setdefault(str(code_hash), []).append(fact["execution_id"])
+        method_basis = _method_basis_of(payload)
+        if method_basis in ("performed", "planned_only"):
+            basis_reported = True
+        task_check = _task_check_state_of(payload)
+        failures = payload.get("failures") or []
+        checks.append({
+            "check": "read_fact", "source": FRAMEWORK,
+            "execution_id": fact["execution_id"],
+            "role": role_of.get(fact["execution_id"]),
+            "task_id": fact["task_id"],
+            "status": quality.get("status"),
+            "feasible": quality.get("feasible"),
+            "task_check": task_check,
+            "code_hash": code_hash,
+            "failure_classes": sorted({
+                str(f.get("error_class")) for f in failures
+                if isinstance(f, dict) and f.get("error_class")}),
+            "method_basis": method_basis,
+        })
+    code_unchanged = (len(hashes) == 1) if hashes else None
+    scope["fact_check"] = {
+        "records": len(records),
+        "code_hashes": {h: sorted(ids) for h, ids in hashes.items()},
+        "code_unchanged_across_evidence": code_unchanged,
+        "method_basis_reported": basis_reported,
+    }
+    scope["assertions_checked"] = []
+    scope["assertions_unchecked"] = []
+    report = _relation_report(FACT_CHECKED, claim, checks, [], scope=scope,
+                              conclusion=(
+                                  "no computable assertion was declared, so "
+                                  "the framework READ the FACTS the cited "
+                                  "executions carry (status, task check, code "
+                                  "hash, failure classes, method basis). This "
+                                  "is a fact-checked observation WITHIN THIS "
+                                  "SCOPE — it does NOT establish that the "
+                                  "natural-language claim is correct, causal "
+                                  "or transferable"))
+    report["not_covered"] = (
+        "this verdict covers ONLY the FACTS read from the listed samples. It "
+        "does not establish that the natural-language claim is correct, "
+        "causal, or generally transferable beyond the conditions and tasks "
+        "the evidence covers; a transfer claim needs a declared comparison")
+    if not basis_reported:
+        report.setdefault("material", {}).update({
+            "reason": ("no cited execution reports a method and the claim "
+                       "declares none: a claim that names a METHOD would rest "
+                       "on a strategy name and numbers only"),
+            "missing": "method_performed",
+        })
+    return report
+
+
+def _method_basis_of(payload: Dict[str, Any]) -> str:
+    """Which grounds a record's method: performed > planned_only > none."""
+    if not isinstance(payload, dict):
+        return "none"
+    if payload.get("method_performed") or payload.get("method_actual"):
+        return "performed"
+    if payload.get("method_planned") or payload.get("method"):
+        return "planned_only"
+    features = payload.get("execution_features") or {}
+    if isinstance(features, dict):
+        performed = features.get("method_performed")
+        if performed:
+            return "performed"
+    return "none"
+
+
+def _task_check_state_of(payload: Dict[str, Any]) -> Optional[str]:
+    """The recorded TASK verdict on a record, or None when never checked."""
+    if not isinstance(payload, dict):
+        return None
+    state = payload.get("task_check")
+    if isinstance(state, dict):
+        state = state.get("state")
+    if state is None:
+        features = payload.get("execution_features") or {}
+        if isinstance(features, dict):
+            state = features.get("task_check_state")
+    return str(state) if state is not None else None
+
+
 def verify_relation(claim: str,
                     *, evidence: Sequence[Any] = (),
                     roles: Optional[Sequence[Dict[str, str]]] = None,
@@ -1148,10 +1343,20 @@ def verify_relation(claim: str,
     carries a ``scope`` block naming exactly which executions and assertions
     the verdict covered — ``verified`` means "no violation was found within
     this scope", never "true for every future task".
+
+    **No assertion is not "unverifiable".** A claim that declares no
+    computable assertion still gets its cited FACTS read (status, task check,
+    code hash, failure classes, method basis) and is reported
+    ``fact_checked`` — so an agent that writes no assertion is not blocked,
+    while a transfer claim still requires a declared comparison to reach
+    ``verified``.
     """
     records = [_as_fact(r) for r in evidence]
     role_list = [dict(r) for r in (roles or [])]
-    assertion_list = [dict(a) for a in (assertions or [])]
+    role_of = {str(r.get("execution_id")): str(r.get("role"))
+               for r in role_list}
+    assertion_list = [_normalize_assertion(a, role_of)
+                      for a in (assertions or [])]
     declared = [str(a.get("kind")) for a in assertion_list]
 
     if not records:
@@ -1176,8 +1381,6 @@ def verify_relation(claim: str,
     # Role partition: every referenced execution must have a role, and every
     # assertion reads through those roles.
     by_role: Dict[str, List[Dict[str, Any]]] = {}
-    role_of = {str(r.get("execution_id")): str(r.get("role"))
-               for r in role_list}
     for fact in records:
         role = role_of.get(fact["execution_id"])
         if not role:
@@ -1199,23 +1402,27 @@ def verify_relation(claim: str,
         "assertions_declared": declared,
     }
     if not assertion_list:
-        return _relation_report(
-            INSUFFICIENT, claim, [], assertion_list, scope=scope,
-            conclusion=("no assertion was declared: the framework has nothing "
-                        "it can compute, so the claim stays unverified — "
-                        "declare probe/status/comparison/code_unchanged "
-                        "assertions for the parts of the claim that are "
-                        "checkable"))
+        # No declared assertion: READ THE FACTS instead of refusing. This is
+        # the no-assertion admission path — ``fact_checked`` publishes a
+        # single observation, and never masquerades as a verified transfer.
+        return _fact_check_report(claim, records, scope, role_of)
 
+    # Per-assertion discipline: an assertion decides from the facts IT needs.
+    # There is NO global "all executions must be usable" gate — a `status`
+    # assertion is decidable on an `error` record (r9's 12 error executions),
+    # and `code_unchanged` only needs the hashes. An assertion whose facts are
+    # genuinely absent is reported INSUFFICIENT for ITSELF (the scope names
+    # which assertions were checked and which were not).
     checks: List[Dict[str, Any]] = []
-    usable = [f for f in records if _usable(f)]
-    if not usable:
-        checks.append({"check": "execution_completed", "source": FRAMEWORK,
-                       "observed": False})
-        return _relation_report(
-            INSUFFICIENT, claim, checks, assertion_list, scope=scope,
-            conclusion=("no referenced execution produced a usable result, so "
-                        "the assertions could not run — not refuted"))
+    for fact in records:
+        if not _usable(fact):
+            checks.append({"check": "execution_usable", "source": FRAMEWORK,
+                           "execution_id": fact["execution_id"],
+                           "usable": False,
+                           "note": ("this execution produced no usable "
+                                    "result; assertions that need a measured "
+                                    "result report themselves undecided, "
+                                    "while status/code checks still run")})
     verified_assertions: List[int] = []
     for index, assertion in enumerate(assertion_list):
         state, reason = _assertion_checks(assertion, by_role, checks)

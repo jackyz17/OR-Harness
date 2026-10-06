@@ -159,6 +159,51 @@ def cir_shape_problems(data: Any, *, allow_empty: bool = False,
                 f"'{key}' must be a list, got {type(value).__name__}.",
                 f'Use "{key}": [ ... ].', "structural", key=key)
 
+    # NESTED required fields. The list check above only proves the OUTER
+    # container is a list; a member with a missing required key used to be
+    # reported later as a bare ``KeyError: 'source'`` with no path. Every
+    # entry is validated here instead, with the exact path and the shape it
+    # should have — a correctable error, never a fill-in-the-blank repair.
+    if isinstance(data.get("entities"), list):
+        _check_nested(data["entities"], "entities", _ENTITY_REQUIRED, add,
+                      "an entity needs {'name': <str>, ...}")
+    if isinstance(data.get("decisions"), list):
+        _check_nested(data["decisions"], "decisions", _DECISION_REQUIRED, add,
+                      "a decision needs {'name': <str>, ...}")
+    if isinstance(data.get("constraints"), list):
+        _check_nested(data["constraints"], "constraints", _CONSTRAINT_REQUIRED,
+                      add, "a constraint needs {'id': <str>, ...}")
+    if isinstance(data.get("relations"), list):
+        _check_nested(data["relations"], "relations", _RELATION_REQUIRED, add,
+                      "a relation needs {'source': <name>, 'target': <name>}")
+    if isinstance(data.get("coupling_groups"), list):
+        _check_nested(data["coupling_groups"], "coupling_groups",
+                      _COUPLING_GROUP_REQUIRED, add,
+                      "a coupling group needs {'type': <str>, ...}")
+
+    # Reference integrity: only meaningful once the endpoints themselves are
+    # well-formed, so it runs only when no structural problem was raised for
+    # entities/decisions/constraints/relations (otherwise the "unknown
+    # endpoint" noise would bury the real, correctable field error).
+    nested_broken = any(
+        str(p.get("path", "")).split("[")[0] in
+        ("entities", "decisions", "constraints", "relations")
+        for p in problems)
+
+    def _is_list_or_absent(key: str) -> bool:
+        value = data.get(key)
+        return value is None or isinstance(value, list)
+
+    if not nested_broken \
+            and all(_is_list_or_absent(k) for k in
+                    ("entities", "decisions", "constraints", "relations")) \
+            and any(data.get(k) for k in ("entities", "decisions",
+                                          "constraints")):
+        for problem in _relation_endpoint_problems(
+                data.get("entities") or [], data.get("decisions") or [],
+                data.get("constraints") or [], data.get("relations") or []):
+            problems.append(problem)
+
     if not allow_empty and not any(data.get(k) for k in _CIR_LIST_KEYS):
         add("empty_cir",
             "CIR present but carries no entities/decisions/constraints/"
@@ -175,6 +220,101 @@ def cir_shape_problems(data: Any, *, allow_empty: bool = False,
     for p in problems:
         if p["severity"] == "policy":
             p["severity"] = "lint"
+    return problems
+
+
+#: Required (name, type) fields per CIR member. ``str`` means "a non-empty
+#: string"; the reference fields below additionally demand the target exists.
+_ENTITY_REQUIRED = (("name", str),)
+_DECISION_REQUIRED = (("name", str),)
+_CONSTRAINT_REQUIRED = (("id", str),)
+_RELATION_REQUIRED = (("source", str), ("target", str))
+_COUPLING_GROUP_REQUIRED = (("type", str),)
+
+#: Member type checks: the CIR list key -> the human name of one member.
+_MEMBER_LABEL = {
+    "entities": "entity", "decisions": "decision",
+    "constraints": "constraint", "relations": "relation",
+    "coupling_groups": "coupling group",
+}
+
+
+def _check_nested(items: List[Any], key: str,
+                  required: Tuple[Tuple[str, type], ...], add, hint: str
+                  ) -> None:
+    """Report missing/mistyped required fields on each CIR list member.
+
+    The path names the exact member (``relations[2].source``), so a caller
+    fixes the payload in one turn instead of meeting a bare ``KeyError``.
+    Never fabricates a value: a missing field is reported, never filled.
+    """
+    label = _MEMBER_LABEL.get(key, key[:-1] if key.endswith("s") else key)
+    for index, member in enumerate(items):
+        path = f"{key}[{index}]"
+        if not isinstance(member, dict):
+            add("bad_member_type",
+                f"{path} must be an object, got {type(member).__name__}.",
+                f"Write {path} as {{{hint}}}.", "structural",
+                path=path, key=key)
+            continue
+        for field_name, field_type in required:
+            if field_name not in member or member[field_name] is None:
+                add("missing_field",
+                    f"{path}.{field_name} is missing: every {label} needs a "
+                    f"{field_name!r}.",
+                    f"Add \"{field_name}\" to {path}: {hint}.", "structural",
+                    path=f"{path}.{field_name}", key=key)
+            elif field_type is str and not isinstance(member[field_name], str):
+                add("bad_field_type",
+                    f"{path}.{field_name} must be a string, got "
+                    f"{type(member[field_name]).__name__}.",
+                    f'Use "{field_name}": "...".', "structural",
+                    path=f"{path}.{field_name}", key=key)
+            elif field_type is str and not str(member[field_name]).strip():
+                add("empty_field",
+                    f"{path}.{field_name} is empty.",
+                    f"Name the {field_name} explicitly.", "structural",
+                    path=f"{path}.{field_name}", key=key)
+
+
+def _relation_endpoint_problems(entities: List[Any], decisions: List[Any],
+                                constraints: List[Any],
+                                relations: List[Any]) -> List[Dict[str, Any]]:
+    """References a relation's endpoints make to nodes the CIR never declares.
+
+    A dangling endpoint is a SHAPE problem, not a silent no-op: the relation
+    points at a node nobody defined, so every consumer would treat it as
+    connecting nothing. Reported per relation with its path."""
+    problems: List[Dict[str, Any]] = []
+
+    def _declared(items: List[Any], field: str) -> Set[str]:
+        names: Set[str] = set()
+        for member in items:
+            if isinstance(member, dict) and isinstance(member.get(field), str):
+                names.add(member[field])
+        return names
+
+    known = (_declared(entities, "name") | _declared(decisions, "name")
+             | _declared(constraints, "id"))
+    if not known:
+        return problems
+    for index, member in enumerate(relations):
+        if not isinstance(member, dict):
+            continue
+        for endpoint in ("source", "target"):
+            value = member.get(endpoint)
+            if isinstance(value, str) and value and value not in known:
+                problems.append({
+                    "severity": "structural",
+                    "kind": "unknown_endpoint",
+                    "detail": (f"relations[{index}].{endpoint} {value!r} does "
+                               "not name any declared entity/decision/"
+                               "constraint."),
+                    "hint": ("Point it at a declared name, or declare the "
+                             "node in entities/decisions/constraints first."),
+                    "path": f"relations[{index}].{endpoint}",
+                    "key": "relations",
+                })
     return problems
 
 

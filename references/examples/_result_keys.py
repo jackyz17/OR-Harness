@@ -60,7 +60,7 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         # The plan object rides under ``plan``: candidates, status, ids and
         # costs are inside it, not at the top level.
         "required": {"plan", "decision_action_id", "effective_parameters"},
-        "conditional": {"protocol"},
+        "conditional": {"protocol", "candidate_rejections"},
     },
     "choose-next": {
         # ``deviation`` and ``rejected`` are ALWAYS present (None / False when
@@ -110,7 +110,8 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
     "induction-material": {
         "required": {"count", "material", "existing_knowledge", "budget"},
         "conditional": {"tasks", "n_distinct_tasks", "check_states",
-                        "total_completed", "n_attempts", "cross_task_hint"},
+                        "total_completed", "n_attempts", "cross_task_hint",
+                        "guidance"},
     },
     "predict-capability": {
         "required": {"prediction_id"},

@@ -270,16 +270,18 @@ class TestClaimAssertions(ClaimCase):
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "insufficient_evidence")
 
-    def test_no_assertion_is_insufficient(self):
-        """A claim with nothing declared checkable stays unverified: the
-        framework computes only what is computable."""
+    def test_no_assertion_reads_facts_not_a_verdict(self):
+        """A claim with nothing declared checkable is NOT verified: the
+        framework computes only what is computable. It still READS the facts
+        (``fact_checked``) so a single-observation fact can be published, but
+        that is weaker than ``verified`` and never a transfer verdict."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         claim["check"] = {"assertions": []}
         out = self.engine.submit_relation(claim,
                                           verify=self.verify_payload(claim))
         entry = self.sbank.get(out["saved"])
-        self.assertEqual(entry.verification_state, "insufficient_evidence")
+        self.assertEqual(entry.verification_state, "fact_checked")
 
     def test_only_declared_parts_are_covered(self):
         """A passing verdict records WHICH checks ran and states what is NOT
@@ -474,10 +476,11 @@ class TestClaimRevision(ClaimCase):
         out2 = self.engine.submit_relation(other)
         self.assertNotEqual(out1["saved"], out2["saved"])
         self.assertEqual(self.sbank.count(), 2)
-        # The second was never verified: it must not inherit the first's
-        # verdict.
+        # The second was never given an assertion: the facts were READ
+        # (``fact_checked``) but it must not inherit the first's ``verified``
+        # transfer verdict, and a non-fact kind does not publish from facts.
         independent = self.sbank.get(out2["saved"])
-        self.assertEqual(independent.verification_state, "unverified")
+        self.assertEqual(independent.verification_state, "fact_checked")
         self.assertFalse(independent.is_published)
 
     def test_claim_and_statistical_claim_do_not_merge(self):

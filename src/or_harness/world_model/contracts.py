@@ -890,6 +890,298 @@ class BaselineStatement:
         )
 
 
+#: Candidate keys this module reads directly. Anything else on a candidate
+#: payload is NOT a candidate field: the recognized method-bearing keys are
+#: folded into ``method`` and the remaining unknown keys are preserved under
+#: ``method.extra`` (never silently dropped — see
+#: :func:`normalize_candidate_payload`).
+_CANDIDATE_KEYS = frozenset({
+    "action_type", "strategy_id", "solver", "method", "config",
+    "preconditions", "expected_scope", "stop_conditions", "task_id",
+    "episode_id", "scope", "scope_basis", "window_id",
+})
+
+#: Keys that NAME a method when they appear on the method mapping itself, and
+#: the sibling spellings a caller may use at the top level of the candidate.
+_METHOD_NAME_KEYS = ("name",)
+_METHOD_STEP_KEYS = ("steps",)
+_METHOD_WHY_KEYS = ("why", "key_insight", "key_idea", "rationale")
+_METHOD_FALLBACK_KEYS = ("fallback",)
+
+#: Sibling spellings for a method carried under its own top-level key.
+_METHOD_ALIAS_KEYS = ("method_planned", "method_actual", "method_performed")
+
+#: A candidate's free-text label (``id``) — deliberately NOT used as a
+#: strategy id: a per-run label like ``cand1`` is not a stable identity.
+_CANDIDATE_LABEL_KEYS = ("id",)
+
+
+def _method_identity(method: Dict[str, Any]) -> str:
+    """The ``cand_<hash8>`` id derived from a method's OWN content.
+
+    Only the METHOD identity feeds the hash — ``name``, ``steps``, ``why``
+    and ``fallback``. The solver and the execution config are deliberately
+    EXCLUDED: the same method under a different solver or a different
+    ``time_limit`` is the SAME method, and hashing the tooling would scatter
+    one method's history across several ids. Deterministic, so re-parsing a
+    candidate or re-ordering a candidate list yields the same id.
+    """
+    payload = json.dumps({
+        "name": str(method.get("name") or ""),
+        "steps": [str(s) for s in (method.get("steps") or [])],
+        "why": str(method.get("why") or ""),
+        "fallback": str(method.get("fallback") or ""),
+    }, sort_keys=True, ensure_ascii=False)
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return f"cand_{digest[:8]}"
+
+
+def normalize_candidate_payload(raw: Any, *,
+                                allocate_strategy_id: bool = True
+                                ) -> Dict[str, Any]:
+    """Normalize a candidate payload to the ONE canonical candidate shape.
+
+    THE single entry-point discipline for candidates: ``plan-next`` and
+    ``predict-strategy`` (API and CLI) all call this BEFORE they build a
+    :class:`CandidateRef` / ``ActionSpec``, so the same hand-written input is
+    never interpreted two different ways.
+
+    What it accepts and how it maps it (deterministic; the scope is
+    deliberately small and there is NO guesswork):
+
+    * a **top-level** ``name`` / ``steps`` (the minimal candidate format) is
+      moved into ``method.name`` / ``method.steps``. A bare string ``steps``
+      is read as ONE step.
+    * a method under a sibling key (``method_planned`` / ``method_actual`` /
+      ``method_performed``) is unified into ``method`` when the candidate
+      does not already state one.
+    * a bare-string ``method`` is read as the method NAME and a
+      ``method.planned`` sub-key is unpacked — both handled by
+      :func:`~or_harness.core.schema.normalize_method`, which also keeps any
+      unrecognized method key under ``extra`` rather than dropping it.
+    * a ``solver`` stated inside the method mapping is lifted to the
+      candidate's own ``solver`` field (the solver is tooling, not method).
+    * a method placed in ``config`` is re-homed through
+      :func:`~or_harness.world_model.attribution.check_candidate_config`.
+    * a missing ``action_type`` defaults to ``execute_strategy``.
+    * a missing ``strategy_id`` is ALLOCATED from the method's own content
+      (:func:`_method_identity`). This does NOT mean the framework believes
+      the method equals a historical one, and it is never merged by name
+      similarity.
+
+    What it REFUSES (a correctable error, raised BEFORE any model call, with
+    the offending field named):
+
+    * the top-level ``name``/``steps`` CONTRADICT a stated ``method`` — two
+      sources that disagree cannot be silently reconciled;
+    * a method NAMES itself but carries no step at all (steps are never
+      invented);
+    * a method would be silently DROPPED (method content exists that cannot
+      be mapped without losing it);
+    * no ``strategy_id`` AND no method content to identify one.
+
+    What it deliberately LEAVES ALONE: a LEGACY ``ActionSpec`` payload
+    (``measurement_scope`` / ``budget_hint``) is returned unchanged so the
+    legacy mapping keeps its own verbatim-preserving behaviour.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("a candidate must be a JSON object")
+    # LEGACY passthrough: the ActionSpec path preserves its config verbatim
+    # and refuses an unmappable scope. Re-routing it here would be a second,
+    # divergent interpretation of the same input.
+    if "measurement_scope" in raw or "budget_hint" in raw:
+        return copy.deepcopy(raw)
+    data = copy.deepcopy(raw)
+    if not data.get("action_type"):
+        data["action_type"] = "execute_strategy"
+
+    errors: List[str] = []
+    notes: List[str] = []
+
+    # -- method content, from every spelling ------------------------------
+    stated = data.get("method")
+    if isinstance(stated, str) and stated.strip():
+        stated = {"name": stated}
+    elif not isinstance(stated, dict):
+        stated = {}
+    else:
+        stated = dict(stated)
+    # A top-level ``steps`` given as a bare string is ONE step.
+    if isinstance(data.get("steps"), str):
+        data["steps"] = [data["steps"]]
+
+    # A solver stated INSIDE the method belonged to the candidate all along:
+    # the method is the approach, the solver is the tooling. Lift it before
+    # the method is normalized (which would otherwise file it under extra).
+    if stated.get("solver") not in (None, "", {}) and not data.get("solver"):
+        data["solver"] = str(stated.pop("solver"))
+        notes.append("the solver was read from candidate.method.solver and "
+                     "moved to the candidate's own `solver` field")
+    else:
+        stated.pop("solver", None)
+
+    def _first(source: Dict[str, Any], keys) -> Any:
+        for key in keys:
+            if source.get(key) not in (None, "", [], {}):
+                return source[key]
+        return None
+
+    top_name = _first(data, _METHOD_NAME_KEYS)
+    top_steps = _first(data, _METHOD_STEP_KEYS)
+    top_why = _first(data, _METHOD_WHY_KEYS)
+    top_fallback = _first(data, _METHOD_FALLBACK_KEYS)
+    method_name = _first(stated, _METHOD_NAME_KEYS)
+    method_steps = _first(stated, _METHOD_STEP_KEYS)
+    method_why = _first(stated, _METHOD_WHY_KEYS)
+    method_fallback = _first(stated, _METHOD_FALLBACK_KEYS)
+
+    # CONFLICT: two spellings that disagree are refused with BOTH fields
+    # named — never reconciled by picking one.
+    if top_name is not None and method_name is not None \
+            and str(top_name).strip() != str(method_name).strip():
+        errors.append(
+            f"candidate.name {top_name!r} and candidate.method.name "
+            f"{method_name!r} disagree: state the method name in ONE place")
+    if top_steps is not None and method_steps is not None:
+        if _steps_of(top_steps) != _steps_of(method_steps):
+            errors.append(
+                "candidate.steps and candidate.method.steps disagree: state "
+                "the steps in ONE place (top level OR method, not both)")
+
+    # A sibling method key supplies the method only when none is stated.
+    sibling = None
+    for key in _METHOD_ALIAS_KEYS:
+        if data.get(key) not in (None, "", [], {}):
+            sibling = (key, data[key])
+            break
+    if sibling is not None:
+        if method_name is None and top_name is None \
+                and method_steps is None and top_steps is None:
+            value = sibling[1]
+            stated = value if isinstance(value, dict) else {"name": value}
+            method_name = _first(stated, _METHOD_NAME_KEYS)
+            method_steps = _first(stated, _METHOD_STEP_KEYS)
+            method_why = _first(stated, _METHOD_WHY_KEYS)
+            method_fallback = _first(stated, _METHOD_FALLBACK_KEYS)
+            notes.append(
+                f"the method was read from candidate.{sibling[0]} and "
+                "unified into `method`")
+        data.pop(sibling[0], None)
+
+    # Build the ONE method mapping. ``normalize_method`` keeps any leftover
+    # key (a solver hint, a formulation tag, a note) under ``extra`` so no
+    # method content is silently dropped.
+    merged: Dict[str, Any] = {}
+    for key, value in stated.items():
+        if key == "planned":
+            continue
+        merged[key] = value
+    if top_name is not None:
+        merged["name"] = top_name
+    if top_steps is not None:
+        merged["steps"] = top_steps
+    if top_why is not None and merged.get("why") in (None, "", [], {}):
+        merged["why"] = top_why
+    if top_fallback is not None and merged.get("fallback") in (None, "", [], {}):
+        merged["fallback"] = top_fallback
+    # ``params`` is the legacy NAME for the execution parameters (the
+    # ActionSpec field): it belongs in ``config``, not in the method. A
+    # candidate that states it must not have that config silently dropped.
+    if data.get("params") not in (None, "", {}):
+        config = dict(data.get("config") or {})
+        for key, value in dict(data["params"]).items():
+            config.setdefault(key, value)
+        data["config"] = config
+        data.pop("params", None)
+        notes.append("candidate.params was read as execution parameters and "
+                     "merged into `config`")
+    # Unknown TOP-LEVEL keys are method-relevant free text (a note, an
+    # insight): preserved under ``extra`` rather than dropped, so nothing a
+    # caller wrote about its method disappears. Keys already folded into the
+    # method (name/steps/why/fallback/params), the per-run ``id`` label and
+    # the solver are NOT echoed a second time under ``extra``.
+    _folded = set(_METHOD_NAME_KEYS) | set(_METHOD_STEP_KEYS) \
+        | set(_METHOD_WHY_KEYS) | set(_METHOD_FALLBACK_KEYS) \
+        | set(_CANDIDATE_LABEL_KEYS)
+    for key in list(data):
+        if key in _CANDIDATE_KEYS or key in _METHOD_ALIAS_KEYS:
+            continue
+        if key in _folded or data[key] in (None, "", [], {}):
+            data.pop(key, None)
+            continue
+        merged.setdefault("extra", {})
+        if isinstance(merged["extra"], dict):
+            merged["extra"][key] = data[key]
+        data.pop(key, None)
+
+    # ``config`` may still carry the method under a method-ish key.
+    from or_harness.world_model.attribution import check_candidate_config
+    entry = check_candidate_config(data.get("config") or {}, merged)
+    errors.extend(entry["errors"])
+    notes.extend(entry["notes"])
+    data["config"] = entry["config"]
+    # ``check_candidate_config`` may return the method as a bare STRING (a
+    # ``config.method`` string that was folded in). Keep whatever it resolved
+    # to — dropping it here is exactly the silent-loss this function exists
+    # to prevent.
+    resolved = entry["method"]
+    if isinstance(resolved, dict):
+        merged = resolved
+    elif isinstance(resolved, str) and resolved.strip():
+        merged = {"name": resolved} if not merged else merged
+        merged.setdefault("name", resolved)
+
+    normalized = normalize_method(merged)
+    if normalized is not None:
+        data["method"] = normalized
+    else:
+        # A method was stated in some form but normalizes to nothing: that
+        # is exactly the silent-drop failure mode this function exists to
+        # prevent, so it is REFUSED rather than written as ``{}``.
+        if merged:
+            errors.append(
+                "the candidate stated method content ("
+                + ", ".join(sorted(merged)) + ") that resolves to no method "
+                "name or step; give `method` a `name` and at least one step")
+        data["method"] = {}
+
+    if errors:
+        raise ValueError("candidate payload could not be normalized: "
+                         + "; ".join(errors))
+
+    # -- identity ---------------------------------------------------------
+    if not data.get("strategy_id"):
+        method = data.get("method") or {}
+        if not method:
+            raise ValueError(
+                "candidate has no strategy_id and no method to identify it: "
+                "give it a `method` with a `name` (and steps), or cite an "
+                "existing `strategy_id`")
+        if allocate_strategy_id:
+            data["strategy_id"] = _method_identity(method)
+            notes.append(
+                f"no strategy_id was supplied, so the framework allocated "
+                f"{data['strategy_id']} from the METHOD content "
+                f"({method.get('name')!r}). This does NOT mean the framework "
+                "holds this method to be the same as any historical one, and "
+                "no two methods are merged by name similarity")
+    # The normalization itself is REPORTED, never silent: what was moved and
+    # which id was allocated travel with the payload so a reader can retrace
+    # the original input against the normalized result.
+    if notes:
+        data["normalization_notes"] = notes
+    return data
+
+
+def _steps_of(raw: Any) -> List[str]:
+    """The step list a value denotes, for conflict comparison only."""
+    if isinstance(raw, str):
+        return [raw.strip()] if raw.strip() else []
+    if isinstance(raw, (list, tuple)):
+        return [str(s).strip() for s in raw if str(s).strip()]
+    return []
+
+
 @dataclass
 class CandidateRef:
     """The candidate a strategy-outcome prediction is about.

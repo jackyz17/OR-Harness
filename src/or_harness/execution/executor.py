@@ -497,7 +497,17 @@ class SafePythonExecutor:
         problems: List[str] = []
         status = outcome.status
         if status not in ALLOWED_STATUSES:
-            problems.append(f"illegal status {status!r}")
+            # A CORRECTABLE protocol error: state the legal values and the
+            # common misuse (a boolean written where a status belongs) so the
+            # script can be fixed in one turn. The illegal value is NEVER
+            # converted into a success — an honest refusal, not a guess.
+            hint = (f"illegal status {status!r}: `status` must be one of "
+                    + "|".join(ALLOWED_STATUSES))
+            if status in ("true", "false"):
+                hint += (" — a BOOLEAN is not a status; write a legal word "
+                         "(e.g. 'optimal' when the solve succeeded, 'error' "
+                         "when it failed)")
+            problems.append(hint)
         feasible = status in ("optimal", "feasible")
         objective = outcome.objective_value
         if feasible:

@@ -413,19 +413,29 @@ def build_induction_material(harness, *,
                        if (r.created_at, r.execution_id) < boundary]
 
     truncated_by_limit = False
+    limit_dropped: List[Any] = []
     if limit is not None and limit >= 0 and len(records) > limit:
-        records = records[len(records) - limit:]  # keep the NEWEST
+        # Keep the NEWEST ``limit`` records; the older ones are DROPPED but
+        # must stay reachable through the cursor (see below). Dropping them
+        # without a cursor was how a ``--limit`` read silently lost history.
+        limit_dropped = records[:len(records) - limit]
+        records = records[len(records) - limit:]
         truncated_by_limit = True
 
     budget = _induction_material_budget()
-    # Budget eviction keeps the NEWEST material, matching ``--limit``: a
-    # reviewer should see the most recent work first, and an older record is
-    # what is omitted when the budget runs out. Pack from the newest
-    # backwards, then restore chronological order for reading.
+    # Budget eviction keeps a CONTIGUOUS newest run: pack from the newest
+    # backwards and STOP at the first entry that does not fit. The old
+    # behaviour skipped a too-large entry and kept packing OLDER ones — those
+    # skipped records then fell on the wrong side of ``next_cursor`` and were
+    # never reachable again. Stopping keeps every omitted record strictly
+    # older than the oldest returned one, so one cursor walks the whole
+    # history exactly once. The FIRST entry is always kept, however large, so
+    # a single oversized record cannot stall progress.
+    records_newest_first = list(reversed(records))
     entries_newest_first: List[Dict[str, Any]] = []
     used = 0
-    omitted: List[str] = []
-    for record in reversed(records):
+    stop_index: Optional[int] = None
+    for index, record in enumerate(records_newest_first):
         entry = _material_entry(harness, record,
                                 previous=previous_of.get(record.execution_id))
         entry["attempts_of_task"] = attempts_by_task.get(record.task_id, 1)
@@ -434,12 +444,15 @@ def build_induction_material(harness, *,
         entry["cursor"] = _material_cursor(record)
         size = len(json.dumps(entry, ensure_ascii=False, default=str))
         if entries_newest_first and used + size > budget:
-            omitted.append(record.execution_id)
-            continue
+            stop_index = index
+            break
         entries_newest_first.append(entry)
         used += size
+    budget_dropped = (records_newest_first[stop_index:]
+                      if stop_index is not None else [])
     material: List[Dict[str, Any]] = list(reversed(entries_newest_first))
-    omitted.reverse()
+    omitted = ([r.execution_id for r in budget_dropped]
+               + [r.execution_id for r in limit_dropped])
 
     # Attempt indices, computed on the geometry of the FULL chronological
     # chain (so an evicted neighbour does not renumber what is shown).
@@ -453,9 +466,14 @@ def build_induction_material(harness, *,
     failed = sum(1 for m in material if m["task_check"]["state"] == "failed")
     untested = len(material) - passed - failed
     reviewed = [harness.bank.get(m["execution_id"]) for m in material]
-    # The cursor that reads the NEXT (older) batch, when material was
-    # omitted: the oldest entry returned. None when everything fit.
-    next_cursor = material[0]["cursor"] if (omitted and material) else None
+    # The cursor that reads the NEXT (older) batch whenever ANYTHING was
+    # dropped (by the budget OR by ``--limit``): the oldest entry RETURNED.
+    # Because eviction is contiguous, every omitted record is strictly older
+    # than it, so one cursor reaches them all — no gap, no repeat.
+    next_cursor = None
+    if omitted and material:
+        oldest = records_newest_first[len(entries_newest_first) - 1]
+        next_cursor = _material_cursor(oldest)
     # CROSS-TASK AFFORDANCE. A batch of single-task claims is a symptom, not
     # a goal: a transferable claim needs the SAME mechanism observed on >=2
     # INDEPENDENT tasks, and that evidence has to come from more than one
@@ -497,10 +515,29 @@ def build_induction_material(harness, *,
         "budget": {
             "chars_used": used,
             "chars_limit": budget,
-            "truncated_by_budget": bool(omitted),
-            "omitted_execution_ids": omitted,
+            "truncated_by_budget": bool(budget_dropped),
+            "chars_dropped": len(budget_dropped),
             "truncated_by_limit": truncated_by_limit,
+            "limit_dropped": len(limit_dropped),
+            "omitted_execution_ids": omitted,
             "next_cursor": next_cursor,
+            "cursor_note": (
+                "every omitted record is strictly OLDER than next_cursor, so "
+                "passing it back reads the next contiguous batch with no gap "
+                "and no repeat; None means the whole history was returned"),
+        },
+        "guidance": {
+            "structural_contrast": (
+                "compare the constraint relations against the method's steps; "
+                "do NOT call a method transferable because two tasks share a "
+                "solver, a method name, or a 'both succeeded' outcome"),
+            "key_step_explanation": (
+                "say WHY the key step works and what premise it depends on; "
+                "report speculation and incomplete derivations as such"),
+            "boundary_check": (
+                "which condition, if changed, makes the method fail? Separate "
+                "'still correct but slower' from 'the method no longer "
+                "holds'"),
         },
         "note": ("read a BATCH of completed tasks directly — no candidate "
                  "and no sample-count gate is required. Success, failure, "

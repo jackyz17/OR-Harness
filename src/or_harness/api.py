@@ -84,6 +84,7 @@ from or_harness.world_model.contracts import (
     detect_payload_version,
     legacy_prediction_view,
     load_contract_payload,
+    normalize_candidate_payload,
     validate_capability_evolution,
     validate_strategy_outcome,
 )
@@ -285,6 +286,11 @@ class ORHarness:
             raise ValueError("plan_mode must be 'advise' or 'shadow'")
         self.planning = bool(planning)
         self.plan_mode = plan_mode
+        # Candidates the ENTRY-POINT normalizer refused for the CURRENT
+        # planning call: a correctable input error reported back with the
+        # plan, never a doomed model call. Reset at the start of each
+        # ``plan_next``.
+        self._candidate_rejections: List[str] = []
         # World-model M4: offline maintenance assessment.
         # World-model M6: what the world model is asked to predict, and
         # whether a knowledge term may influence the choice.
@@ -1518,6 +1524,26 @@ class ORHarness:
         gate = self._budget_gate(str(task.get("task_id", "")), episode_id)
         if not gate["allowed"]:
             raise BudgetExhausted(gate["reason"], gate.get("view"))
+        # ENTRY-POINT NORMALIZATION, before ANY model call: the minimal
+        # candidate format (top-level name/steps, a method under its own key)
+        # is turned into the ONE canonical shape here, shared with the
+        # plan-next entry so the same hand-written input is never read two
+        # ways. A payload that cannot be normalized (two disagreeing method
+        # spellings, no name/step to identify) raises NOW, so a doomed model
+        # call is never spent on it.
+        entry_notes: List[str] = []
+        if isinstance(candidate, dict):
+            candidate = normalize_candidate_payload(candidate)
+            entry_notes = list(candidate.pop("normalization_notes", []) or [])
+        elif isinstance(candidate, ActionSpec):
+            # A legacy ActionSpec is mirrored to a dict and re-normalized so
+            # the minimal format reaches it too, then mapped back.
+            raw = candidate.to_dict()
+            if "measurement_scope" not in raw and "budget_hint" not in raw:
+                normalized = normalize_candidate_payload(raw)
+                entry_notes = list(
+                    normalized.pop("normalization_notes", []) or [])
+                candidate = ActionSpec.from_dict(normalized)
         if isinstance(candidate, ActionSpec):
             candidate_ref = CandidateRef.from_action_spec(candidate)
         elif isinstance(candidate, dict):
@@ -1540,7 +1566,7 @@ class ORHarness:
         # carry a shape that crashes on read (``dict("assignment MILP")``).
         normalized_method = normalize_method(entry["method"])
         candidate_ref.method = normalized_method or {}
-        config_notes = list(entry["notes"])
+        config_notes = entry_notes + list(entry["notes"])
         task_id = str(task.get("task_id", ""))
         if candidate_ref.task_id and candidate_ref.task_id != task_id:
             raise ValueError(
@@ -4032,15 +4058,23 @@ class ORHarness:
         if not candidates:
             return []
         specs = []
-        for spec in list(candidates)[:limit]:
+        for index, spec in enumerate(list(candidates)[:limit]):
             if isinstance(spec, dict):
-                # The CLI reads candidates from JSON (``--candidates``) and a
-                # Python caller naturally writes them as dicts; both are the
-                # SAME shape. Accepting only ActionSpec made a plain dict
-                # crash with an opaque AttributeError.
-                spec = ActionSpec.from_dict(spec)
+                raw = spec
             else:
-                spec = ActionSpec.from_dict(spec.to_dict())  # value copy
+                raw = spec.to_dict()
+            # NORMALIZE BEFORE building the spec, so the minimal candidate
+            # format reaches the planner too. A payload that cannot be
+            # normalized is a CORRECTABLE error reported per candidate (it
+            # never becomes a doomed model call), and it never drags the
+            # other candidates down.
+            try:
+                raw = normalize_candidate_payload(raw)
+            except ValueError as exc:
+                self._candidate_rejections.append(
+                    f"candidate #{index + 1}: {exc}")
+                continue
+            spec = ActionSpec.from_dict(raw)
             if not spec.task_id:
                 spec.task_id = task_id
             if spec.episode_id is None:
@@ -4173,6 +4207,11 @@ class ORHarness:
             return plan.to_dict()
         specs = self._candidate_specs(task, episode_id, candidates,
                                       limits.max_root_candidates)
+        # Candidates the normalizer REFUSED (a correctable input error) are
+        # reported alongside the plan: they never became a model call, and
+        # they never change the status of the candidates that did.
+        candidate_rejections = list(getattr(self, "_candidate_rejections", []))
+        self._candidate_rejections = []
         valid_specs = []
         identity_conflicts = []
         for spec in specs:
@@ -4202,10 +4241,17 @@ class ORHarness:
                       "framework does not generate a candidate menu — "
                       "propose the methods you want compared under the "
                       "strategy-outcome protocol")
+            if candidate_rejections:
+                reason = ("every candidate was REFUSED at input "
+                          "normalization (correctable): "
+                          + "; ".join(candidate_rejections) + ". " + reason)
             if plan.truncation_reason:
                 reason = plan.truncation_reason + ". " + reason
             plan.truncation_reason = reason
-            return plan.to_dict()
+            result = plan.to_dict()
+            if candidate_rejections:
+                result["candidate_rejections"] = candidate_rejections
+            return result
         decision = self.actions.begin_action(
             "select_strategy", task_id, episode_id, pre_snapshot=root,
             params={"kind": "plan_next", "protocol": "strategy-outcome",
@@ -4462,6 +4508,8 @@ class ORHarness:
         result["protocol"] = "strategy-outcome"
         result["benefit_convention"] = copy.deepcopy(plan.benefit_convention)
         result["protocol"] = "strategy-outcome"
+        if candidate_rejections:
+            result["candidate_rejections"] = candidate_rejections
         result["candidates"] = [
             {"action_spec": spec.to_dict(),
              "prediction_id": prediction.prediction_id,

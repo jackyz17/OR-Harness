@@ -1596,12 +1596,22 @@ class StrategicEntry:
 
     @property
     def is_published(self) -> bool:
-        """True when this entry's claim passed admission verification AND
-        is not stale after a substantive revision."""
+        """True when this entry may be presented as published knowledge.
+
+        ``verified`` always publishes. ``fact_checked`` publishes ONLY a
+        ``conditional_fact`` (a single observation); a transfer claim needs a
+        declared assertion, so its ``fact_checked`` block does NOT publish by
+        itself (the selector applies the same rule).
+        """
         block = self.verification or {}
         if block.get("stale_after_revision"):
             return False
-        return block.get("state") == "verified"
+        state = block.get("state")
+        if state == "verified":
+            return True
+        return (state == "fact_checked"
+                and str((self.claim or {}).get("kind") or "")
+                == "conditional_fact")
 
     @property
     def verification_state(self) -> str:
@@ -1744,8 +1754,12 @@ class StrategicEntry:
 #: an entry that has not been through an offline check (including every entry
 #: written before this field existed); ``insufficient_evidence`` covers "the
 #: check ran but could not decide" — a failed execution is NOT a refutation.
-VERIFICATION_STATES = ("unverified", "verified", "insufficient_evidence",
-                       "refuted")
+#: ``fact_checked`` is WEAKER than ``verified``: the cited FACTS were read
+#: (status, task check, code hash, failure classes, method basis) but no
+#: computable assertion was declared, so it can publish only a single
+#: observation (a ``conditional_fact``), never a transfer claim.
+VERIFICATION_STATES = ("unverified", "verified", "fact_checked",
+                       "insufficient_evidence", "refuted")
 
 
 def _verification_block(raw: Any) -> Dict[str, Any]:

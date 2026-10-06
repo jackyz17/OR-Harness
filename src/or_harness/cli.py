@@ -1926,11 +1926,28 @@ def cmd_plan_next(args) -> int:
                 "happened — no imagined multi-step rollout is built")
         candidates = None
         if args.candidates:
+            from or_harness.world_model.contracts import (
+                normalize_candidate_payload)
             raw = _load_json_arg(args.candidates)
             if not isinstance(raw, list):
                 return _fail("--candidates must be a JSON list of "
                              "ActionSpec objects")
-            candidates = [ActionSpec.from_dict(c) for c in raw]
+            normalized = []
+            rejections = []
+            for index, item in enumerate(raw):
+                try:
+                    normalized.append(normalize_candidate_payload(item))
+                except ValueError as exc:
+                    # A correctable input error is reported WITH the other
+                    # candidates rather than aborting the whole call.
+                    rejections.append(f"candidate #{index + 1}: {exc}")
+            if rejections and not normalized:
+                return _fail("every candidate was refused at input "
+                             "normalization (correctable): "
+                             + "; ".join(rejections))
+            candidates = [ActionSpec.from_dict(c) for c in normalized]
+            if rejections:
+                args._candidate_rejections = rejections
         limits = {"horizon": args.horizon,
                   "max_model_calls": args.max_calls,
                   "time_budget_s": getattr(args, "time_budget", None)}
@@ -1955,6 +1972,14 @@ def cmd_plan_next(args) -> int:
         }
         if plan.get("protocol"):
             result["protocol"] = plan["protocol"]
+        # Input-level refusals travel with the plan, so the caller sees what
+        # to fix even when the rest of the candidates were compared.
+        rejections = list(getattr(args, "_candidate_rejections", []) or [])
+        plan_rejections = plan.get("candidate_rejections") or []
+        if plan_rejections:
+            rejections = list(plan_rejections)
+        if rejections:
+            result["candidate_rejections"] = rejections
         status = plan.get("status")
         if status in ("disabled", "no_candidates", "fallback"):
             return _emit(result, f"plan_next returned status={status}: "
@@ -2388,13 +2413,21 @@ def _summarize_context(ctx, *, stored: bool = False) -> str:
 def _candidate_from_spec(spec: Dict[str, Any]):
     """Build a ``CandidateRef`` from either candidate or legacy spec JSON.
 
-    A payload naming ``measurement_scope`` is a LEGACY ``ActionSpec``: it is
-    routed through ``CandidateRef.from_action_spec`` so its execution
-    configuration and budget hint survive, and so an unmappable legacy scope
-    (``task``) is refused instead of silently shrunk to one attempt.
+    The payload is normalized FIRST (the shared entry-point discipline): the
+    minimal candidate format (top-level ``name``/``steps``, a method under
+    its own key, an allocated ``strategy_id``) reaches the direct
+    prediction path too. A payload naming ``measurement_scope`` is a LEGACY
+    ``ActionSpec`` and is passed through UNCHANGED: it is routed through
+    ``CandidateRef.from_action_spec`` so its execution configuration and
+    budget hint survive, and so an unmappable legacy scope (``task``) is
+    refused instead of silently shrunk to one attempt.
     """
-    from or_harness.world_model.contracts import CandidateRef
+    from or_harness.world_model.contracts import (
+        CandidateRef, normalize_candidate_payload)
     from or_harness.world_model.prediction import ActionSpec
+    if "measurement_scope" in spec or "budget_hint" in spec:
+        return CandidateRef.from_action_spec(ActionSpec.from_dict(spec))
+    spec = normalize_candidate_payload(spec)
     if "measurement_scope" in spec or "budget_hint" in spec:
         return CandidateRef.from_action_spec(ActionSpec.from_dict(spec))
     return CandidateRef.from_dict(spec)

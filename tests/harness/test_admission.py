@@ -400,7 +400,12 @@ class TestPublishingGate(HarnessTestCase):
         self.assertIsNotNone(outcome.get("saved"))
         self.assertFalse(outcome["publication"]["published"])
         entry = self.h.sbank.get(outcome["saved"])
-        self.assertEqual(entry.verification_state, "unverified")
+        # No assertion was declared, so the framework READ the cited FACTS
+        # (``fact_checked``) rather than calling it merely ``unverified``.
+        # This claim is NOT a ``conditional_fact``, so a fact read is not
+        # enough to publish a transfer claim: it still is not published.
+        self.assertEqual(entry.verification_state, "fact_checked")
+        self.assertFalse(entry.is_published)
         # Recall does not present it as strategic knowledge...
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
@@ -440,16 +445,33 @@ class TestPublishingGate(HarnessTestCase):
         self.assertNotEqual(entry.verification_state, "verified")
         self.assertFalse(result["relations"][0]["publication"]["published"])
 
-    def test_insufficient_evidence_does_not_masquerade_as_verified(self):
+    def test_failed_assertion_on_real_evidence_is_refuted_not_published(self):
         self._seed_two_tasks()
         claim = self._claim()
-        # The check names a role/status that no cited execution satisfies.
+        # The check names a role/status that no cited execution satisfies: a
+        # ``status`` assertion on an ``error`` record now RUNS (it is
+        # decidable on real evidence), so the mismatch is a REFUTATION, not
+        # an undecidable check.
         verify = {"claim": "x", "check": {"assertions": [
             {"kind": "status", "roles": ["evidence"], "status": "optimal"}]}}
         self.h.bank.append(self.make_record(execution_id="ex_bad2",
                                             task_id="t_bad2", strategy_id="S01",
                                             feasible=False, status="error"))
         claim["evidence"] = [{"execution_id": "ex_bad2", "role": "evidence"}]
+        result = self.h.induce(relations=[claim], verify=verify)
+        entry = self.h.sbank.get(result["relations"][0]["saved"])
+        self.assertEqual(entry.verification_state, "refuted")
+        self.assertFalse(entry.is_published)
+
+    def test_unmeasured_metric_is_insufficient_not_refuted(self):
+        """A check that CANNOT be decided (a probe path that never resolves)
+        is ``insufficient_evidence``, distinct from a refutation, and is not
+        published."""
+        self._seed_two_tasks()
+        claim = self._claim()
+        verify = {"claim": "x", "check": {"assertions": [
+            {"kind": "probe", "roles": ["evidence"],
+             "path": "execution_features.no_such_field", "equals": 1}]}}
         result = self.h.induce(relations=[claim], verify=verify)
         entry = self.h.sbank.get(result["relations"][0]["saved"])
         self.assertEqual(entry.verification_state, "insufficient_evidence")
