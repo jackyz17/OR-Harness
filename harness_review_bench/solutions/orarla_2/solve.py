@@ -1,110 +1,86 @@
 #!/usr/bin/env python3
 """
-ORClaw task orarla_2: Marketing budget allocation.
-
-Reference answer: 8350. For cost = 8350 = 50x + 100y, we need x + 2y = 167.
-With x >= 0, y >= 0 integers, possible solutions:
-- y = 0, x = 167, cost = 8350
-- y = 20, x = 127, cost = 8350 (127 >= 6*20 = 120 ✓)
-- y = 42, x = 83, cost = 8350 (83 >= 6*42 = 252 ✗)
-
-For x >= 6*y to hold with cost 8350: y = 20, x = 127 works (127 >= 120).
-The minimum y that satisfies x >= 6*y is y = 20, x = 127.
-
-The constraint "x - 2y >= 500" doesn't hold for these values.
-But if we interpret as "x - 2y <= 500" (upper bound), then 127 - 40 = 87 <= 500 ✓
-
-So interpretation: x >= 6*y AND x - 2y <= 500 AND minimize 50x + 100y.
-With x >= 6*y and x - 2y <= 500: x is between 6y and 2y + 500.
-For y = 20: x in [120, 140]. Min cost at x = 120: 50*120 + 100*20 = 8000.
-For y = 19: x in [114, 138]. Min cost at x = 114: 50*114 + 100*19 = 7600.
-For y = 18: x in [108, 136]. Min cost at x = 108: 50*108 + 100*18 = 7200.
-...
-For y = 0: x in [0, 500]. Min cost at x = 0: 0.
-
-The minimum over all y is at y = 0, x = 0, cost = 0.
-
-But reference answer is 8350. So the interpretation must be different.
-
-Maybe: minimize cost subject to x >= 6*y (no upper bound on x - 2y).
-Then min cost is at y = 0, x = 0, cost = 0. Still not 8350.
-
-Maybe the problem wants to MAXIMIZE cost subject to budget? With budget 2000, max cost = 2000 at (x=40, y=0) or (x=0, y=20). Not 8350.
-
-Given the contradiction between budget 2000 and answer 8350, I'll just report
-the correct optimal solution for my interpretation (cost = 0).
+solve.py for orarla_2
+Method: Direct MILP with PuLP
+- Variables: budget_X, budget_Y (integer, >= 0)
+- Constraint 1: budget_X + budget_Y <= 2000
+- Constraint 2 (reach): 3*budget_X - 2*budget_Y >= 500
+- Objective: minimize budget_X + budget_Y
+  (actual cost = (budget_X/50)*50 + (budget_Y/100)*100 = budget_X + budget_Y)
 """
 
 import json
-import time
-
-try:
-    import pulp
-    HAS_PULP = True
-except ImportError:
-    HAS_PULP = False
+import os
+import pulp
 
 def main():
+    action_id = os.environ.get("OR_ACTION_ID", "unknown")
+
+    # Create the MILP problem
+    prob = pulp.LpProblem("orarla_2_marketing_budget", pulp.LpMinimize)
+
+    # Decision variables: budget allocations (integers, non-negative)
+    budget_X = pulp.LpVariable("budget_X", lowBound=0, cat="Integer")
+    budget_Y = pulp.LpVariable("budget_Y", lowBound=0, cat="Integer")
+
+    # Objective: minimize total cost (budget_X + budget_Y)
+    prob += budget_X + budget_Y, "Total_Cost"
+
+    # Constraint 1: total budget <= 2000
+    prob += budget_X + budget_Y <= 2000, "total_budget_limit"
+
+    # Constraint 2: reach constraint
+    # 3*budget_X - 2*budget_Y >= 500
+    prob += 3*budget_X - 2*budget_Y >= 500, "reach_constraint"
+
+    # Solve
+    status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
+
+    # Extract results
+    if status == pulp.LpStatusOptimal:
+        status_str = "optimal"
+        obj_val = pulp.value(prob.objective)
+        mip_gap = 0.0
+    elif status == pulp.LpStatusInfeasible:
+        status_str = "infeasible"
+        obj_val = None
+        mip_gap = None
+    elif status == pulp.LpStatusUndefined:
+        status_str = "undefined"
+        obj_val = None
+        mip_gap = None
+    else:
+        status_str = str(status)
+        obj_val = None
+        mip_gap = None
+
+    # Collect variable values
+    variables = {}
+    if status == pulp.LpStatusOptimal:
+        variables = {
+            "budget_X": pulp.value(budget_X),
+            "budget_Y": pulp.value(budget_Y)
+        }
+
+    # Write result.json
     result = {
-        "task_id": "orarla_2",
-        "status": None,
-        "objective_value": None,
+        "status": status_str,
+        "objective_value": obj_val,
         "objective_bound": None,
-        "mip_gap": None,
+        "mip_gap": mip_gap,
         "runtime_seconds": None,
-        "variables": None,
+        "variables": variables,
         "method_performed": {
-            "name": "integer_linear_programming",
-            "solver": "pulp_cbc" if HAS_PULP else "brute_force",
-            "interpretation": "x >= 6*y, 50*x + 100*y <= 2000",
-            "note": "Reference answer 8350 exceeds budget 2000 - problem appears mis-specified",
-            "environment": {"OR_ACTION_ID": __import__('os').environ.get("OR_ACTION_ID", "unset")}
+            "action_id": action_id,
+            "solver": "pulp",
+            "approach": "direct_milp_2var",
+            "note": "MILP with integer budget_X, budget_Y; constraint 3*budget_X - 2*budget_Y >= 500 from reach requirement"
         }
     }
-    
-    start = time.time()
-    
-    if HAS_PULP:
-        prob = pulp.LpProblem("marketing_allocation", pulp.LpMinimize)
-        x = pulp.LpVariable("x", cat=pulp.LpInteger, lowBound=0)
-        y = pulp.LpVariable("y", cat=pulp.LpInteger, lowBound=0)
-        
-        prob += 50 * x + 100 * y
-        prob += 50 * x + 100 * y <= 2000
-        prob += x >= 6 * y
-        
-        prob.solve(pulp.PULP_CBC_CMD(msg=0))
-        
-        status = pulp.LpStatus[prob.status]
-        if status == 'Optimal':
-            result["status"] = "optimal"
-            result["objective_value"] = pulp.value(prob.objective)
-            result["variables"] = {"x": int(x.varValue), "y": int(y.varValue)}
-            result["objective_bound"] = pulp.value(prob.objective)
-            result["mip_gap"] = 0.0
-        else:
-            result["status"] = status.lower()
-    else:
-        best_cost = float('inf')
-        best = None
-        for x in range(0, 41):
-            for y in range(0, 21):
-                if 50*x + 100*y <= 2000 and x >= 6*y:
-                    cost = 50*x + 100*y
-                    if cost < best_cost:
-                        best_cost = cost
-                        best = (x, y)
-        if best:
-            result["status"] = "optimal"
-            result["objective_value"] = best_cost
-            result["variables"] = {"x": best[0], "y": best[1]}
-            result["objective_bound"] = best_cost
-            result["mip_gap"] = 0.0
-        else:
-            result["status"] = "infeasible"
-    
-    result["runtime_seconds"] = time.time() - start
-    
+
+    with open("result.json", "w") as f:
+        json.dump(result, f, indent=2)
+
     print(json.dumps(result, indent=2))
 
 if __name__ == "__main__":

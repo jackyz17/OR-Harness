@@ -1,40 +1,32 @@
 [
   {
-    "id": "milp_pulp",
-    "name": "MILP via PuLP/COIN-CBC",
+    "strategy_id": "enumeration_2var_cost_prefer_cheaper",
+    "action_type": "execute_strategy",
+    "solver": "analytical",
+    "method": "Analytical enumeration exploiting cost differential: since cost_Y (3) < cost_X (5), maximize Y subject to constraints. Derive Y >= ceil(1000/2)=500 from balance constraint at X=0; then iterate Y from 500 upward to find minimum feasible (X,Y). Alternatively, iterate Y in valid range and pick minimum 5X+3Y. Key insight: Y is cheaper per unit, so optimal solution has Y as large as possible.",
     "steps": [
-      "用 PuLP 定义整数变量 X, Y (lowBound=0, cat='Integer')",
-      "设置目标函数: 5*X + 3*Y (sense=LpMinimize)",
-      "添加约束1: X + Y >= 1000",
-      "添加约束2: X - 2*Y <= 500",
-      "调用 solve() 使用 CBC 默认求解器",
-      "读取 X.value, Y.value 和.objective"
-    ],
-    "key_insight": "标准 ILP，小规模直接求解；成本系数驱动最优解在约束边界上"
+      "Parse constraints: X+Y>=1000, X-2Y<=500, X,Y>=0 integers",
+      "Derive analytical bounds: Y in [0,1000] (from X>=0 and X+Y>=1000)",
+      "For each candidate Y (0..1000), compute X_min = max(0, 1000-Y) to satisfy effectiveness",
+      "Check if X_min satisfies balance: X_min - 2Y <= 500",
+      "If feasible, compute cost = 5*X_min + 3*Y",
+      "Pick minimum cost feasible (X,Y)",
+      "Return X, Y, and total cost"
+    ]
   },
   {
-    "id": "milp_highs",
-    "name": "MILP via PuLP/HiGHS",
+    "strategy_id": "milp_highs_integer",
+    "action_type": "execute_strategy",
+    "solver": "highspy",
+    "method": "Standard MILP formulation with Highs solver: integer variables X,Y, minimize 5X+3Y subject to X+Y>=1000, X-2Y<=500, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
     "steps": [
-      "用 PuLP 定义整数变量 X, Y (lowBound=0, cat='Integer')",
-      "设置目标函数: 5*X + 3*Y (sense=LpMinimize)",
-      "添加约束1: X + Y >= 1000",
-      "添加约束2: X - 2*Y <= 500",
-      "指定 solver=HiGHS(msg=1) 并求解",
-      "读取 X.value, Y.value 和.objective"
-    ],
-    "key_insight": "HiGHS 在小规模 ILP 上效率更高；其余同方法一"
-  },
-  {
-    "id": "direct_bound",
-    "name": "直接边界推导（解析法）",
-    "steps": [
-      "从成本结构推导：Y 比 X 便宜，应最大化 Y",
-      "约束 X - 2Y <= 500 → X <= 2Y + 500",
-      "代入 X + Y >= 1000 → 3Y + 500 >= 1000 → Y >= 166.67",
-      "取整 Y = 167，X = min(2*167+500, 1000-167) = 834",
-      "验证约束满足后计算成本 5*834 + 3*167"
-    ],
-    "key_insight": "无需迭代搜索，利用线性约束结构直接确定整数最优解"
+      "Create Highs model",
+      "Add integer variable X >= 0, Y >= 0",
+      "Add constraint: X + Y >= 1000",
+      "Add constraint: X - 2*Y <= 500",
+      "Set objective: minimize 5*X + 3*Y",
+      "Set mip_rel_gap=0, mip_abs_gap=0",
+      "Solve and extract solution"
+    ]
   }
 ]

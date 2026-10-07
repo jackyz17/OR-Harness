@@ -9,16 +9,23 @@ Contents: [Read evidence](#1-read-evidence) · [Form a strategy](#2-form-or-revi
 Read a bounded batch from the evidence bank:
 
 ```bash
-orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C]
+orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K]
 ```
 
 Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Review `existing_knowledge` before deciding whether to add, revise, merge, or leave it unchanged.
+
+**One task at a time, without losing cross-task material.** For a fast per-task review, read THIS task's chain with `--task T`. The response then fills `related_history` with a SMALL semantically related set from other tasks, so the narrowing does not hide a comparable method, a failure, or a boundary case:
+
+- `query_basis` is built from the batch's OWN recorded method (performed preferred, else the plan marked `planned_only`) plus the family — **no model call**, and the outcome / task number / solver name are deliberately excluded so the search is not biased toward successes. You may rewrite the query when researching a specific tool-chain fix.
+- `executions[]` / `knowledge[]` are UNFILTERED: a failed or cross-cell execution and an unpublished entry are exactly the material a boundary check needs, so they are not removed by the online admission filter.
+- Three facts stay separate: `no_hits: true` (ran, matched nothing — **not** proof that no counterexample exists), `failure` (could not run at all — reported with a hint, never as "nothing similar exists"), and `degraded_layers`.
+- `--related-top-k K` sets the budget (default 5; `0` disables the channel and restores the plain whole-batch behaviour). A `similarity` value is a DISCOVERY signal, never support strength; a hit does not raise a claim's support, and the reviewer still predicts, executes and checks what it picks.
 
 - `execute --method` records a plan. A matching `method_performed` receipt or inspected execution artifacts support what actually ran. Keep the source explicit; a plan alone is not performed-method evidence.
 - A solver status and an independent `task_check` are separate facts. An absent task check is unobserved, not passed. An `error` does not establish model infeasibility.
 - Several attempts with one `task_id` form one task chain. Preserve failed attempts and their costs; do not count retries as independent tasks.
 - Successes, failures, different method names, and different structural cells may all inform an abstraction. Sample counts and observation hints organize facts; they do not determine which material may be reviewed.
-- Read missing fields as unknown. Follow `budget.next_cursor` for omitted material when it is needed; do not enlarge the batch merely to collect more records.
+- Read missing fields as unknown. Follow `budget.next_cursor` for omitted material when it is needed; do not enlarge the batch merely to collect more records. A cursor is a READ POSITION, never a record that the earlier material was already induced.
 
 A structural cell organizes statistics and assists retrieval. Similar coupling scores do not establish the semantic premises of a method; two unknown profiles do not establish structural similarity. Compare the actual relationships before pooling evidence or transferring a technique.
 

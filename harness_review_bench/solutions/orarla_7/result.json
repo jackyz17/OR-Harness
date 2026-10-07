@@ -1,18 +1,28 @@
 {
   "status": "optimal",
-  "objective_value": 4000.0,
-  "objective_bound": 4000.0,
+  "objective_value": 3000.0,
+  "objective_bound": null,
   "mip_gap": 0.0,
-  "runtime_seconds": 0.0067081451416015625,
+  "runtime_seconds": null,
   "variables": {
-    "X": 500,
-    "Y": 500
+    "X": 0,
+    "Y": 1000
   },
   "method_performed": {
-    "name": "MILP via PuLP/COIN-CBC",
-    "approach": "ILP with integer X,Y >= 0; objective 5X+3Y; constraints: X+Y>=1000, |X-2Y|<=500 (reformulated as X-2Y<=500 AND 2Y-X<=500)",
-    "solver": "COIN-CBC (default PULP_CBC_CMD)",
-    "action_id": "none",
-    "note": "Balance constraint interpreted as two-sided |X-2Y|<=500 based on 'balanced strategy' phrasing"
-  }
+    "strategy_id": "milp_highs_integer",
+    "solver": "highspy",
+    "action_id": "ac_f7aa1159e27e",
+    "task_id": "orarla_7",
+    "episode": "ep1",
+    "planned_steps": [
+      "Create Highs model",
+      "Add integer variable X >= 0, Y >= 0",
+      "Add constraint: X + Y >= 1000",
+      "Add constraint: X - 2*Y <= 500",
+      "Set objective: minimize 5*X + 3*Y",
+      "Set mip_rel_gap=0, mip_abs_gap=0",
+      "Solve and extract solution"
+    ]
+  },
+  "solver": "highspy"
 }

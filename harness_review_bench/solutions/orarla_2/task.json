@@ -1,1 +1,34 @@
-{"task_id":"orarla_2","family":"planning","text":"A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?"}
+{
+  "task_id": "orarla_2",
+  "family": "planning",
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
+  "coupling": {
+    "entities": [
+      {"name": "budget_X", "type": "integer", "description": "Budget allocated to channel X (in dollars)"},
+      {"name": "budget_Y", "type": "integer", "description": "Budget allocated to channel Y (in dollars)"}
+    ],
+    "decisions": [
+      {"name": "allocate_budget", "description": "Determine integer budget allocations for channel X and Y"}
+    ],
+    "relations": [
+      {"source": "budget_X", "target": "c1", "type": "contributes_to"},
+      {"source": "budget_Y", "target": "c1", "type": "contributes_to"},
+      {"source": "budget_X", "target": "c2", "type": "subject_to"},
+      {"source": "budget_Y", "target": "c2", "type": "subject_to"}
+    ],
+    "constraints": [
+      {
+        "id": "c1",
+        "name": "total_budget_limit",
+        "expression": "budget_X + budget_Y <= 2000",
+        "description": "Total budget for both channels combined is at most $2000"
+      },
+      {
+        "id": "c2",
+        "name": "reach_constraint",
+        "expression": "3*budget_X - 2*budget_Y >= 500",
+        "description": "Three times channel X effort minus twice channel Y effort is at least 500 points (effort is proportional to budget divided by cost per unit)"
+      }
+    ]
+  }
+}

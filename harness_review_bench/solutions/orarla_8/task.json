@@ -1,7 +1,38 @@
 {
   "task_id": "orarla_8",
-  "name": "orarla_8",
   "family": "planning",
   "text": "A marketing manager is planning the distribution of resources between two different marketing strategies, X and Y. The total resources available for both strategies combined cannot exceed 5000 units due to budget constraints. To meet the company's reach and frequency objectives, the combined effort from these strategies must yield a minimum effectiveness score calculated as twice the resources allocated to strategy X plus thrice those allocated to strategy Y, with a minimum threshold of 10000 points. Each unit of resource in strategy X and Y has associated costs of 10 and 20 units respectively. The manager aims to minimize the total cost while meeting all these requirements (X,Y are integers). What is the minimum total cost in units, rounded to the nearest whole number?",
-  "model": "min 10*X + 20*Y\ns.t. X + Y <= 5000\n     2*X + 3*Y >= 10000\n     X, Y >= 0, integer"
+  "model": {
+    "type": "milp",
+    "variables": [
+      {"name": "X", "type": "integer", "lb": 0, "ub": 5000},
+      {"name": "Y", "type": "integer", "lb": 0, "ub": 5000}
+    ],
+    "constraints": [
+      {"name": "budget_limit", "expr": "X + Y <= 5000"},
+      {"name": "effectiveness", "expr": "2*X + 3*Y >= 10000"}
+    ],
+    "objective": {"sense": "minimize", "expr": "10*X + 20*Y"}
+  },
+  "coupling": {
+    "entities": [
+      {"name": "X", "type": "decision", "description": "Units of resource allocated to strategy X"},
+      {"name": "Y", "type": "decision", "description": "Units of resource allocated to strategy Y"}
+    ],
+    "decisions": [
+      {"name": "X", "type": "integer", "lb": 0, "ub": 5000},
+      {"name": "Y", "type": "integer", "lb": 0, "ub": 5000}
+    ],
+    "relations": [
+      {"source": "X", "target": "Y", "type": "competes_for_budget"},
+      {"source": "X", "target": "budget_limit", "type": "depends_on"},
+      {"source": "Y", "target": "budget_limit", "type": "depends_on"},
+      {"source": "X", "target": "effectiveness", "type": "contributes_to"},
+      {"source": "Y", "target": "effectiveness", "type": "contributes_to"}
+    ],
+    "constraints": [
+      {"id": "budget_limit", "name": "budget_limit", "description": "Total resources cannot exceed 5000"},
+      {"id": "effectiveness", "name": "effectiveness", "description": "Combined effectiveness must be at least 10000"}
+    ]
+  }
 }

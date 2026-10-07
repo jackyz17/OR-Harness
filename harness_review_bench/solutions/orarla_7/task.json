@@ -1,20 +1,33 @@
 {
   "task_id": "orarla_7",
   "family": "planning",
-  "text": "A marketing manager is planning a new campaign and has two channels to choose from, $X$ and $Y$. Both channels have different costs per unit of effectiveness: $5 for channel $X$ and $3 for channel $Y$. The total effectiveness score, calculated as the sum of the units allocated to each channel, must be at least 1000 points. Furthermore, the difference in units between channel X and twice that of channel Y should not exceed 500 units to maintain a balanced strategy. Given these constraints and aiming to minimize the total cost (assuming both X and Y are integers due to budget limitations), what would be the minimum cost needed for this campaign? Provide your answer rounded to the nearest dollar.",
-  "coupling": {
-    "entities": [
-      {"id": "X", "type": "channel", "desc": "Channel X allocation (integer units)"},
-      {"id": "Y", "type": "channel", "desc": "Channel Y allocation (integer units)"}
+  "text": "A marketing manager is planning a new campaign and has two channels to choose from, X and Y. Both channels have different costs per unit of effectiveness: $5 for channel X and $3 for channel Y. The total effectiveness score, calculated as the sum of the units allocated to each channel, must be at least 1000 points. Furthermore, the difference in units between channel X and twice that of channel Y should not exceed 500 units to maintain a balanced strategy. Given these constraints and aiming to minimize the total cost (assuming both X and Y are integers due to budget limitations), what would be the minimum cost needed for this campaign? Provide your answer rounded to the nearest dollar.",
+  "model": {
+    "type": "MILP",
+    "variables": [
+      {"name": "X", "type": "integer", "lb": 0, "description": "units allocated to channel X"},
+      {"name": "Y", "type": "integer", "lb": 0, "description": "units allocated to channel Y"}
     ],
+    "constraints": [
+      {"name": "effectiveness", "expr": "X + Y >= 1000", "description": "total effectiveness at least 1000"},
+      {"name": "balance", "expr": "X - 2*Y <= 500", "description": "X minus twice Y not exceeding 500"}
+    ],
+    "objective": {"sense": "minimize", "expr": "5*X + 3*Y", "description": "total cost"}
+  },
+  "coupling": {
     "decisions": [
-      {"id": "alloc", "type": "resource_allocation", "desc": "Allocate units to channels X and Y", "entities": ["X", "Y"]}
+      {"name": "X", "type": "integer", "lb": 0},
+      {"name": "Y", "type": "integer", "lb": 0}
+    ],
+    "constraints": [
+      {"id": "eff", "name": "effectiveness", "expr": "X + Y >= 1000"},
+      {"id": "bal", "name": "balance", "expr": "X - 2*Y <= 500"}
     ],
     "relations": [
-      {"id": "effort", "type": "min_total", "expr": "X + Y", "ref": 1000, "sense": ">="},
-      {"id": "balance", "type": "bound_diff", "expr": "X - 2*Y", "ref": 500, "sense": "<="},
-      {"id": "cost", "type": "minimize", "expr": "5*X + 3*Y", "desc": "total cost"}
+      {"source": "X", "target": "eff", "type": "subject_to"},
+      {"source": "Y", "target": "eff", "type": "subject_to"},
+      {"source": "X", "target": "bal", "type": "subject_to"},
+      {"source": "Y", "target": "bal", "type": "subject_to"}
     ]
-  },
-  "model": null
+  }
 }

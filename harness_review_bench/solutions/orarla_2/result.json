@@ -1,0 +1,17 @@
+{
+  "status": "optimal",
+  "objective_value": 167.0,
+  "objective_bound": null,
+  "mip_gap": 0.0,
+  "runtime_seconds": null,
+  "variables": {
+    "budget_X": 167.0,
+    "budget_Y": 0.0
+  },
+  "method_performed": {
+    "action_id": "ac_9735ce0d5074",
+    "solver": "pulp",
+    "approach": "direct_milp_2var",
+    "note": "MILP with integer budget_X, budget_Y; constraint 3*budget_X - 2*budget_Y >= 500 from reach requirement"
+  }
+}

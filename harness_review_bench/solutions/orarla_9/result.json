@@ -1,19 +1,16 @@
 {
   "status": "optimal",
-  "solver_status": "HighsStatus.kOk",
-  "objective_value": 150.0,
-  "objective_bound": null,
+  "objective_value": 150,
+  "objective_bound": 150,
   "mip_gap": 0.0,
-  "runtime_seconds": 0.017806,
+  "runtime_seconds": 0.0,
   "variables": {
-    "Ad1": -0.0,
-    "Ad2": 50.0
+    "x": 0,
+    "y": 50
   },
   "method_performed": {
-    "action_id": "ac_39e3c1a7b915",
-    "name": "Integer MILP with HiGHS (highspy native API)",
-    "solver": "highspy",
-    "solver_version": "1.15.1",
-    "model": "minimize 5*Ad1 + 3*Ad2 | Ad1+Ad2>=50, 4*Ad1+6*Ad2<=300 | Ad1,Ad2 integer>=0"
+    "strategy_id": "ac_31c12c0ceaa7",
+    "solver": "python_enum",
+    "approach": "Analytical enumeration for bounded 2-var ILP"
   }
 }

@@ -345,7 +345,8 @@ def build_induction_material(harness, *,
                              strategy_id: Optional[str] = None,
                              task_id: Optional[str] = None,
                              limit: Optional[int] = None,
-                             cursor: Optional[str] = None
+                             cursor: Optional[str] = None,
+                             related_top_k: int = 5
                              ) -> Dict[str, Any]:
     """Organize a BATCH of completed tasks as induction material.
 
@@ -369,6 +370,20 @@ def build_induction_material(harness, *,
     same newest records being re-shown on every call — application code
     never has to guess how to page, and one page is never taken for the whole
     bank.
+
+    **Related history by SEMANTIC discovery (``related_top_k``).** Narrowing
+    the batch to one task (``--task``) is how a per-task review is sped up,
+    but it must not blind the reviewer to comparable work on OTHER tasks.
+    When ``related_top_k > 0`` the module runs ONE retrieval whose query text
+    is built from THIS task's own recorded METHOD (the performed method when
+    one exists, else the plan with a basis marker) plus its structural
+    summary — NO model call is made to write the query. Execution hits come
+    back UNFILTERED (a failed or cross-cell record is exactly the material a
+    boundary check needs), knowledge hits include UNPUBLISHED entries, and
+    the result reports ``no_hits`` vs a retrieval FAILURE separately. A
+    similarity hit is a DISCOVERY signal, never a support strength, and no
+    hit is NOT evidence that no counterexample exists. ``related_top_k=0``
+    disables the channel entirely (identical to the pre-r11 behaviour).
 
     Every attempt is kept in the flat ``material`` list (each failure with its
     own cost and source), and ``task_chains`` groups their execution ids per
@@ -481,6 +496,12 @@ def build_induction_material(harness, *,
     # implication, beyond this batch) so the agent can deliberately look for
     # a mechanism that recurs across them instead of abstracting one task.
     n_tasks = len(tasks)
+    # RELATED HISTORY. Narrowing the batch to one task speeds the read up;
+    # the retrieval below puts cross-task material back so the narrowing
+    # never blinds the reviewer to a comparable method, a failure or a
+    # boundary case on ANOTHER task.
+    related_history = _related_history(
+        harness, reviewed, related_top_k=related_top_k)
     return {
         "count": len(material),
         "total_completed": total,
@@ -512,6 +533,7 @@ def build_induction_material(harness, *,
         "task_chains": {t: task_chains[t] for t in tasks},
         "existing_knowledge": _existing_knowledge_for(
             harness, [r for r in reviewed if r is not None]),
+        "related_history": related_history,
         "budget": {
             "chars_used": used,
             "chars_limit": budget,
@@ -548,6 +570,135 @@ def build_induction_material(harness, *,
                  "strategy (condition -> how -> consequence -> boundary) and "
                  "submit it with `orx induce --relation`."),
     }
+
+
+def _query_text_for(records: Sequence[Any]) -> Dict[str, Any]:
+    """Build the retrieval query from THIS batch's own recorded content.
+
+    The query is assembled from what the records already carry — the METHOD
+    that ran (``method_actual`` preferred, else ``method_planned`` with a
+    basis marker) and the structural summary (family + coupling cell). It is
+    deliberately NOT built from the outcome, the task number or the solver
+    name, so the search is not biased toward successes or toward one tool;
+    the solver and failure text can still be put in the query by the agent,
+    which may rewrite it freely.
+
+    NO model call is made: the text is a deterministic join of recorded
+    fields. A record that reports no method yields a query with an explicit
+    ``method: null`` marker — the plan is never presented as the performed
+    fact.
+    """
+    names: List[str] = []
+    steps: List[str] = []
+    basis = "none"
+    family = None
+    for record in records:
+        actual = getattr(record, "method_actual", None)
+        planned = getattr(record, "method_planned", None)
+        chosen = None
+        if isinstance(actual, dict) and (actual.get("name")
+                                         or actual.get("steps")):
+            chosen, side = actual, "performed"
+        elif isinstance(planned, dict) and (planned.get("name")
+                                            or planned.get("steps")):
+            chosen, side = planned, "planned_only"
+        if chosen is not None:
+            if side == "performed":
+                basis = "performed" if basis != "performed" else basis
+            elif basis == "none":
+                basis = "planned_only"
+            if chosen.get("name"):
+                names.append(str(chosen["name"]))
+            steps.extend(str(s) for s in (chosen.get("steps") or [])
+                         if str(s).strip())
+        profile = getattr(record, "profile_snapshot", None)
+        if family is None and profile is not None:
+            family = getattr(profile, "family", None)
+    parts: List[str] = []
+    if names:
+        parts.append("methods " + ", ".join(dict.fromkeys(names)))
+    if steps:
+        parts.append("steps " + "; ".join(steps[:_MATERIAL_MAX_STEPS * 2]))
+    if family:
+        parts.append(f"family {family}")
+    text = " ".join(parts).strip()
+    return {
+        "text": text,
+        "method": ({"name": names[0] if names else "",
+                    "steps": steps[:8], "basis": basis}
+                   if names or steps else None),
+        "basis": basis,
+        "note": ("query built from THIS batch's recorded method and family; "
+                 "no model call, and the outcome/task number/solver name are "
+                 "NOT used so the search is not biased toward successes")
+        if text else "no method or structure recorded on this batch: the "
+                     "related-history query is empty",
+    }
+
+
+def _related_history(harness, records: Sequence[Any], *,
+                     related_top_k: int) -> Dict[str, Any]:
+    """A SMALL, unfiltered retrieval around this batch's own method.
+
+    Reuses the existing embedding index and ``recall_vectors`` machinery —
+    no second index, no per-task rebuild. The execution channel is returned
+    WITHOUT the online admission filter (an ``error`` record or a
+    cross-cell/pending entry is exactly the material a boundary check
+    needs), and the knowledge channel includes UNPUBLISHED entries so a
+    revisable draft is still visible. A retrieval that could not run is
+    reported as ``failure``; a retrieval that ran with no hits is ``[]`` —
+    the two are never conflated, and neither is read as "no counterexample
+    exists".
+    """
+    valid = [r for r in records if r is not None]
+    if related_top_k <= 0 or not valid:
+        return {
+            "enabled": False,
+            "top_k": max(0, related_top_k),
+            "note": ("related-history discovery is OFF"
+                     if related_top_k <= 0 else
+                     "no records in this batch to build a query from"),
+        }
+    query = _query_text_for(valid)
+    base = {
+        "enabled": True,
+        "top_k": int(related_top_k),
+        "query_basis": query,
+        "note": ("a similarity hit is a DISCOVERY signal, not support "
+                 "strength; no hit is NOT evidence that no counterexample "
+                 "exists. Execution hits are unfiltered (failures and "
+                 "cross-cell cases included); knowledge hits include "
+                 "unpublished entries."),
+    }
+    if not query["text"]:
+        base["executions"] = []
+        base["knowledge"] = []
+        base["no_hits"] = True
+        base["failure"] = None
+        return base
+    try:
+        from or_harness.strategy.vector_recall import recall_vectors
+        vectors = recall_vectors(
+            harness, query["text"],
+            top_k=int(related_top_k), include_unverified=True,
+            task_profile=getattr(valid[-1], "profile_snapshot", None))
+    except Exception as exc:  # noqa: BLE001 - a degraded channel is reported
+        base["executions"] = []
+        base["knowledge"] = []
+        base["no_hits"] = None
+        base["failure"] = {
+            "reason": f"{type(exc).__name__}: {exc}",
+            "note": ("related-history retrieval could NOT run; that is NOT "
+                     "'nothing similar exists'. Read other batches (--cursor) "
+                     "or rebuild the index (`orx rebuild-index`)"),
+        }
+        return base
+    base["executions"] = list(vectors.get("execution_evidence") or [])
+    base["knowledge"] = list(vectors.get("strategic_knowledge") or [])
+    base["degraded_layers"] = vectors.get("degraded_layers")
+    base["no_hits"] = not (base["executions"] or base["knowledge"])
+    base["failure"] = None
+    return base
 
 
 def _material_cursor(record: Any) -> str:

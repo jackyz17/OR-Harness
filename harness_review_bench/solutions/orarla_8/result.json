@@ -1,17 +1,25 @@
 {
   "status": "optimal",
-  "objective_value": 50000,
-  "objective_bound": 50000,
+  "objective_value": 50000.0,
+  "objective_bound": 50000.0,
   "mip_gap": 0.0,
-  "runtime_seconds": null,
+  "runtime_seconds": 0.0015020370483398438,
   "variables": {
     "X": 5000,
     "Y": 0
   },
   "method_performed": {
-    "name": "enumeration_with_constraints",
-    "solver": "python",
-    "action_id": "unknown",
-    "note": "Pure Python enumeration; Y iterates 0..5000, X = budget - Y; pick min cost satisfying effectiveness"
+    "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP. Iterate X from 0 to 5000; for each X compute minimum feasible integer Y = ceil(max(0, (10000-2X)/3)); check budget constraint Y <= 5000-X; track minimum cost. Uses cost-per-effectiveness insight (X=$5/pt < Y=$6.67/pt) but verifies via scan.",
+    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "solver": "python_enum",
+    "steps": [
+      "Iterate X from 0 to 5000 (integer)",
+      "For each X, compute minimum feasible Y = max(0, ceil((10000-2X)/3))",
+      "Check budget feasibility: Y <= 5000 - X",
+      "Track minimum 10X + 20Y across all feasible (X,Y)",
+      "Return optimal (X,Y) and total cost"
+    ],
+    "action_id": "ac_ea18c3f90eca",
+    "prediction_id": "sp_867bd705b597"
   }
 }

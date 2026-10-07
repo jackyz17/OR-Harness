@@ -1,48 +1,29 @@
 [
   {
     "action_type": "execute_strategy",
-    "name": "LP_ilp_pulp_cbc",
-    "method": {
-      "planned": {
-        "name": "LP_ilp_pulp_cbc",
-        "steps": [
-          "Formulate as MILP: minimize x+y subject to 3x+4y>=12000, 5x-2y<=10000, x+y<=5000, x>=0, y>=0, x,y integers",
-          "Use PuLP with CBC solver",
-          "Integer variables for x, y (whole dollars constraint)"
-        ],
-        "source": "harness_declared"
-      }
-    }
+    "strategy_id": "milp_pulp_cbc",
+    "solver": "pulp",
+    "method": "MILP with PuLP/CBC: define integer variables X,Y (budget in dollars); constraints: X+Y<=5000, 3X+4Y>=12000, 5X-2Y<=10000, X>=0, Y>=0; objective: minimize 200X+150Y. Use pulp.LpProblem and CBC solver.",
+    "steps": [
+      "Define integer decision variables X, Y (non-negative, dollars)",
+      "Constraint 1 (total budget): X + Y <= 5000",
+      "Constraint 2 (effectiveness): 3*X + 4*Y >= 12000",
+      "Constraint 3 (balance): 5*X - 2*Y <= 10000",
+      "Objective: minimize 200*X + 150*Y",
+      "Call solver and verify status == optimal"
+    ]
   },
   {
     "action_type": "execute_strategy",
-    "name": "LP_ilp_scipy_milp",
-    "method": {
-      "planned": {
-        "name": "LP_ilp_scipy_milp",
-        "steps": [
-          "Formulate as MILP using scipy.optimize.milp",
-          "Minimize x+y with constraint matrix A_ub, b_ub for <= constraints and A_eq, b_eq for = constraints",
-          "Bounds: x>=0, y>=0, integrality=1 for both variables"
-        ],
-        "source": "harness_declared"
-      }
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "name": "direct_enumeration",
-    "method": {
-      "planned": {
-        "name": "direct_enumeration",
-        "steps": [
-          "From effectiveness constraint: y >= (12000 - 3x)/4",
-          "From balance constraint: y >= (5x - 10000)/2",
-          "Minimize x+y subject to y >= max((12000-3x)/4, (5x-10000)/2, 0) and x+y<=5000",
-          "Check integer feasibility near binding constraint intersection"
-        ],
-        "source": "harness_declared"
-      }
-    }
+    "strategy_id": "enumeration_budget_2var",
+    "solver": "custom",
+    "method": "Direct enumeration: since X,Y are bounded (X<=5000 from X+Y<=5000), iterate X from 0 to 5000, compute minimum feasible Y from effectiveness constraint (Y >= ceil((12000-3X)/4)), check balance and budget constraints, pick minimum cost 200X+150Y. Exploits small 2-var domain.",
+    "steps": [
+      "X ranges 0..5000 (bounded by total budget)",
+      "For each X, compute Y_min = max(0, ceil((12000-3X)/4)) to satisfy effectiveness",
+      "Also need Y <= 5000-X from budget, and 5X-2Y <= 10000 from balance",
+      "Evaluate cost = 200*X + 150*Y_min if feasible",
+      "Pick minimum cost feasible (X,Y)"
+    ]
   }
 ]

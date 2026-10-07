@@ -1,26 +1,43 @@
 [
   {
-    "id": "cand1",
+    "strategy_id": "milp_highs_integer",
     "action_type": "execute_strategy",
-    "name": "PuLP_CBC_ILP",
-    "steps": "Use PuLP library to formulate integer linear program: X and Y as LpVariable integer non-negative, objective 50*X + 30*Y minimized, constraints X+Y<=1000, X-Y>=200, X<=700, Y<=500. Solve with CBC solver.",
-    "key_insight": "Direct ILP formulation with CBC solver; straightforward for small 2-variable problem.",
-    "method": {
-      "solver": "pulp",
-      "solver_config": {"solver": "PULP_CBC_CMD"},
-      "formulation": "standard_linear"
-    }
+    "solver": "highs",
+    "method": "MILP with HiGHS: integer decision variables X, Y; objective 50X + 30Y minimize; constraints X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500, X >= 0, Y >= 0, X, Y integer.",
+    "steps": [
+      "Define integer variables X, Y",
+      "Set objective: minimize 50*X + 30*Y",
+      "Add constraint: X + Y <= 1000",
+      "Add constraint: X - Y >= 200",
+      "Add constraint: X <= 700",
+      "Add constraint: Y <= 500",
+      "Add constraint: X >= 0, Y >= 0",
+      "Solve with HiGHS MILP solver"
+    ]
   },
   {
-    "id": "cand2",
+    "strategy_id": "pulp_integer_opt",
     "action_type": "execute_strategy",
-    "name": "ORTools_CPSAT",
-    "steps": "Use OR-Tools CP-SAT solver: define IntVar for X and Y with domains [0,700] and [0,500], add linear constraints X+Y<=1000, X-Y>=200, set minimize objective 50*X+30*Y, solve.",
-    "key_insight": "CP-SAT is a constraint programming SAT solver; may have different performance characteristics on small problems.",
-    "method": {
-      "solver": "ortools",
-      "solver_config": {"optimizer": "cp-sat"},
-      "formulation": "cp_sat_linear"
-    }
+    "solver": "pulp",
+    "method": "PuLP LP solver: integer variables X, Y; same constraints as MILP; uses COIN-OR CBC backend.",
+    "steps": [
+      "Define integer variables X, Y using PuLP.LpVariable",
+      "Create minimization problem",
+      "Add constraints using lpSum and direct inequalities",
+      "Solve with default CBC solver"
+    ]
+  },
+  {
+    "strategy_id": "enumeration_based",
+    "action_type": "execute_strategy",
+    "solver": "custom",
+    "method": "Direct enumeration: analyze constraint structure to find analytical solution; exploit monotonicity and bounded integer domain.",
+    "steps": [
+      "Analyze constraints: X >= 200 from X - Y >= 200 and Y >= 0",
+      "To minimize 50X + 30Y, prefer smaller X and Y values",
+      "At X=200, Y=0 satisfies all constraints with minimum cost",
+      "Verify no better solution exists at lower X values",
+      "Return solution analytically"
+    ]
   }
 ]

@@ -1,56 +1,27 @@
 [
   {
     "action_type": "execute_strategy",
-    "name": "ilp_scipy_milp",
-    "solver": "scipy.optimize.milp",
-    "params": {},
-    "method": {
-      "planned": {
-        "name": "ilp_scipy_milp",
-        "solver": "scipy.optimize.milp",
-        "steps": [
-          "Formulate ILP: variables A,P (integers), minimize A+P",
-          "Constraint 4A+5P>=100 (effectiveness), A-P<=50 (balance)",
-          "Use scipy.optimize.milp with integrality=1, mip_gap=0"
-        ]
-      }
-    },
-    "key_idea": "Direct ILP with scipy.optimize.milp, integrality on both variables, zero MIP gap"
-  },
-  {
-    "action_type": "execute_strategy",
-    "name": "ilp_enumeration",
-    "solver": " brute_force",
-    "params": {},
-    "method": {
-      "planned": {
-        "name": "ilp_enumeration",
-        "solver": "brute_force",
-        "steps": [
-          "Small bounded ILP: enumerate all feasible integer (A,P) pairs",
-          "Check 4A+5P>=100 and A-P<=50",
-          "Pick minimum A+P"
-        ]
-      }
-    },
-    "key_idea": "Brute force enumeration of small bounded integer domain"
-  },
-  {
-    "action_type": "execute_strategy",
-    "name": "ilp_highs",
+    "strategy_id": "milp_highs_integer",
     "solver": "highspy",
-    "params": {},
-    "method": {
-      "planned": {
-        "name": "ilp_highs",
-        "solver": "highspy",
-        "steps": [
-          "Formulate MILP: variables A,P (integers), minimize A+P",
-          "Constraints: 4A+5P>=100, A-P<=50, A>=0, P>=0",
-          "Use highspy with mip_rel_gap=0, mip_abs_gap=0"
-        ]
-      }
-    },
-    "key_idea": "HiGHS MILP with tight gap settings for exact integer optimum"
+    "method": "MILP with Highs: integer variables A (advertising), P (promotion); constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P. Uses highspy addVariable/addConstr API.",
+    "steps": [
+      "Define integer variables A, P with lower bound 0",
+      "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
+      "Add constraint: A - P <= 50 (balance)",
+      "Set objective: minimize A + P",
+      "Set mip_rel_gap=0 for exact solution",
+      "Solve and extract solution"
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "enumeration_2var_bounded",
+    "solver": "python",
+    "method": "Analytical enumeration for bounded 2-variable integer LP: iterate feasible A values, compute minimum P from effectiveness constraint, find minimum A+P.",
+    "steps": [
+      "For A from 0 to 50 (bounded by A-P<=50 and P>=0), compute minimum integer P satisfying 2A+3P>=100",
+      "Among all feasible (A,P), pick minimum A+P",
+      "Return minimum total spending"
+    ]
   }
 ]

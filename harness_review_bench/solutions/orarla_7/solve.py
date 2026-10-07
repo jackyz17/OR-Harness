@@ -1,83 +1,85 @@
+#!/usr/bin/env python3
 """
-solve.py for orarla_7
-Method: MILP via PuLP/COIN-CBC (corrected)
-- Variables: X, Y integers >= 0
-- Objective: minimize 5*X + 3*Y
-- Constraints:
-    X + Y >= 1000        (effectiveness)
-    |X - 2*Y| <= 500     (balance, two-sided)
-  Reformulated as:
-    X - 2*Y <= 500
-    2*Y - X <= 500
+solve.py for orarla_7: marketing campaign planning
+Method: MILP with Highs solver (highspy)
+Selected by: orx choose-next --prediction sp_4ec0dde4b9c7
 """
-
-import json
 import os
-import pulp
-import time
+import json
+import highspy
 
-def solve():
-    start = time.time()
+# Record method_performed for traceability
+method_performed = {
+    "strategy_id": "milp_highs_integer",
+    "solver": "highspy",
+    "action_id": os.environ.get("OR_ACTION_ID", "unknown"),
+    "task_id": "orarla_7",
+    "episode": "ep1",
+    "planned_steps": [
+        "Create Highs model",
+        "Add integer variable X >= 0, Y >= 0",
+        "Add constraint: X + Y >= 1000",
+        "Add constraint: X - 2*Y <= 500",
+        "Set objective: minimize 5*X + 3*Y",
+        "Set mip_rel_gap=0, mip_abs_gap=0",
+        "Solve and extract solution"
+    ]
+}
 
-    # Create the LP problem
-    prob = pulp.LpProblem("marketing_campaign", pulp.LpMinimize)
+# Create Highs model
+h = highspy.Highs()
+h.setOptionValue("log_to_console", False)
 
-    # Decision variables
-    X = pulp.LpVariable("X", lowBound=0, cat="Integer")
-    Y = pulp.LpVariable("Y", lowBound=0, cat="Integer")
+# Add integer variables X, Y >= 0
+# addVariable(lb, ub, obj, type, name)
+x_var = h.addVariable(0.0, highspy.kHighsInf, 5.0, highspy.HighsVarType.kInteger, "X")
+y_var = h.addVariable(0.0, highspy.kHighsInf, 3.0, highspy.HighsVarType.kInteger, "Y")
 
-    # Objective: minimize 5*X + 3*Y
-    prob += 5 * X + 3 * Y, "total_cost"
+# Add constraints
+# C1: X + Y >= 1000  =>  -X - Y <= -1000
+h.addConstr(-x_var - y_var <= -1000.0, "effectiveness")
 
-    # Constraints
-    prob += X + Y >= 1000, "effectiveness"
-    # Balance: |X - 2Y| <= 500  =>  -500 <= X - 2Y <= 500
-    prob += X - 2 * Y <= 500, "balance_upper"   # X - 2Y <= 500
-    prob += 2 * Y - X <= 500, "balance_lower"   # 2Y - X <= 500  =>  X >= 2Y - 500
+# C2: X - 2*Y <= 500
+h.addConstr(x_var - 2*y_var <= 500.0, "balance")
 
-    # Solve with CBC (default)
-    status = prob.solve(pulp.PULP_CBC_CMD(msg=1))
+# Set sense to minimize (default is minimize, but be explicit)
+h.changeObjectiveSense(highspy.ObjSense.kMinimize)
 
-    elapsed = time.time() - start
+# Set MIP gap to 0 for exact solution
+h.setOptionValue("mip_rel_gap", 0.0)
+h.setOptionValue("mip_abs_gap", 0.0)
 
-    # Extract results
-    obj_val = None
-    mip_gap = None
+# Solve
+status = h.run()
+model_status = h.getModelStatus()
 
-    if status == pulp.LpStatusOptimal:
-        obj_val = pulp.value(prob.objective)
-        mip_gap = 0.0
+# Map Highs model status to canonical status string
+def canonical_status(ms):
+    s = ms.name.lower() if ms else "unknown"
+    # kOptimal -> optimal, kInfeasible -> infeasible, etc.
+    return s.replace("k", "")
 
-    X_val = int(X.value()) if hasattr(X.value(), '__int__') else int(X.value())
-    Y_val = int(Y.value()) if hasattr(Y.value(), '__int__') else int(Y.value())
+# Extract solution
+sol = h.getSolution()
+col_val = sol.col_value
 
-    # Collect result
-    result = {
-        "status": "optimal" if status == pulp.LpStatusOptimal else "unknown",
-        "objective_value": obj_val,
-        "objective_bound": obj_val,  # optimal => bound == value
-        "mip_gap": mip_gap,
-        "runtime_seconds": elapsed,
-        "variables": {
-            "X": X_val,
-            "Y": Y_val
-        },
-        "method_performed": {
-            "name": "MILP via PuLP/COIN-CBC",
-            "approach": "ILP with integer X,Y >= 0; objective 5X+3Y; constraints: X+Y>=1000, |X-2Y|<=500 (reformulated as X-2Y<=500 AND 2Y-X<=500)",
-            "solver": "COIN-CBC (default PULP_CBC_CMD)",
-            "action_id": os.environ.get("OR_ACTION_ID", "none"),
-            "note": "Balance constraint interpreted as two-sided |X-2Y|<=500 based on 'balanced strategy' phrasing"
-        }
-    }
+x_val = int(round(col_val[x_var.index]))
+y_val = int(round(col_val[y_var.index]))
+objective_value = h.getInfo().objective_function_value
 
-    with open("/home/ubuntu/.openclaw/workspace/bench_orarla/ws/orarla_7/result.json", "w") as f:
-        json.dump(result, f, indent=2)
+# Write result
+result = {
+    "status": canonical_status(model_status),
+    "objective_value": objective_value,
+    "objective_bound": h.getInfo().mip_global_bound if hasattr(h.getInfo(), "mip_global_bound") else None,
+    "mip_gap": h.getInfo().mip_gap if hasattr(h.getInfo(), "mip_gap") else None,
+    "runtime_seconds": h.getInfo().mip_runtime if hasattr(h.getInfo(), "mip_runtime") else None,
+    "variables": {"X": x_val, "Y": y_val},
+    "method_performed": method_performed,
+    "solver": "highspy"
+}
 
-    print(f"\nResult: status={result['status']}, objective={result['objective_value']}, "
-          f"X={X_val}, Y={Y_val}, runtime={elapsed:.3f}s")
+with open("result.json", "w") as f:
+    json.dump(result, f, indent=2)
 
-    return result
-
-if __name__ == "__main__":
-    solve()
+print(f"X={x_val}, Y={y_val}, objective={objective_value}, status={model_status.name}")

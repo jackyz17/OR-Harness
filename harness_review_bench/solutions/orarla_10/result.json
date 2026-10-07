@@ -3,16 +3,22 @@
   "objective_value": 40020,
   "objective_bound": 40020,
   "mip_gap": 0.0,
-  "runtime_seconds": 0.0003285408020019531,
+  "runtime_seconds": 0.0,
   "variables": {
     "X": 0,
     "Y": 667
   },
   "method_performed": {
-    "name": "enumeration_with_constraints",
-    "planned": "LP relaxation analysis + constrained enumeration over Y in [0,667]",
-    "actual": "Analytical + enumeration: Y in [0,667], X = max(0, ceil((20000-30Y)/10)), pick minimum cost",
-    "action_id": "ac_e59954ec9044",
-    "basis": "chosen from plan-next sp_15df0ba220ac"
+    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "solver": "python_enum",
+    "action_id": "ac_44a06f744d5f",
+    "steps": [
+      "Iterate X from 0 to 5000",
+      "Compute min feasible Y = ceil(max(0, (20000-10*X)/30))",
+      "Check budget Y <= 5000-X",
+      "Track minimum 50*X + 60*Y",
+      "Also iterate Y-dominant scan",
+      "Return optimal (X,Y) and total cost"
+    ]
   }
 }

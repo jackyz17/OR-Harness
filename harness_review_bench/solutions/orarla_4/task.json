@@ -3,13 +3,30 @@
   "family": "planning",
   "text": "A marketing firm is planning the distribution of resources between two campaigns: X and Y. The total resources allocated to both campaigns cannot exceed 1000 units due to budget constraints. Furthermore, due to the differing demands of each campaign, the resources allocated to campaign X must be at least twice as many as those allocated to campaign Y plus an additional 300 units.\n\nThe costs associated with each unit of resource for campaigns X and Y are 4 and 3 units respectively. Given that the allocations for both campaigns must be whole numbers due to indivisible nature of the resources, and all constraints must be satisfied: What is the minimum total cost required for this allocation strategy? Provide your answer rounded to nearest whole number.",
   "model": {
-    "name": "scipy_milp_integer",
-    "solver": "scipy.optimize.milp",
-    "steps": [
-      "Formulate as MILP: min 4X + 3Y subject to X + Y <= 1000, X >= 2Y + 300, X,Y integers >= 0",
-      "Use scipy.optimize.milp with bounds=(0, inf), constraints=linear inequalities, integrality=1",
-      "Extract optimal X, Y and compute objective = 4*X + 3*Y",
-      "Write result to result.json with status/objective_value/variables"
+    "kind": "ILP",
+    "variables": [
+      {"name": "X", "type": "integer", "lb": 0, "ub": 1000},
+      {"name": "Y", "type": "integer", "lb": 0, "ub": 1000}
+    ],
+    "objective": {"type": "minimize", "coeffs": {"X": 4, "Y": 3}},
+    "constraints": [
+      {"name": "budget_limit", "expr": "X + Y <= 1000"},
+      {"name": "demand_coupling", "expr": "X >= 2*Y + 300"}
+    ]
+  },
+  "coupling": {
+    "entities": [
+      {"name": "X", "type": "decision", "domain": "integer", "bounds": [0, 1000], "description": "resources allocated to campaign X"},
+      {"name": "Y", "type": "decision", "domain": "integer", "bounds": [0, 1000], "description": "resources allocated to campaign Y"}
+    ],
+    "constraints": [
+      {"id": "c1", "name": "budget_limit", "relation": "X + Y <= 1000", "description": "total resources cannot exceed 1000"},
+      {"id": "c2", "name": "demand_coupling", "relation": "X >= 2*Y + 300", "description": "X at least twice Y plus 300"}
+    ],
+    "relations": [
+      {"source": "X", "target": "Y", "type": "depends_on"},
+      {"source": "X", "target": "c1", "type": "constrains"},
+      {"source": "Y", "target": "c1", "type": "constrains"}
     ]
   }
 }

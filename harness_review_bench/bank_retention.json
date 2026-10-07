@@ -14,8 +14,8 @@
    "n_window_episodes": 10,
    "n_closeouts_total": 10,
    "n_closeouts_archived": 0,
-   "n_contract_predictions": 28,
-   "n_prediction_contexts": 13
+   "n_contract_predictions": 36,
+   "n_prediction_contexts": 17
   },
   "archive": {
    "directory": "/home/ubuntu/.openclaw/workspace/bench_orarla/home/archive/calibration",
@@ -24,5 +24,5 @@
   },
   "note": "three separate scopes: the WINDOW decides which closed episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps bound what history is kept on disk. Registry tombstones stay online permanently so a repeated close is still idempotent"
  },
- "summary": "Online: 10 window episode(s), 10 closed total, 28 prediction(s), 13 context(s). Archive: 0 file(s), 0 bytes. Three separate scopes — see `policy`."
+ "summary": "Online: 10 window episode(s), 10 closed total, 36 prediction(s), 17 context(s). Archive: 0 file(s), 0 bytes. Three separate scopes — see `policy`."
 }

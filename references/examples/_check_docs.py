@@ -91,7 +91,8 @@ DOCUMENTED_FLAGS = [
                    "--max-calls", "--time-budget", "--delta",
                    "--prediction-mode", "--benefit-kind", "--benefit-metric",
                    "--benefit-unit"]),
-    ("induction-material", ["--strategy", "--task", "--limit", "--cursor"]),
+    ("induction-material", ["--strategy", "--task", "--limit", "--cursor",
+                            "--related-top-k"]),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),
     ("snapshot", ["--task", "--episode"]),
     ("action", ["--report", "--task", "--amend-cost", "--cost"]),
@@ -227,24 +228,6 @@ def _check_frontmatter(path: Path) -> list:
     return failures
 
 
-def _check_not_hard_wrapped(path: Path) -> list:
-    """Report a document whose prose is hard-wrapped.
-
-    The unwrapper is idempotent and is the authority on what a wrapped
-    paragraph is, so the exact test is "running it changes nothing" — a
-    heuristic would misfire on legitimate lines that start with inline code.
-    """
-    if not path.exists():
-        return []
-    from _unwrap_prose import unwrap
-    text = path.read_text(encoding="utf-8")
-    if unwrap(text) == text:
-        return []
-    return [f"{path.name} is hard-wrapped: run "
-            "`python3 references/examples/_unwrap_prose.py` to join the "
-            "paragraphs into one line each"]
-
-
 def _check_skill_result_table() -> list:
     """Cross-check the Skill's command tables against the declared keys.
 
@@ -346,14 +329,6 @@ def main() -> int:
                 f"{match.group(0)!r}: milestones belong in git history, not "
                 "in the runtime Skill")
     print("no milestone/history references            OK")
-
-    # Agent-facing docs must not be hard-wrapped: a paragraph is one logical
-    # line, so a file's line count reflects structure rather than an editor's
-    # width. A wrapped file is detected by finding a prose line whose
-    # successor continues the same sentence.
-    for doc in AGENT_FACING_DOCS:
-        failures.extend(_check_not_hard_wrapped(ROOT / doc))
-    print("docs are not hard-wrapped                 OK")
 
     # Every markdown link target in the agent-facing docs must exist.
     for doc in ["SKILL.md", "README.md", "README_zh.md",

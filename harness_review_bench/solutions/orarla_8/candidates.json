@@ -1,29 +1,30 @@
 [
   {
+    "strategy_id": "enumeration_2var_budget_effectiveness",
     "action_type": "execute_strategy",
-    "strategy_id": "ilp_cbc",
-    "solver": "pulp",
+    "solver": "python_enum",
+    "method": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP. Iterate X from 0 to 5000; for each X compute minimum feasible integer Y = ceil(max(0, (10000-2X)/3)); check budget constraint Y <= 5000-X; track minimum cost. Uses cost-per-effectiveness insight (X=$5/pt < Y=$6.67/pt) but verifies via scan.",
     "steps": [
-      "Define integer variables X, Y using PuLP (LpProblem minimize).",
-      "Set objective: 10*X + 20*Y (LpProblem +=).",
-      "Add constraint: X + Y <= 5000.",
-      "Add constraint: 2*X + 3*Y >= 10000.",
-      "Declare X, Y as Integer (cat='Integer').",
-      "Solve with CBC (default PuLP solver).",
-      "Read solution values and write result.json."
-    ],
-    "key_insight": "Direct ILP: two integer variables, two linear constraints, corner-point optimal. PuLP with CBC is the solver."
+      "Iterate X from 0 to 5000 (integer)",
+      "For each X, compute minimum feasible Y = max(0, ceil((10000-2X)/3))",
+      "Check budget feasibility: Y <= 5000 - X",
+      "Track minimum 10X + 20Y across all feasible (X,Y)",
+      "Return optimal (X,Y) and total cost"
+    ]
   },
   {
+    "strategy_id": "milp_highs_integer",
     "action_type": "execute_strategy",
-    "strategy_id": "enumeration_with_constraints",
-    "solver": "python",
+    "solver": "highspy",
+    "method": "Standard MILP with Highs solver: integer variables X,Y, minimize 10X+20Y subject to X+Y<=5000, 2X+3Y>=10000, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
     "steps": [
-      "Reduce search space using constraint analysis: Y >= ceil((10000 - 2*X)/3) and Y <= 5000 - X.",
-      "For each candidate Y in feasible range, check if X = 5000 - Y is valid (non-negative integer).",
-      "Evaluate cost = 10*X + 20*Y for valid pairs, pick minimum.",
-      "Write result.json with optimal cost."
-    ],
-    "key_insight": "Analytical reduction: given X+Y=5000 from budget, effectiveness constraint reduces to 2D search. Only Y needs enumeration since X is determined by budget. O(1666) iterations, pure Python."
+      "Create Highs model",
+      "Add integer variable X >= 0, Y >= 0",
+      "Add constraint: X + Y <= 5000",
+      "Add constraint: 2*X + 3*y >= 10000",
+      "Set objective: minimize 10*x + 20*y",
+      "Set mip_rel_gap=0, mip_abs_gap=0",
+      "Solve and extract solution"
+    ]
   }
 ]

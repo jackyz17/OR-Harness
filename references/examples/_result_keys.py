@@ -111,7 +111,7 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "required": {"count", "material", "existing_knowledge", "budget"},
         "conditional": {"tasks", "n_distinct_tasks", "check_states",
                         "total_completed", "n_attempts", "cross_task_hint",
-                        "guidance"},
+                        "guidance", "related_history"},
     },
     "predict-capability": {
         "required": {"prediction_id"},

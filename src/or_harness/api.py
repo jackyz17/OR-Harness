@@ -4686,7 +4686,8 @@ class ORHarness:
     def induction_material(self, *, strategy_id: Optional[str] = None,
                            task_id: Optional[str] = None,
                            limit: Optional[int] = None,
-                           cursor: Optional[str] = None
+                           cursor: Optional[str] = None,
+                           related_top_k: int = 5
                            ) -> Dict[str, Any]:
         """Organize a BATCH of completed tasks as induction material.
 
@@ -4715,7 +4716,8 @@ class ORHarness:
         )
         return build_induction_material(self, strategy_id=strategy_id,
                                         task_id=task_id, limit=limit,
-                                        cursor=cursor)
+                                        cursor=cursor,
+                                        related_top_k=related_top_k)
 
     # -- world-model M3: bounded planning ------------------------------------
     def profile(self, task: Dict[str, Any],
@@ -4737,7 +4739,8 @@ class ORHarness:
                candidates: Optional[Sequence[str]] = None,
                memory_mode: str = "cost-aware",
                include_unverified: bool = False,
-               vector_top_k: Optional[int] = None) -> Dict[str, Any]:
+               vector_top_k: Optional[int] = None,
+               profile: Optional[ProblemProfile] = None) -> Dict[str, Any]:
         """Recall accumulated experience for this task.
 
         TWO INDEPENDENT CHANNELS, never blended into one number, and never
@@ -4766,6 +4769,17 @@ class ORHarness:
         evidence for them, never ranks them, and never blocks their
         execution (``execute``/``predict_cost`` accept any id).
 
+        ``profile`` lets a caller that has ALREADY profiled this task
+        (``self.profile(task)``, e.g. a host that ran ``profile`` and
+        ``recall`` in one request) pass the object in, so the task's CIR and
+        structure are parsed ONCE instead of twice. The caller OWNS the
+        consistency and the profile must come from ``self.profile(task)`` for
+        THIS task; a profile whose ``problem_id`` is a different task is
+        refused (a cheap check that does not re-parse the CIR), never
+        silently used. A same-id profile built from a DIFFERENT effective CIR
+        is the caller's error to avoid — like a reused prediction context,
+        the profile must describe the same frozen input.
+
         When the text channel cannot run (no backend, no task text, missing
         or model-incompatible index, backend error) the structural result is
         returned BY ITSELF with ``degraded`` explaining why, rather than
@@ -4776,7 +4790,21 @@ class ORHarness:
         READ-ONLY: the query text is embedded in memory and never written;
         no index item is created and no migration is triggered.
         """
-        profile = self.profile(task)
+        if profile is None:
+            profile = self.profile(task)
+        elif str(getattr(profile, "problem_id", "")) \
+                != str(task.get("task_id", "")):
+            # The caller supplies a profile it computed for this task; a
+            # profile of a DIFFERENT task would key recall on the wrong
+            # structural cell. Refused as a correctable error, never a quiet
+            # fallback — and the check is a cheap id comparison, so the whole
+            # point (one CIR parse) is preserved.
+            raise ValueError(
+                f"the supplied profile is for problem "
+                f"{getattr(profile, 'problem_id', None)!r}, not this task "
+                f"({task.get('task_id')!r}): recall would search the wrong "
+                "structural cell. Pass the profile computed from THIS task "
+                "(self.profile(task)), or omit profile= to build one here")
         proposed = (None if candidates is None
                     else sorted({str(c) for c in candidates}))
         recalled = self.selector.recall(profile, top=top, exclude=exclude,

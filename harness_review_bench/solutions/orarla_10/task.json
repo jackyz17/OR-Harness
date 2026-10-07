@@ -2,13 +2,34 @@
   "task_id": "orarla_10",
   "family": "planning",
   "text": "An energy company is planning to invest in two types of renewable energy projects, X and Y. The total investment for both projects cannot exceed 5000 units due to budget constraints. To achieve a certain environmental impact, the combined output of 10 units from project X and 30 units from project Y must be at least 20000 units. Each unit of investment in project X and Y incurs costs of 50 and 60 units respectively. The company aims to minimize the total cost while adhering to these constraints, given that all investments are whole numbers due to the indivisible nature of resources. What is the minimum total cost required for this scenario? Provide your answer rounded to the nearest whole number.",
+  "entities": [
+    {"name": "X", "type": "variable", "description": "Investment units in project X"},
+    {"name": "Y", "type": "variable", "description": "Investment units in project Y"}
+  ],
+  "decisions": [
+    {"id": "X", "name": "X", "type": "integer", "lb": 0},
+    {"id": "Y", "name": "Y", "type": "integer", "lb": 0}
+  ],
+  "constraints": [
+    {"id": "budget_limit", "name": "budget_limit", "relation": "X + Y <= 5000", "type": "linear"},
+    {"id": "output_req", "name": "output_req", "relation": "10*X + 30*Y >= 20000", "type": "linear"}
+  ],
+  "objective": {
+    "id": "cost",
+    "type": "minimize",
+    "function": "50*X + 60*Y"
+  },
   "model": {
-    "type": "MILP",
-    "variables": [{"name": "X", "lb": 0, "ub": 5000, "type": "integer"}, {"name": "Y", "lb": 0, "ub": 5000, "type": "integer"}],
-    "objective": {"type": "minimize", "expr": "50*X + 60*Y"},
-    "constraints": [
-      {"name": "budget", "expr": "X + Y", "sense": "<=", "rhs": 5000},
-      {"name": "output", "expr": "10*X + 30*Y", "sense": ">=", "rhs": 20000}
+    "type": "milp",
+    "variables": ["X", "Y"],
+    "constraints": ["budget_limit", "output_req"]
+  },
+  "coupling": {
+    "relations": [
+      {"source": "X", "target": "budget_limit", "type": "participates_in"},
+      {"source": "Y", "target": "budget_limit", "type": "participates_in"},
+      {"source": "X", "target": "output_req", "type": "participates_in"},
+      {"source": "Y", "target": "output_req", "type": "participates_in"}
     ]
   }
 }

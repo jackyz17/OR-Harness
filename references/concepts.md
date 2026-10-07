@@ -1,265 +1,138 @@
 # Concepts: why OR-Harness is built this way
 
-Read this page when you want the reasoning behind a mechanism rather than its syntax: why coupling is derived structurally, why memory is two layers, why cost is never folded at rest, and how the world model relates to the loop. For the calls themselves see [commands.md](commands.md), for formats see [modeling.md](modeling.md), and for the contract fields see [world_model_contract.md](world_model_contract.md).
+Read this page for the design rationale. Use [commands.md](commands.md) for calls, [modeling.md](modeling.md) for representations, [induction.md](induction.md) for knowledge formation, and [world_model_contract.md](world_model_contract.md) / [prediction_context.md](prediction_context.md) for prediction fields and input assembly.
 
-For agents that need the "why" behind the mechanisms. Everyone else: SKILL.md is sufficient.
+Contents: [Research goal](#1-research-goal-and-core-variables) · [Problem structure](#2-understand-structure-before-selecting-a-strategy) · [Memory and retrieval](#3-learn-from-executions-and-retrieve-for-reuse) · [World model](#4-predict-consequences-to-support-decisions) · [Quality, cost, and risk](#5-preserve-quality-cost-and-risk-as-distinct-evidence) · [Offline evolution](#6-separate-online-solving-from-offline-evolution)
 
-## The research question
+## 1. Research goal and core variables
 
-> Given an evolving stream of large-scale industrial optimization tasks, can an OR agent learn from previous executions which solving strategies are appropriate for particular problem structures, and increasingly achieve similar or better solution quality at lower execution cost?
+OR-Harness studies whether an agent operating on a changing stream of optimization tasks can learn which strategies fit particular problem structures and achieve comparable or better solution quality at lower execution cost.
 
-The conceptual loop:
+The difficult part is the interaction among decisions: shared capacity, cross-period state, alternative routes, logical rules, and other coupled constraints. A useful strategy must explain how it handles those interactions and under which conditions it remains applicable.
 
-```
-P_t → Problem Profiling → Strategy Selection → Strategy Execution
-    → Outcome + CostVector → Execution Evidence Bank (E_t)
-    → Induction/Consolidation → Strategic Knowledge Bank (M_strategic)
-    → S_{t+1}
-```
+Use three core variables:
 
-E_t is factual execution evidence (what actually happened); M_strategic is derived strategic knowledge (what to do next time). Both layers are necessary — neither alone is memory.
-
-## Structural grouping and coupling derivation
-
-Structural groups — the similarity keys for all memory — are one (**problem class**, structural cell, method) triple each: the observations that may be aggregated together. The **problem class** is the anchor, DERIVED from what the model IS (integer-vs-continuous structure and index shape → `pure_lp` / `milp` / `network` / `scheduling` / `mixed` / `unknown`); it is NOT the free-text `family` label. A cell is the measurable coupling dims quantized to the four intervals `[0.00,0.25] [0.25,0.50] [0.50,0.75] [0.75,1.00]`, with an unmeasured dimension in its own `[unknown]` cell. `family` is still recorded and named in a claim's predicates, but it no longer SPLITS the statistics: on cold-start runs callers typed it freely ("inventory" / "generic" / "planning" for structurally identical tasks), and that scatter alone scattered comparable evidence into groups too thin to claim from. Structure conditions the statistics but not the ladder: there are no generalization levels, no `widen`/`tighten`, and no automatic re-scoping. Coupling values are derived by priority: the task's CIR (the `coupling` field) > the `model` representation > structured spec fields > harness-supplied values. `semantic_coupling` is never derived as a scalar. When a supplied value contradicts the winning structural derivation across a bin boundary, the profile carries a warning — and the derived value wins for grouping, because an append-only fact filed in the wrong group would pollute conditional statistics permanently.
-
-**The signature is frozen before strategy selection.** `execute` uses the same profile as `recall` — derived from `coupling` (CIR) / `spec` / `annotations` only. The `model` field and a solve script are POST-strategy artifacts and never enter the key; no command accepts a solve script as a coupling source.
-
-Post-strategy information (solver diagnostics, model diagnostics) is stored separately in `ExecutionRecord.execution_features` — never in `profile_snapshot`. This keeps task identity stable across executions while preserving execution-time observations for offline induction.
-
-## Coupling-Aware Intermediate Representation (CIR)
-
-The four scalar coupling dimensions are **derived summaries**, not the primary representation. The primary representation is the CIR — an explicit, inspectable set of entities, decisions, constraints, and relations that captures *how* the problem's components interact. The CIR is produced **before** the canonical model, from the natural-language task description, and provides modeling guidance that improves the correctness of the canonical representation (which is written only after the strategy is chosen).
-
-The architectural shift:
-
-```
-Old:  Task → scalar coupling scores → strategy matching → model
-New:  Task → profile (CIR: entities/relations → understanding + retrieval key)
-                → strategy comparison on expected quality/cost/risk
-                → canonical model (after the strategy is chosen) → solve.py
-```
-
-Key principles:
-
-- **CIR before model**: the CIR does not require a `model` field. The model is an intermediate representation written AFTER the strategy is chosen; it is verified and its coupling is reported as a diagnostic, but it never moves the structural key.
-- **The profile retrieves, evidence decides**: the profile (including the CIR-derived scalar signature) is only the retrieval key — it decides WHICH historical evidence is comparable to this problem. The strategy choice itself rests on the expected quality/cost/risk carried by that evidence (entries, conditional statistics, or world-model predictions), never on the profile alone.
-- **Discovery and reuse are separate operations**: text similarity (embedding) decides which memories are SEEN; structural keys and applicability predicates decide whether a seen memory may be APPLIED. Two nearly identical tasks whose coupling lands in different cells are invisible to each other through the structural channel — that is the aggregation rule working as intended, not a defect — so the text channel exists to surface them. What must never happen is the reverse leak: a `different_cell` hit's observed numbers joining the target cell's statistics, or a text similarity being read as a quality/cost/risk estimate. The score formula, `for_profile`, `evidence_predicates` and `group_key` are therefore untouched by retrieval, and `similarity` is reported as its own field, never folded into a score.
-- **Structure first, scalars second**: scalar coupling scores (rc, tc, rx) are derived from the structure; they are summaries, never substitutes for the structure itself.
-- **Co-occurrence is structural evidence only**: constraint-variable co-occurrence produces generic `depends_on` edges. A semantic relation (`uses_resource`, `shares_resource`, `competes_for`) requires additional entity/constraint semantics.
-- **Domain-general**: all `kind`/`type` fields in the CIR are free-form strings — the schema never hard-codes supply-chain-specific vocabulary.
-- **Dual downstream**: CIR feeds both modeling guidance and strategy retrieval via the single `orx profile` entry (rc/tc/rx derive from the CIR structure with priority CIR > spec > supplied). Coupling-aware understanding works even when Strategic Memory is empty.
-
-See [references/modeling.md](modeling.md) for the CIR schema, evidence levels, and validation rules.
-
-## Two-layer memory: facts vs derived knowledge
-
-| | Execution Evidence Bank | Strategic Knowledge Bank |
-|---|---|---|
-| Question answered | "What actually happened?" | "What should we do next time?" |
-| Storage unit | ExecutionRecord (episodic fact) | StrategicEntry (commitment) |
-| Strategy role | the strategy ACTUALLY used | the strategy RECOMMENDED for this structure |
-| Quality / cost | actual (`quality`, `cost`; alias properties `actual_quality` / `actual_cost`) | expected (`expected_quality_hat`, `expected_cost_hat`, `failure_prob`) |
-| Artifacts | solver output, diagnostics — artifacts are evidence | none (only future abstracted patterns) |
-| Mutation | append-first, fact-preserving WHILE RETAINED; cost backfill; the whole episode may leave the bounded evidence window at once | CRUD, lifecycle, disposal — beliefs may be revised |
-| Validation | it *is* the truth — the factual grounding layer | recorded, never rewritten: applicability and intervals are read off the supporting evidence at induction time, and the frozen checks on the facts are what promote, demote, or wake an entry |
-| Re-induction | delete it and the factual basis is gone | refreshed in place from currently retained evidence (`induce` re-reads the predicates; `induce --all` covers every cell) — exact reconstruction of past entries is NOT a requirement, and a full-bank wipe is deliberately NOT offered |
-
-A **conditional statistic** ("S04 averaged 0.91 quality over 6 runs in this group") is a query result — a recount. A **Strategic entry** ("S04 will land in [0.75, 0.95] for routing problems with resource coupling ≥ 0.75") is a claim about the future: it carries a prediction interval, a calibration track, and feature predicates that can match across groups. An entry that only restates statistics is redundant and refused at creation.
-
-**The two layers are used in order, and BOTH are usable.** The strategic channel (`recommendations` / `vector_recall.strategic_knowledge`) is checked FIRST: it holds admitted, applicable claims. When it is empty or nothing applies, the EXECUTION channel (`vector_recall.execution_evidence`) is the main source — an execution case is usable experience **on its own**, and it does NOT have to be promoted to strategic knowledge first. A recall hit therefore carries the method (`method.planned` / `method.actual` / `method.basis`), the answer (`solution_variables`), a one-line-per-failure `failure_summary`, and an `inspect_hint` for the full record, so the method can actually be read and adapted. When the strategic channel is empty, the recalled methods are also surfaced as `evidence_candidates[]` (a copy of `vector_recall.suggested_candidates`) — suggestions, not a ranked menu and not a voucher. This keeps the split honest: knowledge is what the system COMMITS to; evidence is what actually happened, and it is directly reusable without being over-claimed.
-
-An entry may also state a **new strategy** (`induce --relation`): a structural condition paired with a modeling/solving choice and its consequence, anchored to explicitly referenced executions with roles. The unit of knowledge is the ENTRY, and one entry is ONE strategy — a second independent strategy is a second entry. The entry's own `verification` block is the ONE verdict for whatever the entry states; it records what was CHECKED and what is explicitly NOT covered, so a passing verdict is never read as a proof of the whole prose strategy. A strategy entry with no statistical claim (its `subject` names the principle) is a *strategy-only* entry. See [induction.md](induction.md#new-strategies-induce---relation).
-
-**The method is recorded, not assumed.** An execution carries the method it PLANNED (`method_planned` — the candidate's own description) and the method it reports as ACTUALLY performed (`method_actual` — from the solve script's `method_performed` receipt, or an explicit harness declaration). A plan is never promoted to a fact: without a receipt the performed method is UNKNOWN, and `orx induction-material` reports each attempt's `method.basis` (`performed` / `planned_only` / `none`) so you can see how the work was really done. Both are indexed on the execution document (a future task can search "how was this done"), and neither is inferred from the strategy id — the framework keeps no method directory.
-
-Semantic induction is a division of labour: the framework organizes the material (`induction-material`) and CHECKS what you submit; the outer agent reads the material and writes the new strategy (condition → how → consequence → boundary), submitting it as a strategy entry. The framework reports what the evidence CARRIES (`method.basis` plus what is missing) — a REPORT, not an admission verdict — and it will not turn a mean into a technique. A passed check means only that the DECLARED checks held on the listed samples — it is never a proof the whole prose strategy is correct, causal, or broadly general.
-
-An entry's continued validity does NOT depend on preserving its original supporting evidence. Evidence is bounded by the **evidence window** (see below): once an old episode leaves it, the source reference in a claim simply EXPIRES — the claim keeps its own content, conditions, expected effect and verification scope, and is never automatically revoked. Expiry is NOT a withdrawal (that is `exclude-execution`, an explicit correction) and NOT a refutation. New evidence accumulates normally and influences knowledge again at the **next induction cycle** (a claim must still be checked against CURRENT real evidence when it is created or substantively revised).
-
-When the task carries a CIR, the evidence record preserves a `cir_snapshot` (the coupling representation actually solved), so future induction can re-bin evidence by structural context (`structural_context`) beyond the four scalar coupling features — an extension slot reserved for the strategy-cost phase, not implemented yet. The snapshot is the PARSED CIR, never the caller's raw `coupling` payload: a payload of the wrong shape is rejected before the execution runs, so a record can never carry a structure that looks present while parsing to zero entities.
-
-## Task texts: a retrieval attachment, not a third bank
-
-The task-text versions captured on the write paths (`task_texts`, keyed by `(task_id, text_digest)`) are neither facts about outcomes nor derived beliefs. They are the **source documents** of text retrieval: a task's own text, keyed by a digest of the whole task payload (`task_digest`), referenced from each `ExecutionRecord` via `task_text_digest`. Consequences of that distinction:
-
-- They enter no statistic, carry no lifecycle, and cannot be recalled as evidence — they are input to the discovery channel, never an answer.
-- One `task_id` may have SEVERAL versions: solving the same problem with changed requirements produces different digests, so each execution stays bound to the text that was actually in force. Re-capturing the same version is idempotent (the primary key is `(task_id, text_digest)`).
-- A legacy record whose text was never captured keeps `task_text_digest = None` and is simply not vector-indexed. It is labelled (counted under `vector_recall.unindexed`) and remains fully visible through the profile channel and `orx inspect --bank texts`, and the text is never reconstructed from a guess.
-- The index built from them (`{home}/index/*.embedding.json`) stores `{id, doc_digest, vector}` only — never a snapshot of the record. Recall re-reads the current record by id, so validity is always current and a changed document is detected by digest mismatch (reported as `stale`, excluded) rather than being served as a current similarity.
-
-## No candidate menu: memory IS the candidate set
-
-There is **no built-in strategy directory**. Nothing in the codebase ships a list of method names, descriptions, applicability rules, action lists or fallback chains, and nothing loads one.
-
-A strategy is a **candidate** when, and only when, the memory really holds something about it in this structural cell:
-
-| Candidate because | Evidence kind |
+| Variable | Meaning |
 |---|---|
-| it was really executed and recorded here | `conditional_stats` (a recount) |
-| a claim about it here passed admission | `strategic_entry` (a commitment) |
+| **P** | The current externally supplied OR problem and task context |
+| **X = (Q, C, R)** | Outcome quality, execution cost, and risk/uncertainty |
+| **H** | The Harness capability available to solve the problem |
 
-With nothing in either, `recall` returns an **empty list** plus `recommendations_basis.reason` saying so. It does not return a `no_memory` row at score `-inf`, a zero quality, or a zero risk — a fabricated row is indistinguishable downstream from a measured one, and the whole point of the memory layer is that a number means "this was observed".
+The problem stream is externally driven. Changes in demand, capacity, or constraints produce new problems; they are not transitions caused by Harness actions. The world model predicts the consequences of a candidate strategy for solving the current problem.
 
-**The outer agent proposes the candidates.** You name the methods you are considering (`recall --candidate X --candidate Y`, `plan-next --candidates`, `predict-cost --strategy X`, `execute --strategy X`). Supplying them to `recall` only *filters* the real memory: the ones with no memory come back under `candidates_without_evidence` rather than being given a score.
+Represent capability conceptually as `H = F(M, W, Pi, R, T)`: memory, world-model prediction, strategy/planning, retrieval/transfer, and tools/solvers. These sources interact. Counts of executions or entries provide indirect evidence about capability; they do not define a composite capability score. Here `R` denotes retrieval; the `R` in the outcome tuple denotes risk.
 
-**No directory membership is required anywhere.** `predict-cost` and `execute` accept any method id. An unknown cost basis is reported as `source="unknown"` with `expected_cost=null` — never a default zero, and never a refusal. The checks that remain are about *legality and safety*, not identity: the strategy id must be non-empty, the solver must be named, `code_path` must live inside `workspace`, and the sandbox's timeout/rlimits/budget rules are unchanged.
+`H+` denotes an anticipated capability gain after completing a task and processing its experience. A predicted gain becomes supported only when the resulting knowledge or calibration improves later use.
 
-**Content comes from evidence, never from a directory.** A method's recorded type, actions and fallback live on the `StrategicEntry` that the harness wrote (or migrated); induction fills in **none** of them, because inferring a method's actions from its id would be fabrication. An entry with no recorded actions reports `[]` — "the memory does not record this", which is a fact, not a gap to paper over. Two different methods that happen to share an id are **not merged**: their entries are reported separately, each with its own content, and their executions stay separate samples.
+## 2. Understand structure before selecting a strategy
 
-**Retrieval documents are composed from what already exists** — the entry's own applicability notes, its own stated claim, its own recorded actions, and a readable transcription of its predicates. A method's name and description are not evidence about what ran, so they are not part of the document either.
+Profiling combines problem understanding with structural analysis. The Coupling-Aware Intermediate Representation (CIR) expresses entities, decisions, constraints, and their relationships before the agent chooses a strategy and builds the canonical optimization model.
 
-**Historical ids stay readable.** Records and entries written under an earlier naming scheme (S01, S04, …) are ordinary strings to this build: they recall, predict, induce and inspect exactly as before. Nothing is rewritten and nothing is back-filled.
+This ordering lets structural understanding inform the modeling and solving approach. For example, a cross-period inventory balance may make preserving state essential when decomposing a planning problem. Discovering that relationship after choosing a decomposition would be too late to guide the choice.
 
-## CostVector: five dimensions, never folded at rest
+Coupling scores summarize the CIR. Preserve the inspectable relationships as well as scalar summaries: the same score can arise from different mechanisms, and those mechanisms may require different methods. Constraint-variable co-occurrence supports a structural dependency; identifying shared resources or temporal state requires the corresponding semantics.
 
-`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`.
+Freeze the task profile before strategy selection. Keep diagnostics from the subsequently built model and solver as execution observations. A strategy's implementation must not retrospectively change the structural identity under which it was selected.
 
-Retries and rework are costs. A "wrong model → repair → rerun" trajectory must be more expensive than getting it right the first time, even when solver runtime is similar — otherwise the memory cannot learn that one-shot strategies are worth preferring. Scalarization (`C_scalar = Σ wᵢ·norm(cᵢ)`) happens only inside the selector, with configurable weights; the stored record always keeps the raw five dimensions.
+Structural classes and quantized coupling cells organize conditional statistics. Their grouping rules belong in the representation and command references. The conceptual distinction is:
 
-**Unknown ≠ zero.** Each record carries a measured-dimension mask (`cost_measured`) meaning "this value is a real observation". Only what the framework can actually observe enters it: `latency_s` (the attempt's whole wall-clock span, from `time.monotonic()` — sandbox check, spawn, interpreter start-up, imports, solve, verify) and `solver_runtime_s`. A constant is never masked in: `tool_calls`, `retries` and `llm_tokens` are **declarations** (or, for `llm_tokens`, a host-reported observation), not framework measurements, and stay UNKNOWN until you supply them.
+- **Statistical comparability:** whether observations may be pooled into a particular estimate.
+- **Method applicability:** whether a technique's necessary premises hold for the current task.
 
-**A cost has a provenance.** Every amended dimension records WHERE its number came from (`execution_features.cost_provenance`): `provider_usage` (a provider/host reported it — a real observation), `agent_observed` (a number read off a real report) or `agent_estimate` (the `--override` default — a hand-typed number with no stated source, a declaration). The two must never be indistinguishable in the stored fact, because a real measurement and an estimate carry different weight in calibration — and the tag decides WHAT THE NUMBER MAY BE USED AS. Only `provider_usage`/`agent_observed` (plus the framework's own `latency_s`/`solver_runtime_s`) may stand as a calibration actual, a measured cost claim or a learning evidence mean; an `agent_estimate` is shown everywhere but excluded from those, and a single-side token figure is a lower bound, never a complete total. Consumers simply SKIP a non-measured value (it never enters a mean, a scored total or a feedback error), and the count they dropped is reported where the number is shown, so the exclusion is visible rather than silent. Overwriting a dimension the FRAMEWORK measured (`latency_s`, `solver_runtime_s`, or a provider-reported one) is REFUSED unless `--force` is passed, so a real observation is never silently rewritten. A declared token figure is also tagged with its口径 (`provider_total` / `completion_only`): a legacy completion-only number and a full total are different units, and the budget view reports `token_basis_mixed` rather than pooling them as if they were the same quantity.
+Different cells may require separate estimates while still admitting transfer of a method after its premises are checked. Membership in one cell likewise does not establish that all methods observed there apply. Unknown structure records missing information; it does not establish similarity.
 
-`solver_runtime_s` carries a provenance: `reported` (the script's `result.json:runtime_seconds` — the inner solve) or `wall_proxy` (the whole subprocess wall clock, imports included). They are **different quantities under one name**, so conditional statistics keep them apart and refuse to average a mixture; a runtime that is not a usable number is rejected and downgraded to the proxy with a recorded note.
+## 3. Learn from executions and retrieve for reuse
 
-`tool_calls` counts **every tool invocation in the attempt's scope** — shell commands, file reads/writes, sandbox runs, solver calls — not just sandbox executions. The sandbox sees exactly one of them and records that as a provable lower bound (`execution_features.tool_calls_lower_bound`); declaring a total below it is refused. `retries` counts only *extra* attempts beyond the first, and the framework RECORDS a measured zero only when it can PROVE there was nothing to retry (no earlier attempt of the same task, episode and strategy exists); otherwise the count stays unknown until you declare it via `--override retries=...`. `llm_tokens` and `tool_calls` are both invisible to the sandbox (the HOST owns the LLM connection and the tool invocations), so they come from the host's attempt-level **HostUsageReport** (`or-host-usage/1`): pass it with `record --usage-file <json>` (inline, path or `@path`), let `--usage-host openclaw` locate it under `<home>/host_usage/`, or set `$OR_HOST_USAGE_FILE` as the default path. One report writes BOTH dimensions with no hand-typing — `llm_tokens` as `provider_usage` (the full口径 total: prompt + completion, reasoning/cached kept as sub-facts and never added again), `tool_calls` as `agent_observed` (the whole-scope count, validated against the report's own lower bound). Only dimensions in the report's `measured` whitelist enter `cost_measured`; a missing report leaves them UNKNOWN (never zero), and `close-episode` warns about the gap. The report schema, the adapter contract and the 3-line host-side recipe: [commands.md](commands.md). A hand-typed `--override` remains the fallback: it defaults to `agent_estimate` (shown, but **never** used as a calibration actual or a measured cost claim); pass `--override-source agent_observed` when you READ the number off a real report, or `provider_usage` when the provider itself reported it. A single-side (completion-only) token figure is a lower bound, not a complete total. `--force` overwrites a dimension the framework measured.
+Two memory layers serve different purposes:
 
-Unmeasured dimensions are excluded from means, cost comparisons, and prediction errors — a placeholder zero is never evidence of cheapness. Legacy payloads without a mask keep the value-level inference: non-zero values (including already-backfilled tokens) stay usable, unconfirmable zeros stay unknown.
-
-**A cost claim is complete-or-silent.** When a strategy's cited evidence is consolidated, a dimension enters a cost claim only when EVERY supporting record measured it. A mean over a subset ("3 of 4 records reported tokens") is a partial observation dressed up as a full claim, and downstream it would feed strategy selection and world-model prediction as if it were the whole truth. The evidence statistics still report the complete dimensions; the incomplete one reads as unknown, and the gap is reported at record time (`cost_completeness.missing`). Close it with `orx amend-cost <execution_id> --override <dim>=<value>` — the fact is amended in place, nothing is re-run.
-
-Cost predictions are validated like quality predictions — but separately. The pre-execution expectation is frozen as a prediction snapshot (`orx predict-cost`: strategy, expected cost with its measured mask, source, scope, per-dimension support). Feedback compares the actual attempt against that snapshot only — same strategy, same scope, and only on dimensions measured on BOTH sides; A's execution never audits B's prediction, an attempt never audits a task-scope prediction, and an unmeasured predicted zero never fabricates an error. Feedback is written into the Execution Evidence (`cost_feedback`) for the next offline induction round — it NEVER demotes, retires, or re-scopes an entry, and never updates calibration online. No snapshot, no fabricated error.
-
-## The disposal ladder (derived layer only)
-
-Facts are permanently neutral — no disposal ever touches an ExecutionRecord's meaning. The derived layer carries the ladder:
-
-| State / action | Trigger | Effect | Reversible? |
-|---|---|---|---|
-| suspect | 3 consecutive prediction misses (auto) | score ×0.5, warnings attached | yes |
-| dormant | 10 tasks unconsulted (auto) | excluded from matching | yes (wakes on hit) |
-| retired | your explicit confirmation | moved to cold archive | no (leaves hot store) |
-| cold archive | default forever | vetoes re-induction of the same pattern | `--force` only |
-| compaction (removed) | — | lossy evidence compaction is GONE with the boundary it was meant to enforce: statistics and induction always read full facts, and storage growth is bounded by the evidence WINDOW (`enforce-window`) plus the calibration archive's three scopes | — |
-
-## Evidence retention (inside the Evidence layer — no new Banks)
-
-The Evidence Bank is **bounded**: `enforce-window` keeps a recent window of COMPLETE episodes (default 800, `OR_EVIDENCE_WINDOW_EPISODES`). While a fact is a fact inside the window it is immutable under every write path (append, cost backfill, annotations, exclude/restore); outside it the WHOLE episode leaves at once, so a contrast/repair chain is never split.
-
-- **What is never evicted** — episodes inside the calibration window, episodes awaiting a task verdict within the late-check grace period, and young UNCLOSED episodes (an aged unclosed episode is evicted as a whole and reported separately).
-- **Eviction runs AFTER consolidation** — calibration publish / archive and any induction opportunity are taken first; the window pass is deliberately last in `close-episode`, and it is also an explicit command (`enforce-window`).
-- **Eviction is not withdrawal** — a window-expired source is a historical reference EXPIRING, never a refutation and never confused with `exclude-execution` (an explicit correction). The stored evaluation of an expired episode stays FINAL; only a present-but-non-counting fact is a withdrawal.
-- **A count, not a byte cap** — the bound is expressed in episodes and nothing promises a byte budget. Eviction drops the derived vector items and any task-text version no remaining execution references, so the bank and its index shrink together. This bounds the Evidence Bank — it does NOT make the whole project directory bounded.
-- **A dry run writes nothing** (no row, no vector, no text) and re-running is idempotent.
-
-## Verification philosophy: forward, not backward
-
-An induced entry is a prediction hypothesis. Two separate things must hold before it counts as published knowledge: its CLAIM must pass an admission check at induction time (`induce --verify` — a rule holding, a repair working, or a quality-preserving cost saving, judged by the framework from real executions), and its PREDICTIONS are then validated by *future* executions checking its interval — never by self-testing on the training data. This is why entries are born `candidate`, why intervals are floored by sample size (n=2 may not claim [0.95, 1.0]), and why promotion requires ≥5 predictions with ≥70% hit rate ON TOP of the passed admission check.
-
-The only text a model writes into the knowledge layer is *phrasing*: you may attach applicability notes at induce time (`--note`). They are stored for the reader and sit outside scoring — a sentence cannot be verified, so it is not scored. (A configured world model may separately produce *predictions*, but those live in their own log and never enter an entry, a statistic, or a verdict; see [world_model_contract.md](world_model_contract.md).)
-
-### Three different questions, three different layers
-
-The framework keeps apart three things that are easy to conflate, and conflating them is how a wrong answer becomes training data:
-
-| Question | Layer | Who answers |
+| Layer | Content | Role in future solving |
 |---|---|---|
-| Did the solver solve the MODEL it was given? | the execution's own `quality` | the executor (`status`, finite objective, gap) |
-| Is this a valid answer to the TASK? | `execution_features.task_check` | `orx check-task`, from the check bases YOU declare |
-| Does the strategic CLAIM hold? | the entry's `verification` | `induce --verify`, offline |
+| **Execution Evidence** | Recorded methods, attempt chains, outputs, task checks, failures, and measured costs | Inspect how a previous task was handled and adapt grounded experience |
+| **Strategic Knowledge** | Reusable methods, applicability conditions, explanations, boundaries, and supported effect claims | Guide what to do under specified conditions |
 
-A relaxed LP answered with fractional values passes the first (it is `optimal` with `gap=0`), fails the second (the units cannot be shipped), and says nothing about the third. **Solver optimality is a property of the model as written, not of the task**: a model with the wrong variable domain, the wrong objective or a missing constraint is optimally wrong. That is why a task-level verdict is a separate fact attached to the execution rather than an edit of its quality — the observation must survive so a correction can be judged against it.
+An execution record preserves observations and their sources. Its solver result can be valid for the implemented model while the answer remains wrong for the task. Record planned and actually performed methods separately; a plan supplies intent, while execution receipts and inspected artifacts support what happened.
 
-**A confirmed-wrong answer stays in the evidence set.** Its cost is real and its failure is raw material, so it is never deleted, excluded, or rewritten. What changes is that it may no longer count as a success sample: every quality consumer reads `0.0` for it, while its cost still counts in the task total. Three states, never merged:
+A conditional statistic summarizes retained observations. Strategic knowledge adds an actionable commitment: a method, why it works, where it applies, and which effects the evidence supports. Expected quality or cost may accompany a strategy, but a method does not need a prediction interval to be useful.
 
-- `passed` — every DECLARED basis held. This covers the declared bases only: the model's fidelity to the task and any undeclared constraint remain UNCHECKED, and the report says so.
-- `failed` — a declared basis ran and did not hold.
-- `insufficient` — no basis declared, no solution vector recorded, a needed variable missing, or the execution produced no usable result. **Not a pass, not a failure.** An unchecked answer's validity is UNKNOWN, and the framework never demands a reference value to fill the gap.
+Semantic induction is agent-led. The framework organizes execution material and computes declared checks; the agent compares relationships, explains operative steps, checks premises and boundaries, and decides whether to add, revise, merge, narrow, or produce nothing. A single execution can reveal a conditional method. Broader empirical advantage claims require comparable independent evidence. See [induction.md](induction.md) for support scopes and current publication rules.
 
-The framework does not parse natural-language constraints: a constraint is checkable only through a probe or a recomputation you declare. A matching objective never proves the model correct — which is why the old "no gold ⇒ matched" shortcut is gone: with nothing declared, the honest verdict is `insufficient`.
+### Retrieval and cold start
 
-**A task check passing is not a knowledge claim passing.** The admission gate (`induce --verify`) is untouched by this layer: an execution whose answer was validated still has to earn any entry's verification separately, and an entry's verification says nothing about a particular execution's answer.
+Embedding retrieval is the primary discovery channel; profile information assists organization and applicability assessment. Retrieve substantive method content, claims, and relevant task semantics rather than relying on method IDs.
 
-## World-model outcome predictions: shadow hypotheses, never decisions
+Prefer admitted applicable knowledge as a starting point. When it is absent, inspect execution evidence directly; useful experience does not require prior promotion into strategic knowledge. Historical failures can reveal repair conditions or limitations even when the successful method is unsuitable.
 
-A *world-model prediction* is a structured hypothesis about what ONE candidate action would do from the current frozen state: expected status, feasibility, quality, failure risk, per-dimension cost, and successor state changes. It is produced by an explicitly configured provider (`--world-model URL::MODEL`, OpenAI-compatible; credentials from the environment, never persisted) and lives in its own log table — it is not a third knowledge bank, not an ExecutionRecord, and not a StrategicEntry.
+A retrieved item keeps its evidence status. Text similarity exposes material to inspect; semantic premises determine whether its method can be adapted. Structural statistics retain their own scope: finding a related execution from another cell does not authorize adding its measured numbers to the target cell's estimate.
 
-The discipline that makes these predictions useful rather than corrosive:
+When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. Keep uncertainty explicit and obtain evidence through execution.
 
-- **Shadow mode.** A prediction never changes a recommendation, a score, or a route. You decide; the prediction is compared afterwards.
-- **Frozen before the act.** The input snapshot is frozen at prediction time. Predicting after executing and calling it a forecast is not evidence — it is hindsight wearing a costume.
-- **Both sides defined, or not compared.** Comparison covers only fields the prediction defined AND the execution measured (the same both-sides-measured rule as cost feedback). A predicted-but-unmeasured cost dimension is listed as not-compared, never scored as zero error.
-- **No counterfactuals.** A candidate that never ran has no result. A prediction for strategy A is never scored as strategy B's outcome: a wrong task, a wrong strategy, a wrong round or a post-hoc prediction excludes the sample entirely. But a KNOWN deviation is not the same as a wrong prediction — a different solver, or a different value for a config key the run really reported, blocks the OUTCOME dimensions (the quality is not the original condition's performance) while the measured cost stays, because the attempt really happened and really spent what it spent.
-- **A missing receipt is a caveat, not a discard.** An identity field the executed action could not CONFIRM (a config key the run never reported back) is not grounds to throw away a real observation: it is REPORTED, and it blocks nothing. Identity is decided by the STRUCTURED fields — the task, the strategy, the solver, the config values the run really reported — never by a prose description, because a free-text method receipt differs from the plan for reasons that have nothing to do with what ran (a subscript, a split word). The rule is one small framework table (`world_model/attribution.py`), never a dependency engine over field names.
-- **Two costs, never confused.** The PREDICTED cost of the action is a hypothesis inside the prediction record; the model call's OWN cost (tokens, latency) is real spend, recorded on the prediction and charged to the calling action when one is named.
-- **Uncalibrated confidence.** The model's self-reported confidence is data about the model, not a probability you may bank on. Calibration is what the accumulated prediction-vs-outcome record is FOR — that is the entire point of the shadow loop.
-- **Knowledge stays gated.** Prediction feedback records facts and errors online; it never promotes, revises, or publishes anything. Knowledge changes only through explicit offline induction with admission verification, exactly as before.
+Task texts and embedding indexes support discovery within these two layers. They do not form another bank of outcome facts or strategic beliefs.
 
-### H is a prediction subject, not only a condition
+## 4. Predict consequences to support decisions
 
-The state the model conditions on is H/P/X/B, and what it predicts covers X, B **and** the capability side — how the action changes accumulated experience and strategic knowledge. Predicting only X/B and then updating H after the fact would make the harness unable to reason about *which action is worth taking for what it teaches*, which is the capability this layer exists to provide.
+The world model provides a unified conditional forecast:
 
-**The unified contract for this is defined in [world_model_contract.md](world_model_contract.md)** — that page is the single authority for the two prediction modules (`StrategyOutcomePrediction` and `CapabilityEvolutionPrediction`), the status vocabulary, the attempt-vs-strategy-window scope rule, and the migration table. What follows here is the *why* behind the design.
+**`(P, H, candidate strategy) → (predicted X = Q/C/R, predicted H+)`**
 
-`H = F(M, W_OR, Pi, R, T)` — five INTERACTING capability sources, not five score dimensions and not a sum:
+A candidate specifies the proposed method and execution conditions. The predictor estimates their consequences: likely solution quality, required resources, failure risks, and potential learning. Solver/configuration choices are candidate inputs whose effects are assessed.
 
-| Source | What it covers |
+Use Q/C/R predictions alongside relevant evidence to compare candidates before execution. Historical experience describes observed cases; the forecast addresses the proposed action in the current context. The agent remains responsible for the choice, including uncertain predictions, quality requirements, and available budget.
+
+The default comparison uses quality, cost, and risk. H+ explains what the action might teach and what would establish a later gain. It is not a measured reward or an automatic utility bonus. Adding an entry or predicting a benefit does not establish capability improvement.
+
+A shadow configuration records forecasts without consuming them for selection. This is a diagnostic or ablation configuration; decision support is the world model's role in the main loop.
+
+### Prediction and observation
+
+Freeze the prediction input before the action. Include the relevant problem structure, consulted memory, current execution context, and predictor version; a historical replay must use the saved content rather than today's revised memory. Input construction itself produces no forecast.
+
+Several unexecuted candidates may receive what-if predictions. Only an executed action supplies a real outcome for comparison. Bind forecasts to their actual executions and compare only defined predictions with corresponding observed dimensions. Missing receipts indicate unconfirmed conditions; known deviations require dimension-specific attribution under the contract.
+
+Keep three forms of uncertainty distinct: missing evidence, the predictor's stated uncertainty, and reliability measured from resolved forecasts. Self-reported confidence is not a calibrated success probability. An unavailable predictor should remain distinguishable from a working service that returned no usable prediction.
+
+Prediction calls also consume tokens and time. Their measured spend belongs in the actual execution ledger; the candidate's forecast cost remains a hypothesis. This makes the overhead of decision support visible in the final cost.
+
+## 5. Preserve quality, cost, and risk as distinct evidence
+
+| Dimension | Meaning | Evidence requirement |
+|---|---|---|
+| **Q: quality** | Task feasibility, correctness, and objective performance under the evaluation criteria | Model results plus task-level checks covering the relevant requirements |
+| **C: cost** | Resources consumed by reasoning, tools, solving, checking, and rework | Measured values with provenance and compatible scope |
+| **R: risk/uncertainty** | Failure exposure and uncertainty in quality, cost, or applicability | Observed failures, limited support, structural differences, and calibrated prediction reliability |
+
+Three checks answer different questions:
+
+1. **Model result:** did the solver solve the implemented optimization model?
+2. **Task answer:** does the proposed solution satisfy the actual task and evaluation criteria?
+3. **Knowledge claim:** do the stated method premises or empirical effect claims hold within their declared scope?
+
+An optimal solver status does not validate omitted constraints or incorrect variable domains. A matching reference objective also does not establish every semantic requirement. Record task checks as passed, failed, or insufficient according to what was actually checked, with uncovered requirements explicit.
+
+Retain confirmed-wrong attempts as failure evidence and include their measured cost. They must not continue to support a success claim. Repair and reflection can change the later answer while preserving the earlier observations.
+
+Store cost as the raw vector:
+
+**`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`**
+
+Preserve which dimensions were measured, their source, and their measurement scope. Missing cost is unknown. Distinguish estimates from observations, total tokens from partial token counts, and inner solver time from a subprocess wall-clock proxy. Do not silently average incompatible quantities or omit unmeasured records from a claim covering the whole cited set.
+
+Compare attempt costs with attempt costs and complete task costs with complete task costs. The task total includes failed attempts, repairs, checks, and prediction overhead within its declared scope. Normalization and weighting are decision-policy operations; keeping raw dimensions permits later comparisons under different resource priorities.
+
+Quality-preserving cost reduction is therefore a joint claim. Demonstrating lower solver runtime alone may leave total execution cost higher, and lower cost obtained by returning an invalid answer does not meet the research objective.
+
+## 6. Separate online solving from offline evolution
+
+| Phase | Responsibility |
 |---|---|
-| M | Execution Evidence / Strategic Knowledge **and how usable it actually is** |
-| W_OR | consequence prediction and reliability judgement for OR solving |
-| Pi | strategy generation, composition, comparison, selection, switching, stopping |
-| R | knowledge retrieval, applicability matching, context adaptation (**not** the final decision) |
-| T | tool/solver selection, composition, invocation, result handling |
+| **Online, within an episode** | Profile the problem; retrieve knowledge/evidence; propose and compare strategies; make what-if predictions; execute; check answers; reflect or repair; record outcomes and cost |
+| **Offline, after episode closeout** | Reconcile the full trajectory; assess eligible forecasts; publish calibration updates; review related evidence; induce and verify knowledge; revise the memory used by future tasks |
 
-Three consequences that are easy to get wrong:
+Within an episode, execution progress informs subsequent decisions while predictor parameters and learned calibration remain fixed. Recording an observation or binding a prediction is not an online model update. Calibrate and update the world model at episode boundaries, using the completed trajectory and real outcomes. An update may use calibration summaries and revised memory/context; weight training is not required by the design.
 
-- **H is not its evidence.** `harness_state` knowledge refs, experience counts and tool configuration are *evidence about* H. They map to M and T as `indirect_evidence` only; nothing in the old state observed W_OR, Pi or R, so those stay `no_evidence` rather than being filled from an unrelated count. There is no composite H score in this build, and the validator rejects a payload that tries to add one.
-- **There is no `E_hist` capability term.** Historical experience is not a sixth component — it is the substrate the sources are evidenced from. The H-evolution predictor's own quality is assessed separately; it is not part of its own claim to have got stronger.
-- **B is not a predicted world-state object.** Budget declarations, execution limits and the real ledger stay in `BudgetLedger`. Cost appears twice in the contracts and the two are never summed: the *predicted* cost of the candidate, and the *measured* spend of the prediction call itself.
+Knowledge evolution likewise occurs through explicit offline review. Match validation to the claim: inspect mathematical premises and solution preservation for method correctness, and compare measured executions for empirical effects. Framework verdicts cover declared computable checks; forward observations test subsequent reuse and refine confidence. These checks complement each other.
 
-Three facts about a prediction service that are routinely collapsed into one, and must not be: `provider_configured` (a provider object is attached), `service_available` (this build IMPLEMENTS that kind and a provider is configured) and `prediction_made` (a prediction really was produced and validated). Only the third makes a contract `valid`, and building a contract makes no model call at all — so a configured provider with zero calls and empty benefit/cost/risk is not a forecast. The field-level rules (status values, the attempt-vs-window scope rule, the legacy migration table) are in [world_model_contract.md](world_model_contract.md).
+Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counterexample challenges a claim whose premises held; a task outside its conditions indicates an applicability boundary. Structural-cell membership alone does not decide between those cases.
 
-A knowledge change is predicted against a target that is either an existing entry (it must really exist — a model cannot invent knowledge) or a hypothesis (allowed, but it must state what would be observed and how that observation would be judged). Each item names a change, a horizon, and any standing preconditions, because the timescales genuinely differ: evidence lands when the execution is recorded, while a claim only forms, moves or narrows after an offline induction.
+Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
 
-**Prediction, fact binding and verified effect are three different things.** Adding knowledge entries, accumulating evidence, or a model asserting an improvement confirms none of them; only an observed improvement in future task performance does. The contract records all three flags separately, and a capability prediction is judged through those observable consequences — never through a latent vector.
-
-**A gain can be predicted ONLINE without becoming a claim.** The strategy-outcome prediction (wm-so/1) may carry a `capability_gain` block (H+) in the SAME model call as the current task's benefit/cost/risk: what the candidate might teach, which problems it would apply to, the expected improvement per metric, the real evidence that would confirm it, and the degradation risk. It is EXPLANATORY — never the utility (the score is benefit/cost/risk only), never a compressed 0-1 score, and never written into the harness capability evidence. A predicted gain becomes "verified" only through the offline capability path on later tasks; the online block has no verified state at all. An omitted H+ never invalidates the benefit/cost/risk of the same prediction, and a new method or one more experience entry is never by itself a gain.
-
-**Unknown upside is not rewarded.** The knowledge term is `δ·K` with `δ` defaulting to 0, and a K that cannot be justified contributes exactly zero. This is the deliberate mirror image of how unknown *risk* is treated: an unknown downside is charged in full, but an unknown upside is paid nothing — otherwise the system would prefer whichever action it understands least. `K = None` means "no justified value", never "worth nothing".
-
-**The model cannot raise its own value.** K's magnitude comes from framework-side quantities (how thin the support is, how much room the claim's interval still has above its honest floor, how much *independent* cross-task reuse the cell has). The model contributes a direction and any preconditions. Its `uncertainty` and its self-scored `expected_knowledge_value` are recorded for later calibration but never consumed as value.
-
-**Feedback is judged in stages, and pending is not failure.** A prediction's verdicts are partitioned by stage, so an already-compared X/B prediction can still receive its knowledge verdict later. A precondition that never arrived leaves the item `pending` — it is not counted as a miss. Only a class with enough resolved samples earns a measured reliability, and that measured reliability (never the model's own confidence) is what later predictions may draw on.
-
-### The prediction input context: what a prediction is conditioned on
-
-The state, candidates and predictions are expressed in one place; what a prediction actually uses, and how it gets there, is the FROZEN INPUT side. The mechanism is one frozen bundle, `PredictionContext` (see [references/prediction_context.md](prediction_context.md)), built once per decision by `orx context` / `build_prediction_context`.
-
-**The problem's name is not evidence about its mathematics.** The joint representation carries math attributes (`integrality`, `linearity`, `objective_kind`, `constraint_kinds`) with an explicit ORIGIN each, taken from a declaration, the declared model, the structured spec, or the CIR. A task whose only content is the word "routing" gets `unknown` — not "MILP". The same discipline governs the CIR: its relations stay relations, because compressing them into three coupling numbers and discarding the structure loses exactly the information a prediction needs.
-
-**A model is not a precondition for a prediction input.** A task with no `model` field, no CIR and no solve.py still builds a context; the absent parts are listed with what they mean. This is the same principle as the snapshot's "unknown ≠ zero", applied to input assembly.
-
-**"Retrieved" is not "verified".** Every retrieved item carries an evidence CLASS — an execution fact was observed, verified knowledge was admitted, an unverified candidate was neither, a structural recommendation may be backed by nothing at all. Retrieval never upgrades one class into another, and a candidate does not become knowledge by being surfaced.
-
-**Two channels, never one number.** The structural channel answers "what may I reuse?" (applicability) and the text channel answers "what should I look at?" (discovery). They are reported side by side with their own statuses; blending them into a single score would hide which question was answered. A near-identical problem in a different structural cell stays VISIBLE and labelled `different_cell`, and its numbers never join the target cell's statistics. One hit found by both channels is ONE piece of evidence, identified as `layer:id`, and when the two channels report different versions of one id that disagreement is recorded rather than silently resolved.
-
-**Reuse must be provable.** A supplied recall result or context carries the task VERSION it was produced for; a mismatch is refused with a named reason, and a result with no recorded version cannot be confirmed either way and is also refused. An external result of unknown provenance must not masquerade as aligned frozen evidence — the same rule as "an unmeasured condition is not a satisfied one".
-
-**Freezing is content, not a pointer.** A built context is stored WITH the content it was built from, so replaying it reads nothing from today's banks, and reuse replays its frozen X/B, its frozen knowledge targets and its frozen reliability. A stored id alone would not reproduce the input, because the bank it points at may have moved. The BUDGET is deliberately the exception — an external limit on whether a call may be made, not a prediction condition — and when it has moved the difference is REPORTED rather than silently substituted.
-
-**One CIR per request.** An explicit CIR must drive the joint representation, the profile (hence the snapshot's cell) and the retrieval alike; otherwise a single request carries two structural judgments and may retrieve knowledge from the wrong cell. A supplied CIR replaces the task's own rather than being quietly overridden by it. The structural consistency check therefore runs against the EFFECTIVE input, with a conflict refused rather than carried — an unmeasured dimension is not a conflict.
-
-**A historical input must not read today's memory.** Building from a frozen snapshot bounds the retrieval to that moment: evidence created afterwards is excluded and reported, and an item whose creation time cannot be established is kept but counted unbounded — neither silently dropped nor silently trusted. Creation-time filtering is NOT historical reconstruction, because it cannot tell that an entry which already existed was later REVISED; reconstruction therefore reads what the snapshot SAVED and reports everything it did not save (reliability, cell evidence, the retrieval) as missing. The snapshot itself is the saved history, so no separate historical database is needed.
-
-**Degradation is per part, and "did not run" ≠ "found nothing".** No backend, no task text, a missing index and a failed backend call are four different facts with four different reasons, and all four differ from a healthy channel that ran and matched nothing. Collapsing them would make an unavailable channel look like an empty memory.
-
-**Capability evidence is evidence, not a level.** Which retrieval channels ran, which strategies were recorded, what a prediction track record measured — all of these are `indirect_evidence`, and a source nothing observed stays `no_evidence` rather than being filled in to complete a set of five. The capability VERSION block (config / model / prompt / tools / memory content) is an identity whose digest covers the decision-relevant CONTENT of what was consulted, with read timestamps excluded — so a revision moves it, a re-read does not — and it says which memories were read, never how capable the harness is. Building an input is not predicting: context assembly may read the embedding index and does nothing else.
-
-## Applicability: the structural cell, not a declared ladder
-
-There is no ladder of generalization levels and no `widen`/`tighten` command. Each (family, structural cell, strategy) triple is one evidence set, and the claim induced from it states its own applicability: that family and that cell (e.g. `rc[0.75,1.00]`). Structurally different regions of one family are separate evidence sets — one strategy scoring 1.0 at low coupling and 0.1 at high coupling yields two claims, not one averaged "0.55 everywhere".
-
-Unmeasured structure is never similarity: an `[unknown]` claim matches only a task whose value is also unmeasured. The cost of the cell rule is honest: evidence scattered across cells may be too thin to form a claim, in which case only the statistics remain and no knowledge is invented.
-
-Cross-family transfer is therefore a judgment, not a mechanism: a claim speaks for the family it was induced from, and applying a routing lesson to packing is your call. Record those executions and packing earns its own claim. The frozen per-fact checks (same strategy, attempt scope) are what make the lifecycle revision evidence-based rather than self-referential.
+Evaluate H+ through later consequences: a derived method that is correctly reused, a calibrated forecast that improves selection, or a verified reduction in cost at comparable quality. Evidence accumulation, knowledge formation, and useful capability gain are separate events, potentially resolved at different times. Pending future evidence is not a failed prediction.

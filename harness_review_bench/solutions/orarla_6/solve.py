@@ -1,99 +1,68 @@
 #!/usr/bin/env python3
 """
-solve.py for orarla_6 - Marketing Budget Allocation (ILP)
-Method: HiGHS MILP (highspy)
-
-min 10*X + 20*Y
-s.t. X + Y <= 1000       (total budget)
-     2*X + 3*Y >= 2000   (effectiveness constraint)
-     X >= 0, Y >= 0
-     X, Y integer (budget units are indivisible)
+orarla_6: Marketing budget allocation (enumeration method)
+Minimize 10*X + 20*Y subject to:
+  X + Y <= 1000  (budget)
+  2*X + 3*Y >= 2000  (effectiveness)
+  X, Y >= 0 integers
 """
+import math
 import json
 import time
-import os
-import highspy
 
 def solve():
-    t0 = time.time()
-    
-    # Create HiGHS model
-    h = highspy.Highs()
-    h.setOptionValue("mip_rel_gap", 0.0)
-    h.setOptionValue("mip_abs_gap", 0.0)
-    h.setOptionValue("log_to_console", False)
-    
-    # Add variables: X (budget for channel X), Y (budget for channel Y)
-    # Both are non-negative integers
-    # Objective: min 10*X + 20*Y
-    x = h.addVariable(lb=0.0, ub=float('inf'), obj=10.0, type=highspy.HighsVarType.kInteger, name="X")
-    y = h.addVariable(lb=0.0, ub=float('inf'), obj=20.0, type=highspy.HighsVarType.kInteger, name="Y")
-    
-    # Constraint 1: X + Y <= 1000 (total budget limit)
-    h.addConstr(x + y <= 1000.0, "budget_limit")
-    
-    # Constraint 2: 2*X + 3*Y >= 2000 (effectiveness requirement)
-    h.addConstr(2*x + 3*y >= 2000.0, "effectiveness")
-    
-    # Set minimize (default is minimize for Highs)
-    h.changeObjectiveSense(highspy.ObjSense.kMinimize)
-    
-    # Solve
-    status = h.run()
-    runtime = time.time() - t0
-    
-    # Extract solution
-    solution = h.getSolution()
-    model_status = h.getModelStatus()
-    
-    # Get variable values
-    X_val = solution.col_value[x.index]
-    Y_val = solution.col_value[y.index]
-    
-    # Get objective value
-    objective_value = h.getObjectiveValue()
-    
-    # Get info
-    info = h.getInfo()
-    objective_bound = info.mip_dual_bound if hasattr(info, 'mip_dual_bound') and info.mip_dual_bound is not None else None
-    mip_gap = info.mip_gap if hasattr(info, 'mip_gap') and info.mip_gap is not None else None
-    
-    # Determine status
-    if model_status == highspy.HighsModelStatus.kOptimal:
-        status_str = "optimal"
-    elif model_status == highspy.HighsModelStatus.kInfeasible:
-        status_str = "infeasible"
-    elif model_status == highspy.HighsModelStatus.kUnbounded:
-        status_str = "unbounded"
-    else:
-        status_str = f"model_status_{model_status}"
-    
+    start = time.time()
+    best_cost = float('inf')
+    best_X = None
+    best_Y = None
+
+    # Effective lower bound on X: need 2*X >= 2000 - 3*Y >= 2000 - 3*1000 = -1000, so X >= 0
+    # But to satisfy effectiveness: 2*X + 3*Y >= 2000 with Y <= 1000 - X
+    # Max effectiveness with all budget on Y: 3*1000 = 3000 >= 2000 ✓
+    # Min X to satisfy effectiveness with Y=1000-X: 2X + 3(1000-X) >= 2000 → X >= 334 (integer)
+    # So X ranges from 334 to 1000
+
+    for X in range(0, 1001):
+        # Minimum Y to satisfy effectiveness: ceil(max(0, 2000 - 2*X) / 3)
+        if 2*X >= 2000:
+            min_Y = 0
+        else:
+            min_Y = math.ceil((2000 - 2*X) / 3)
+        
+        # Feasibility: Y must satisfy budget constraint
+        if min_Y > 1000 - X:
+            continue  # Not feasible
+        
+        # Y can be larger than minimum (we want minimum cost, so use minimum)
+        Y = min_Y
+        cost = 10*X + 20*Y
+        
+        if cost < best_cost:
+            best_cost = cost
+            best_X = X
+            best_Y = Y
+
+    elapsed = time.time() - start
+
     result = {
-        "status": status_str,
-        "objective_value": round(objective_value) if objective_value is not None else None,
-        "objective_bound": objective_bound,
-        "mip_gap": mip_gap,
-        "runtime_seconds": round(runtime, 4),
-        "variables": {
-            "X": X_val,
-            "Y": Y_val
-        },
+        "status": "optimal",
+        "objective_value": float(best_cost),
+        "objective_bound": float(best_cost),
+        "mip_gap": 0.0,
+        "runtime_seconds": elapsed,
+        "variables": {"X": best_X, "Y": best_Y},
         "method_performed": {
-            "name": "HiGHS_MILP",
-            "solver": "highspy",
-            "action_id": os.environ.get("OR_ACTION_ID", "unknown")
+            "strategy_id": "enumeration_2var_budget_effectiveness",
+            "solver": "python enumeration",
+            "action_id": None,  # will be filled by framework
+            "note": "Enumerated X from 0 to 1000, computed min feasible Y=ceil(max(0,2000-2X)/3), checked budget feasibility, minimized 10X+20Y"
         }
     }
-    
+
     with open("result.json", "w") as f:
         json.dump(result, f, indent=2)
-    
-    print(f"Status: {status_str}")
-    print(f"Objective: {objective_value}")
-    print(f"X={X_val}, Y={Y_val}")
-    print(f"Runtime: {runtime:.4f}s")
-    
-    return result
+
+    print(f"Optimal: X={best_X}, Y={best_Y}, Cost={best_cost}")
 
 if __name__ == "__main__":
     solve()

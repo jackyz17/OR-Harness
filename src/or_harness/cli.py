@@ -1108,7 +1108,9 @@ def cmd_induction_material(args) -> int:
             strategy_id=getattr(args, "strategy", None),
             task_id=getattr(args, "task", None),
             limit=getattr(args, "limit", None),
-            cursor=getattr(args, "cursor", None))
+            cursor=getattr(args, "cursor", None),
+            related_top_k=getattr(args, "related_top_k", 5)
+            if getattr(args, "related_top_k", 5) is not None else 5)
         if not result["count"]:
             return _emit(
                 result,
@@ -3224,6 +3226,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="continue with material OLDER than this cursor "
                         "(pass budget.next_cursor from a previous call) so a "
                         "long history is read in distinct batches")
+    p.add_argument("--related-top-k", type=int, default=5, metavar="K",
+                   dest="related_top_k",
+                   help="how many semantically RELATED past executions and "
+                        "entries to surface alongside this batch (default 5, "
+                        "0 disables). The query is built from THIS batch's "
+                        "recorded method — no model call; hits are unfiltered "
+                        "(failures and cross-cell cases included) and a "
+                        "similarity hit is a discovery signal, not support")
     p.set_defaults(func=cmd_induction_material)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")

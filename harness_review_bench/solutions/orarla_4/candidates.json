@@ -1,40 +1,37 @@
 [
   {
     "action_type": "execute_strategy",
-    "name": "scipy_milp_integer",
-    "solver": "scipy.optimize.milp",
-    "params": {},
+    "strategy_id": "enumeration_2var_ilp_direct",
+    "description": "Analytical solution for 2-variable bounded integer LP with minimum-excess constraint",
+    "solver": "builtin",
     "method": {
-      "planned": {
-        "name": "scipy_milp_integer",
-        "solver": "scipy.optimize.milp",
-        "steps": [
-          "Formulate as MILP: min 4X + 3Y subject to X + Y <= 1000, X >= 2Y + 300, X,Y integers >= 0",
-          "Use scipy.optimize.milp with bounds=(0, inf), constraints=linear inequalities, integrality=1",
-          "Extract optimal X, Y and compute objective = 4*X + 3*Y",
-          "Write result to result.json with status/objective_value/variables"
-        ]
-      }
-    },
-    "key_idea": "Two-variable bounded ILP; scipy.optimize.milp handles mixed-integer directly via integrality constraint; efficient for small variable count"
+      "name": "Analytical enumeration for bounded 2-variable ILP",
+      "steps": [
+        "Identify feasible region: X >= 2Y + 300 (binding constraint), X + Y <= 1000",
+        "Since c_X=4 > c_Y=3 and we minimize cost, prefer Y=0 (lower coefficient)",
+        "Set Y=0 => X >= 300 from coupling, X <= 1000 from budget",
+        "Minimum cost at Y=0, X=300: objective = 4*300 + 3*0 = 1200",
+        "Verify: X+Y=300<=1000, X-2Y=300>=300, both integers",
+        "Return X=300, Y=0, objective=1200"
+      ]
+    }
   },
   {
     "action_type": "execute_strategy",
-    "name": "enumeration_with_constraints",
-    "solver": "brute_force",
-    "params": {},
+    "strategy_id": "milp_pulp_integer",
+    "description": "MILP formulation using PuLP with integer variables",
+    "solver": "pulp",
     "method": {
-      "planned": {
-        "name": "enumeration_with_constraints",
-        "solver": "brute_force",
-        "steps": [
-          "From X >= 2Y + 300 and X + Y <= 1000, derive bounds: Y <= (1000-300)/3 = 233, X >= 2Y+300",
-          "Enumerate Y from 0 to 233, compute minimal feasible X for each Y",
-          "For each feasible (X,Y), compute cost = 4X + 3Y and pick minimum",
-          "Because cost coefficients 4>3, minimizing X minimizes cost; exploit constraint tight bounds to prune"
-        ]
-      }
-    },
-    "key_idea": "Direct enumeration with tight bounds derived from constraints; leverages monotonicity to prune efficiently"
+      "name": "MILP with PuLP: integer variables X,Y; constraints X+Y<=1000, X>=2Y+300; minimize 4X+3Y",
+      "steps": [
+        "Create PuLP problem 'min_cost_allocation'",
+        "Define integer variables X >= 0, Y >= 0 using LpVariable('X',0,None,LpInteger)",
+        "Add constraint: X + Y <= 1000 (budget)",
+        "Add constraint: X >= 2*Y + 300 (coupling/demand)",
+        "Set objective: minimize 4*X + 3*Y using lpSum([4*x, 3*y])",
+        "Solve with PULP_CBC_CMD",
+        "Extract solution and objective value"
+      ]
+    }
   }
 ]

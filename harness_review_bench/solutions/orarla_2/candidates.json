@@ -1,11 +1,34 @@
 [
   {
-    "name": "integer_linear_programming_with_cbc",
-    "steps": [
-      "Formulate as MILP: minimize 50x + 100y subject to 50x + 100y <= 2000, x - 2y >= 500, x,y >= 0 integers",
-      "Use PuLP with CBC solver to find optimal integer solution",
-      "If infeasible, try alternative constraint interpretations"
-    ],
-    "key_insight": "Two-variable integer LP with budget and reach constraints. Y is more expensive ($100/unit) so we prefer X, but X must exceed twice Y by 500 points. This creates tension: to minimize cost we want small x,y but reach requires large x."
+    "action_type": "execute_strategy",
+    "strategy_id": "enumeration_analytical_2var_ilp",
+    "solver": "analytical",
+    "method": {
+      "name": "Analytical enumeration for 2-var bounded ILP",
+      "steps": [
+        "Formulate ILP: minimize budget_X + budget_Y subject to budget_X + budget_Y <= 2000 and 3*budget_X - budget_Y >= 25000 (derived from reach constraint: 3*(budget_X/50) - 2*(budget_Y/100) >= 500 => 3*budget_X - budget_Y >= 25000), budget_X, budget_Y are non-negative integers",
+        "From 3*budget_X - budget_Y >= 25000 => budget_Y <= 3*budget_X - 25000",
+        "Since budget_X >= 0 and budget_Y >= 0, and budget_X + budget_Y <= 2000, analyze feasible region",
+        "If budget_X <= 2000, then budget_Y <= 3*budget_X - 25000 <= 6000 - 25000 = -19000 (impossible since budget_Y >= 0)",
+        "Therefore no feasible integer solution exists",
+        "Report result as infeasible"
+      ]
+    }
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "direct_milp_2var",
+    "solver": "pulp",
+    "method": {
+      "name": "Direct MILP with PuLP solver",
+      "steps": [
+        "Define integer decision variables: budget_X >= 0, budget_Y >= 0",
+        "Constraint 1 (total budget): budget_X + budget_Y <= 2000",
+        "Constraint 2 (reach): 3*(budget_X/50) - 2*(budget_Y/100) >= 500 => 3*budget_X - budget_Y >= 25000",
+        "Constraint 3 (non-negativity): budget_X >= 0, budget_Y >= 0",
+        "Objective: minimize budget_X + budget_Y",
+        "Call solver.solve() and check status"
+      ]
+    }
   }
 ]

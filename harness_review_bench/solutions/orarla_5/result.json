@@ -1,16 +1,17 @@
 {
-  "status": "Optimal",
-  "objective_value": 3000.0,
-  "objective_bound": null,
-  "mip_gap": null,
+  "status": "optimal",
+  "objective_value": 450000,
+  "objective_bound": 450000,
+  "mip_gap": 0.0,
   "runtime_seconds": null,
   "variables": {
-    "x": 0.0,
-    "y": 3000.0
+    "budget_X": 0,
+    "budget_Y": 3000
   },
   "method_performed": {
-    "name": "LP_ilp_pulp_cbc",
-    "source": "PuLP CBC solver",
-    "action_id": "ac_fd24bb8766ae"
+    "action_id": "ac_cd6781beeb02",
+    "strategy_id": "enumeration_budget_2var",
+    "solver": "custom",
+    "note": "Direct enumeration: iterate X 0..5000, compute min feasible Y from effectiveness constraint, verify balance and budget, pick min cost"
   }
 }

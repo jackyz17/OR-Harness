@@ -1,18 +1,32 @@
 [
   {
     "action_type": "execute_strategy",
-    "task_id": "orarla_10",
-    "episode_id": "ep1",
-    "strategy_id": "enumeration_with_constraints",
-    "solver": null,
-    "params": {},
-    "measurement_scope": "attempt",
+    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "solver": "python_enum",
     "method": {
-      "name": "enumeration_with_constraints",
+      "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP",
       "steps": [
-        "1. Solve LP relaxation: minimize 50X+60Y subject to X+Y<=5000, 10X+30Y>=20000, X>=0, Y>=0 (continuous).",
-        "2. Enumerate integer pairs (X,Y) in feasible region; prune using constraints.",
-        "3. Compute cost for each feasible integer pair; pick minimum."
+        "Iterate X from 0 to 5000 (bounded by budget)",
+        "For each X, compute minimum feasible Y = max(0, ceil((20000-10*X)/30))",
+        "Check budget feasibility: Y <= 5000 - X",
+        "Track minimum 50*X + 60*Y across all feasible (X,Y)",
+        "Return optimal (X,Y) and total cost"
+      ]
+    }
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "milp_pulp_highs",
+    "solver": "pulp",
+    "method": {
+      "name": "MILP with PuLP/Highs for 2-variable planning ILP",
+      "steps": [
+        "Define integer variables X, Y >= 0 using PuLP LpProblem",
+        "Add constraint: X + Y <= 5000 (budget)",
+        "Add constraint: 10*X + 30*Y >= 20000 (environmental output)",
+        "Set objective: minimize 50*X + 60*Y",
+        "Solve with PuLP's Highs solver",
+        "Return solution and objective"
       ]
     }
   }

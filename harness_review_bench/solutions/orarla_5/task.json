@@ -2,17 +2,32 @@
   "task_id": "orarla_5",
   "family": "planning",
   "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, of at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel $X$ is $200 and for channel $Y$ is $150$, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints.",
-  "model": {
-    "type": "MILP",
-    "objective": {"type": "minimize", "expression": "x + y"},
-    "variables": [
-      {"name": "x", "lb": 0, "ub": null, "type": "integer"},
-      {"name": "y", "lb": 0, "ub": null, "type": "integer"}
+  "coupling": {
+    "entities": [
+      {"name": "budget_X", "type": "decision", "description": "Budget allocated to channel X (in dollars)"},
+      {"name": "budget_Y", "type": "decision", "description": "Budget allocated to channel Y (in dollars)"}
     ],
-    "constraints": [
-      {"name": "effectiveness", "expression": "3*x + 4*y >= 12000"},
-      {"name": "balance", "expression": "5*x - 2*y <= 10000"},
-      {"name": "budget", "expression": "x + y <= 5000"}
+    "relations": [
+      {"source": "budget_X", "target": "budget_Y", "type": "coupled_via_total_budget"},
+      {"source": "budget_X", "target": "budget_Y", "type": "coupled_via_effectiveness"},
+      {"source": "budget_X", "target": "budget_Y", "type": "coupled_via_balance"}
     ]
+  },
+  "model": {
+    "kind": "direct_enumeration",
+    "strategy_id": "enumeration_budget_2var",
+    "variables": ["budget_X", "budget_Y"],
+    "constraints": [
+      {"name": "total_budget", "expr": "budget_X + budget_Y <= 5000"},
+      {"name": "effectiveness", "expr": "3*budget_X + 4*budget_Y >= 12000"},
+      {"name": "balance", "expr": "5*budget_X - 2*budget_Y <= 10000"},
+      {"name": "nonneg_X", "expr": "budget_X >= 0"},
+      {"name": "nonneg_Y", "expr": "budget_Y >= 0"}
+    ],
+    "objective": {
+      "sense": "minimize",
+      "expr": "200*budget_X + 150*budget_Y",
+      "note": "cost per unit effectiveness multiplied by budget gives total cost"
+    }
   }
 }
