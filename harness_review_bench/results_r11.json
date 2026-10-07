@@ -1,0 +1,82 @@
+[
+ {
+  "task": "orarla_1",
+  "check": "passed",
+  "objective": 10000.0,
+  "reference": 10000.0,
+  "correct": true,
+  "n_exec": 3
+ },
+ {
+  "task": "orarla_2",
+  "check": "passed",
+  "objective": 8350.0,
+  "reference": 8350.0,
+  "correct": true,
+  "n_exec": 1
+ },
+ {
+  "task": "orarla_3",
+  "check": "failed",
+  "objective": 34,
+  "reference": 168.0,
+  "correct": false,
+  "n_exec": 2
+ },
+ {
+  "task": "orarla_4",
+  "check": "passed",
+  "objective": 1200.0,
+  "reference": 1200.0,
+  "correct": true,
+  "n_exec": 1
+ },
+ {
+  "task": "orarla_5",
+  "check": "passed",
+  "objective": 450000.0,
+  "reference": 450000.0,
+  "correct": true,
+  "n_exec": 1
+ },
+ {
+  "task": "orarla_6",
+  "check": "passed",
+  "objective": 10000,
+  "reference": 10000.0,
+  "correct": true,
+  "n_exec": 2
+ },
+ {
+  "task": "orarla_7",
+  "check": "passed",
+  "objective": 3000.0,
+  "reference": 3000.0,
+  "correct": true,
+  "n_exec": 1
+ },
+ {
+  "task": "orarla_8",
+  "check": "passed",
+  "objective": 50000.0,
+  "reference": 50000.0,
+  "correct": true,
+  "n_exec": 5
+ },
+ {
+  "task": "orarla_9",
+  "check": "passed",
+  "objective": 150.0,
+  "reference": 150.0,
+  "correct": true,
+  "n_exec": 1
+ },
+ {
+  "task": "orarla_10",
+  "check": "passed",
+  "objective": 40020.0,
+  "reference": 40020.0,
+  "correct": true,
+  "n_exec": 1
+ }
+]

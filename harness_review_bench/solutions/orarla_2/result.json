@@ -1,17 +1,35 @@
 {
-  "status": "optimal",
-  "objective_value": 167.0,
-  "objective_bound": null,
+  "status": "Optimal",
+  "objective_value": 8350.0,
+  "objective_bound": 8350.0,
   "mip_gap": 0.0,
   "runtime_seconds": null,
   "variables": {
-    "budget_X": 167.0,
-    "budget_Y": 0.0
+    "X": 167.0,
+    "Y": 0.0
   },
   "method_performed": {
-    "action_id": "ac_9735ce0d5074",
+    "action_id": "ac_739437c66327",
+    "strategy_id": "milp_pulp_cbc",
     "solver": "pulp",
-    "approach": "direct_milp_2var",
-    "note": "MILP with integer budget_X, budget_Y; constraint 3*budget_X - 2*budget_Y >= 500 from reach requirement"
+    "solver_backend": "CBC",
+    "steps": [
+      "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+      "Set objective: minimize 50*X + 100*Y",
+      "Add constraint: X + Y <= 2000 (total budget)",
+      "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
+    ],
+    "model_math": {
+      "objective": "min 50*X + 100*Y",
+      "constraints": [
+        "X + Y <= 2000",
+        "3*X - 2*Y >= 500",
+        "X >= 0",
+        "Y >= 0",
+        "X,Y integer"
+      ]
+    }
   }
 }

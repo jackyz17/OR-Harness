@@ -1,17 +1,14 @@
 {
-  "status": "optimal",
-  "objective_value": 450000,
-  "objective_bound": 450000,
-  "mip_gap": 0.0,
-  "runtime_seconds": null,
+  "status": "Optimal",
+  "objective_value": 450000.0,
+  "objective_bound": 450000.0,
   "variables": {
-    "budget_X": 0,
-    "budget_Y": 3000
+    "X": 0.0,
+    "Y": 3000.0
   },
   "method_performed": {
-    "action_id": "ac_cd6781beeb02",
-    "strategy_id": "enumeration_budget_2var",
-    "solver": "custom",
-    "note": "Direct enumeration: iterate X 0..5000, compute min feasible Y from effectiveness constraint, verify balance and budget, pick min cost"
+    "action_id": "ac_d5fed6f095a7",
+    "solver": "PuLP_CBC",
+    "formulation": "Min 200*X + 150*Y s.t. X+Y<=5000, 3X+4Y>=12000, 5X-2Y<=10000, X,Y integer>=0"
   }
 }

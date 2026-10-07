@@ -1,76 +1,83 @@
 {
  "result": {
   "bank": "experience",
-  "count": 16,
+  "count": 18,
   "records": [
    {
-    "execution_id": "ex_d2fafa948913",
+    "execution_id": "ex_9f777ddcf1c2",
     "task_id": "orarla_1",
-    "strategy_id": "enumeration_based",
+    "strategy_id": "milp_pulp_highs",
     "profile_snapshot": {
      "problem_id": "orarla_1",
      "family": "planning",
      "problem_class": "unknown",
      "scale_features": {},
      "semantic_coupling": null,
-     "resource_coupling": null,
-     "temporal_coupling": null,
-     "route_complexity": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
      "risk_features": {},
      "source": "derived",
      "annotations": {
       "profiling": {
        "origin": {
-        "resource_coupling": "null",
-        "route_complexity": "null",
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
         "semantic_coupling": "null",
-        "temporal_coupling": "null"
+        "temporal_coupling": "cir"
        }
       }
      }
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_based via custom",
-      "outcome": "optimal",
-      "duration_s": 0.02645408920943737
+      "action": "execute:milp_pulp_highs via pulp",
+      "outcome": "error",
+      "duration_s": 0.6341542955487967
      }
     ],
     "quality": {
-     "feasible": true,
-     "gap": 0.0,
-     "objective": 10000,
+     "feasible": false,
+     "gap": null,
+     "objective": null,
      "problems": [],
-     "status": "optimal"
+     "status": "error"
     },
     "cost": {
-     "llm_tokens": 609163.0,
-     "tool_calls": 18.0,
-     "solver_runtime_s": 0.001,
+     "llm_tokens": 541388.0,
+     "tool_calls": 17.0,
+     "solver_runtime_s": 0.6341542955487967,
      "retries": 0.0,
-     "latency_s": 0.02765011414885521
+     "latency_s": 0.6356482524424791
     },
-    "failures": [],
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "Traceback (most recent call last): | AttributeError: module 'pulp' has no attribute 'makeSolver'",
+      "recovery_action": null,
+      "error_class": "model"
+     }
+    ],
     "solver": {
-     "code_hash": "02cfc85b5a233661",
-     "name": "custom_analytical"
+     "code_hash": "9551b478110455a4",
+     "name": "pulp"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791303801.798714,
+       "amended_at": 1791364136.7507951,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791303801.8014257,
+       "amended_at": 1791364136.7530613,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_d2c8eba11b1d",
+      "action_id": "ac_046cc8a9a1c2",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -84,18 +91,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "custom_analytical"
+       "solver": "pulp"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 547071.0,
-      "completion_tokens": 7509.0,
+      "cached_tokens": 483191.0,
+      "completion_tokens": 5976.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 601654.0,
+      "prompt_tokens": 535412.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -106,13 +113,450 @@
       "tool_calls_lower_bound": 1.0
      },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791363943.5042176,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "budget",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "excess",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "x_max",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "y_max",
+       "kind": "other"
+      }
+     ],
+     "coupling_groups": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "issues": [],
+     "relations": [
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Y",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "Y",
+       "type": "exceeds_by"
+      }
+     ]
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "retries",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "a7080d0d158eb490",
+    "method_planned": {
+     "name": "Integer Linear Programming with PuLP + HiGHS solver. Formulate as: Minimize 50X + 30Y subject to X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500, X,Y >= 0 integer. Use PuLP's HiGHS backend for exact integer optimization.",
+     "steps": [
+      "Define decision variables X, Y as integer LpVariables with bounds [0,700] and [0,500]",
+      "Set objective: minimize 50*X + 30*Y",
+      "Add constraints: X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500",
+      "Solve with PuLP's HiGHS solver (pulp.HIWS_API, msg=0)",
+      "Extract optimal solution and objective value"
+     ],
+     "source": "candidate"
+    },
+    "method_actual": null
+   },
+   {
+    "execution_id": "ex_2b23fe680167",
+    "task_id": "orarla_1",
+    "strategy_id": "milp_pulp_highs",
+    "profile_snapshot": {
+     "problem_id": "orarla_1",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
+        "semantic_coupling": "null",
+        "temporal_coupling": "cir"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:milp_pulp_highs via pulp",
+      "outcome": "error",
+      "duration_s": 0.23310436680912971
+     }
+    ],
+    "quality": {
+     "feasible": false,
+     "gap": null,
+     "objective": null,
+     "problems": [],
+     "status": "error"
+    },
+    "cost": {
+     "llm_tokens": 319545.0,
+     "tool_calls": 8.0,
+     "solver_runtime_s": 0.23310436680912971,
+     "retries": 0.0,
+     "latency_s": 0.23466402292251587
+    },
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "Traceback (most recent call last): |     raise PulpSolverError(\"PuLP: cannot execute \" + self.path) | pulp.apis.core.PulpSolverError: PuLP: cannot execute highs",
+      "recovery_action": null,
+      "error_class": "model"
+     }
+    ],
+    "solver": {
+     "code_hash": "f92673e03b4157f6",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791364137.324898,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791364137.3273375,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_dd4eeec7d88e",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 302471.0,
+      "completion_tokens": 1917.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 317628.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791364039.3710804,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "budget",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "excess",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "x_max",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "y_max",
+       "kind": "other"
+      }
+     ],
+     "coupling_groups": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "issues": [],
+     "relations": [
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Y",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "Y",
+       "type": "exceeds_by"
+      }
+     ]
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "a7080d0d158eb490",
+    "method_planned": {
+     "name": "Integer Linear Programming with PuLP + HiGHS solver. Formulate as: Minimize 50X + 30Y subject to X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500, X,Y >= 0 integer. Use PuLP's HiGHS_CMD solver for exact integer optimization (pulp.HiGHS_CMD(msg=0)).",
+     "steps": [
+      "Define decision variables X, Y as integer LpVariables with bounds [0,700] and [0,500]",
+      "Set objective: minimize 50*X + 30*Y",
+      "Add constraints: X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500",
+      "Solve with pulp.HiGHS_CMD(msg=0)",
+      "Extract optimal solution and objective value"
+     ],
+     "source": "candidate"
+    },
+    "method_actual": null
+   },
+   {
+    "execution_id": "ex_45e6898fc1b3",
+    "task_id": "orarla_1",
+    "strategy_id": "milp_pulp_cbc",
+    "profile_snapshot": {
+     "problem_id": "orarla_1",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
+        "semantic_coupling": "null",
+        "temporal_coupling": "cir"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:milp_pulp_cbc via pulp",
+      "outcome": "optimal",
+      "duration_s": 0.22391574271023273
+     }
+    ],
+    "quality": {
+     "feasible": true,
+     "gap": null,
+     "objective": 10000.0,
+     "problems": [],
+     "status": "optimal"
+    },
+    "cost": {
+     "llm_tokens": 419786.0,
+     "tool_calls": 8.0,
+     "solver_runtime_s": 0.22391574271023273,
+     "retries": 0.0,
+     "latency_s": 0.22541374526917934
+    },
+    "failures": [],
+    "solver": {
+     "code_hash": "a0131e5ea820c7b7",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791364140.6360488,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791364140.6379638,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_962efe4f0b67",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 396834.0,
+      "completion_tokens": 2761.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 417025.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "method_receipt": {
+      "action_id": "ac_962efe4f0b67",
+      "method": {
+       "extra": {
+        "solver": "pulp",
+        "strategy_id": "milp_pulp_highs"
+       },
+       "name": "Integer Linear Programming with PuLP + CBC solver",
+       "steps": []
+      },
+      "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
+     },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "X": 200,
-      "Y": 0
+      "X": 200.0,
+      "Y": 0.0
      },
      "task_check": {
-      "action_id": "ac_5130af296680",
-      "checked_at": 1791303774.8443756,
+      "action_id": "ac_a5f442c1c37e",
+      "checked_at": 1791364091.1056967,
       "checks": [
        {
         "check": "reference_status",
@@ -134,7 +578,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_d2fafa948913",
+      "execution_id": "ex_45e6898fc1b3",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -159,10 +603,375 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791303767.8542678,
+    "created_at": 1791364082.271104,
     "source": "executed",
     "cir_snapshot": {
-     "constraints": [],
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "budget",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "excess",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "x_max",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "y_max",
+       "kind": "other"
+      }
+     ],
+     "coupling_groups": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "issues": [],
+     "relations": [
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Y",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "Y",
+       "type": "exceeds_by"
+      }
+     ]
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "retries",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "a7080d0d158eb490",
+    "method_planned": {
+     "name": "Integer Linear Programming with PuLP + CBC solver. Formulate as: Minimize 50X + 30Y subject to X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500, X,Y >= 0 integer. Use PuLP's bundled CBC solver (pulp.PULP_CBC_CMD(msg=0)) for exact integer optimization.",
+     "steps": [
+      "Define decision variables X, Y as integer LpVariables with bounds [0,700] and [0,500]",
+      "Set objective: minimize 50*X + 30*Y",
+      "Add constraints: X + Y <= 1000, X - Y >= 200, X <= 700, Y <= 500",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and objective value"
+     ],
+     "source": "candidate"
+    },
+    "method_actual": {
+     "name": "Integer Linear Programming with PuLP + CBC solver",
+     "steps": [],
+     "extra": {
+      "solver": "pulp",
+      "strategy_id": "milp_pulp_highs"
+     }
+    }
+   },
+   {
+    "execution_id": "ex_f2b6816de9bf",
+    "task_id": "orarla_2",
+    "strategy_id": "milp_pulp_cbc",
+    "profile_snapshot": {
+     "problem_id": "orarla_2",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": null,
+     "temporal_coupling": null,
+     "route_complexity": null,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "null",
+        "route_complexity": "null",
+        "semantic_coupling": "null",
+        "temporal_coupling": "null"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:milp_pulp_cbc via pulp",
+      "outcome": "optimal",
+      "duration_s": 0.2487946804612875
+     },
+     {
+      "action": "method:Define decision variables X, Y as integer LpVariables with non-negative bounds",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Set objective: minimize 50*X + 100*Y",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: X + Y <= 2000 (total budget)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Extract optimal solution and total cost",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     }
+    ],
+    "quality": {
+     "feasible": true,
+     "gap": 0.0,
+     "objective": 8350.0,
+     "problems": [],
+     "status": "optimal"
+    },
+    "cost": {
+     "llm_tokens": 543544.0,
+     "tool_calls": 17.0,
+     "solver_runtime_s": 0.2487946804612875,
+     "retries": 0.0,
+     "latency_s": 0.2503017857670784
+    },
+    "failures": [],
+    "solver": {
+     "code_hash": "a2ed199c8e817b15",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791364630.9989154,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791364631.0050247,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_739437c66327",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 484994.0,
+      "completion_tokens": 15088.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 528456.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "method_receipt": {
+      "action_id": "ac_739437c66327",
+      "method": {
+       "extra": {
+        "model_math": {
+         "constraints": [
+          "X + Y <= 2000",
+          "3*X - 2*Y >= 500",
+          "X >= 0",
+          "Y >= 0",
+          "X,Y integer"
+         ],
+         "objective": "min 50*X + 100*Y"
+        },
+        "solver": "pulp",
+        "solver_backend": "CBC",
+        "strategy_id": "milp_pulp_cbc"
+       },
+       "name": "",
+       "steps": [
+        "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+        "Set objective: minimize 50*X + 100*Y",
+        "Add constraint: X + Y <= 2000 (total budget)",
+        "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+        "Solve with pulp.PULP_CBC_CMD(msg=0)",
+        "Extract optimal solution and total cost"
+       ]
+      },
+      "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
+     },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "solution_variables": {
+      "X": 167.0,
+      "Y": 0.0
+     },
+     "task_check": {
+      "action_id": "ac_2a75fddccb27",
+      "checked_at": 1791364607.2167852,
+      "checks": [
+       {
+        "check": "reference_status",
+        "expected": "optimal",
+        "observed": "optimal",
+        "ok": true,
+        "source": "framework"
+       },
+       {
+        "abs_diff": 0.0,
+        "check": "reference_objective",
+        "observed": 8350.0,
+        "ok": true,
+        "reference": 8350.0,
+        "source": "framework",
+        "tolerance": 0.00835
+       }
+      ],
+      "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
+      "diffs": [],
+      "episode_id": "ep1",
+      "execution_id": "ex_f2b6816de9bf",
+      "intent": null,
+      "reference_source": {
+       "declared": null,
+       "independent": false,
+       "note": "the caller did not state where the reference came from; an UNSTATED source is treated as self-derived — a pass is not evidence the answer satisfies the task. Declare reference_source=bench_declared|independent|self_derived to say which",
+       "source": null,
+       "version": null
+      },
+      "scope": {
+       "basis": [
+        "reference_objective",
+        "reference_status"
+       ],
+       "unchecked": [
+        "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+        "constraint satisfaction not declared as a probe or a recomputation"
+       ]
+      },
+      "staged": true,
+      "state": "passed",
+      "task_id": "orarla_2"
+     },
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791364603.253908,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "budget_limit",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "reach_freq",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "nonneg_X",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "nonneg_Y",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "int_X",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "int_Y",
+       "kind": "other"
+      }
+     ],
      "coupling_groups": [],
      "decisions": [],
      "entities": [
@@ -175,21 +984,6 @@
        "attrs": {},
        "kind": "other",
        "name": "Y"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "budget_limit"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "X_max"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "Y_max"
       }
      ],
      "issues": [],
@@ -212,268 +1006,15 @@
        "detail": "",
        "evidence": "structural",
        "source": "X",
-       "target": "Y",
-       "type": "excess_constraint"
-      }
-     ]
-    },
-    "cost_measured": [
-     "latency_s",
-     "llm_tokens",
-     "retries",
-     "solver_runtime_s",
-     "tool_calls"
-    ],
-    "measurement_scope": "attempt",
-    "solver_runtime_provenance": "reported",
-    "prediction_snapshot": null,
-    "task_text_digest": "497988b27bea0881",
-    "method_planned": {
-     "name": "Direct enumeration: analyze constraint structure to find analytical solution; exploit monotonicity and bounded integer domain.",
-     "steps": [
-      "Analyze constraints: X >= 200 from X - Y >= 200 and Y >= 0",
-      "To minimize 50X + 30Y, prefer smaller X and Y values",
-      "At X=200, Y=0 satisfies all constraints with minimum cost",
-      "Verify no better solution exists at lower X values",
-      "Return solution analytically"
-     ],
-     "source": "candidate"
-    },
-    "method_actual": null
-   },
-   {
-    "execution_id": "ex_b6b4275c9777",
-    "task_id": "orarla_2",
-    "strategy_id": "direct_milp_2var",
-    "profile_snapshot": {
-     "problem_id": "orarla_2",
-     "family": "planning",
-     "problem_class": "unknown",
-     "scale_features": {},
-     "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
-     "risk_features": {},
-     "source": "derived",
-     "annotations": {
-      "profiling": {
-       "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
-        "semantic_coupling": "null",
-        "temporal_coupling": "cir"
-       }
-      }
-     }
-    },
-    "trajectory": [
-     {
-      "action": "execute:direct_milp_2var via pulp",
-      "outcome": "optimal",
-      "duration_s": 0.1901810821145773
-     }
-    ],
-    "quality": {
-     "feasible": true,
-     "gap": 0.0,
-     "objective": 167.0,
-     "problems": [],
-     "status": "optimal"
-    },
-    "cost": {
-     "llm_tokens": 1000504.0,
-     "tool_calls": 30.0,
-     "solver_runtime_s": 0.1901810821145773,
-     "retries": 0.0,
-     "latency_s": 0.1923897210508585
-    },
-    "failures": [],
-    "solver": {
-     "code_hash": "9634d4276561b024",
-     "name": "pulp"
-    },
-    "execution_features": {
-     "cost_provenance": {
-      "llm_tokens": {
-       "amended_at": 1791304462.3722274,
-       "basis": "provider_total",
-       "mode": "replace",
-       "source": "provider_usage"
-      },
-      "tool_calls": {
-       "amended_at": 1791304462.3748589,
-       "mode": "replace",
-       "source": "agent_observed"
-      }
-     },
-     "execution_config": {
-      "action_id": "ac_9735ce0d5074",
-      "executor_configured": {
-       "solver_timeout_s": 60.0
-      },
-      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
-      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
-      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
-      "sources": {
-       "script_timeout_s": "executor",
-       "solver": "executor",
-       "solver_timeout_s": "executor_configured"
-      },
-      "stale_result_cleared": true,
-      "values": {
-       "script_timeout_s": 120.0,
-       "solver": "pulp"
-      }
-     },
-     "host_usage": {
-      "basis": "provider_total",
-      "cached_tokens": 915708.0,
-      "completion_tokens": 24384.0,
-      "host": "openclaw",
-      "model": "minimax/MiniMax-M2.7",
-      "model_calls": null,
-      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 976120.0,
-      "provenance": {
-       "llm_tokens": "provider_usage",
-       "tool_calls": "agent_observed"
-      },
-      "reasoning_tokens": null,
-      "schema": "or-host-usage/1",
-      "scope": "attempt",
-      "tool_calls_lower_bound": 1.0
-     },
-     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
-     "solution_variables": {
-      "budget_X": 167.0,
-      "budget_Y": 0.0
-     },
-     "task_check": {
-      "action_id": "ac_204664b08e6f",
-      "checked_at": 1791304393.2657382,
-      "checks": [
-       {
-        "check": "reference_status",
-        "expected": "optimal",
-        "observed": "optimal",
-        "ok": true,
-        "source": "framework"
-       },
-       {
-        "abs_diff": 8183.0,
-        "check": "reference_objective",
-        "observed": 167.0,
-        "ok": false,
-        "reference": 8350.0,
-        "source": "framework",
-        "tolerance": 0.00835
-       }
-      ],
-      "conclusion": "the objective does not match the reference within 0.00835",
-      "diffs": [
-       {
-        "abs_diff": 8183.0,
-        "basis": "reference_objective",
-        "expected": 8350.0,
-        "observed": 167.0,
-        "reason": "the objective differs from the reference by 8183, outside the tolerance 0.00835",
-        "tolerance": 0.00835
-       }
-      ],
-      "episode_id": "ep1",
-      "execution_id": "ex_b6b4275c9777",
-      "intent": null,
-      "reference_source": {
-       "declared": null,
-       "independent": false,
-       "note": "the caller did not state where the reference came from; an UNSTATED source is treated as self-derived — a pass is not evidence the answer satisfies the task. Declare reference_source=bench_declared|independent|self_derived to say which",
-       "source": null,
-       "version": null
-      },
-      "scope": {
-       "basis": [
-        "reference_objective",
-        "reference_status"
-       ],
-       "unchecked": [
-        "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
-        "constraint satisfaction not declared as a probe or a recomputation"
-       ]
-      },
-      "staged": true,
-      "state": "failed",
-      "task_id": "orarla_2"
-     },
-     "tool_calls_lower_bound": 1
-    },
-    "created_at": 1791304390.133243,
-    "source": "executed",
-    "cir_snapshot": {
-     "constraints": [
-      {
-       "attrs": {},
-       "expr": "",
-       "id": "c1",
-       "kind": "other"
-      },
-      {
-       "attrs": {},
-       "expr": "",
-       "id": "c2",
-       "kind": "other"
-      }
-     ],
-     "coupling_groups": [],
-     "decisions": [
-      {
-       "attrs": {},
-       "indexes": [],
-       "kind": "other",
-       "name": "allocate_budget"
-      }
-     ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "budget_X"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "budget_Y"
-      }
-     ],
-     "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_X",
-       "target": "c1",
+       "target": "reach_freq",
        "type": "contributes_to"
       },
       {
        "detail": "",
        "evidence": "structural",
-       "source": "budget_Y",
-       "target": "c1",
+       "source": "Y",
+       "target": "reach_freq",
        "type": "contributes_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_X",
-       "target": "c2",
-       "type": "subject_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_Y",
-       "target": "c2",
-       "type": "subject_to"
       }
      ]
     },
@@ -487,319 +1028,268 @@
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "2fda85a8b2fc54f7",
+    "task_text_digest": "9f14ed80f1d75661",
     "method_planned": {
-     "name": "Direct MILP with PuLP solver",
+     "name": "Integer Linear Programming with PuLP + CBC solver",
      "steps": [
-      "Define integer decision variables: budget_X >= 0, budget_Y >= 0",
-      "Constraint 1 (total budget): budget_X + budget_Y <= 2000",
-      "Constraint 2 (reach): 3*(budget_X/50) - 2*(budget_Y/100) >= 500 => 3*budget_X - budget_Y >= 25000",
-      "Constraint 3 (non-negativity): budget_X >= 0, budget_Y >= 0",
-      "Objective: minimize budget_X + budget_Y",
-      "Call solver.solve() and check status"
+      "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+      "Set objective: minimize 50*X + 100*Y",
+      "Add constraint: X + Y <= 2000 (total budget)",
+      "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
      ],
+     "why": "Standard ILP formulation for this budget allocation problem. The constraints are linear, the objective is linear, and integer variables are required. PuLP+CBC is verified on similar orarla_1 planning tasks.",
      "source": "candidate"
     },
-    "method_actual": null
+    "method_actual": {
+     "name": "",
+     "steps": [
+      "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+      "Set objective: minimize 50*X + 100*Y",
+      "Add constraint: X + Y <= 2000 (total budget)",
+      "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
+     ],
+     "extra": {
+      "model_math": {
+       "constraints": [
+        "X + Y <= 2000",
+        "3*X - 2*Y >= 500",
+        "X >= 0",
+        "Y >= 0",
+        "X,Y integer"
+       ],
+       "objective": "min 50*X + 100*Y"
+      },
+      "solver": "pulp",
+      "solver_backend": "CBC",
+      "strategy_id": "milp_pulp_cbc"
+     }
+    }
    },
    {
-    "execution_id": "ex_27ea23e58213",
+    "execution_id": "ex_e9348fa866af",
     "task_id": "orarla_3",
-    "strategy_id": "enumeration_2var_bounded",
+    "strategy_id": "orarla_3_pure_python_enum",
     "profile_snapshot": {
      "problem_id": "orarla_3",
      "family": "planning",
      "problem_class": "unknown",
      "scale_features": {},
      "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
+     "resource_coupling": null,
+     "temporal_coupling": null,
+     "route_complexity": null,
      "risk_features": {},
      "source": "derived",
      "annotations": {
       "profiling": {
        "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
+        "resource_coupling": "null",
+        "route_complexity": "null",
         "semantic_coupling": "null",
-        "temporal_coupling": "cir"
+        "temporal_coupling": "null"
        }
       }
      }
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_bounded via python",
+      "action": "execute:orarla_3_pure_python_enum via Pure Python Enumeration",
+      "outcome": "error",
+      "duration_s": 0.0
+     }
+    ],
+    "quality": {
+     "feasible": false,
+     "gap": null,
+     "objective": null,
+     "problems": [],
+     "status": "error"
+    },
+    "cost": {
+     "llm_tokens": 441251.0,
+     "tool_calls": 16.0,
+     "solver_runtime_s": 0.0,
+     "retries": 0.0,
+     "latency_s": 0.0007588062435388565
+    },
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "security policy: open() may only access the workspace-local file named result.json (relative path, no directories)",
+      "recovery_action": null,
+      "error_class": "environment"
+     }
+    ],
+    "solver": {
+     "code_hash": "6e3f857b66e5d597",
+     "name": "Pure Python Enumeration"
+    },
+    "execution_features": {
+     "cost_notes": [
+      "the script never ran: no runtime was observed",
+      "the solve script was rejected before execution: no cost dimension was measured for this record"
+     ],
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791365458.2674546,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791365458.2692034,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 400740.0,
+      "completion_tokens": 7311.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 433940.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "runtime_checks": [
+      "the script never ran: no runtime was observed"
+     ]
+    },
+    "created_at": 1791365140.718575,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [],
+     "coupling_groups": [],
+     "decisions": [],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "advertising_spend"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "promotion_spend"
+      }
+     ],
+     "issues": [],
+     "relations": [
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "advertising_spend",
+       "target": "promotion_spend",
+       "type": "difference_bounded"
+      }
+     ]
+    },
+    "cost_measured": [
+     "llm_tokens",
+     "retries",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": null,
+    "prediction_snapshot": null,
+    "task_text_digest": "3a431888e9e42679",
+    "method_planned": {
+     "name": "Direct enumeration approach exploiting the small problem size. Since constraints are linear and variable domains are bounded (from constraints), we can enumerate feasible integer pairs and find minimum total spending. This is a fallback/verification method.",
+     "steps": [
+      "Parse problem constraints",
+      "Determine feasible bounds from constraints",
+      "Enumerate advertising_spend from 0 to 100",
+      "For each advertising value, compute required promotion to satisfy effectiveness",
+      "Check balance constraint and integer constraint",
+      "Track minimum total spending found",
+      "Output optimal solution"
+     ],
+     "source": "candidate"
+    },
+    "method_actual": null
+   },
+   {
+    "execution_id": "ex_3878ef05150c",
+    "task_id": "orarla_3",
+    "strategy_id": "orarla_3_pure_python_enum",
+    "profile_snapshot": {
+     "problem_id": "orarla_3",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": null,
+     "temporal_coupling": null,
+     "route_complexity": null,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "null",
+        "route_complexity": "null",
+        "semantic_coupling": "null",
+        "temporal_coupling": "null"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:orarla_3_pure_python_enum via Pure Python Enumeration",
       "outcome": "optimal",
-      "duration_s": 0.02656695246696472
+      "duration_s": 0.028152674436569214
      }
     ],
     "quality": {
      "feasible": true,
-     "gap": null,
+     "gap": 0.0,
      "objective": 34,
      "problems": [],
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 358465.0,
-     "tool_calls": 12.0,
-     "solver_runtime_s": 0.02656695246696472,
+     "llm_tokens": 302492.0,
+     "tool_calls": 7.0,
+     "solver_runtime_s": 0.028152674436569214,
      "retries": 0.0,
-     "latency_s": 0.027802636846899986
+     "latency_s": 0.029503293335437775
     },
     "failures": [],
     "solver": {
-     "code_hash": "767a95435e2d18cf",
-     "name": "python"
+     "code_hash": "f6a07de8236d19c5",
+     "name": "Pure Python Enumeration"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791305663.7768638,
+       "amended_at": 1791365466.8268604,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791305663.778867,
+       "amended_at": 1791365466.8291965,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_aebfb702b666",
-      "executor_configured": {
-       "solver_timeout_s": 60.0
-      },
-      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
-      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
-      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
-      "sources": {
-       "script_timeout_s": "executor",
-       "solver": "executor",
-       "solver_timeout_s": "executor_configured"
-      },
-      "values": {
-       "script_timeout_s": 120.0,
-       "solver": "python"
-      }
-     },
-     "host_usage": {
-      "basis": "provider_total",
-      "cached_tokens": 306546.0,
-      "completion_tokens": 5313.0,
-      "host": "openclaw",
-      "model": "minimax/MiniMax-M2.7",
-      "model_calls": null,
-      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 353152.0,
-      "provenance": {
-       "llm_tokens": "provider_usage",
-       "tool_calls": "agent_observed"
-      },
-      "reasoning_tokens": null,
-      "schema": "or-host-usage/1",
-      "scope": "attempt",
-      "tool_calls_lower_bound": 1.0
-     },
-     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
-     "solution_variables": {
-      "A": 0,
-      "P": 34
-     },
-     "task_check": {
-      "action_id": "ac_d04df94a5ccb",
-      "checked_at": 1791304755.9344702,
-      "checks": [
-       {
-        "check": "reference_status",
-        "expected": "optimal",
-        "observed": "optimal",
-        "ok": true,
-        "source": "framework"
-       },
-       {
-        "abs_diff": 134.0,
-        "check": "reference_objective",
-        "observed": 34.0,
-        "ok": false,
-        "reference": 168.0,
-        "source": "framework",
-        "tolerance": 0.000168
-       }
-      ],
-      "conclusion": "the objective does not match the reference within 0.000168",
-      "diffs": [
-       {
-        "abs_diff": 134.0,
-        "basis": "reference_objective",
-        "expected": 168.0,
-        "observed": 34.0,
-        "reason": "the objective differs from the reference by 134, outside the tolerance 0.000168",
-        "tolerance": 0.000168
-       }
-      ],
-      "episode_id": "ep1",
-      "execution_id": "ex_27ea23e58213",
-      "intent": null,
-      "reference_source": {
-       "declared": null,
-       "independent": false,
-       "note": "the caller did not state where the reference came from; an UNSTATED source is treated as self-derived — a pass is not evidence the answer satisfies the task. Declare reference_source=bench_declared|independent|self_derived to say which",
-       "source": null,
-       "version": null
-      },
-      "scope": {
-       "basis": [
-        "reference_objective",
-        "reference_status"
-       ],
-       "unchecked": [
-        "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
-        "constraint satisfaction not declared as a probe or a recomputation"
-       ]
-      },
-      "staged": true,
-      "state": "failed",
-      "task_id": "orarla_3"
-     },
-     "tool_calls_lower_bound": 1
-    },
-    "created_at": 1791304738.2309458,
-    "source": "executed",
-    "cir_snapshot": {
-     "constraints": [],
-     "coupling_groups": [],
-     "decisions": [
-      {
-       "attrs": {},
-       "indexes": [],
-       "kind": "other",
-       "name": "spend"
-      }
-     ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "A"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "P"
-      }
-     ],
-     "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "A",
-       "target": "P",
-       "type": "coupled_via_constraint"
-      }
-     ]
-    },
-    "cost_measured": [
-     "latency_s",
-     "llm_tokens",
-     "retries",
-     "solver_runtime_s",
-     "tool_calls"
-    ],
-    "measurement_scope": "attempt",
-    "solver_runtime_provenance": "wall_proxy",
-    "prediction_snapshot": null,
-    "task_text_digest": "d3384b8554f20d5d",
-    "method_planned": {
-     "name": "Analytical enumeration for bounded 2-variable integer LP: iterate feasible A values, compute minimum P from effectiveness constraint, find minimum A+P.",
-     "steps": [
-      "For A from 0 to 50 (bounded by A-P<=50 and P>=0), compute minimum integer P satisfying 2A+3P>=100",
-      "Among all feasible (A,P), pick minimum A+P",
-      "Return minimum total spending"
-     ],
-     "source": "candidate"
-    },
-    "method_actual": null
-   },
-   {
-    "execution_id": "ex_cdea4771022c",
-    "task_id": "orarla_3",
-    "strategy_id": "milp_highs_integer",
-    "profile_snapshot": {
-     "problem_id": "orarla_3",
-     "family": "planning",
-     "problem_class": "unknown",
-     "scale_features": {},
-     "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
-     "risk_features": {},
-     "source": "derived",
-     "annotations": {
-      "profiling": {
-       "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
-        "semantic_coupling": "null",
-        "temporal_coupling": "cir"
-       }
-      }
-     }
-    },
-    "trajectory": [
-     {
-      "action": "execute:milp_highs_integer via highspy",
-      "outcome": "error",
-      "duration_s": 0.23954345285892487
-     }
-    ],
-    "quality": {
-     "feasible": false,
-     "gap": null,
-     "objective": null,
-     "problems": [],
-     "status": "error"
-    },
-    "cost": {
-     "llm_tokens": 1457458.0,
-     "tool_calls": 23.0,
-     "solver_runtime_s": 0.23954345285892487,
-     "retries": 0.0,
-     "latency_s": 0.2412873227149248
-    },
-    "failures": [
-     {
-      "attempt": 1,
-      "error": "Traceback (most recent call last): | AttributeError: 'Highs' object has no attribute 'setObjectiveSense'. Did you mean: 'getObjectiveSense'?",
-      "recovery_action": null,
-      "error_class": "model"
-     }
-    ],
-    "solver": {
-     "code_hash": "8f816d12eb2ae820",
-     "name": "highspy"
-    },
-    "execution_features": {
-     "cost_provenance": {
-      "llm_tokens": {
-       "amended_at": 1791305664.3544023,
-       "basis": "provider_total",
-       "mode": "replace",
-       "source": "provider_usage"
-      },
-      "tool_calls": {
-       "amended_at": 1791305664.356173,
-       "mode": "replace",
-       "source": "agent_observed"
-      }
-     },
-     "execution_config": {
-      "action_id": "ac_ef1ae12c4c5c",
+      "action_id": "ac_60409f25d3e9",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -814,355 +1304,18 @@
       "stale_result_cleared": true,
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "highspy"
+       "solver": "Pure Python Enumeration"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 1347564.0,
-      "completion_tokens": 25326.0,
+      "cached_tokens": 277179.0,
+      "completion_tokens": 8479.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 1432132.0,
-      "provenance": {
-       "llm_tokens": "provider_usage",
-       "tool_calls": "agent_observed"
-      },
-      "reasoning_tokens": null,
-      "schema": "or-host-usage/1",
-      "scope": "attempt",
-      "tool_calls_lower_bound": 1.0
-     },
-     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
-     "tool_calls_lower_bound": 1
-    },
-    "created_at": 1791305339.072563,
-    "source": "executed",
-    "cir_snapshot": {
-     "constraints": [],
-     "coupling_groups": [],
-     "decisions": [
-      {
-       "attrs": {},
-       "indexes": [],
-       "kind": "other",
-       "name": "spend"
-      }
-     ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "A"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "P"
-      }
-     ],
-     "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "A",
-       "target": "P",
-       "type": "coupled_via_constraint"
-      }
-     ]
-    },
-    "cost_measured": [
-     "latency_s",
-     "llm_tokens",
-     "retries",
-     "solver_runtime_s",
-     "tool_calls"
-    ],
-    "measurement_scope": "attempt",
-    "solver_runtime_provenance": "wall_proxy",
-    "prediction_snapshot": null,
-    "task_text_digest": "d3384b8554f20d5d",
-    "method_planned": {
-     "name": "MILP with Highs: integer variables A (advertising), P (promotion); constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P. Uses highspy addVariable/addConstr API.",
-     "steps": [
-      "Define integer variables A, P with lower bound 0",
-      "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
-      "Add constraint: A - P <= 50 (balance)",
-      "Set objective: minimize A + P",
-      "Set mip_rel_gap=0 for exact solution",
-      "Solve and extract solution"
-     ],
-     "source": "candidate"
-    },
-    "method_actual": null
-   },
-   {
-    "execution_id": "ex_ccc5b2c8ec56",
-    "task_id": "orarla_3",
-    "strategy_id": "milp_highs_integer",
-    "profile_snapshot": {
-     "problem_id": "orarla_3",
-     "family": "planning",
-     "problem_class": "unknown",
-     "scale_features": {},
-     "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
-     "risk_features": {},
-     "source": "derived",
-     "annotations": {
-      "profiling": {
-       "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
-        "semantic_coupling": "null",
-        "temporal_coupling": "cir"
-       }
-      }
-     }
-    },
-    "trajectory": [
-     {
-      "action": "execute:milp_highs_integer via highspy",
-      "outcome": "error",
-      "duration_s": 0.18220215290784836
-     }
-    ],
-    "quality": {
-     "feasible": false,
-     "gap": null,
-     "objective": null,
-     "problems": [],
-     "status": "error"
-    },
-    "cost": {
-     "llm_tokens": 831277.0,
-     "tool_calls": 10.0,
-     "solver_runtime_s": 0.18220215290784836,
-     "retries": 0.0,
-     "latency_s": 0.18378258123993874
-    },
-    "failures": [
-     {
-      "attempt": 1,
-      "error": "Traceback (most recent call last): | AttributeError: 'highspy._core.HighsInfo' object has no attribute 'running_time'",
-      "recovery_action": null,
-      "error_class": "model"
-     }
-    ],
-    "solver": {
-     "code_hash": "c85f428ca4646e23",
-     "name": "highspy"
-    },
-    "execution_features": {
-     "cost_provenance": {
-      "llm_tokens": {
-       "amended_at": 1791305665.0899866,
-       "basis": "provider_total",
-       "mode": "replace",
-       "source": "provider_usage"
-      },
-      "tool_calls": {
-       "amended_at": 1791305665.0937579,
-       "mode": "replace",
-       "source": "agent_observed"
-      }
-     },
-     "execution_config": {
-      "action_id": "ac_4014b76c6c27",
-      "executor_configured": {
-       "solver_timeout_s": 60.0
-      },
-      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
-      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
-      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
-      "sources": {
-       "script_timeout_s": "executor",
-       "solver": "executor",
-       "solver_timeout_s": "executor_configured"
-      },
-      "values": {
-       "script_timeout_s": 120.0,
-       "solver": "highspy"
-      }
-     },
-     "host_usage": {
-      "basis": "provider_total",
-      "cached_tokens": 792171.0,
-      "completion_tokens": 5450.0,
-      "host": "openclaw",
-      "model": "minimax/MiniMax-M2.7",
-      "model_calls": null,
-      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 825827.0,
-      "provenance": {
-       "llm_tokens": "provider_usage",
-       "tool_calls": "agent_observed"
-      },
-      "reasoning_tokens": null,
-      "schema": "or-host-usage/1",
-      "scope": "attempt",
-      "tool_calls_lower_bound": 1.0
-     },
-     "tool_calls_lower_bound": 1
-    },
-    "created_at": 1791305510.556153,
-    "source": "executed",
-    "cir_snapshot": {
-     "constraints": [],
-     "coupling_groups": [],
-     "decisions": [
-      {
-       "attrs": {},
-       "indexes": [],
-       "kind": "other",
-       "name": "spend"
-      }
-     ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "A"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "P"
-      }
-     ],
-     "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "A",
-       "target": "P",
-       "type": "coupled_via_constraint"
-      }
-     ]
-    },
-    "cost_measured": [
-     "latency_s",
-     "llm_tokens",
-     "solver_runtime_s",
-     "tool_calls"
-    ],
-    "measurement_scope": "attempt",
-    "solver_runtime_provenance": "wall_proxy",
-    "prediction_snapshot": null,
-    "task_text_digest": "d3384b8554f20d5d",
-    "method_planned": {
-     "name": "MILP with Highs: integer variables A (advertising), P (promotion); constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P. Uses highspy addVariable/addConstr API.",
-     "steps": [
-      "Define integer variables A, P with lower bound 0",
-      "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
-      "Add constraint: A - P <= 50 (balance)",
-      "Set objective: minimize A + P",
-      "Set mip_rel_gap=0 for exact solution",
-      "Solve and extract solution"
-     ],
-     "source": "candidate"
-    },
-    "method_actual": null
-   },
-   {
-    "execution_id": "ex_dbb149ab1846",
-    "task_id": "orarla_3",
-    "strategy_id": "milp_highs_integer",
-    "profile_snapshot": {
-     "problem_id": "orarla_3",
-     "family": "planning",
-     "problem_class": "unknown",
-     "scale_features": {},
-     "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
-     "risk_features": {},
-     "source": "derived",
-     "annotations": {
-      "profiling": {
-       "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
-        "semantic_coupling": "null",
-        "temporal_coupling": "cir"
-       }
-      }
-     }
-    },
-    "trajectory": [
-     {
-      "action": "execute:milp_highs_integer via highspy",
-      "outcome": "optimal",
-      "duration_s": 0.11466963775455952
-     }
-    ],
-    "quality": {
-     "feasible": true,
-     "gap": 0.0,
-     "objective": 34.0,
-     "problems": [],
-     "status": "optimal"
-    },
-    "cost": {
-     "llm_tokens": 901887.0,
-     "tool_calls": 9.0,
-     "solver_runtime_s": 0.0009019374847412109,
-     "retries": 0.0,
-     "latency_s": 0.11604750342667103
-    },
-    "failures": [],
-    "solver": {
-     "code_hash": "8e3003d4f6ccc9ca",
-     "name": "highspy"
-    },
-    "execution_features": {
-     "cost_provenance": {
-      "llm_tokens": {
-       "amended_at": 1791305666.2541385,
-       "basis": "provider_total",
-       "mode": "replace",
-       "source": "provider_usage"
-      },
-      "tool_calls": {
-       "amended_at": 1791305666.2559726,
-       "mode": "replace",
-       "source": "agent_observed"
-      }
-     },
-     "execution_config": {
-      "action_id": "ac_510f6c651ccd",
-      "executor_configured": {
-       "solver_timeout_s": 60.0
-      },
-      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
-      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
-      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
-      "sources": {
-       "script_timeout_s": "executor",
-       "solver": "executor",
-       "solver_timeout_s": "executor_configured"
-      },
-      "values": {
-       "script_timeout_s": 120.0,
-       "solver": "highspy"
-      }
-     },
-     "host_usage": {
-      "basis": "provider_total",
-      "cached_tokens": 864026.0,
-      "completion_tokens": 3078.0,
-      "host": "openclaw",
-      "model": "minimax/MiniMax-M2.7",
-      "model_calls": null,
-      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 898809.0,
+      "prompt_tokens": 294013.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -1173,12 +1326,12 @@
       "tool_calls_lower_bound": 1.0
      },
      "solution_variables": {
-      "A": 0,
-      "P": 34
+      "advertising_spend": 0,
+      "promotion_spend": 34
      },
      "task_check": {
-      "action_id": "ac_446e2f251486",
-      "checked_at": 1791305610.801073,
+      "action_id": "ac_f330b11af8c7",
+      "checked_at": 1791365260.5786095,
       "checks": [
        {
         "check": "reference_status",
@@ -1209,7 +1362,7 @@
        }
       ],
       "episode_id": "ep1",
-      "execution_id": "ex_dbb149ab1846",
+      "execution_id": "ex_3878ef05150c",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -1234,29 +1387,22 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791305606.0703876,
+    "created_at": 1791365255.9807162,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [],
      "coupling_groups": [],
-     "decisions": [
-      {
-       "attrs": {},
-       "indexes": [],
-       "kind": "other",
-       "name": "spend"
-      }
-     ],
+     "decisions": [],
      "entities": [
       {
        "attrs": {},
        "kind": "other",
-       "name": "A"
+       "name": "advertising_spend"
       },
       {
        "attrs": {},
        "kind": "other",
-       "name": "P"
+       "name": "promotion_spend"
       }
      ],
      "issues": [],
@@ -1264,9 +1410,9 @@
       {
        "detail": "",
        "evidence": "structural",
-       "source": "A",
-       "target": "P",
-       "type": "coupled_via_constraint"
+       "source": "advertising_spend",
+       "target": "promotion_spend",
+       "type": "difference_bounded"
       }
      ]
     },
@@ -1277,27 +1423,28 @@
      "tool_calls"
     ],
     "measurement_scope": "attempt",
-    "solver_runtime_provenance": "reported",
+    "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "d3384b8554f20d5d",
+    "task_text_digest": "3a431888e9e42679",
     "method_planned": {
-     "name": "MILP with Highs: integer variables A (advertising), P (promotion); constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P. Uses highspy addVariable/addConstr API.",
+     "name": "Direct enumeration approach exploiting the small problem size. Since constraints are linear and variable domains are bounded (from constraints), we can enumerate feasible integer pairs and find minimum total spending. This is a fallback/verification method.",
      "steps": [
-      "Define integer variables A, P with lower bound 0",
-      "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
-      "Add constraint: A - P <= 50 (balance)",
-      "Set objective: minimize A + P",
-      "Set mip_rel_gap=0 for exact solution",
-      "Solve and extract solution"
+      "Parse problem constraints",
+      "Determine feasible bounds from constraints",
+      "Enumerate advertising_spend from 0 to 100",
+      "For each advertising value, compute required promotion to satisfy effectiveness",
+      "Check balance constraint and integer constraint",
+      "Track minimum total spending found",
+      "Output optimal solution"
      ],
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_db34267ccd28",
+    "execution_id": "ex_944519723964",
     "task_id": "orarla_4",
-    "strategy_id": "enumeration_2var_ilp_direct",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_4",
      "family": "planning",
@@ -1322,29 +1469,9 @@
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_ilp_direct via builtin",
+      "action": "execute:milp_pulp_cbc via PuLP+CBC",
       "outcome": "optimal",
-      "duration_s": 0.025406932458281517
-     },
-     {
-      "action": "method:Enumerate Y from 0 to floor((1000-300)/3)=233",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:For each Y, set X = max(0, 2Y+300) to satisfy coupling binding",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Pick (X,Y) minimizing 4X+3Y",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Solution: X=300, Y=0, obj=1200",
-      "outcome": "optimal",
-      "duration_s": 0.0
+      "duration_s": 0.33096617832779884
      }
     ],
     "quality": {
@@ -1355,33 +1482,33 @@
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 805800.0,
-     "tool_calls": 25.0,
-     "solver_runtime_s": 0.0,
+     "llm_tokens": 625033.0,
+     "tool_calls": 17.0,
+     "solver_runtime_s": 0.042613,
      "retries": 0.0,
-     "latency_s": 0.026928408071398735
+     "latency_s": 0.33273393474519253
     },
     "failures": [],
     "solver": {
-     "code_hash": "3c890057df8cc190",
-     "name": "builtin"
+     "code_hash": "b2c0c8a3fc4914dc",
+     "name": "PuLP+CBC"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791306153.9005046,
+       "amended_at": 1791365768.4737794,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791306153.9025748,
+       "amended_at": 1791365768.4765005,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_f08c47a9ad5a",
+      "action_id": "ac_7673c83ac1d2",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -1395,18 +1522,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "builtin"
+       "solver": "PuLP+CBC"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 742214.0,
-      "completion_tokens": 7101.0,
+      "cached_tokens": 449530.0,
+      "completion_tokens": 4546.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 798699.0,
+      "prompt_tokens": 620487.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -1417,31 +1544,25 @@
       "tool_calls_lower_bound": 1.0
      },
      "method_receipt": {
-      "action_id": "ac_f08c47a9ad5a",
+      "action_id": "ac_7673c83ac1d2",
       "method": {
        "extra": {
-        "method": "Analytical enumeration for bounded 2-variable ILP",
-        "solver": "builtin",
-        "strategy_id": "enumeration_2var_ilp_direct"
+        "formulation": "Min 4X + 3Y s.t. X + Y <= 1000, X - 2*Y >= 300, X,Y >= 0 integer",
+        "solver": "pulp.PULP_CBC_CMD"
        },
-       "name": "",
-       "steps": [
-        "Enumerate Y from 0 to floor((1000-300)/3)=233",
-        "For each Y, set X = max(0, 2Y+300) to satisfy coupling binding",
-        "Pick (X,Y) minimizing 4X+3Y",
-        "Solution: X=300, Y=0, obj=1200"
-       ]
+       "name": "Integer Linear Programming with PuLP + CBC solver",
+       "steps": []
       },
       "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
      },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "X": 300,
-      "Y": 0
+      "X": 300.0,
+      "Y": 0.0
      },
      "task_check": {
-      "action_id": "ac_66f72d0db3f4",
-      "checked_at": 1791306140.7603285,
+      "action_id": "ac_74f44a3e7e37",
+      "checked_at": 1791365748.412,
       "checks": [
        {
         "check": "reference_status",
@@ -1463,7 +1584,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_db34267ccd28",
+      "execution_id": "ex_944519723964",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -1488,23 +1609,10 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791306133.5557728,
+    "created_at": 1791365738.436234,
     "source": "executed",
     "cir_snapshot": {
-     "constraints": [
-      {
-       "attrs": {},
-       "expr": "",
-       "id": "c1",
-       "kind": "other"
-      },
-      {
-       "attrs": {},
-       "expr": "",
-       "id": "c2",
-       "kind": "other"
-      }
-     ],
+     "constraints": [],
      "coupling_groups": [],
      "decisions": [],
      "entities": [
@@ -1527,20 +1635,6 @@
        "source": "X",
        "target": "Y",
        "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "c1",
-       "type": "constrains"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "c1",
-       "type": "constrains"
       }
      ]
     },
@@ -1554,41 +1648,32 @@
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "reported",
     "prediction_snapshot": null,
-    "task_text_digest": "aaf893405e8fcfd0",
+    "task_text_digest": "f26977126d185c93",
     "method_planned": {
-     "name": "Analytical enumeration for bounded 2-variable ILP",
+     "name": "Integer Linear Programming with PuLP + CBC solver. Formulate as: Minimize 4X + 3Y subject to X + Y <= 1000, X >= 2Y + 300 (i.e., X - 2Y >= 300), X,Y >= 0 integer. Solve with pulp.PULP_CBC_CMD(msg=0) for exact optimal integer solution.",
      "steps": [
-      "Identify feasible region: X >= 2Y + 300 (binding constraint), X + Y <= 1000",
-      "Since c_X=4 > c_Y=3 and we minimize cost, prefer Y=0 (lower coefficient)",
-      "Set Y=0 => X >= 300 from coupling, X <= 1000 from budget",
-      "Minimum cost at Y=0, X=300: objective = 4*300 + 3*0 = 1200",
-      "Verify: X+Y=300<=1000, X-2Y=300>=300, both integers",
-      "Return X=300, Y=0, objective=1200"
+      "Define decision variables X, Y as integer LpVariables with non-negative lower bounds",
+      "Set objective: minimize 4*X + 3*Y",
+      "Add constraint: X + Y <= 1000 (total resources)",
+      "Add constraint: X - 2*Y >= 300 (X at least twice Y plus 300)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
      ],
-     "source": "candidate",
-     "extra": {
-      "description": "Analytical solution for 2-variable bounded integer LP with minimum-excess constraint"
-     }
+     "source": "candidate"
     },
     "method_actual": {
-     "name": "",
-     "steps": [
-      "Enumerate Y from 0 to floor((1000-300)/3)=233",
-      "For each Y, set X = max(0, 2Y+300) to satisfy coupling binding",
-      "Pick (X,Y) minimizing 4X+3Y",
-      "Solution: X=300, Y=0, obj=1200"
-     ],
+     "name": "Integer Linear Programming with PuLP + CBC solver",
+     "steps": [],
      "extra": {
-      "method": "Analytical enumeration for bounded 2-variable ILP",
-      "solver": "builtin",
-      "strategy_id": "enumeration_2var_ilp_direct"
+      "formulation": "Min 4X + 3Y s.t. X + Y <= 1000, X - 2*Y >= 300, X,Y >= 0 integer",
+      "solver": "pulp.PULP_CBC_CMD"
      }
     }
    },
    {
-    "execution_id": "ex_55978cf735a2",
+    "execution_id": "ex_1fd4124ed3fb",
     "task_id": "orarla_5",
-    "strategy_id": "enumeration_budget_2var",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_5",
      "family": "planning",
@@ -1613,46 +1698,46 @@
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_budget_2var via custom",
+      "action": "execute:milp_pulp_cbc via PuLP+CBC",
       "outcome": "optimal",
-      "duration_s": 0.028647927567362785
+      "duration_s": 0.1797925941646099
      }
     ],
     "quality": {
      "feasible": true,
      "gap": 0.0,
-     "objective": 450000,
+     "objective": 450000.0,
      "problems": [],
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 669958.0,
+     "llm_tokens": 525228.0,
      "tool_calls": 16.0,
-     "solver_runtime_s": 0.028647927567362785,
+     "solver_runtime_s": 0.1797925941646099,
      "retries": 0.0,
-     "latency_s": 0.029978683218359947
+     "latency_s": 0.18114718794822693
     },
     "failures": [],
     "solver": {
-     "code_hash": "b9aa774d34777e70",
-     "name": "custom"
+     "code_hash": "a8981615e7009f0e",
+     "name": "PuLP+CBC"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791306522.597027,
+       "amended_at": 1791366193.0893714,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791306522.5991943,
+       "amended_at": 1791366193.0913746,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_cd6781beeb02",
+      "action_id": "ac_d5fed6f095a7",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -1666,18 +1751,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "custom"
+       "solver": "PuLP+CBC"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 608810.0,
-      "completion_tokens": 7333.0,
+      "cached_tokens": 471537.0,
+      "completion_tokens": 10070.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 662625.0,
+      "prompt_tokens": 515158.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -1689,12 +1774,12 @@
      },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "budget_X": 0,
-      "budget_Y": 3000
+      "X": 0.0,
+      "Y": 3000.0
      },
      "task_check": {
-      "action_id": "ac_e26b7c3405e6",
-      "checked_at": 1791306512.2598205,
+      "action_id": "ac_f7dffa38614e",
+      "checked_at": 1791366178.171071,
       "checks": [
        {
         "check": "reference_status",
@@ -1716,7 +1801,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_55978cf735a2",
+      "execution_id": "ex_1fd4124ed3fb",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -1741,49 +1826,9 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791306478.974441,
+    "created_at": 1791366091.9306424,
     "source": "executed",
-    "cir_snapshot": {
-     "constraints": [],
-     "coupling_groups": [],
-     "decisions": [],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "budget_X"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "budget_Y"
-      }
-     ],
-     "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_X",
-       "target": "budget_Y",
-       "type": "coupled_via_total_budget"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_X",
-       "target": "budget_Y",
-       "type": "coupled_via_effectiveness"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "budget_X",
-       "target": "budget_Y",
-       "type": "coupled_via_balance"
-      }
-     ]
-    },
+    "cir_snapshot": null,
     "cost_measured": [
      "latency_s",
      "llm_tokens",
@@ -1794,88 +1839,97 @@
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "8ca8c472821a3db5",
+    "task_text_digest": "fbd13ff91773dddc",
     "method_planned": {
-     "name": "Direct enumeration: since X,Y are bounded (X<=5000 from X+Y<=5000), iterate X from 0 to 5000, compute minimum feasible Y from effectiveness constraint (Y >= ceil((12000-3X)/4)), check balance and budget constraints, pick minimum cost 200X+150Y. Exploits small 2-var domain.",
+     "name": "Integer Linear Programming with PuLP + CBC solver. Formulate: Min 200*X + 150*Y subject to X+Y <= 5000, 3X+4Y >= 12000, 5X-2Y <= 10000, X,Y integer >= 0. Solve with pulp.PULP_CBC_CMD(msg=0).",
      "steps": [
-      "X ranges 0..5000 (bounded by total budget)",
-      "For each X, compute Y_min = max(0, ceil((12000-3X)/4)) to satisfy effectiveness",
-      "Also need Y <= 5000-X from budget, and 5X-2Y <= 10000 from balance",
-      "Evaluate cost = 200*X + 150*Y_min if feasible",
-      "Pick minimum cost feasible (X,Y)"
+      "Define decision variables X, Y as integer LpVariables with non-negative lower bounds",
+      "Set objective: minimize 200*X + 150*Y",
+      "Add constraint: X + Y <= 5000 (total budget)",
+      "Add constraint: 3*X + 4*Y >= 12000 (minimum effectiveness score)",
+      "Add constraint: 5*X - 2*Y <= 10000 (balance constraint)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
      ],
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_ee1862e94269",
+    "execution_id": "ex_709b89d53beb",
     "task_id": "orarla_6",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "strategy_id": "orarla_6_milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_6",
      "family": "planning",
      "problem_class": "unknown",
      "scale_features": {},
      "semantic_coupling": null,
-     "resource_coupling": null,
-     "temporal_coupling": null,
-     "route_complexity": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
      "risk_features": {},
      "source": "derived",
      "annotations": {
       "profiling": {
        "origin": {
-        "resource_coupling": "null",
-        "route_complexity": "null",
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
         "semantic_coupling": "null",
-        "temporal_coupling": "null"
+        "temporal_coupling": "cir"
        }
       }
      }
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_budget_effectiveness via python enumeration",
-      "outcome": "optimal",
-      "duration_s": 0.025307144969701767
+      "action": "execute:orarla_6_milp_pulp_cbc via pulp",
+      "outcome": "error",
+      "duration_s": 0.45347109250724316
      }
     ],
     "quality": {
-     "feasible": true,
-     "gap": 0.0,
-     "objective": 10000.0,
+     "feasible": false,
+     "gap": null,
+     "objective": null,
      "problems": [],
-     "status": "optimal"
+     "status": "error"
     },
     "cost": {
-     "llm_tokens": 586704.0,
-     "tool_calls": 16.0,
-     "solver_runtime_s": 0.00026917457580566406,
+     "llm_tokens": 746695.0,
+     "tool_calls": 14.0,
+     "solver_runtime_s": 0.45347109250724316,
      "retries": 0.0,
-     "latency_s": 0.026619022712111473
+     "latency_s": 0.45496365800499916
     },
-    "failures": [],
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "Traceback (most recent call last): | AttributeError: 'LpProblem' object has no attribute '_objective'. Did you mean: 'objective'?",
+      "recovery_action": null,
+      "error_class": "model"
+     }
+    ],
     "solver": {
-     "code_hash": "f140ea04adc67b35",
-     "name": "python enumeration"
+     "code_hash": "9a2593e79d6d2ae7",
+     "name": "pulp"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791306944.7150798,
+       "amended_at": 1791366854.7571998,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791306944.7167728,
+       "amended_at": 1791366854.7594514,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_56df2eaca419",
+      "action_id": "ac_b7f07feb79f7",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -1889,18 +1943,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "python enumeration"
+       "solver": "pulp"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 532762.0,
-      "completion_tokens": 6763.0,
+      "cached_tokens": 335725.0,
+      "completion_tokens": 24808.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 579941.0,
+      "prompt_tokens": 721887.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -1911,13 +1965,234 @@
       "tool_calls_lower_bound": 1.0
      },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791366774.1125758,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "X + Y <= 1000",
+       "id": "budget_limit",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "2*X + 3*Y >= 2000",
+       "id": "effectiveness_req",
+       "kind": "other"
+      }
+     ],
+     "coupling_groups": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "budget"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "effectiveness_min"
+      }
+     ],
+     "issues": [],
+     "relations": [
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Y",
+       "target": "budget",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "effectiveness_req",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Y",
+       "target": "effectiveness_req",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "effectiveness_req",
+       "target": "effectiveness_min",
+       "type": "meets"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "Y",
+       "type": "competes_with"
+      }
+     ]
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "retries",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "6e515387c31e61de",
+    "method_planned": {
+     "name": "Integer Linear Programming with PuLP + CBC",
+     "steps": [
+      "Define X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 1000  (budget limit)",
+      "Add constraint: 2*X + 3*Y >= 2000  (effectiveness requirement)",
+      "Add non-negativity: X >= 0, Y >= 0",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
+     ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on similar budget-allocation planning tasks (orarla_1, orarla_2). HiGHS backend is known to fail on this class.",
+     "source": "candidate"
+    },
+    "method_actual": null
+   },
+   {
+    "execution_id": "ex_b93713d614c6",
+    "task_id": "orarla_6",
+    "strategy_id": "orarla_6_milp_pulp_cbc",
+    "profile_snapshot": {
+     "problem_id": "orarla_6",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
+        "semantic_coupling": "null",
+        "temporal_coupling": "cir"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:orarla_6_milp_pulp_cbc via pulp",
+      "outcome": "optimal",
+      "duration_s": 0.1970127560198307
+     }
+    ],
+    "quality": {
+     "feasible": true,
+     "gap": null,
+     "objective": 10000,
+     "problems": [],
+     "status": "optimal"
+    },
+    "cost": {
+     "llm_tokens": 466089.0,
+     "tool_calls": 6.0,
+     "solver_runtime_s": 0.1970127560198307,
+     "retries": 0.0,
+     "latency_s": 0.1987258419394493
+    },
+    "failures": [],
+    "solver": {
+     "code_hash": "e43584ac83919d2f",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791366855.3083124,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791366855.3113694,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_e1db94044f31",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 180775.0,
+      "completion_tokens": 2068.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 464021.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
      "solution_variables": {
-      "X": 1000,
-      "Y": 0
+      "X": 1000.0,
+      "Y": 0.0
      },
      "task_check": {
-      "action_id": "ac_b9f08924d115",
-      "checked_at": 1791306935.9367764,
+      "action_id": "ac_56612251be11",
+      "checked_at": 1791366829.0744562,
       "checks": [
        {
         "check": "reference_status",
@@ -1939,7 +2214,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_ee1862e94269",
+      "execution_id": "ex_b93713d614c6",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -1964,175 +2239,20 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791306921.6028008,
-    "source": "executed",
-    "cir_snapshot": null,
-    "cost_measured": [
-     "latency_s",
-     "llm_tokens",
-     "retries",
-     "solver_runtime_s",
-     "tool_calls"
-    ],
-    "measurement_scope": "attempt",
-    "solver_runtime_provenance": "reported",
-    "prediction_snapshot": null,
-    "task_text_digest": "9082ab5acdde667b",
-    "method_planned": {
-     "name": "Analytical enumeration for bounded 2-var budget/effectiveness ILP",
-     "steps": [
-      "Variables: X (channel X budget units, integer), Y (channel Y budget units, integer)",
-      "Constraints: (1) X + Y <= 1000 (budget), (2) 2X + 3Y >= 2000 (effectiveness)",
-      "Objective: minimize 10X + 20Y",
-      "Since cost per unit effectiveness: X costs $5/pt, Y costs $6.67/pt — prefer X",
-      "Iterate X from max(0, 2000-3*1000) to 1000; for each X compute minimum feasible Y = max(0, ceil((2000-2X)/3))",
-      "Feasibility check: Y <= 1000-X (budget slack)",
-      "Track minimum cost; verify integer solution",
-      "Return X, Y, total cost"
-     ],
-     "source": "candidate",
-     "extra": {
-      "expected": {
-       "cost": {
-        "solver_runtime_s": 0.01
-       },
-       "failure_prob": 0.0,
-       "quality": 1.0
-      }
-     }
-    },
-    "method_actual": null
-   },
-   {
-    "execution_id": "ex_b620bb2acbd6",
-    "task_id": "orarla_7",
-    "strategy_id": "milp_highs_integer",
-    "profile_snapshot": {
-     "problem_id": "orarla_7",
-     "family": "planning",
-     "problem_class": "unknown",
-     "scale_features": {},
-     "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
-     "risk_features": {},
-     "source": "derived",
-     "annotations": {
-      "profiling": {
-       "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
-        "semantic_coupling": "null",
-        "temporal_coupling": "cir"
-       }
-      }
-     }
-    },
-    "trajectory": [
-     {
-      "action": "execute:milp_highs_integer via highspy",
-      "outcome": "koptimal",
-      "duration_s": 0.22698253579437733
-     },
-     {
-      "action": "verify:basic",
-      "outcome": "illegal status 'koptimal': `status` must be one of optimal|feasible|infeasible|unbounded|timeout|error",
-      "duration_s": 0.0
-     }
-    ],
-    "quality": {
-     "feasible": false,
-     "gap": 0.0,
-     "objective": 3000.0,
-     "problems": [
-      "illegal status 'koptimal': `status` must be one of optimal|feasible|infeasible|unbounded|timeout|error"
-     ],
-     "status": "error"
-    },
-    "cost": {
-     "llm_tokens": 704927.0,
-     "tool_calls": 24.0,
-     "solver_runtime_s": 0.22698253579437733,
-     "retries": 0.0,
-     "latency_s": 0.22860056348145008
-    },
-    "failures": [],
-    "solver": {
-     "code_hash": "92c5cb33f71f2cf9",
-     "name": "highspy"
-    },
-    "execution_features": {
-     "cost_provenance": {
-      "llm_tokens": {
-       "amended_at": 1791307672.7227798,
-       "basis": "provider_total",
-       "mode": "replace",
-       "source": "provider_usage"
-      },
-      "tool_calls": {
-       "amended_at": 1791307672.7254536,
-       "mode": "replace",
-       "source": "agent_observed"
-      }
-     },
-     "execution_config": {
-      "action_id": "ac_1323a1f8ebc0",
-      "executor_configured": {
-       "solver_timeout_s": 60.0
-      },
-      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
-      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
-      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
-      "sources": {
-       "script_timeout_s": "executor",
-       "solver": "executor",
-       "solver_timeout_s": "executor_configured"
-      },
-      "values": {
-       "script_timeout_s": 120.0,
-       "solver": "highspy"
-      }
-     },
-     "host_usage": {
-      "basis": "provider_total",
-      "cached_tokens": 639382.0,
-      "completion_tokens": 8535.0,
-      "host": "openclaw",
-      "model": "minimax/MiniMax-M2.7",
-      "model_calls": null,
-      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 696392.0,
-      "provenance": {
-       "llm_tokens": "provider_usage",
-       "tool_calls": "agent_observed"
-      },
-      "reasoning_tokens": null,
-      "schema": "or-host-usage/1",
-      "scope": "attempt",
-      "tool_calls_lower_bound": 1.0
-     },
-     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
-     "solution_variables": {
-      "X": 0,
-      "Y": 1000
-     },
-     "tool_calls_lower_bound": 1
-    },
-    "created_at": 1791307567.079607,
+    "created_at": 1791366822.3333693,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
-       "expr": "X + Y >= 1000",
-       "id": "eff",
+       "expr": "X + Y <= 1000",
+       "id": "budget_limit",
        "kind": "other"
       },
       {
        "attrs": {},
-       "expr": "X - 2*Y <= 500",
-       "id": "bal",
+       "expr": "2*X + 3*Y >= 2000",
+       "id": "effectiveness_req",
        "kind": "other"
       }
      ],
@@ -2151,96 +2271,121 @@
        "name": "Y"
       }
      ],
-     "entities": [],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "budget"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "effectiveness_min"
+      }
+     ],
      "issues": [],
      "relations": [
       {
        "detail": "",
        "evidence": "structural",
        "source": "X",
-       "target": "eff",
-       "type": "subject_to"
+       "target": "budget",
+       "type": "contributes_to"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "Y",
-       "target": "eff",
-       "type": "subject_to"
+       "target": "budget",
+       "type": "contributes_to"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "X",
-       "target": "bal",
-       "type": "subject_to"
+       "target": "effectiveness_req",
+       "type": "contributes_to"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "Y",
-       "target": "bal",
-       "type": "subject_to"
+       "target": "effectiveness_req",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "effectiveness_req",
+       "target": "effectiveness_min",
+       "type": "meets"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "X",
+       "target": "Y",
+       "type": "competes_with"
       }
      ]
     },
     "cost_measured": [
      "latency_s",
      "llm_tokens",
-     "retries",
      "solver_runtime_s",
      "tool_calls"
     ],
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "8aee8f809ec87c46",
+    "task_text_digest": "6e515387c31e61de",
     "method_planned": {
-     "name": "Standard MILP formulation with Highs solver: integer variables X,Y, minimize 5X+3Y subject to X+Y>=1000, X-2Y<=500, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
+     "name": "Integer Linear Programming with PuLP + CBC",
      "steps": [
-      "Create Highs model",
-      "Add integer variable X >= 0, Y >= 0",
-      "Add constraint: X + Y >= 1000",
-      "Add constraint: X - 2*Y <= 500",
-      "Set objective: minimize 5*X + 3*Y",
-      "Set mip_rel_gap=0, mip_abs_gap=0",
-      "Solve and extract solution"
+      "Define X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 1000  (budget limit)",
+      "Add constraint: 2*X + 3*Y >= 2000  (effectiveness requirement)",
+      "Add non-negativity: X >= 0, Y >= 0",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
      ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on similar budget-allocation planning tasks (orarla_1, orarla_2). HiGHS backend is known to fail on this class.",
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_d37215f7c6de",
+    "execution_id": "ex_adf998861dfe",
     "task_id": "orarla_7",
-    "strategy_id": "milp_highs_integer",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_7",
      "family": "planning",
      "problem_class": "unknown",
      "scale_features": {},
      "semantic_coupling": null,
-     "resource_coupling": 0.0,
-     "temporal_coupling": 0.0,
-     "route_complexity": 0.0,
+     "resource_coupling": null,
+     "temporal_coupling": null,
+     "route_complexity": null,
      "risk_features": {},
      "source": "derived",
      "annotations": {
       "profiling": {
        "origin": {
-        "resource_coupling": "cir",
-        "route_complexity": "cir",
+        "resource_coupling": "null",
+        "route_complexity": "null",
         "semantic_coupling": "null",
-        "temporal_coupling": "cir"
+        "temporal_coupling": "null"
        }
       }
      }
     },
     "trajectory": [
      {
-      "action": "execute:milp_highs_integer via highspy",
+      "action": "execute:milp_pulp_cbc via pulp",
       "outcome": "optimal",
-      "duration_s": 0.12563508190214634
+      "duration_s": 0.4398606922477484
      }
     ],
     "quality": {
@@ -2251,33 +2396,33 @@
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 527844.0,
-     "tool_calls": 9.0,
-     "solver_runtime_s": 0.12563508190214634,
+     "llm_tokens": 623943.0,
+     "tool_calls": 17.0,
+     "solver_runtime_s": 0.4398606922477484,
      "retries": 0.0,
-     "latency_s": 0.12734204530715942
+     "latency_s": 0.4413193594664335
     },
     "failures": [],
     "solver": {
-     "code_hash": "7b78ae73e4d3456b",
-     "name": "highspy"
+     "code_hash": "7a8cef87fd5b9902",
+     "name": "pulp"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791307685.0357387,
+       "amended_at": 1791367100.8582134,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791307685.0379176,
+       "amended_at": 1791367100.8603425,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_f7aa1159e27e",
+      "action_id": "ac_b8bd8023de06",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -2289,21 +2434,20 @@
        "solver": "executor",
        "solver_timeout_s": "executor_configured"
       },
-      "stale_result_cleared": true,
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "highspy"
+       "solver": "pulp"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 503604.0,
-      "completion_tokens": 1548.0,
+      "cached_tokens": 449564.0,
+      "completion_tokens": 6446.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 526296.0,
+      "prompt_tokens": 617497.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -2313,13 +2457,26 @@
       "scope": "attempt",
       "tool_calls_lower_bound": 1.0
      },
+     "method_receipt": {
+      "action_id": "ac_b8bd8023de06",
+      "method": {
+       "extra": {
+        "formulation": "Min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y>=0 integers",
+        "solver": "pulp_CBC"
+       },
+       "name": "Integer Linear Programming with PuLP + CBC solver",
+       "steps": []
+      },
+      "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
+     },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "X": 0,
-      "Y": 1000
+      "X": 0.0,
+      "Y": 1000.0
      },
      "task_check": {
-      "action_id": "ac_0b1a5536a1aa",
-      "checked_at": 1791307656.0347981,
+      "action_id": "ac_40c531618fa6",
+      "checked_at": 1791367077.1876779,
       "checks": [
        {
         "check": "reference_status",
@@ -2341,7 +2498,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_d37215f7c6de",
+      "execution_id": "ex_adf998861dfe",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -2366,20 +2523,185 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791307647.2551901,
+    "created_at": 1791367068.0849226,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [],
+     "coupling_groups": [],
+     "decisions": [],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "issues": [],
+     "relations": []
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "retries",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "bb4e6fa54d9c3244",
+    "method_planned": {
+     "name": "Integer Linear Programming with PuLP + CBC solver. Formulate: Min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y>=0 integers.",
+     "steps": [
+      "Define X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 5*X + 3*Y",
+      "Add constraint: X + Y >= 1000  (effectiveness)",
+      "Add constraint: X - 2*Y <= 500  (balance)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value"
+     ],
+     "source": "candidate"
+    },
+    "method_actual": {
+     "name": "Integer Linear Programming with PuLP + CBC solver",
+     "steps": [],
+     "extra": {
+      "formulation": "Min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y>=0 integers",
+      "solver": "pulp_CBC"
+     }
+    }
+   },
+   {
+    "execution_id": "ex_a5a7904760db",
+    "task_id": "orarla_8",
+    "strategy_id": "milp_pulp_cbc",
+    "profile_snapshot": {
+     "problem_id": "orarla_8",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
+        "semantic_coupling": "null",
+        "temporal_coupling": "cir"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:milp_pulp_cbc via pulp",
+      "outcome": "error",
+      "duration_s": 0.32652409188449383
+     }
+    ],
+    "quality": {
+     "feasible": false,
+     "gap": null,
+     "objective": null,
+     "problems": [],
+     "status": "error"
+    },
+    "cost": {
+     "llm_tokens": 594913.0,
+     "tool_calls": 18.0,
+     "solver_runtime_s": 0.32652409188449383,
+     "retries": 0.0,
+     "latency_s": 0.3284416329115629
+    },
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "  } | }",
+      "recovery_action": null,
+      "error_class": "model"
+     }
+    ],
+    "solver": {
+     "code_hash": "a161250d901673f0",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791367742.7529738,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791367742.758164,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_3c9d4084f57f",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 423682.0,
+      "completion_tokens": 7147.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 587766.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791367414.2679443,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
-       "expr": "X + Y >= 1000",
-       "id": "eff",
+       "expr": "",
+       "id": "resource_limit",
        "kind": "other"
       },
       {
        "attrs": {},
-       "expr": "X - 2*Y <= 500",
-       "id": "bal",
+       "expr": "",
+       "id": "effectiveness_min",
        "kind": "other"
       }
      ],
@@ -2400,66 +2722,39 @@
      ],
      "entities": [],
      "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "eff",
-       "type": "subject_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "eff",
-       "type": "subject_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "bal",
-       "type": "subject_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "bal",
-       "type": "subject_to"
-      }
-     ]
+     "relations": []
     },
     "cost_measured": [
      "latency_s",
      "llm_tokens",
+     "retries",
      "solver_runtime_s",
      "tool_calls"
     ],
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "8aee8f809ec87c46",
+    "task_text_digest": "9830572a0936dc86",
     "method_planned": {
-     "name": "Standard MILP formulation with Highs solver: integer variables X,Y, minimize 5X+3Y subject to X+Y>=1000, X-2Y<=500, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
+     "name": "Integer Linear Programming with PuLP + CBC solver",
      "steps": [
-      "Create Highs model",
-      "Add integer variable X >= 0, Y >= 0",
-      "Add constraint: X + Y >= 1000",
-      "Add constraint: X - 2*Y <= 500",
-      "Set objective: minimize 5*X + 3*Y",
-      "Set mip_rel_gap=0, mip_abs_gap=0",
-      "Solve and extract solution"
+      "Define X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 5000  (total resource budget)",
+      "Add constraint: 2*X + 3*Y >= 10000  (effectiveness threshold)",
+      "Add non-negativity: X >= 0, Y >= 0",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
      ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on identical problem structure (orarla_6: Min 10X+20Y, X+Y≤1000, 2X+3Y≥2000 → passed with X=1000, Y=0, objective=10000). HiGHS backend is known to fail on this class. This task is exactly 5× that scale, expecting X=5000, Y=0, objective=50000.",
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_736e49dbe500",
+    "execution_id": "ex_aa981b6bb230",
     "task_id": "orarla_8",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_8",
      "family": "planning",
@@ -2484,9 +2779,9 @@
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_budget_effectiveness via python_enum",
+      "action": "execute:milp_pulp_cbc via pulp",
       "outcome": "error",
-      "duration_s": 0.0
+      "duration_s": 0.16585714370012283
      }
     ],
     "quality": {
@@ -2497,51 +2792,65 @@
      "status": "error"
     },
     "cost": {
-     "llm_tokens": 585790.0,
-     "tool_calls": 16.0,
-     "solver_runtime_s": 0.0,
+     "llm_tokens": 621402.0,
+     "tool_calls": 14.0,
+     "solver_runtime_s": 0.16585714370012283,
      "retries": 0.0,
-     "latency_s": 0.000947980210185051
+     "latency_s": 0.1676357015967369
     },
     "failures": [
      {
       "attempt": 1,
-      "error": "security policy: open() may only access the workspace-local file named result.json (relative path, no directories)",
+      "error": "Traceback (most recent call last):",
       "recovery_action": null,
-      "error_class": "environment"
+      "error_class": "model"
      }
     ],
     "solver": {
-     "code_hash": "9a5cd9a8e0c9e4fc",
-     "name": "python_enum"
+     "code_hash": "0f72359ee2719bfb",
+     "name": "pulp"
     },
     "execution_features": {
-     "cost_notes": [
-      "the script never ran: no runtime was observed",
-      "the solve script was rejected before execution: no cost dimension was measured for this record"
-     ],
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791308408.0914228,
+       "amended_at": 1791367753.1663256,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791308408.093403,
+       "amended_at": 1791367753.1707726,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
+     "execution_config": {
+      "action_id": "ac_6ef8ac84dc73",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 517630.0,
-      "completion_tokens": 5445.0,
+      "cached_tokens": 335582.0,
+      "completion_tokens": 3427.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 580345.0,
+      "prompt_tokens": 617975.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -2551,25 +2860,22 @@
       "scope": "attempt",
       "tool_calls_lower_bound": 1.0
      },
-     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
-     "runtime_checks": [
-      "the script never ran: no runtime was observed"
-     ]
+     "tool_calls_lower_bound": 1
     },
-    "created_at": 1791308005.379716,
+    "created_at": 1791367518.9118013,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
        "expr": "",
-       "id": "budget_limit",
+       "id": "resource_limit",
        "kind": "other"
       },
       {
        "attrs": {},
        "expr": "",
-       "id": "effectiveness",
+       "id": "effectiveness_min",
        "kind": "other"
       }
      ],
@@ -2588,83 +2894,40 @@
        "name": "Y"
       }
      ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "X"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "Y"
-      }
-     ],
+     "entities": [],
      "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "Y",
-       "type": "competes_for_budget"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      }
-     ]
+     "relations": []
     },
     "cost_measured": [
+     "latency_s",
      "llm_tokens",
-     "retries",
+     "solver_runtime_s",
      "tool_calls"
     ],
     "measurement_scope": "attempt",
-    "solver_runtime_provenance": null,
+    "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "5f5cb94664439640",
+    "task_text_digest": "9830572a0936dc86",
     "method_planned": {
-     "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP. Iterate X from 0 to 5000; for each X compute minimum feasible integer Y = ceil(max(0, (10000-2X)/3)); check budget constraint Y <= 5000-X; track minimum cost. Uses cost-per-effectiveness insight (X=$5/pt < Y=$6.67/pt) but verifies via scan.",
+     "name": "Integer Linear Programming with PuLP + CBC solver",
      "steps": [
-      "Iterate X from 0 to 5000 (integer)",
-      "For each X, compute minimum feasible Y = max(0, ceil((10000-2X)/3))",
-      "Check budget feasibility: Y <= 5000 - X",
-      "Track minimum 10X + 20Y across all feasible (X,Y)",
-      "Return optimal (X,Y) and total cost"
+      "Define X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 5000  (total resource budget)",
+      "Add constraint: 2*X + 3*Y >= 10000  (effectiveness threshold)",
+      "Add non-negativity: X >= 0, Y >= 0",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
      ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on identical problem structure (orarla_6: Min 10X+20Y, X+Y≤1000, 2X+3Y≥2000 → passed with X=1000, Y=0, objective=10000). HiGHS backend is known to fail on this class. This task is exactly 5× that scale, expecting X=5000, Y=0, objective=50000.",
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_8d0ca4a9b550",
+    "execution_id": "ex_b8f8b466c95f",
     "task_id": "orarla_8",
-    "strategy_id": "milp_highs_integer",
+    "strategy_id": "milp_scipy_highs",
     "profile_snapshot": {
      "problem_id": "orarla_8",
      "family": "planning",
@@ -2689,9 +2952,9 @@
     },
     "trajectory": [
      {
-      "action": "execute:milp_highs_integer via highspy",
+      "action": "execute:milp_scipy_highs via scipy",
       "outcome": "error",
-      "duration_s": 0.19195276126265526
+      "duration_s": 0.46330087073147297
      }
     ],
     "quality": {
@@ -2702,40 +2965,40 @@
      "status": "error"
     },
     "cost": {
-     "llm_tokens": 393197.0,
-     "tool_calls": 8.0,
-     "solver_runtime_s": 0.19195276126265526,
+     "llm_tokens": 386817.0,
+     "tool_calls": 7.0,
+     "solver_runtime_s": 0.46330087073147297,
      "retries": 0.0,
-     "latency_s": 0.19430884532630444
+     "latency_s": 0.4649176765233278
     },
     "failures": [
      {
       "attempt": 1,
-      "error": "Traceback (most recent call last): | AttributeError: 'str' object has no attribute 'bounds'",
+      "error": "  } | }",
       "recovery_action": null,
       "error_class": "model"
      }
     ],
     "solver": {
-     "code_hash": "50b35fac08ce1aca",
-     "name": "highspy"
+     "code_hash": "4687d72857b67050",
+     "name": "scipy"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791308415.8230448,
+       "amended_at": 1791367753.8251555,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791308415.825376,
+       "amended_at": 1791367753.8275118,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_455a16ba7145",
+      "action_id": "ac_891bc1bcffa6",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -2749,18 +3012,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "highspy"
+       "solver": "scipy"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 373427.0,
-      "completion_tokens": 2361.0,
+      "cached_tokens": 180698.0,
+      "completion_tokens": 2077.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 390836.0,
+      "prompt_tokens": 384740.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -2773,20 +3036,20 @@
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791308125.816313,
+    "created_at": 1791367595.3721683,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
        "expr": "",
-       "id": "budget_limit",
+       "id": "resource_limit",
        "kind": "other"
       },
       {
        "attrs": {},
        "expr": "",
-       "id": "effectiveness",
+       "id": "effectiveness_min",
        "kind": "other"
       }
      ],
@@ -2805,56 +3068,9 @@
        "name": "Y"
       }
      ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "X"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "Y"
-      }
-     ],
+     "entities": [],
      "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "Y",
-       "type": "competes_for_budget"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      }
-     ]
+     "relations": []
     },
     "cost_measured": [
      "latency_s",
@@ -2866,26 +3082,24 @@
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "5f5cb94664439640",
+    "task_text_digest": "9830572a0936dc86",
     "method_planned": {
-     "name": "Standard MILP with Highs solver: integer variables X,Y, minimize 10X+20Y subject to X+Y<=5000, 2X+3Y>=10000, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
+     "name": "ILP via scipy linprog (LP relaxation) + integer verification",
      "steps": [
-      "Create Highs model",
-      "Add integer variable X >= 0, Y >= 0",
-      "Add constraint: X + Y <= 5000",
-      "Add constraint: 2*X + 3*y >= 10000",
-      "Set objective: minimize 10*x + 20*y",
-      "Set mip_rel_gap=0, mip_abs_gap=0",
-      "Solve and extract solution"
+      "Formulate as LP: min 10*X + 20*Y s.t. X+Y<=5000, 2X+3Y>=10000, X,Y>=0",
+      "Solve LP relaxation with linprog(method='highs')",
+      "Verify X=5000, Y=0 is optimal integer (enumeration of binding constraints at vertices)",
+      "Compute objective = 10*5000 + 20*0 = 50000"
      ],
+     "why": "The sandbox environment fails when running pulp (Python traceback during solve). scipy.optimize.linprog with method='highs' is more reliably available. The LP relaxation gives X=5000, Y=0, and since X=5000, Y=0 is already integer and satisfies both constraints, it is the optimal ILP solution.",
      "source": "candidate"
     },
     "method_actual": null
    },
    {
-    "execution_id": "ex_674c7024b227",
+    "execution_id": "ex_a46f4106d145",
     "task_id": "orarla_8",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "strategy_id": "minimal_test",
     "profile_snapshot": {
      "problem_id": "orarla_8",
      "family": "planning",
@@ -2910,46 +3124,53 @@
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_budget_effectiveness via python_enum",
-      "outcome": "optimal",
-      "duration_s": 0.0264564398676157
+      "action": "execute:minimal_test via python",
+      "outcome": "error",
+      "duration_s": 0.024333342909812927
      }
     ],
     "quality": {
-     "feasible": true,
-     "gap": 0.0,
-     "objective": 50000.0,
+     "feasible": false,
+     "gap": null,
+     "objective": null,
      "problems": [],
-     "status": "optimal"
+     "status": "error"
     },
     "cost": {
-     "llm_tokens": 1196209.0,
-     "tool_calls": 20.0,
-     "solver_runtime_s": 0.0015020370483398438,
+     "llm_tokens": 359534.0,
+     "tool_calls": 6.0,
+     "solver_runtime_s": 0.024333342909812927,
      "retries": 0.0,
-     "latency_s": 0.02783801406621933
+     "latency_s": 0.025168992578983307
     },
-    "failures": [],
+    "failures": [
+     {
+      "attempt": 1,
+      "error": "{\"status\": \"ok\", \"value\": 42, \"action_id\": \"ac_5f5aae58ed73\"}",
+      "recovery_action": null,
+      "error_class": "model"
+     }
+    ],
     "solver": {
-     "code_hash": "4add8d2a1c3db8d8",
-     "name": "python_enum"
+     "code_hash": "734e782b6b284b1d",
+     "name": "python"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791308418.327082,
+       "amended_at": 1791367763.4603593,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791308418.3301756,
+       "amended_at": 1791367763.4628775,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_24c9ea93e659",
+      "action_id": "ac_5f5aae58ed73",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -2961,21 +3182,20 @@
        "solver": "executor",
        "solver_timeout_s": "executor_configured"
       },
-      "stale_result_cleared": true,
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "python_enum"
+       "solver": "python"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 1143639.0,
-      "completion_tokens": 5553.0,
+      "cached_tokens": 154884.0,
+      "completion_tokens": 782.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 1190656.0,
+      "prompt_tokens": 358752.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -2985,13 +3205,223 @@
       "scope": "attempt",
       "tool_calls_lower_bound": 1.0
      },
+     "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
+     "tool_calls_lower_bound": 1
+    },
+    "created_at": 1791367650.5790157,
+    "source": "executed",
+    "cir_snapshot": {
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "resource_limit",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "effectiveness_min",
+       "kind": "other"
+      }
+     ],
+     "coupling_groups": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [],
+     "issues": [],
+     "relations": []
+    },
+    "cost_measured": [
+     "latency_s",
+     "llm_tokens",
+     "retries",
+     "solver_runtime_s",
+     "tool_calls"
+    ],
+    "measurement_scope": "attempt",
+    "solver_runtime_provenance": "wall_proxy",
+    "prediction_snapshot": null,
+    "task_text_digest": "9830572a0936dc86",
+    "method_planned": {
+     "name": "Minimal test script",
+     "steps": [
+      "Print JSON status"
+     ],
+     "why": "Test if sandbox can run any Python",
+     "source": "candidate"
+    },
+    "method_actual": null
+   },
+   {
+    "execution_id": "ex_fd87c8e9de1c",
+    "task_id": "orarla_8",
+    "strategy_id": "milp_pulp_cbc",
+    "profile_snapshot": {
+     "problem_id": "orarla_8",
+     "family": "planning",
+     "problem_class": "unknown",
+     "scale_features": {},
+     "semantic_coupling": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
+     "risk_features": {},
+     "source": "derived",
+     "annotations": {
+      "profiling": {
+       "origin": {
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
+        "semantic_coupling": "null",
+        "temporal_coupling": "cir"
+       }
+      }
+     }
+    },
+    "trajectory": [
+     {
+      "action": "execute:milp_pulp_cbc via pulp",
+      "outcome": "optimal",
+      "duration_s": 0.18650677986443043
+     },
+     {
+      "action": "method:Define X, Y as integer LpVariables with bounds [0, 5000]",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Set objective: minimize 10*X + 20*Y",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: X + Y <= 5000",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: 2*X + 3*Y >= 10000",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Extract optimal solution",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     }
+    ],
+    "quality": {
+     "feasible": true,
+     "gap": 0.0,
+     "objective": 50000.0,
+     "problems": [],
+     "status": "optimal"
+    },
+    "cost": {
+     "llm_tokens": 589979.0,
+     "tool_calls": 8.0,
+     "solver_runtime_s": 0.134202241897583,
+     "retries": 0.0,
+     "latency_s": 0.18821031041443348
+    },
+    "failures": [],
+    "solver": {
+     "code_hash": "6d183e78a79cba0c",
+     "name": "pulp"
+    },
+    "execution_features": {
+     "cost_provenance": {
+      "llm_tokens": {
+       "amended_at": 1791367764.022046,
+       "basis": "provider_total",
+       "mode": "replace",
+       "source": "provider_usage"
+      },
+      "tool_calls": {
+       "amended_at": 1791367764.024628,
+       "mode": "replace",
+       "source": "agent_observed"
+      }
+     },
+     "execution_config": {
+      "action_id": "ac_9f4fced28393",
+      "executor_configured": {
+       "solver_timeout_s": 60.0
+      },
+      "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+      "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+      "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+      "sources": {
+       "script_timeout_s": "executor",
+       "solver": "executor",
+       "solver_timeout_s": "executor_configured"
+      },
+      "values": {
+       "script_timeout_s": 120.0,
+       "solver": "pulp"
+      }
+     },
+     "host_usage": {
+      "basis": "provider_total",
+      "cached_tokens": 232326.0,
+      "completion_tokens": 2407.0,
+      "host": "openclaw",
+      "model": "minimax/MiniMax-M2.7",
+      "model_calls": null,
+      "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
+      "prompt_tokens": 587572.0,
+      "provenance": {
+       "llm_tokens": "provider_usage",
+       "tool_calls": "agent_observed"
+      },
+      "reasoning_tokens": null,
+      "schema": "or-host-usage/1",
+      "scope": "attempt",
+      "tool_calls_lower_bound": 1.0
+     },
+     "method_receipt": {
+      "action_id": "ac_9f4fced28393",
+      "method": {
+       "extra": {
+        "solver": "pulp.PULP_CBC_CMD"
+       },
+       "name": "Integer Linear Programming with PuLP + CBC solver",
+       "steps": [
+        "Define X, Y as integer LpVariables with bounds [0, 5000]",
+        "Set objective: minimize 10*X + 20*Y",
+        "Add constraint: X + Y <= 5000",
+        "Add constraint: 2*X + 3*Y >= 10000",
+        "Solve with pulp.PULP_CBC_CMD(msg=0)",
+        "Extract optimal solution"
+       ]
+      },
+      "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
+     },
      "solution_variables": {
-      "X": 5000,
-      "Y": 0
+      "X": 5000.0,
+      "Y": 0.0
      },
      "task_check": {
-      "action_id": "ac_6a817a345613",
-      "checked_at": 1791308391.1515057,
+      "action_id": "ac_e00e53d9d63e",
+      "checked_at": 1791367734.5196357,
       "checks": [
        {
         "check": "reference_status",
@@ -3013,7 +3443,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_674c7024b227",
+      "execution_id": "ex_fd87c8e9de1c",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -3038,20 +3468,20 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791308386.9666834,
+    "created_at": 1791367730.272417,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
        "expr": "",
-       "id": "budget_limit",
+       "id": "resource_limit",
        "kind": "other"
       },
       {
        "attrs": {},
        "expr": "",
-       "id": "effectiveness",
+       "id": "effectiveness_min",
        "kind": "other"
       }
      ],
@@ -3070,56 +3500,9 @@
        "name": "Y"
       }
      ],
-     "entities": [
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "X"
-      },
-      {
-       "attrs": {},
-       "kind": "other",
-       "name": "Y"
-      }
-     ],
+     "entities": [],
      "issues": [],
-     "relations": [
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "Y",
-       "type": "competes_for_budget"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "budget_limit",
-       "type": "depends_on"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "X",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      },
-      {
-       "detail": "",
-       "evidence": "structural",
-       "source": "Y",
-       "target": "effectiveness",
-       "type": "contributes_to"
-      }
-     ]
+     "relations": []
     },
     "cost_measured": [
      "latency_s",
@@ -3130,24 +3513,39 @@
     "measurement_scope": "attempt",
     "solver_runtime_provenance": "reported",
     "prediction_snapshot": null,
-    "task_text_digest": "5f5cb94664439640",
+    "task_text_digest": "9830572a0936dc86",
     "method_planned": {
-     "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP. Iterate X from 0 to 5000; for each X compute minimum feasible integer Y = ceil(max(0, (10000-2X)/3)); check budget constraint Y <= 5000-X; track minimum cost. Uses cost-per-effectiveness insight (X=$5/pt < Y=$6.67/pt) but verifies via scan.",
+     "name": "Integer Linear Programming with PuLP + CBC solver",
      "steps": [
-      "Iterate X from 0 to 5000 (integer)",
-      "For each X, compute minimum feasible Y = max(0, ceil((10000-2X)/3))",
-      "Check budget feasibility: Y <= 5000 - X",
-      "Track minimum 10X + 20Y across all feasible (X,Y)",
-      "Return optimal (X,Y) and total cost"
+      "Define X, Y as integer LpVariables with bounds [0, 5000]",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 5000",
+      "Add constraint: 2*X + 3*Y >= 10000",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Write result to result.json"
      ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on identical problem structure (orarla_6). Write output to result.json (sandbox requirement). Expect X=5000, Y=0, objective=50000.",
      "source": "candidate"
     },
-    "method_actual": null
+    "method_actual": {
+     "name": "Integer Linear Programming with PuLP + CBC solver",
+     "steps": [
+      "Define X, Y as integer LpVariables with bounds [0, 5000]",
+      "Set objective: minimize 10*X + 20*Y",
+      "Add constraint: X + Y <= 5000",
+      "Add constraint: 2*X + 3*Y >= 10000",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution"
+     ],
+     "extra": {
+      "solver": "pulp.PULP_CBC_CMD"
+     }
+    }
    },
    {
-    "execution_id": "ex_340383705984",
+    "execution_id": "ex_0c69e5519670",
     "task_id": "orarla_9",
-    "strategy_id": "enumeration_2var_analytic",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_9",
      "family": "planning",
@@ -3172,46 +3570,76 @@
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_analytic via python_enum",
+      "action": "execute:milp_pulp_cbc via pulp",
       "outcome": "optimal",
-      "duration_s": 0.024928895756602287
+      "duration_s": 0.19486877135932446
+     },
+     {
+      "action": "method:Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Set objective: minimize 5*Ad1 + 3*Ad2",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: Ad1 + Ad2 >= 50  (minimum effectiveness score)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Add constraint: 4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "outcome": "optimal",
+      "duration_s": 0.0
+     },
+     {
+      "action": "method:Extract optimal solution (Ad1*, Ad2*) and total cost",
+      "outcome": "optimal",
+      "duration_s": 0.0
      }
     ],
     "quality": {
      "feasible": true,
-     "gap": 0.0,
-     "objective": 150,
+     "gap": null,
+     "objective": 150.0,
      "problems": [],
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 757409.0,
-     "tool_calls": 21.0,
-     "solver_runtime_s": 0.0,
+     "llm_tokens": 633110.0,
+     "tool_calls": 19.0,
+     "solver_runtime_s": 0.19486877135932446,
      "retries": 0.0,
-     "latency_s": 0.02612157352268696
+     "latency_s": 0.19634052366018295
     },
     "failures": [],
     "solver": {
-     "code_hash": "8feeeb5624553888",
-     "name": "python_enum"
+     "code_hash": "62622aa37cdeb05e",
+     "name": "pulp"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791308818.6584787,
+       "amended_at": 1791368158.7084155,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791308818.6602752,
+       "amended_at": 1791368158.7104065,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_31c12c0ceaa7",
+      "action_id": "ac_289e2bac365c",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -3225,18 +3653,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "python_enum"
+       "solver": "pulp"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 697173.0,
-      "completion_tokens": 6596.0,
+      "cached_tokens": 562507.0,
+      "completion_tokens": 8772.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 750813.0,
+      "prompt_tokens": 624338.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -3246,14 +3674,34 @@
       "scope": "attempt",
       "tool_calls_lower_bound": 1.0
      },
+     "method_receipt": {
+      "action_id": "ac_289e2bac365c",
+      "method": {
+       "extra": {
+        "method": "Integer Linear Programming with PuLP + CBC solver",
+        "solver": "pulp",
+        "strategy_id": "milp_pulp_cbc"
+       },
+       "name": "",
+       "steps": [
+        "Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+        "Set objective: minimize 5*Ad1 + 3*Ad2",
+        "Add constraint: Ad1 + Ad2 >= 50  (minimum effectiveness score)",
+        "Add constraint: 4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)",
+        "Solve with pulp.PULP_CBC_CMD(msg=0)",
+        "Extract optimal solution (Ad1*, Ad2*) and total cost"
+       ]
+      },
+      "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
+     },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "x": 0,
-      "y": 50
+      "Ad1": 0.0,
+      "Ad2": 50.0
      },
      "task_check": {
-      "action_id": "ac_1549275d6cad",
-      "checked_at": 1791308810.79498,
+      "action_id": "ac_ae29c5646928",
+      "checked_at": 1791368135.5627317,
       "checks": [
        {
         "check": "reference_status",
@@ -3275,7 +3723,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_340383705984",
+      "execution_id": "ex_0c69e5519670",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -3300,20 +3748,20 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791308806.4527624,
+    "created_at": 1791368129.238095,
     "source": "executed",
     "cir_snapshot": {
      "constraints": [
       {
        "attrs": {},
        "expr": "",
-       "id": "effort_constraint",
+       "id": "effectiveness_min",
        "kind": "other"
       },
       {
        "attrs": {},
        "expr": "",
-       "id": "effectiveness_constraint",
+       "id": "effort_limit",
        "kind": "other"
       }
      ],
@@ -3323,25 +3771,25 @@
        "attrs": {},
        "indexes": [],
        "kind": "other",
-       "name": "Ad1 budget allocation"
+       "name": "Ad1"
       },
       {
        "attrs": {},
        "indexes": [],
        "kind": "other",
-       "name": "Ad2 budget allocation"
+       "name": "Ad2"
       }
      ],
      "entities": [
       {
        "attrs": {},
        "kind": "other",
-       "name": "Ad1 budget"
+       "name": "Ad1"
       },
       {
        "attrs": {},
        "kind": "other",
-       "name": "Ad2 budget"
+       "name": "Ad2"
       }
      ],
      "issues": [],
@@ -3349,9 +3797,30 @@
       {
        "detail": "",
        "evidence": "structural",
-       "source": "Ad1 budget",
-       "target": "Ad2 budget",
-       "type": "coupled_in_objective"
+       "source": "Ad1",
+       "target": "effectiveness_min",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Ad2",
+       "target": "effectiveness_min",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Ad1",
+       "target": "effort_limit",
+       "type": "contributes_to"
+      },
+      {
+       "detail": "",
+       "evidence": "structural",
+       "source": "Ad2",
+       "target": "effort_limit",
+       "type": "contributes_to"
       }
      ]
     },
@@ -3363,121 +3832,107 @@
      "tool_calls"
     ],
     "measurement_scope": "attempt",
-    "solver_runtime_provenance": "reported",
+    "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "2c1f6b0b386cf8b1",
+    "task_text_digest": "e4dc46b2a1af6ded",
     "method_planned": {
-     "name": "Analytical enumeration for bounded 2-var ILP",
+     "name": "Integer Linear Programming with PuLP + CBC solver",
      "steps": [
-      "Given tight bounds from constraints: x in [0, 75] (from 4x<=300), y in [0, 50] (from 6y<=300)",
-      "Iterate x from 0 to 75",
-      "For each x, compute minimum feasible y = max(0, ceil(50-x)) from effectiveness",
-      "Verify 2x + 3y <= 150 (fatigue constraint)",
-      "Track minimum cost = 5x + 3y",
-      "Return optimal (x, y) and cost"
+      "Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+      "Set objective: minimize 5*Ad1 + 3*Ad2",
+      "Add constraint: Ad1 + Ad2 >= 50  (minimum effectiveness score)",
+      "Add constraint: 4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (Ad1*, Ad2*) and total cost"
      ],
+     "why": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on similar budget-allocation planning tasks (orarla_1, orarla_2). HiGHS backend is known to fail on this class.",
      "source": "candidate"
     },
-    "method_actual": null
+    "method_actual": {
+     "name": "",
+     "steps": [
+      "Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+      "Set objective: minimize 5*Ad1 + 3*Ad2",
+      "Add constraint: Ad1 + Ad2 >= 50  (minimum effectiveness score)",
+      "Add constraint: 4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (Ad1*, Ad2*) and total cost"
+     ],
+     "extra": {
+      "method": "Integer Linear Programming with PuLP + CBC solver",
+      "solver": "pulp",
+      "strategy_id": "milp_pulp_cbc"
+     }
+    }
    },
    {
-    "execution_id": "ex_1ad90835ed83",
+    "execution_id": "ex_45ed035b4b93",
     "task_id": "orarla_10",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
+    "strategy_id": "milp_pulp_cbc",
     "profile_snapshot": {
      "problem_id": "orarla_10",
      "family": "planning",
      "problem_class": "unknown",
      "scale_features": {},
      "semantic_coupling": null,
-     "resource_coupling": null,
-     "temporal_coupling": null,
-     "route_complexity": null,
+     "resource_coupling": 0.0,
+     "temporal_coupling": 0.0,
+     "route_complexity": 0.0,
      "risk_features": {},
      "source": "derived",
      "annotations": {
       "profiling": {
        "origin": {
-        "resource_coupling": "null",
-        "route_complexity": "null",
+        "resource_coupling": "cir",
+        "route_complexity": "cir",
         "semantic_coupling": "null",
-        "temporal_coupling": "null"
+        "temporal_coupling": "cir"
        }
       }
      }
     },
     "trajectory": [
      {
-      "action": "execute:enumeration_2var_budget_effectiveness via python_enum",
+      "action": "execute:milp_pulp_cbc via pulp",
       "outcome": "optimal",
-      "duration_s": 0.04574098810553551
-     },
-     {
-      "action": "method:Iterate X from 0 to 5000",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Compute min feasible Y = ceil(max(0, (20000-10*X)/30))",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Check budget Y <= 5000-X",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Track minimum 50*X + 60*Y",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Also iterate Y-dominant scan",
-      "outcome": "optimal",
-      "duration_s": 0.0
-     },
-     {
-      "action": "method:Return optimal (X,Y) and total cost",
-      "outcome": "optimal",
-      "duration_s": 0.0
+      "duration_s": 0.1893969476222992
      }
     ],
     "quality": {
      "feasible": true,
      "gap": 0.0,
-     "objective": 40020,
+     "objective": 40020.0,
      "problems": [],
      "status": "optimal"
     },
     "cost": {
-     "llm_tokens": 843730.0,
-     "tool_calls": 26.0,
-     "solver_runtime_s": 0.0,
+     "llm_tokens": 638188.0,
+     "tool_calls": 18.0,
+     "solver_runtime_s": 0.1893969476222992,
      "retries": 0.0,
-     "latency_s": 0.04796682670712471
+     "latency_s": 0.1913618165999651
     },
     "failures": [],
     "solver": {
-     "code_hash": "c3e755efe0dbf60c",
-     "name": "python_enum"
+     "code_hash": "daa51aeae5e66fa0",
+     "name": "pulp"
     },
     "execution_features": {
      "cost_provenance": {
       "llm_tokens": {
-       "amended_at": 1791309262.1470242,
+       "amended_at": 1791368447.2426512,
        "basis": "provider_total",
        "mode": "replace",
        "source": "provider_usage"
       },
       "tool_calls": {
-       "amended_at": 1791309262.1489198,
+       "amended_at": 1791368447.2447658,
        "mode": "replace",
        "source": "agent_observed"
       }
      },
      "execution_config": {
-      "action_id": "ac_44a06f744d5f",
+      "action_id": "ac_2cb8f81b60e1",
       "executor_configured": {
        "solver_timeout_s": 60.0
       },
@@ -3491,18 +3946,18 @@
       },
       "values": {
        "script_timeout_s": 120.0,
-       "solver": "python_enum"
+       "solver": "pulp"
       }
      },
      "host_usage": {
       "basis": "provider_total",
-      "cached_tokens": 771084.0,
-      "completion_tokens": 8993.0,
+      "cached_tokens": 582173.0,
+      "completion_tokens": 6571.0,
       "host": "openclaw",
       "model": "minimax/MiniMax-M2.7",
       "model_calls": null,
       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again. Only dimensions listed in the report's 'measured' whitelist enter cost_measured; everything else stays unknown, never zero",
-      "prompt_tokens": 834737.0,
+      "prompt_tokens": 631617.0,
       "provenance": {
        "llm_tokens": "provider_usage",
        "tool_calls": "agent_observed"
@@ -3513,32 +3968,24 @@
       "tool_calls_lower_bound": 1.0
      },
      "method_receipt": {
-      "action_id": "ac_44a06f744d5f",
+      "action_id": "ac_2cb8f81b60e1",
       "method": {
        "extra": {
-        "solver": "python_enum",
-        "strategy_id": "enumeration_2var_budget_effectiveness"
+        "solver": "pulp.PULP_CBC_CMD"
        },
-       "name": "",
-       "steps": [
-        "Iterate X from 0 to 5000",
-        "Compute min feasible Y = ceil(max(0, (20000-10*X)/30))",
-        "Check budget Y <= 5000-X",
-        "Track minimum 50*X + 60*Y",
-        "Also iterate Y-dominant scan",
-        "Return optimal (X,Y) and total cost"
-       ]
+       "name": "Integer Linear Programming with PuLP + CBC solver",
+       "steps": []
       },
       "note": "the method the solve script reports it ACTUALLY performed, stamped with this attempt's action id. It is an observation, kept separate from the planned method — a plan is not a performed method"
      },
      "retries_proof": "no earlier execute_strategy attempt of this (task, episode, strategy) exists: retries=0 is observed",
      "solution_variables": {
-      "X": 0,
-      "Y": 667
+      "X": 0.0,
+      "Y": 667.0
      },
      "task_check": {
-      "action_id": "ac_3c084f610cbd",
-      "checked_at": 1791309247.7263854,
+      "action_id": "ac_eb765d09cd71",
+      "checked_at": 1791368424.6458955,
       "checks": [
        {
         "check": "reference_status",
@@ -3560,7 +4007,7 @@
       "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
       "diffs": [],
       "episode_id": "ep1",
-      "execution_id": "ex_1ad90835ed83",
+      "execution_id": "ex_45ed035b4b93",
       "intent": null,
       "reference_source": {
        "declared": null,
@@ -3585,13 +4032,60 @@
      },
      "tool_calls_lower_bound": 1
     },
-    "created_at": 1791309239.2241974,
+    "created_at": 1791368410.2012665,
     "source": "executed",
     "cir_snapshot": {
-     "constraints": [],
+     "constraints": [
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "budget_limit",
+       "kind": "other"
+      },
+      {
+       "attrs": {},
+       "expr": "",
+       "id": "output_req",
+       "kind": "other"
+      }
+     ],
      "coupling_groups": [],
-     "decisions": [],
-     "entities": [],
+     "decisions": [
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "indexes": [],
+       "kind": "other",
+       "name": "Y"
+      }
+     ],
+     "entities": [
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "X"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "Y"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "budget_limit"
+      },
+      {
+       "attrs": {},
+       "kind": "other",
+       "name": "output_req"
+      }
+     ],
      "issues": [],
      "relations": [
       {
@@ -3599,28 +4093,28 @@
        "evidence": "structural",
        "source": "X",
        "target": "budget_limit",
-       "type": "participates_in"
+       "type": "depends_on"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "Y",
        "target": "budget_limit",
-       "type": "participates_in"
+       "type": "depends_on"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "X",
        "target": "output_req",
-       "type": "participates_in"
+       "type": "contributes_to"
       },
       {
        "detail": "",
        "evidence": "structural",
        "source": "Y",
        "target": "output_req",
-       "type": "participates_in"
+       "type": "contributes_to"
       }
      ]
     },
@@ -3632,37 +4126,30 @@
      "tool_calls"
     ],
     "measurement_scope": "attempt",
-    "solver_runtime_provenance": "reported",
+    "solver_runtime_provenance": "wall_proxy",
     "prediction_snapshot": null,
-    "task_text_digest": "989eef983236349a",
+    "task_text_digest": "d2ffed39658f3663",
     "method_planned": {
-     "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP",
+     "name": "Integer Linear Programming with PuLP + CBC solver. Formulate: Min 50X + 60Y s.t. X+Y ≤ 5000, 10X+30Y ≥ 20000, X,Y ≥ 0 integer.",
      "steps": [
-      "Iterate X from 0 to 5000 (bounded by budget)",
-      "For each X, compute minimum feasible Y = max(0, ceil((20000-10*X)/30))",
-      "Check budget feasibility: Y <= 5000 - X",
-      "Track minimum 50*X + 60*Y across all feasible (X,Y)",
-      "Return optimal (X,Y) and total cost"
+      "Define decision variables X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 50*X + 60*Y",
+      "Add constraint: X + Y <= 5000 (budget limit)",
+      "Add constraint: 10*X + 30*Y >= 20000 (output requirement)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
      ],
      "source": "candidate"
     },
     "method_actual": {
-     "name": "",
-     "steps": [
-      "Iterate X from 0 to 5000",
-      "Compute min feasible Y = ceil(max(0, (20000-10*X)/30))",
-      "Check budget Y <= 5000-X",
-      "Track minimum 50*X + 60*Y",
-      "Also iterate Y-dominant scan",
-      "Return optimal (X,Y) and total cost"
-     ],
+     "name": "Integer Linear Programming with PuLP + CBC solver",
+     "steps": [],
      "extra": {
-      "solver": "python_enum",
-      "strategy_id": "enumeration_2var_budget_effectiveness"
+      "solver": "pulp.PULP_CBC_CMD"
      }
     }
    }
   ]
  },
- "summary": "16 records in experience bank."
+ "summary": "18 records in experience bank."
 }

@@ -1,87 +1,84 @@
 #!/usr/bin/env python3
 """
 solve.py for orarla_2
-Method: Direct MILP with PuLP
-- Variables: budget_X, budget_Y (integer, >= 0)
-- Constraint 1: budget_X + budget_Y <= 2000
-- Constraint 2 (reach): 3*budget_X - 2*budget_Y >= 500
-- Objective: minimize budget_X + budget_Y
-  (actual cost = (budget_X/50)*50 + (budget_Y/100)*100 = budget_X + budget_Y)
+Method: ILP via PuLP + CBC solver
+Selected by: orx choose-next (milp_pulp_cbc, prediction sp_34b9166100c5)
 """
-
 import json
-import os
 import pulp
+import os
 
 def main():
-    action_id = os.environ.get("OR_ACTION_ID", "unknown")
+    # Create the LP problem
+    prob = pulp.LpProblem("orarla_2_budget_allocation", pulp.LpMinimize)
 
-    # Create the MILP problem
-    prob = pulp.LpProblem("orarla_2_marketing_budget", pulp.LpMinimize)
+    # Decision variables: budgets for channel X and Y (integer, non-negative)
+    X = pulp.LpVariable("X", lowBound=0, cat="Integer")
+    Y = pulp.LpVariable("Y", lowBound=0, cat="Integer")
 
-    # Decision variables: budget allocations (integers, non-negative)
-    budget_X = pulp.LpVariable("budget_X", lowBound=0, cat="Integer")
-    budget_Y = pulp.LpVariable("budget_Y", lowBound=0, cat="Integer")
+    # Objective: minimize total cost = 50*X + 100*Y
+    prob += 50 * X + 100 * Y, "Total_Cost"
 
-    # Objective: minimize total cost (budget_X + budget_Y)
-    prob += budget_X + budget_Y, "Total_Cost"
+    # Constraint 1: Total budget <= 2000
+    prob += X + Y <= 2000, "budget_limit"
 
-    # Constraint 1: total budget <= 2000
-    prob += budget_X + budget_Y <= 2000, "total_budget_limit"
+    # Constraint 2: Reach and frequency: 3*X - 2*Y >= 500
+    prob += 3 * X - 2 * Y >= 500, "reach_freq"
 
-    # Constraint 2: reach constraint
-    # 3*budget_X - 2*budget_Y >= 500
-    prob += 3*budget_X - 2*budget_Y >= 500, "reach_constraint"
-
-    # Solve
-    status = prob.solve(pulp.PULP_CBC_CMD(msg=0))
+    # Solve with CBC
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    status = prob.solve(solver)
 
     # Extract results
-    if status == pulp.LpStatusOptimal:
-        status_str = "optimal"
-        obj_val = pulp.value(prob.objective)
-        mip_gap = 0.0
-    elif status == pulp.LpStatusInfeasible:
-        status_str = "infeasible"
-        obj_val = None
-        mip_gap = None
-    elif status == pulp.LpStatusUndefined:
-        status_str = "undefined"
-        obj_val = None
-        mip_gap = None
-    else:
-        status_str = str(status)
-        obj_val = None
-        mip_gap = None
+    status_val = pulp.LpStatus[status]
+    objective_value = pulp.value(prob.objective)
+    objective_bound = pulp.value(prob.objective)  # CBC gives optimal directly
 
-    # Collect variable values
-    variables = {}
-    if status == pulp.LpStatusOptimal:
-        variables = {
-            "budget_X": pulp.value(budget_X),
-            "budget_Y": pulp.value(budget_Y)
-        }
+    # MIP gap (optimal status means gap = 0)
+    mip_gap = 0.0 if status_val == "Optimal" else None
 
-    # Write result.json
+    # Runtime
+    runtime_seconds = None  # CBC doesn't easily expose this in PuLP
+
+    # Solution values
+    X_val = pulp.value(X)
+    Y_val = pulp.value(Y)
+
+    # Build result
     result = {
-        "status": status_str,
-        "objective_value": obj_val,
-        "objective_bound": None,
+        "status": status_val,
+        "objective_value": objective_value,
+        "objective_bound": objective_bound,
         "mip_gap": mip_gap,
-        "runtime_seconds": None,
-        "variables": variables,
+        "runtime_seconds": runtime_seconds,
+        "variables": {"X": X_val, "Y": Y_val},
         "method_performed": {
-            "action_id": action_id,
+            "action_id": os.environ.get("OR_ACTION_ID", "unknown"),
+            "strategy_id": "milp_pulp_cbc",
             "solver": "pulp",
-            "approach": "direct_milp_2var",
-            "note": "MILP with integer budget_X, budget_Y; constraint 3*budget_X - 2*budget_Y >= 500 from reach requirement"
+            "solver_backend": "CBC",
+            "steps": [
+                "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+                "Set objective: minimize 50*X + 100*Y",
+                "Add constraint: X + Y <= 2000 (total budget)",
+                "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+                "Solve with pulp.PULP_CBC_CMD(msg=0)",
+                "Extract optimal solution and total cost"
+            ],
+            "model_math": {
+                "objective": "min 50*X + 100*Y",
+                "constraints": ["X + Y <= 2000", "3*X - 2*Y >= 500", "X >= 0", "Y >= 0", "X,Y integer"]
+            }
         }
     }
 
+    # Write result
     with open("result.json", "w") as f:
         json.dump(result, f, indent=2)
 
-    print(json.dumps(result, indent=2))
+    print(f"Status: {status_val}")
+    print(f"X = {X_val}, Y = {Y_val}")
+    print(f"Objective (Total Cost) = {objective_value}")
 
 if __name__ == "__main__":
     main()

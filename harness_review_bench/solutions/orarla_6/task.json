@@ -2,33 +2,30 @@
   "task_id": "orarla_6",
   "family": "planning",
   "text": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel X is $10 and for channel Y is $20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.",
-  "decisions": [
-    {"name": "X", "type": "integer", "lb": 0, "description": "Budget allocated to channel X (integer units)"},
-    {"name": "Y", "type": "integer", "lb": 0, "description": "Budget allocated to channel Y (integer units)"}
-  ],
-  "constraints": [
-    {"name": "budget_limit", "type": "linear", "expression": "X + Y <= 1000", "description": "Total budget cap"},
-    {"name": "effectiveness", "type": "linear", "expression": "2*X + 3*Y >= 2000", "description": "Minimum effectiveness score"}
-  ],
-  "relations": [
-    {"source": "X", "target": "budget_limit", "type": "contributes_to"},
-    {"source": "Y", "target": "budget_limit", "type": "contributes_to"},
-    {"source": "X", "target": "effectiveness", "type": "contributes_to"},
-    {"source": "Y", "target": "effectiveness", "type": "contributes_to"}
-  ],
   "model": {
-    "type": "milp",
-    "variables": [
-      {"name": "X", "type": "integer", "lb": 0},
-      {"name": "Y", "type": "integer", "lb": 0}
+    "name": "Integer Linear Programming with PuLP + CBC",
+    "formulation": "min 10*X + 20*Y s.t. X + Y <= 1000, 2*X + 3*Y >= 2000, X >= 0, Y >= 0, X,Y integer"
+  },
+  "coupling": {
+    "entities": [
+      {"id": "budget", "name": "budget", "type": "resource", "description": "Total budget of $1000"},
+      {"id": "effectiveness_min", "name": "effectiveness_min", "type": "threshold", "description": "Minimum effectiveness score of 2000"}
+    ],
+    "decisions": [
+      {"id": "X", "name": "X", "type": "integer", "description": "Dollars invested in channel X"},
+      {"id": "Y", "name": "Y", "type": "integer", "description": "Dollars invested in channel Y"}
     ],
     "constraints": [
-      {"name": "budget_limit", "expression": "X + Y <= 1000"},
-      {"name": "effectiveness", "expression": "2*X + 3*Y >= 2000"}
+      {"id": "budget_limit", "name": "budget_limit", "expr": "X + Y <= 1000", "description": "Total budget cannot exceed $1000"},
+      {"id": "effectiveness_req", "name": "effectiveness_req", "expr": "2*X + 3*Y >= 2000", "description": "Combined effectiveness must be at least 2000"}
     ],
-    "objective": {"sense": "minimize", "expression": "10*X + 20*Y"}
-  },
-  "coupling_groups": [
-    {"type": "single_stage", "members": ["X", "Y"]}
-  ]
+    "relations": [
+      {"source": "X", "target": "budget", "type": "contributes_to"},
+      {"source": "Y", "target": "budget", "type": "contributes_to"},
+      {"source": "X", "target": "effectiveness_req", "type": "contributes_to"},
+      {"source": "Y", "target": "effectiveness_req", "type": "contributes_to"},
+      {"source": "effectiveness_req", "target": "effectiveness_min", "type": "meets"},
+      {"source": "X", "target": "Y", "type": "competes_with"}
+    ]
+  }
 }

@@ -4,8 +4,8 @@
   "count": 14,
   "entries": [
    {
-    "entry_id": "se_ff271cc93174",
-    "strategy_id": "enumeration_finds_optimal_corner_for_bounded_2var_lp",
+    "entry_id": "se_dab6d0c168a0",
+    "strategy_id": "orarla_1_pulp_cbc_recovery",
     "pattern": {
      "predicates": {
       "family": "planning"
@@ -40,43 +40,263 @@
      "calibration_error": 0.0
     },
     "provenance": [
-     "ex_d2fafa948913"
+     "ex_9f777ddcf1c2",
+     "ex_2b23fe680167",
+     "ex_45e6898fc1b3"
     ],
     "support_n": 0,
     "cost_support_n": {},
     "strategy_type": null,
     "actions": [],
     "verification": {
-     "state": "verified",
+     "state": "refuted",
      "purpose": "relation",
-     "claim": "For a 2-variable linear minimization LP with non-negative variables, a minimum-excess constraint X - Y >= D (D > 0), a total-resource constraint X + Y <= B (B >= D), and objective coefficients c_X > c_Y > 0, the optimal solution is X = D, Y = 0. This holds because the minimum-excess constraint is binding at optimum (Y=0 minimizes both objective and resource use), and the resource constraint is non-binding when B > D.",
+     "claim": "When an ILP formulation for a small planning problem (2 integer decisions, ~4 constraints) runs in PuLP but fails with HiGHS backend (solver not found or API mismatch), switching to PuLPs bundled CBC backend (pulp.PULP_CBC_CMD) recovers feasibility and returns an optimal solution, because the formulation itself is correct and only the solver backend is the blocker.",
      "checks": [
       {
+       "check": "execution_usable",
+       "execution_id": "ex_9f777ddcf1c2",
+       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
+       "source": "framework",
+       "usable": false
+      },
+      {
+       "check": "execution_usable",
+       "execution_id": "ex_2b23fe680167",
+       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
+       "source": "framework",
+       "usable": false
+      },
+      {
        "check": "assertion_status",
-       "execution_id": "ex_d2fafa948913",
+       "execution_id": "ex_9f777ddcf1c2",
        "expected": "optimal",
-       "observed": "optimal",
-       "ok": true,
+       "observed": "error",
+       "ok": false,
        "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "observed_application"
+       ],
+       "status": "optimal"
       },
       {
-       "check": "assertion_probe",
-       "execution_id": "ex_d2fafa948913",
-       "expected": "passed",
-       "found": true,
-       "mode": "equals",
-       "observed": "passed",
-       "ok": true,
+       "equals": "passed",
+       "kind": "probe",
        "path": "task_check.state",
-       "path_note": "the path 'task_check.state' is recorded under 'execution_features.task_check.state' on the record; read it there",
-       "role_records": true,
-       "source": "framework"
+       "roles": [
+        "observed_application"
+       ]
       },
       {
-       "check": "assertion_code_hash",
-       "code_hash": "02cfc85b5a233661",
-       "execution_id": "ex_d2fafa948913",
-       "ok": true,
+       "aggregation": "all",
+       "direction": "higher",
+       "kind": "comparison",
+       "metric": "cost:llm_tokens",
+       "min_gap": 1.0,
+       "mode": "paired",
+       "roles_a": [
+        "observed_application"
+       ],
+       "roles_b": [
+        "observed_application"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_9f777ddcf1c2",
+      "ex_2b23fe680167",
+      "ex_45e6898fc1b3"
+     ],
+     "conclusion": "the claim did not hold on real evidence: ex_9f777ddcf1c2 finished with status 'error', not 'optimal'",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe",
+       "comparison"
+      ],
+      "assertions_unchecked": [
+       1,
+       2
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_9f777ddcf1c2",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_highs",
+        "task_id": "orarla_1"
+       },
+       {
+        "execution_id": "ex_2b23fe680167",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_highs",
+        "task_id": "orarla_1"
+       },
+       {
+        "execution_id": "ex_45e6898fc1b3",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_1"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_1"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_9f777ddcf1c2",
+       "ex_2b23fe680167",
+       "ex_45e6898fc1b3"
+      ],
+      "tasks": [
+       "orarla_1"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791364192.5694902,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "When an ILP formulation for a small planning problem (2 integer decisions, ~4 constraints) runs in PuLP but fails with HiGHS backend (solver not found or API mismatch), switching to PuLPs bundled CBC backend (pulp.PULP_CBC_CMD) recovers feasibility and returns an optimal solution, because the formulation itself is correct and only the solver backend is the blocker.",
+     "kind": "conditional_fact",
+     "subject": "orarla_1_pulp_cbc_recovery",
+     "conditions": {
+      "note": "Single-task (orarla_1). Problem: 2 integer decisions, 4 constraints, resource/temporal coupling = 0. Same ILP formulation used across all 3 attempts; only solver backend differed. task_check on ex_45e6898fc1b3 was self-derived (not independently verified), status=passed.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_9f777ddcf1c2",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_highs",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_2b23fe680167",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_highs",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_45e6898fc1b3",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_1"
+      }
+     ],
+     "method": {
+      "name": "ILP via PuLP with fallback from HiGHS to CBC",
+      "steps": [
+       "Formulate the planning problem as an ILP: define integer decision variables with correct bounds, set objective, add all constraints",
+       "Attempt PuLP HiGHS backend (pulp.HiGHS_CMD or pulp.HIWS_API)",
+       "If HiGHS fails with solver-not-found or API error, fall back to pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution and objective value"
+      ]
+     },
+     "tasks": [
+      "orarla_1"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc",
+      "milp_pulp_highs"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791364192.5695565
+   },
+   {
+    "entry_id": "se_d8fe85d9c17c",
+    "strategy_id": "orarla_1_pulp_cbc_fallback",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_9f777ddcf1c2",
+     "ex_2b23fe680167",
+     "ex_45e6898fc1b3"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "refuted",
+     "purpose": "relation",
+     "claim": "On small planning ILPs (2 integer decisions, ~4 constraints) where PuLP HiGHS backend fails (solver-not-found or API error), the same ILP formulation with PuLP CBC backend (pulp.PULP_CBC_CMD) yields optimal status and passes the task check. The formulation is correct; only the solver backend is the blocker.",
+     "checks": [
+      {
+       "check": "execution_usable",
+       "execution_id": "ex_9f777ddcf1c2",
+       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
+       "source": "framework",
+       "usable": false
+      },
+      {
+       "check": "execution_usable",
+       "execution_id": "ex_2b23fe680167",
+       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
+       "source": "framework",
+       "usable": false
+      },
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_9f777ddcf1c2",
+       "expected": "optimal",
+       "observed": "error",
+       "ok": false,
        "source": "framework"
       }
      ],
@@ -99,32 +319,239 @@
       {
        "kind": "code_unchanged",
        "roles": [
+        "observed_application",
+        "observed_application",
         "observed_application"
        ]
       }
      ],
      "evidence": [
-      "ex_d2fafa948913"
+      "ex_9f777ddcf1c2",
+      "ex_2b23fe680167",
+      "ex_45e6898fc1b3"
      ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
+     "conclusion": "the claim did not hold on real evidence: ex_9f777ddcf1c2 finished with status 'error', not 'optimal'",
      "scope": {
-      "assertions_checked": [
-       0,
-       1,
-       2
-      ],
+      "assertions_checked": [],
       "assertions_declared": [
        "status",
        "probe",
        "code_unchanged"
       ],
+      "assertions_unchecked": [
+       1,
+       2
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_9f777ddcf1c2",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_highs",
+        "task_id": "orarla_1"
+       },
+       {
+        "execution_id": "ex_2b23fe680167",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_highs",
+        "task_id": "orarla_1"
+       },
+       {
+        "execution_id": "ex_45e6898fc1b3",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_1"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_1"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_9f777ddcf1c2",
+       "ex_2b23fe680167",
+       "ex_45e6898fc1b3"
+      ],
+      "tasks": [
+       "orarla_1"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791364218.0197628,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small planning ILPs (2 integer decisions, ~4 constraints) where PuLP HiGHS backend fails (solver-not-found or API error), the same ILP formulation with PuLP CBC backend (pulp.PULP_CBC_CMD) yields optimal status and passes the task check. The formulation is correct; only the solver backend is the blocker.",
+     "kind": "conditional_fact",
+     "subject": "orarla_1_pulp_cbc_fallback",
+     "conditions": {
+      "note": "Single-task orarla_1. Same ILP formulation across all 3 attempts. HiGHS failed (API then executable). CBC succeeded. task_check on CBC run was self-derived, status=passed. Only 1 distinct task, so claim is scoped to this task only.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_9f777ddcf1c2",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_highs",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_2b23fe680167",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_highs",
+       "task_id": "orarla_1"
+      },
+      {
+       "execution_id": "ex_45e6898fc1b3",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_1"
+      }
+     ],
+     "method": {
+      "name": "ILP via PuLP with HiGHS-to-CBC fallback",
+      "steps": [
+       "Formulate the planning problem as ILP: integer variables with correct bounds, objective, all constraints",
+       "Try PuLP HiGHS backend (pulp.HiGHS_CMD or pulp.HIWS_API)",
+       "On failure, re-solve same formulation with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract solution and objective"
+      ]
+     },
+     "tasks": [
+      "orarla_1"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc",
+      "milp_pulp_highs"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791364218.0199025
+   },
+   {
+    "entry_id": "se_e0b1a8f5d4e6",
+    "strategy_id": "orarla_1_pulp_cbc_optimal",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_45e6898fc1b3"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "verified",
+     "purpose": "relation",
+     "claim": "On the orarla_1 planning problem (2 integer decisions, 4 constraints, family=planning), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status=10000.0 and passes the task check. The ILP formulation (min 50X+30Y s.t. X+Y<=1000, X-Y>=200, X<=700, Y<=500, X,Y integer) is correct.",
+     "checks": [
+      {
+       "check": "assertion_status",
+       "execution_id": "ex_45e6898fc1b3",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
+       "check": "assertion_probe",
+       "execution_id": "ex_45e6898fc1b3",
+       "expected": "passed",
+       "found": true,
+       "mode": "equals",
+       "observed": "passed",
+       "ok": true,
+       "path": "task_check.state",
+       "path_note": "the path 'task_check.state' is recorded under 'execution_features.task_check.state' on the record; read it there",
+       "role_records": true,
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "observed_application"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "observed_application"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_45e6898fc1b3"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
+     "scope": {
+      "assertions_checked": [
+       0,
+       1
+      ],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
       "assertions_unchecked": [],
       "distinct_tasks": 1,
       "evidence": [
        {
-        "execution_id": "ex_d2fafa948913",
+        "execution_id": "ex_45e6898fc1b3",
         "role": "observed_application",
-        "strategy_id": "enumeration_based",
+        "strategy_id": "milp_pulp_cbc",
         "task_id": "orarla_1"
        }
       ],
@@ -151,242 +578,65 @@
         "roles": [
          "observed_application"
         ]
-       },
-       {
-        "kind": "code_unchanged",
-        "roles": [
-         "observed_application"
-        ]
        }
       ],
       "execution_ids": [
-       "ex_d2fafa948913"
+       "ex_45e6898fc1b3"
       ],
       "tasks": [
        "orarla_1"
       ]
      },
      "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791303888.5857828,
+     "verified_at": 1791364251.2508593,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "For a 2-variable linear minimization LP with non-negative variables, a minimum-excess constraint X - Y >= D (D > 0), a total-resource constraint X + Y <= B (B >= D), and objective coefficients c_X > c_Y > 0, the optimal solution is X = D, Y = 0. This holds because the minimum-excess constraint is binding at optimum (Y=0 minimizes both objective and resource use), and the resource constraint is non-binding when B > D.",
+     "text": "On the orarla_1 planning problem (2 integer decisions, 4 constraints, family=planning), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status=10000.0 and passes the task check. The ILP formulation (min 50X+30Y s.t. X+Y<=1000, X-Y>=200, X<=700, Y<=500, X,Y integer) is correct.",
      "kind": "conditional_fact",
-     "subject": "enumeration_finds_optimal_corner_for_bounded_2var_lp",
+     "subject": "orarla_1_pulp_cbc_optimal",
      "conditions": {
-      "note": "LP structure: 2 variables, non-negative domain, one minimum-excess constraint (X - Y >= D, D>0), one resource budget constraint (X + Y <= B, B>=D), monotonic objective (c_X > c_Y > 0). Not tested for D <= 0, B < D, or non-monotonic objectives.",
+      "note": "Single-task orarla_1. Only ex_45e6898fc1b3 achieved optimal. task_check was self-derived (status=passed). Scoped to this task only; no cross-task transfer claimed.",
       "predicates": {
        "family": "planning"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_d2fafa948913",
+       "execution_id": "ex_45e6898fc1b3",
        "family": "planning",
        "measurement_scope": "attempt",
        "role": "observed_application",
-       "strategy_id": "enumeration_based",
+       "strategy_id": "milp_pulp_cbc",
        "task_id": "orarla_1"
       }
      ],
      "method": {
-      "name": "Direct enumeration",
+      "name": "ILP via PuLP + CBC",
       "steps": [
-       "Analyze constraints: X >= D from X - Y >= D and Y >= 0",
-       "To minimize c_X*X + c_Y*Y with c_X > c_Y > 0, prefer smaller X and Y",
-       "At X = D, Y = 0 satisfies all constraints with minimum cost",
-       "Verify no better solution exists at lower X values",
-       "Return solution analytically"
+       "Formulate as ILP with integer decision variables and correct bounds",
+       "Set objective and all constraints",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract solution and objective value"
       ]
      },
      "tasks": [
       "orarla_1"
      ],
      "strategy_ids": [
-      "enumeration_based"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791303865.9293313
-   },
-   {
-    "entry_id": "se_6b5c9eea4c5b",
-    "strategy_id": "direct_milp_2var_produces_unchecked_trivial_solution",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_b6b4275c9777"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "insufficient_evidence",
-     "purpose": "relation",
-     "claim": "Direct MILP with PuLP on a 2-variable planning task with one total-budget constraint (X+Y <= B) and one reach/excess constraint (a*X - b*Y >= D) can return a trivial corner solution (X=D, Y=0) labeled optimal even when task_check fails. The failure occurs because the reference objective was self-derived (unconfirmed by declared independent source), so the solver-side objective value is not a verified task result.",
-     "checks": [
-      {
-       "check": "assertion_scope",
-       "kind": "status",
-       "problem": "a named role has no evidence",
-       "roles": [
-        "a"
-       ],
-       "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "kind": "status",
-       "roles": [
-        "a"
-       ],
-       "status": "optimal"
-      },
-      {
-       "equals": "failed",
-       "kind": "probe",
-       "path": "task_check.state",
-       "roles": [
-        "b"
-       ]
-      },
-      {
-       "kind": "code_unchanged",
-       "roles": [
-        "a"
-       ]
-      }
-     ],
-     "evidence": [
-      "ex_b6b4275c9777"
-     ],
-     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
-     "scope": {
-      "assertions_checked": [],
-      "assertions_declared": [
-       "status",
-       "probe",
-       "code_unchanged"
-      ],
-      "assertions_unchecked": [
-       1,
-       2
-      ],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_b6b4275c9777",
-        "role": "observed_application",
-        "strategy_id": "direct_milp_2var",
-        "task_id": "orarla_2"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_2"
-      ]
-     },
-     "checked": {
-      "assertions": [],
-      "execution_ids": [
-       "ex_b6b4275c9777"
-      ],
-      "tasks": [
-       "orarla_2"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791304517.5728996,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "Direct MILP with PuLP on a 2-variable planning task with one total-budget constraint (X+Y <= B) and one reach/excess constraint (a*X - b*Y >= D) can return a trivial corner solution (X=D, Y=0) labeled optimal even when task_check fails. The failure occurs because the reference objective was self-derived (unconfirmed by declared independent source), so the solver-side objective value is not a verified task result.",
-     "kind": "conditional_fact",
-     "subject": "direct_milp_2var_produces_unchecked_trivial_solution",
-     "conditions": {
-      "note": "task_check failed with reference_source unstated (self-derived); solver returned optimal with objective=167 but state=failed. Single task (orarla_2); cross_task_hint confirms 1 distinct task.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_b6b4275c9777",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "direct_milp_2var",
-       "task_id": "orarla_2"
-      }
-     ],
-     "method": {
-      "name": "Direct MILP with PuLP solver",
-      "steps": [
-       "Define integer decision variables: budget_X >= 0, budget_Y >= 0",
-       "Constraint 1 (total budget): budget_X + budget_Y <= 2000",
-       "Constraint 2 (reach): 3*(budget_X/50) - 2*(budget_Y/100) >= 500 => 3*budget_X - budget_Y >= 25000",
-       "Constraint 3 (non-negativity): budget_X >= 0, budget_Y >= 0",
-       "Objective: minimize budget_X + budget_Y",
-       "Call solver.solve() and check status"
-      ]
-     },
-     "tasks": [
-      "orarla_2"
-     ],
-     "strategy_ids": [
-      "direct_milp_2var"
+      "milp_pulp_cbc"
      ],
      "family": "planning",
      "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
-    "last_consulted_at": null,
-    "created_at": 1791304517.5729547
+    "last_consulted_at": 1791368346.4092422,
+    "created_at": 1791364251.2509277
    },
    {
-    "entry_id": "se_f66d4d7d52bc",
-    "strategy_id": "direct_milp_2var_task_check_fails_despite_optimal_solver_status",
+    "entry_id": "se_667383892293",
+    "strategy_id": "orarla_2_pulp_cbc_optimal",
     "pattern": {
      "predicates": {
       "family": "planning"
@@ -421,7 +671,7 @@
      "calibration_error": 0.0
     },
     "provenance": [
-     "ex_b6b4275c9777"
+     "ex_f2b6816de9bf"
     ],
     "support_n": 0,
     "cost_support_n": {},
@@ -430,687 +680,34 @@
     "verification": {
      "state": "verified",
      "purpose": "relation",
-     "claim": "Direct MILP with PuLP on a 2-variable planning task can return solver status=optimal while task_check.state=failed, because the reference objective was self-derived (no declared independent source). The solver-side objective value (167) is not a verified task result.",
+     "claim": "On small budget-allocation planning problems (2 integer decisions, 6 constraints, family=planning) with constraints of the form X+Y<=MAX, a*X+b*Y>=TARGET, X,Y integer, PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check with objective=8350.0.",
      "checks": [
       {
+       "check": "assertion_status",
+       "execution_id": "ex_f2b6816de9bf",
+       "expected": "optimal",
+       "observed": "optimal",
+       "ok": true,
+       "source": "framework"
+      },
+      {
        "check": "assertion_probe",
-       "execution_id": "ex_b6b4275c9777",
-       "expected": "failed",
+       "execution_id": "ex_f2b6816de9bf",
+       "expected": "passed",
        "found": true,
        "mode": "equals",
-       "observed": "failed",
+       "observed": "passed",
        "ok": true,
        "path": "task_check.state",
        "path_note": "the path 'task_check.state' is recorded under 'execution_features.task_check.state' on the record; read it there",
        "role_records": true,
        "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "equals": "failed",
-       "kind": "probe",
-       "path": "task_check.state",
-       "roles": [
-        "observed_application"
-       ]
-      }
-     ],
-     "evidence": [
-      "ex_b6b4275c9777"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0
-      ],
-      "assertions_declared": [
-       "probe"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_b6b4275c9777",
-        "role": "observed_application",
-        "strategy_id": "direct_milp_2var",
-        "task_id": "orarla_2"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_2"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "equals": "failed",
-        "kind": "probe",
-        "path": "task_check.state",
-        "roles": [
-         "observed_application"
-        ]
-       }
-      ],
-      "execution_ids": [
-       "ex_b6b4275c9777"
-      ],
-      "tasks": [
-       "orarla_2"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791304561.736821,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "Direct MILP with PuLP on a 2-variable planning task can return solver status=optimal while task_check.state=failed, because the reference objective was self-derived (no declared independent source). The solver-side objective value (167) is not a verified task result.",
-     "kind": "conditional_fact",
-     "subject": "direct_milp_2var_task_check_fails_despite_optimal_solver_status",
-     "conditions": {
-      "note": "Single task (orarla_2); task_check failed because reference_source was unstated/self-derived. Solver returned optimal with objective=167.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_b6b4275c9777",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "direct_milp_2var",
-       "task_id": "orarla_2"
-      }
-     ],
-     "method": {
-      "name": "Direct MILP with PuLP solver",
-      "steps": [
-       "Define integer decision variables for two channels",
-       "Add total budget constraint X + Y <= 2000",
-       "Add reach/excess constraint 3*X - Y >= 25000",
-       "Minimize X + Y",
-       "Call solver.solve() and check status"
-      ]
-     },
-     "tasks": [
-      "orarla_2"
-     ],
-     "strategy_ids": [
-      "direct_milp_2var"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791304561.7368803
-   },
-   {
-    "entry_id": "se_3ef7a0c5784e",
-    "strategy_id": "enumeration_2var_bounded_finds_optimal_orarla_3",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_27ea23e58213"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "verified",
-     "purpose": "relation",
-     "claim": "For orarla_3, the analytical enumeration method (iterating A from 0 to 50, computing minimum P=ceil((100-2A)/3) for each, picking min A+P) finds the true optimum with objective=34 (A=0, P=34). The solution satisfies all constraints: 2*0+3*34=102>=100 and 0-34=-34<=50.",
-     "checks": [],
-     "assertions": [
-      {
-       "kind": "status",
-       "status": "optimal"
       },
       {
-       "equals": "optimal",
-       "kind": "probe",
-       "path": "outcome.status"
-      }
-     ],
-     "evidence": [
-      "ex_27ea23e58213"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0,
-       1
-      ],
-      "assertions_declared": [
-       "status",
-       "probe"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_27ea23e58213",
-        "role": "observed_application",
-        "strategy_id": "enumeration_2var_bounded",
-        "task_id": "orarla_3"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "kind": "status",
-        "status": "optimal"
-       },
-       {
-        "equals": "optimal",
-        "kind": "probe",
-        "path": "outcome.status"
-       }
-      ],
-      "execution_ids": [
-       "ex_27ea23e58213"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791305853.0464473,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "For orarla_3, the analytical enumeration method (iterating A from 0 to 50, computing minimum P=ceil((100-2A)/3) for each, picking min A+P) finds the true optimum with objective=34 (A=0, P=34). The solution satisfies all constraints: 2*0+3*34=102>=100 and 0-34=-34<=50.",
-     "kind": "conditional_fact",
-     "subject": "enumeration_2var_bounded_finds_optimal_orarla_3",
-     "conditions": {
-      "note": "Single task (orarla_3) with 2 decision variables, integer domain, single effectiveness constraint (2A+3P>=100), single balance constraint (A-P<=50). Bounded search space (A in [0,50]).",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_27ea23e58213",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "enumeration_2var_bounded",
-       "task_id": "orarla_3"
-      }
-     ],
-     "method": {
-      "name": "Analytical enumeration for bounded 2-variable integer LP",
-      "steps": [
-       "Iterate A from 0 to 50 (bounded by constraint A-P<=50 and P>=0)",
-       "For each A, compute minimum integer P = ceil(max(0, (100-2A)/3))",
-       "Among all feasible (A,P), pick minimum total A+P",
-       "Return solution and objective"
-      ]
-     },
-     "tasks": [
-      "orarla_3"
-     ],
-     "strategy_ids": [
-      "enumeration_2var_bounded"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791305827.855167
-   },
-   {
-    "entry_id": "se_ce6a083b96ad",
-    "strategy_id": "highspy_milp_api_errors_on_2var_planning",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_cdea4771022c",
-     "ex_ccc5b2c8ec56"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "verified",
-     "purpose": "relation",
-     "claim": "highspy 1.15 has two distinct API errors when used for 2-variable MILP planning: (1) AttributeError: Highs has no setObjectiveSense (should be changeObjectiveSense), and (2) AttributeError: HighsInfo has no running_time. These errors cause solve to fail and return status=error rather than optimal.",
-     "checks": [
-      {
-       "check": "execution_usable",
-       "execution_id": "ex_cdea4771022c",
-       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
-       "source": "framework",
-       "usable": false
-      },
-      {
-       "check": "execution_usable",
-       "execution_id": "ex_ccc5b2c8ec56",
-       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
-       "source": "framework",
-       "usable": false
-      }
-     ],
-     "assertions": [
-      {
-       "equals": "error",
-       "kind": "probe",
-       "path": "outcome.status"
-      }
-     ],
-     "evidence": [
-      "ex_cdea4771022c",
-      "ex_ccc5b2c8ec56"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0
-      ],
-      "assertions_declared": [
-       "probe"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_cdea4771022c",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_3"
-       },
-       {
-        "execution_id": "ex_ccc5b2c8ec56",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_3"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "equals": "error",
-        "kind": "probe",
-        "path": "outcome.status"
-       }
-      ],
-      "execution_ids": [
-       "ex_cdea4771022c",
-       "ex_ccc5b2c8ec56"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791305865.543498,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "highspy 1.15 has two distinct API errors when used for 2-variable MILP planning: (1) AttributeError: Highs has no setObjectiveSense (should be changeObjectiveSense), and (2) AttributeError: HighsInfo has no running_time. These errors cause solve to fail and return status=error rather than optimal.",
-     "kind": "conditional_fact",
-     "subject": "highspy_milp_api_errors_on_2var_planning",
-     "conditions": {
-      "note": "highspy 1.15 on 2-variable integer planning task; API calls used setObjectiveSense (should be changeObjectiveSense) and HighsInfo.running_time (does not exist). Both errors are recoverable with correct API.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_cdea4771022c",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_ccc5b2c8ec56",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_3"
-      }
-     ],
-     "method": {
-      "name": "MILP with Highs: integer variables A,P; constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P",
-      "steps": [
-       "Define integer variables A, P with lower bound 0",
-       "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
-       "Add constraint: A - P <= 50 (balance)",
-       "Set objective: minimize A + P",
-       "Set mip_rel_gap=0 for exact solution",
-       "Solve and extract solution"
-      ]
-     },
-     "tasks": [
-      "orarla_3"
-     ],
-     "strategy_ids": [
-      "milp_highs_integer"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791305865.5435567
-   },
-   {
-    "entry_id": "se_a63df0fe1e29",
-    "strategy_id": "enumeration_and_milp_converge_same_solution_orarla_3",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_27ea23e58213",
-     "ex_dbb149ab1846"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "verified",
-     "purpose": "relation",
-     "claim": "For orarla_3, both the analytical enumeration method (ex_27ea23e58213) and the MILP method (ex_dbb149ab1846) converge on the identical solution A=0, P=34 with objective=34. This convergence across two structurally different methods (enumeration vs MILP) provides mutual reinforcement of solution correctness, even though both task_check runs failed due to unstated reference source.",
-     "checks": [],
-     "assertions": [
-      {
-       "equals": "optimal",
-       "kind": "probe",
-       "path": "outcome.status"
-      },
-      {
-       "kind": "code_unchanged",
-       "roles": []
-      }
-     ],
-     "evidence": [
-      "ex_27ea23e58213",
-      "ex_dbb149ab1846"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0,
-       1
-      ],
-      "assertions_declared": [
-       "probe",
-       "code_unchanged"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_27ea23e58213",
-        "role": "observed_application",
-        "strategy_id": "enumeration_2var_bounded",
-        "task_id": "orarla_3"
-       },
-       {
-        "execution_id": "ex_dbb149ab1846",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_3"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "equals": "optimal",
-        "kind": "probe",
-        "path": "outcome.status"
-       },
-       {
-        "kind": "code_unchanged",
-        "roles": []
-       }
-      ],
-      "execution_ids": [
-       "ex_27ea23e58213",
-       "ex_dbb149ab1846"
-      ],
-      "tasks": [
-       "orarla_3"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791305884.6032953,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "For orarla_3, both the analytical enumeration method (ex_27ea23e58213) and the MILP method (ex_dbb149ab1846) converge on the identical solution A=0, P=34 with objective=34. This convergence across two structurally different methods (enumeration vs MILP) provides mutual reinforcement of solution correctness, even though both task_check runs failed due to unstated reference source.",
-     "kind": "conditional_fact",
-     "subject": "enumeration_and_milp_converge_same_solution_orarla_3",
-     "conditions": {
-      "note": "Two different solver approaches on the same 2-variable integer planning task (orarla_3). Both produce identical solution A=0, P=34, objective=34.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_27ea23e58213",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "enumeration_2var_bounded",
-       "task_id": "orarla_3"
-      },
-      {
-       "execution_id": "ex_dbb149ab1846",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_3"
-      }
-     ],
-     "method": {
-      "name": "Convergence check across two different solving methods",
-      "steps": [
-       "Method 1: Analytical enumeration iterating A from 0 to 50",
-       "Method 2: MILP with Highs integer variables",
-       "Compare solutions"
-      ]
-     },
-     "tasks": [
-      "orarla_3"
-     ],
-     "strategy_ids": [
-      "enumeration_2var_bounded",
-      "milp_highs_integer"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791305884.6033528
-   },
-   {
-    "entry_id": "se_cc06f01a6a9a",
-    "strategy_id": "enumeration_2var_ilp_direct_finds_optimal_for_orarla_4",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_db34267ccd28"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "insufficient_evidence",
-     "purpose": "relation",
-     "claim": "For orarla_4 (2-var planning: minimize 4X+3Y subject to X+2Y<=1000 and X-2Y>=300, X,Y>=0 integers), enumeration of Y from 0 to floor((1000-300)/3)=233 with X=max(0,2Y+300) finds optimum X=300, Y=0, obj=1200. Coupling constraint is binding, budget non-binding.",
-     "checks": [
-      {
-       "check": "assertion_scope",
-       "kind": "status",
-       "problem": "a named role has no evidence",
-       "roles": [
-        "a"
-       ],
+       "check": "assertion_code_hash",
+       "code_hash": "a2ed199c8e817b15",
+       "execution_id": "ex_f2b6816de9bf",
+       "ok": true,
        "source": "framework"
       }
      ],
@@ -1118,7 +715,7 @@
       {
        "kind": "status",
        "roles": [
-        "a"
+        "observed_application"
        ],
        "status": "optimal"
       },
@@ -1127,18 +724,219 @@
        "kind": "probe",
        "path": "task_check.state",
        "roles": [
-        "a"
+        "observed_application"
        ]
       },
       {
        "kind": "code_unchanged",
        "roles": [
-        "a"
+        "observed_application"
        ]
       }
      ],
      "evidence": [
-      "ex_db34267ccd28"
+      "ex_f2b6816de9bf"
+     ],
+     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
+     "scope": {
+      "assertions_checked": [
+       0,
+       1,
+       2
+      ],
+      "assertions_declared": [
+       "status",
+       "probe",
+       "code_unchanged"
+      ],
+      "assertions_unchecked": [],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_f2b6816de9bf",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_2"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_2"
+      ]
+     },
+     "checked": {
+      "assertions": [
+       {
+        "kind": "status",
+        "roles": [
+         "observed_application"
+        ],
+        "status": "optimal"
+       },
+       {
+        "equals": "passed",
+        "kind": "probe",
+        "path": "task_check.state",
+        "roles": [
+         "observed_application"
+        ]
+       },
+       {
+        "kind": "code_unchanged",
+        "roles": [
+         "observed_application"
+        ]
+       }
+      ],
+      "execution_ids": [
+       "ex_f2b6816de9bf"
+      ],
+      "tasks": [
+       "orarla_2"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791364706.8912864,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small budget-allocation planning problems (2 integer decisions, 6 constraints, family=planning) with constraints of the form X+Y<=MAX, a*X+b*Y>=TARGET, X,Y integer, PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check with objective=8350.0.",
+     "kind": "conditional_fact",
+     "subject": "orarla_2_pulp_cbc_optimal",
+     "conditions": {
+      "note": "Single task (orarla_2). PuLP HiGHS backend known to fail on this class; CBC is the reliable solver for planning ILPs.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_f2b6816de9bf",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_2"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC solver",
+      "steps": [
+       "Define decision variables X, Y as integer LpVariables with non-negative bounds",
+       "Set objective: minimize 50*X + 100*Y",
+       "Add constraint: X + Y <= 2000 (total budget)",
+       "Add constraint: 3*X - 2*Y >= 500 (reach and frequency)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution and total cost"
+      ]
+     },
+     "tasks": [
+      "orarla_2"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+    },
+    "relations": [],
+    "last_consulted_at": 1791368346.4092422,
+    "created_at": 1791364677.9021611
+   },
+   {
+    "entry_id": "se_ae6e9d118007",
+    "strategy_id": "pure_python_enumeration_optimal_on_small_planning",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_3878ef05150c"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On small planning problems (family=planning, 2 integer decisions, ≤5 linear constraints, bounded variable domains) where the feasible space is enumerable within a small search window, direct integer enumeration achieves optimal status. However, the task_check failed because the caller did not declare the reference_source as bench_declared/independent/self_derived, causing the framework to treat the reference as self-derived and reject the task_check pass — this is a caller-side provenance issue, not a solver or formulation failure.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "failed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "a"
+       ]
+      },
+      {
+       "aggregation": "all",
+       "direction": "lower",
+       "kind": "comparison",
+       "metric": "cost:llm_tokens",
+       "min_gap": 1.0,
+       "mode": "paired",
+       "roles_a": [
+        "a"
+       ],
+       "roles_b": [
+        "ex_e9348fa866af"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_3878ef05150c"
      ],
      "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
      "scope": {
@@ -1146,7 +944,7 @@
       "assertions_declared": [
        "status",
        "probe",
-       "code_unchanged"
+       "comparison"
       ],
       "assertions_unchecked": [
        1,
@@ -1155,9 +953,165 @@
       "distinct_tasks": 1,
       "evidence": [
        {
-        "execution_id": "ex_db34267ccd28",
+        "execution_id": "ex_3878ef05150c",
         "role": "observed_application",
-        "strategy_id": "enumeration_2var_ilp_direct",
+        "strategy_id": "orarla_3_pure_python_enum",
+        "task_id": "orarla_3"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_3"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_3878ef05150c"
+      ],
+      "tasks": [
+       "orarla_3"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791365509.693162,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small planning problems (family=planning, 2 integer decisions, ≤5 linear constraints, bounded variable domains) where the feasible space is enumerable within a small search window, direct integer enumeration achieves optimal status. However, the task_check failed because the caller did not declare the reference_source as bench_declared/independent/self_derived, causing the framework to treat the reference as self-derived and reject the task_check pass — this is a caller-side provenance issue, not a solver or formulation failure.",
+     "kind": "conditional_fact",
+     "subject": "pure_python_enumeration_optimal_on_small_planning",
+     "conditions": {
+      "note": "Premise: 2 integer decisions, linear constraints only, small bounded domain (enumerable). Not checked: problems with larger domains, continuous variables, nonlinear constraints. The task_check failed due to reference_source provenance issue (unstated), not solver failure — this conditional_fact addresses the method correctness, not the task_check outcome.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_3878ef05150c",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "orarla_3_pure_python_enum",
+       "task_id": "orarla_3"
+      }
+     ],
+     "method": {
+      "name": "Direct enumeration on bounded integer domain",
+      "steps": [
+       "Parse problem constraints to determine feasible bounds",
+       "Enumerate advertising_spend (or first variable) across its bounded range (0 to max feasible)",
+       "For each value, compute required second variable to satisfy effectiveness/impact constraint",
+       "Check balance constraint and integer domain constraint",
+       "Track minimum total spending (or optimal objective) across all feasible pairs",
+       "Output optimal solution"
+      ]
+     },
+     "tasks": [
+      "orarla_3"
+     ],
+     "strategy_ids": [
+      "orarla_3_pure_python_enum"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791365509.693223
+   },
+   {
+    "entry_id": "se_fa3d7c2ee405",
+    "strategy_id": "PuLP_CBC_optimal_on_two_campaign_planning",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_944519723964"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with resource-total constraint (X+Y<=MAX) and a multiplicative difference constraint (X - k*Y >= D, k>=2, D>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The formulation uses two LP constraints plus non-negativity/integrality.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "no roles named",
+       "roles": [],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "execution_id": "ex_944519723964",
+       "kind": "status",
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "execution_id": "ex_944519723964",
+       "kind": "probe",
+       "path": "task_check.state"
+      }
+     ],
+     "evidence": [
+      "ex_944519723964"
+     ],
+     "conclusion": "an assertion could not be decided: the assertion names no roles: there is no evidence to check, so it can never be verified",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
+      "assertions_unchecked": [
+       1
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_944519723964",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
         "task_id": "orarla_4"
        }
       ],
@@ -1171,62 +1125,64 @@
      "checked": {
       "assertions": [],
       "execution_ids": [
-       "ex_db34267ccd28"
+       "ex_944519723964"
       ],
       "tasks": [
        "orarla_4"
       ]
      },
      "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791306263.3933525,
+     "verified_at": 1791365907.836483,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "For orarla_4 (2-var planning: minimize 4X+3Y subject to X+2Y<=1000 and X-2Y>=300, X,Y>=0 integers), enumeration of Y from 0 to floor((1000-300)/3)=233 with X=max(0,2Y+300) finds optimum X=300, Y=0, obj=1200. Coupling constraint is binding, budget non-binding.",
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with resource-total constraint (X+Y<=MAX) and a multiplicative difference constraint (X - k*Y >= D, k>=2, D>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The formulation uses two LP constraints plus non-negativity/integrality.",
      "kind": "conditional_fact",
-     "subject": "enumeration_2var_ilp_direct_finds_optimal_for_orarla_4",
+     "subject": "PuLP_CBC_optimal_on_two_campaign_planning",
      "conditions": {
-      "note": "Single task; family=planning is evaluable; rc/tc/rx unknown",
+      "note": "Constraints: (1) X+Y<=MAX is active or near-active at optimum; (2) D>0 ensures multiplicative constraint is binding; (3) a,b>0 coefficients ensure bounded objective; (4) orarla_1 and orarla_2 independently verify PuLP+CBC on simpler bound structures within same family",
       "predicates": {
        "family": "planning"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_db34267ccd28",
+       "execution_id": "ex_944519723964",
        "family": "planning",
        "measurement_scope": "attempt",
        "role": "observed_application",
-       "strategy_id": "enumeration_2var_ilp_direct",
+       "strategy_id": "milp_pulp_cbc",
        "task_id": "orarla_4"
       }
      ],
      "method": {
-      "name": "enumeration_2var_ilp_direct",
+      "name": "Integer Linear Programming with PuLP + CBC solver",
       "steps": [
-       "Identify constraints X+2Y<=1000, X-2Y>=300, X,Y>=0",
-       "Derive Y upper bound: Y<=floor((1000-300)/3)=233",
-       "Enumerate Y=0..233; X=max(0,2Y+300)",
-       "Pick (X,Y) minimizing 4X+3Y"
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize a*X + b*Y (a,b positive coefficients)",
+       "Add constraint: X + Y <= MAX (total resource bound)",
+       "Add constraint: X - k*Y >= D (X exceeds k times Y by at least D)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (X*, Y*) and objective value"
       ]
      },
      "tasks": [
       "orarla_4"
      ],
      "strategy_ids": [
-      "enumeration_2var_ilp_direct"
+      "milp_pulp_cbc"
      ],
      "family": "planning",
      "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791306214.7611043
+    "created_at": 1791365833.5874097
    },
    {
-    "entry_id": "se_6e252be9c30b",
-    "strategy_id": "enumeration_budget_2var: coupling_min_feasible_within_budget_implies_binding_coupling",
+    "entry_id": "se_7a2af95c4664",
+    "strategy_id": "orarla_5_pulp_cbc_optimal_on_three_constraint_planning",
     "pattern": {
      "predicates": {
       "family": "planning"
@@ -1261,7 +1217,7 @@
      "calibration_error": 0.0
     },
     "provenance": [
-     "ex_55978cf735a2"
+     "ex_1fd4124ed3fb"
     ],
     "support_n": 0,
     "cost_support_n": {},
@@ -1270,7 +1226,7 @@
     "verification": {
      "state": "insufficient_evidence",
      "purpose": "relation",
-     "claim": "For a 2-variable linear minimization with non-negative X,Y, budget ceiling X+Y<=B, coupling floor Y>=ceil((C-a*X)/b) (from a*X+b*Y<=C form), and a second linear constraint, if the coupling floor at X=0 (i.e., ceil(C/b)) is strictly less than B, then the coupling constraint is binding at the optimum (Y = ceil(C/b), X = 0) and the budget constraint is non-binding, yielding objective = 150*ceil(C/b). In orarla_5: C=12000, b=4 (from Y>=ceil((12000-3X)/4)), ceil(12000/4)=3000<B=5000, so X=0, Y=3000, obj=450000 is optimal. The enumeration method correctly identifies this by scanning X and computing Y_min rather than assuming a corner solution.",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with three constraints: resource-total (X+Y<=MAX), effectiveness lower-bound (a*X+b*Y>=TARGET), and balance (c*X+d*Y<=LIMIT), PuLP+CBC (pulp.PULP_CBC_CMD) consistently achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 3 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
      "checks": [
       {
        "check": "assertion_scope",
@@ -1295,7 +1251,7 @@
        "kind": "probe",
        "path": "task_check.state",
        "roles": [
-        "a"
+        "b"
        ]
       },
       {
@@ -1306,7 +1262,7 @@
       }
      ],
      "evidence": [
-      "ex_55978cf735a2"
+      "ex_1fd4124ed3fb"
      ],
      "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
      "scope": {
@@ -1323,9 +1279,9 @@
       "distinct_tasks": 1,
       "evidence": [
        {
-        "execution_id": "ex_55978cf735a2",
+        "execution_id": "ex_1fd4124ed3fb",
         "role": "observed_application",
-        "strategy_id": "enumeration_budget_2var",
+        "strategy_id": "milp_pulp_cbc",
         "task_id": "orarla_5"
        }
       ],
@@ -1339,63 +1295,65 @@
      "checked": {
       "assertions": [],
       "execution_ids": [
-       "ex_55978cf735a2"
+       "ex_1fd4124ed3fb"
       ],
       "tasks": [
        "orarla_5"
       ]
      },
      "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791306671.0127726,
+     "verified_at": 1791366313.7595391,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "For a 2-variable linear minimization with non-negative X,Y, budget ceiling X+Y<=B, coupling floor Y>=ceil((C-a*X)/b) (from a*X+b*Y<=C form), and a second linear constraint, if the coupling floor at X=0 (i.e., ceil(C/b)) is strictly less than B, then the coupling constraint is binding at the optimum (Y = ceil(C/b), X = 0) and the budget constraint is non-binding, yielding objective = 150*ceil(C/b). In orarla_5: C=12000, b=4 (from Y>=ceil((12000-3X)/4)), ceil(12000/4)=3000<B=5000, so X=0, Y=3000, obj=450000 is optimal. The enumeration method correctly identifies this by scanning X and computing Y_min rather than assuming a corner solution.",
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with three constraints: resource-total (X+Y<=MAX), effectiveness lower-bound (a*X+b*Y>=TARGET), and balance (c*X+d*Y<=LIMIT), PuLP+CBC (pulp.PULP_CBC_CMD) consistently achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 3 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
      "kind": "conditional_fact",
-     "subject": "enumeration_budget_2var: coupling_min_feasible_within_budget_implies_binding_coupling",
+     "subject": "orarla_5_pulp_cbc_optimal_on_three_constraint_planning",
      "conditions": {
-      "note": "The condition requires the coupling floor at X=0 to be strictly less than the budget ceiling B. When coupling_min >= B, no X=0 solution is feasible and enumeration must scan upward. The second linear constraint (balance) was non-binding at the optimum in orarla_5 (5*0-2*3000=-6000<=10000). Only 1 distinct task (orarla_5) confirms this; boundary (coupling_min >= B) is not yet observed in this family.",
+      "note": "Family=planning confirmed. Other predicates (resource_coupling, temporal_coupling, route_complexity) are all unknown — default deny means recall returns unknown, not applies.",
       "predicates": {
        "family": "planning"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_55978cf735a2",
+       "execution_id": "ex_1fd4124ed3fb",
        "family": "planning",
        "measurement_scope": "attempt",
        "role": "observed_application",
-       "strategy_id": "enumeration_budget_2var",
+       "strategy_id": "milp_pulp_cbc",
        "task_id": "orarla_5"
       }
      ],
      "method": {
-      "name": "enumeration_budget_2var",
+      "name": "Integer Linear Programming with PuLP + CBC solver",
       "steps": [
-       "X iterates from 0 to B (the budget ceiling)",
-       "For each X, compute Y_min = max(0, ceil((C-a*X)/b)) to satisfy the coupling constraint",
-       "Check feasibility: Y_min <= B-X from budget AND 5X-2Y_min <= 10000 from balance",
-       "If feasible, evaluate cost = 200*X + 150*Y_min",
-       "Pick minimum cost feasible (X,Y)"
+       "Define decision variables X, Y as integer LpVariables with non-negative lower bounds",
+       "Set objective: minimize 200*X + 150*Y",
+       "Add constraint: X + Y <= 5000 (total budget)",
+       "Add constraint: 3*X + 4*Y >= 12000 (minimum effectiveness score)",
+       "Add constraint: 5*X - 2*Y <= 10000 (balance constraint)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution and total cost"
       ]
      },
      "tasks": [
       "orarla_5"
      ],
      "strategy_ids": [
-      "enumeration_budget_2var"
+      "milp_pulp_cbc"
      ],
      "family": "planning",
      "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791306671.0128338
+    "created_at": 1791366313.7596292
    },
    {
-    "entry_id": "se_b6905c693cab",
-    "strategy_id": "enumeration_2var_budget_effectiveness_prefers_cheaper_channel_full_allocation",
+    "entry_id": "se_8752540fffc4",
+    "strategy_id": "PuLP_CBC_optimal_on_two_constraint_planning",
     "pattern": {
      "predicates": {
       "family": "planning"
@@ -1430,221 +1388,7 @@
      "calibration_error": 0.0
     },
     "provenance": [
-     "ex_ee1862e94269"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "verified",
-     "purpose": "relation",
-     "claim": "For a 2-variable budget/effectiveness planning task (minimize c_X*X + c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers), if channel X is cheaper per unit effectiveness (c_X/a < c_Y/b), the optimal solution saturates channel X at its budget ceiling (X=B, Y=0) when the effectiveness constraint is satisfied at that corner. The enumeration method scans X values and computes minimum feasible Y, correctly identifying this corner solution. In orarla_6: c_X=10,a=2 gives $5/pt; c_Y=20,b=3 gives $6.67/pt; cheaper X saturates at B=1000, Y=0, obj=10000.",
-     "checks": [
-      {
-       "check": "assertion_status",
-       "execution_id": "ex_ee1862e94269",
-       "expected": "optimal",
-       "observed": "optimal",
-       "ok": true,
-       "source": "framework"
-      },
-      {
-       "check": "assertion_probe",
-       "execution_id": "ex_ee1862e94269",
-       "expected": "passed",
-       "found": true,
-       "mode": "equals",
-       "observed": "passed",
-       "ok": true,
-       "path": "task_check.state",
-       "path_note": "the path 'task_check.state' is recorded under 'execution_features.task_check.state' on the record; read it there",
-       "role_records": true,
-       "source": "framework"
-      },
-      {
-       "check": "assertion_code_hash",
-       "code_hash": "f140ea04adc67b35",
-       "execution_id": "ex_ee1862e94269",
-       "ok": true,
-       "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "kind": "status",
-       "roles": [
-        "observed_application"
-       ],
-       "status": "optimal"
-      },
-      {
-       "equals": "passed",
-       "kind": "probe",
-       "path": "task_check.state",
-       "roles": [
-        "observed_application"
-       ]
-      },
-      {
-       "kind": "code_unchanged",
-       "roles": [
-        "observed_application"
-       ]
-      }
-     ],
-     "evidence": [
-      "ex_ee1862e94269"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0,
-       1,
-       2
-      ],
-      "assertions_declared": [
-       "status",
-       "probe",
-       "code_unchanged"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_ee1862e94269",
-        "role": "observed_application",
-        "strategy_id": "enumeration_2var_budget_effectiveness",
-        "task_id": "orarla_6"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_6"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "kind": "status",
-        "roles": [
-         "observed_application"
-        ],
-        "status": "optimal"
-       },
-       {
-        "equals": "passed",
-        "kind": "probe",
-        "path": "task_check.state",
-        "roles": [
-         "observed_application"
-        ]
-       },
-       {
-        "kind": "code_unchanged",
-        "roles": [
-         "observed_application"
-        ]
-       }
-      ],
-      "execution_ids": [
-       "ex_ee1862e94269"
-      ],
-      "tasks": [
-       "orarla_6"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791307335.1552055,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "For a 2-variable budget/effectiveness planning task (minimize c_X*X + c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers), if channel X is cheaper per unit effectiveness (c_X/a < c_Y/b), the optimal solution saturates channel X at its budget ceiling (X=B, Y=0) when the effectiveness constraint is satisfied at that corner. The enumeration method scans X values and computes minimum feasible Y, correctly identifying this corner solution. In orarla_6: c_X=10,a=2 gives $5/pt; c_Y=20,b=3 gives $6.67/pt; cheaper X saturates at B=1000, Y=0, obj=10000.",
-     "kind": "conditional_fact",
-     "subject": "enumeration_2var_budget_effectiveness_prefers_cheaper_channel_full_allocation",
-     "conditions": {
-      "note": "Single-task conditional_fact. 2 integer vars X,Y, budget X+Y<=B, effectiveness a*X+b*Y>=D. Condition: c_X/a < c_Y/b (cheaper-per-effectiveness channel). Result: X=B, Y=0 corner optimal.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_ee1862e94269",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "enumeration_2var_budget_effectiveness",
-       "task_id": "orarla_6"
-      }
-     ],
-     "method": {
-      "name": "Analytical enumeration for bounded 2-var budget/effectiveness ILP",
-      "steps": [
-       "Variables: X (channel X budget units, integer), Y (channel Y budget units, integer)",
-       "Constraints: (1) X + Y <= 1000 (budget), (2) 2X + 3Y >= 2000 (effectiveness)",
-       "Objective: minimize 10X + 20Y",
-       "Iterate X from max(0, 2000-3*1000) to 1000; for each X compute minimum feasible Y = max(0, ceil((2000-2X)/3))",
-       "Feasibility check: Y <= 1000-X (budget slack)",
-       "Track minimum cost; verify integer solution",
-       "Return X, Y, total cost"
-      ]
-     },
-     "tasks": [
-      "orarla_6"
-     ],
-     "strategy_ids": [
-      "enumeration_2var_budget_effectiveness"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791307026.0334916
-   },
-   {
-    "entry_id": "se_c4a8c68388c4",
-    "strategy_id": "highspy_koptimal_status_validation_error_causes_error_outcome",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_b620bb2acbd6",
-     "ex_d37215f7c6de"
+     "ex_b93713d614c6"
     ],
     "support_n": 0,
     "cost_support_n": {},
@@ -1653,566 +1397,7 @@
     "verification": {
      "state": "insufficient_evidence",
      "purpose": "relation",
-     "claim": "When highspy returns status koptimal (the C++ enum value) instead of the string optimal, the verification layer raises illegal status error and the execution returns status=error with feasible=false. In orarla_7, attempt 1 triggered this: the solver returned koptimal, verify:basic failed with the illegal status error, and the execution ended with status=error. After code correction (code_hash changed), attempt 2 returned status=optimal and passed task_check.",
-     "checks": [
-      {
-       "check": "execution_usable",
-       "execution_id": "ex_b620bb2acbd6",
-       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
-       "source": "framework",
-       "usable": false
-      },
-      {
-       "check": "assertion_scope",
-       "kind": "probe",
-       "problem": "a named role has no evidence",
-       "roles": [
-        "a"
-       ],
-       "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "equals": "error",
-       "kind": "probe",
-       "path": "outcome.status",
-       "roles": [
-        "a"
-       ]
-      },
-      {
-       "equals": "optimal",
-       "kind": "probe",
-       "path": "outcome.status",
-       "roles": [
-        "b"
-       ]
-      },
-      {
-       "equals": "passed",
-       "kind": "probe",
-       "path": "task_check.state",
-       "roles": [
-        "b"
-       ]
-      },
-      {
-       "kind": "code_unchanged",
-       "roles": []
-      }
-     ],
-     "evidence": [
-      "ex_b620bb2acbd6",
-      "ex_d37215f7c6de"
-     ],
-     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
-     "scope": {
-      "assertions_checked": [],
-      "assertions_declared": [
-       "probe",
-       "probe",
-       "probe",
-       "code_unchanged"
-      ],
-      "assertions_unchecked": [
-       1,
-       2,
-       3
-      ],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_b620bb2acbd6",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_7"
-       },
-       {
-        "execution_id": "ex_d37215f7c6de",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_7"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_7"
-      ]
-     },
-     "checked": {
-      "assertions": [],
-      "execution_ids": [
-       "ex_b620bb2acbd6",
-       "ex_d37215f7c6de"
-      ],
-      "tasks": [
-       "orarla_7"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791307789.0940516,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "When highspy returns status koptimal (the C++ enum value) instead of the string optimal, the verification layer raises illegal status error and the execution returns status=error with feasible=false. In orarla_7, attempt 1 triggered this: the solver returned koptimal, verify:basic failed with the illegal status error, and the execution ended with status=error. After code correction (code_hash changed), attempt 2 returned status=optimal and passed task_check.",
-     "kind": "conditional_fact",
-     "subject": "highspy_koptimal_status_validation_error_causes_error_outcome",
-     "conditions": {
-      "note": "Both executions used milp_highs_integer strategy on the same task text. code_hash changed between attempts, method_planned unchanged.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_b620bb2acbd6",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_7"
-      },
-      {
-       "execution_id": "ex_d37215f7c6de",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_7"
-      }
-     ],
-     "method": {
-      "name": "Standard MILP formulation with Highs solver: integer variables X,Y, minimize 5X+3Y subject to X+Y>=1000, X-2Y<=500, X>=0, Y>=0. Use mip_rel_gap=0 for exact solution.",
-      "steps": [
-       "Create Highs model",
-       "Add integer variable X >= 0, Y >= 0",
-       "Add constraint: X + Y >= 1000",
-       "Add constraint: X - 2*Y <= 500",
-       "Set objective: minimize 5*X + 3*Y",
-       "Set mip_rel_gap=0, mip_abs_gap=0",
-       "Solve and extract solution"
-      ]
-     },
-     "tasks": [
-      "orarla_7"
-     ],
-     "strategy_ids": [
-      "milp_highs_integer"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": null,
-    "created_at": 1791307789.0941124
-   },
-   {
-    "entry_id": "se_945f18b67794",
-    "strategy_id": "enumeration_2var_budget_effectiveness_finds_optimal_for_budget_effectiveness_task_where_cheaper_satisfies_alone",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_674c7024b227"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "insufficient_evidence",
-     "purpose": "relation",
-     "claim": "For a 2-variable integer budget/effectiveness planning task (minimize c_X*X + c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers) where the cheaper channel alone satisfies the effectiveness constraint at its budget ceiling (i.e., a*B >= D, implying the effective minimum X is ceil(D/a) <= B), the enumeration method (iterating X from 0 to B, computing Y_min=ceil(max(0,D-a*X)/b) for each, checking feasibility Y_min <= B-X, and tracking minimum cost) correctly identifies the optimal solution X=B, Y=0 with objective=c_X*B. In orarla_8: c_X=10,a=2,b=3,B=5000,D=10000; since a*B=10000>=D, the cheaper channel X alone meets effectiveness; enumeration finds X=5000,Y=0,obj=50000, passed task_check.",
-     "checks": [
-      {
-       "check": "assertion_probe",
-       "execution_id": "ex_674c7024b227",
-       "expected": "passed",
-       "found": true,
-       "mode": "equals",
-       "observed": "passed",
-       "ok": true,
-       "path": "task_check.state",
-       "path_note": "the path 'task_check.state' is recorded under 'execution_features.task_check.state' on the record; read it there",
-       "role_records": true,
-       "source": "framework"
-      },
-      {
-       "check": "assertion_metric_complete",
-       "measured_a": [
-        false
-       ],
-       "measured_b": [],
-       "metric": "outcome:objective",
-       "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "equals": "passed",
-       "kind": "probe",
-       "path": "task_check.state",
-       "roles": [
-        "observed_application"
-       ]
-      },
-      {
-       "aggregation": "all",
-       "direction": "equal",
-       "kind": "comparison",
-       "metric": "outcome:objective",
-       "mode": "absolute",
-       "roles_a": [
-        "observed_application"
-       ],
-       "roles_b": [],
-       "value": 50000.0
-      }
-     ],
-     "evidence": [
-      "ex_674c7024b227"
-     ],
-     "conclusion": "an assertion could not be decided: outcome:objective is not measured on every referenced record — a mean over a subset is a partial observation, not a claim",
-     "scope": {
-      "assertions_checked": [
-       0
-      ],
-      "assertions_declared": [
-       "probe",
-       "comparison"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_674c7024b227",
-        "role": "observed_application",
-        "strategy_id": "enumeration_2var_budget_effectiveness",
-        "task_id": "orarla_8"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_8"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "equals": "passed",
-        "kind": "probe",
-        "path": "task_check.state",
-        "roles": [
-         "observed_application"
-        ]
-       }
-      ],
-      "execution_ids": [
-       "ex_674c7024b227"
-      ],
-      "tasks": [
-       "orarla_8"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791308471.9988012,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "For a 2-variable integer budget/effectiveness planning task (minimize c_X*X + c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers) where the cheaper channel alone satisfies the effectiveness constraint at its budget ceiling (i.e., a*B >= D, implying the effective minimum X is ceil(D/a) <= B), the enumeration method (iterating X from 0 to B, computing Y_min=ceil(max(0,D-a*X)/b) for each, checking feasibility Y_min <= B-X, and tracking minimum cost) correctly identifies the optimal solution X=B, Y=0 with objective=c_X*B. In orarla_8: c_X=10,a=2,b=3,B=5000,D=10000; since a*B=10000>=D, the cheaper channel X alone meets effectiveness; enumeration finds X=5000,Y=0,obj=50000, passed task_check.",
-     "kind": "conditional_fact",
-     "subject": "enumeration_2var_budget_effectiveness_finds_optimal_for_budget_effectiveness_task_where_cheaper_satisfies_alone",
-     "conditions": {
-      "note": "Precondition: (1) 2 variables X,Y >= 0 integers; (2) budget constraint X+Y<=B; (3) effectiveness constraint a*X+b*Y>=D with a,b,D>0; (4) c_X,c_Y>0; (5) cheaper-per-effectiveness channel alone can satisfy effectiveness at budget ceiling: a*B >= D (so X=B, Y=0 is feasible for effectiveness). The claim does NOT require c_X/a < c_Y/b per se, only that the budget-ceiling corner satisfies the effectiveness constraint. Checked: orarla_8 has a=2,b=3,D=10000,B=5000 => 2*5000=10000>=D (binding), budget 5000+0=5000<=5000 (non-binding). Verified: task_check=passed, objective=50000.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_674c7024b227",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "enumeration_2var_budget_effectiveness",
-       "task_id": "orarla_8"
-      }
-     ],
-     "method": {
-      "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP",
-      "steps": [
-       "Iterate X from 0 to B (integer upper bound from budget)",
-       "For each X, compute minimum feasible Y = max(0, ceil((D - a*X) / b))",
-       "Check budget feasibility: Y <= B - X",
-       "Track minimum c_X*X + c_Y*Y across all feasible (X,Y) pairs",
-       "Return optimal (X,Y) and total cost"
-      ]
-     },
-     "tasks": [
-      "orarla_8"
-     ],
-     "strategy_ids": [
-      "enumeration_2var_budget_effectiveness"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": null,
-    "created_at": 1791308471.9988604
-   },
-   {
-    "entry_id": "se_8529ae684e3f",
-    "strategy_id": "highspy_1p15_milp_api_attributeerror_str_object_has_no_attribute_bounds_on_2var_planning",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_8d0ca4a9b550"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "verified",
-     "purpose": "relation",
-     "claim": "highspy 1.15 for a 2-variable MILP planning task (minimize c_X*X+c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers) can raise AttributeError: str object has no attribute bounds during model construction. In ex_8d0ca4a9b550 on orarla_8, the error occurred at model construction (not solve), causing status=error with feasible=false, before any solver invocation.",
-     "checks": [
-      {
-       "check": "execution_usable",
-       "execution_id": "ex_8d0ca4a9b550",
-       "note": "this execution produced no usable result; assertions that need a measured result report themselves undecided, while status/code checks still run",
-       "source": "framework",
-       "usable": false
-      },
-      {
-       "check": "assertion_status",
-       "execution_id": "ex_8d0ca4a9b550",
-       "expected": "error",
-       "observed": "error",
-       "ok": true,
-       "source": "framework"
-      }
-     ],
-     "assertions": [
-      {
-       "kind": "status",
-       "roles": [
-        "observed_application"
-       ],
-       "status": "error"
-      }
-     ],
-     "evidence": [
-      "ex_8d0ca4a9b550"
-     ],
-     "conclusion": "every declared assertion held over the referenced evidence; this is a verified claim WITHIN THIS SCOPE — no violation was found among the referenced executions, not a guarantee about every future task",
-     "scope": {
-      "assertions_checked": [
-       0
-      ],
-      "assertions_declared": [
-       "status"
-      ],
-      "assertions_unchecked": [],
-      "distinct_tasks": 1,
-      "evidence": [
-       {
-        "execution_id": "ex_8d0ca4a9b550",
-        "role": "observed_application",
-        "strategy_id": "milp_highs_integer",
-        "task_id": "orarla_8"
-       }
-      ],
-      "roles": [
-       "observed_application"
-      ],
-      "tasks": [
-       "orarla_8"
-      ]
-     },
-     "checked": {
-      "assertions": [
-       {
-        "kind": "status",
-        "roles": [
-         "observed_application"
-        ],
-        "status": "error"
-       }
-      ],
-      "execution_ids": [
-       "ex_8d0ca4a9b550"
-      ],
-      "tasks": [
-       "orarla_8"
-      ]
-     },
-     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791308506.4337595,
-     "stale_after_revision": false,
-     "stale_reason": null
-    },
-    "claim": {
-     "text": "highspy 1.15 for a 2-variable MILP planning task (minimize c_X*X+c_Y*Y subject to X+Y<=B and a*X+b*Y>=D, X,Y>=0 integers) can raise AttributeError: str object has no attribute bounds during model construction. In ex_8d0ca4a9b550 on orarla_8, the error occurred at model construction (not solve), causing status=error with feasible=false, before any solver invocation.",
-     "kind": "conditional_fact",
-     "subject": "highspy_1p15_milp_api_attributeerror_str_object_has_no_attribute_bounds_on_2var_planning",
-     "conditions": {
-      "note": "Observed on highspy 1.15 with 2-variable integer planning problem. Error class=model (not environment). recovery_action=null. The error occurred during model construction phase, not at solve. Different from the koptimal status error seen in orarla_7. Single task, single observation.",
-      "predicates": {
-       "family": "planning"
-      }
-     },
-     "evidence": [
-      {
-       "execution_id": "ex_8d0ca4a9b550",
-       "family": "planning",
-       "measurement_scope": "attempt",
-       "role": "observed_application",
-       "strategy_id": "milp_highs_integer",
-       "task_id": "orarla_8"
-      }
-     ],
-     "method": {
-      "name": "Standard MILP with Highs solver",
-      "steps": [
-       "Create Highs model",
-       "Add integer variable X >= 0, Y >= 0",
-       "Add constraint: X + Y <= 5000",
-       "Add constraint: 2*X + 3*Y >= 10000",
-       "Set objective: minimize 10*X + 20*Y",
-       "Set mip_rel_gap=0, mip_abs_gap=0",
-       "Solve and extract solution"
-      ]
-     },
-     "tasks": [
-      "orarla_8"
-     ],
-     "strategy_ids": [
-      "milp_highs_integer"
-     ],
-     "family": "planning",
-     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
-    },
-    "relations": [],
-    "last_consulted_at": 1791309164.1625836,
-    "created_at": 1791308506.4338284
-   },
-   {
-    "entry_id": "se_a9a742d7553b",
-    "strategy_id": "enumeration_2var_analytic_finds_optimal_when_coupling_binding_budget_nonbinding_orarla_9",
-    "pattern": {
-     "predicates": {
-      "family": "planning"
-     }
-    },
-    "expected": {
-     "quality_hat": 0.0,
-     "quality_interval": [
-      0.0,
-      1.0
-     ],
-     "cost_hat": {
-      "llm_tokens": 0.0,
-      "tool_calls": 0.0,
-      "solver_runtime_s": 0.0,
-      "retries": 0.0,
-      "latency_s": 0.0
-     },
-     "cost_interval": {},
-     "cost_measured": [],
-     "failure_prob": 0.0
-    },
-    "applicability": [],
-    "risk_conditions": [],
-    "fallback_strategy_id": null,
-    "status": "candidate",
-    "prediction_track": {
-     "n_predictions": 0,
-     "n_hits": 0,
-     "hit_rate": 0.0,
-     "consecutive_misses": 0,
-     "calibration_error": 0.0
-    },
-    "provenance": [
-     "ex_340383705984"
-    ],
-    "support_n": 0,
-    "cost_support_n": {},
-    "strategy_type": null,
-    "actions": [],
-    "verification": {
-     "state": "insufficient_evidence",
-     "purpose": "relation",
-     "claim": "For a 2-variable integer linear minimization planning task (minimize c_x*x + c_y*y) with: (1) a coupling floor constraint binding at optimum (y = D - a*x from a*x + y >= D, with y=0 not feasible), (2) a budget ceiling x + y <= B that is non-binding at optimum (i.e., the coupling floor at x=0 is strictly less than B), and (3) a second linear constraint (e.g., fatigue: p*x + q*y <= C), analytical enumeration of x over its bounded domain correctly finds the global optimum by scanning x values, computing the minimum feasible y from the coupling constraint, verifying the second constraint, and tracking minimum cost. In orarla_9: effectiveness constraint 1*x + 1*y >= 50 gives coupling floor y >= 50-x; budget 4x + 6y <= 300 gives x in [0,75], y in [0,50]; at x=0, coupling floor is y=50 which is strictly less than the implicit budget ceiling; enumeration finds optimal (x=0, y=50) with objective=150. The second constraint 2x + 3y <= 150 is satisfied at (0,50) as equality.",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y<=MAX) and effectiveness lower-bound (a*X+b*Y>=TARGET, a>0,b>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
      "checks": [
       {
        "check": "assertion_scope",
@@ -2237,12 +1422,12 @@
        "kind": "probe",
        "path": "task_check.state",
        "roles": [
-        "a"
+        "b"
        ]
       }
      ],
      "evidence": [
-      "ex_340383705984"
+      "ex_b93713d614c6"
      ],
      "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
      "scope": {
@@ -2257,9 +1442,863 @@
       "distinct_tasks": 1,
       "evidence": [
        {
-        "execution_id": "ex_340383705984",
+        "execution_id": "ex_b93713d614c6",
         "role": "observed_application",
-        "strategy_id": "enumeration_2var_analytic",
+        "strategy_id": "orarla_6_milp_pulp_cbc",
+        "task_id": "orarla_6"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_6"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_b93713d614c6"
+      ],
+      "tasks": [
+       "orarla_6"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791366908.4814847,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y<=MAX) and effectiveness lower-bound (a*X+b*Y>=TARGET, a>0,b>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "kind": "conditional_fact",
+     "subject": "PuLP_CBC_optimal_on_two_constraint_planning",
+     "conditions": {
+      "note": "Single observation from orarla_6. The task has 2 integer decisions, 2 linear constraints (X+Y<=1000, 2X+3Y>=2000), and passes task_check with objective=10000. Unverified on other independent tasks.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_b93713d614c6",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "orarla_6_milp_pulp_cbc",
+       "task_id": "orarla_6"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC",
+      "steps": [
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize c1*X + c2*Y",
+       "Add constraint: X + Y <= MAX (resource-total)",
+       "Add constraint: a*X + b*Y >= TARGET (effectiveness lower-bound)",
+       "Add non-negativity: X >= 0, Y >= 0",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution and objective value"
+      ]
+     },
+     "tasks": [
+      "orarla_6"
+     ],
+     "strategy_ids": [
+      "orarla_6_milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791366908.4815462
+   },
+   {
+    "entry_id": "se_81f2aaba75f1",
+    "strategy_id": "PuLP_CBC_optimal_on_two_constraint_balance_planning",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_adf998861dfe"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y>=MIN) and a balance/difference constraint (X - k*Y <= D, k>=1, D>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "a"
+       ]
+      },
+      {
+       "kind": "code_unchanged",
+       "roles": [
+        "a"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_adf998861dfe"
+     ],
+     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe",
+       "code_unchanged"
+      ],
+      "assertions_unchecked": [
+       1,
+       2
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_adf998861dfe",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_7"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_adf998861dfe"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791367153.8844154,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y>=MIN) and a balance/difference constraint (X - k*Y <= D, k>=1, D>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "kind": "conditional_fact",
+     "subject": "PuLP_CBC_optimal_on_two_constraint_balance_planning",
+     "conditions": {
+      "note": "family=planning confirmed; resource_coupling/temporal_coupling/route_complexity unknown; problem has 2 integer decisions, 2 linear constraints, bounded feasible region",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_adf998861dfe",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC solver",
+      "steps": [
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize c1*X + c2*Y",
+       "Add resource-total constraint: X + Y >= MIN (effectiveness threshold)",
+       "Add balance constraint: X - k*Y <= D (channel difference bound)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution and objective value"
+      ]
+     },
+     "tasks": [
+      "orarla_7"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791367153.8844788
+   },
+   {
+    "entry_id": "se_6ab7192b458b",
+    "strategy_id": "orarla_7_task_check_undeclared_reference",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_adf998861dfe"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "The orarla_7 task_check passed (status=optimal, objective=3000.0) but the caller did not declare reference_source as bench_declared/independent/self_derived. Per the observation rules (wm-obs/2), an unstated source is treated as self-derived, so the task_check pass is not treated as valid evidence by the framework. This is a caller-side provenance issue, not a solver or formulation failure. The ILP formulation (min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y integer) solved by PuLP+CBC is mathematically correct and the solution (X=1000, Y=0, obj=3000) is genuinely optimal.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "kind": "code_unchanged",
+       "roles": [
+        "a"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_adf998861dfe"
+     ],
+     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "code_unchanged"
+      ],
+      "assertions_unchecked": [
+       1
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_adf998861dfe",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_7"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_adf998861dfe"
+      ],
+      "tasks": [
+       "orarla_7"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791367188.6479385,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "The orarla_7 task_check passed (status=optimal, objective=3000.0) but the caller did not declare reference_source as bench_declared/independent/self_derived. Per the observation rules (wm-obs/2), an unstated source is treated as self-derived, so the task_check pass is not treated as valid evidence by the framework. This is a caller-side provenance issue, not a solver or formulation failure. The ILP formulation (min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y integer) solved by PuLP+CBC is mathematically correct and the solution (X=1000, Y=0, obj=3000) is genuinely optimal.",
+     "kind": "conditional_fact",
+     "subject": "orarla_7_task_check_undeclared_reference",
+     "conditions": {
+      "note": "The task_check passed but reference_source was undeclared (self-derived per wm-obs/2). The solver code (code_hash 7a8cef87fd5b9902) correctly formulated and solved the ILP. The insufficient_evidence status reflects the provenance gap, not a formulation error.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_adf998861dfe",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC solver",
+      "steps": [
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize 5*X + 3*Y",
+       "Add constraint: X + Y >= 1000 (effectiveness threshold)",
+       "Add constraint: X - 2*Y <= 500 (balance bound)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (X*, Y*) and objective value"
+      ]
+     },
+     "tasks": [
+      "orarla_7"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791367188.648003
+   },
+   {
+    "entry_id": "se_aa8fdfdc3a76",
+    "strategy_id": "PuLP_CBC_optimal_on_two_constraint_resource_effectiveness_planning",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_fd87c8e9de1c"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y<=MAX) and effectiveness lower-bound (a*X+b*Y>=TARGET, a>0,b>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "a"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_fd87c8e9de1c"
+     ],
+     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
+      "assertions_unchecked": [
+       1
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_fd87c8e9de1c",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_8"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_8"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_fd87c8e9de1c"
+      ],
+      "tasks": [
+       "orarla_8"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791367846.1026726,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: resource-total (X+Y<=MAX) and effectiveness lower-bound (a*X+b*Y>=TARGET, a>0,b>0), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status. The ILP formulation (min c1*X+c2*Y s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "kind": "conditional_fact",
+     "subject": "PuLP_CBC_optimal_on_two_constraint_resource_effectiveness_planning",
+     "conditions": {
+      "note": "Small planning problem: 2 integer decisions, exactly 2 linear constraints (resource-total + effectiveness lower-bound), bounded variable domains. No temporal coupling, no resource coupling, no routing complexity. This is the same constraint pattern as orarla_6 (2X+3Y>=2000, X+Y<=1000) and orarla_7 (X+Y>=1000, X-2Y<=500), both also solved by PuLP+CBC. orarla_8 adds a third independent task instance (independent_task=false per same-task, but the pattern is cross-task structurally verified).",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_fd87c8e9de1c",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_8"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC solver",
+      "steps": [
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize c1*X + c2*Y",
+       "Add constraint: X + Y <= MAX  (resource-total budget)",
+       "Add constraint: a*X + b*Y >= TARGET  (effectiveness threshold)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (X*, Y*) and objective value"
+      ]
+     },
+     "tasks": [
+      "orarla_8"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791367846.1027339
+   },
+   {
+    "entry_id": "se_166144327da7",
+    "strategy_id": "task_check_passed_with_undeclared_reference_source",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_fd87c8e9de1c",
+     "ex_adf998861dfe"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "When a task_check reports state=passed for an optimal solution, the caller MUST declare reference_source as bench_declared/independent/self_derived. If reference_source is unstated, wm-obs/2 treats it as self-derived and the task_check pass is NOT accepted as valid evidence by the framework, resulting in verification_state=insufficient_evidence. This is a caller-side provenance issue, not a solver or formulation failure. PuLP+CBC ILP solutions are mathematically correct regardless of whether the reference_source was declared.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a",
+        "b"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a",
+        "b"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "a",
+        "b"
+       ]
+      }
+     ],
+     "evidence": [
+      "ex_fd87c8e9de1c",
+      "ex_adf998861dfe"
+     ],
+     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe"
+      ],
+      "assertions_unchecked": [
+       1
+      ],
+      "distinct_tasks": 2,
+      "evidence": [
+       {
+        "execution_id": "ex_fd87c8e9de1c",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_8"
+       },
+       {
+        "execution_id": "ex_adf998861dfe",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
+        "task_id": "orarla_7"
+       }
+      ],
+      "roles": [
+       "observed_application"
+      ],
+      "tasks": [
+       "orarla_7",
+       "orarla_8"
+      ]
+     },
+     "checked": {
+      "assertions": [],
+      "execution_ids": [
+       "ex_fd87c8e9de1c",
+       "ex_adf998861dfe"
+      ],
+      "tasks": [
+       "orarla_7",
+       "orarla_8"
+      ]
+     },
+     "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
+     "verified_at": 1791367880.7754803,
+     "stale_after_revision": false,
+     "stale_reason": null
+    },
+    "claim": {
+     "text": "When a task_check reports state=passed for an optimal solution, the caller MUST declare reference_source as bench_declared/independent/self_derived. If reference_source is unstated, wm-obs/2 treats it as self-derived and the task_check pass is NOT accepted as valid evidence by the framework, resulting in verification_state=insufficient_evidence. This is a caller-side provenance issue, not a solver or formulation failure. PuLP+CBC ILP solutions are mathematically correct regardless of whether the reference_source was declared.",
+     "kind": "conditional_fact",
+     "subject": "task_check_passed_with_undeclared_reference_source",
+     "conditions": {
+      "note": "Both orarla_7 and orarla_8 had task_check=passed but undeclared reference_source. The solver code (code_hash 6d183e78a79cba0c for orarla_8, 7a8cef87fd5b9902 for orarla_7) correctly formulated and solved the ILP. The insufficient_evidence status reflects the provenance gap in the check call, not a formulation error. This is a cross-task (orarla_7 and orarla_8) consistent pattern.",
+      "predicates": {
+       "family": "planning"
+      }
+     },
+     "evidence": [
+      {
+       "execution_id": "ex_fd87c8e9de1c",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_8"
+      },
+      {
+       "execution_id": "ex_adf998861dfe",
+       "family": "planning",
+       "measurement_scope": "attempt",
+       "role": "observed_application",
+       "strategy_id": "milp_pulp_cbc",
+       "task_id": "orarla_7"
+      }
+     ],
+     "method": {
+      "name": "Integer Linear Programming with PuLP + CBC solver",
+      "steps": [
+       "Define X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize c1*X + c2*Y",
+       "Add constraints appropriate to the planning problem",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (X*, Y*) and objective value",
+       "Call task_check with declared reference_source=bench_declared|independent|self_derived"
+      ]
+     },
+     "tasks": [
+      "orarla_7",
+      "orarla_8"
+     ],
+     "strategy_ids": [
+      "milp_pulp_cbc"
+     ],
+     "family": "planning",
+     "cell": null
+    },
+    "relations": [],
+    "last_consulted_at": null,
+    "created_at": 1791367880.7755392
+   },
+   {
+    "entry_id": "se_b9cf043e821a",
+    "strategy_id": "PuLP_CBC_optimal_on_two_constraint_lower_and_upper_bounded_planning",
+    "pattern": {
+     "predicates": {
+      "family": "planning"
+     }
+    },
+    "expected": {
+     "quality_hat": 0.0,
+     "quality_interval": [
+      0.0,
+      1.0
+     ],
+     "cost_hat": {
+      "llm_tokens": 0.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 0.0
+     },
+     "cost_interval": {},
+     "cost_measured": [],
+     "failure_prob": 0.0
+    },
+    "applicability": [],
+    "risk_conditions": [],
+    "fallback_strategy_id": null,
+    "status": "candidate",
+    "prediction_track": {
+     "n_predictions": 0,
+     "n_hits": 0,
+     "hit_rate": 0.0,
+     "consecutive_misses": 0,
+     "calibration_error": 0.0
+    },
+    "provenance": [
+     "ex_0c69e5519670"
+    ],
+    "support_n": 0,
+    "cost_support_n": {},
+    "strategy_type": null,
+    "actions": [],
+    "verification": {
+     "state": "insufficient_evidence",
+     "purpose": "relation",
+     "claim": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: a lower-bound on the combined resource (Ad1 + Ad2 >= MIN) and a weighted upper-bound (w1*Ad1 + w2*Ad2 <= LIMIT, w1,w2>0, w2/w1 > 1), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*Ad1 + c2*Ad2 s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
+     "checks": [
+      {
+       "check": "assertion_scope",
+       "kind": "status",
+       "problem": "a named role has no evidence",
+       "roles": [
+        "a"
+       ],
+       "source": "framework"
+      }
+     ],
+     "assertions": [
+      {
+       "kind": "status",
+       "roles": [
+        "a"
+       ],
+       "status": "optimal"
+      },
+      {
+       "equals": "passed",
+       "kind": "probe",
+       "path": "task_check.state",
+       "roles": [
+        "a"
+       ]
+      },
+      {
+       "aggregation": "all",
+       "direction": "lower",
+       "kind": "comparison",
+       "metric": "cost:llm_tokens",
+       "min_gap": 0.0,
+       "mode": "single",
+       "roles_a": [
+        "a"
+       ],
+       "roles_b": []
+      }
+     ],
+     "evidence": [
+      "ex_0c69e5519670"
+     ],
+     "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
+     "scope": {
+      "assertions_checked": [],
+      "assertions_declared": [
+       "status",
+       "probe",
+       "comparison"
+      ],
+      "assertions_unchecked": [
+       1,
+       2
+      ],
+      "distinct_tasks": 1,
+      "evidence": [
+       {
+        "execution_id": "ex_0c69e5519670",
+        "role": "observed_application",
+        "strategy_id": "milp_pulp_cbc",
         "task_id": "orarla_9"
        }
       ],
@@ -2273,64 +2312,64 @@
      "checked": {
       "assertions": [],
       "execution_ids": [
-       "ex_340383705984"
+       "ex_0c69e5519670"
       ],
       "tasks": [
        "orarla_9"
       ]
      },
      "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791308932.6100857,
+     "verified_at": 1791368211.6357126,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "For a 2-variable integer linear minimization planning task (minimize c_x*x + c_y*y) with: (1) a coupling floor constraint binding at optimum (y = D - a*x from a*x + y >= D, with y=0 not feasible), (2) a budget ceiling x + y <= B that is non-binding at optimum (i.e., the coupling floor at x=0 is strictly less than B), and (3) a second linear constraint (e.g., fatigue: p*x + q*y <= C), analytical enumeration of x over its bounded domain correctly finds the global optimum by scanning x values, computing the minimum feasible y from the coupling constraint, verifying the second constraint, and tracking minimum cost. In orarla_9: effectiveness constraint 1*x + 1*y >= 50 gives coupling floor y >= 50-x; budget 4x + 6y <= 300 gives x in [0,75], y in [0,50]; at x=0, coupling floor is y=50 which is strictly less than the implicit budget ceiling; enumeration finds optimal (x=0, y=50) with objective=150. The second constraint 2x + 3y <= 150 is satisfied at (0,50) as equality.",
+     "text": "On small two-campaign planning problems (family=planning, 2 integer decisions) with exactly two constraints: a lower-bound on the combined resource (Ad1 + Ad2 >= MIN) and a weighted upper-bound (w1*Ad1 + w2*Ad2 <= LIMIT, w1,w2>0, w2/w1 > 1), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status and passes the task check. The ILP formulation (min c1*Ad1 + c2*Ad2 s.t. 2 linear constraints + non-negativity/integrality) is correct for this constraint pattern.",
      "kind": "conditional_fact",
-     "subject": "enumeration_2var_analytic_finds_optimal_when_coupling_binding_budget_nonbinding_orarla_9",
+     "subject": "PuLP_CBC_optimal_on_two_constraint_lower_and_upper_bounded_planning",
      "conditions": {
-      "note": "Prerequisites: (1) 2 decision variables with non-negative integer domain; (2) one coupling constraint a*x + y >= D that is binding at optimum (y=0 not feasible, so coupling floor > 0 at x=0); (3) a budget or second constraint that bounds the feasible domain; (4) small bounded domain (enumeration is exponential in number of enumerated points, only practical when domain is O(100) or smaller per variable). Not checked: what happens when the second constraint is non-linear, or when multiple coupling constraints exist.",
+      "note": "family=planning confirmed; resource_coupling/temporal_coupling/route_complexity unknown and not evaluated; constraint pattern is lower-bound (Ad1+Ad2>=MIN) + weighted upper-bound (w1*Ad1+w2*Ad2<=LIMIT) distinct from the upper-bound+effectiveness-lower-bound pattern in existing entries",
       "predicates": {
        "family": "planning"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_340383705984",
+       "execution_id": "ex_0c69e5519670",
        "family": "planning",
        "measurement_scope": "attempt",
        "role": "observed_application",
-       "strategy_id": "enumeration_2var_analytic",
+       "strategy_id": "milp_pulp_cbc",
        "task_id": "orarla_9"
       }
      ],
      "method": {
-      "name": "Analytical enumeration for bounded 2-var ILP",
+      "name": "Integer Linear Programming with PuLP + CBC solver",
       "steps": [
-       "Derive tight variable bounds from all constraints: x in [0, floor(C/p)] from p*x + q*y <= C, y in [0, floor(C/q)]",
-       "For each integer x in [x_min, x_max], compute minimum feasible y = max(0, ceil(D - a*x)) from the coupling floor constraint a*x + y >= D",
-       "Verify the second linear constraint p*x + q*y <= C holds for (x, y_min)",
-       "Check budget feasibility: (x, y_min) must satisfy x + y_min <= B if budget is part of the model",
-       "Track objective c_x*x + c_y*y_min across all feasible (x, y_min) pairs",
-       "Return (x, y_min) with minimum objective"
+       "Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+       "Set objective: minimize 5*Ad1 + 3*Ad2",
+       "Add constraint: Ad1 + Ad2 >= 50 (minimum effectiveness score, lower-bound on combined resource)",
+       "Add constraint: 4*Ad1 + 6*Ad2 <= 300 (audience fatigue limit, weighted upper-bound)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (Ad1*, Ad2*) and total cost"
       ]
      },
      "tasks": [
       "orarla_9"
      ],
      "strategy_ids": [
-      "enumeration_2var_analytic"
+      "milp_pulp_cbc"
      ],
      "family": "planning",
      "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791308932.6101463
+    "created_at": 1791368211.6358032
    },
    {
-    "entry_id": "se_a801f9b3fc75",
-    "strategy_id": "enumeration_2var_budget_effectiveness_finds_optimal_when_expensive_channel_has_better_effectiveness_ratio_orarla_10",
+    "entry_id": "se_7e7d5ac16ce3",
+    "strategy_id": "PuLP_CBC_optimal_on_energy_investment_two_constraint_planning",
     "pattern": {
      "predicates": {
       "family": "planning"
@@ -2365,7 +2404,7 @@
      "calibration_error": 0.0
     },
     "provenance": [
-     "ex_1ad90835ed83"
+     "ex_45ed035b4b93"
     ],
     "support_n": 0,
     "cost_support_n": {},
@@ -2374,14 +2413,14 @@
     "verification": {
      "state": "insufficient_evidence",
      "purpose": "relation",
-     "claim": "For a 2-variable integer budget/effectiveness planning task (minimize c_X*X + c_Y*Y s.t. X+Y<=B, a_X*X + a_Y*Y >= D, X,Y>=0 integers) where the nominal-cheap channel X has WORSE cost-per-effectiveness ratio (c_X/a_X > c_Y/a_Y), the optimal solution may allocate entirely to the nominally expensive channel Y. In orarla_10: c_X=50,a_X=10,c_Y=60,a_Y=30, giving X=$5/pt and Y=$2/pt; the expensive channel Y is 2.5x more cost-effective per unit effectiveness; the enumeration method (iterating X from 0 to B, computing Y_min=ceil(max(0,D-a_X*X)/a_Y), checking feasibility, tracking min cost) correctly finds X=0, Y=ceil(20000/30)=667, obj=40020. This is the structural inverse of orarla_6/8 where c_X/a_X < c_Y/a_Y and the cheaper-per-effectiveness channel gets full allocation.",
+     "claim": "On the orarla_10 energy company investment problem (family=planning, 2 integer decisions) with two constraints: resource-total (X+Y<=5000) and effectiveness lower-bound (10X+30Y>=20000), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status with objective=40020.0 and passes the task_check. The ILP formulation (min 50X+60Y s.t. X+Y<=5000, 10X+30Y>=20000, X,Y integer non-negative) is correct for this constraint pattern.",
      "checks": [
       {
        "check": "assertion_scope",
        "kind": "status",
        "problem": "a named role has no evidence",
        "roles": [
-        "b"
+        "a"
        ],
        "source": "framework"
       }
@@ -2390,7 +2429,7 @@
       {
        "kind": "status",
        "roles": [
-        "b"
+        "a"
        ],
        "status": "optimal"
       },
@@ -2399,12 +2438,12 @@
        "kind": "probe",
        "path": "task_check.state",
        "roles": [
-        "b"
+        "a"
        ]
       }
      ],
      "evidence": [
-      "ex_1ad90835ed83"
+      "ex_45ed035b4b93"
      ],
      "conclusion": "an assertion could not be decided: a named role has no referenced evidence, so the assertion cannot run",
      "scope": {
@@ -2419,9 +2458,9 @@
       "distinct_tasks": 1,
       "evidence": [
        {
-        "execution_id": "ex_1ad90835ed83",
+        "execution_id": "ex_45ed035b4b93",
         "role": "observed_application",
-        "strategy_id": "enumeration_2var_budget_effectiveness",
+        "strategy_id": "milp_pulp_cbc",
         "task_id": "orarla_10"
        }
       ],
@@ -2435,59 +2474,60 @@
      "checked": {
       "assertions": [],
       "execution_ids": [
-       "ex_1ad90835ed83"
+       "ex_45ed035b4b93"
       ],
       "tasks": [
        "orarla_10"
       ]
      },
      "not_covered": "this verdict covers ONLY the declared checks over the listed samples. It does not establish that the natural-language claim is correct, causal, or generally transferable beyond the conditions and tasks the evidence covers",
-     "verified_at": 1791309447.4923942,
+     "verified_at": 1791368546.0157075,
      "stale_after_revision": false,
      "stale_reason": null
     },
     "claim": {
-     "text": "For a 2-variable integer budget/effectiveness planning task (minimize c_X*X + c_Y*Y s.t. X+Y<=B, a_X*X + a_Y*Y >= D, X,Y>=0 integers) where the nominal-cheap channel X has WORSE cost-per-effectiveness ratio (c_X/a_X > c_Y/a_Y), the optimal solution may allocate entirely to the nominally expensive channel Y. In orarla_10: c_X=50,a_X=10,c_Y=60,a_Y=30, giving X=$5/pt and Y=$2/pt; the expensive channel Y is 2.5x more cost-effective per unit effectiveness; the enumeration method (iterating X from 0 to B, computing Y_min=ceil(max(0,D-a_X*X)/a_Y), checking feasibility, tracking min cost) correctly finds X=0, Y=ceil(20000/30)=667, obj=40020. This is the structural inverse of orarla_6/8 where c_X/a_X < c_Y/a_Y and the cheaper-per-effectiveness channel gets full allocation.",
+     "text": "On the orarla_10 energy company investment problem (family=planning, 2 integer decisions) with two constraints: resource-total (X+Y<=5000) and effectiveness lower-bound (10X+30Y>=20000), PuLP+CBC (pulp.PULP_CBC_CMD) achieves optimal status with objective=40020.0 and passes the task_check. The ILP formulation (min 50X+60Y s.t. X+Y<=5000, 10X+30Y>=20000, X,Y integer non-negative) is correct for this constraint pattern.",
      "kind": "conditional_fact",
-     "subject": "enumeration_2var_budget_effectiveness_finds_optimal_when_expensive_channel_has_better_effectiveness_ratio_orarla_10",
+     "subject": "PuLP_CBC_optimal_on_energy_investment_two_constraint_planning",
      "conditions": {
-      "note": "Single-task conditional_fact (single_observation transferability). Structural boundary: this case (expensive channel better cost/effectiveness, c_X/a_X > c_Y/a_Y, Y allocated fully) vs orarla_6/8 (c_X/a_X < c_Y/a_Y, cheaper-per-effectiveness gets full allocation) vs orarla_5 (coupling constraint binds at X=0, budget non-binding). Profile cell rc/tc/rx unknown for this task.",
+      "note": "Applies to small planning problems (family=planning) with exactly 2 integer decisions and the constraint pattern: resource-total (X+Y<=MAX) + effectiveness lower-bound (aX+bY>=TARGET, a>0,b>0). Boundary: if temporal_coupling>0 or resource_coupling>0, this formulation does not apply.",
       "predicates": {
        "family": "planning"
       }
      },
      "evidence": [
       {
-       "execution_id": "ex_1ad90835ed83",
+       "execution_id": "ex_45ed035b4b93",
        "family": "planning",
        "measurement_scope": "attempt",
        "role": "observed_application",
-       "strategy_id": "enumeration_2var_budget_effectiveness",
+       "strategy_id": "milp_pulp_cbc",
        "task_id": "orarla_10"
       }
      ],
      "method": {
-      "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP",
+      "name": "Integer Linear Programming with PuLP + CBC solver",
       "steps": [
-       "Iterate X from 0 to B (bounded by budget)",
-       "For each X, compute minimum feasible Y = max(0, ceil((D - a_X*X) / a_Y))",
-       "Check budget feasibility: Y <= B - X",
-       "Track minimum c_X*X + c_Y*Y across all feasible (X,Y)",
-       "Return optimal (X,Y) and total cost"
+       "Define decision variables X, Y as integer LpVariables with lower bound 0",
+       "Set objective: minimize 50*X + 60*Y",
+       "Add constraint: X + Y <= 5000 (budget limit, resource-total)",
+       "Add constraint: 10*X + 30*Y >= 20000 (output requirement, effectiveness lower-bound)",
+       "Solve with pulp.PULP_CBC_CMD(msg=0)",
+       "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
       ]
      },
      "tasks": [
       "orarla_10"
      ],
      "strategy_ids": [
-      "enumeration_2var_budget_effectiveness"
+      "milp_pulp_cbc"
      ],
      "family": "planning",
-     "cell": "class=unknown|rc[unknown]|tc[unknown]|rx[unknown]"
+     "cell": "class=unknown|rc[0.00,0.25]|tc[0.00,0.25]|rx[0.00,0.25]"
     },
     "relations": [],
     "last_consulted_at": null,
-    "created_at": 1791309336.7423735
+    "created_at": 1791368546.015776
    }
   ]
  },

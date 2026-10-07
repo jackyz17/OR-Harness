@@ -1,27 +1,50 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "milp_highs_integer",
-    "solver": "highspy",
-    "method": "MILP with Highs: integer variables A (advertising), P (promotion); constraints 2A+3P>=100, A-P<=50, A>=0, P>=0; minimize A+P. Uses highspy addVariable/addConstr API.",
+    "strategy_id": "orarla_3_pulp_cbc",
+    "solver": "PuLP+CBC",
+    "method": "Integer Linear Programming with PuLP library and CBC solver. Formulation: Min advertising+promotion s.t. 2*advertising+3*promotion>=100, advertising-promotion<=50, advertising,promotion integer >=0. CBC handles the mixed integer programming efficiently.",
     "steps": [
-      "Define integer variables A, P with lower bound 0",
-      "Add constraint: 2*A + 3*P >= 100 (effectiveness)",
-      "Add constraint: A - P <= 50 (balance)",
-      "Set objective: minimize A + P",
-      "Set mip_rel_gap=0 for exact solution",
-      "Solve and extract solution"
+      "Parse problem parameters",
+      "Create PuLP LP problem with minimize objective",
+      "Define integer decision variables advertising_spend, promotion_spend",
+      "Add effectiveness constraint: 2*advertising + 3*promotion >= 100",
+      "Add balance constraint: advertising - promotion <= 50",
+      "Add non-negativity constraints",
+      "Solve with CBC solver",
+      "Extract optimal spending values and total",
+      "Output result with method_performed receipt"
     ]
   },
   {
     "action_type": "execute_strategy",
-    "strategy_id": "enumeration_2var_bounded",
-    "solver": "python",
-    "method": "Analytical enumeration for bounded 2-variable integer LP: iterate feasible A values, compute minimum P from effectiveness constraint, find minimum A+P.",
+    "strategy_id": "orarla_3_ortools_cpSat",
+    "solver": "OR-Tools CP-SAT",
+    "method": "Constraint Programming SAT solver from OR-Tools. More modern approach for combinatorial constraints. Same ILP formulation but CP-SAT may handle integer constraints more efficiently for small problems.",
     "steps": [
-      "For A from 0 to 50 (bounded by A-P<=50 and P>=0), compute minimum integer P satisfying 2A+3P>=100",
-      "Among all feasible (A,P), pick minimum A+P",
-      "Return minimum total spending"
+      "Parse problem parameters",
+      "Create CpModel with integer variables for advertising and promotion",
+      "Define minimize objective: advertising + promotion",
+      "Add effectiveness constraint: 2*advertising + 3*promotion >= 100",
+      "Add balance constraint: advertising - promotion <= 50",
+      "Set variables as integer with domain [0, infinity]",
+      "Solve with CP-SAT solver",
+      "Extract and return optimal solution"
+    ]
+  },
+  {
+    "action_type": "execute_strategy",
+    "strategy_id": "orarla_3_pure_python_enum",
+    "solver": "Pure Python Enumeration",
+    "method": "Direct enumeration approach exploiting the small problem size. Since constraints are linear and variable domains are bounded (from constraints), we can enumerate feasible integer pairs and find minimum total spending. This is a fallback/verification method.",
+    "steps": [
+      "Parse problem constraints",
+      "Determine feasible bounds from constraints",
+      "Enumerate advertising_spend from 0 to 100",
+      "For each advertising value, compute required promotion to satisfy effectiveness",
+      "Check balance constraint and integer constraint",
+      "Track minimum total spending found",
+      "Output optimal solution"
     ]
   }
 ]

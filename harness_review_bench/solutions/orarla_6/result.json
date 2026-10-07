@@ -1,17 +1,17 @@
 {
-  "status": "optimal",
-  "objective_value": 10000.0,
-  "objective_bound": 10000.0,
-  "mip_gap": 0.0,
-  "runtime_seconds": 0.00026917457580566406,
+  "status": "Optimal",
+  "objective_value": 10000,
+  "objective_bound": null,
+  "mip_gap": null,
+  "runtime_seconds": null,
   "variables": {
-    "X": 1000,
-    "Y": 0
+    "X": 1000.0,
+    "Y": 0.0
   },
   "method_performed": {
-    "strategy_id": "enumeration_2var_budget_effectiveness",
-    "solver": "python enumeration",
-    "action_id": null,
-    "note": "Enumerated X from 0 to 1000, computed min feasible Y=ceil(max(0,2000-2X)/3), checked budget feasibility, minimized 10X+20Y"
+    "action_id": "ac_e1db94044f31",
+    "solver": "pulp.PULP_CBC_CMD",
+    "model": "ILP: min 10*X + 20*Y s.t. X + Y <= 1000, 2*X + 3*Y >= 2000, X,Y integer",
+    "notes": "X=dollars invested in channel X; Y=dollars invested in channel Y"
   }
 }

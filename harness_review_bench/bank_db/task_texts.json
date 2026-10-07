@@ -1,62 +1,62 @@
 [
  {
-  "text_digest": "497988b27bea0881",
+  "text_digest": "a7080d0d158eb490",
   "task_id": "orarla_1",
-  "text": "A marketing company is planning to allocate resources between two projects: $X$ and $Y$. The total resource allocation for both projects cannot exceed 1000 units due to budget constraints. Project $X$ requires a minimum excess of 200 units over project $Y$ to ensure its success. Each unit of resource allocation costs $50 for project $X$ and $30 for project $Y$. Both projects can only be allocated whole numbers of resources due to the indivisible nature of these resources. Moreover, the maximum resource allocation for project X is 700 units and for project Y is 500 units due to operational constraints.\n\nGiven these conditions, what is the minimum cost (in dollars) required for resource allocation that satisfies all given constraints? Provide your answer rounded to the nearest dollar.",
-  "created_at": 1791303767.794984
+  "text": "A marketing company is planning to allocate resources between two projects: X and Y. The total resource allocation for both projects cannot exceed 1000 units due to budget constraints. Project X requires a minimum excess of 200 units over project Y to ensure its success. Each unit of resource allocation costs $50 for project X and $30 for project Y. Both projects can only be allocated whole numbers of resources due to the indivisible nature of these resources. Moreover, the maximum resource allocation for project X is 700 units and for project Y is 500 units due to operational constraints.\n\nGiven these conditions, what is the minimum cost (in dollars) required for resource allocation that satisfies all given constraints? Provide your answer rounded to the nearest dollar.",
+  "created_at": 1791363942.8353019
  },
  {
-  "text_digest": "2fda85a8b2fc54f7",
+  "text_digest": "9f14ed80f1d75661",
   "task_id": "orarla_2",
-  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
-  "created_at": 1791304389.9018836
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel X is $50 and for channel Y is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
+  "created_at": 1791364602.9683805
  },
  {
-  "text_digest": "d3384b8554f20d5d",
+  "text_digest": "3a431888e9e42679",
   "task_id": "orarla_3",
   "text": "A marketing manager is planning a campaign with two main strategies: advertising and promotion. The manager has determined that the effectiveness of the campaign, measured in impact points, must be at least 100 and can be calculated as twice the amount spent on advertising plus three times the amount spent on promotion. Additionally, to maintain a balanced strategy, the spending on advertising cannot exceed that on promotion by more than $50$. Given that each unit of money spent on advertising contributes $4$ impact points and each unit spent on promotion contributes $5$ impact points, how much should the manager spend in total to achieve the minimum required effectiveness while adhering to these constraints (Advertising and Promotion are integers)? Please provide your answer rounded to the nearest dollar.",
-  "created_at": 1791304738.1509879
+  "created_at": 1791365140.6813035
  },
  {
-  "text_digest": "aaf893405e8fcfd0",
+  "text_digest": "f26977126d185c93",
   "task_id": "orarla_4",
   "text": "A marketing firm is planning the distribution of resources between two campaigns: X and Y. The total resources allocated to both campaigns cannot exceed 1000 units due to budget constraints. Furthermore, due to the differing demands of each campaign, the resources allocated to campaign X must be at least twice as many as those allocated to campaign Y plus an additional 300 units.\n\nThe costs associated with each unit of resource for campaigns X and Y are 4 and 3 units respectively. Given that the allocations for both campaigns must be whole numbers due to indivisible nature of the resources, and all constraints must be satisfied: What is the minimum total cost required for this allocation strategy? Provide your answer rounded to nearest whole number.",
-  "created_at": 1791306133.4904697
+  "created_at": 1791365738.062422
  },
  {
-  "text_digest": "8ca8c472821a3db5",
+  "text_digest": "fbd13ff91773dddc",
   "task_id": "orarla_5",
-  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, of at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel $X$ is $200 and for channel $Y$ is $150$, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints.",
-  "created_at": 1791306478.9065342
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, of at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel X is $200 and for channel Y is $150$, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints.\n[{\"description\": \"Total budget <= 5000\", \"expr\": \"budget_X + budget_Y <= 5000\", \"name\": \"total_budget\"}, {\"description\": \"Minimum effectiveness score >= 12000\", \"expr\": \"3*budget_X + 4*budget_Y >= 12000\", \"name\": \"effectiveness\"}, {\"description\": \"Balance constraint <= 10000\", \"expr\": \"5*budget_X - 2*budget_Y <= 10000\", \"name\": \"balance\"}]",
+  "created_at": 1791366091.7069285
  },
  {
-  "text_digest": "9082ab5acdde667b",
+  "text_digest": "6e515387c31e61de",
   "task_id": "orarla_6",
-  "text": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel X is $10 and for channel Y is $20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.\n[{\"description\": \"Total budget cap\", \"expression\": \"X + Y <= 1000\", \"name\": \"budget_limit\", \"type\": \"linear\"}, {\"description\": \"Minimum effectiveness score\", \"expression\": \"2*X + 3*Y >= 2000\", \"name\": \"effectiveness\", \"type\": \"linear\"}]",
-  "created_at": 1791306921.5355766
+  "text": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel X is $10 and for channel Y is $20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.",
+  "created_at": 1791366773.617278
  },
  {
-  "text_digest": "8aee8f809ec87c46",
+  "text_digest": "bb4e6fa54d9c3244",
   "task_id": "orarla_7",
   "text": "A marketing manager is planning a new campaign and has two channels to choose from, X and Y. Both channels have different costs per unit of effectiveness: $5 for channel X and $3 for channel Y. The total effectiveness score, calculated as the sum of the units allocated to each channel, must be at least 1000 points. Furthermore, the difference in units between channel X and twice that of channel Y should not exceed 500 units to maintain a balanced strategy. Given these constraints and aiming to minimize the total cost (assuming both X and Y are integers due to budget limitations), what would be the minimum cost needed for this campaign? Provide your answer rounded to the nearest dollar.",
-  "created_at": 1791307566.808149
+  "created_at": 1791367067.6006923
  },
  {
-  "text_digest": "5f5cb94664439640",
+  "text_digest": "9830572a0936dc86",
   "task_id": "orarla_8",
   "text": "A marketing manager is planning the distribution of resources between two different marketing strategies, X and Y. The total resources available for both strategies combined cannot exceed 5000 units due to budget constraints. To meet the company's reach and frequency objectives, the combined effort from these strategies must yield a minimum effectiveness score calculated as twice the resources allocated to strategy X plus thrice those allocated to strategy Y, with a minimum threshold of 10000 points. Each unit of resource in strategy X and Y has associated costs of 10 and 20 units respectively. The manager aims to minimize the total cost while meeting all these requirements (X,Y are integers). What is the minimum total cost in units, rounded to the nearest whole number?",
-  "created_at": 1791308005.335331
+  "created_at": 1791367413.897242
  },
  {
-  "text_digest": "2c1f6b0b386cf8b1",
+  "text_digest": "e4dc46b2a1af6ded",
   "task_id": "orarla_9",
   "text": "A marketing manager is planning the distribution of advertising budget between two advertising channels, Ad1 and Ad2 for an upcoming campaign. The total effort from both channels combined must yield a minimum effectiveness score of at least 50 points. Additionally, to prevent audience fatigue, the combined effort of these channels calculated as 4 times the budget for Ad1 plus 6 times the budget for Ad2 should not exceed 300 points. Given that the cost per unit of effectiveness for Ad1 is $5 and for Ad2 is $3 and considering that budgets can only be allocated in whole dollars (Ad1, Ad2 are integers), find the minimum total cost in dollars required to meet all constraints while achieving the objectives.",
-  "created_at": 1791308806.3773775
+  "created_at": 1791368128.9964635
  },
  {
-  "text_digest": "989eef983236349a",
+  "text_digest": "d2ffed39658f3663",
   "task_id": "orarla_10",
-  "text": "An energy company is planning to invest in two types of renewable energy projects, X and Y. The total investment for both projects cannot exceed 5000 units due to budget constraints. To achieve a certain environmental impact, the combined output of 10 units from project X and 30 units from project Y must be at least 20000 units. Each unit of investment in project X and Y incurs costs of 50 and 60 units respectively. The company aims to minimize the total cost while adhering to these constraints, given that all investments are whole numbers due to the indivisible nature of resources. What is the minimum total cost required for this scenario? Provide your answer rounded to the nearest whole number.\n{\"function\": \"50*X + 60*Y\", \"id\": \"cost\", \"type\": \"minimize\"}\n[{\"id\": \"budget_limit\", \"name\": \"budget_limit\", \"relation\": \"X + Y <= 5000\", \"type\": \"linear\"}, {\"id\": \"output_req\", \"name\": \"output_req\", \"relation\": \"10*X + 30*Y >= 20000\", \"type\": \"linear\"}]",
-  "created_at": 1791309239.130376
+  "text": "An energy company is planning to invest in two types of renewable energy projects, $X$ and $Y$. The total investment for both projects cannot exceed 5000 units due to budget constraints. To achieve a certain environmental impact, the combined output of 10 units from project $X$ and 30 units from project $Y$ must be at least 20000 units. Each unit of investment in project $X$ and $Y$ incurs costs of 50 and 60 units respectively. The company aims to minimize the total cost while adhering to these constraints, given that all investments are whole numbers due to the indivisible nature of resources. What is the minimum total cost required for this scenario? Provide your answer rounded to the nearest whole number.",
+  "created_at": 1791368409.9659183
  }
 ]

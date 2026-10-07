@@ -1,17 +1,16 @@
 {
   "status": "optimal",
-  "objective_value": 34.0,
-  "objective_bound": 34.0,
+  "objective_value": 34,
+  "objective_bound": 34,
   "mip_gap": 0.0,
-  "runtime_seconds": 0.0009019374847412109,
+  "runtime_seconds": null,
   "variables": {
-    "A": 0,
-    "P": 34
+    "advertising_spend": 0,
+    "promotion_spend": 34
   },
   "method_performed": {
-    "strategy_id": "milp_highs_integer",
-    "solver": "highspy",
-    "action_id": "ac_510f6c651ccd",
-    "note": "MILP with Highs: integer A,P; 2A+3P>=100, A-P<=50; min A+P. Optimal: A=0, P=34, total=34"
+    "strategy_id": "orarla_3_pure_python_enum",
+    "solver": "Pure Python Enumeration",
+    "action_id": "ac_60409f25d3e9"
   }
 }

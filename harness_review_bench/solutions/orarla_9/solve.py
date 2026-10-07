@@ -1,63 +1,87 @@
 #!/usr/bin/env python3
 """
-solve.py for orarla_9
-Method: Analytical enumeration for bounded 2-var ILP
+solve.py — orarla_9
+Method: Integer Linear Programming with PuLP + CBC solver
 
-Problem: Minimize 5x + 3y subject to:
-  x + y >= 50  (effectiveness)
-  4x + 6y <= 300  (audience fatigue) => 2x + 3y <= 150
-  x, y >= 0 integers
+Minimize: 5*Ad1 + 3*Ad2
+s.t.     Ad1 + Ad2 >= 50        (minimum effectiveness score)
+         4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)
+         Ad1, Ad2 >= 0, integer
 """
 
-import math
 import json
 import os
+import pulp
 
-def solve():
-    best_cost = float('inf')
-    best_x = None
-    best_y = None
+def main():
+    action_id = os.environ.get("OR_ACTION_ID", "unknown")
 
-    # x in [0, 75] from 4x <= 300
-    for x in range(0, 76):
-        # y >= ceil(50 - x) from effectiveness constraint
-        y_min = max(0, math.ceil(50 - x))
-        # y upper bound from fatigue: 2x + 3y <= 150 => y <= (150 - 2x) / 3
-        y_max = (150 - 2 * x) // 3
+    # Create the LP problem
+    prob = pulp.LpProblem("orarla_9_advertising_budget", pulp.LpMinimize)
 
-        for y in range(y_min, y_max + 1):
-            # Verify fatigue constraint: 2x + 3y <= 150
-            if 2 * x + 3 * y <= 150:
-                cost = 5 * x + 3 * y
-                if cost < best_cost:
-                    best_cost = cost
-                    best_x = x
-                    best_y = y
+    # Decision variables: budget for Ad1 and Ad2 (integer, >= 0)
+    Ad1 = pulp.LpVariable("Ad1", lowBound=0, cat="Integer")
+    Ad2 = pulp.LpVariable("Ad2", lowBound=0, cat="Integer")
 
-    # Also check corner cases
-    # x=0: y >= 50, y <= 50 -> y=50, cost=150
-    # x=50: y >= 0, y <= 16 -> no y >= 0 satisfies 2*50+3y<=150 (100+3y<=150 => y<=16)
-    #        but x+y>=50 => 50+y>=50 => y>=0, so (50,0) is infeasible due to fatigue
+    # Objective: minimize total cost 5*Ad1 + 3*Ad2
+    prob += 5 * Ad1 + 3 * Ad2, "Total_Cost"
+
+    # Constraints
+    # Minimum effectiveness score: Ad1 + Ad2 >= 50
+    prob += Ad1 + Ad2 >= 50, "effectiveness_min"
+
+    # Audience fatigue limit: 4*Ad1 + 6*Ad2 <= 300
+    prob += 4 * Ad1 + 6 * Ad2 <= 300, "effort_limit"
+
+    # Solve with CBC
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    status = prob.solve(solver)
+
+    # Extract results
+    status_str = pulp.LpStatus[status]
+    if status == pulp.LpStatusOptimal:
+        obj_val = pulp.value(prob.objective)
+        ad1_val = pulp.value(Ad1)
+        ad2_val = pulp.value(Ad2)
+        mip_gap = None  # optimal, no gap
+    else:
+        obj_val = None
+        ad1_val = None
+        ad2_val = None
+        mip_gap = None
 
     result = {
-        "status": "optimal",
-        "objective_value": best_cost,
-        "objective_bound": best_cost,
-        "mip_gap": 0.0,
-        "runtime_seconds": 0.0,
-        "variables": {"x": best_x, "y": best_y},
+        "status": status_str,
+        "objective_value": obj_val,
+        "objective_bound": None,
+        "mip_gap": mip_gap,
+        "runtime_seconds": None,
+        "variables": {
+            "Ad1": ad1_val,
+            "Ad2": ad2_val
+        },
         "method_performed": {
-            "strategy_id": os.environ.get("OR_ACTION_ID", "enumeration_2var_analytic"),
-            "solver": "python_enum",
-            "approach": "Analytical enumeration for bounded 2-var ILP"
+            "action_id": action_id,
+            "strategy_id": "milp_pulp_cbc",
+            "solver": "pulp",
+            "method": "Integer Linear Programming with PuLP + CBC solver",
+            "steps": [
+                "Define Ad1, Ad2 as integer LpVariables with lower bound 0",
+                "Set objective: minimize 5*Ad1 + 3*Ad2",
+                "Add constraint: Ad1 + Ad2 >= 50  (minimum effectiveness score)",
+                "Add constraint: 4*Ad1 + 6*Ad2 <= 300  (audience fatigue limit)",
+                "Solve with pulp.PULP_CBC_CMD(msg=0)",
+                "Extract optimal solution (Ad1*, Ad2*) and total cost"
+            ]
         }
     }
 
     with open("result.json", "w") as f:
         json.dump(result, f, indent=2)
 
-    print(f"Optimal solution: x={best_x}, y={best_y}, cost={best_cost}")
-    return result
+    print(f"Status: {status_str}")
+    print(f"Objective: {obj_val}")
+    print(f"Ad1={ad1_val}, Ad2={ad2_val}")
 
 if __name__ == "__main__":
-    solve()
+    main()

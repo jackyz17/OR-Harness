@@ -1,24 +1,16 @@
 {
-  "status": "optimal",
-  "objective_value": 40020,
-  "objective_bound": 40020,
-  "mip_gap": 0.0,
-  "runtime_seconds": 0.0,
+  "status": "Optimal",
+  "objective_value": 40020.0,
+  "objective_bound": 40020.0,
+  "mip_gap": null,
+  "runtime_seconds": null,
   "variables": {
-    "X": 0,
-    "Y": 667
+    "X": 0.0,
+    "Y": 667.0
   },
   "method_performed": {
-    "strategy_id": "enumeration_2var_budget_effectiveness",
-    "solver": "python_enum",
-    "action_id": "ac_44a06f744d5f",
-    "steps": [
-      "Iterate X from 0 to 5000",
-      "Compute min feasible Y = ceil(max(0, (20000-10*X)/30))",
-      "Check budget Y <= 5000-X",
-      "Track minimum 50*X + 60*Y",
-      "Also iterate Y-dominant scan",
-      "Return optimal (X,Y) and total cost"
-    ]
+    "name": "Integer Linear Programming with PuLP + CBC solver",
+    "solver": "pulp.PULP_CBC_CMD",
+    "action_id": "ac_2cb8f81b60e1"
   }
 }

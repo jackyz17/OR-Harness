@@ -1,46 +1,20 @@
 [
   {
+    "strategy_id": "orarla_6_milp_pulp_cbc",
     "action_type": "execute_strategy",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
-    "solver": "python enumeration",
+    "solver": "pulp",
     "method": {
-      "name": "Analytical enumeration for bounded 2-var budget/effectiveness ILP",
+      "name": "Integer Linear Programming with PuLP + CBC",
       "steps": [
-        "Variables: X (channel X budget units, integer), Y (channel Y budget units, integer)",
-        "Constraints: (1) X + Y <= 1000 (budget), (2) 2X + 3Y >= 2000 (effectiveness)",
-        "Objective: minimize 10X + 20Y",
-        "Since cost per unit effectiveness: X costs $5/pt, Y costs $6.67/pt — prefer X",
-        "Iterate X from max(0, 2000-3*1000) to 1000; for each X compute minimum feasible Y = max(0, ceil((2000-2X)/3))",
-        "Feasibility check: Y <= 1000-X (budget slack)",
-        "Track minimum cost; verify integer solution",
-        "Return X, Y, total cost"
-      ]
-    },
-    "expected": {
-      "quality": 1.0,
-      "cost": {"solver_runtime_s": 0.01},
-      "failure_prob": 0.0
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "milp_pulp_2var",
-    "solver": "PuLP (CBC backend)",
-    "method": {
-      "name": "Direct MILP with PuLP: integer vars X,Y; constraints X+Y<=1000, 2X+3Y>=2000; minimize 10X+20Y",
-      "steps": [
-        "Define integer variables X, Y with lower bound 0",
-        "Add constraint: X + Y <= 1000 (total budget)",
-        "Add constraint: 2*X + 3*y >= 2000 (effectiveness)",
+        "Define X, Y as integer LpVariables with lower bound 0",
         "Set objective: minimize 10*X + 20*Y",
-        "Call solver.solve() and check status",
-        "Extract X, Y, objective value from solution"
+        "Add constraint: X + Y <= 1000  (budget limit)",
+        "Add constraint: 2*X + 3*Y >= 2000  (effectiveness requirement)",
+        "Add non-negativity: X >= 0, Y >= 0",
+        "Solve with pulp.PULP_CBC_CMD(msg=0)",
+        "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
       ]
     },
-    "expected": {
-      "quality": 1.0,
-      "cost": {"solver_runtime_s": 0.1},
-      "failure_prob": 0.1
-    }
+    "rationale": "Small 2-variable integer program with linear constraints — direct ILP with CBC is the standard approach, verified on similar budget-allocation planning tasks (orarla_1, orarla_2). HiGHS backend is known to fail on this class."
   }
 ]

@@ -1,23 +1,17 @@
 {
-  "status": "optimal",
+  "status": "Optimal",
   "objective_value": 1200.0,
-  "objective_bound": 1200.0,
+  "objective_bound": null,
   "mip_gap": 0.0,
-  "runtime_seconds": 0.0,
+  "runtime_seconds": 0.042613,
   "variables": {
-    "X": 300,
-    "Y": 0
+    "X": 300.0,
+    "Y": 0.0
   },
   "method_performed": {
-    "action_id": "ac_f08c47a9ad5a",
-    "strategy_id": "enumeration_2var_ilp_direct",
-    "solver": "builtin",
-    "method": "Analytical enumeration for bounded 2-variable ILP",
-    "steps": [
-      "Enumerate Y from 0 to floor((1000-300)/3)=233",
-      "For each Y, set X = max(0, 2Y+300) to satisfy coupling binding",
-      "Pick (X,Y) minimizing 4X+3Y",
-      "Solution: X=300, Y=0, obj=1200"
-    ]
+    "name": "Integer Linear Programming with PuLP + CBC solver",
+    "solver": "pulp.PULP_CBC_CMD",
+    "action_id": "ac_7673c83ac1d2",
+    "formulation": "Min 4X + 3Y s.t. X + Y <= 1000, X - 2*Y >= 300, X,Y >= 0 integer"
   }
 }

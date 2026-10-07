@@ -1,37 +1,30 @@
 [
   {
+    "strategy_id": "milp_pulp_cbc",
     "action_type": "execute_strategy",
-    "strategy_id": "enumeration_2var_ilp_direct",
-    "description": "Analytical solution for 2-variable bounded integer LP with minimum-excess constraint",
-    "solver": "builtin",
-    "method": {
-      "name": "Analytical enumeration for bounded 2-variable ILP",
-      "steps": [
-        "Identify feasible region: X >= 2Y + 300 (binding constraint), X + Y <= 1000",
-        "Since c_X=4 > c_Y=3 and we minimize cost, prefer Y=0 (lower coefficient)",
-        "Set Y=0 => X >= 300 from coupling, X <= 1000 from budget",
-        "Minimum cost at Y=0, X=300: objective = 4*300 + 3*0 = 1200",
-        "Verify: X+Y=300<=1000, X-2Y=300>=300, both integers",
-        "Return X=300, Y=0, objective=1200"
-      ]
-    }
+    "solver": "PuLP+CBC",
+    "method": "Integer Linear Programming with PuLP + CBC solver. Formulate as: Minimize 4X + 3Y subject to X + Y <= 1000, X >= 2Y + 300 (i.e., X - 2Y >= 300), X,Y >= 0 integer. Solve with pulp.PULP_CBC_CMD(msg=0) for exact optimal integer solution.",
+    "steps": [
+      "Define decision variables X, Y as integer LpVariables with non-negative lower bounds",
+      "Set objective: minimize 4*X + 3*Y",
+      "Add constraint: X + Y <= 1000 (total resources)",
+      "Add constraint: X - 2*Y >= 300 (X at least twice Y plus 300)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution and total cost"
+    ]
   },
   {
+    "strategy_id": "milp_pulp_highs",
     "action_type": "execute_strategy",
-    "strategy_id": "milp_pulp_integer",
-    "description": "MILP formulation using PuLP with integer variables",
-    "solver": "pulp",
-    "method": {
-      "name": "MILP with PuLP: integer variables X,Y; constraints X+Y<=1000, X>=2Y+300; minimize 4X+3Y",
-      "steps": [
-        "Create PuLP problem 'min_cost_allocation'",
-        "Define integer variables X >= 0, Y >= 0 using LpVariable('X',0,None,LpInteger)",
-        "Add constraint: X + Y <= 1000 (budget)",
-        "Add constraint: X >= 2*Y + 300 (coupling/demand)",
-        "Set objective: minimize 4*X + 3*Y using lpSum([4*x, 3*y])",
-        "Solve with PULP_CBC_CMD",
-        "Extract solution and objective value"
-      ]
-    }
+    "solver": "PuLP+HiGHS",
+    "method": "Same ILP formulation as above but using PuLP's HiGHS_CMD solver backend for integer programming. Note: HiGHS backend has had issues on similar planning tasks per memory bank advisory, so this is a secondary option if CBC fails.",
+    "steps": [
+      "Define decision variables X, Y as integer LpVariables with non-negative lower bounds",
+      "Set objective: minimize 4*X + 3*Y",
+      "Add constraint: X + Y <= 1000",
+      "Add constraint: X - 2*Y >= 300",
+      "Solve with pulp.HiGHS_CMD(msg=0) or pulp.HIWS_CMD(msg=0)",
+      "Extract optimal solution and total cost"
+    ]
   }
 ]

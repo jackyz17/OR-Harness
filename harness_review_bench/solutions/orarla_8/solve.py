@@ -1,71 +1,91 @@
 #!/usr/bin/env python3
-"""solve.py for orarla_8: enumeration method for bounded 2-var budget/effectiveness ILP."""
+"""
+ORClaw orarla_8: Budget allocation planning problem.
+Minimize 10*X + 20*Y subject to X + Y <= 5000, 2*X + 3*Y >= 10000, X,Y integers.
+"""
 import json
-import math
+import os
 import time
+import traceback
 
-def solve():
-    start = time.time()
-    best_cost = float('inf')
-    best_X = None
-    best_Y = None
+ACTION_ID = os.environ.get("OR_ACTION_ID", "unknown")
+start_time = time.time()
 
-    # Iterate X from 0 to 5000 (bounded by budget)
-    for X in range(0, 5001):
-        # Minimum feasible Y to satisfy effectiveness: 2X + 3Y >= 10000
-        # => Y >= ceil((10000 - 2X) / 3)
-        if 2 * X >= 10000:
-            min_Y = 0
-        else:
-            min_Y = math.ceil((10000 - 2 * X) / 3.0)
+def write_result(data):
+    with open("result.json", "w") as f:
+        json.dump(data, f, indent=2)
 
-        # Budget constraint: Y <= 5000 - X
-        max_Y = 5000 - X
-        if min_Y > max_Y:
-            continue  # infeasible for this X
+try:
+    import pulp
 
-        Y = min_Y  # smallest Y is cheapest (Y costs 20 per unit vs X costs 10)
-        cost = 10 * X + 20 * Y
-        if cost < best_cost:
-            best_cost = cost
-            best_X = X
-            best_Y = Y
+    # Create the problem
+    prob = pulp.LpProblem("orarla_8", pulp.LpMinimize)
 
-    elapsed = time.time() - start
+    # Decision variables
+    X = pulp.LpVariable("X", lowBound=0, upBound=5000, cat="Integer")
+    Y = pulp.LpVariable("Y", lowBound=0, upBound=5000, cat="Integer")
 
-    # Verify solution
-    assert best_X is not None, "No feasible solution found"
-    assert best_X + best_Y <= 5000, f"Budget violated: {best_X}+{best_Y}={best_X+best_Y}>5000"
-    assert 2*best_X + 3*best_Y >= 10000, f"Effectiveness violated: 2*{best_X}+3*{best_Y}={2*best_X+3*best_Y}<10000"
+    # Objective: minimize 10*X + 20*Y
+    prob += 10 * X + 20 * Y, "Total_Cost"
 
-    result = {
-        "status": "optimal",
-        "objective_value": float(best_cost),
-        "objective_bound": float(best_cost),
+    # Constraints
+    prob += X + Y <= 5000, "resource_limit"
+    prob += 2 * X + 3 * Y >= 10000, "effectiveness_min"
+
+    # Solve with CBC
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    result = prob.solve(solver)
+
+    runtime = time.time() - start_time
+
+    status_map = {
+        pulp.LpStatusOptimal: "optimal",
+        pulp.LpStatusNotSolved: "not_solved",
+        pulp.LpStatusInfeasible: "infeasible",
+        pulp.LpStatusUnbounded: "unbounded",
+        pulp.LpStatusUndefined: "undefined",
+    }
+    status_str = status_map.get(result, f"unknown_{result}")
+
+    obj_val = pulp.value(prob.objective) if result == pulp.LpStatusOptimal else None
+
+    result_data = {
+        "status": status_str,
+        "objective_value": obj_val,
+        "objective_bound": obj_val,
         "mip_gap": 0.0,
-        "runtime_seconds": elapsed,
-        "variables": {"X": best_X, "Y": best_Y},
+        "runtime_seconds": runtime,
+        "variables": {"X": pulp.value(X), "Y": pulp.value(Y)} if result == pulp.LpStatusOptimal else None,
         "method_performed": {
-            "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP. Iterate X from 0 to 5000; for each X compute minimum feasible integer Y = ceil(max(0, (10000-2X)/3)); check budget constraint Y <= 5000-X; track minimum cost. Uses cost-per-effectiveness insight (X=$5/pt < Y=$6.67/pt) but verifies via scan.",
-            "strategy_id": "enumeration_2var_budget_effectiveness",
-            "solver": "python_enum",
+            "action_id": ACTION_ID,
+            "name": "Integer Linear Programming with PuLP + CBC solver",
+            "solver": "pulp.PULP_CBC_CMD",
             "steps": [
-                "Iterate X from 0 to 5000 (integer)",
-                "For each X, compute minimum feasible Y = max(0, ceil((10000-2X)/3))",
-                "Check budget feasibility: Y <= 5000 - X",
-                "Track minimum 10X + 20Y across all feasible (X,Y)",
-                "Return optimal (X,Y) and total cost"
-            ],
-            "action_id": "ac_ea18c3f90eca",
-            "prediction_id": "sp_867bd705b597"
+                "Define X, Y as integer LpVariables with bounds [0, 5000]",
+                "Set objective: minimize 10*X + 20*Y",
+                "Add constraint: X + Y <= 5000",
+                "Add constraint: 2*X + 3*Y >= 10000",
+                "Solve with pulp.PULP_CBC_CMD(msg=0)",
+                "Extract optimal solution"
+            ]
         }
     }
 
-    with open("result.json", "w") as f:
-        json.dump(result, f, indent=2)
+    write_result(result_data)
 
-    print(f"Optimal: X={best_X}, Y={best_Y}, Cost={best_cost}")
-    return result
-
-if __name__ == "__main__":
-    solve()
+except Exception as e:
+    runtime = time.time() - start_time
+    err_data = {
+        "status": "error",
+        "error": str(e),
+        "error_type": type(e).__name__,
+        "traceback": traceback.format_exc(),
+        "runtime_seconds": runtime,
+        "method_performed": {
+            "action_id": ACTION_ID,
+            "name": "Integer Linear Programming with PuLP + CBC solver",
+            "error": str(e)
+        }
+    }
+    write_result(err_data)
+    raise SystemExit(1)

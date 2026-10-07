@@ -1,68 +1,75 @@
 #!/usr/bin/env python3
 """
-orarla_6: Marketing budget allocation (enumeration method)
-Minimize 10*X + 20*Y subject to:
-  X + Y <= 1000  (budget)
-  2*X + 3*Y >= 2000  (effectiveness)
-  X, Y >= 0 integers
+solve.py — orarla_6
+ILP: min 10*X + 20*Y s.t. X + Y <= 1000, 2*X + 3*Y >= 2000, X,Y >= 0 integers
+Solver: PuLP + CBC
 """
-import math
 import json
-import time
+import pulp
+import os
 
-def solve():
-    start = time.time()
-    best_cost = float('inf')
-    best_X = None
-    best_Y = None
+action_id = os.environ.get("OR_ACTION_ID", "unknown")
 
-    # Effective lower bound on X: need 2*X >= 2000 - 3*Y >= 2000 - 3*1000 = -1000, so X >= 0
-    # But to satisfy effectiveness: 2*X + 3*Y >= 2000 with Y <= 1000 - X
-    # Max effectiveness with all budget on Y: 3*1000 = 3000 >= 2000 ✓
-    # Min X to satisfy effectiveness with Y=1000-X: 2X + 3(1000-X) >= 2000 → X >= 334 (integer)
-    # So X ranges from 334 to 1000
+# --- ILP formulation ---
+prob = pulp.LpProblem("orarla_6", pulp.LpMinimize)
 
-    for X in range(0, 1001):
-        # Minimum Y to satisfy effectiveness: ceil(max(0, 2000 - 2*X) / 3)
-        if 2*X >= 2000:
-            min_Y = 0
-        else:
-            min_Y = math.ceil((2000 - 2*X) / 3)
-        
-        # Feasibility: Y must satisfy budget constraint
-        if min_Y > 1000 - X:
-            continue  # Not feasible
-        
-        # Y can be larger than minimum (we want minimum cost, so use minimum)
-        Y = min_Y
-        cost = 10*X + 20*Y
-        
-        if cost < best_cost:
-            best_cost = cost
-            best_X = X
-            best_Y = Y
+X = pulp.LpVariable("X", lowBound=0, cat="Integer")
+Y = pulp.LpVariable("Y", lowBound=0, cat="Integer")
 
-    elapsed = time.time() - start
+# Objective: minimize total cost
+prob += 10 * X + 20 * Y, "TotalCost"
 
-    result = {
-        "status": "optimal",
-        "objective_value": float(best_cost),
-        "objective_bound": float(best_cost),
-        "mip_gap": 0.0,
-        "runtime_seconds": elapsed,
-        "variables": {"X": best_X, "Y": best_Y},
-        "method_performed": {
-            "strategy_id": "enumeration_2var_budget_effectiveness",
-            "solver": "python enumeration",
-            "action_id": None,  # will be filled by framework
-            "note": "Enumerated X from 0 to 1000, computed min feasible Y=ceil(max(0,2000-2X)/3), checked budget feasibility, minimized 10X+20Y"
-        }
+# Budget constraint
+prob += X + Y <= 1000, "BudgetLimit"
+
+# Effectiveness requirement
+prob += 2 * X + 3 * Y >= 2000, "EffectivenessReq"
+
+# Solve
+solver = pulp.PULP_CBC_CMD(msg=0)
+status = prob.solve(solver)
+
+# --- Extract results ---
+status_str = pulp.LpStatus[status]
+obj_val = pulp.value(prob.objective)
+
+# Get MIP gap and bound from solver model
+mip_gap = None
+objective_bound = None
+runtime = None
+try:
+    solver_model = prob.solverModel
+    mip_gap = getattr(solver_model, "mipGap", None) or getattr(solver_model, "MIPGap", None)
+    # CBC stores best bound differently
+    if hasattr(solver_model, "objBound"):
+        objective_bound = solver_model.objBound
+    elif hasattr(solver_model, "bestBound"):
+        objective_bound = solver_model.bestBound
+    runtime = getattr(solver_model, "time", None) or getattr(prob, "solveTime", None)
+except Exception:
+    pass
+
+X_star = pulp.value(X) if status == pulp.LpStatusOptimal else None
+Y_star = pulp.value(Y) if status == pulp.LpStatusOptimal else None
+
+result = {
+    "status": status_str,
+    "objective_value": round(obj_val) if obj_val is not None else None,
+    "objective_bound": round(objective_bound) if objective_bound is not None else None,
+    "mip_gap": mip_gap,
+    "runtime_seconds": runtime,
+    "variables": {"X": X_star, "Y": Y_star},
+    "method_performed": {
+        "action_id": action_id,
+        "solver": "pulp.PULP_CBC_CMD",
+        "model": "ILP: min 10*X + 20*Y s.t. X + Y <= 1000, 2*X + 3*Y >= 2000, X,Y integer",
+        "notes": "X=dollars invested in channel X; Y=dollars invested in channel Y"
     }
+}
 
-    with open("result.json", "w") as f:
-        json.dump(result, f, indent=2)
+with open("result.json", "w") as f:
+    json.dump(result, f, indent=2)
 
-    print(f"Optimal: X={best_X}, Y={best_Y}, Cost={best_cost}")
-
-if __name__ == "__main__":
-    solve()
+print(f"Status: {status_str}")
+print(f"X={X_star}, Y={Y_star}")
+print(f"Objective: {obj_val}")

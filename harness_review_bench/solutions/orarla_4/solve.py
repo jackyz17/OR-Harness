@@ -1,80 +1,75 @@
 #!/usr/bin/env python3
 """
-solve.py for orarla_4
-Task: Minimize 4*X + 3*Y subject to X >= 2*Y + 300, X + Y <= 1000, X,Y integers >= 0.
-
-Method: Analytical enumeration - exploit structure of 2-var bounded ILP.
-  - Coupling constraint X >= 2Y + 300 is binding at optimum (cost coeff of X > Y).
-  - Enumerate Y from 0 to floor((1000-300)/3)=233, compute minimum feasible X for each Y.
-  - Pick (X,Y) with minimum objective 4X+3Y.
+solve.py — orarla_4
+ILP: Min 4X + 3Y s.t. X + Y <= 1000, X - 2*Y >= 300, X,Y >= 0 integers.
+Method: PuLP + CBC (pulp.PULP_CBC_CMD)
 """
-
 import json
+import time
+import pulp
 import os
 
-def solve():
-    # Parameters
-    cX, cY = 4, 3  # cost per unit
-    B = 1000       # budget cap
-    D = 300        # demand offset
+start = time.time()
 
-    best_obj = None
-    best_X = None
-    best_Y = None
+# Create the problem
+prob = pulp.LpProblem("orarla_4", pulp.LpMinimize)
 
-    # Y can be at most floor((B - D) / 3) from budget + coupling:
-    # X >= 2Y + D and X + Y <= B  =>  2Y + D + Y <= B  =>  Y <= (B - D) / 3
-    Y_max = (B - D) // 3
-    if Y_max < 0:
-        Y_max = 0
+# Decision variables
+X = pulp.LpVariable("X", lowBound=0, cat=pulp.LpInteger)
+Y = pulp.LpVariable("Y", lowBound=0, cat=pulp.LpInteger)
 
-    for Y in range(Y_max + 1):
-        # Minimum X to satisfy coupling: X >= 2Y + 300
-        X_min = 2 * Y + D
-        # Check budget: need X_min + Y <= B
-        if X_min + Y > B:
-            continue
-        X = X_min  # binding coupling, minimal X for this Y
-        obj = cX * X + cY * Y
-        if best_obj is None or obj < best_obj:
-            best_obj = obj
-            best_X = X
-            best_Y = Y
+# Objective: minimize 4*X + 3*Y
+prob += 4 * X + 3 * Y, "Total_Cost"
 
-    # Verify solution
-    assert best_X is not None, "No feasible solution found"
-    assert best_X + best_Y <= B, f"Budget violated: {best_X}+{best_Y}={best_X+best_Y} > {B}"
-    assert best_X >= 2 * best_Y + D, f"Coupling violated: {best_X} < 2*{best_Y}+{D}"
-    assert best_X >= 0 and best_Y >= 0, "Non-negativity violated"
+# Constraints
+prob += X + Y <= 1000, "total_resources"
+prob += X - 2 * Y >= 300, "x_minimum"
 
-    action_id = os.environ.get("OR_ACTION_ID", "unknown")
+# Solve with CBC
+solver = pulp.PULP_CBC_CMD(msg=0)
+result = prob.solve(solver)
 
-    result = {
-        "status": "optimal",
-        "objective_value": float(best_obj),
-        "objective_bound": float(best_obj),
-        "mip_gap": 0.0,
-        "runtime_seconds": 0.0,
-        "variables": {"X": best_X, "Y": best_Y},
-        "method_performed": {
-            "action_id": action_id,
-            "strategy_id": "enumeration_2var_ilp_direct",
-            "solver": "builtin",
-            "method": "Analytical enumeration for bounded 2-variable ILP",
-            "steps": [
-                "Enumerate Y from 0 to floor((1000-300)/3)=233",
-                "For each Y, set X = max(0, 2Y+300) to satisfy coupling binding",
-                "Pick (X,Y) minimizing 4X+3Y",
-                f"Solution: X={best_X}, Y={best_Y}, obj={best_obj}"
-            ]
-        }
+elapsed = time.time() - start
+
+status = pulp.LpStatus[result]
+objective_value = pulp.value(prob.objective) if status in ("Optimal", "Feasible") else None
+
+# Gap
+mip_gap = None
+if status == "Optimal":
+    mip_gap = 0.0
+elif hasattr(prob, 'MIP'):
+    try:
+        mip_gap = abs(pulp.value(prob.objective) - (pulp.value(prob.objective) or 0))
+    except Exception:
+        mip_gap = None
+
+solution_vars = None
+if status in ("Optimal", "Feasible"):
+    solution_vars = {
+        "X": pulp.value(X),
+        "Y": pulp.value(Y)
     }
 
-    with open("result.json", "w") as f:
-        json.dump(result, f, indent=2)
+result_data = {
+    "status": status,
+    "objective_value": objective_value,
+    "objective_bound": None,
+    "mip_gap": mip_gap,
+    "runtime_seconds": round(elapsed, 6),
+    "variables": solution_vars,
+    "method_performed": {
+        "name": "Integer Linear Programming with PuLP + CBC solver",
+        "solver": "pulp.PULP_CBC_CMD",
+        "action_id": os.environ.get("OR_ACTION_ID", None),
+        "formulation": "Min 4X + 3Y s.t. X + Y <= 1000, X - 2*Y >= 300, X,Y >= 0 integer"
+    }
+}
 
-    print(f"Optimal: X={best_X}, Y={best_Y}, objective={best_obj}")
-    return result
+with open("result.json", "w") as f:
+    json.dump(result_data, f, indent=2)
 
-if __name__ == "__main__":
-    solve()
+print(f"Status: {status}")
+print(f"Objective: {objective_value}")
+print(f"X={pulp.value(X)}, Y={pulp.value(Y)}")
+print(f"Runtime: {elapsed:.4f}s")

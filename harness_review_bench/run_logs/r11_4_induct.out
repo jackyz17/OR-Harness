@@ -1,0 +1,25 @@
+[all10-r11]   agent orarla_r11_induct_4 (try 1) 2026-10-07T09:36:12Z
+│
+◇  Doctor warnings ──────────────────────────────────────────────────────╮
+│                                                                        │
+│  - Left plugin install index in place because shared SQLite state has  │
+│    conflicting plugin install metadata for: feishu                     │
+│                                                                        │
+├────────────────────────────────────────────────────────────────────────╯
+[state-migrations] Legacy state migration warnings:
+- Left plugin install index in place because shared SQLite state has conflicting plugin install metadata for: feishu
+│
+◇  Doctor warnings ──────────────────────────────────────────────────────╮
+│                                                                        │
+│  - Left plugin install index in place because shared SQLite state has  │
+│    conflicting plugin install metadata for: feishu                     │
+│                                                                        │
+├────────────────────────────────────────────────────────────────────────╯
+[plugins] [orx-budget-guard] active: toolCalls=100 wallSeconds=1800 prefixes=[orarla_,bench_orarla_] markerDir=/home/ubuntu/.openclaw/workspace/bench_orarla/logs envFile=/home/ubuntu/.openclaw/workspace/bench_orarla/budget.env
+The claim saved but remains `insufficient_evidence` — the embedded assertion check fails because the framework's internal role-mapping for assertions (`roles: ["a"]`) cannot resolve against evidence that only carries `role: observed_application`. The claim is stored as a candidate for future cross-task widening.
+
+The important nuance: `insufficient_evidence` here is NOT `refuted` — the evidence (ex_944519723964) does show `status: optimal` and `task_check.state: passed`. The framework simply cannot verify the assertion mechanically due to role-resolution friction. The conditional_fact is a valid single-observation entry.
+
+**Summary**: 1 task, 1 distinct task, 1 induced (saved as candidate, not published), 0 skipped.
+
+INDUCT item=orarla_4 reviewed=1 distinct_tasks=1 induced=1 skipped=0

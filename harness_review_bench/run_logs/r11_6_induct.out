@@ -1,0 +1,27 @@
+[all10-r11]   agent orarla_r11_induct_6 (try 1) 2026-10-07T09:54:20Z
+│
+◇  Doctor warnings ──────────────────────────────────────────────────────╮
+│                                                                        │
+│  - Left plugin install index in place because shared SQLite state has  │
+│    conflicting plugin install metadata for: feishu                     │
+│                                                                        │
+├────────────────────────────────────────────────────────────────────────╯
+[state-migrations] Legacy state migration warnings:
+- Left plugin install index in place because shared SQLite state has conflicting plugin install metadata for: feishu
+│
+◇  Doctor warnings ──────────────────────────────────────────────────────╮
+│                                                                        │
+│  - Left plugin install index in place because shared SQLite state has  │
+│    conflicting plugin install metadata for: feishu                     │
+│                                                                        │
+├────────────────────────────────────────────────────────────────────────╯
+[plugins] [orx-budget-guard] active: toolCalls=100 wallSeconds=1800 prefixes=[orarla_,bench_orarla_] markerDir=/home/ubuntu/.openclaw/workspace/bench_orarla/logs envFile=/home/ubuntu/.openclaw/workspace/bench_orarla/budget.env
+INDUCT item=orarla_6 reviewed=2 distinct_tasks=1 induced=1 skipped=0
+
+**Claim submitted:** `PuLP_CBC_optimal_on_two_constraint_planning` (se_8752540fffc4)
+- **Scope:** family=planning, 2 integer decisions, 2 constraints (resource-total + effectiveness lower-bound), PuLP+CBC → optimal + task_check passed
+- **Evidence:** ex_b93713d614c6 (orarla_6, attempt 2)
+- **Verification state:** `insufficient_evidence` — saved but **not published**
+  - Root cause: task_check reference_source is unstated/self-derived per framework rules; the probe assertion on `task_check.state=passed` passes structurally but the framework declines to treat it as verified evidence
+- **Status:** candidate, unpublished — single-task conditional_fact requires `fact_checked` to publish, but the task_check provenance issue prevents that threshold from being met
+- **Boundary:** claim holds for orarla_6's specific constraint coefficients (X+Y≤1000, 2X+3Y≥2000); untested on other two-constraint planning variants

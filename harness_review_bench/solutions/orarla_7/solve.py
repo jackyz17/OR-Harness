@@ -1,85 +1,70 @@
 #!/usr/bin/env python3
 """
-solve.py for orarla_7: marketing campaign planning
-Method: MILP with Highs solver (highspy)
-Selected by: orx choose-next --prediction sp_4ec0dde4b9c7
+solve.py — orarla_7
+Marketing campaign channel allocation (X, Y integers)
+Minimize 5X + 3Y
+Subject to: X + Y >= 1000, X - 2Y <= 500, X, Y >= 0 integers
 """
-import os
 import json
-import highspy
+import pulp
+import os
 
-# Record method_performed for traceability
-method_performed = {
-    "strategy_id": "milp_highs_integer",
-    "solver": "highspy",
-    "action_id": os.environ.get("OR_ACTION_ID", "unknown"),
-    "task_id": "orarla_7",
-    "episode": "ep1",
-    "planned_steps": [
-        "Create Highs model",
-        "Add integer variable X >= 0, Y >= 0",
-        "Add constraint: X + Y >= 1000",
-        "Add constraint: X - 2*Y <= 500",
-        "Set objective: minimize 5*X + 3*Y",
-        "Set mip_rel_gap=0, mip_abs_gap=0",
-        "Solve and extract solution"
-    ]
-}
+def main():
+    action_id = os.environ.get("OR_ACTION_ID", "unknown")
 
-# Create Highs model
-h = highspy.Highs()
-h.setOptionValue("log_to_console", False)
+    # Create the problem
+    prob = pulp.LpProblem("orarla_7", pulp.LpMinimize)
 
-# Add integer variables X, Y >= 0
-# addVariable(lb, ub, obj, type, name)
-x_var = h.addVariable(0.0, highspy.kHighsInf, 5.0, highspy.HighsVarType.kInteger, "X")
-y_var = h.addVariable(0.0, highspy.kHighsInf, 3.0, highspy.HighsVarType.kInteger, "Y")
+    # Decision variables
+    X = pulp.LpVariable("X", lowBound=0, cat="Integer")
+    Y = pulp.LpVariable("Y", lowBound=0, cat="Integer")
 
-# Add constraints
-# C1: X + Y >= 1000  =>  -X - Y <= -1000
-h.addConstr(-x_var - y_var <= -1000.0, "effectiveness")
+    # Objective: minimize 5X + 3Y
+    prob += 5 * X + 3 * Y, "TotalCost"
 
-# C2: X - 2*Y <= 500
-h.addConstr(x_var - 2*y_var <= 500.0, "balance")
+    # Constraints
+    # Effectiveness: X + Y >= 1000
+    prob += X + Y >= 1000, "Effectiveness"
 
-# Set sense to minimize (default is minimize, but be explicit)
-h.changeObjectiveSense(highspy.ObjSense.kMinimize)
+    # Balance: X - 2Y <= 500
+    prob += X - 2 * Y <= 500, "Balance"
 
-# Set MIP gap to 0 for exact solution
-h.setOptionValue("mip_rel_gap", 0.0)
-h.setOptionValue("mip_abs_gap", 0.0)
+    # Solve with CBC
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    status = prob.solve(solver)
 
-# Solve
-status = h.run()
-model_status = h.getModelStatus()
+    # Extract results
+    obj_val = pulp.value(prob.objective)
+    X_val = pulp.value(X)
+    Y_val = pulp.value(Y)
+    status_str = pulp.LpStatus[status]
 
-# Map Highs model status to canonical status string
-def canonical_status(ms):
-    s = ms.name.lower() if ms else "unknown"
-    # kOptimal -> optimal, kInfeasible -> infeasible, etc.
-    return s.replace("k", "")
+    # MIP gap (CBC doesn't compute it directly, set to None for optimal)
+    mip_gap = None
+    if status == pulp.LpStatusOptimal:
+        mip_gap = 0.0
 
-# Extract solution
-sol = h.getSolution()
-col_val = sol.col_value
+    result = {
+        "status": status_str,
+        "objective_value": obj_val,
+        "objective_bound": obj_val if status == pulp.LpStatusOptimal else None,
+        "mip_gap": mip_gap,
+        "runtime_seconds": None,  # CBC doesn't expose this cleanly
+        "variables": {"X": X_val, "Y": Y_val},
+        "method_performed": {
+            "action_id": action_id,
+            "name": "Integer Linear Programming with PuLP + CBC solver",
+            "solver": "pulp_CBC",
+            "formulation": "Min 5X+3Y s.t. X+Y>=1000, X-2Y<=500, X,Y>=0 integers"
+        }
+    }
 
-x_val = int(round(col_val[x_var.index]))
-y_val = int(round(col_val[y_var.index]))
-objective_value = h.getInfo().objective_function_value
+    with open("result.json", "w") as f:
+        json.dump(result, f, indent=2)
 
-# Write result
-result = {
-    "status": canonical_status(model_status),
-    "objective_value": objective_value,
-    "objective_bound": h.getInfo().mip_global_bound if hasattr(h.getInfo(), "mip_global_bound") else None,
-    "mip_gap": h.getInfo().mip_gap if hasattr(h.getInfo(), "mip_gap") else None,
-    "runtime_seconds": h.getInfo().mip_runtime if hasattr(h.getInfo(), "mip_runtime") else None,
-    "variables": {"X": x_val, "Y": y_val},
-    "method_performed": method_performed,
-    "solver": "highspy"
-}
+    print(f"Status: {status_str}")
+    print(f"X = {X_val}, Y = {Y_val}")
+    print(f"Objective (Total Cost) = {obj_val}")
 
-with open("result.json", "w") as f:
-    json.dump(result, f, indent=2)
-
-print(f"X={x_val}, Y={y_val}, objective={objective_value}, status={model_status.name}")
+if __name__ == "__main__":
+    main()

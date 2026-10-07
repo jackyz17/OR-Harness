@@ -1,33 +1,16 @@
 [
   {
     "action_type": "execute_strategy",
-    "strategy_id": "enumeration_2var_budget_effectiveness",
-    "solver": "python_enum",
-    "method": {
-      "name": "Analytical enumeration for bounded 2-variable budget/effectiveness ILP",
-      "steps": [
-        "Iterate X from 0 to 5000 (bounded by budget)",
-        "For each X, compute minimum feasible Y = max(0, ceil((20000-10*X)/30))",
-        "Check budget feasibility: Y <= 5000 - X",
-        "Track minimum 50*X + 60*Y across all feasible (X,Y)",
-        "Return optimal (X,Y) and total cost"
-      ]
-    }
-  },
-  {
-    "action_type": "execute_strategy",
-    "strategy_id": "milp_pulp_highs",
+    "strategy_id": "milp_pulp_cbc",
     "solver": "pulp",
-    "method": {
-      "name": "MILP with PuLP/Highs for 2-variable planning ILP",
-      "steps": [
-        "Define integer variables X, Y >= 0 using PuLP LpProblem",
-        "Add constraint: X + Y <= 5000 (budget)",
-        "Add constraint: 10*X + 30*Y >= 20000 (environmental output)",
-        "Set objective: minimize 50*X + 60*Y",
-        "Solve with PuLP's Highs solver",
-        "Return solution and objective"
-      ]
-    }
+    "method": "Integer Linear Programming with PuLP + CBC solver. Formulate: Min 50X + 60Y s.t. X+Y ≤ 5000, 10X+30Y ≥ 20000, X,Y ≥ 0 integer.",
+    "steps": [
+      "Define decision variables X, Y as integer LpVariables with lower bound 0",
+      "Set objective: minimize 50*X + 60*Y",
+      "Add constraint: X + Y <= 5000 (budget limit)",
+      "Add constraint: 10*X + 30*Y >= 20000 (output requirement)",
+      "Solve with pulp.PULP_CBC_CMD(msg=0)",
+      "Extract optimal solution (X*, Y*) and objective value (minimum total cost)"
+    ]
   }
 ]

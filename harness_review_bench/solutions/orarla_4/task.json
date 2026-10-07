@@ -2,31 +2,25 @@
   "task_id": "orarla_4",
   "family": "planning",
   "text": "A marketing firm is planning the distribution of resources between two campaigns: X and Y. The total resources allocated to both campaigns cannot exceed 1000 units due to budget constraints. Furthermore, due to the differing demands of each campaign, the resources allocated to campaign X must be at least twice as many as those allocated to campaign Y plus an additional 300 units.\n\nThe costs associated with each unit of resource for campaigns X and Y are 4 and 3 units respectively. Given that the allocations for both campaigns must be whole numbers due to indivisible nature of the resources, and all constraints must be satisfied: What is the minimum total cost required for this allocation strategy? Provide your answer rounded to nearest whole number.",
-  "model": {
-    "kind": "ILP",
-    "variables": [
-      {"name": "X", "type": "integer", "lb": 0, "ub": 1000},
-      {"name": "Y", "type": "integer", "lb": 0, "ub": 1000}
-    ],
-    "objective": {"type": "minimize", "coeffs": {"X": 4, "Y": 3}},
-    "constraints": [
-      {"name": "budget_limit", "expr": "X + Y <= 1000"},
-      {"name": "demand_coupling", "expr": "X >= 2*Y + 300"}
-    ]
-  },
   "coupling": {
     "entities": [
-      {"name": "X", "type": "decision", "domain": "integer", "bounds": [0, 1000], "description": "resources allocated to campaign X"},
-      {"name": "Y", "type": "decision", "domain": "integer", "bounds": [0, 1000], "description": "resources allocated to campaign Y"}
-    ],
-    "constraints": [
-      {"id": "c1", "name": "budget_limit", "relation": "X + Y <= 1000", "description": "total resources cannot exceed 1000"},
-      {"id": "c2", "name": "demand_coupling", "relation": "X >= 2*Y + 300", "description": "X at least twice Y plus 300"}
+      {"name": "X", "type": "decision", "description": "Resources allocated to campaign X"},
+      {"name": "Y", "type": "decision", "description": "Resources allocated to campaign Y"}
     ],
     "relations": [
-      {"source": "X", "target": "Y", "type": "depends_on"},
-      {"source": "X", "target": "c1", "type": "constrains"},
-      {"source": "Y", "target": "c1", "type": "constrains"}
+      {"source": "X", "target": "Y", "type": "depends_on", "description": "X constraint depends on Y"}
     ]
+  },
+  "model": {
+    "name": "Integer Linear Programming with PuLP + CBC solver",
+    "type": "MILP",
+    "formulation": {
+      "variables": {"X": {"type": "integer", "lb": 0, "ub": null}, "Y": {"type": "integer", "lb": 0, "ub": null}},
+      "objective": {"type": "minimize", "coefficients": {"X": 4, "Y": 3}},
+      "constraints": [
+        {"name": "total_resources", "expression": "X + Y <= 1000"},
+        {"name": "x_minimum", "expression": "X - 2*Y >= 300"}
+      ]
+    }
   }
 }

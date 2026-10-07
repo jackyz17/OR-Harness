@@ -1,14 +1,17 @@
 {
-  "status": "optimal",
-  "objective_value": 10000,
-  "objective_bound": 10000,
-  "mip_gap": 0.0,
-  "runtime_seconds": 0.001,
+  "status": "Optimal",
+  "objective_value": 10000.0,
+  "objective_bound": null,
+  "mip_gap": null,
+  "runtime_seconds": null,
   "variables": {
-    "X": 200,
-    "Y": 0
+    "X": 200.0,
+    "Y": 0.0
   },
-  "method_performed": "ac_d2c8eba11b1d",
-  "solver": "custom_analytical",
-  "note": "Analytical solution: X=200, Y=0, cost=10000"
+  "method_performed": {
+    "name": "Integer Linear Programming with PuLP + CBC solver",
+    "solver": "pulp",
+    "strategy_id": "milp_pulp_highs",
+    "action_id": "ac_962efe4f0b67"
+  }
 }
