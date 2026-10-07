@@ -277,5 +277,103 @@ class TestKnowledgeThroughTheContext(HonestyCase):
                          "routing")
 
 
+# ---------------------------------------------------------------------------
+# 3. An assertion that names no roles check NOTHING
+# ---------------------------------------------------------------------------
+
+
+class TestEmptyAssertionsAreNeverVerified(HonestyCase):
+    """The honesty rule for assertions: ``verified`` means the declared
+    checks RAN and held. An assertion that names no roles — or that names
+    one with no evidence — is ``insufficient``, never verified."""
+
+    def _fact(self, eid, task_id, **kw):
+        rec = self.make_record(execution_id=eid, task_id=task_id, **kw)
+        return rec
+
+    def test_status_assertion_without_roles_is_insufficient(self):
+        from or_harness.strategy.verification import (
+            INSUFFICIENT, verify_relation)
+        rec = self._fact("ex_a", "T1", status="optimal", gap=0.0)
+        report = verify_relation(
+            "the run reached optimal",
+            evidence=[rec],
+            roles=[{"execution_id": "ex_a", "role": "e"}],
+            assertions=[{"kind": "status", "status": "optimal"}])
+        self.assertEqual(report["state"], INSUFFICIENT)
+        self.assertNotEqual(report["state"], VERIFIED)
+        scope = report["scope"]
+        self.assertEqual(scope.get("assertions_checked"), [])
+
+    def test_probe_assertion_without_roles_is_insufficient(self):
+        from or_harness.strategy.verification import (
+            INSUFFICIENT, verify_relation)
+        rec = self._fact("ex_b", "T1", status="optimal", gap=0.0)
+        report = verify_relation(
+            "feasible", evidence=[rec],
+            roles=[{"execution_id": "ex_b", "role": "e"}],
+            assertions=[{"kind": "probe", "path": "quality.feasible",
+                         "equals": True}])
+        self.assertEqual(report["state"], INSUFFICIENT)
+
+    def test_named_role_with_no_evidence_is_insufficient(self):
+        from or_harness.strategy.verification import (
+            INSUFFICIENT, verify_relation)
+        rec = self._fact("ex_c", "T1", status="optimal", gap=0.0)
+        report = verify_relation(
+            "claim", evidence=[rec],
+            roles=[{"execution_id": "ex_c", "role": "e"}],
+            assertions=[{"kind": "status", "roles": ["missing_role"],
+                         "status": "optimal"}])
+        self.assertEqual(report["state"], INSUFFICIENT)
+
+    def test_comparison_without_both_sides_is_insufficient_not_crash(self):
+        from or_harness.strategy.verification import (
+            INSUFFICIENT, verify_relation)
+        rec = self._fact("ex_d", "T1", status="optimal", gap=0.0)
+        report = verify_relation(
+            "quality differs", evidence=[rec],
+            roles=[{"execution_id": "ex_d", "role": "e"}],
+            assertions=[{"kind": "comparison", "metric": "quality"}])
+        self.assertEqual(report["state"], INSUFFICIENT)
+
+    def test_unknown_direction_is_insufficient_not_silently_lowered(self):
+        from or_harness.strategy.verification import (
+            INSUFFICIENT, verify_relation)
+        a = self._fact("ex_e1", "T1", status="optimal", gap=0.0)
+        b = self._fact("ex_e2", "T1", status="feasible", gap=0.4)
+        report = verify_relation(
+            "quality differs", evidence=[a, b],
+            roles=[{"execution_id": "ex_e1", "role": "hi"},
+                   {"execution_id": "ex_e2", "role": "lo"}],
+            assertions=[{"kind": "comparison", "metric": "quality",
+                         "roles_a": ["hi"], "roles_b": ["lo"],
+                         "direction": "sideways", "min_gap": 0.1}])
+        self.assertEqual(report["state"], INSUFFICIENT)
+
+    def test_named_assertions_and_failed_evidence_are_correctly_checked(self):
+        from or_harness.strategy.verification import (
+            REFUTED, VERIFIED, verify_relation)
+        ok = self._fact("ex_f1", "T1", status="optimal", gap=0.0)
+        bad = self._fact("ex_f2", "T1", status="error", feasible=False,
+                         gap=None)
+        roles = [{"execution_id": "ex_f1", "role": "good"},
+                 {"execution_id": "ex_f2", "role": "bad"}]
+        # A status assertion over the OPTIMAL fact verifies...
+        report = verify_relation(
+            "optimal run", evidence=[ok], roles=roles[:1],
+            assertions=[{"kind": "status", "roles": ["good"],
+                         "status": "optimal"}])
+        self.assertEqual(report["state"], VERIFIED)
+        # ...over the ERROR fact it REFUTES (a real check, distinct from
+        # "could not check").
+        report = verify_relation(
+            "the failed run reached optimal", evidence=[bad],
+            roles=[roles[1]],
+            assertions=[{"kind": "status", "roles": ["bad"],
+                         "status": "optimal"}])
+        self.assertEqual(report["state"], REFUTED)
+
+
 if __name__ == "__main__":
     unittest.main()

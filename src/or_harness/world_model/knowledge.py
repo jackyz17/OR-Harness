@@ -279,34 +279,27 @@ def learning_needs(snapshot, action_spec,
                     f"than {REVISION_DIVERGENCE}", width, as_range))
 
     # (4) An hypothesis for a strategy with SOME evidence but no claim
-    #     covering it yet. Two sub-cases, both real:
+    #     covering it yet. The framework reports the evidence it has
+    #     (executions and independent tasks) as a FACT; publication is a
+    #     VERIFICATION gate downstream, not a task-count gate here, so the
+    #     hint never claims that a claim "cannot form yet". The next
+    #     induction is where the agent decides whether the mechanism,
+    #     premises and counterexamples support forming or revising one.
     #
-    #     - fewer than 2 INDEPENDENT tasks: the admission gate refuses, so
-    #       more evidence (or a second task) is what would let a claim
-    #       form;
-    #     - 2+ independent tasks: the gate can now admit a claim, so the
-    #       next induction is where one FORMS.
-    #
-    #     Both predict ``candidate_forms`` at the consolidation horizon,
-    #     which is exactly the proposition an ordinary action should be
-    #     able to anticipate. Distinct from the coverage gap
+    #     Predicts ``candidate_forms`` at the consolidation horizon, which
+    #     is the proposition an ordinary action should be able to
+    #     anticipate. Distinct from the coverage gap
     #     (``strategies_without_evidence`` uses n == 0): here n >= 1, so
     #     something was really tried. Allowed with no existing entries at
     #     all, which keeps cold start workable once one task has run.
     covered = any(str(e.get("strategy_id")) == strategy_id
                   for layer in layers.values() for e in layer)
     if n_exec >= 1 and not covered:
-        independent_enough = n_tasks is None or n_tasks >= 2
-        if independent_enough:
-            reason = (f"{n_exec} execution(s) from "
-                      f"{'an unknown number of' if n_tasks is None else n_tasks} "
-                      "independent task(s) with no claim covering them: the "
-                      "admission gate's condition is met, so the next "
-                      "induction is where a claim can FORM")
-        else:
-            reason = (f"{n_exec} execution(s) from {n_tasks} independent "
-                      "task(s): below the admission gate's >=2-task "
-                      "requirement, so a claim cannot form yet")
+        reason = (f"{n_exec} execution(s) from "
+                  f"{'an unknown number of' if n_tasks is None else n_tasks} "
+                  "independent task(s) with no claim covering them: the "
+                  "evidence is there for the next induction to judge "
+                  "whether a mechanism forms")
         targets.append(KnowledgeTarget(
             kind="hypothesis",
             strategy_id=strategy_id,

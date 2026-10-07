@@ -3,16 +3,17 @@
 The unit of knowledge is the ENTRY, and one entry is one claim. This suite
 covers the claim's generation (from cross-task evidence, with no host lookup
 and no relation sub-structure), its assertion semantics, the publication gate
-(>= 2 independent tasks), revision (a substantive change invalidates the old
-verdict), transfer to a future task's recall, and the rule that two
-independent claims never inherit each other's verification.
+(a VERIFICATION gate — the task count is reported, not enforced), revision (a
+substantive change invalidates the old verdict), transfer to a future task's
+recall, and the rule that two independent claims never inherit each other's
+verification.
 """
 import unittest
 
 from helpers import HarnessTestCase
 
 from or_harness.api import ORHarness
-from or_harness.core.schema import (CLAIM_MIN_TASKS, StrategicEntry,
+from or_harness.core.schema import (StrategicEntry,
                                     claim_scope_tasks, validate_claim)
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.strategy.induction import InductionEngine
@@ -311,7 +312,10 @@ class TestClaimPublication(ClaimCase):
         self.assertTrue(out["publication"]["published"])
         self.assertEqual(out["publication"]["distinct_tasks"], 3)
 
-    def test_single_task_claim_is_saved_but_not_published(self):
+    def test_single_task_claim_publishes_with_scope_stated(self):
+        # Publication is a VERIFICATION gate, not a task-count gate: a
+        # single task whose declared comparison holds publishes, with the
+        # scope stated (one task, transfer unproven).
         self.seed_cross_period()
         claim = {
             "subject": "principle:one_task_only",
@@ -325,15 +329,15 @@ class TestClaimPublication(ClaimCase):
         }
         out = self.engine.submit_relation(claim,
                                           verify=self.verify_payload(claim))
-        # Saved, and the single-task fact itself verified...
         self.assertIsNotNone(out["saved"])
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "verified")
-        # ...but NOT published as transferable knowledge.
-        self.assertFalse(out["publication"]["published"])
-        self.assertTrue(any("task" in r
-                            for r in out["publication"]["reasons"]))
-        self.assertLess(len(claim_scope_tasks(entry)), CLAIM_MIN_TASKS)
+        # Published, but the ONE-task scope is a stated fact, not hidden.
+        self.assertTrue(out["publication"]["published"])
+        self.assertEqual(out["publication"]["distinct_tasks"], 1)
+        self.assertEqual(out["publication"]["support_scope"],
+                         "single_observation")
+        self.assertEqual(len(claim_scope_tasks(entry)), 1)
 
     def test_unverified_claim_is_not_published(self):
         self.seed_cross_period()

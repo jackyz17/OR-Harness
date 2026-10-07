@@ -318,8 +318,10 @@ class TestConditionalFactPublication(HarnessTestCase):
         from or_harness.strategy.selector import is_publishable
         self.assertTrue(is_publishable(h.sbank.get(rel["saved"])))
 
-    def test_transferable_claim_still_needs_two_tasks(self):
-        """The rule is NOT relaxed for transferable (non-fact) strategies."""
+    def test_transferable_claim_publishes_with_scope_stated(self):
+        """A verified transfer claim publishes; its task span is a reported
+        FACT, not a threshold (two tasks are not a proof, one task can still
+        reveal a conditional method)."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         rec = self.make_record(execution_id="ex_two", task_id="T1",
@@ -335,8 +337,11 @@ class TestConditionalFactPublication(HarnessTestCase):
                 {"kind": "status", "roles": ["evidence"],
                  "status": "optimal"}]}})
         pub = result["relations"][0]["publication"]
-        self.assertFalse(pub["published"])
-        self.assertIn("independent tasks", " ".join(pub["reasons"]))
+        self.assertTrue(pub["published"])
+        self.assertEqual(pub["distinct_tasks"], 1)
+        # Nothing in the publication claims a task-count rule.
+        self.assertNotIn("required_tasks", pub)
+        self.assertNotIn("independent tasks", " ".join(pub["reasons"]))
 
 
 if __name__ == "__main__":

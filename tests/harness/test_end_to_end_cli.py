@@ -460,9 +460,10 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(out["result"]["published"], 0)
         self.assertIn("refuted", out["summary"])
 
-    def test_relation_single_task_is_saved_but_not_published(self):
-        """The cross-task gate reported through the CLI: a single-task fact
-        is saved and verified, but never published as transferable knowledge."""
+    def test_relation_single_task_publishes_with_scope_stated(self):
+        """Publication is a verification gate: a single-task fact whose
+        declared comparison holds is saved, verified and published, with the
+        one-task scope reported as a fact."""
         def solve(objective):
             return textwrap.dedent(f"""
                 import json
@@ -502,8 +503,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = json.loads(proc.stdout)
         self.assertEqual(out["result"]["saved"], 1)
-        self.assertEqual(out["result"]["published"], 0)
-        self.assertIn("NOT published", out["summary"])
+        self.assertEqual(out["result"]["published"], 1)
 
     def test_recording_writes_evidence_and_the_write_replays_checks(self):
         """Recording a matching execution writes a FROZEN check onto the fact

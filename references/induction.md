@@ -55,7 +55,7 @@ Separate the following conclusions, even when one execution suggests all three:
 | Conditional method correctness | An inspectable argument covering the premises, transformation, and solution preservation | Tasks satisfying the checked premises; empirical performance remains unestablished |
 | Empirical advantage | Comparable measured executions and checks for the claimed quality, cost, or risk effect | The tested tasks and conditions; broader performance remains uncertain |
 
-One execution can reveal a conditional method. Check its argument rather than requiring a second task to substitute for reasoning. Independent tasks are needed to support broader empirical effects; two tasks are a minimum runtime support threshold, not a proof of general performance.
+One execution can reveal a conditional method. Check its argument rather than requiring a second task to substitute for reasoning. More independent tasks strengthen empirical claims about broader quality, cost, or risk effects, but the task count is reported as a fact — two tasks are not a proof, and no count substitutes for an inspectable derivation.
 
 ### Method example: bound and monotone reduction
 
@@ -152,7 +152,7 @@ For a measured cost advantage, add checks inside the empirical claim's `check` b
 }
 ```
 
-Cite both roles on at least two independent tasks for that empirical claim. These comparisons check non-degraded recorded quality and lower token cost; they do not establish method correctness or independently validate task answers. Match metrics, quality requirements, tolerances, and wording to the actual evidence.
+Cite both roles on the tasks that support the empirical claim. These comparisons check non-degraded recorded quality and lower token cost; they do not establish method correctness or independently validate task answers. Match metrics, quality requirements, tolerances, and wording to the actual evidence. More independent tasks widen the scope; the count is reported as a fact.
 
 Use one check source: the embedded `check`, or the supported standalone `--verify` argument. Inspect the returned verification scope and `publication.reasons`.
 
@@ -160,8 +160,8 @@ Use one check source: the embedded `check`, or the supported standalone `--verif
 
 | Entry kind | Publication requirement |
 |---|---|
-| `conditional_fact` | `fact_checked` or `verified`, not stale; one task may suffice |
-| Other kinds | `verified`, not stale, with at least two distinct tasks in the verification scope |
+| `conditional_fact` | `fact_checked` or `verified`, not stale; one task may suffice, stamped `single_observation` |
+| Other kinds | `verified`, not stale; `distinct_tasks` is reported as a fact, not enforced as a threshold |
 
 These are current interface rules. They do not define scientific validity, certify a mathematical argument, or guarantee generalization. Do not overstate a claim to fit a kind or treat a published fact as a validated performance rule.
 

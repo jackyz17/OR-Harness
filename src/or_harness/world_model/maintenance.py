@@ -394,6 +394,13 @@ def build_induction_material(harness, *,
     """
     records = [r for r in harness.bank.all()
                if r.source == "executed" and r.measurement_scope == "attempt"]
+    # Distinct tasks across the WHOLE history, captured BEFORE the scope
+    # filters: ``distinct_tasks_across_history`` must report how many tasks
+    # the memory actually spans even when the caller narrowed the batch with
+    # ``--task``. Computing it after the filter made it equal the batch's own
+    # task count (always 1 under ``--task``) — the field name promised more
+    # than it delivered.
+    all_history_tasks = {str(r.task_id) for r in records if r.task_id}
     if strategy_id is not None:
         records = [r for r in records if r.strategy_id == str(strategy_id)]
     if task_id is not None:
@@ -489,12 +496,11 @@ def build_induction_material(harness, *,
     if omitted and material:
         oldest = records_newest_first[len(entries_newest_first) - 1]
         next_cursor = _material_cursor(oldest)
-    # CROSS-TASK AFFORDANCE. A batch of single-task claims is a symptom, not
-    # a goal: a transferable claim needs the SAME mechanism observed on >=2
-    # INDEPENDENT tasks, and that evidence has to come from more than one
-    # batch. The framework reports WHICH task ids exist (here and, by
-    # implication, beyond this batch) so the agent can deliberately look for
-    # a mechanism that recurs across them instead of abstracting one task.
+    # CROSS-TASK AFFORDANCE. The framework reports WHICH task ids exist here
+    # and across the memory as FACTS — it does not turn the count into a
+    # rule. A transferable claim is the agent's judgement, weighing whether a
+    # mechanism recurs; two tasks are not a proof and one task can reveal a
+    # conditional method with a derivation behind it.
     n_tasks = len(tasks)
     # RELATED HISTORY. Narrowing the batch to one task speeds the read up;
     # the retrieval below puts cross-task material back so the narrowing
@@ -510,19 +516,22 @@ def build_induction_material(harness, *,
         "n_attempts": len(material),
         "cross_task_hint": {
             "n_distinct_tasks_in_batch": n_tasks,
-            "distinct_tasks_across_history": len(task_chains),
-            "note": ("a TRANSFERABLE claim needs the same mechanism observed "
-                     "on >=2 INDEPENDENT tasks (distinct task_id). This batch "
-                     "spans "
-                     + (f"{n_tasks} task(s); look for a mechanism that recurs "
-                        "across them and across other tasks in the history — "
-                        "not a restatement of one task."
+            "distinct_tasks_across_history": len(all_history_tasks),
+            "note": ("this batch spans "
+                     + (f"{n_tasks} task(s) and the memory spans "
+                        f"{len(all_history_tasks)} task(s) in total. Look for "
+                        "a mechanism that recurs across tasks — but the "
+                        "count is a FACT, not a threshold: a single task can "
+                        "reveal a conditional method worth recording, and two "
+                        "tasks are not by themselves a proof."
                         if n_tasks >= 2 else
-                        "1 task only; if you are about to publish from it, a "
-                        "`conditional_fact` is a fact about THAT task, not "
-                        "transferable knowledge — widen the task set (read "
-                        "other batches / record more tasks) before claiming a "
-                        "rule.")),
+                        "1 task only; the memory spans "
+                        f"{len(all_history_tasks)} task(s) in total. A "
+                        "`conditional_fact` is a fact about THAT task's "
+                        "structure and method — state its scope; you may also "
+                        "form a conditional method here if the derivation "
+                        "supports it, or read other batches to find a "
+                        "mechanism that recurs.")),
         },
         "check_states": {"passed": passed, "failed": failed,
                          "never_checked_or_insufficient": untested},
@@ -668,7 +677,10 @@ def _related_history(harness, records: Sequence[Any], *,
                  "strength; no hit is NOT evidence that no counterexample "
                  "exists. Execution hits are unfiltered (failures and "
                  "cross-cell cases included); knowledge hits include "
-                 "unpublished entries."),
+                 "unpublished entries. This batch's OWN executions are "
+                 "excluded from the execution layer — otherwise the query "
+                 "(built from their methods) would retrieve the batch "
+                 "itself."),
     }
     if not query["text"]:
         base["executions"] = []
@@ -676,12 +688,17 @@ def _related_history(harness, records: Sequence[Any], *,
         base["no_hits"] = True
         base["failure"] = None
         return base
+    # The batch's own executions are the query's source, so they must not be
+    # returned as "related history" (an identical document scores highest
+    # and would fill the whole top_k, hiding real cross-task cases).
+    batch_ids = {str(r.execution_id) for r in valid}
     try:
         from or_harness.strategy.vector_recall import recall_vectors
         vectors = recall_vectors(
             harness, query["text"],
             top_k=int(related_top_k), include_unverified=True,
-            task_profile=getattr(valid[-1], "profile_snapshot", None))
+            task_profile=getattr(valid[-1], "profile_snapshot", None),
+            exclude_execution_ids=batch_ids)
     except Exception as exc:  # noqa: BLE001 - a degraded channel is reported
         base["executions"] = []
         base["knowledge"] = []

@@ -405,7 +405,8 @@ def _scan(index, layer: str, query_vector: List[float]) -> List[Tuple[Any, float
 
 def recall_vectors(harness, task_text: str, *, top_k: int = 5,
                    include_unverified: bool = False,
-                   task_profile: Optional[ProblemProfile] = None
+                   task_profile: Optional[ProblemProfile] = None,
+                   exclude_execution_ids: Optional[Sequence[str]] = None
                    ) -> Dict[str, Any]:
     """Embedding-first discovery over both memory layers.
 
@@ -414,6 +415,12 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
     Eligibility (publishability, lifecycle, staleness) is applied BEFORE the
     ``top_k`` cut, so an ineligible item never occupies a slot that a usable
     memory could have taken.
+
+    ``exclude_execution_ids`` drops named executions from the EXECUTION
+    layer before the ``top_k`` cut. A caller that builds its query text from
+    a batch's own methods would otherwise retrieve that very batch (an
+    identical document scores highest) and the "related history" channel
+    would degrade into self-repetition. Knowledge hits are unaffected.
     """
     backend = getattr(harness, "embedding_index", None)
     if backend is None:
@@ -439,6 +446,7 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
             f"embedding backend error: {type(exc).__name__}: {exc}") from exc
 
     query_cell = group_key(task_profile) if task_profile is not None else None
+    excluded = {str(e) for e in (exclude_execution_ids or [])}
 
     result: Dict[str, Any] = {
         "backend": describe_backend(backend.backend),
@@ -446,11 +454,17 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
         "strategic_knowledge": [],
     }
     stale: Dict[str, int] = {LAYER_EXECUTION: 0, LAYER_STRATEGIC: 0}
+    excluded_hits = 0
 
     if LAYER_EXECUTION in usable:
         for item, score in _scan(backend, LAYER_EXECUTION, query_vector):
             if len(result["execution_evidence"]) >= top_k:
                 break
+            if excluded and str(item.get("id")) in excluded:
+                # Dropped BEFORE the top_k cut, so a self-hit never occupies
+                # a slot a real related execution could have taken.
+                excluded_hits += 1
+                continue
             row = _execution_entry(harness, item, score, task_profile,
                                    query_cell)
             if row is None:
@@ -470,6 +484,8 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
             result["strategic_knowledge"].append(row)
 
     result["stale_indexed"] = stale
+    if excluded_hits:
+        result["excluded_self_hits"] = excluded_hits
     result["stale_note"] = (
         "stale counts index items skipped while filling top_k — items below "
         "the cut are not examined, so a zero here means 'none encountered', "

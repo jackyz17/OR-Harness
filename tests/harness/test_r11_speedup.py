@@ -140,6 +140,19 @@ class TestRelatedHistory(HarnessTestCase):
         self.assertIn("bound_then_monotone_enum", basis["text"])
         self.assertEqual(basis["basis"], "performed")
 
+    def test_batch_own_executions_are_excluded_from_related_history(self):
+        """The query is built from the batch's OWN methods, so an identical
+        self-document would score highest and fill every slot — the channel
+        must exclude the batch's own executions instead of degrading into
+        self-repetition."""
+        self._seed()
+        out = self.h.induction_material(task_id="t1", related_top_k=5)
+        rh = out["related_history"]
+        ids = {e["execution_id"] for e in rh["executions"]}
+        self.assertNotIn("ex_t1_bound_then_monotone_enum", ids)
+        # A genuinely related OTHER execution is still returned.
+        self.assertIn("ex_t2_a_different_name_same_idea", ids)
+
     def test_top_k_zero_disables_the_channel(self):
         self._seed()
         out = self.h.induction_material(task_id="t1", related_top_k=0)

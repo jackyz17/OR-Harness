@@ -717,12 +717,12 @@ def task_effective_quality(record: Any, observed: float) -> float:
 # ---------------------------------------------------------------------------
 # knowledge claims (ONE structured claim per entry)
 # ---------------------------------------------------------------------------
-
-#: Distinct tasks a transferable knowledge CLAIM needs before it may be
-#: published as knowledge. A single-task repair is a verified FACT about that
-#: task; transferring it to future tasks is a knowledge claim and needs
-#: independent evidence.
-CLAIM_MIN_TASKS = 2
+#
+# Publication is a VERIFICATION gate, not a task-count gate. The number of
+# independent tasks behind a claim is reported as a fact (``distinct_tasks``)
+# so a reader can weigh it; it is deliberately NOT a threshold constant —
+# two tasks are not a proof, and a single task can reveal a conditional
+# method with a derivation behind it. The agent judges that, not a counter.
 
 
 def copy_any_list(raw: Any) -> List[Any]:

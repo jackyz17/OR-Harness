@@ -208,11 +208,12 @@ class TestReviewMaterialCursor(HarnessTestCase):
         self.assertIn("code_hash_changed", entry["changes"])
 
     def test_cross_task_hint_reports_the_task_span(self):
-        """The batch tells the agent how many DISTINCT tasks it spans, so a
-        single-task review is visibly single-task."""
+        """The batch tells the agent how many DISTINCT tasks it spans (as a
+        FACT, not a threshold), so a single-task review is visibly
+        single-task without forbidding a conditional method from it."""
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
-        # One task only: the hint must warn against a one-task claim.
+        # One task only: the hint states the scope as a fact.
         h.record(self.make_record(execution_id="ex_solo", task_id="T_solo",
                                   strategy_id="S", profile=_profile("T_solo")))
         solo = h.induction_material()
@@ -220,7 +221,8 @@ class TestReviewMaterialCursor(HarnessTestCase):
         self.assertEqual(hint["n_distinct_tasks_in_batch"], 1)
         self.assertIn("1 task only", hint["note"])
         self.assertIn("conditional_fact", hint["note"])
-        # Two tasks: the hint points at the cross-task opportunity.
+        # Two tasks: the hint points at the cross-task material without
+        # turning the count into a publication rule.
         for i in range(2):
             h.record(self.make_record(
                 execution_id=f"ex_pair_{i}", task_id=f"T_pair_{i}",
@@ -228,7 +230,7 @@ class TestReviewMaterialCursor(HarnessTestCase):
         pair = h.induction_material()
         hint = pair["cross_task_hint"]
         self.assertGreaterEqual(hint["n_distinct_tasks_in_batch"], 2)
-        self.assertIn("look for a mechanism that recurs", hint["note"])
+        self.assertIn("look for a mechanism that recurs", hint["note"].lower())
 
 
 class TestEpisodeBackfill(HarnessTestCase):

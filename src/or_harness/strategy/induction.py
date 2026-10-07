@@ -22,15 +22,16 @@ to; the concrete method; a grounded explanation and expected effect; its
 cost, risks and boundary; and its supporting evidence, counterexamples and
 anything still unverified.
 
-Publication is a SEPARATE gate from saving. A strategy is saved and may be
-verified as a fact about the tasks it cites, but a TRANSFERABLE strategy
-needs the same mechanism observed on >= ``CLAIM_MIN_TASKS`` independent
-tasks (distinct ``task_id``). Different tasks, strategy ids and cells may be
-cited TOGETHER — there is no same-name / same-cell requirement. A single
-observation that is verified publishes only as a ``conditional_fact`` stamped
-``single_observation`` / ``transferability: unproven``; it never masquerades
-as a rule. The distinct-task count is computed from the evidence the strategy
-ACTUALLY cites, never padded.
+Publication is a SEPARATE gate from saving, and it is a VERIFICATION gate,
+not a task-count gate: a strategy publishes when the claim's declared checks
+hold over the evidence it cites. The number of independent tasks is reported
+as a FACT (``distinct_tasks``) so a reader can weigh it, but two tasks are
+not a proof and one task can reveal a conditional method with a derivation
+behind it — the framework does not decide that question by counting. A
+``conditional_fact`` is stamped ``single_observation`` /
+``transferability: unproven`` when its evidence is one task; a transfer claim
+carries its own scope and ``not_covered`` wording. The distinct-task count is
+computed from the evidence the strategy ACTUALLY cites, never padded.
 
 The four observation angles — method contrast, recovery after an
 intervention, structural reproduction, advantage reversal — are THINKING AIDS
@@ -52,7 +53,6 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
-    CLAIM_MIN_TASKS,
     CostVector,
     ExecutionRecord,
     GROUPING_FEATURES,
@@ -193,10 +193,12 @@ class InductionEngine:
         the role each plays). The framework DERIVES everything the evidence
         implies (tasks, family, structural cell, strategy ids) — the caller
         submits only ids and roles. Verification reuses
-        :func:`verify_relation`; the cross-task independence requirement
-        (:data:`CLAIM_MIN_TASKS`) is a PUBLICATION gate, not a save gate: a
-        single-task claim is saved and may be verified as a fact about that
-        task, but it is not published as transferable knowledge.
+        :func:`verify_relation`; publication is a VERIFICATION gate: a claim
+        publishes when its declared checks hold over the cited evidence, and
+        the distinct-task count is reported as a fact for the reader rather
+        than enforced as a threshold. A single-task claim is saved, verified
+        and published with its scope stated (a ``conditional_fact`` is
+        stamped ``single_observation``; other kinds carry ``not_covered``).
 
         The declared checks may be supplied in EITHER place: the standalone
         ``verify`` payload (``{"claim", "check", "executions"}``) OR a
@@ -512,36 +514,38 @@ class InductionEngine:
                     "`conditional_fact` kind")
             else:
                 reasons.append(f"verification state is {state!r}")
-        if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
-            reasons.append(
-                f"verification covers {len(tasks)} task(s); a transferable "
-                f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks")
-        out = {"published": published_state
-                             and (single_fact or len(tasks) >= CLAIM_MIN_TASKS),
+        # The task count is reported, never enforced: two tasks are not a
+        # proof, and a single task can reveal a conditional method.
+        out = {"published": published_state,
                "state": state, "distinct_tasks": len(tasks),
-               "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
-        if single_fact:
+               "reasons": reasons}
+        if len(tasks) == 1:
             out["support_scope"] = "single_observation"
             out["transferability"] = "unproven"
+            out["note"] = ("the evidence covers ONE task: the claim is a "
+                           "fact about that task's structure and method, "
+                           "not a demonstrated transfer")
         return out
 
     @staticmethod
     def _claim_publication(entry: StrategicEntry) -> Dict[str, Any]:
         """Why a claim-bearing entry is (or is not) publishable.
 
-        Three publication rules, by claim KIND and verdict:
+        Publication is a VERIFICATION gate, by claim KIND and verdict:
 
         * ``conditional_fact`` — a verified statement about the evidence it
           cites, INCLUDING a single observation ("under this structure, this
-          method produced a checked-correct answer"). It publishes with ONE
-          task from a ``verified`` OR a ``fact_checked`` verdict, but it is
-          stamped ``support_scope: single_observation`` and
-          ``transferability: unproven`` so no reader mistakes it for a rule.
-        * a TRANSFER claim (every other kind) with a ``verified`` verdict —
-          needs >= ``CLAIM_MIN_TASKS`` independent tasks.
-        * a TRANSFER claim with only ``fact_checked`` — NOT published: the
-          facts were read, but a transfer conclusion needs a declared
-          assertion. The reason says which.
+          method produced a checked-correct answer"). It publishes with a
+          ``verified`` OR a ``fact_checked`` verdict, stamped
+          ``support_scope: single_observation`` when its evidence is one
+          task.
+        * any other kind with a ``verified`` verdict — published. The
+          distinct-task count travels as a FACT (``distinct_tasks``) so a
+          reader can weigh the evidence; it is not a threshold. The verdict's
+          own ``not_covered`` wording states the scope.
+        * a claim with only ``fact_checked`` that is NOT a conditional fact —
+          NOT published: the facts were read, but a transfer conclusion
+          needs a declared assertion. The reason says which.
         """
         state = str((entry.verification or {}).get("state") or "unverified")
         block = entry.verification or {}
@@ -567,20 +571,18 @@ class InductionEngine:
                 "claim as a `conditional_fact` single observation")
         elif not published_state:
             reasons.append(f"verification state is {state!r}")
-        if not single_fact and len(tasks) < CLAIM_MIN_TASKS:
-            reasons.append(
-                f"verification covers {len(tasks)} task(s); a transferable "
-                f"knowledge claim needs >= {CLAIM_MIN_TASKS} independent tasks "
-                "(a single-task repair is a verified fact about that task, "
-                "not yet knowledge)")
+        # The task count is reported as a FACT, never a threshold: two tasks
+        # are not a proof and one task can reveal a conditional method with a
+        # derivation behind it. The verdict's own ``not_covered`` wording
+        # carries the scope; ``distinct_tasks`` lets a reader weigh it.
         out = {"published": (published_state
-                             and not block.get("stale_after_revision")
-                             and (single_fact or len(tasks) >= CLAIM_MIN_TASKS)),
+                             and not block.get("stale_after_revision")),
                "state": state, "distinct_tasks": len(tasks),
-               "required_tasks": CLAIM_MIN_TASKS, "reasons": reasons}
-        if single_fact:
+               "reasons": reasons}
+        if single_fact or len(tasks) == 1:
             out["support_scope"] = "single_observation"
             out["transferability"] = "unproven"
+        if single_fact:
             out["note"] = ("a conditional FACT about the cited evidence: it "
                            "publishes with one observation but makes NO "
                            "transfer claim — more evidence either widens it "

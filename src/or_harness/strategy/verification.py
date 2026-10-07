@@ -924,6 +924,13 @@ def _assertion_checks(assertion: Dict[str, Any],
     roles = [str(r) for r in (assertion.get("roles") or [])]
 
     def _role_records(role_list: List[str]) -> Optional[List[Dict[str, Any]]]:
+        # An assertion that names NO roles has nothing to evaluate. Returning
+        # an empty list here would let the caller's loop iterate zero times
+        # and fall through to VERIFIED — a claim "verified" without a single
+        # fact checked. Empty is UNKNOWN, so it maps to None like a named
+        # role with no evidence.
+        if not role_list:
+            return None
         out: List[Dict[str, Any]] = []
         for role in role_list:
             records = by_role.get(role)
@@ -932,14 +939,25 @@ def _assertion_checks(assertion: Dict[str, Any],
             out.extend(records)
         return out
 
+    def _no_evidence_reason(role_list: List[str]) -> str:
+        # "no roles named" and "a named role has no evidence" are different
+        # facts and must not be collapsed: the first is a malformed assertion
+        # (nothing was ever going to be checked), the second is missing
+        # evidence for a real scope.
+        if not role_list:
+            return ("the assertion names no roles: there is no evidence to "
+                    "check, so it can never be verified")
+        return ("a named role has no referenced evidence, "
+                "so the assertion cannot run")
+
     if kind == ASSERTION_PROBE:
         records = _role_records(roles)
         if records is None:
             checks.append({"check": "assertion_scope", "source": FRAMEWORK,
                            "kind": kind, "roles": roles,
-                           "problem": "a named role has no evidence"})
-            return INSUFFICIENT, ("a named role has no referenced evidence, "
-                                  "so the assertion cannot run")
+                           "problem": ("no roles named" if not roles
+                                       else "a named role has no evidence")})
+            return INSUFFICIENT, _no_evidence_reason(roles)
         probe = {k: v for k, v in assertion.items()
                  if k in ("path", "equals", "min", "max", "in")}
         for fact in records:
@@ -962,9 +980,9 @@ def _assertion_checks(assertion: Dict[str, Any],
         if records is None:
             checks.append({"check": "assertion_scope", "source": FRAMEWORK,
                            "kind": kind, "roles": roles,
-                           "problem": "a named role has no evidence"})
-            return INSUFFICIENT, ("a named role has no referenced evidence, "
-                                  "so the assertion cannot run")
+                           "problem": ("no roles named" if not roles
+                                       else "a named role has no evidence")})
+            return INSUFFICIENT, _no_evidence_reason(roles)
         expected = str(assertion.get("status"))
         for fact in records:
             status = str(fact["quality"].get("status", ""))
@@ -985,9 +1003,9 @@ def _assertion_checks(assertion: Dict[str, Any],
         if records is None:
             checks.append({"check": "assertion_scope", "source": FRAMEWORK,
                            "kind": kind, "roles": roles,
-                           "problem": "a named role has no evidence"})
-            return INSUFFICIENT, ("a named role has no referenced evidence, "
-                                  "so the assertion cannot run")
+                           "problem": ("no roles named" if not roles
+                                       else "a named role has no evidence")})
+            return INSUFFICIENT, _no_evidence_reason(roles)
         hashes: Dict[str, List[str]] = {}
         for fact in records:
             code_hash = fact.get("code_hash")
@@ -1007,20 +1025,48 @@ def _assertion_checks(assertion: Dict[str, Any],
         return VERIFIED, None
 
     if kind == ASSERTION_COMPARISON:
-        side_a = _role_records([str(r) for r in
-                                (assertion.get("roles_a") or [])])
-        side_b = _role_records([str(r) for r in
-                                (assertion.get("roles_b") or [])])
+        roles_a = [str(r) for r in (assertion.get("roles_a") or [])]
+        roles_b = [str(r) for r in (assertion.get("roles_b") or [])]
+        side_a = _role_records(roles_a)
+        side_b = _role_records(roles_b)
         if side_a is None or side_b is None:
+            missing = ("no roles_a/roles_b named"
+                       if not (roles_a and roles_b)
+                       else "a named role has no evidence")
             checks.append({"check": "assertion_scope", "source": FRAMEWORK,
                            "kind": kind,
                            "roles_a": assertion.get("roles_a"),
                            "roles_b": assertion.get("roles_b"),
-                           "problem": "a named role has no evidence"})
-            return INSUFFICIENT, ("a named role has no referenced evidence, "
-                                  "so the comparison cannot run")
+                           "problem": missing})
+            return INSUFFICIENT, (
+                "the comparison does not name both sides: there is no "
+                "evidence to compare, so it can never be verified"
+                if not (roles_a and roles_b)
+                else "a named role has no referenced evidence, "
+                     "so the comparison cannot run")
+        if not side_a or not side_b:
+            # Named roles that resolved to zero records on one side: the
+            # means below would divide by zero, and an empty side is no
+            # evidence, not a valid comparison.
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind,
+                           "roles_a": assertion.get("roles_a"),
+                           "roles_b": assertion.get("roles_b"),
+                           "problem": "one side has no evidence"})
+            return INSUFFICIENT, ("one side of the comparison has no "
+                                  "referenced evidence, so no difference "
+                                  "can be measured")
         metric = str(assertion.get("metric") or "")
         direction = str(assertion.get("direction") or "higher")
+        if direction not in ("higher", "lower"):
+            # Silently reading an unrecognized direction as "lower" would
+            # verify the OPPOSITE of what was declared, so it is refused.
+            checks.append({"check": "assertion_direction", "source": FRAMEWORK,
+                           "direction": direction, "ok": False})
+            return INSUFFICIENT, (
+                f"unknown comparison direction {direction!r}: expected "
+                "'higher' or 'lower', so the declared relation cannot be "
+                "evaluated (and is never assumed)")
         min_gap = _finite(assertion.get("min_gap"))
         min_gap = 0.0 if min_gap is None else min_gap
         mode = str(assertion.get("mode") or MODE_GROUP)

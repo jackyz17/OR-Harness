@@ -425,7 +425,7 @@ Supported predicate keys are `family`, `resource_coupling`, `temporal_coupling`,
 | Current publication route | Requirement |
 |---|---|
 | `conditional_fact` | `fact_checked` or `verified`, not stale; one task may suffice |
-| Other kinds | `verified`, not stale, at least two distinct tasks in verification scope |
+| Other kinds | `verified`, not stale; `distinct_tasks` is reported as a fact, not enforced |
 
 Kind therefore affects runtime publication; it is not merely a descriptive label. Publication does not prove mathematical correctness, causality, transfer, or cost advantage. A one-task conditional method needs an inspected argument/premises; empirical advantage needs appropriate independent comparison. Do not fabricate tasks or overstate claims to meet a gate.
 
