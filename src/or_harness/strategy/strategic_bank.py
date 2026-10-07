@@ -86,8 +86,32 @@ class StrategicBank:
     # -- CRUD --------------------------------------------------------------------
 
     def add(self, entry: StrategicEntry) -> str:
-        self._validate(entry)
+        """Add a new entry, ASSIGNING it the next number.
+
+        The framework owns the entry's number: it is ``MAX(existing)+1`` over
+        the whole table (including rows written earlier and later archived),
+        so numbers are strictly increasing and are NEVER reused or
+        resequenced. A caller-supplied ``entry_id`` is IGNORED — the agent
+        cannot invent an identity, and no ``se_``-style name is accepted. The
+        returned id is the assigned decimal string.
+        """
         with self.store.transaction() as conn:
+            row = conn.execute(
+                "SELECT MAX(CAST(entry_id AS INTEGER)) AS m "
+                "FROM strategic_entries").fetchone()
+            next_number = int(row["m"] or 0) + 1
+            # The cold archive also holds retired numbers: an archived number
+            # is never handed out again, so the sequence spans both tables.
+            try:
+                crow = conn.execute(
+                    "SELECT MAX(entry_number) AS m FROM cold_archive"
+                ).fetchone()
+                if crow is not None and crow["m"] is not None:
+                    next_number = max(next_number, int(crow["m"]) + 1)
+            except Exception:  # noqa: BLE001 - older table without the column
+                pass
+            entry.entry_id = str(next_number)
+            self._validate(entry)
             conn.execute(
                 "INSERT INTO strategic_entries "
                 "(entry_id, strategy_id, scope_level, status, payload) "
@@ -95,6 +119,21 @@ class StrategicBank:
                 (entry.entry_id, entry.strategy_id, self._scope_token(entry),
                  entry.status, self.store.dumps(entry.to_dict())))
         return entry.entry_id
+
+    def next_number(self) -> int:
+        """The number the next :meth:`add` will assign (read-only preview)."""
+        row = self.store.conn.execute(
+            "SELECT MAX(CAST(entry_id AS INTEGER)) AS m "
+            "FROM strategic_entries").fetchone()
+        highest = int(row["m"] or 0)
+        try:
+            crow = self.store.conn.execute(
+                "SELECT MAX(entry_number) AS m FROM cold_archive").fetchone()
+            if crow is not None and crow["m"] is not None:
+                highest = max(highest, int(crow["m"]))
+        except Exception:  # noqa: BLE001 - older table without the column
+            pass
+        return highest + 1
 
     def update(self, entry: StrategicEntry) -> None:
         self._validate(entry)
@@ -199,6 +238,7 @@ class StrategicBank:
             predicates=entry.predicates,
             outcome=outcome,
             reason=reason,
+            entry_id=entry.entry_id,
             evidence_summary={
                 "support_n": entry.support_n,
                 "hit_rate": round(entry.prediction_track.hit_rate, 4),
@@ -208,9 +248,12 @@ class StrategicBank:
             },
         )
         with self.store.transaction() as conn:
-            conn.execute("INSERT OR REPLACE INTO cold_archive (pattern_hash, payload) "
-                         "VALUES (?,?)",
-                         (card.pattern_hash, self.store.dumps(card.to_dict())))
+            conn.execute(
+                "INSERT OR REPLACE INTO cold_archive "
+                "(pattern_hash, entry_number, payload) VALUES (?,?,?)",
+                (card.pattern_hash,
+                 entry.entry_number if entry.entry_number else None,
+                 self.store.dumps(card.to_dict())))
             conn.execute("DELETE FROM strategic_entries WHERE entry_id=?",
                          (entry_id,))
         return card

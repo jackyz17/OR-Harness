@@ -359,11 +359,11 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         h = ORHarness(home=self.home)
         try:
             entry = StrategicEntry(
-                entry_id="se_keep", strategy_id="S01",
+                entry_id="", strategy_id="S01",
                 pattern={"predicates": {}},
                 strategy_type="execution", actions=["harness-custom"],
                 fallback_strategy_id="custom:fallback")
-            h.sbank.add(entry)
+            eid = h.sbank.add(entry)
             for i in range(2):
                 h.bank.append(self.make_record(
                     execution_id=f"ex_keep{i}", task_id=f"tk{i}",
@@ -372,7 +372,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
                 "subject": "S02", "claim": "a different subject",
                 "evidence": [{"execution_id": "ex_keep0", "role": "e"},
                              {"execution_id": "ex_keep1", "role": "e"}]}])
-            kept = h.sbank.get("se_keep")
+            kept = h.sbank.get(eid)
             self.assertEqual(kept.strategy_type, "execution")
             self.assertEqual(kept.actions, ["harness-custom"])
             self.assertEqual(kept.fallback_strategy_id, "custom:fallback")
@@ -411,7 +411,8 @@ class TestCostCompletenessSignal(HarnessTestCase):
             out = h.record(rec)
             block = out["cost_completeness"]
             self.assertEqual(set(block["missing"]),
-                             {"llm_tokens", "tool_calls", "retries"})
+                             {"llm_tokens", "tool_calls", "retries",
+                              "remaining_latency_s"})
             self.assertIn("UNKNOWN", block["note"])
             self.assertIn("--override", block["note"])
             # The fact is still recorded — a warning, not a refusal.

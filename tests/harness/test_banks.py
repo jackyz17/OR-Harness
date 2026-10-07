@@ -199,7 +199,7 @@ class TestStrategicBank(HarnessTestCase):
         super().setUp()
         self.sbank = StrategicBank(self.store)
 
-    def make_entry(self, entry_id="se_1", strategy_id="S01", status="candidate",
+    def make_entry(self, entry_id="", strategy_id="S01", status="candidate",
                    predicates=None, support_n=2, verified=False) -> StrategicEntry:
         return StrategicEntry(
             entry_id=entry_id, strategy_id=strategy_id,
@@ -212,13 +212,23 @@ class TestStrategicBank(HarnessTestCase):
             provenance=["ex_1", "ex_2"])
 
     def test_crud(self):
-        self.sbank.add(self.make_entry())
-        got = self.sbank.get("se_1")
+        eid = self.sbank.add(self.make_entry())
+        got = self.sbank.get(eid)
         self.assertEqual(got.strategy_id, "S01")
         got.failure_prob = 0.2
         self.sbank.update(got)
-        self.assertEqual(self.sbank.get("se_1").failure_prob, 0.2)
+        self.assertEqual(self.sbank.get(eid).failure_prob, 0.2)
         self.assertEqual(self.sbank.count(), 1)
+
+    def test_numbers_are_assigned_and_never_reused(self):
+        """The framework owns the number: it is increasing, the agent cannot
+        invent it, and a retired number is never handed out again."""
+        first = self.sbank.add(self.make_entry())
+        second = self.sbank.add(self.make_entry(strategy_id="S02"))
+        self.assertEqual([first, second], ["1", "2"])
+        self.sbank.retire(second, reason="test")
+        third = self.sbank.add(self.make_entry(strategy_id="S03"))
+        self.assertEqual(third, "3", "a retired number is not reused")
 
     def test_update_unknown_raises(self):
         with self.assertRaises(StorageError):
@@ -233,23 +243,23 @@ class TestStrategicBank(HarnessTestCase):
     def test_matching_respects_scope(self):
         # A family-scoped claim and a family-free one; the latter matches
         # every family (it is cross-family by construction, not by a label).
-        self.sbank.add(self.make_entry(entry_id="se_l1"))
-        self.sbank.add(self.make_entry(
-            entry_id="se_l2", predicates={"resource_coupling": [0.75, 1.0]}))
+        l1 = self.sbank.add(self.make_entry())
+        l2 = self.sbank.add(self.make_entry(
+            predicates={"resource_coupling": [0.75, 1.0]}))
         profile = self.make_profile(problem_id="q")
         self.assertEqual({e.entry_id for e in self.sbank.matching(profile)},
-                         {"se_l1", "se_l2"})
+                         {l1, l2})
         other_family = self.make_profile(problem_id="q2", family="scheduling")
         self.assertEqual([e.entry_id for e in self.sbank.matching(other_family)],
-                         ["se_l2"])
+                         [l2])
 
     def test_promotion(self):
         """Forward calibration promotes ONLY verified claims: five checks
         with a good hit rate are calibration evidence, not admission."""
-        self.sbank.add(self.make_entry(verified=True))
+        eid = self.sbank.add(self.make_entry(verified=True))
         transitions = []
         for _ in range(PROMOTE_MIN_PREDICTIONS):
-            entry, tr = self.sbank.record_prediction("se_1", hit=True)
+            entry, tr = self.sbank.record_prediction(eid, hit=True)
             transitions.extend(tr)
         self.assertEqual(entry.status, "validated")
         self.assertIn("promoted:candidate->validated", transitions)
@@ -259,9 +269,9 @@ class TestStrategicBank(HarnessTestCase):
         """The reproduced defect: n>=5 hits used to promote regardless of
         admission verification, so a never-verified candidate could reach
         `validated` and be published."""
-        self.sbank.add(self.make_entry())       # unverified
+        eid = self.sbank.add(self.make_entry())       # unverified
         for _ in range(PROMOTE_MIN_PREDICTIONS):
-            entry, transitions = self.sbank.record_prediction("se_1", hit=True)
+            entry, transitions = self.sbank.record_prediction(eid, hit=True)
         self.assertEqual(entry.status, "candidate")
         self.assertNotIn("promoted:candidate->validated", transitions)
         self.assertEqual(entry.prediction_track.n_predictions,
@@ -279,15 +289,15 @@ class TestStrategicBank(HarnessTestCase):
             self.sbank.add(entry)
 
     def test_no_early_promotion(self):
-        self.sbank.add(self.make_entry())
+        eid = self.sbank.add(self.make_entry())
         for _ in range(PROMOTE_MIN_PREDICTIONS - 1):
-            entry, _ = self.sbank.record_prediction("se_1", hit=True)
+            entry, _ = self.sbank.record_prediction(eid, hit=True)
         self.assertEqual(entry.status, "candidate")
 
     def test_demotion_after_consecutive_misses(self):
-        self.sbank.add(self.make_entry(status="validated", verified=True))
+        eid = self.sbank.add(self.make_entry(status="validated", verified=True))
         for i in range(DEMOTE_CONSECUTIVE_MISSES):
-            entry, tr = self.sbank.record_prediction("se_1", hit=False,
+            entry, tr = self.sbank.record_prediction(eid, hit=False,
                                                      calibration_err=0.4)
         self.assertEqual(entry.status, "suspect")
         self.assertTrue(any(t.startswith("demoted") for t in tr))
@@ -295,7 +305,7 @@ class TestStrategicBank(HarnessTestCase):
     def test_dormant_and_wakeup(self):
         entry = self.make_entry()
         entry.created_at = 1.0  # long before the task window below
-        self.sbank.add(entry)
+        eid = self.sbank.add(entry)
         # 10 tasks after the entry's creation -> dormant.
         bank = ExperienceBank(self.store)
         for i in range(10):
@@ -303,23 +313,25 @@ class TestStrategicBank(HarnessTestCase):
                                          task_id=f"task_{i}",
                                          created_at=1000.0 + i))
         affected = self.sbank.age()
-        self.assertEqual(affected, ["se_1"])
-        self.assertEqual(self.sbank.get("se_1").status, "dormant")
+        self.assertEqual(affected, [eid])
+        self.assertEqual(self.sbank.get(eid).status, "dormant")
         # A prediction event wakes it up.
-        entry, tr = self.sbank.record_prediction("se_1", hit=True)
+        entry, tr = self.sbank.record_prediction(eid, hit=True)
         self.assertEqual(entry.status, "candidate")
         self.assertIn("awakened:dormant->candidate", tr)
 
     def test_retire_moves_to_cold_archive(self):
-        self.sbank.add(self.make_entry(status="suspect"))
-        card = self.sbank.retire("se_1", reason="persistent misses")
-        self.assertIsNone(self.sbank.get("se_1"))
+        eid = self.sbank.add(self.make_entry(status="suspect"))
+        card = self.sbank.retire(eid, reason="persistent misses")
+        self.assertIsNone(self.sbank.get(eid))
         self.assertEqual(card.strategy_id, "S01")
+        self.assertEqual(card.entry_id, eid,
+                         "the archived card keeps the entry's number")
         self.assertEqual(len(self.sbank.cold_archive()), 1)
 
     def test_archive_veto_and_force_revival(self):
-        self.sbank.add(self.make_entry(status="suspect"))
-        card = self.sbank.retire("se_1", reason="bad generalization")
+        eid = self.sbank.add(self.make_entry(status="suspect"))
+        card = self.sbank.retire(eid, reason="bad generalization")
         veto = self.sbank.archive_vetoes("S01", card.predicates)
         self.assertIsNotNone(veto)
         # Revival without force is refused.
@@ -329,9 +341,9 @@ class TestStrategicBank(HarnessTestCase):
         self.assertIsNone(self.sbank.archive_vetoes("S01", card.predicates))
 
     def test_consulted_marks(self):
-        self.sbank.add(self.make_entry())
-        self.sbank.mark_consulted(["se_1"], at=1234.0)
-        self.assertEqual(self.sbank.get("se_1").last_consulted_at, 1234.0)
+        eid = self.sbank.add(self.make_entry())
+        self.sbank.mark_consulted([eid], at=1234.0)
+        self.assertEqual(self.sbank.get(eid).last_consulted_at, 1234.0)
 
 
 if __name__ == "__main__":

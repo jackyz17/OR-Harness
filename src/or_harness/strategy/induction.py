@@ -179,35 +179,39 @@ class InductionEngine:
                         verify: Optional[Dict[str, Any]] = None,
                         notes: Optional[List[str]] = None
                         ) -> Dict[str, Any]:
-        """Create or refresh ONE knowledge CLAIM as a standalone entry.
+        """Submit ONE knowledge CLAIM as a NEW standalone entry.
 
         The unit of knowledge is the ENTRY, and one entry is one claim: a
         structured assertion (condition -> how -> consequence -> boundary)
-        grounded in explicitly referenced evidence, with its OWN
-        verification. There is no separate relation structure and no host
-        lookup — a claim submitted here either creates a new entry or
-        revises an existing one under the same identity (its
-        ``strategy_id``), and two independent claims never share an entry.
+        grounded in explicitly referenced evidence. Knowledge is ADDITIVE —
+        this path only ever CREATES a new numbered entry. It never rewrites
+        or merges an existing entry's core content: when new evidence
+        revises or contradicts an existing claim, the revision is a SEPARATE
+        entry, and the earlier one keeps its own text, conditions, evidence
+        and verification (its use counts, feedback and lifecycle continue to
+        update independently).
 
         ``raw`` carries ``claim`` text plus ``evidence`` (execution ids and
         the role each plays). The framework DERIVES everything the evidence
         implies (tasks, family, structural cell, strategy ids) — the caller
-        submits only ids and roles. Verification reuses
-        :func:`verify_relation`; publication is a VERIFICATION gate: a claim
-        publishes when its declared checks hold over the cited evidence, and
-        the distinct-task count is reported as a fact for the reader rather
-        than enforced as a threshold. A single-task claim is saved, verified
-        and published with its scope stated (a ``conditional_fact`` is
-        stamped ``single_observation``; other kinds carry ``not_covered``).
+        submits only ids and roles.
 
-        The declared checks may be supplied in EITHER place: the standalone
-        ``verify`` payload (``{"claim", "check", "executions"}``) OR a
-        ``check`` block INSIDE ``raw`` (``{"assertions": [...]}``), which is
-        what the documentation's ``--relation`` example shows. The two are
-        unified here so an embedded ``check`` is never silently ignored. If
-        BOTH are present, ``verify`` WINS and the outcome records
-        ``check_source: "verify_arg"`` with a note that the embedded
-        ``check`` was overridden — the conflict is reported, never swallowed.
+        What the framework checks at submission is ADMINISTRATIVE ONLY:
+
+        * the payload is well-formed and storable (``validate_claim``);
+        * every cited execution really exists and is real evidence;
+        * the assigned number is valid;
+        * the write (and later the index sync) succeeds.
+
+        There is NO publication gate on the CONTENT. A submitted claim is
+        PUBLISHED as knowledge within its declared scope — the framework does
+        not certify the conclusion. Any computable check (an embedded
+        ``check`` block or a standalone ``verify`` payload) is EVALUATED and
+        RECORDED as the agent's own audit trail, reported under
+        ``verification`` — never required to publish. ``verification`` and
+        the preserved ``not_covered`` wording state exactly what was checked;
+        a claim with no check is published with ``verification.state ==
+        "unverified"``, honestly labelled.
         """
         # The stored claim is built on the schema's validate_claim so the
         # write path has ONE shape authority; ``claim`` text keeps the
@@ -249,22 +253,18 @@ class InductionEngine:
         if not predicates:
             predicates = evidence_predicates(
                 records, family=resolved["family"] or None)
-        # Verification: the entry's OWN verdict, covering the declared
-        # checks over the cited evidence. With NO declared check the facts
-        # are still READ (``fact_checked``) rather than left ``unverified``:
-        # that is what lets a single-observation fact be published and
-        # recalled WITHOUT the agent hand-writing an assertion, while a
-        # transfer claim still needs a declared comparison. An explicit
-        # ``verify`` payload with no assertions is treated the same way.
+        # Verification is the agent's OWN audit trail: evaluate and record
+        # whatever checks were declared, but never gate publication on them.
+        # With no declared check the facts are still READ (``fact_checked``)
+        # so a reader sees what was inspected rather than a bare claim.
         declared_assertions = ((verify or {}).get("check") or {}).get(
             "assertions")
         if verify:
-            report = verify_relation(
+            verification = verify_relation(
                 str(verify.get("claim") or claim["text"]),
                 evidence=verify.get("executions") or records,
                 roles=claim["evidence"],
                 assertions=declared_assertions)
-            verification = report
         else:
             verification = verify_relation(
                 claim["text"], evidence=records,
@@ -272,76 +272,41 @@ class InductionEngine:
         verification["scope"] = dict(verification.get("scope") or {})
         verification["scope"].setdefault("distinct_tasks", len(claim["tasks"]))
 
-        # Identity: the entry's ``strategy_id`` names the claim. A claim with
-        # an explicit free-form ``subject`` uses it; otherwise the evidence's
-        # single strategy names it. One entry === one claim.
+        # Identity: the entry's ``strategy_id`` NAMES the claim. A claim
+        # with an explicit free-form ``subject`` uses it; otherwise the
+        # evidence's single strategy names it. One entry === one claim.
         effective_subject = subject
         if not effective_subject and len(resolved["strategy_ids"]) == 1:
             effective_subject = resolved["strategy_ids"][0]
-        # An EXPLICIT ``target_entry_id`` names the entry to revise
-        # unambiguously: a substantive edit does not have to re-derive the
-        # target from subject + cell + kind. When it does not match, the
-        # submission REFUSES rather than silently revising a different entry
-        # (or creating a new one under a name the caller did not intend).
-        target_entry_id = raw.get("target_entry_id")
-        entry = None
-        if target_entry_id:
-            entry = self.sbank.get(str(target_entry_id))
-            if entry is None:
-                return {"saved": None, "skipped": (
-                    f"unknown target_entry_id {target_entry_id!r}: a revision "
-                    "must name an existing entry (or omit it to create/refresh "
-                    "by identity)")}
-        else:
-            entry = self._find_claim_entry(effective_subject or "claim",
-                                           predicates, claim.get("kind"))
         if dry_run:
             return {"saved": None,
-                    "would_" + ("update" if entry is not None else "create"):
-                        entry.entry_id if entry is not None else
-                        (effective_subject or "claim"),
+                    "would_create": (effective_subject or "claim"),
                     "claim": claim,
                     "material": material_gate,
                     "check_note": check_note,
-                    "publication": self._claim_publication_placeholder(claim,
-                                                                       verification)}
-        if entry is None:
-            entry = self._new_claim_entry(
-                effective_subject or "claim", predicates, records)
-            veto = self._claim_veto(entry)
-            if veto is not None:
-                if not force:
-                    return {"saved": None, "vetoed": veto,
-                            "material": material_gate,
-                            "check_note": check_note,
-                            "skipped": ("cold-archive veto (use --force to "
-                                        "override)")}
-                self.sbank.revive(veto["pattern_hash"], force=True)
-            entry.claim = claim
-            entry.verification = verification
-            entry.applicability = [str(n).strip() for n in (notes or [])
-                                   if str(n).strip()]
-            self.sbank.add(entry)
-            return {"saved": entry.entry_id, "created_entry": entry.entry_id,
-                    "entry": entry.to_dict(), "claim": claim,
-                    "material": material_gate,
-                    "check_note": check_note,
-                    "publication": self._claim_publication(entry)}
-        # Existing entry: revise the claim in place (dedup by content). A
-        # SUBSTANTIVE change to an already-verified claim invalidates the
-        # previous verdict: the old check no longer covers the new claim.
-        merged, stale = self._merge_claim(
-            entry.claim or {}, claim, entry.verification or {}, verification,
-            fresh_verdict=bool(verify))
-        entry.claim = merged
-        entry.verification = verification if verify else stale
-        entry.provenance = [r.execution_id for r in records][:50]
-        new_notes = [str(n).strip() for n in (notes or []) if str(n).strip()]
-        if new_notes:
-            entry.applicability = list(entry.applicability or []) + new_notes
-        self.sbank.update(entry)
-        return {"saved": entry.entry_id, "updated_entry": entry.entry_id,
-                "claim": merged,
+                    "publication": self._claim_publication_placeholder(
+                        claim, verification)}
+        entry = self._new_claim_entry(
+            effective_subject or "claim", predicates, records)
+        # The cold archive still vetoes re-creating a RETIRED generalization
+        # from the same (strategy, predicates) — an administrative
+        # anti-resurrection guard, overridable with ``force``.
+        veto = self._claim_veto(entry)
+        if veto is not None:
+            if not force:
+                return {"saved": None, "vetoed": veto,
+                        "material": material_gate,
+                        "check_note": check_note,
+                        "skipped": ("cold-archive veto (use --force to "
+                                    "override)")}
+            self.sbank.revive(veto["pattern_hash"], force=True)
+        entry.claim = claim
+        entry.verification = verification
+        entry.applicability = [str(n).strip() for n in (notes or [])
+                               if str(n).strip()]
+        self.sbank.add(entry)
+        return {"saved": entry.entry_id, "created_entry": entry.entry_id,
+                "entry": entry.to_dict(), "claim": claim,
                 "material": material_gate,
                 "check_note": check_note,
                 "publication": self._claim_publication(entry)}
@@ -399,7 +364,10 @@ class InductionEngine:
         ``ConditionalStats`` (which the world model still reads); they are not
         dressed up as an entry estimate here."""
         return StrategicEntry(
-            entry_id=StrategicEntry.new_id(),
+            # Identity is ASSIGNED by the bank on ``add``: the framework owns
+            # the number, so no id is invented here (the placeholder is
+            # overwritten).
+            entry_id="",
             strategy_id=str(subject or "claim"),
             pattern={"predicates": dict(predicates)},
             expected_quality_hat=0.0,
@@ -412,82 +380,12 @@ class InductionEngine:
             claim=None,
         )
 
-    def _find_claim_entry(self, subject: str,
-                          predicates: Dict[str, Any],
-                          kind: Optional[str]
-                          ) -> Optional[StrategicEntry]:
-        """The claim-bearing entry this submission REVISES, when one exists.
-
-        Only CLAIM-bearing entries are candidates (an entry with a
-        ``claim``). A statistical entry with the same identity is NOT a host:
-        a claim and a statistical claim are separate knowledge objects and
-        must not inherit each other's verdict — so this returns None when the
-        only match is statistical, and a new claim-only entry is created.
-
-        Matching is by ``strategy_id`` AND the claim's structural CELL AND
-        its ``kind``, so two independent claims under one subject (a
-        different cell, or a different kind) stay independent entries and
-        never inherit each other's verification."""
-        for entry in self.sbank.list(strategy_id=str(subject),
-                                     include_dormant=True):
-            claim = entry.claim
-            if claim is None:
-                continue
-            if not self._same_cell(entry.predicates, predicates):
-                continue
-            if (claim.get("kind") or None) != (kind or None):
-                continue
-            return entry
-        return None
-
     def _claim_veto(self, entry: StrategicEntry) -> Optional[Dict[str, Any]]:
         card = self.sbank.archive_vetoes(entry.strategy_id,
                                          entry.predicates)
         if card is None:
             return None
         return {"pattern_hash": card.pattern_hash, "reason": card.reason}
-
-    @staticmethod
-    def _merge_claim(current: Dict[str, Any],
-                     incoming: Dict[str, Any], current_verification: Dict[str, Any],
-                     incoming_verification: Dict[str, Any], *,
-                     fresh_verdict: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Revise an existing claim in place, marking a stale verdict.
-
-        Returns ``(merged_claim, verification)``. A SUBSTANTIVE change (claim
-        text, conditions, evidence set, method) invalidates the previous
-        verdict: the old check no longer covers the new claim. A pure
-        re-submission with identical content is a no-op.
-
-        ``fresh_verdict`` says the caller supplied a NEW verification. That
-        verdict WINS outright — it was computed over the incoming evidence, so
-        the previous one is neither kept nor marked stale."""
-        substantive_keys = ("text", "conditions", "method", "kind")
-        substantive = any(current.get(k) != incoming.get(k)
-                          for k in substantive_keys)
-        current_evidence = [(e.get("execution_id"), e.get("role"))
-                            for e in current.get("evidence") or []]
-        incoming_evidence = [(e.get("execution_id"), e.get("role"))
-                             for e in incoming.get("evidence") or []]
-        if current_evidence != incoming_evidence:
-            substantive = True
-        if fresh_verdict:
-            # The incoming verdict already reflects the incoming evidence.
-            return incoming, incoming_verification
-        previous = dict(current_verification or {})
-        if substantive and previous.get("state") == "verified":
-            stale = dict(previous)
-            stale["stale_after_revision"] = True
-            stale["stale_reason"] = (
-                "claim substantively revised (text/conditions/evidence/"
-                "method) without a fresh verification; re-submit with a "
-                "verification (a `--verify` payload or an embedded relation "
-                "`check` block) to re-publish")
-            return incoming, stale
-        if not substantive and previous.get("state") == "verified":
-            # Identical re-submission: keep the existing verdict.
-            return incoming, previous
-        return incoming, (previous or incoming_verification)
 
     @staticmethod
     def _claim_publication_placeholder(claim: Dict[str, Any],
@@ -497,55 +395,32 @@ class InductionEngine:
         scope = (verification or {}).get("scope") or {}
         tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
             or {str(t) for t in (claim.get("tasks") or []) if str(t)}
-        kind = str(claim.get("kind") or "")
-        single_fact = kind == "conditional_fact"
-        # ``fact_checked`` publishes ONLY a single observation (a
-        # conditional fact). A rule/transfer claim published from facts
-        # ALONE would dress a fact read up as a proven generalization.
-        published_state = state in ("verified",) or (
-            state == "fact_checked" and single_fact)
-        reasons: List[str] = []
-        if not published_state:
-            if state == "fact_checked":
-                reasons.append(
-                    "fact_checked covers a single observation only; a "
-                    "transfer claim needs a declared assertion "
-                    "(comparison/code_unchanged/probe) or a "
-                    "`conditional_fact` kind")
-            else:
-                reasons.append(f"verification state is {state!r}")
-        # The task count is reported, never enforced: two tasks are not a
-        # proof, and a single task can reveal a conditional method.
-        out = {"published": published_state,
+        single_fact = str(claim.get("kind") or "") == "conditional_fact"
+        # Publication is the AGENT's decision to offer this knowledge within
+        # its declared scope, not a framework verdict on the content.
+        out = {"published": True,
                "state": state, "distinct_tasks": len(tasks),
-               "reasons": reasons}
-        if len(tasks) == 1:
+               "note": ("publishing means the agent offers this knowledge "
+                        "within its declared scope; it does not mean the "
+                        "framework proved the conclusion"),
+               "reasons": []}
+        if single_fact or len(tasks) == 1:
             out["support_scope"] = "single_observation"
             out["transferability"] = "unproven"
-            out["note"] = ("the evidence covers ONE task: the claim is a "
-                           "fact about that task's structure and method, "
-                           "not a demonstrated transfer")
         return out
 
     @staticmethod
     def _claim_publication(entry: StrategicEntry) -> Dict[str, Any]:
-        """Why a claim-bearing entry is (or is not) publishable.
+        """Why a claim-bearing entry is (or is not) offered as knowledge.
 
-        Publication is a VERIFICATION gate, by claim KIND and verdict:
-
-        * ``conditional_fact`` — a verified statement about the evidence it
-          cites, INCLUDING a single observation ("under this structure, this
-          method produced a checked-correct answer"). It publishes with a
-          ``verified`` OR a ``fact_checked`` verdict, stamped
-          ``support_scope: single_observation`` when its evidence is one
-          task.
-        * any other kind with a ``verified`` verdict — published. The
-          distinct-task count travels as a FACT (``distinct_tasks``) so a
-          reader can weigh the evidence; it is not a threshold. The verdict's
-          own ``not_covered`` wording states the scope.
-        * a claim with only ``fact_checked`` that is NOT a conditional fact —
-          NOT published: the facts were read, but a transfer conclusion
-          needs a declared assertion. The reason says which.
+        Publication is the AGENT's call: a claim the agent submitted is
+        offered within the scope it declared. The framework does NOT certify
+        the conclusion, so this reports no content gate. What travels is the
+        agent's own verification state (``verified`` / ``fact_checked`` /
+        ``unverified``) and its scope, so a reader can see exactly what was
+        checked — and ``not_covered`` on the verification block states that a
+        passing check covers only the declared checks over the listed
+        samples.
         """
         state = str((entry.verification or {}).get("state") or "unverified")
         block = entry.verification or {}
@@ -554,39 +429,15 @@ class InductionEngine:
         tasks = {str(t) for t in (scope.get("tasks") or []) if str(t)} \
             or {str(t) for t in (claim.get("tasks") or []) if str(t)}
         single_fact = str(claim.get("kind") or "") == "conditional_fact"
-        # ``fact_checked`` can publish a single observation, never a transfer
-        # claim: the framework read the FACTS, which is not the same as
-        # proving a generalization.
-        published_state = state == "verified" or (
-            state == "fact_checked" and single_fact)
-        reasons: List[str] = []
-        if block.get("stale_after_revision"):
-            reasons.append("the claim was revised without a fresh verification")
-        elif state == "fact_checked" and not single_fact:
-            reasons.append(
-                "verification is fact_checked (the facts were READ): a "
-                "transfer claim published from that alone would dress a "
-                "fact read up as a proven generalization. Declare a "
-                "comparison/code_unchanged/probe assertion, or state the "
-                "claim as a `conditional_fact` single observation")
-        elif not published_state:
-            reasons.append(f"verification state is {state!r}")
-        # The task count is reported as a FACT, never a threshold: two tasks
-        # are not a proof and one task can reveal a conditional method with a
-        # derivation behind it. The verdict's own ``not_covered`` wording
-        # carries the scope; ``distinct_tasks`` lets a reader weigh it.
-        out = {"published": (published_state
-                             and not block.get("stale_after_revision")),
+        out = {"published": True,
                "state": state, "distinct_tasks": len(tasks),
-               "reasons": reasons}
+               "note": ("publishing means the agent offers this knowledge "
+                        "within its declared scope; it does not mean the "
+                        "framework proved the conclusion"),
+               "reasons": []}
         if single_fact or len(tasks) == 1:
             out["support_scope"] = "single_observation"
             out["transferability"] = "unproven"
-        if single_fact:
-            out["note"] = ("a conditional FACT about the cited evidence: it "
-                           "publishes with one observation but makes NO "
-                           "transfer claim — more evidence either widens it "
-                           "into a rule or supersedes it")
         return out
 
     # -- offline revalidation --------------------------------------------------

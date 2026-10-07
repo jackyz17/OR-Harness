@@ -72,7 +72,6 @@ DOCUMENTED_FLAGS = [
     ("archive-calibration", ["--dry-run"]),
     ("enforce-window", ["--window-episodes", "--open-grace-days",
                         "--dry-run"]),
-    ("migrate-relations", ["--dry-run"]),
     ("predict-capability", ["--operation", "--task", "--bundle", "--horizon",
                             "--horizon-tasks", "--budget", "--task-id",
                             "--episode", "--timeout"]),

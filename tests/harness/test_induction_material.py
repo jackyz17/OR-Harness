@@ -119,6 +119,49 @@ class TestReviewMaterialEntry(HarnessTestCase):
         self.assertTrue(result["budget"]["omitted_execution_ids"])
         self.assertLess(result["count"], 6)
 
+    def test_method_why_and_fallback_are_carried(self):
+        """The material keeps the method's ``why`` and ``fallback`` — the
+        operative knowledge a reviewer judges a mechanism and its premises
+        with — not only the name and steps."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        rec = self.make_record(execution_id="ex_m", task_id="T_m",
+                               strategy_id="S", profile=_profile("T_m"))
+        rec.method_actual = {
+            "name": "bound-and-enumerate",
+            "steps": ["bound Y", "enumerate X"],
+            "why": "the bound makes the range finite",
+            "fallback": "fall back to a full MILP when the bound fails"}
+        h.record(rec)
+        entry = h.induction_material()["material"][0]
+        actual = entry["method"]["actual"]
+        self.assertEqual(actual["why"], "the bound makes the range finite")
+        self.assertIn("full MILP", actual["fallback"])
+
+    def test_material_reports_the_banks_memory_state(self):
+        """Cold start is reported as a STATE, never a gate."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        empty = h.induction_material()
+        self.assertEqual(empty["memory_state"]["state"], "both_banks_empty")
+        h.bank.append(self.make_record(
+            execution_id="ex_s", task_id="T_s", strategy_id="S",
+            profile=_profile("T_s")))
+        out = h.induction_material()
+        self.assertEqual(out["memory_state"]["state"],
+                         "strategic_bank_empty")
+        self.assertFalse(out["memory_state"]["evidence_bank_empty"])
+
+    def test_material_entry_has_an_inspect_hint(self):
+        """A bounded excerpt names how to read the FULL record by id."""
+        h = ORHarness(home=self.home)
+        self.addCleanup(h.close)
+        h.bank.append(self.make_record(
+            execution_id="ex_h", task_id="T_h", strategy_id="S",
+            profile=_profile("T_h")))
+        entry = h.induction_material()["material"][0]
+        self.assertIn("ex_h", entry["inspect_hint"])
+
 
 class TestTriggerDemotion(HarnessTestCase):
     """A single execution is visible material, never a silent drop — and

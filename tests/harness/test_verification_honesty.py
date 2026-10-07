@@ -166,8 +166,12 @@ class TestVerifiedIsNotProof(HonestyCase):
         result = self.h.induce(relations=[claim], verify=verify)
         outcome = result["relations"][0]
         report = self.h.sbank.get(outcome["saved"]).verification or {}
+        # The framework reports insufficient evidence rather than a proof,
+        # and the claim is still OFFERED with that honest state recorded.
         self.assertEqual(report.get("state"), "insufficient_evidence")
-        self.assertFalse(outcome["publication"]["published"])
+        self.assertTrue(outcome["publication"]["published"])
+        self.assertEqual(outcome["publication"]["state"],
+                         "insufficient_evidence")
 
 
 # ---------------------------------------------------------------------------

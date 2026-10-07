@@ -127,21 +127,22 @@ class TestEndToEndCLI(HarnessTestCase):
         out = json.loads(proc.stdout)
         outcome = out["result"]["relations"][0]
         self.assertTrue(outcome.get("saved"), msg=proc.stdout)
-        # Saved but NOT published: no check was supplied, so recall must keep
-        # answering from the statistics.
-        self.assertFalse(outcome["publication"]["published"])
+        # A submitted claim IS published (the agent decides publication); the
+        # framework records the verification state it could compute.
+        self.assertTrue(outcome["publication"]["published"])
+        self.assertEqual(outcome["publication"]["state"], "fact_checked")
         entry_id = outcome["saved"]
 
-        # 7. recall again — still statistics: publishing needs a verified
-        #    strategy.
+        # 7. recall now shows the submitted claim as knowledge.
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
         s01 = next(r for r in out["result"]["recommendations"]
                    if r["strategy_id"] == "S01")
-        self.assertEqual(s01["evidence"], "conditional_stats")
+        self.assertEqual(s01["evidence"], "strategic_entry")
 
-        # 7b. re-submit WITH a check -> published knowledge
+        # 7b. a second submission WITH a check is ADDITIVE: it creates a NEW
+        #     entry whose state is ``verified``.
         verify = json.dumps({
             "claim": "S01 reaches the reference objective in this cell",
             "check": {"assertions": [
@@ -153,11 +154,10 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         vout = json.loads(proc.stdout)["result"]["relations"][0]
         self.assertTrue(vout["publication"]["published"])
-        self.assertEqual(
-            json.loads(proc.stdout)["result"]["relations"][0]["saved"],
-            entry_id)
+        self.assertNotEqual(vout["saved"], entry_id,
+                            "a second submission creates a new entry")
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
-                       "--top", "3")
+                       "--top", "5")
         out = json.loads(proc.stdout)
         s01 = next(r for r in out["result"]["recommendations"]
                    if r["strategy_id"] == "S01")
@@ -168,10 +168,13 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(json.loads(proc.stdout)["result"]["count"], 2)
         proc = run_orx(self.home, "inspect", "--bank", "strategic")
         entries = json.loads(proc.stdout)["result"]["entries"]
-        self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0]["status"], "candidate")
-        self.assertEqual(entries[0]["entry_id"], entry_id)
-        self.assertEqual(entries[0]["verification"]["state"], "verified")
+        # Additive knowledge: the two submissions are TWO numbered entries.
+        self.assertEqual(len(entries), 2)
+        verified = next(e for e in entries
+                        if e["verification"]["state"] == "verified")
+        self.assertEqual(verified["status"], "candidate")
+        self.assertEqual(verified["entry_id"], vout["saved"])
+        self.assertIn(entry_id, {e["entry_id"] for e in entries})
 
         # 9. the retirement CANDIDATES are a QUERY now (no collector claims
         #    a cleanup it cannot perform): an entry with no evidence of
@@ -434,11 +437,10 @@ class TestEndToEndCLI(HarnessTestCase):
         entry_recs = [r for r in recs
                       if r.get("knowledge", {}).get("claim")]
         self.assertTrue(entry_recs)
-        item = entry_recs[0]
+        item = next(r for r in entry_recs
+                    if r["knowledge"]["verification_state"] == "verified")
         self.assertEqual(item["strategy_id"],
                          "principle:repair_keeps_period_state")
-        self.assertEqual(item["knowledge"]["verification_state"],
-                         "verified")
         self.assertIn("跨期", item["knowledge"]["claim"]["text"])
 
         # A counterexample (worse 'after') refutes the group comparison.
@@ -457,13 +459,15 @@ class TestEndToEndCLI(HarnessTestCase):
                        "--verify", json.dumps(verify))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = json.loads(proc.stdout)
-        self.assertEqual(out["result"]["published"], 0)
+        # The refuted claim is a SEPARATE, newly-numbered entry (knowledge is
+        # additive): it IS published, and its verdict says ``refuted``.
+        self.assertEqual(out["result"]["saved"], 1)
+        self.assertEqual(out["result"]["published"], 1)
         self.assertIn("refuted", out["summary"])
 
     def test_relation_single_task_publishes_with_scope_stated(self):
-        """Publication is a verification gate: a single-task fact whose
-        declared comparison holds is saved, verified and published, with the
-        one-task scope reported as a fact."""
+        """A single-task claim is published; its one-task scope is reported
+        as a fact, and the framework records the agent's verification."""
         def solve(objective):
             return textwrap.dedent(f"""
                 import json

@@ -50,11 +50,13 @@ Two memory layers serve different purposes:
 | **Execution Evidence** | Recorded methods, attempt chains, outputs, task checks, failures, and measured costs | Inspect how a previous task was handled and adapt grounded experience |
 | **Strategic Knowledge** | Reusable methods, applicability conditions, explanations, boundaries, and supported effect claims | Guide what to do under specified conditions |
 
+Each strategic entry carries a NUMBER the framework assigns (`1`, `2`, …), which is its identity across recall, adoption and maintenance. Knowledge is ADDITIVE: a new submission creates a new numbered entry; a revision or a contradiction is its own entry, and an existing entry is never rewritten. Publication is the agent's decision, not a framework content verdict — the framework checks only administrative matters (well-formed, cited executions exist, valid number, successful write), and any declared checks are recorded as the agent's own audit trail.
+
 An execution record preserves observations and their sources. Its solver result can be valid for the implemented model while the answer remains wrong for the task. Record planned and actually performed methods separately; a plan supplies intent, while execution receipts and inspected artifacts support what happened.
 
 A conditional statistic summarizes retained observations. Strategic knowledge adds an actionable commitment: a method, why it works, where it applies, and which effects the evidence supports. Expected quality or cost may accompany a strategy, but a method does not need a prediction interval to be useful.
 
-Semantic induction is agent-led. The framework organizes execution material and computes declared checks; the agent compares relationships, explains operative steps, checks premises and boundaries, and decides whether to add, revise, merge, narrow, or produce nothing. A single execution can reveal a conditional method. Broader empirical advantage claims require comparable independent evidence. See [induction.md](induction.md) for support scopes and current publication rules.
+Semantic induction is agent-led. The framework organizes execution material and computes declared checks; the agent compares relationships, explains operative steps, checks premises and boundaries, and decides whether to add or produce nothing. Knowledge is additive: a refinement is a new entry, not an in-place edit or merge. A single execution can reveal a conditional method; broader empirical advantage claims require comparable independent evidence. See [induction.md](induction.md) for support scopes and submission rules.
 
 ### Retrieval and cold start
 
@@ -64,7 +66,9 @@ Prefer admitted applicable knowledge as a starting point. When it is absent, ins
 
 A retrieved item keeps its evidence status. Text similarity exposes material to inspect; semantic premises determine whether its method can be adapted. Structural statistics retain their own scope: finding a related execution from another cell does not authorize adding its measured numbers to the target cell's estimate.
 
-When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. Keep uncertainty explicit and obtain evidence through execution.
+When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. An empty bank is a reported state, never a gate: with no prior knowledge, solve the task and its own evidence becomes the first material, and you are never required to publish a first entry. Keep uncertainty explicit and obtain evidence through execution.
+
+Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. The framework ties a declared adoption to the run's result and never counts a mere recall — or a shared method name — as reuse succeeded.
 
 Task texts and embedding indexes support discovery within these two layers. They do not form another bank of outcome facts or strategic beliefs.
 

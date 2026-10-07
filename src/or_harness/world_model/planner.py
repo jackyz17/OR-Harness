@@ -63,6 +63,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import chargeable_dimensions
 from or_harness.world_model.prediction import ActionSpec, OutcomePrediction
 from or_harness.world_model.state import BeliefSnapshot
 
@@ -765,6 +766,11 @@ class StrategyOutcomeScore:
     cost_normalized: Optional[float] = None
     risk_effective: Optional[float] = None
     utility: Optional[float] = None
+    #: EVERY predicted risk event (name + probability), including any whose
+    #: loss is already inside the benefit under this convention. This is the
+    #: DIAGNOSTIC view: ``risk_effective`` is what the utility charged, this
+    #: is what was predicted. The two differ when a loss is not double-counted.
+    risk_reported: List[Dict[str, Any]] = field(default_factory=list)
     incomparable: Dict[str, str] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
 
@@ -774,17 +780,18 @@ class StrategyOutcomeScore:
             "benefit_value": self.benefit_value,
             "cost_normalized": self.cost_normalized,
             "risk_effective": self.risk_effective,
+            "risk_reported": [dict(e) for e in self.risk_reported],
             "utility": self.utility,
             "incomparable": dict(self.incomparable),
             "notes": list(self.notes),
         }
 
 
-#: The DEFAULT benefit kind. Kept as a named constant because it appears in
-#: documentation and in the default convention; the comparison no longer
-#: gates on the KIND alone (see ``resolve_benefit_convention``), so this is
-#: the default's kind, not the only acceptable one.
-COMPARABLE_BENEFIT_KINDS = ("solution_quality",)
+#: The benefit KINDS this build can compare. ``effective_completion`` (the
+#: primary, task-completion convention) and ``solution_quality`` (the
+#: solver's own gap) are DIFFERENT currencies and are never mixed within
+#: one decision; each decision compares under ONE of them.
+COMPARABLE_BENEFIT_KINDS = ("solution_quality", "effective_completion")
 
 #: The benefit METRICS on that same default yardstick. The kind alone is not
 #: enough: two ``solution_quality`` predictions that measure different things
@@ -827,9 +834,35 @@ KNOWN_BENEFIT_CONVENTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
     },
 }
 
+#: The PRIMARY benefit of a strategy decision: whether the ORIGINAL TASK
+#: was effectively completed. r12 makes this the DEFAULT yardstick. The
+#: solver's own gap measures how well the MODEL was solved, which is NOT
+#: the same as the agent completing the task it was given — defaulting to
+#: it let an optimal solve of a mis-modelled problem read as full success.
+#: ``solution_quality`` stays a fully supported, explicitly declarable
+#: convention; it is simply no longer the default.
+PRIMARY_BENEFIT_CONVENTION = (COMPLETION_BENEFIT_KIND,
+                              COMPLETION_BENEFIT_METRIC)
+
 #: The default convention when a decision declares none and the candidates
-#: do not agree on one.
-DEFAULT_BENEFIT_CONVENTION = ("solution_quality", COMPARABLE_BENEFIT_METRIC)
+#: do not agree on one. It is the PRIMARY (task completion) convention: the
+#: main benefit of choosing a method is that the ORIGINAL TASK gets
+#: completed, so absent any declaration the comparison optimises that.
+DEFAULT_BENEFIT_CONVENTION = PRIMARY_BENEFIT_CONVENTION
+
+
+#: Risk events whose loss is ALREADY represented by the benefit when the
+#: decision compares under task completion. ``task_check_failed`` is the
+#: complement of ``effective_completion``: a candidate predicted to complete
+#: the task with probability p has already had (1-p) of a task-check failure
+#: priced into its benefit. Charging the SAME loss again through the risk
+#: term would double-count one loss. The probability is still REPORTED (for
+#: diagnosis and calibration) — it is only removed from the UTILITY term.
+#: This list applies ONLY when the convention is completion; under
+#: ``solution_quality`` a task-check failure is an independent loss.
+BENEFIT_IMPLIED_RISK_EVENTS = {
+    COMPLETION_BENEFIT_KIND: ("task_check_failed",),
+}
 
 
 def comparable_benefit_metric(metric: Any) -> Optional[str]:
@@ -868,6 +901,18 @@ def normalize_benefit_convention(kind: Any, metric: Any
             return (COMPLETION_BENEFIT_KIND, COMPLETION_BENEFIT_METRIC)
         return None
     return None
+
+
+def benefit_implied_risk_events(kind: Any) -> Tuple[str, ...]:
+    """Risk event names already priced into the benefit under ``kind``.
+
+    Returns the events whose loss the benefit's own distribution already
+    carries, so the utility term must not charge them a second time. Empty
+    when no such overlap exists (e.g. under ``solution_quality``, where a
+    task-check failure is an INDEPENDENT loss beside the solver quality).
+    """
+    k = str(kind or "").strip().lower().replace(" ", "_").replace("-", "_")
+    return BENEFIT_IMPLIED_RISK_EVENTS.get(k, ())
 
 
 def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
@@ -954,9 +999,11 @@ def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
         "unit": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["unit"],
         "source": "default",
         "comparable": True,
-        "reason": (f"{detail}; the build's default yardstick ({k}/{m}) was "
-                   "used. Declare the convention for this decision to "
-                   "compare a different currency (e.g. completion)"),
+        "reason": (f"{detail}; the build's PRIMARY yardstick ({k}/{m} — "
+                   "whether the ORIGINAL TASK was effectively completed) "
+                   "was used as the default. Declare a convention (e.g. "
+                   "solution_quality with normalized_objective_gap) to "
+                   "compare a different currency"),
         "observed_from": KNOWN_BENEFIT_CONVENTIONS[(k, m)]["observed_from"],
     }
 
@@ -988,17 +1035,20 @@ def score_strategy_outcome_predictions(
     - the knowledge term is OFF (delta=0) for this protocol.
     """
     valid = [p for p in predictions if p.status == "valid"]
-    # Common cost basis: every dimension any valid prediction predicted.
+    # Common cost basis: every dimension any valid prediction predicted,
+    # with COMPONENT dimensions dropped where their container is also
+    # predicted (the part and the whole are never billed together).
     basis: List[str] = sorted({
         dim for p in valid
         if p.cost is not None and p.cost.expected is not None
-        for dim in p.cost.expected.measured_dims()})
+        for dim in chargeable_dimensions(p.cost.expected.measured_dims())})
     norms: Dict[str, float] = {}
     for dim in basis:
         values = [float(getattr(p.cost.expected, dim))
                   for p in valid
                   if p.cost is not None and p.cost.expected is not None
-                  and dim in p.cost.expected.measured_dims()]
+                  and dim in chargeable_dimensions(
+                      p.cost.expected.measured_dims())]
         peak = max(values) if values else 0.0
         norms[dim] = float(peak) if peak > 0 else 1.0
     weights = limits.cost_weights or {}
@@ -1059,7 +1109,8 @@ def score_strategy_outcome_predictions(
         missing_dims: List[str] = []
         if prediction.cost is not None \
                 and prediction.cost.expected is not None:
-            measured = prediction.cost.expected.measured_dims()
+            measured = chargeable_dimensions(
+                prediction.cost.expected.measured_dims())
             for dim in basis:
                 if dim in measured:
                     cost_value += (
@@ -1081,26 +1132,50 @@ def score_strategy_outcome_predictions(
                 "never free)")
         score.cost_normalized = round(cost_value, 6)
         # Risk: the MAXIMUM event probability; a probability-less event is
-        # a full-weight deficit.
+        # a full-weight deficit. Events whose loss the BENEFIT already
+        # carries under this convention (e.g. task_check_failed beside a
+        # completion probability) are EXCLUDED from the risk term so one
+        # loss is not charged twice; their probabilities are still reported
+        # (``risk_reported``) for diagnosis and calibration.
+        implied = benefit_implied_risk_events(convention["kind"])
         risk = prediction.risk
         risk_effective = 0.0
+        risk_reported: List[Dict[str, Any]] = []
         if risk is not None and risk.events:
-            probabilities = [e.probability for e in risk.events
+            for e in risk.events:
+                risk_reported.append({"event": e.event,
+                                      "probability": e.probability})
+            charged = [e for e in risk.events
+                       if str(e.event) not in implied]
+            excluded = [e for e in risk.events
+                        if str(e.event) in implied]
+            probabilities = [e.probability for e in charged
                              if e.probability is not None]
             if probabilities:
                 risk_effective = max(float(p) for p in probabilities)
-            else:
+            elif charged:
                 risk_effective = 1.0
                 score.incomparable["risk"] = (
                     "risk events were predicted with no probability basis; "
                     "charged the full gamma weight (unknown risk is a "
                     "deficit, never free)")
+            # Otherwise every event's loss is already inside the benefit: the
+            # charged set is empty and the risk term adds nothing.
+            if excluded:
+                score.notes.append(
+                    "risk event(s) "
+                    + ", ".join(str(e.event) for e in excluded)
+                    + " are already represented by the benefit under "
+                    + f"{convention['kind']}/{convention['metric']}: "
+                    "their probabilities are reported but NOT charged "
+                    "again in the utility (one loss, one charge)")
         else:
             risk_effective = 1.0
             score.incomparable["risk"] = (
                 "no risk was predicted; charged the full gamma weight "
                 "(unknown risk is a deficit, never free)")
         score.risk_effective = round(risk_effective, 6)
+        score.risk_reported = risk_reported
         if not benefit_comparable:
             # NO full-ranking utility. A candidate whose upside is in a
             # currency this comparison cannot read must not be ranked as if

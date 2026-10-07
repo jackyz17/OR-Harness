@@ -9,7 +9,7 @@ These tests prove the REAL LINK, not the mere existence of fields:
   consumed by the next prediction;
 - the H+ follow-up state reaches the next context, with ``pending``
   distinguished from a verified effect;
-- the observation rules (wm-obs/2) keep the solver's quality figure and
+- the observation rules (wm-obs/3) keep the solver's quality figure and
   carry the task check as a SEPARATE fact;
 - a late check / repeated publication never double-counts.
 
@@ -454,7 +454,7 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
 class TestObservationRules(CalibrationLoopCase):
 
     def test_quality_survives_a_failed_task_check(self):
-        """wm-obs/2: the solver's quality figure is never rewritten by a
+        """wm-obs/3: the solver's quality figure is never rewritten by a
         task check; the check is a separate fact."""
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
@@ -471,7 +471,7 @@ class TestObservationRules(CalibrationLoopCase):
         self.assertEqual(evaluation["benefit"]["task_check"]["state"],
                          "failed")
         self.assertEqual(evaluation["observation_rule_version"],
-                         "wm-obs/2")
+                         "wm-obs/3")
 
     def test_interval_kind_is_carried_and_versioned(self):
         """An interval's kind/coverage travel with it, and the group key

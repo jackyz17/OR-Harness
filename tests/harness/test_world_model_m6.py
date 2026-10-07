@@ -836,9 +836,12 @@ class TestPublicationGateUntouched(Base):
         h.predict_outcome(TASK, spec, "ep1")
         self.assertEqual([e.entry_id for e in h.sbank.list()], before)
 
-    def test_unverified_entry_still_not_publishable(self):
-        """A33: a prediction's verdict never flips an entry's standing."""
-        from or_harness.strategy.selector import is_publishable
+    def test_prediction_does_not_flip_an_entry_verdict(self):
+        """A33: a prediction's verdict never flips an entry's standing.
+
+        Publication is the agent's decision on submission; a later
+        prediction does not change it, and the entry's recorded verification
+        state stays exactly what the agent's own check produced."""
         h = self.make_harness()
         r1 = self.seed(h, "t1")
         r2 = self.seed(h, "t2")
@@ -846,11 +849,13 @@ class TestPublicationGateUntouched(Base):
             "subject": "S01", "claim": "S01 works here",
             "evidence": [{"execution_id": r1.execution_id, "role": "e"},
                          {"execution_id": r2.execution_id, "role": "e"}]}])
-        self.assertTrue(h.sbank.list())
-        for entry in h.sbank.list():
-            block = entry.verification or {}
-            if block and block.get("state") != "verified":
-                self.assertFalse(is_publishable(entry))
+        entries = h.sbank.list()
+        self.assertTrue(entries)
+        before = [(e.entry_id, e.verification_state) for e in entries]
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(TASK, spec, "ep1")
+        after = [(e.entry_id, e.verification_state) for e in h.sbank.list()]
+        self.assertEqual(before, after)
 
     def test_legacy_entry_without_verification_remains_publishable(self):
         """A32: the pre-existing exception is preserved, not silently

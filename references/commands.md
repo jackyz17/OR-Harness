@@ -35,7 +35,7 @@ Avoid duplicate work:
 | Optional maintenance forecasts | `predict-capability`, `compare-capability`, `accept-capability`, `reject-capability`, `bind-capability`, `evaluate-capability` | Forecast, compare, decide, bind facts, then evaluate later effects |
 | Inspect and diagnose | `doctor`, `contract`, `inspect`, `calibration` | Read/build views; `calibration --rebuild` writes |
 | Repair/report | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` | Writes links, costs, actions, or correction history |
-| Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window`, `migrate-relations` | Explicit maintenance; `--dry-run` writes nothing |
+| Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window` | Explicit maintenance; `--dry-run` writes nothing |
 
 ## 2. IDs and shared rules
 
@@ -210,7 +210,7 @@ Unknown `finish_reason` remains unknown. Pass the chosen prediction ID to `execu
 
 ## 5. Execute and check
 
-### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT]`
+### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT] [--used-entry-ids 3,5]`
 
 **Purpose / effects:** Run the chosen code, log an action, capture task text/version and observed configuration, and stage every resulting attempt. Staging is not recording; use `record --from-staged` afterward. No automatic second solve is started.
 
@@ -246,6 +246,8 @@ This illustrates the reporting shape, not a solve or a reference answer. Replace
 `execution_config` distinguishes `executor` observations, `script_reported` read-back values, and `executor_configured` instructions. Instructions are not evidence that a solver honored them. Executor observations prevail over contradictory receipts, with conflicts retained. Whole-script `script_timeout_s` differs from solver time limit. Method receipts populate `method_actual`, trajectory, and `method_receipt`; candidate intent remains `method_planned`.
 
 Optional `--adapted-from` and `--adaptation` store `reuse_trace`. Citation records the cases considered, not benefit; unknown cited IDs are retained without validating existence.
+
+`--used-entry-ids` declares the knowledge ENTRY NUMBERS this attempt ADOPTED (e.g. `3,5`; `''` records "adopted none"). This is a DECLARATION, distinct from recall (`last_consulted_at`) and from `--adapted-from` (cases you read): only declared entries have a forward check computed, so a mere recall never counts as a successful use. The adoption is stored under `execution_features.used_entries`; an unknown number is kept as a citation, and the flag never rewrites a value the record already carries.
 
 **Cost:** The executor observes latency and solver runtime with provenance. Supply whole-attempt tokens/tool calls from a host report; hand-typed defaults are estimates. Tool calls have a provable sandbox lower bound. Retries are measured zero only when no earlier attempt exists for this task/episode/strategy; otherwise remain unknown until supplied. A static-policy rejection has no measured solving cost. See recording/cost rules below.
 
@@ -291,6 +293,7 @@ orx record (--execution JSON|PATH | --from-staged ID)
   [--override llm_tokens=1840,tool_calls=9] [--override-mode replace|increment]
   [--override-source agent_estimate|agent_observed|provider_usage] [--force]
   [--prediction JSON] [--method JSON] [--method-actual JSON]
+  [--used-entry-ids 3,5]
 orx record --discard-staged ID
 orx record --session --task T --reason TEXT [--episode E] [--cancelled]
   [--attempted-execution EX_ID] [--override ...]
@@ -300,7 +303,7 @@ orx record --session --task T --reason TEXT [--episode E] [--cancelled]
 
 **Execution record:** Applies cost backfill (replace by default), freezes quality checks against matching entries onto `execution_features.quality_feedback`, and compares measured cost with the frozen historical prediction under `cost_feedback`. Checks cover the actual strategy and attempt scope. Recording neither interprets the method nor promotes/demotes knowledge; later induction replays feedback.
 
-`--method` declares the plan; `--method-actual` declares observed performance. Existing record values, including script receipts, are not overwritten. Explicit `execution_features.contrast` marks contrast evidence; there is no per-record retention label.
+`--method` declares the plan; `--method-actual` declares observed performance. Existing record values, including script receipts, are not overwritten. `--used-entry-ids` declares the knowledge ENTRY NUMBERS this attempt ADOPTED (e.g. `3,5`; `''` records "adopted none"), tying them to this attempt's result; a value the record already carries is never overwritten. Explicit `execution_features.contrast` marks contrast evidence; there is no per-record retention label.
 
 **Read / next:** `result.{execution_id,recorded,prediction_checks[],cost_completeness?,cost_feedback?}`, optional `unrecorded_staged_executions[]`, and `index_sync`. Missing cost is reported with dimensions, lower bounds, and an amend hint; it does not block recording. Task text resolves from a supplied digest, otherwise the most recent real task snapshot. If unavailable it stays missing. Index sync is best effort: `synced|deferred|skipped`; a failure never rolls back a durable fact. Record remaining staged attempts, then retry deliberately or close the episode.
 
@@ -393,11 +396,11 @@ Solver quality remains the solver's measurement. Task failure is a separate `ben
 
 **Reading one task at a time (`--task`) + `related_history`:** narrow the batch to ONE task for a fast per-task review; the response's `related_history` then runs ONE retrieval so the narrowing does not hide comparable work on OTHER tasks. Its `query_basis` is the batch's OWN recorded method (performed preferred, else plan with a `basis` marker) plus family — NO model call, and the outcome / task number / solver name are deliberately excluded so the search is not biased toward successes. `executions[]` and `knowledge[]` are UNFILTERED (a failed or cross-cell record is exactly the material a boundary check needs; unpublished entries are included). `--related-top-k K` sets the budget (default 5, 0 disables the channel entirely). Three facts are kept apart and must not be confused: `no_hits: true` (the retrieval ran and matched nothing — NOT proof no counterexample exists), `failure` (the retrieval could NOT run — a different fact, with a `rebuild-index` hint), and `degraded_layers`. A `similarity` value is a DISCOVERY signal, never support strength.
 
-**Next:** Read further batches with `--cursor`; default size bound is 24000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`), while `--limit` caps recent attempts. Inspect full records when compact material omits a premise. Form a conditional method/claim yourself, then submit it; evidence count limits claim strength, not whether you may inspect or reason about a method. See [induction.md](induction.md).
+**Next:** Read further batches with `--cursor`; default size bound is 32000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`), while `--limit` caps recent attempts. Inspect full records when compact material omits a premise. Form a conditional method/claim yourself, then submit it; evidence count limits claim strength, not whether you may inspect or reason about a method. See [induction.md](induction.md).
 
 ### `orx induce [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON]`
 
-**Purpose / effects:** Submit agent-formed knowledge or revisions, verify declared computable assertions, replay existing feedback, and log maintenance/index changes. It does not generate techniques from statistical means. Direct submission and `accept-capability`'s delegation use this induction path; retirement is a separate knowledge mutation.
+**Purpose / effects:** Submit agent-formed knowledge, record the declared checks as an audit trail, replay existing feedback, and log maintenance/index changes. Knowledge is ADDITIVE: each submission creates a NEW numbered entry (the framework assigns the number); no entry is ever rewritten or merged. It does not generate techniques from statistical means. Submitting NO relations still runs the utility lifecycle and records the review. Direct submission and `accept-capability`'s delegation use this induction path; retirement is a separate knowledge mutation.
 
 **Input:** `--relation` is repeatable; inline JSON describes one claim. There is no `--all`, `--family`, or `--cell` target sweep:
 
@@ -414,22 +417,17 @@ Solver quality remains the solver's measurement. Task failure is a separate `ben
                           "status":"optimal"}]}}
 ```
 
-Replace illustrative IDs with recorded facts and choose assertions that actually cover your claim. An optimal status assertion checks that status only; it does not certify the method. `claim` and evidence are required; each citation needs execution ID and a free-form role. The framework derives tasks/family/cell/strategy IDs from facts; there is no bundle-ID citation or same-name/same-cell bar. Optional `subject` identifies claim-only knowledge; `target_entry_id` names a revision target and unknown targets are refused. Entry identity uses strategy/subject, structural cell, and kind; separate entries do not inherit verdicts.
+Replace illustrative IDs with recorded facts and choose assertions that actually cover your claim. An optimal status assertion checks that status only; it does not certify the method. `claim` and evidence are required; each citation needs execution ID and a free-form role. The framework derives tasks/family/cell/strategy IDs from facts; there is no bundle-ID citation or same-name/same-cell bar. Optional `subject` names the claim; there is no `target_entry_id` revision path — a re-submission is a SEPARATE entry. A `check` block (embedded or `--verify`) is RECORDED as your audit trail, never a publication gate.
 
-Supported predicate keys are `family`, `resource_coupling`, `temporal_coupling`, `route_complexity`. Omitted conditions inherit evidence-cell conditions. Put semantic premises in the claim/`conditions.note`, inspect them before reuse, and do not invent predicate keys that the applicability evaluator cannot resolve. `--note` adds reader-facing applicability notes, not scores. Missing method evidence produces a warning rather than a fabricated technique.
+Supported predicate keys are `family`, `resource_coupling`, `temporal_coupling`, `route_complexity`. Omitted conditions inherit evidence-cell conditions. Put semantic premises in the claim/`conditions.note`, inspect them before reuse, and do not invent predicate keys that the applicability evaluator cannot resolve. `--note` adds reader-facing applicability notes, not scores. Missing method evidence produces a warning rather than a fabricated technique. An empty bank is NOT a gate: with no prior knowledge you may still submit the first entry, and you are never required to.
 
-**Verification:** Embedded `check` or standalone `--verify` declares `probe|status|comparison|code_unchanged` assertions. A comparison names metric, A/B roles, direction, gap, `paired|group`, and `all|mean` aggregation. Paired checks use same-task counterparts; group checks use measured means. `all` fails on a comparable counterexample; `mean` supports a mean claim only. Unmeasured metrics/missing counterparts yield insufficient evidence. If both check sources are supplied, `--verify` wins with visible `check_note`; use one source deliberately.
+**Verification (YOUR audit trail):** Embedded `check` or standalone `--verify` declares `probe|status|comparison|code_unchanged` assertions. A comparison names metric, A/B roles, direction, gap, `paired|group`, and `all|mean` aggregation. Paired checks use same-task counterparts; group checks use measured means. `all` fails on a comparable counterexample; `mean` supports a mean claim only. Unmeasured metrics/missing counterparts yield insufficient evidence. If both check sources are supplied, `--verify` wins with visible `check_note`; use one source deliberately.
 
-**Read:** `result.relations[]`, `saved`, `published`, verification scope, `publication.reasons`, revisions, knowledge delta and index sync. Verdicts: `verified` means declared computable assertions held; `fact_checked` means facts were inspected without proving the method argument; `insufficient_evidence` is not refutation; `refuted` means an assertion failed.
+**Read:** `result.relations[]`, `saved`, `published`, verification scope, revisions, knowledge delta and index sync. `published` is True for a submitted claim (YOU decide publication); `publication.state` reports your verification. Verdicts: `verified` means declared computable assertions held; `fact_checked` means facts were inspected without proving the method argument; `insufficient_evidence` is not refutation; `refuted` means an assertion failed. None of these block publication — they tell a reader what was checked.
 
-| Current publication route | Requirement |
-|---|---|
-| `conditional_fact` | `fact_checked` or `verified`, not stale; one task may suffice |
-| Other kinds | `verified`, not stale; `distinct_tasks` is reported as a fact, not enforced |
+Kind is a descriptive label; publication is the agent's decision and does not prove mathematical correctness, causality, transfer, or cost advantage. A one-task conditional method needs an inspected argument/premises; empirical advantage needs appropriate independent comparison. Do not fabricate tasks or overstate claims.
 
-Kind therefore affects runtime publication; it is not merely a descriptive label. Publication does not prove mathematical correctness, causality, transfer, or cost advantage. A one-task conditional method needs an inspected argument/premises; empirical advantage needs appropriate independent comparison. Do not fabricate tasks or overstate claims to meet a gate.
-
-**Revision / recovery:** Substantive revision without a fresh verdict becomes `stale_after_revision`; identical submission preserves verdict. Use an explicit target for revisions and consolidate genuine duplicates. `--force` is the explicit cold-archive-veto override; it does not prove the claim. Dry-run writes neither memory nor index. No relation creates no new claim; existing-entry lifecycle replay is reported separately (verified entry promotion at ≥5 checks / ≥70% hits; demotion at 3 consecutive misses; dormancy wakeup). Deferred index sync is recoverable through `rebuild-index`. Inspect the result before reusing it.
+**Revision / recovery:** Knowledge is additive — a re-submission is a NEW numbered entry, and there is no in-place revision or merge. `--force` is the explicit cold-archive-veto override; it does not prove the claim. Dry-run writes neither memory nor index. `induce` with no relation creates no new claim but STILL runs the utility lifecycle and records the review (existing-entry lifecycle replay: promotion at ≥5 checks / ≥70% hits with a verified claim; demotion at 3 consecutive misses; dormancy wakeup). Deferred index sync is recoverable through `rebuild-index`. Inspect the result before reusing it.
 
 ### `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
 
@@ -520,9 +518,9 @@ orx contract --payload prediction.json
 
 **Next:** Re-index with `rebuild-index --layer execution` when text retrieval is needed, and run induction maintenance to refresh derived feedback. Restoration does not automatically recreate its vector.
 
-### `orx retire --entry ID --reason "..."`
+### `orx retire --entry NUMBER --reason "..."`
 
-**Purpose / effects:** Irreversibly move the named knowledge entry to the cold archive and remove its vector. Recall cannot surface retired advice. Inspect suspect/dormant entries first; retirement is explicit, not automatic deletion on a miss. There is no undo command for this retirement.
+**Purpose / effects:** Irreversibly move the numbered knowledge entry to the cold archive and remove its vector. Recall cannot surface retired advice. Inspect suspect/dormant entries first; retirement is explicit, not automatic deletion on a miss. The number is kept on the archive card and is never reused. There is no undo command for this retirement.
 
 ### `orx rebuild-index [--layer both|execution|strategic] [--dry-run]`
 
@@ -541,9 +539,3 @@ orx contract --payload prediction.json
 **Purpose / effects:** Bound evidence by whole episodes (default 800, `OR_EVIDENCE_WINDOW_EPISODES`), ordered by registry close time. Evicts obsolete vectors and unreferenced text versions with facts; never solve sources. Idempotent/recoverable.
 
 **Bounds / next:** Protects calibration-window episodes, unchecked episodes in late-check grace, and young unclosed episodes. Unclosed protection expires after default 30 days (`OR_EVIDENCE_OPEN_GRACE_DAYS`), reported as `evicted_unclosed`. Keeps an oversized single episode intact; episode count is not a byte guarantee. Expired evidence references do not refute knowledge. Close-out runs this last after publication/archive with a cheap count guard; force a pass after import when needed. Dry-run writes nothing; zero evictions is success.
-
-### `orx migrate-relations [--dry-run]`
-
-**Purpose / effects:** One-way legacy migration: split each embedded relation into its own claim entry, copying verification scope verbatim. Relation-only hosts are removed; hosts with their own statistical claim remain. Stores `old_entry_id -> [new_entry_id,...]` audit mapping.
-
-**Next:** Nothing to chain. Idempotent; a store without legacy relations is a no-op. Dry-run writes nothing and never widens verification.

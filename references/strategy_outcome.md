@@ -113,20 +113,26 @@ orx plan-next --task t.json --episode ep1 \
 
 **One convention per decision, resolved and reported.** The comparison reads ONE benefit currency, and where it came from is recorded in `result.plan.benefit_convention` (`kind`/`metric`/`unit`/`source`/`reason`). Three sources, in order:
 
-1. **declared** — the caller names it for this decision: `--benefit-kind` / `--benefit-metric` (optionally `--benefit-unit`). It is then pushed into EVERY candidate's request as a REQUIRED convention, so the candidates are PREDICTED in that currency, not merely compared in it. Use it to compare completion: `--benefit-kind effective_completion --benefit-metric task_result_check_passed`.
-2. **agreed** — nothing declared, and every candidate carrying a benefit declared the SAME `kind`/`metric`. This is what makes two completion candidates comparable without ceremony.
-3. **default** — otherwise the build's own yardstick (`solution_quality` / `normalized_objective_gap`); the disagreement is named in `reason`.
+1. **declared** — the caller names it for this decision: `--benefit-kind` / `--benefit-metric` (optionally `--benefit-unit`). It is then pushed into EVERY candidate's request as a REQUIRED convention, so the candidates are PREDICTED in that currency, not merely compared in it. Declare this to compare **solver quality** instead of completion: `--benefit-kind solution_quality --benefit-metric normalized_objective_gap`.
+2. **agreed** — nothing declared, and every candidate carrying a benefit declared the SAME `kind`/`metric`. This is what makes two candidates comparable without ceremony.
+3. **default** — otherwise the build's PRIMARY yardstick: `effective_completion` / `task_result_check_passed` (whether the **ORIGINAL TASK** is completed). The disagreement is named in `reason`. The solver's gap is NO LONGER the default — an optimal solve of a mis-modelled problem must not read as task success by default.
 
 A declaration this build has no scale for (`valid_progress`, or an unknown pair) resolves to `source="unknown_declaration"` with `comparable=false`: **no ranking is produced at all**, because ranking by an invented scale is worse than saying there is none. A candidate whose own `kind`/`metric` differs from the decision's convention is reported in `score.incomparable["benefit"]` and produces **no utility** — so it can never silently win or lose the ranking on an upside the comparison could not read. It keeps its cost and risk picture (still reported, still charged).
+
+**Benefit and risk are not double-charged.** When the decision compares under **completion**, the event `task_check_failed` is already the complement of the benefit (`1 - p` of a task-check failure is inside the predicted completion probability). Its probability is still REPORTED (`score.risk_reported`), but it is NOT charged again in the risk term — one loss, one charge. Under `solution_quality` the same event is an INDEPENDENT loss and IS charged.
 
 **Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one (the convention in the request says so):
 
 | You are predicting | Declare | Observed from |
 |---|---|---|
-| how well the solver solved the model | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
-| whether the ANSWER satisfies the TASK | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
+| **whether the ORIGINAL TASK is completed (PRIMARY)** | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
+| how well the solver solved the MODEL | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
 
 Candidates compared on completion are compared **with each other**, never against a quality candidate (and the reverse): the convention has to match before two numbers are ranked, because `1 - mip_gap` is not a completion rate and a `passed` check is not a quality level, even though both land in [0,1]. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
+
+**Judge the primary benefit from FOUR layers.** The main benefit is not the solver's objective alone: consider (1) whether the method matches what the question asks, (2) whether the constraints are modelled correctly, (3) whether the implementation is completed, and (4) whether the RESULT is valid for the task. Keep feasibility, solution quality and optimality as SEPARATE facts — "not proven optimal" is never "no benefit", and an optimal solve that fails the task check is NOT an effective completion (the close-out records this with an explicit `represents_effective_completion: false` cross-fact, without rewriting the quality number).
+
+**Completion observation and recovery.** The completion window rule is the LAST in-scope attempt carrying a task-check verdict. When an EARLIER attempt was CONFIRMED failed and a LATER one completed the task, the primary benefit is the final verdict (completed) and the intermediate failures are carried as `recovered_intermediate_failures` — a recovered failure is NOT a failed task, and the two cases are distinguishable. Unchecked / `insufficient` attempts contribute NOTHING (UNKNOWN, never a failure).
 
 **Describe the candidate's `method`.** A candidate carries `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` and the model predicts FROM it: a bare strategy id or solver name describes nothing about what would happen. The caller supplies it (a cold start has no memory to read it from), the solver/config stay separate fields, and an empty value means the caller did not describe it — not that there is nothing to describe.
 
@@ -164,7 +170,9 @@ A socket timeout bounds ONE blocking operation, not the whole request, so the ca
 
 **A declared budget caps SOLVING, and the stop is the HOST's.** `orx budget --task T [--episode E] --declare 'dim=value,...'` declares (and replaces) a task/episode budget. It is a cap over real consumption, not a promise: the framework REFUSES to START new solving work once a budget is spent, but it does not itself kill a running process.
 
-**Dimensions and scope.** Supported dimensions are `llm_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`. The first four accumulate over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). `latency_s` is NEVER summed — attempts may overlap — so it is judged PER ATTEMPT.
+**Dimensions and scope.** Supported dimensions are `llm_tokens`, `tool_calls`, `solver_runtime_s`, `retries`, `latency_s`, `remaining_latency_s`. The first four accumulate over the EPISODE (recorded + staged executions, own-cost actions, unparented prediction calls, deduplicated by execution id). The two WALL-CLOCK dimensions are NEVER summed — attempts may overlap, and overlapping prediction ranges would double-count the same span — so they are reported per item.
+
+**The PRIMARY latency is `remaining_latency_s` (r12).** It measures the wall-clock from the DECISION's anchor to the END of the task, covering the later modelling, coding, tool calls, solving, checking, repair and retries. Every candidate of one decision shares ONE anchor (the decision point) and ONE end (the end of the task) — stated in the request's `cost_scope` block. `solver_runtime_s` is a COMPONENT of that span (the solver's own inner solve time): it is kept for diagnosis but is NOT added on top of `remaining_latency_s` (the part and the whole are never billed together — see `chargeable_dimensions`). The old attempt-level `latency_s` keeps its own meaning (one attempt's sandbox wall-clock) and is NEVER renamed into the remaining span. When no real start/end boundary is available the framework leaves `remaining_latency_s` UNKNOWN and says so — it never downgrades to the script-execution cost.
 
 **Four honest states** (`orx budget` prints `result.status`):
 

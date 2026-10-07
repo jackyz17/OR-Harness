@@ -2,7 +2,7 @@
 
 Use this reference to review completed episodes and create or revise reusable strategies.
 
-Contents: [Read evidence](#1-read-evidence) · [Form a strategy](#2-form-or-revise-a-strategy) · [Scope and verification](#3-match-verification-to-the-claim) · [Submit](#4-submit-and-check-publication) · [Reuse and revise](#5-reuse-and-revise)
+Contents: [Read evidence](#1-read-evidence) · [Form a strategy](#2-form-or-revise-a-strategy) · [Scope and verification](#3-match-verification-to-the-claim) · [Submit](#4-submit) · [Reuse, declare adoption, and manage](#5-reuse-declare-adoption-and-manage)
 
 ## 1. Read evidence
 
@@ -12,7 +12,7 @@ Read a bounded batch from the evidence bank:
 orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K]
 ```
 
-Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Review `existing_knowledge` before deciding whether to add, revise, merge, or leave it unchanged.
+Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Optionally declare that no new knowledge is needed (`orx induce` with no relations): the review still runs the utility lifecycle and is recorded. Review `existing_knowledge` before deciding whether to add or leave it unchanged.
 
 **One task at a time, without losing cross-task material.** For a fast per-task review, read THIS task's chain with `--task T`. The response then fills `related_history` with a SMALL semantically related set from other tasks, so the narrowing does not hide a comparable method, a failure, or a boundary case:
 
@@ -37,7 +37,7 @@ Work from the execution content, using these steps:
 2. **Explain the operative step.** Identify the modeling, decomposition, search, checking, or repair step that matters. Explain why it works and state the premises it requires. A before/after difference alone does not establish causality.
 3. **Check the boundary.** Vary a necessary premise in your reasoning and examine what fails. Distinguish loss of correctness, feasibility, and efficiency. A hypothetical counterexample guides reasoning; it is not an observed execution.
 4. **Separate support.** Distinguish mathematical reasoning, observed task results, and measured quality/cost/risk effects. State which source supports each part and what remains unchecked.
-5. **Compare existing knowledge.** Add a distinct mechanism, revise an existing strategy, merge duplicates, narrow an unsupported condition, or produce nothing. Entry count is not the objective.
+5. **Compare existing knowledge.** Add a distinct mechanism, or produce nothing when existing knowledge covers the finding. Knowledge is ADDITIVE: a revision or a refinement is a NEW entry, not an in-place edit or a merge. Entry count is not the objective.
 
 Write a compact strategy:
 
@@ -100,9 +100,20 @@ Report the verdict accurately:
 
 Keep agent-checked derivations and premises distinct from framework-computed checks. The current runtime has no automatic mathematical-proof verdict. A natural-language argument must be inspected on its merits; do not represent it as framework-certified correctness. Identify unchecked claim parts even when other assertions pass.
 
-## 4. Submit and check publication
+## 4. Submit
 
-Submit one strategy per entry with `orx induce --relation '<json>'`. Use actual execution IDs and role names that explain their part in the claim. The framework reads task identities from the records; do not create task IDs to satisfy a publication count.
+Submit one strategy with `orx induce --relation '<json>'`. Use actual execution IDs and role names that explain their part in the claim. The framework reads task identities from the records; do not create task IDs to satisfy a publication count.
+
+**Knowledge is ADDITIVE.** Each submission creates a NEW entry with a NUMBER the framework assigns (`1`, `2`, …). The number is the entry's identity: you do not invent it, a re-submission is a SEPARATE entry (never an in-place rewrite), and a revision or a contradiction is its own entry. A retired number is never reused. To point at an existing entry, cite its number in `--used-entry-ids` when you adopt it.
+
+**The framework checks only administrative matters at submission:**
+
+- the claim payload is well-formed and storable;
+- every cited execution id exists and is real `executed` evidence;
+- the assigned number is valid;
+- the write (and the later index sync) succeeds.
+
+**Publication is YOUR decision.** A submitted claim is offered within the scope you declared — the framework does NOT gate on the content and does NOT certify the conclusion. Any `check` block (or a standalone `--verify`) you supply is EVALUATED and RECORDED as your own audit trail on the entry's `verification` block (`verified` / `fact_checked` / `insufficient_evidence` / `refuted`); it is never required to publish. With no declared check, the framework reads the cited facts (`fact_checked`) and says so. A claim it cannot decide is stored as `insufficient_evidence`, honestly labelled.
 
 The following is a template. Replace the execution ID and example family with recorded values, and include only a method argument you have actually checked:
 
@@ -129,9 +140,9 @@ The following is a template. Replace the execution ID and example family with re
 }
 ```
 
-Keep the reusable method and its conditional argument distinct from the task-specific observation. `conditional_fact` is the existing runtime route for a one-task finding; its `single_observation` / `unproven` provenance is not a correctness verdict. Reuse requires checking the argument and premises against the new task.
+Keep the reusable method and its conditional argument distinct from the task-specific observation. A single task can reveal a conditional method; its `single_observation` / `unproven` provenance is not a correctness verdict, and more independent tasks widen the scope (the distinct-task count is reported as a FACT, never a threshold).
 
-For a measured cost advantage, add checks inside the empirical claim's `check` block, for example:
+A `check` block you include is your audit trail, for example a measured cost comparison:
 
 ```json
 {
@@ -152,26 +163,18 @@ For a measured cost advantage, add checks inside the empirical claim's `check` b
 }
 ```
 
-Cite both roles on the tasks that support the empirical claim. These comparisons check non-degraded recorded quality and lower token cost; they do not establish method correctness or independently validate task answers. Match metrics, quality requirements, tolerances, and wording to the actual evidence. More independent tasks widen the scope; the count is reported as a fact.
+These comparisons check non-degraded recorded quality and lower token cost; they do not establish method correctness or independently validate task answers. Match metrics, quality requirements, tolerances, and wording to the actual evidence.
 
-Use one check source: the embedded `check`, or the supported standalone `--verify` argument. Inspect the returned verification scope and `publication.reasons`.
+Use one check source: the embedded `check`, or the supported standalone `--verify` argument. Inspect the returned verification scope in `verification` (the `not_covered` wording states that a passing check covers only the declared checks over the listed samples).
 
-**Current runtime publication:**
-
-| Entry kind | Publication requirement |
-|---|---|
-| `conditional_fact` | `fact_checked` or `verified`, not stale; one task may suffice, stamped `single_observation` |
-| Other kinds | `verified`, not stale; `distinct_tasks` is reported as a fact, not enforced as a threshold |
-
-These are current interface rules. They do not define scientific validity, certify a mathematical argument, or guarantee generalization. Do not overstate a claim to fit a kind or treat a published fact as a validated performance rule.
+`induce` with NO relations still runs utility maintenance: the offline lifecycle (`revise`) replays the frozen forward checks on existing entries, and the review is recorded as a maintenance action. Knowledge creation and utility maintenance are decoupled.
 
 Use `conditions.predicates` for the supported profile keys: `family`, `resource_coupling`, `temporal_coupling`, and `route_complexity`. Put semantic premises in the claim or `conditions.note`; check them before use. Unsupported predicate keys produce unknown applicability, not a satisfied condition.
 
-## 5. Reuse and revise
+## 5. Reuse, declare adoption, and manage
 
-- Read published entries through ordinary recall recommendations, including their claim, verification scope, provenance, and semantic premises. Treat unknown applicability as requiring inspection.
-- Inspect held claims or use `--include-unverified` during offline review. Unverified or refuted entries may inform investigation; they do not establish a usable advantage.
-- Revise an existing entry with its identity or `target_entry_id`. A substantive edit requires fresh checks; without them, the previous verdict becomes stale. Merge duplicates by revising one entry and retiring the other.
-- Assess a new miss against the full claimed conditions. A task violating a necessary premise is outside the method's scope; a relevant failure within scope may require narrowing, refutation, or repair. Structural-cell membership alone does not settle this.
-- Forward calibration adjusts confidence from later observations; it does not replace claim-specific verification. Review lifecycle changes returned by induction.
+- Read offered entries through ordinary recall recommendations, including their claim, verification state, provenance, and semantic premises. Treat unknown applicability as requiring inspection.
+- **Declare adoption**: when a run uses an entry, pass its number in `execute --used-entry-ids` / `record --used-entry-ids` (e.g. `3,5`). This is a DECLARATION, distinct from being recalled (`--adapted-from` cites cases you READ). Passing an empty list (`''`) records "adopted no prior knowledge" as a fact. The framework ties the numbers to that attempt's result; recall, adoption and outcome are kept apart, and an adoption that does not help is not counted as a success.
+- A claim that contradicts or refines an existing one is a NEW entry: do not rewrite the earlier one. Assess a new miss against the full claimed conditions; a task violating a necessary premise is outside the method's scope, while a relevant failure within scope may warrant a new, narrower claim.
+- Forward calibration adjusts an entry's confidence from later observations; it does not replace claim-specific verification. Review lifecycle changes returned by induction.
 - Retired patterns remain in the cold archive. Use `--force` only when new evidence or a changed environment justifies reopening the claim; record the reason.

@@ -228,8 +228,12 @@ class Selector:
         for strategy_id in ids:
             for rec in self._collect(strategy_id, profile, entries, cells,
                                      memory_mode, cost_basis):
-                consulted.extend(r for r in rec.evidence_refs
-                                 if r.startswith("se_"))
+                # Only rows backed by a STRATEGIC ENTRY carry entry numbers;
+                # a conditional-stats row's refs are execution ids. The row's
+                # own ``evidence`` field says which, so no id-prefix guess is
+                # made.
+                if rec.evidence == "strategic_entry":
+                    consulted.extend(rec.evidence_refs)
                 recs.append(rec)
         if consulted:
             self.sbank.mark_consulted(sorted(set(consulted)))
@@ -349,27 +353,24 @@ class Selector:
                     ) -> Recommendation:
         """A recalled row from a Strategic Knowledge entry.
 
-        An entry that is not publishable is only reachable through the
-        explicit offline view (``include_unverified=True``): the framework
-        HOLDS that claim, it has not admitted it as knowledge. The row
-        carries an explicit warning so the inspection view stays useful
-        without letting the caller mistake an unchecked claim for a verified
-        one.
-
-        The content block is read off the ENTRY (its own notes, its own
-        recorded actions, its own strategy_type/fallback, its own support) —
-        the framework does not fill any of it in from a directory.
+        An entry whose recorded verification is not ``verified`` is still
+        OFFERED (publication is the agent's decision), but the row carries an
+        explicit warning naming that state, so a caller never mistakes an
+        unchecked claim for a checked one. The content block is read off the
+        ENTRY (its own notes, its own recorded actions, its own
+        strategy_type/fallback, its own support) — the framework does not
+        fill any of it in from a directory.
         """
         confidence = self._entry_confidence(entry, profile)
         cross_family = self._is_cross_family(entry, profile)
         cost = entry.expected_cost_hat
         warnings: List[str] = []
-        if not is_publishable(entry):
+        if entry.verification_state != "verified":
             warnings.append(
-                f"UNPUBLISHED candidate {entry.entry_id} "
-                f"(verification={entry.verification_state}): the framework "
-                "holds this claim, it has not been admitted as knowledge — "
-                "its estimates support inspection, not a decision")
+                f"entry {entry.entry_id} is offered with verification="
+                f"{entry.verification_state}: the agent submitted this claim, "
+                "and its checks (if any) are recorded on the entry — read "
+                "them before relying on the estimate")
         if entry.status == "suspect":
             warnings.append(
                 f"entry {entry.entry_id} is suspect (3 consecutive prediction "
@@ -511,34 +512,20 @@ PROMOTE_REFERENCE_N = 5.0
 
 
 def is_publishable(entry: StrategicEntry) -> bool:
-    """Whether an entry may be presented as published strategic knowledge.
+    """Whether an entry may be presented as offered knowledge.
 
-    - ``verified``: yes — the claim passed its admission check.
-    - ``fact_checked``: yes ONLY for a ``conditional_fact`` (a single
-      observation). The framework read the cited FACTS but no computable
-      assertion was declared, so a transfer claim published from it alone
-      would dress a fact read up as a proven generalization.
-    - NO verification block at all: yes — this is a legacy entry written
-      before admission verification existed. Refusing to use it would
-      silently discard accumulated knowledge; it stays usable and its missing
-      verification stays visible in ``inspect``.
-    - anything else (``unverified`` candidate, ``insufficient_evidence``,
-      ``refuted``): no — the framework holds a candidate, not knowledge.
-      Recall falls back to the raw conditional statistics, and the harness
-      can still try the strategy.
-    - ``stale_after_revision``: no — the entry's claim was SUBSTANTIVELY
-      revised (predicates or expected estimates moved) without a fresh
-      admission verdict, so the old verification no longer covers the new
-      claim. Re-verify with ``induce --verify`` to re-publish.
+    Publication is the AGENT's decision: a claim the agent submitted is
+    offered as knowledge, and the framework does NOT certify the conclusion.
+    So this gate is ADMINISTRATIVE, not a content verdict:
+
+    - ANY entry is publishable — including one the agent submitted with no
+      declared check (its ``verification`` state is honestly reported and
+      the ``not_covered`` wording states that a passing check covers only the
+      declared checks over the listed samples).
+
+    There is no content threshold here: a single-task claim, an
+    ``unverified`` claim, and a ``fact_checked`` claim are all offered. The
+    reader weighs the agent's own verification state; recall never hides
+    knowledge on a framework content judgement.
     """
-    block = entry.verification or {}
-    if not block:
-        return True
-    if block.get("stale_after_revision"):
-        return False
-    state = block.get("state")
-    if state == "verified":
-        return True
-    return (state == "fact_checked"
-            and str((entry.claim or {}).get("kind") or "")
-            == "conditional_fact")
+    return True

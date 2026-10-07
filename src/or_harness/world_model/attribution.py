@@ -294,22 +294,78 @@ def _unknown_config_reason(key: str) -> str:
 #: a comparison — see :func:`binding_attribution` for why.
 METHOD_DEVIATION_VERDICTS = ("differs",)
 
+#: The two KINDS of method change, kept apart because they attribute
+#: differently:
+#:
+#: - ``declared_fallback`` — the performed method IS the plan's own declared
+#:   ``fallback`` (or a declared alternative). The candidate's plan already
+#:   NAMED this route, so the real cost/outcome still belongs to the ORIGINAL
+#:   candidate: the agent did what its plan said it would do if the primary
+#:   route failed.
+#: - ``substantive_deviation`` — the performed method is neither the plan nor
+#:   its declared fallback. The work that ran is a DIFFERENT method, so its
+#:   success must never be credited to the original candidate as if the
+#:   planned method had worked. Cost attribution follows the real execution;
+#:   the final result is attributed to what actually ran.
+METHOD_CHANGE_KINDS = ("declared_fallback", "substantive_deviation")
 
-def method_deviation(method_observed: Any) -> Optional[Dict[str, Any]]:
+
+def classify_method_change(deviation: Mapping[str, Any],
+                           planned_method: Any = None
+                           ) -> Optional[str]:
+    """Whether a deviation is a DECLARED FALLBACK or a SUBSTANTIVE change.
+
+    A change counts as the declared fallback when the plan named a
+    ``fallback`` and the performed method's label or steps match it. Any
+    other observed change is substantive. ``None`` when the deviation is not
+    a real change (no verdict / identical), so an unknown never gets a kind.
+    """
+    if not isinstance(deviation, Mapping):
+        return None
+    if str(deviation.get("verdict") or "") not in METHOD_DEVIATION_VERDICTS:
+        return None
+    plan = planned_method if isinstance(planned_method, Mapping) else None
+    declared = (plan or {}).get("fallback")
+    if not declared or not str(declared).strip():
+        return "substantive_deviation"
+    declared_norm = _norm_prose(declared)
+    actual_name = _norm_prose(deviation.get("actual_name") or "")
+    actual_steps = [_norm_prose(s) for s in
+                    (deviation.get("actual_steps") or [])]
+    if declared_norm and declared_norm == actual_name:
+        return "declared_fallback"
+    if actual_steps and declared_norm and any(
+            declared_norm == s for s in actual_steps):
+        return "declared_fallback"
+    return "substantive_deviation"
+
+
+def _norm_prose(text: Any) -> str:
+    """Case/punctuation/whitespace-normalized prose (compare_methods rule)."""
+    import re as _re
+    cleaned = _re.sub(r"[^\w\s]", " ", str(text or "").lower())
+    return " ".join(cleaned.split())
+
+
+def method_deviation(method_observed: Any,
+                     planned_method: Any = None
+                     ) -> Optional[Dict[str, Any]]:
     """Read a ``compare_methods`` observation, or None when there is none.
 
     The comparison record is produced by the BINDING (``method_observed``
     in the prediction's ``trace.model_info``). Returns a small readable
     summary when the performed method differs from the plan; returns
     ``None`` when either side is unknown. The result is REPORTED — it
-    blocks no comparison.
+    blocks no comparison. ``change_kind`` separates a DECLARED FALLBACK
+    (attributed to the original candidate) from a SUBSTANTIVE deviation
+    (attributed to what really ran).
     """
     if not isinstance(method_observed, dict):
         return None
     verdict = str(method_observed.get("verdict") or "")
     if verdict not in METHOD_DEVIATION_VERDICTS:
         return None
-    return {
+    out = {
         "verdict": verdict,
         "planned_name": method_observed.get("planned_name"),
         "actual_name": method_observed.get("actual_name"),
@@ -317,6 +373,20 @@ def method_deviation(method_observed: Any) -> Optional[Dict[str, Any]]:
         "actual_steps": list(method_observed.get("actual_steps") or []),
         "reason": str(method_observed.get("reason") or ""),
     }
+    kind = classify_method_change(out, planned_method)
+    if kind is not None:
+        out["change_kind"] = kind
+        out["attribution_note"] = (
+            "the performed method is the plan's DECLARED fallback: the "
+            "candidate already named this route, so the real cost/outcome "
+            "still belongs to the original candidate"
+            if kind == "declared_fallback" else
+            "the performed method is NOT the plan nor its declared "
+            "fallback: this is a SUBSTANTIVE change. The real spend follows "
+            "the execution, and any success belongs to what actually ran — "
+            "it is never credited to the original candidate as if the "
+            "planned method had succeeded")
+    return out
 
 
 def method_deviation_note(deviation: Mapping[str, Any]) -> str:

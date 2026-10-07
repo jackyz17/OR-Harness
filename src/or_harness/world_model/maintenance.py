@@ -73,7 +73,7 @@ from or_harness.core.schema import (
 #: Larger than the world-model paired block (8000): induction compares
 #: METHODS across tasks, so a useful batch is several full records, and one
 #: record (profile + planned method + outcome) runs ~2 KB.
-DEFAULT_INDUCTION_MATERIAL_CHARS = 24000
+DEFAULT_INDUCTION_MATERIAL_CHARS = 32000
 
 
 def _induction_material_budget() -> int:
@@ -146,20 +146,59 @@ def _compact_cir(cir: Any) -> Dict[str, Any]:
 
 
 def _compact_method(method: Any) -> Optional[Dict[str, Any]]:
-    """A method description with its steps clipped, or None when absent."""
+    """A method description with its steps clipped, or None when absent.
+
+    ``why`` (the reason the step works) and ``fallback`` (what to do when it
+    does not) are CARRIED, not dropped: they are the operative knowledge a
+    reviewer needs to judge a mechanism and its premises, and the recall
+    layer already keeps them (dropping them here made the material layer
+    carry less than the discovery layer)."""
     if not isinstance(method, dict):
         return None
     name = method.get("name")
     steps = method.get("steps") or []
     if not name and not steps:
         return None
-    return {
+    out: Dict[str, Any] = {
         "name": name,
         "steps": [_truncate(s, _MATERIAL_METHOD_STEP_CHARS)
                   for s in steps[:_MATERIAL_MAX_STEPS]],
         "n_steps": len(steps),
         "truncated_steps": max(0, len(steps) - _MATERIAL_MAX_STEPS),
     }
+    why = method.get("why")
+    if why:
+        out["why"] = _truncate(str(why), _MATERIAL_METHOD_STEP_CHARS * 2)
+    fallback = method.get("fallback")
+    if fallback:
+        out["fallback"] = _truncate(str(fallback),
+                                    _MATERIAL_METHOD_STEP_CHARS * 2)
+    if method.get("source"):
+        out["source"] = str(method["source"])
+    return out
+
+
+def _compact_checked(checked: Any) -> Any:
+    """A bounded view of a task check's per-field verdicts, or None.
+
+    The check block carries what was actually compared (a reference value, a
+    status, declared domains, an objective recomputation, explicit probes).
+    Keeping a compact form here means the material shows WHY a verdict
+    followed, so a source warning never stands in for the real reason."""
+    if not isinstance(checked, list) or not checked:
+        return None
+    out: List[Dict[str, Any]] = []
+    for item in checked[:8]:
+        if not isinstance(item, dict):
+            out.append({"check": str(item)[:_MATERIAL_ERROR_CHARS]})
+            continue
+        row: Dict[str, Any] = {}
+        for key in ("check", "field", "status", "expected", "observed",
+                    "ok", "passed", "reason"):
+            if item.get(key) is not None:
+                row[key] = item[key]
+        out.append(row)
+    return out
 
 
 def _profile_summary(profile: Any) -> Dict[str, Any]:
@@ -249,11 +288,18 @@ def _material_entry(harness, record: Any,
         },
         # TASK verdict, a SEPARATE fact from the solver's own status: absent
         # is reported as never-checked, NOT as a pass. The reference
-        # provenance (who supplied the reference value) travels with it.
+        # provenance (who supplied the reference value) travels with it, and
+        # the verdict's OWN details (the checked fields and the conclusion)
+        # are carried so a source warning never hides the real failure
+        # reason.
         "task_check": {
             "state": (task_check_state(record) or "never_checked"),
             "basis": ((task_check or {}).get("scope") or {}).get("basis"),
             "reference_source": (task_check or {}).get("reference_source"),
+            "conclusion": _truncate(
+                str((task_check or {}).get("conclusion") or ""),
+                _MATERIAL_ERROR_CHARS) or None,
+            "checked": _compact_checked((task_check or {}).get("checked")),
         },
         # Flat mirror of the state, kept for callers that read it directly.
         "task_check_state": (task_check_state(record) or "never_checked"),
@@ -269,6 +315,12 @@ def _material_entry(harness, record: Any,
         "cost_measured": (sorted(record.cost.measured)
                           if record.cost.measured is not None else None),
         "measurement_scope": record.measurement_scope,
+        # A read entry point for the FULL record: the material is bounded on
+        # purpose, and the reviewer can always read the whole fact by id
+        # rather than being shown a truncated excerpt with no way to go wider.
+        "inspect_hint": (
+            f"bounded excerpt; read the FULL record by id "
+            f"`{record.execution_id}` (its code hash {code_hash})"),
     }
     if previous is not None:
         prev_hash = (previous.solver or {}).get("code_hash")
@@ -508,12 +560,20 @@ def build_induction_material(harness, *,
     # boundary case on ANOTHER task.
     related_history = _related_history(
         harness, reviewed, related_top_k=related_top_k)
+    memory_state = _memory_state(harness, related_history,
+                                 n_records=len(material))
     return {
         "count": len(material),
         "total_completed": total,
         "tasks": tasks,
         "n_distinct_tasks": n_tasks,
         "n_attempts": len(material),
+        # The STATE of the two banks, kept apart and reported honestly: an
+        # empty strategic bank, an empty evidence bank, no matches and a
+        # retrieval failure are DIFFERENT facts. Crucially, an empty bank is
+        # NOT a gate: the agent may still solve and then induce from THIS
+        # task's own evidence.
+        "memory_state": memory_state,
         "cross_task_hint": {
             "n_distinct_tasks_in_batch": n_tasks,
             "distinct_tasks_across_history": len(all_history_tasks),
@@ -642,6 +702,102 @@ def _query_text_for(records: Sequence[Any]) -> Dict[str, Any]:
                  "NOT used so the search is not biased toward successes")
         if text else "no method or structure recorded on this batch: the "
                      "related-history query is empty",
+    }
+
+
+def _memory_state(harness, related_history: Dict[str, Any], *,
+                  n_records: int) -> Dict[str, Any]:
+    """Report the STATE of the two banks WITHOUT turning it into a gate.
+
+    Cold-start honesty: an empty strategic bank, an empty evidence bank, no
+    matching material and a retrieval failure are DIFFERENT facts, and each
+    one means something SPECIFIC that is NOT "you cannot induce":
+
+    - an empty strategic bank means there is no PRIOR knowledge to reuse — it
+      does NOT mean there is nothing to learn from (the evidence bank may be
+      full), and it does NOT force the agent to publish a first entry;
+    - an empty evidence bank means nothing has been solved yet: solve the
+      task and its own real evidence becomes the first material;
+    - ``recall_no_match`` (both banks have content, nothing related) means the
+      retrieval ran and found nothing comparable — NOT that no counterexample
+      exists;
+    - a retrieval FAILURE is reported separately and is never read as "no
+      hits".
+
+    The framework REPORTS; the agent decides whether to induce.
+    """
+    try:
+        sbank_count = harness.sbank.count()
+    except Exception:  # noqa: BLE001 - a read failure is reported, not fatal
+        sbank_count = None
+    try:
+        bank_count = harness.bank.count()
+    except Exception:  # noqa: BLE001
+        bank_count = None
+    strategic_empty = sbank_count == 0
+    evidence_empty = (bank_count == 0) and n_records == 0
+    both_empty = bool(strategic_empty and evidence_empty)
+    retrieval_failed = related_history.get("failure") is not None
+    retrieval_disabled = not related_history.get("enabled")
+    # "no matches" only when the retrieval really RAN and came back empty.
+    no_match = bool(related_history.get("no_hits")) and not retrieval_failed \
+        and not retrieval_disabled and not both_empty
+
+    notes: List[str] = []
+    if both_empty:
+        state = "both_banks_empty"
+        notes.append(
+            "BOTH banks are empty: propose a method from the task and the "
+            "available tools, execute it, and THIS task's own real evidence "
+            "is the first induction material. No prior knowledge is needed "
+            "and none is fabricated; an empty bank is NOT a reason to refuse "
+            "to induce, and NOT a reason to publish a first entry if nothing "
+            "worth keeping was found.")
+    elif strategic_empty:
+        state = "strategic_bank_empty"
+        notes.append(
+            "the STRATEGIC bank is empty (no prior knowledge entries), but "
+            "the evidence bank has real executions: induce from their "
+            "methods, structures, failures and repairs. No prior knowledge "
+            "is a precondition for nothing here.")
+    elif evidence_empty:
+        state = "evidence_bank_empty"
+        notes.append(
+            "the EVIDENCE bank has no executed attempts yet: solve the task "
+            "first; its own evidence becomes the material.")
+    elif no_match:
+        state = "recall_no_match"
+        notes.append(
+            "both banks have content, but nothing related was retrieved: "
+            "that is NOT evidence that no counterexample exists. Widen the "
+            "read (`--cursor`) or add candidates before concluding.")
+    else:
+        state = "has_material"
+    if retrieval_failed:
+        notes.append(
+            "related-history retrieval could NOT run (see "
+            "related_history.failure): a degraded channel is NOT 'nothing "
+            "similar exists'.")
+    if retrieval_disabled:
+        notes.append(
+            "related-history discovery was DISABLED for this read "
+            "(`related_top_k=0`), so its emptiness is by configuration, not "
+            "by absence.")
+
+    return {
+        "state": state,
+        "strategic_bank_empty": strategic_empty,
+        "evidence_bank_empty": evidence_empty,
+        "both_empty": both_empty,
+        "strategic_entry_count": sbank_count,
+        "evidence_count": bank_count,
+        "recall_no_match": no_match,
+        "retrieval_failed": retrieval_failed,
+        "retrieval_disabled": retrieval_disabled,
+        "note": ("an empty bank does NOT gate induction: the framework "
+                 "reports the state and the agent decides whether to induce "
+                 "from the available evidence"),
+        "details": notes,
     }
 
 

@@ -49,6 +49,7 @@ CREATE INDEX IF NOT EXISTS idx_entries_status ON strategic_entries(status);
 
 CREATE TABLE IF NOT EXISTS cold_archive (
     pattern_hash TEXT PRIMARY KEY,
+    entry_number INTEGER,
     payload      TEXT NOT NULL
 );
 

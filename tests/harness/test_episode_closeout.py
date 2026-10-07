@@ -75,7 +75,7 @@ GOOD_PAYLOAD = {
 #: provider name standing in for a version. The trailing observation-rules
 #: version is part of the key (samples under different rules never pool).
 GROUP_PREFIX = "strategy_outcome|(unknown)|"
-OBS_RULE = "|wm-obs/2"
+OBS_RULE = "|wm-obs/3"
 
 
 class StubProvider(WorldModelProvider):

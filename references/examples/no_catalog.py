@@ -234,7 +234,11 @@ def main() -> int:
         entry.actions = ["solve the LP relaxation",
                          "round and repair deterministically"]
         h.sbank.update(entry)
-        rec = h.recall(TASK)["recommendations"][0]
+        recs = h.recall(TASK)["recommendations"]
+        # Knowledge is ADDITIVE, so both submissions are separate entries;
+        # pick the one the harness declared content on.
+        rec = next(r for r in recs
+                   if r["knowledge"]["entry_id"] == vout["saved"])
         knowledge = rec["knowledge"]
         print(f"evidence kind now: {rec['evidence']}")
         print(f"after the harness declares it: "

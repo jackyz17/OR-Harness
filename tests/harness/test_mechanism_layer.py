@@ -40,7 +40,7 @@ class TestCostPredictionLoop(HarnessTestCase):
         from or_harness.core.schema import StrategicEntry, evidence_predicates
         predicates = evidence_predicates(recs, family="routing")
         entry = StrategicEntry(
-            entry_id=StrategicEntry.new_id(),
+            entry_id="",
             strategy_id="S01",
             pattern={"predicates": predicates},
             expected_quality_hat=1.0,

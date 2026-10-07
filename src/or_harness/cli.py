@@ -513,6 +513,9 @@ def cmd_execute(args) -> int:
         adapted_raw = getattr(args, "adapted_from", None)
         adapted_from = ([e.strip() for e in adapted_raw.split(",")
                          if e.strip()] if adapted_raw else None)
+        used = getattr(args, "used_entry_ids", None)
+        used_entry_ids = ([e.strip() for e in used.split(",")
+                           if e.strip()] if used is not None else None)
         try:
             record = h.execute(task, args.strategy, args.code, args.workspace,
                                solver=args.solver,
@@ -520,7 +523,8 @@ def cmd_execute(args) -> int:
                                prediction_id=prediction_id,
                                method=method,
                                adapted_from=adapted_from,
-                               adaptation=getattr(args, "adaptation", None))
+                               adaptation=getattr(args, "adaptation", None),
+                               used_entry_ids=used_entry_ids)
         except BudgetExhausted as exc:
             # The task is STOPPED: refused BEFORE anything ran, so no
             # prediction was spent and no cost was incurred. This is an
@@ -764,6 +768,9 @@ def cmd_record(args) -> int:
             elif isinstance(raw.get("result", {}).get("prediction"), dict):
                 raw = raw["result"]["prediction"]
             prediction = PredictionSnapshot.from_dict(raw)
+        _used = getattr(args, "used_entry_ids", None)
+        used_entry_ids = ([e.strip() for e in _used.split(",") if e.strip()]
+                          if _used is not None else None)
         result = h.record(record, override=override,
                           override_mode=args.override_mode,
                           override_source=getattr(args, "override_source",
@@ -777,7 +784,8 @@ def cmd_record(args) -> int:
                                   if getattr(args, "method", None) else None),
                           method_actual=(_load_json_arg(args.method_actual)
                                          if getattr(args, "method_actual", None)
-                                         else None))
+                                         else None),
+                          used_entry_ids=used_entry_ids)
         checks = result["prediction_checks"]
         summary = [f"Recorded {result['execution_id']}."]
         if checks:
@@ -1066,8 +1074,9 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
     if saved:
         parts.append(f"Saved {saved} relation claim(s)")
     if published:
-        parts.append(f"{published} published as knowledge (own verification + "
-                     ">=2 independent tasks)")
+        parts.append(f"{published} published as knowledge "
+                     "(the agent decides publication; the framework records "
+                     "the verification state)")
     for item in result.get("relations") or []:
         entry_id = item.get("created_entry") or item.get("saved")
         if not entry_id:
@@ -1078,14 +1087,7 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
         claim = item.get("claim") or {}
         text = str(claim.get("text") or "")[:80]
         state = publication.get("state", "unverified")
-        if publication.get("published"):
-            parts.append(f"Entry {entry_id}: {state} claim published — "
-                         f"{text}")
-        else:
-            reasons = "; ".join(publication.get("reasons") or []) or \
-                "not yet publishable"
-            parts.append(f"Entry {entry_id}: claim saved as {state} but NOT "
-                         f"published ({reasons})")
+        parts.append(f"Entry {entry_id}: {state} claim published — {text}")
     if not parts:
         parts.append("No claim was submitted.")
     return " ".join(parts)
@@ -1137,11 +1139,16 @@ def cmd_induction_material(args) -> int:
         if budget["truncated_by_limit"]:
             summary += (" --limit kept only the newest attempts; more "
                         "completed material exists.")
-        summary += (f" A TRANSFERABLE new strategy needs the same mechanism on "
-                    f">=2 independent tasks (this batch spans "
-                    f"{result['cross_task_hint']['n_distinct_tasks_in_batch']}"
-                    "). Form the strategy (condition -> how -> consequence -> "
-                    "boundary) and submit it with `orx induce --relation`.")
+        summary += (f" This batch spans "
+                    f"{result['cross_task_hint']['n_distinct_tasks_in_batch']} "
+                    "task(s) (a fact, not a threshold). Form the strategy "
+                    "(condition -> how -> consequence -> boundary) and submit "
+                    "it with `orx induce --relation` — or submit nothing if "
+                    "nothing new was found.")
+        memory = result.get("memory_state") or {}
+        if memory.get("state") in ("both_banks_empty", "strategic_bank_empty",
+                                   "evidence_bank_empty"):
+            summary += f" Memory state: {memory['state']}."
         return _emit(result, summary)
     finally:
         h.close()
@@ -1633,30 +1640,6 @@ def cmd_enforce_window(args) -> int:
                 "(calibration window / late-check grace / young unclosed). "
                 "An eviction is a source reference expiring, never a "
                 "refutation or a withdrawal.")
-        return _emit(result, summary)
-    finally:
-        h.close()
-
-
-def cmd_migrate_relations(args) -> int:
-    """One-way migration of legacy relations into standalone claim entries."""
-    h = _harness(args)
-    try:
-        result = h.migrate_relations(dry_run=bool(args.dry_run))
-        if result.get("dry_run"):
-            summary = (f"Dry run: {result.get('relations_found', 0)} legacy "
-                       f"relation(s) across "
-                       f"{result.get('entries_with_relations', 0)} entry(ies) "
-                       "would be migrated; nothing was written.")
-        elif result.get("relations_found"):
-            summary = (
-                f"Migrated {result.get('created_entries', 0)} claim "
-                f"entr(ies) from {result.get('relations_found', 0)} legacy "
-                f"relation(s). Each relation became its OWN entry with its "
-                "verification copied verbatim (a migration never widens what "
-                "was verified).")
-        else:
-            summary = "Nothing to migrate: no legacy relation lists found."
         return _emit(result, summary)
     finally:
         h.close()
@@ -2594,6 +2577,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--adaptation", default=None, metavar="TEXT",
                    help="one line naming the key adaptation you made to the "
                         "cited method (used with --adapted-from)")
+    p.add_argument("--used-entry-ids", dest="used_entry_ids", default=None,
+                   metavar="NUMBERS",
+                   help="comma-separated knowledge ENTRY NUMBERS this attempt "
+                        "ADOPTED (e.g. '3,5'). A DECLARATION — distinct from "
+                        "being recalled and from --adapted-from. Pass an "
+                        "EMPTY string ('') to record 'adopted no prior "
+                        "knowledge', which is a fact, not an omission. An "
+                        "unknown number is kept as a citation")
     p.set_defaults(func=cmd_execute)
 
     p = sub.add_parser("record", help="append an ExecutionRecord to the Experience Bank")
@@ -2675,6 +2666,14 @@ def build_parser() -> argparse.ArgumentParser:
                         "integrity of the evidence depends on honesty here. "
                         "A value the record already carries is never "
                         "overwritten")
+    p.add_argument("--used-entry-ids", dest="used_entry_ids", default=None,
+                   metavar="NUMBERS",
+                   help="comma-separated knowledge ENTRY NUMBERS this attempt "
+                        "ADOPTED (e.g. '3,5'), for a record assembled outside "
+                        "`orx execute`. A DECLARATION — distinct from being "
+                        "recalled. Pass an EMPTY string ('') to record "
+                        "'adopted no prior knowledge'. A value the record "
+                        "already carries is never overwritten")
     p.add_argument("--session", action="store_true", dest="session",
                    help="record a SESSION-LEVEL stop (host cancel / hard "
                         "budget stop) instead of an execution: archive the "
@@ -2992,16 +2991,6 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true",
                    help="report what would be evicted without writing")
     p.set_defaults(func=cmd_enforce_window)
-
-    p = sub.add_parser(
-        "migrate-relations",
-        help="ONE-WAY migration: turn legacy entry-level relation lists into "
-             "standalone claim entries (one claim per entry). Idempotent; "
-             "each relation's verification is copied verbatim (a migration "
-             "never widens what was verified)")
-    p.add_argument("--dry-run", action="store_true",
-                   help="report what would be migrated without writing")
-    p.set_defaults(func=cmd_migrate_relations)
 
     p = sub.add_parser(
         "predict-capability",

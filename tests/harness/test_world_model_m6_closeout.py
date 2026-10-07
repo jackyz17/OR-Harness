@@ -352,9 +352,14 @@ class TestFeedbackStagesIndependent(Base):
         self.assertIn(prediction.prediction_id, feedback)
         self.assertIsNotNone(verdict, "the opportunity must be resolved")
         self.assertEqual(verdict["status"], "fulfilled")
-        # The entry formed is a DRAFT: a single task is not transferable.
+        # The entry formed is offered knowledge; its own verification state
+        # is reported (a single task is not a transfer proof, but the agent
+        # decided to submit it).
         created = h.sbank.get(result["relations"][0]["saved"])
-        self.assertFalse(is_publishable(created))
+        self.assertTrue(is_publishable(created))
+        self.assertIn(created.verification_state,
+                      ("fact_checked", "verified", "unverified",
+                       "insufficient_evidence"))
 
     def test_induction_that_changed_nothing_is_missed(self):
         """When an induction runs over a strategy whose cell is ALREADY

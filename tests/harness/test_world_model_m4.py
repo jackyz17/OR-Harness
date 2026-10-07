@@ -82,7 +82,7 @@ class TestM4InductionMaterial(HarnessTestCase):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         entry = StrategicEntry(
-            entry_id=StrategicEntry.new_id(),
+            entry_id="",
             strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.5,

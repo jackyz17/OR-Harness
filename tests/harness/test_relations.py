@@ -94,7 +94,7 @@ class ClaimCase(HarnessTestCase):
         harness) and they must not merge with a claim entry. This builds one
         without going through the removed statistical path."""
         return StrategicEntry(
-            entry_id=StrategicEntry.new_id(),
+            entry_id="",
             strategy_id=strategy_id,
             pattern={"predicates": dict(
                 predicates or {"family": "scheduling",
@@ -220,7 +220,8 @@ class TestClaimAssertions(ClaimCase):
             claim_v2, verify=self.verify_payload(claim_v2))
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "refuted")
-        self.assertFalse(entry.is_published)
+        # The refutation is a recorded verdict, not a framework deletion.
+        self.assertTrue(entry.is_published)
 
     def test_mean_aggregation_tolerates_one_negative_pair(self):
         """With ``aggregation=mean`` a single unfavourable pair does not
@@ -301,21 +302,20 @@ class TestClaimAssertions(ClaimCase):
 
 
 class TestClaimPublication(ClaimCase):
-    """Publication is the cross-task independence gate, applied to the
-    claim's own evidence — a single-task fact is saved but not published."""
+    """Publication is the AGENT's decision: a submitted claim is offered
+    within its declared scope. The framework checks only administrative
+    matters and records the agent's own verification state."""
 
-    def test_verified_claim_with_two_tasks_is_published(self):
+    def test_verified_claim_is_published(self):
         self.seed_cross_period()
         claim = self.cross_period_claim()
         out = self.engine.submit_relation(
             claim, verify=self.verify_payload(claim))
         self.assertTrue(out["publication"]["published"])
+        self.assertEqual(out["publication"]["state"], "verified")
         self.assertEqual(out["publication"]["distinct_tasks"], 3)
 
     def test_single_task_claim_publishes_with_scope_stated(self):
-        # Publication is a VERIFICATION gate, not a task-count gate: a
-        # single task whose declared comparison holds publishes, with the
-        # scope stated (one task, transfer unproven).
         self.seed_cross_period()
         claim = {
             "subject": "principle:one_task_only",
@@ -339,15 +339,19 @@ class TestClaimPublication(ClaimCase):
                          "single_observation")
         self.assertEqual(len(claim_scope_tasks(entry)), 1)
 
-    def test_unverified_claim_is_not_published(self):
+    def test_unverified_claim_is_still_published(self):
+        """A claim with no declared check is offered; the framework read the
+        FACTS (``fact_checked``) and reports that rather than withholding."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         # No verdict AND no embedded check: nothing computable to verify.
         claim.pop("check", None)
         out = self.engine.submit_relation(claim)   # no verify, no check
         self.assertIsNotNone(out["saved"])
-        self.assertFalse(out["publication"]["published"])
-        self.assertFalse(self.sbank.get(out["saved"]).is_published)
+        entry = self.sbank.get(out["saved"])
+        self.assertTrue(out["publication"]["published"])
+        self.assertEqual(entry.verification_state, "fact_checked")
+        self.assertTrue(entry.is_published)
 
     def test_embedded_relation_check_is_honoured(self):
         """A ``check`` block INSIDE the relation is read, not silently
@@ -378,94 +382,56 @@ class TestClaimPublication(ClaimCase):
         self.assertEqual(self.sbank.get(out["saved"]).verification_state,
                          "verified")
 
-
-class TestClaimRevision(ClaimCase):
-    """Revision: a substantive change invalidates the old verdict; a fresh
-    verification replaces it; an identical resubmission keeps it."""
-
-    def test_substantive_change_without_reverification_marks_stale(self):
+    def test_no_check_records_the_state_without_a_gate(self):
+        """A claim whose declared check is UNDECIDABLE is still published;
+        the state (``insufficient_evidence``) is recorded for the reader."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
-        out = self.engine.submit_relation(
-            claim, verify=self.verify_payload(claim))
-        entry_id = out["saved"]
-        self.assertTrue(out["publication"]["published"])
-        # Same identity (subject+kind+cell), CHANGED claim, NO fresh verdict
-        # and NO embedded check (so nothing re-verifies the revised claim).
-        revised = self.cross_period_claim()
-        revised["claim"] = "修订后的主张：只保留跨期状态的一部分"
-        revised.pop("check", None)
-        self.engine.submit_relation(revised)
-        entry = self.sbank.get(entry_id)
-        self.assertEqual(entry.verification_state, "verified")
-        self.assertTrue(entry.verification["stale_after_revision"])
-        self.assertFalse(entry.is_published)
-
-    def test_fresh_verification_replaces_the_verdict(self):
-        """A newly supplied verdict WINS: it must never be overwritten by
-        the stale marker of the previous one."""
-        self.seed_cross_period()
-        claim = self.cross_period_claim()
-        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
-        revised = self.cross_period_claim()
-        revised["claim"] = "修订后的主张"
-        out = self.engine.submit_relation(
-            revised, verify=self.verify_payload(revised))
-        entry = self.sbank.get(out["saved"])
-        self.assertEqual(entry.verification_state, "verified")
-        self.assertFalse(entry.verification.get("stale_after_revision"))
-
-    def test_identical_resubmission_keeps_the_verdict(self):
-        self.seed_cross_period()
-        claim = self.cross_period_claim()
-        out = self.engine.submit_relation(
-            claim, verify=self.verify_payload(claim))
-        self.assertEqual(self.sbank.get(out["saved"]).verification_state,
-                         "verified")
-        # Re-submit the SAME claim with no verification: the verdict stays.
-        resubmit = self.cross_period_claim()
-        resubmit.pop("check", None)
-        out2 = self.engine.submit_relation(resubmit)
-        entry = self.sbank.get(out2["saved"])
-        self.assertEqual(entry.verification_state, "verified")
-        self.assertFalse(entry.verification.get("stale_after_revision"))
-
-    def test_resubmission_revises_rather_than_duplicates(self):
-        """Same identity -> same entry: a revision must not append a second
-        copy of the same knowledge object."""
-        self.seed_cross_period()
-        claim = self.cross_period_claim()
-        self.engine.submit_relation(claim, verify=self.verify_payload(claim))
-        self.engine.submit_relation(self.cross_period_claim())
-        self.assertEqual(self.sbank.count(), 1)
-
-    def test_explicit_target_entry_id_revises_that_entry(self):
-        """A revision can name the entry to change directly, instead of
-        re-deriving it from subject + cell + kind."""
-        self.seed_cross_period()
-        claim = self.cross_period_claim()
-        first = self.engine.submit_relation(claim,
-                                            verify=self.verify_payload(claim))
-        revised = dict(self.cross_period_claim(),
-                       claim="revised text entirely", target_entry_id=first["saved"])
-        out = self.engine.submit_relation(revised)
-        self.assertEqual(out["saved"], first["saved"])
-        self.assertEqual(self.sbank.count(), 1)
-
-    def test_unknown_target_entry_id_is_refused(self):
-        """An explicit target that does not exist is refused, never silently
-        turned into a different edit or a new entry."""
-        self.seed_cross_period()
-        claim = dict(self.cross_period_claim(),
-                     target_entry_id="se_does_not_exist")
+        claim["check"] = {"assertions": [
+            {"kind": "probe", "roles": ["preserved"],
+             "path": "execution_features.no_such_field", "equals": 1}]}
         out = self.engine.submit_relation(claim)
-        self.assertIsNone(out.get("saved"))
-        self.assertIn("unknown target_entry_id", out["skipped"])
-        self.assertEqual(self.sbank.count(), 0)
+        entry = self.sbank.get(out["saved"])
+        self.assertEqual(entry.verification_state, "insufficient_evidence")
+        self.assertTrue(out["publication"]["published"])
+
+
+class TestClaimAdditive(ClaimCase):
+    """Knowledge is ADDITIVE: a new submission creates a NEW entry. It never
+    rewrites or merges an existing entry's core content, and there is no
+    ``target_entry_id`` revision path any more."""
+
+    def test_resubmission_creates_a_separate_entry(self):
+        """Same identity -> a NEW entry, not an in-place revision: the
+        earlier claim keeps its own text, evidence and verdict."""
+        self.seed_cross_period()
+        claim = self.cross_period_claim()
+        first = self.engine.submit_relation(
+            claim, verify=self.verify_payload(claim))
+        second = self.engine.submit_relation(self.cross_period_claim())
+        self.assertNotEqual(first["saved"], second["saved"])
+        self.assertEqual(self.sbank.count(), 2)
+        # The first keeps its verdict; the second is independent.
+        self.assertEqual(self.sbank.get(first["saved"]).verification_state,
+                         "verified")
+
+    def test_target_entry_id_is_not_a_revision_path(self):
+        """An explicit ``target_entry_id`` is no longer honoured: a
+        submission is always a NEW entry (the field is ignored)."""
+        self.seed_cross_period()
+        claim = self.cross_period_claim()
+        first = self.engine.submit_relation(
+            claim, verify=self.verify_payload(claim))
+        revised = dict(self.cross_period_claim(),
+                       claim="revised text entirely",
+                       target_entry_id=first["saved"])
+        out = self.engine.submit_relation(revised)
+        self.assertNotEqual(out["saved"], first["saved"])
+        self.assertEqual(self.sbank.count(), 2)
 
     def test_two_claims_under_one_subject_stay_independent(self):
-        """#8: two independent claims must NOT share an entry, and a
-        verification on one must never leak to the other."""
+        """Two independent claims do NOT share an entry, and a verification
+        on one never leaks to the other."""
         self.seed_cross_period()
         first = self.cross_period_claim()
         first["kind"] = "intervention_recovery"
@@ -481,11 +447,9 @@ class TestClaimRevision(ClaimCase):
         self.assertNotEqual(out1["saved"], out2["saved"])
         self.assertEqual(self.sbank.count(), 2)
         # The second was never given an assertion: the facts were READ
-        # (``fact_checked``) but it must not inherit the first's ``verified``
-        # transfer verdict, and a non-fact kind does not publish from facts.
+        # (``fact_checked``) and it must not inherit the first's verdict.
         independent = self.sbank.get(out2["saved"])
         self.assertEqual(independent.verification_state, "fact_checked")
-        self.assertFalse(independent.is_published)
 
     def test_claim_and_statistical_claim_do_not_merge(self):
         """A statistical entry and a claim entry under the same strategy id
@@ -504,7 +468,7 @@ class TestClaimRevision(ClaimCase):
 
 
 class TestClaimRecall(ClaimCase):
-    """Transfer: a verified claim reaches a future task's recall through the
+    """Transfer: a submitted claim reaches a future task's recall through the
     ORDINARY entry path (no special section)."""
 
     def task(self, task_id="NEW1"):
@@ -530,26 +494,26 @@ class TestClaimRecall(ClaimCase):
         self.assertIsNotNone(item["knowledge"]["claim"])
         self.assertIn("跨期", item["knowledge"]["claim"]["text"])
 
-    def test_claim_survives_beside_an_unpublished_statistical_entry(self):
-        """A statistical entry for the same strategy is unverified; the
-        verified claim is a SEPARATE entry and must still be recalled."""
+    def test_claim_survives_beside_a_statistical_entry(self):
+        """A statistical entry for the same strategy is a SEPARATE object;
+        the claim must still be recalled."""
         self.seed_cross_period()
         self.sbank.add(self.statistical_entry("S01"))
         claim = self.cross_period_claim()
         claim["subject"] = "S01"
         self.engine.submit_relation(claim, verify=self.verify_payload(claim))
-        # The claim is a separate entry, so the S01 recommendation now shows
-        # the verified claim as its own knowledge object.
         recalled = self.h.recall(self.task())
         self.assertTrue(any(r["strategy_id"] == "S01"
                             and r["knowledge"]["claim"] is not None
                             for r in recalled["recommendations"]))
 
-    def test_refuted_claim_is_not_offered_as_knowledge(self):
+    def test_a_refuted_claim_is_offered_with_its_verdict(self):
+        """A refutation is recorded on the entry and reported; knowledge is
+        offered, and the verdict (not a framework deletion) is what a reader
+        weighs."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         self.h.induce(relations=[claim], verify=self.verify_payload(claim))
-        self.assertTrue(self.h.recall(self.task())["recommendations"])
         # A counterexample refutes it.
         self.bank.append(self.exec_record("ex_t9d", "T9", status="feasible",
                                           gap=0.02))
@@ -558,26 +522,26 @@ class TestClaimRecall(ClaimCase):
         claim_v2 = self.cross_period_claim(
             extra_evidence=[{"execution_id": "ex_t9d", "role": "dropped"},
                             {"execution_id": "ex_t9p", "role": "preserved"}])
-        self.h.induce(relations=[claim_v2],
-                      verify=self.verify_payload(claim_v2))
-        # The refuted claim no longer appears in recommendations...
+        out = self.h.induce(relations=[claim_v2],
+                            verify=self.verify_payload(claim_v2))
+        entry = self.h.sbank.get(out["relations"][0]["saved"])
+        self.assertEqual(entry.verification_state, "refuted")
+        # It is still offered; the reader sees the refuted verdict. (The
+        # first, verified submission is a SEPARATE entry under the additive
+        # model, so find THIS entry's row by its number.)
         recs = self.h.recall(self.task())["recommendations"]
-        self.assertFalse(any(r["strategy_id"] == "principle:cross_period_state"
-                             for r in recs))
-        # ...but the offline view still shows it, with its state.
-        offline = self.h.recall(self.task(), include_unverified=True)
-        held = offline["held_claims"]
-        self.assertEqual(held[0]["verification_state"], "refuted")
+        offered = [r for r in recs
+                   if r["strategy_id"] == "principle:cross_period_state"
+                   and entry.entry_id in (r.get("evidence_refs") or [])]
+        self.assertTrue(offered)
+        self.assertEqual(offered[0]["knowledge"]["verification_state"],
+                         "refuted")
 
     def test_newer_evidence_since_verification_is_reported(self):
         self.seed_cross_period()
         claim = self.cross_period_claim()
         self.h.induce(relations=[claim], verify=self.verify_payload(claim))
         self.bank.append(self.exec_record("ex_late", "TLATE", tc=0.9))
-        offline = self.h.recall(self.task(), include_unverified=True)
-        # A published claim reaches recommendations; the held-claims section
-        # is where the newer-evidence annotation is most visible for a
-        # claim-only entry that is not (yet) admitted.
         entry = next(e for e in self.h.sbank.list()
                      if e.claim is not None)
         self.assertGreaterEqual(

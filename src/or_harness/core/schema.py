@@ -67,6 +67,23 @@ COST_DIMENSIONS: Tuple[str, ...] = (
     "solver_runtime_s",
     "retries",
     "latency_s",
+    # r12: the PRIMARY latency for a strategy decision — the remaining
+    # wall-clock from the decision's ANCHOR to the END of the task,
+    # covering the later modelling, coding, tool calls, solving, checking,
+    # repair and retries. It is a DIFFERENT measurement from ``latency_s``
+    # (one attempt's sandbox wall-clock): the old attempt cost is kept
+    # under its own name and never renamed into this one.
+    "remaining_latency_s",
+)
+
+#: Dimensions that measure a WALL-CLOCK SPAN and must NEVER be summed
+#: across records. Two attempts' ``latency_s`` are disjoint spans, but
+#: overlapping prediction ranges (and per-attempt figures measured against
+#: an episode-level answer) would double-count if added. They are counted
+#: as measured facts and reported individually, never accumulated.
+NON_CUMULATIVE_DIMENSIONS: Tuple[str, ...] = (
+    "latency_s",
+    "remaining_latency_s",
 )
 
 #: Default scalarization weights. Used only inside the selector; never at rest.
@@ -76,6 +93,10 @@ DEFAULT_COST_WEIGHTS: Dict[str, float] = {
     "solver_runtime_s": 0.5,
     "retries": 2.0,
     "latency_s": 0.1,
+    # The primary end-to-end latency: weighted like the other wall-clock
+    # dimension, NOT on top of it (a decision prices ONE latency, and the
+    # two wall-clock dimensions are never added into one another).
+    "remaining_latency_s": 0.1,
 }
 
 
@@ -104,6 +125,7 @@ class CostVector:
     solver_runtime_s: float = 0.0
     retries: float = 0.0
     latency_s: float = 0.0
+    remaining_latency_s: float = 0.0
     #: Measured-dimension mask. ``None`` = legacy/unmarked data.
     measured: Optional[Set[str]] = None
 
@@ -285,8 +307,33 @@ def accumulate_measured_costs(costs, total: Dict[str, float],
         for dim in COST_DIMENSIONS:
             if dim in measured:
                 n_measured[dim] += 1
-                if dim != "latency_s":
+                if dim not in NON_CUMULATIVE_DIMENSIONS:
                     total[dim] += getattr(cost, dim)
+
+
+#: Dimensions that are COMPONENTS of another dimension. Charging both the
+#: part and the whole would double-bill the same spend, so when the
+#: CONTAINER is measured by the same record/prediction the component is not
+#: charged on top of it. The component is still recorded and reported (its
+#: own diagnostic value is real); it is only removed from the UTILITY cost,
+#: never deleted.
+COMPONENT_COST_DIMENSIONS: Dict[str, str] = {
+    "solver_runtime_s": "remaining_latency_s",
+}
+
+
+def chargeable_dimensions(measured: Set[str]) -> Set[str]:
+    """``measured`` with COMPONENT dimensions dropped when their container is
+    also measured — never bill the part and the whole.
+
+    A component whose container is NOT measured stays chargeable: it is then
+    the only thing measured about that spend, so dropping it would let the
+    cost disappear. The drop is per record/prediction; the ORIGINAL set is
+    untouched, so reporting can still show both facts.
+    """
+    drop = {comp for comp, container in COMPONENT_COST_DIMENSIONS.items()
+            if comp in measured and container in measured}
+    return set(measured) - drop
 
 
 def cost_error_per_dim(predicted: "CostVector", actual: "CostVector"
@@ -1515,6 +1562,11 @@ class StrategicEntry:
     nothing on a statistical basis.
     """
 
+    #: The entry's identity: a POSITIVE INTEGER NUMBER assigned by the
+    #: framework (rendered as its decimal string, e.g. ``"1"``, ``"2"``). It
+    #: is the ONE identifier for the entry — the agent never invents one, and
+    #: a retired entry's number is never reused or resequenced. Callers that
+    #: hold an ``entry_id`` compare it as an opaque string.
     entry_id: str
     strategy_id: str
     pattern: Dict[str, Any]  # {"predicates": {"family": ..., "<dim>": [lo, hi]}}
@@ -1577,12 +1629,6 @@ class StrategicEntry:
     #: The text and conditions are the claim; the numeric fields are the
     #: expected effect; ``verification.scope`` bounds what was checked.
     claim: Optional[Dict[str, Any]] = None
-    #: LEGACY carrier: the retired per-entry ``relations`` list read back from
-    #: an older payload. It is preserved through round-trips so a migration
-    #: can turn each relation into its OWN claim entry; it is never written
-    #: by new code and never merged into ``claim`` (a legacy relation is
-    #: migrated, not silently reinterpreted). Empty once migrated.
-    legacy_relations: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def is_claim_only(self) -> bool:
@@ -1596,22 +1642,16 @@ class StrategicEntry:
 
     @property
     def is_published(self) -> bool:
-        """True when this entry may be presented as published knowledge.
+        """True when this entry may be presented as offered knowledge.
 
-        ``verified`` always publishes. ``fact_checked`` publishes ONLY a
-        ``conditional_fact`` (a single observation); a transfer claim needs a
-        declared assertion, so its ``fact_checked`` block does NOT publish by
-        itself (the selector applies the same rule).
+        Publication is the AGENT's decision: a claim the agent submitted is
+        offered, and the framework does NOT certify the conclusion. This is
+        therefore always True — the entry's own ``verification`` state is
+        reported honestly (``verified`` / ``fact_checked`` / ``unverified``),
+        and the reader weighs it. Recall never hides knowledge on a framework
+        content judgement.
         """
-        block = self.verification or {}
-        if block.get("stale_after_revision"):
-            return False
-        state = block.get("state")
-        if state == "verified":
-            return True
-        return (state == "fact_checked"
-                and str((self.claim or {}).get("kind") or "")
-                == "conditional_fact")
+        return True
 
     @property
     def verification_state(self) -> str:
@@ -1620,9 +1660,15 @@ class StrategicEntry:
         treated as verification)."""
         return str((self.verification or {}).get("state", "unverified"))
 
-    @staticmethod
-    def new_id() -> str:
-        return f"se_{uuid.uuid4().hex[:12]}"
+    @property
+    def entry_number(self) -> int:
+        """The entry's number as an int (its ``entry_id`` is its decimal
+        string). A non-numeric id (only possible for a hand-built fixture)
+        reads as 0 — a NEVER-negotiable identity is not fabricated here."""
+        try:
+            return int(self.entry_id)
+        except (TypeError, ValueError):
+            return 0
 
     @property
     def expected_quality(self) -> float:
@@ -1681,9 +1727,6 @@ class StrategicEntry:
                              if self.verification else None),
             "claim": (normalize_claim(self.claim)
                       if self.claim is not None else None),
-            # Legacy relations are re-emitted UNCHANGED so a migration can
-            # consume them; they are never a new-code write path.
-            "relations": [copy.deepcopy(r) for r in self.legacy_relations],
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
         }
@@ -1742,9 +1785,6 @@ class StrategicEntry:
                           if data.get("verification") is not None else {}),
             claim=(normalize_claim(data["claim"])
                    if data.get("claim") is not None else None),
-            legacy_relations=[copy.deepcopy(dict(r))
-                              for r in (data.get("relations") or [])
-                              if isinstance(r, dict)],
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
         )
@@ -1838,6 +1878,9 @@ class ColdArchiveCard:
     predicates: Dict[str, Any]
     outcome: str
     reason: str
+    #: The NUMBER the retired entry held. Kept so an archived entry's identity
+    #: stays readable and its number is never handed out again.
+    entry_id: Optional[str] = None
     evidence_summary: Dict[str, Any] = field(default_factory=dict)
     archived_at: float = field(default_factory=time.time)
 
@@ -1848,6 +1891,7 @@ class ColdArchiveCard:
             "predicates": self.predicates,
             "outcome": self.outcome,
             "reason": self.reason,
+            "entry_id": self.entry_id,
             "evidence_summary": self.evidence_summary,
             "archived_at": self.archived_at,
         }
@@ -1863,6 +1907,8 @@ class ColdArchiveCard:
             predicates=dict(data["predicates"]),
             outcome=str(data.get("outcome", "")),
             reason=str(data.get("reason", "")),
+            entry_id=(str(data["entry_id"])
+                      if data.get("entry_id") is not None else None),
             evidence_summary=dict(data.get("evidence_summary") or {}),
             archived_at=float(data.get("archived_at", time.time())),
         )

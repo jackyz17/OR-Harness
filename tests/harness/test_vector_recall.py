@@ -211,13 +211,13 @@ class TestDiscoveryVsReuse(VectorCase):
         its expected (promised) values, and the applicability verdict."""
         self.solve(_task("t_a", description=REQ_A))  # populate so index exists
         predicates = {"family": "routing", "resource_coupling": [0.25, 0.50]}
-        entry = _entry("se_match", predicates=predicates, quality=0.83)
-        self.h.sbank.add(entry)
-        self.h.index_sync.sync_entries(["se_match"])
+        entry = _entry(predicates=predicates, quality=0.83)
+        eid = self.h.sbank.add(entry)
+        self.h.index_sync.sync_entries([eid])
         out = self.h.recall(_task("t_q", description=REQ_A,
                                   resource_coupling=0.3))
         hit = next(k for k in out["vector_recall"]["strategic_knowledge"]
-                   if k["entry_id"] == "se_match")
+                   if k["entry_id"] == eid)
         self.assertEqual(hit["expected_quality_hat"], 0.83)
         self.assertEqual(hit["structural_match"], "applies")
         self.assertTrue(hit["reusable"])
@@ -226,14 +226,14 @@ class TestDiscoveryVsReuse(VectorCase):
 
     def test_conflicting_knowledge_is_flagged_not_hidden(self):
         self.solve(_task("t_a", description=REQ_A))
-        self.h.sbank.add(_entry(
-            "se_other_family", strategy_id="S01",
+        eid = self.h.sbank.add(_entry(
+            strategy_id="S01",
             predicates={"family": "scheduling",
                         "resource_coupling": [0.25, 0.50]}))
-        self.h.index_sync.sync_entries(["se_other_family"])
+        self.h.index_sync.sync_entries([eid])
         out = self.h.recall(_task("t_q", description=REQ_A))
         hit = next(k for k in out["vector_recall"]["strategic_knowledge"]
-                   if k["entry_id"] == "se_other_family")
+                   if k["entry_id"] == eid)
         self.assertEqual(hit["structural_match"], "conflicts")
         self.assertFalse(hit["reusable"])
         self.assertIn("family mismatch", hit["reason"])
@@ -268,45 +268,37 @@ class TestStatisticsNotContaminated(VectorCase):
 
 
 class TestUnverifiedKnowledge(VectorCase):
-    """Case 4: a candidate is not knowledge, in EITHER channel."""
+    """Case 4: a submitted claim IS offered knowledge — the agent decides
+    publication — and its verification state travels with it so a reader can
+    weigh it."""
 
     def setUp(self):
         super().setUp()
         self.solve(_task("t_a", description=REQ_A))
-        self.h.sbank.add(_entry("se_unverified", verified=False,
-                                predicates={"family": "routing",
-                                            "resource_coupling": [0.25, 0.50]}))
-        self.h.index_sync.sync_entries(["se_unverified"])
+        self.unverified_id = self.h.sbank.add(_entry(
+            verified=False,
+            predicates={"family": "routing",
+                        "resource_coupling": [0.25, 0.50]}))
+        self.h.index_sync.sync_entries([self.unverified_id])
 
-    def test_unverified_absent_by_default_present_on_request(self):
+    def test_offered_by_default_with_its_state(self):
+        """A submitted claim is offered; its state (``unverified``) is
+        carried so it is never mistaken for a checked one."""
         out = self.h.recall(_task("t_q", description=REQ_A,
                                   resource_coupling=0.3))
         ids = [k["entry_id"]
                for k in out["vector_recall"]["strategic_knowledge"]]
-        self.assertNotIn("se_unverified", ids)
-        rec_refs = [ref for r in out["recommendations"]
-                    for ref in r["evidence_refs"]]
-        self.assertNotIn("se_unverified", rec_refs)
-    def test_include_unverified_reveals_it(self):
-        out = self.h.recall(_task("t_q", description=REQ_A,
-                                  resource_coupling=0.3),
-                            include_unverified=True)
-        ids = [k["entry_id"]
-               for k in out["vector_recall"]["strategic_knowledge"]]
-        self.assertIn("se_unverified", ids)
-
-    def test_offline_view_labels_the_candidate(self):
-        """Surfacing an unpublished candidate must not present it as
-        knowledge — the recommendation carries an explicit warning."""
-        out = self.h.recall(_task("t_q", description=REQ_A,
-                                  resource_coupling=0.3),
-                            include_unverified=True)
+        self.assertIn(self.unverified_id, ids)
         rec = next(r for r in out["recommendations"]
                    if r["strategy_id"] == "S04")
-        self.assertIn("se_unverified", rec["evidence_refs"])
-        self.assertTrue(any("UNPUBLISHED" in w for w in rec["risk_warnings"]))
+        self.assertIn(self.unverified_id, rec["evidence_refs"])
+
+    def test_the_state_is_reported_in_the_offline_view(self):
+        out = self.h.recall(_task("t_q", description=REQ_A,
+                                  resource_coupling=0.3),
+                            include_unverified=True)
         knowledge = next(k for k in out["vector_recall"]["strategic_knowledge"]
-                         if k["entry_id"] == "se_unverified")
+                         if k["entry_id"] == self.unverified_id)
         self.assertEqual(knowledge["verification_state"], "unverified")
 
 
@@ -517,47 +509,49 @@ class TestStaleAndLifecycle(VectorCase):
 
     def test_retired_entry_leaves_the_index(self):
         self.solve(_task("t_a", description=REQ_A))
-        self.h.sbank.add(_entry("se_gone", predicates={
+        eid = self.h.sbank.add(_entry(predicates={
             "family": "routing", "resource_coupling": [0.25, 0.50]}))
-        self.h.index_sync.sync_entries(["se_gone"])
+        self.h.index_sync.sync_entries([eid])
         out = self.h.recall(_task("t_q", description=REQ_A,
                                   resource_coupling=0.3))
-        self.assertIn("se_gone",
+        self.assertIn(eid,
                       [k["entry_id"]
                        for k in out["vector_recall"]["strategic_knowledge"]])
-        self.h.retire("se_gone", reason="stopped working")
+        self.h.retire(eid, reason="stopped working")
         out2 = self.h.recall(_task("t_q", description=REQ_A,
                                    resource_coupling=0.3))
-        self.assertNotIn("se_gone",
+        self.assertNotIn(eid,
                          [k["entry_id"]
                           for k in out2["vector_recall"]["strategic_knowledge"]])
 
     def test_dormant_entry_is_not_surfaced(self):
         self.solve(_task("t_a", description=REQ_A))
-        entry = _entry("se_sleep", predicates={
+        entry = _entry(predicates={
             "family": "routing", "resource_coupling": [0.25, 0.50]})
-        self.h.sbank.add(entry)
-        self.h.index_sync.sync_entries(["se_sleep"])
+        eid = self.h.sbank.add(entry)
+        self.h.index_sync.sync_entries([eid])
+        entry.entry_id = eid
         entry.status = "dormant"
         self.h.sbank.update(entry)
         out = self.h.recall(_task("t_q", description=REQ_A,
                                   resource_coupling=0.3))
-        self.assertNotIn("se_sleep",
+        self.assertNotIn(eid,
                          [k["entry_id"]
                           for k in out["vector_recall"]["strategic_knowledge"]])
 
     def test_changed_claim_text_is_reported_stale(self):
         self.solve(_task("t_a", description=REQ_A))
-        entry = _entry("se_changing", predicates={
+        entry = _entry(predicates={
             "family": "routing", "resource_coupling": [0.25, 0.50]})
-        self.h.sbank.add(entry)
-        self.h.index_sync.sync_entries(["se_changing"])
-        # The claim text changes WITHOUT a re-index (simulating a drift).
+        eid = self.h.sbank.add(entry)
+        self.h.index_sync.sync_entries([eid])
+        entry.entry_id = eid
+        # The document changes WITHOUT a re-index (simulating a drift).
         entry.applicability = ["a completely different set of notes now"]
         self.h.sbank.update(entry)
         out = self.h.recall(_task("t_q", description=REQ_A,
                                   resource_coupling=0.3))
-        self.assertNotIn("se_changing",
+        self.assertNotIn(eid,
                          [k["entry_id"]
                           for k in out["vector_recall"]["strategic_knowledge"]])
         self.assertEqual(out["vector_recall"]["stale_indexed"][LAYER_STRATEGIC],

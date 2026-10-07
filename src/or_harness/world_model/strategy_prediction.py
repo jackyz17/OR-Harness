@@ -206,15 +206,24 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "declared|unknown, \"value\": number, \"note\": text}, \"feasible\": "
     "boolean, \"notes\": [text]}. A value with no baseline is invalid.\n"
     "  BENEFIT CONVENTION: the request carries a `benefit_convention` "
-    "block naming the ONE yardstick this decision uses. Predict under it — "
-    "`kind=solution_quality` with `metric=normalized_objective_gap` measures "
-    "how well the SOLVER solved the model; use `kind=effective_completion` "
-    "with `metric=task_result_check_passed` ONLY when the question is "
-    "whether the ANSWER satisfies the TASK. These measure different things "
-    "and are never interchanged. If you declare a different kind or metric, "
-    "your prediction is kept and reported, but it is NOT ranked on the "
-    "comparison's single yardstick: an upside in a currency the comparison "
-    "cannot read is never scored as zero.\n"
+    "block naming the ONE yardstick this decision uses. Predict under it. "
+    "The PRIMARY benefit is `kind=effective_completion` with "
+    "`metric=task_result_check_passed`: whether the ORIGINAL TASK is "
+    "effectively completed. `kind=solution_quality` with "
+    "`metric=normalized_objective_gap` measures how well the SOLVER solved "
+    "the MODEL it was given — that is a SUPPORTING fact, NOT the same as "
+    "completing the task: a solved model whose answer does not satisfy the "
+    "task is NOT an effective completion. Judge the primary benefit by "
+    "synthesising FOUR layers: (1) does the method match what the question "
+    "actually asks; (2) are the constraints modelled correctly; (3) is the "
+    "implementation actually completed; (4) is the RESULT valid for the "
+    "task (not merely optimal for a wrong model). Keep feasibility, "
+    "solution quality and optimality as SEPARATE supporting facts; never "
+    "treat 'not proven optimal' as 'no benefit'. These measures are never "
+    "interchanged. If you declare a different kind or metric, your "
+    "prediction is kept and reported, but it is NOT ranked on the "
+    "comparison's yardstick: an upside in a currency the comparison cannot "
+    "read is never scored as zero.\n"
     "  INTERVAL SEMANTICS: an interval must say WHAT it is about. "
     "`interval_kind=\"outcome\"` covers ONE execution's observed value; "
     "`interval_kind=\"mean\"` covers the average over repeated runs. A "
@@ -225,15 +234,26 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "unstated, and the framework will say so.\n"
     "- cost: object of the resource dimensions you have evidence for, each "
     "a non-negative number: {llm_tokens, tool_calls, solver_runtime_s, "
-    "retries, latency_s}. Include ONLY dimensions you actually predict; an "
-    "omitted dimension is unknown, never zero.\n"
-    "  COST SCOPE: `solver_runtime_s` is the SOLVER's own reported runtime "
-    "for the inner solve the script ran — it does NOT cover the whole "
-    "solving effort (modelling, scripting, debugging, repair). `latency_s` "
-    "is the wall-clock the attempt consumed and is NOT summed across "
-    "attempts. Do not read one dimension as if it were the end-to-end cost "
-    "of solving, and state in `basis`/`unsupported_fields` which scope a "
-    "number really measures when it is not the whole task.\n"
+    "retries, latency_s, remaining_latency_s}. Include ONLY dimensions you "
+    "actually predict; an omitted dimension is unknown, never zero.\n"
+    "  COST SCOPE (all candidates of one decision share ONE anchor — the "
+    "decision point — and ONE end — the end of the task):\n"
+    "    * `remaining_latency_s` is the PRIMARY latency: the wall-clock from "
+    "THIS decision's anchor to the END of the task, covering the LATER "
+    "modelling, coding, tool calls, solving, checking, repair and retries. "
+    "Predict this for cost comparisons;\n"
+    "    * `solver_runtime_s` is the SOLVER's own reported runtime for the "
+    "inner solve the script ran — a component of the total, kept for "
+    "diagnosis, NOT the end-to-end cost. Do not add it to "
+    "`remaining_latency_s` as if they were two separate spends;\n"
+    "    * `latency_s` is the wall-clock ONE attempt's sandbox consumed and "
+    "is NOT summed across attempts — it is NOT the remaining time, and is "
+    "never renamed into it;\n"
+    "    * tokens and tool_calls cover the SAME remaining scope as "
+    "`remaining_latency_s` (the rest of the task), never a whole-task "
+    "cumulative total, a single script run, or both at once. Do not mix "
+    "scopes. State in `basis`/`unsupported_fields` which scope a number "
+    "really measures when it is not the whole remaining task.\n"
     "- risk: object {\"events\": [{\"event\": a short name of the risk "
     "EVENT, \"probability\": number in [0,1] or omitted when you have no "
     "basis, \"severity\": number or omitted, \"severity_unit\": text, "
@@ -255,6 +275,24 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "the model was wrong);\n"
     "    * budget_exhausted — the episode's declared budget would be "
     "exceeded.\n"
+    "  MANDATORY RISK COVERAGE: for EVERY candidate you MUST explicitly "
+    "consider at least these two events and either (a) give a probability "
+    "with a basis, or (b) state in \"notes\"/\"basis\" why you have NO "
+    "basis for it. An OMITTED event is treated as UNKNOWN, NOT as "
+    "probability zero — a missing event is not evidence it cannot happen:\n"
+    "    (1) implementation_failure — will YOUR OWN script/stack hold up? "
+    "Distinguish three things: the MATHEMATICAL METHOD is sound, the TOOL "
+    "ENVIRONMENT is usable here, and THIS implementation is stable. Your "
+    "own new code is unproven even when the method and the solver are "
+    "mature — a familiar method does not make a fresh script safe, and a "
+    "successful past run does not remove today's risk;\n"
+    "    (2) task_check_failed — will the ANSWER satisfy the DECLARED task "
+    "check? Use the relevant history; do not treat a mature solver as "
+    "evidence that the answer is right.\n"
+    "  If you give a probability, base it on the SPECIFIC candidate's "
+    "evidence (the steps, the environment, comparable history), not on the "
+    "solver's reputation. NEVER hardcode a penalty for a particular solver "
+    "or a fixed prior failure rate.\n"
     "  Do NOT invent names like \"model_invalid\" or "
     "\"no_feasible_solution\": they were retired because no channel can "
     "establish them (a solver error status or a failed check does not prove "
@@ -380,19 +418,6 @@ MAX_EVIDENCE_BASIS = 40
 #: there.
 BENEFIT_CONVENTION: Dict[str, Any] = {
     "default": {
-        "kind": "solution_quality",
-        "metric": "normalized_objective_gap",
-        "unit": "1-gap",
-        "scope": "the prediction's own candidate scope",
-        "observed_from": ("the solver's own normalized gap: Q = "
-                          "max(0, 1 - gap); an `optimal` status is a gap "
-                          "of 0 and therefore Q = 1.0"),
-        "note": ("how well the solver solved the model it was given, as "
-                 "QUALITY Q = max(0, 1 - gap) — optimal means Q=1.0, NOT "
-                 "0. Use this unless the question is whether the ANSWER "
-                 "satisfies the TASK"),
-    },
-    "completion": {
         "kind": "effective_completion",
         "metric": "task_result_check_passed",
         "unit": "boolean",
@@ -400,15 +425,35 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
         "observed_from": ("the execution's own task-result check "
                           "(`check-task`): 1.0 passed, 0.0 confirmed failed, "
                           "UNKNOWN when unchecked or insufficient"),
-        "note": ("whether the ANSWER satisfies the TASK — a different "
-                 "measurement that lands in [0,1] as well and is NEVER "
-                 "interchanged with the solver's gap"),
+        "note": ("whether the ORIGINAL TASK is effectively completed — the "
+                 "PRIMARY benefit of choosing a method. A success "
+                 "PROBABILITY is a mean over runs, not a single 0/1 "
+                 "label. Everything else (feasibility, solution quality, "
+                 "optimality) is a SUPPORTING fact carried alongside, "
+                 "never a substitute for completion"),
     },
-    "comparison_yardstick": {
+    "solver_quality": {
         "kind": "solution_quality",
         "metric": "normalized_objective_gap",
-        "note": ("only this pair is on the planner's single comparable "
-                 "yardstick. A benefit in another kind or metric is "
+        "unit": "1-gap",
+        "scope": "the prediction's own candidate scope",
+        "observed_from": ("the solver's own normalized gap: Q = "
+                          "max(0, 1 - gap); an `optimal` status is a gap "
+                          "of 0 and therefore Q = 1.0"),
+        "note": ("how well the solver solved the MODEL it was given, as "
+                 "QUALITY Q = max(0, 1 - gap). Declare this only when the "
+                 "decision really wants solver-side quality rather than "
+                 "task completion — a solved model is not evidence that "
+                 "the ORIGINAL TASK was answered"),
+    },
+    "comparison_yardstick": {
+        "kind": "effective_completion",
+        "metric": "task_result_check_passed",
+        "note": ("this pair is the planner's PRIMARY comparable "
+                 "yardstick: whether the ORIGINAL TASK is completed. A "
+                 "decision may DECLARE solution_quality instead, in which "
+                 "case THAT becomes the yardstick. One decision uses ONE "
+                 "yardstick; a benefit in another kind or metric is "
                  "reported and observed, but it does NOT enter the full "
                  "utility ranking (an unread upside is never scored as "
                  "zero)"),
@@ -419,7 +464,9 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
                                    "observes the metric you declared, and "
                                    "it never re-labels another measurement "
                                    "into it"),
-        "value_and_baseline": ("a benefit VALUE requires a baseline; a "
+        "value_and_baseline": ("a benefit VALUE requires a baseline; "
+                               "completion is a probability in [0,1] with "
+                               "the task check as its observation; a "
                                "`solution_quality` value IS the quality "
                                "Q = max(0, 1 - gap) in [0,1] — optimal "
                                "(gap=0) is Q=1.0, never 0; a raw objective "
@@ -438,6 +485,34 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
                                "the kind leaves the range's meaning "
                                "unstated and the close-out says so"),
     },
+}
+
+#: The SHARED cost scope every candidate of one decision predicts under.
+#: ONE anchor (the decision point) and ONE end (the end of the task), so a
+#: candidate cannot silently measure a different span from its peers. The
+#: primary dimension is ``remaining_latency_s``; ``solver_runtime_s`` is a
+#: COMPONENT kept for diagnosis and is never added on top of it, and the
+#: old attempt-level ``latency_s`` keeps its own (different) meaning. The
+#: anchor is an ID, not a wall-clock reading: prediction is a planning act,
+#: and a shared label is what makes the candidates' costs comparable.
+COST_SCOPE_CONVENTION: Dict[str, Any] = {
+    "anchor": "decision_point",
+    "end": "end_of_task",
+    "primary_dimension": "remaining_latency_s",
+    "covers": ("the later modelling, coding, tool calls, solving, checking, "
+               "repair and retries until the task ends"),
+    "shared_by": "every candidate of one decision (same anchor, same end)",
+    "component_dimensions": {
+        "solver_runtime_s": ("the solver's own inner solve time; a COMPONENT "
+                             "of the total kept for diagnosis, NOT added on "
+                             "top of remaining_latency_s"),
+        "latency_s": ("ONE attempt's sandbox wall-clock; a DIFFERENT "
+                      "measurement, never renamed into the remaining span"),
+    },
+    "note": ("tokens, tool_calls and remaining_latency_s all cover the "
+             "SAME remaining scope; overlapping prediction ranges are never "
+             "summed, and a cumulative host figure is written once (never "
+             "re-added through several executions)"),
 }
 
 
@@ -498,16 +573,23 @@ def build_strategy_outcome_request(
         "benefit_convention": (fixed_convention
                                if fixed_convention is not None
                                else copy.deepcopy(BENEFIT_CONVENTION)),
+        # The SHARED cost scope every candidate of this decision predicts
+        # under: ONE anchor (the decision point) and ONE end (the end of the
+        # task). Travels in the request so the model cannot pick a different
+        # anchor per candidate, and so a reader sees which span a predicted
+        # cost measures. The framework measures the real remaining span at
+        # close-out; this block only FIXES the definition.
+        "cost_scope": copy.deepcopy(COST_SCOPE_CONVENTION),
         "output_contract": {
             "allowed_fields": ["benefit", "cost", "risk", "uncertainty",
                                "capability_gain", "evidence_basis",
                                "unsupported_fields"],
-            "fixed_by_framework": ["task", "candidate", "scope",
+            "fixed_by_framework": ["task", "candidate", "scope", "anchor",
                                    "evidence sources", "benefit convention"],
             "note": ("the model fills prediction content only; it may not "
-                     "rewrite the task, the candidate, the scope or the "
-                     "evidence. Use the `benefit_convention` kind/metric "
-                     "unless the question is task completion"),
+                     "rewrite the task, the candidate, the scope, the cost "
+                     "anchor or the evidence. Use the `benefit_convention` "
+                     "kind/metric and the `cost_scope` dimensions"),
         },
     }
     # Scope filtering of the calibration block (the model identity was

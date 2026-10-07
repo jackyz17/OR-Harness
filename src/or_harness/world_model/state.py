@@ -456,36 +456,31 @@ class BeliefSnapshot:
 
 def verified_knowledge_view(profile: ProblemProfile, sbank,
                              ) -> Dict[str, List[Dict[str, Any]]]:
-    """Layer ``StrategicBank.matching`` by admission state.
+    """Layer ``StrategicBank.matching`` by the agent's OWN verification state.
 
-    ``matching()`` filters by predicates only — it does NOT filter by
-    verification state (that happens in ``Selector.recall`` via
-    ``is_publishable``). Any new consumer (H snapshots, coverage) must go
-    through THIS view so an unverified candidate is never counted as
-    verified knowledge:
+    ``matching()`` filters by predicates only. This view is a REPORT of each
+    entry's verification state — publication is the agent's decision (every
+    submitted claim is offered), so this does NOT gate on publishability:
 
-    - ``verified``: verification.state == "verified" (and not stale after a
-      substantive revision — see ``is_publishable``).
+    - ``verified``: verification.state == "verified".
     - ``legacy_unknown``: no verification block at all (entries written
-      before admission verification existed). Kept for historical recall
-      compatibility, but never counted as verified-knowledge growth.
-    - ``unverified``: unverified / insufficient_evidence / refuted
-      candidates — held by the framework, not knowledge.
+      before the block existed).
+    - ``unverified``: every other state (``unverified`` /
+      ``insufficient_evidence`` / ``refuted``) — reported as such, so an
+      unverified candidate is never COUNTED as verified knowledge.
 
     A claim-only entry (stated claim, no statistical support) is layered by
     the SAME single rule: its own verdict decides.
     """
-    from or_harness.strategy.selector import is_publishable
     layers: Dict[str, List[Dict[str, Any]]] = {
         "verified": [], "legacy_unknown": [], "unverified": []}
     for entry in sbank.matching(profile, include_dormant=True):
         block = entry.verification or {}
         if not block:
             # No verification block at all: a legacy entry written before
-            # admission verification existed. Kept for historical recall
-            # compatibility, but never counted as verified-knowledge growth.
+            # admission verification existed.
             layer = "legacy_unknown"
-        elif is_publishable(entry):
+        elif str(block.get("state") or "") == "verified":
             layer = "verified"
         else:
             layer = "unverified"

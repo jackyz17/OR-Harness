@@ -217,12 +217,12 @@ class TestEntryFlags(SelectorCase):
         self.assertEqual(s01.confidence, 1.0)  # support 5 -> n/5 = 1.0
 
     def test_consultation_marks_entries(self):
-        self.sbank.add(StrategicEntry(
-            entry_id="se_c", strategy_id="S01",
+        eid = self.sbank.add(StrategicEntry(
+            entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             support_n=3))
         self.selector.recall(self.make_profile())
-        self.assertIsNotNone(self.sbank.get("se_c").last_consulted_at)
+        self.assertIsNotNone(self.sbank.get(eid).last_consulted_at)
 
     def test_exclude(self):
         self.seed("S01", n=2, task_prefix="tx")

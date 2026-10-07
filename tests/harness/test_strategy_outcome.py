@@ -726,7 +726,10 @@ class TestScopeAndHonesty(StrategyCase):
         """Requirement 6: a benefit in a currency the comparison cannot read
         is reported, NOT scored as zero. The candidate keeps its cost/risk
         picture but produces no utility, so it can never silently win or
-        lose the full ranking on an upside nobody could read."""
+        lose the full ranking on an upside nobody could read.
+
+        r12: the PRIMARY (default) yardstick is now task COMPLETION, so it
+        is the SOLUTION-QUALITY claim that is off-yardstick here."""
         from or_harness.world_model.planner import (
             PlanLimits,
             score_strategy_outcome_predictions,
@@ -735,8 +738,7 @@ class TestScopeAndHonesty(StrategyCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        # Candidate 1: a completion claim (a DIFFERENT currency from the
-        # solution-quality yardstick).
+        # Candidate 1: a completion claim — the comparison's own yardstick.
         provider.payload = {
             "benefit": {"kind": "effective_completion",
                         "metric": "task_result_check_passed",
@@ -747,7 +749,8 @@ class TestScopeAndHonesty(StrategyCase):
         p_completion = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
                           "strategy_id": "S01"}, "ep1")
-        # Candidate 2: the comparison's own yardstick.
+        # Candidate 2: a solver-quality claim (a DIFFERENT currency from the
+        # default completion yardstick).
         provider.payload = json.loads(json.dumps(GOOD_PAYLOAD))
         p_quality = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
@@ -756,15 +759,15 @@ class TestScopeAndHonesty(StrategyCase):
                             cost_weights={"llm_tokens": 1.0})
         scores = score_strategy_outcome_predictions(
             [p_completion, p_quality], limits)
-        completion_score = scores[0]
+        quality_score = scores[1]
         # Reported as incomparable on the benefit...
-        self.assertIn("benefit", completion_score.incomparable)
+        self.assertIn("benefit", quality_score.incomparable)
         # ...and NO full-ranking utility was produced.
-        self.assertIsNone(completion_score.utility,
+        self.assertIsNone(quality_score.utility,
                           "an off-yardstick benefit must not be ranked as "
                           "a zero benefit")
-        # The on-yardstick candidate still gets a utility.
-        self.assertIsNotNone(scores[1].utility)
+        # The on-yardstick (completion) candidate still gets a utility.
+        self.assertIsNotNone(scores[0].utility)
 
     def test_a_quality_kind_with_a_different_metric_is_off_yardstick(self):
         """The KIND alone is not enough: two solution_quality predictions

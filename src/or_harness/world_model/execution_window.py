@@ -45,6 +45,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import accumulate_measured_costs
+from or_harness.core.schema import NON_CUMULATIVE_DIMENSIONS
 
 #: Prefix of a deterministic window id (see :func:`window_id_for`).
 WINDOW_ID_PREFIX = "win::"
@@ -327,13 +328,21 @@ def _aggregate(costs: Sequence[Optional[CostVector]]) -> Dict[str, Any]:
     accumulate_measured_costs([c for c in costs if c is not None],
                               total, n_measured)
     for dim in COST_DIMENSIONS:
+        # Wall-clock spans (latency_s / remaining_latency_s) are never
+        # summed by ``accumulate_measured_costs``: their ``total`` stays the
+        # placeholder 0.0, so it must be reported as NOT a sum rather than
+        # as a zero. ``non_cumulative`` marks the dimension for readers.
+        non_cumulative = dim in NON_CUMULATIVE_DIMENSIONS
         dims[dim] = {
-            "total": (round(total[dim], 6) if n_measured[dim] else None),
+            "total": (None if non_cumulative
+                      else (round(total[dim], 6) if n_measured[dim]
+                            else None)),
             "n_measured": n_measured[dim],
             "n_items": len(costs),
             "complete": bool(costs) and n_measured[dim] == len(costs),
             "partial": bool(n_measured[dim])
                        and n_measured[dim] != len(costs),
+            "non_cumulative": non_cumulative,
         }
     return dims
 

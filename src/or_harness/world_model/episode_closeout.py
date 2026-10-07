@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import NON_CUMULATIVE_DIMENSIONS
 from or_harness.core.schema import is_finite_number as _finite
 from or_harness.core.schema import (
     task_check_block,
@@ -105,12 +106,21 @@ EVENT_VOCABULARY_VERSION = "wm-events/2"
 #: Version of the OBSERVATION RULES: how a prediction's declared metric is
 #: turned into a real observation. Bumped whenever a rule changes what an
 #: observed value MEANS, so samples measured under one rule are never
-#: pooled with another. ``wm-obs/2`` removes the task-check gate: a
-#: ``normalized_objective_gap`` observation is now ALWAYS the solver's own
-#: figure, and a failed task check is a SEPARATE fact carried alongside it
-#: rather than a rewrite of the quality number (which mixed two different
-#: measurements into one).
-OBSERVATION_RULE_VERSION = "wm-obs/2"
+#: pooled with another.
+#:
+#: ``wm-obs/2`` removes the task-check gate: a ``normalized_objective_gap``
+#: observation is the solver's own figure, and a failed task check is a
+#: SEPARATE fact carried alongside it rather than a rewrite of the quality
+#: number (which mixed two different measurements into one).
+#:
+#: ``wm-obs/3`` (r12) makes TASK COMPLETION the PRIMARY benefit and records
+#: the completion window's recovery structure (an intermediate confirmed
+#: failure later recovered is reported as its own fact, never folded into
+#: the final verdict) and the explicit cross-fact that a failed task check
+#: does NOT represent effective completion. A ``wm-obs/2`` sample and a
+#: ``wm-obs/3`` sample describe different primary benefits, so they are
+#: never pooled.
+OBSERVATION_RULE_VERSION = "wm-obs/3"
 
 #: Terminal states an episode may be closed under. Only ``completed``
 #: claims success; the others are honest endings, never dressed up.
@@ -302,8 +312,16 @@ def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
     """
     observed: List[float] = []
     unknown = 0
+    # Per-attempt verdicts in attempt order, so a failure that a LATER
+    # attempt recovered from is visible as its own fact. "The task failed at
+    # attempt 2 and was completed at attempt 3" is a different story from
+    # "the task never completed", and the primary benefit must not collapse
+    # the two: the WINDOW rule below reads the LAST verdict, and the earlier
+    # failure is reported beside it, never folded into the benefit.
+    verdicts: List[Optional[str]] = []
     for record in records:
         state = task_check_state(record)
+        verdicts.append(state)
         if state == "passed":
             observed.append(1.0)
         elif state == "failed":
@@ -318,17 +336,35 @@ def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
                        "and it becomes observable"),
         }
         return
+    final = observed[-1]
+    # Recovered intermediate failures: an EARLY attempt confirmed failure
+    # (verdict 0.0) followed by a LATER attempt that completed (final 1.0).
+    # The main benefit is the FINAL verdict — a recovered failure is not a
+    # failed task — but the recovery itself is carried as a fact so the two
+    # cases are distinguishable.
+    recovered = sum(1 for v in observed[:-1] if v == 0.0) \
+        if final == 1.0 else 0
     summary.benefit = {
         "kind": "effective_completion",
         "metric": OBSERVABLE_COMPLETION_METRIC,
         "unit": "boolean",
-        "observed": observed[-1],
+        "observed": final,
         "rule": "last in-scope attempt carrying a task-check verdict",
+        "scope": "the bound prediction's in-scope execution window",
         "n_observations": len(observed),
         "all_observations": observed,
+        "verdicts": [v or "unknown" for v in verdicts],
         "source": ("the execution's own check-task verdict; no check is run "
                    "by the close-out"),
     }
+    if recovered:
+        summary.benefit["recovered_intermediate_failures"] = recovered
+        summary.benefit["recovery_note"] = (
+            f"{recovered} earlier in-scope attempt(s) were CONFIRMED not to "
+            "satisfy the task, and a LATER attempt completed it. The primary "
+            "benefit is the FINAL verdict (completed); the intermediate "
+            "failures are reported as their own fact and are NOT counted as "
+            "a failed task")
     if unknown:
         summary.benefit["unknown_checks"] = unknown
         summary.benefit["unknown_note"] = (
@@ -693,11 +729,23 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
                     excluded += 1
                     continue
             values.append(float(getattr(cost, dim)))
+        # Wall-clock spans (latency_s / remaining_latency_s) are NEVER
+        # summed: overlapping prediction ranges would double-count the same
+        # remaining span, and per-attempt figures measured against an
+        # episode-level answer are disjoint from it. The per-item values
+        # stay in ``values`` so the count and completeness are still
+        # reported; only the TOTAL is withheld as a sum. The items are
+        # reported individually elsewhere.
+        non_cumulative = dim in NON_CUMULATIVE_DIMENSIONS
         dims[dim] = {
-            "total": round(sum(values), 6) if values else None,
+            "total": (None if non_cumulative
+                      else (round(sum(values), 6) if values else None)),
             "n_measured": len(values),
             "n_items": len(vectors),
             "complete": bool(vectors) and len(values) == len(vectors),
+            "non_cumulative": non_cumulative,
+            "per_item": ([round(v, 6) for v in values]
+                         if non_cumulative else None),
         }
         if excluded:
             dims[dim]["excluded"] = excluded
@@ -976,6 +1024,14 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                         "state": "failed",
                         "n_failed": task_check_failed,
                         "n_checked": len(task_check_states),
+                        # r12: an explicit cross-fact. A high solver QUALITY
+                        # beside a failed task check means "the solver solved
+                        # the MODEL, but the ANSWER did not satisfy the TASK"
+                        # — it is NOT an effective completion, and the
+                        # quality number must never be read as one. This flag
+                        # makes that reading impossible without changing the
+                        # quality value itself.
+                        "represents_effective_completion": False,
                         "note": (
                             f"{task_check_failed} in-scope observation(s) "
                             "carried a task check that confirmed the answer "
@@ -1190,17 +1246,36 @@ def _execution_event_observations(records: Sequence[Any]
                       "record written before the class existed, or a "
                       "failure with no usable record): the cause is UNKNOWN "
                       "and is not inferred from the error text")
+        elif raw_classes and all(c == "unknown" for c in raw_classes):
+            # r12: the executor CLASSIFIED the failure but could not place
+            # it reliably (a stranger error matched no known pattern). The
+            # cause is UNKNOWN, not "did not happen": marking these
+            # not_occurred would assert an absence the framework cannot
+            # establish, and would corrupt the risk calibration.
+            for name in ("environment_failure", "implementation_failure"):
+                _unit(name, execution_id, None,
+                      "the failure was classified UNKNOWN (it matched no "
+                      "reliable environment or implementation pattern): "
+                      "neither cause can be established and neither is "
+                      "recorded as NOT having happened")
         else:
             for name, wanted in (("environment_failure", "environment"),
                                  ("implementation_failure", "model")):
                 if wanted in classes:
                     _unit(name, execution_id, "occurred",
                           "the executor recorded an ENVIRONMENT failure "
-                          "(sandbox policy / missing module)"
+                          "(sandbox policy / missing module / unavailable "
+                          "backend)"
                           if wanted == "environment" else
                           "the executor recorded the harness's OWN code "
                           "failing (an implementation failure, not a "
                           "modelling error)")
+                elif "unknown" in classes and wanted not in classes:
+                    # The ONLY recorded class is an unknown one: the
+                    # absence of THIS cause is not established.
+                    _unit(name, execution_id, None,
+                          "the only recorded failure class is UNKNOWN: "
+                          "the absence of this cause is not established")
                 else:
                     # The failure class is KNOWN and is a different one (or
                     # there was no failure at all): this event did not
@@ -1692,8 +1767,15 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
     # ``method_deviation`` block so a reader can see the prose difference.
     # It blocks nothing: identity is decided by the structured fields, so a
     # re-worded receipt never invalidates a comparison whose strategy,
-    # solver and config all matched.
-    deviation = method_deviation(attribution.get("method_observed"))
+    # solver and config all matched. The plan is passed so a change can be
+    # classified as the plan's DECLARED fallback versus a substantive
+    # deviation — the two attribute differently (a declared fallback still
+    # belongs to the original candidate; a substantive change belongs to
+    # what actually ran).
+    planned_method_obj = getattr(
+        getattr(prediction, "candidate", None), "method", None)
+    deviation = method_deviation(attribution.get("method_observed"),
+                                 planned_method_obj)
     evaluation.method_deviation = copy.deepcopy(deviation)
     if deviation is not None:
         evaluation.notes.append(method_deviation_note(deviation))
@@ -2967,12 +3049,36 @@ def build_calibration_summary(harness, *,
                 "brier_episodes_by_event": {}, "brier_by_event": {},
                 "probability_by_event": {}, "scored_label_by_event": {},
                 "scored_episodes_by_event": {},
+                # r12 COVERAGE: per event name, how many predictions (a)
+                # predicted it AT ALL, (b) predicted a probability for it,
+                # and (c) were answered with a reliable label. The gap
+                # between (a) and (b) is "asked but no basis" (honest
+                # unknown); between (b) and (c) is "predicted but not
+                # scoreable". Coverage is reported so a model that skips a
+                # risk event is visible, and a MISSING event is never
+                # silently read as probability zero.
+                "asked_by_event": {}, "probabilized_by_event": {},
+                "labelled_by_event": {},
                 "correlated_predictions": 0,
             })
         group["n"] += 1
         episode_key = (str(evaluation.task_id or ""),
                        str(evaluation.episode_id or ""))
         group["all_episodes"].add(episode_key)
+        # Coverage: every prediction is ASKED about every observable event
+        # (the prompt mandates considering implementation_failure and
+        # task_check_failed); it may answer with a probability or with an
+        # honest unknown. Counting the ask once per prediction keeps the
+        # coverage denominator the same whether the model answered or not.
+        for _event in OBSERVABLE_RISK_EVENTS:
+            group["asked_by_event"][_event] = \
+                group["asked_by_event"].get(_event, 0) + 1
+        for _entry in (evaluation.risk or {}).get("scored") or []:
+            _e = str(_entry.get("event") or "(unnamed)")
+            group["probabilized_by_event"][_e] = \
+                group["probabilized_by_event"].get(_e, 0) + 1
+            group["labelled_by_event"][_e] = \
+                group["labelled_by_event"].get(_e, 0) + 1
         if benefit.get("eligibility") == "evaluable":
             group["benefit_episodes"].add(episode_key)
             if benefit.get("abs_error") is not None:
@@ -3161,6 +3267,29 @@ def build_calibration_summary(harness, *,
                 event: _mean(values)
                 for event, values in sorted(
                     group["scored_label_by_event"].items())},
+            # COVERAGE per observable event: how many of the group's
+            # predictions were ASKED about it, gave it a probability, and
+            # were answered with a reliable label. `n_asked` is the
+            # denominator (every prediction is mandated to consider
+            # implementation_failure and task_check_failed); `n_unknown`
+            # is the honest-unknown count, which is NOT a zero and NOT a
+            # failure. Reported separately from the Brier samples so a
+            # model that omits an event is VISIBLE instead of silently
+            # scoring as if it predicted zero.
+            "risk_coverage": {
+                event: {
+                    "n_asked": group["asked_by_event"].get(event, 0),
+                    "n_probabilized": group[
+                        "probabilized_by_event"].get(event, 0),
+                    "n_labelled": group["labelled_by_event"].get(event, 0),
+                    "n_unknown": max(
+                        0, n - group["probabilized_by_event"].get(event, 0)),
+                    "coverage_rate": (
+                        round(group["probabilized_by_event"].get(event, 0)
+                              / group["asked_by_event"][event], 6)
+                        if group["asked_by_event"].get(event) else None),
+                }
+                for event in sorted(OBSERVABLE_RISK_EVENTS)},
         }
         # The GROUP basis summarises the episode count; the per-statistic
         # verdicts above name WHICH numbers are under-sampled.
@@ -3344,14 +3473,24 @@ def _filter_pairs_by_model(block: Dict[str, Any],
     current identity is itself unknown.
     """
     filtered = copy.deepcopy(block)
+    # r12: the model identity is now a BLOCK-level field (shared by every
+    # pair), so filtering checks the block first, then each pair for a
+    # legacy block that still carries it per row.
+    block_ident = block.get("model_identity")
     kept: List[Dict[str, Any]] = []
     withheld = 0
-    for pair in (block.get("pairs") or []):
-        if str(pair.get("model_identity") or "(unknown)") == \
-                str(model_identity):
-            kept.append(pair)
+    if block_ident is not None:
+        if str(block_ident) == str(model_identity):
+            kept = list(block.get("pairs") or [])
         else:
-            withheld += 1
+            withheld = len(block.get("pairs") or [])
+    else:
+        for pair in (block.get("pairs") or []):
+            if str(pair.get("model_identity") or "(unknown)") == \
+                    str(model_identity):
+                kept.append(pair)
+            else:
+                withheld += 1
     filtered["pairs"] = kept
     filtered["filtered"] = True
     filtered["model_identity"] = str(model_identity)
@@ -3775,7 +3914,13 @@ def calibration_summary_for_context(harness, *,
 #: Default character budget for the compact paired-feedback block a
 #: prediction context carries. Overridden by
 #: ``OR_HARNESS_PAIRED_FEEDBACK_CHARS``.
-DEFAULT_PAIRED_FEEDBACK_CHARS = 8000
+#:
+#: r12 raises the default well above the old 8000: the deployed model has a
+#: 256k context, and 8000 characters (a couple of pairs) starved the model of
+#: its OWN past accuracy. This is a CEILING, not a target — the block is only
+#: as large as the material it has, and it is reported with used/n-omitted.
+#: A smaller deployment overrides it downward.
+DEFAULT_PAIRED_FEEDBACK_CHARS = 64000
 
 
 def _paired_feedback_budget() -> int:
@@ -3831,9 +3976,9 @@ def build_paired_feedback(
 
     What it deliberately does NOT do:
 
-    - it is NOT a top-k cut: every closed episode's pairs are included until
-      the character budget is reached, in window order (oldest first), and
-      the included/omitted counts are REPORTED rather than silently dropped;
+    - it is NOT a top-k cut: every closed episode's pairs are candidates,
+      and the included/omitted counts are REPORTED rather than silently
+      dropped;
     - an UNEXECUTED candidate never appears (there is no real outcome to
       pair it with, and none is fabricated);
     - it does not filter by cell, strategy_id or verification state — a
@@ -3841,6 +3986,18 @@ def build_paired_feedback(
       needs;
     - a single unknown or not-comparable FIELD does not drop the row: the
       other fields are still carried.
+
+    r12 ORDERING and SHARING (so a small budget shows the most useful
+    material, and the block does not repeat itself):
+
+    - rows are ordered MOST-RELEVANT-FIRST: failures and repairs, then the
+      most RECENT history, then the rest — never a raw oldest-first scan
+      that lets one early long record hold the budget forever;
+    - the model identity and the observation-rule version are stated ONCE
+      at the block level instead of on every row (they are the same for the
+      whole block), and each row carries only its ``evaluation_id``;
+    - the risk label-basis sentences are SHORT CODES explained once in
+      ``risk_reason_legend``.
 
     It returns a block with an empty ``pairs`` list and a note when there is
     nothing to show (no closed episodes).
@@ -3863,25 +4020,71 @@ def build_paired_feedback(
         if row is None:
             continue
         n_total += 1
-        rows.append(row)
+        rows.append((stored_evaluation, evaluation, row))
+
+    # RELEVANCE-FIRST ordering. The plan's priority: cases relevant to the
+    # current candidate, recent failures and repairs, then successes and
+    # different-condition cases. Since the block is global (not per
+    # candidate), the order is: failures/repairs first, then most RECENT.
+    # This stops an early long record from holding the budget forever.
+    def _is_failure(row: Dict[str, Any]) -> bool:
+        return bool(row.get("failure_classes")) \
+            or row.get("execution_status") in ("error", "timeout") \
+            or row.get("risk_actual") is not None \
+            and any((e.get("label") == "occurred")
+                    for e in row.get("risk_actual") or [])
+
+    def _recency(stored_evaluation) -> float:
+        return float(getattr(stored_evaluation, "created_at", 0.0) or 0.0)
+
+    indexed = list(enumerate(rows))
+
+    def _sort_key(item):
+        index, (stored_evaluation, _evaluation, row) = item
+        return (0 if _is_failure(row) else 1,
+                -_recency(stored_evaluation), index)
+
+    indexed.sort(key=_sort_key)
 
     included: List[Dict[str, Any]] = []
     used = 0
     omitted = 0
-    for row in rows:
+    ident = None
+    obs_rule = None
+    for _index, (_stored, _evaluation, row) in indexed:
+        # Hoist the block-invariant identity OFF the row: it is the same for
+        # every pair, so repeating it per row is pure duplication.
+        row_ident = row.pop("model_identity", None)
+        row_rule = row.pop("observation_rule_version", None)
+        if ident is None:
+            ident = row_ident
+        if obs_rule is None:
+            obs_rule = row_rule
         size = len(json.dumps(row, ensure_ascii=False, default=str))
         if used + size > budget:
             omitted += 1
+            # The identity was popped for a row we cannot include: put it
+            # back is unnecessary (the row is dropped) — but its absence
+            # must not silently change the block identity.
             continue
         used += size
         included.append(row)
     out: Dict[str, Any] = {
         "feedback_version": PAIRED_FEEDBACK_VERSION,
+        "model_identity": ident,
+        "observation_rule_version": obs_rule,
+        "identity_note": ("these two fields are BLOCK-level: all pairs share "
+                          "one predicting model and one observation rule, so "
+                          "they are stated once rather than per row"),
         "n_pairs_total": n_total,
         "n_pairs_included": len(included),
         "n_pairs_omitted": omitted,
         "budget_chars": budget,
         "used_chars": used,
+        "ordering": ("failures/repairs first, then most recent: the budget "
+                     "shows the most useful material rather than an "
+                     "oldest-first scan"),
+        "risk_reason_legend": dict(RISK_REASON_LEGEND),
         "basis": ("derived from CLOSED episodes' stored evaluations in the "
                   "current window; no model call, no re-scoring, no new "
                   "storage"),
@@ -3890,8 +4093,8 @@ def build_paired_feedback(
     if omitted:
         out["omission_note"] = (
             f"{omitted} pair(s) were omitted to stay within the character "
-            "budget after {len(included)} were included in window order; "
-            "they remain available through `orx calibration` and the "
+            "budget after {len(included)} were included (failures/recent "
+            "first); they remain available through `orx calibration` and the "
             "evaluation store — the omission is reported, never silent")
     if not rows:
         out["note"] = ("no closed-episode prediction-execution pairs exist "
@@ -4112,6 +4315,109 @@ def _single_case_reminders(out_groups: Dict[str, Any],
     return out
 
 
+def _compact_method_steps(steps: Sequence[Any], *,
+                          max_steps: int = 12,
+                          per_step_chars: int = 220) -> List[str]:
+    """Compact a method's steps WITHOUT dropping the key constraints.
+
+    The old rule kept the first THREE steps and clipped them, which silently
+    deleted later steps that carry the binding constraints (an upper bound, a
+    boundary condition, a final solve step) — the material then looked
+    complete while the decisive relation was gone. r12 keeps EVERY step up to
+    ``max_steps`` and only clips the individual text, so a normal six-step
+    method travels whole. When a method really has more steps than the cap,
+    the cap is spent on the FIRST and LAST steps (the setup and the final
+    solve/bound usually live at the ends) and the middle is elided with an
+    explicit marker rather than silently truncated.
+    """
+    cleaned = [(" ".join(str(s).split()))[:per_step_chars]
+               for s in steps if str(s).strip()]
+    if len(cleaned) <= max_steps:
+        return cleaned
+    head = max_steps // 2
+    tail = max_steps - head - 1
+    return (cleaned[:head]
+            + [f"...[{len(cleaned) - head - tail} step(s) elided]..."]
+            + (cleaned[-tail:] if tail else []))
+
+
+def _risk_label_basis_code(basis: Any) -> Optional[str]:
+    """Map a long risk label-basis sentence to a SHORT reason code.
+
+    The framework's label reasons are drawn from a small fixed set of
+    sentences (the vocabulary's ``measured``/``note`` text and the two
+    "cannot compute a Brier score" cases). Repeating the whole sentence per
+    event and per pair is pure duplication; the code carries the SAME
+    meaning and is explained once in ``risk_reason_legend``. An
+    unrecognised reason is passed through (clipped) rather than dropped, so
+    no information is invented or lost.
+    """
+    if basis is None:
+        return None
+    text = str(basis)
+    lowered = text.lower()
+    if "no brier score can be computed" in lowered \
+            or ("did not predict this event" in lowered):
+        return "unpredicted_no_brier"
+    if "gave no probability" in lowered:
+        return "predicted_without_probability"
+    if "unknown" in lowered and "class" in lowered:
+        return "error_class_unknown"
+    if "no task check" in lowered:
+        return "no_task_check"
+    if "time limit" in lowered:
+        return "time_limit"
+    if "did not report infeasibility" in lowered:
+        return "no_infeasibility"
+    if "infeasibility" in lowered:
+        return "reported_infeasibility"
+    if "did not record this failure class" in lowered:
+        return "class_not_recorded"
+    if "policy" in lowered or "module" in lowered:
+        return "environment_failure"
+    if "own code" in lowered or "implementation" in lowered:
+        return "implementation_failure"
+    if "check" in lowered and ("did not hold" in lowered
+                               or "failed" in lowered):
+        return "task_check_failed"
+    # Unrecognised: carry a clipped form rather than drop the fact.
+    return (" ".join(text.split()))[:80]
+
+
+#: One-time explanation of the short ``risk_actual[*].label_basis`` codes,
+#: so the block does not repeat the same rule text per event. Declared ONCE
+#: per paired-feedback block (see :func:`build_paired_feedback`).
+RISK_REASON_LEGEND: Dict[str, str] = {
+    "unpredicted_no_brier": (
+        "the model did not predict this event: it is observed by the "
+        "framework and counted in the occurrence rate, but no Brier score "
+        "can be computed without a probability"),
+    "predicted_without_probability": (
+        "the prediction named the event but gave no probability: it is "
+        "observed, not scored"),
+    "error_class_unknown": (
+        "the failure's error_class is unknown/unrecorded: the cause is not "
+        "inferred from the error text"),
+    "no_task_check": (
+        "no task check is on record for this execution: task validity is "
+        "UNKNOWN, never a failure"),
+    "time_limit": "the executor's time limit fired",
+    "no_infeasibility": "the solver did not report infeasibility here",
+    "reported_infeasibility": (
+        "the solver reported infeasibility (a verdict, not by itself a "
+        "strategy failure)"),
+    "class_not_recorded": "the execution did not record this failure class",
+    "environment_failure": (
+        "an ENVIRONMENT failure (sandbox policy / missing module / "
+        "unavailable backend)"),
+    "implementation_failure": (
+        "the harness's OWN code failed (an implementation failure, NOT a "
+        "modelling error)"),
+    "task_check_failed": (
+        "a declared task check ran on real values and did not hold"),
+}
+
+
 def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     """ONE compact prediction-execution pair, or None when not a pair.
 
@@ -4141,28 +4447,49 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
         "task_check": copy.deepcopy(benefit.get("task_check")),
     }
     # The method that was planned, one line: its name, the number of steps
-    # and the FIRST FEW steps themselves (clipped), so a pair shows HOW the
-    # work was organised, not only its length. Never a paraphrase.
+    # and the steps THEMSELVES. r12 keeps EVERY step (up to a cap that a
+    # normal method never reaches) and clips only the per-step text, so a
+    # method that carries a binding constraint in a later step travels
+    # whole. The old "first three steps" rule silently deleted exactly the
+    # constraints (an upper bound, a boundary, the final solve) a later
+    # prediction needed. Never a paraphrase.
     method = getattr(getattr(prediction, "candidate", None), "method", None)
     if isinstance(method, dict) and method:
         steps = [str(s) for s in (method.get("steps") or [])]
         row["method_planned"] = {
             "name": method.get("name"),
             "n_steps": len(steps),
-            "steps": [(" ".join(s.split()))[:160] for s in steps[:3]],
+            "steps": _compact_method_steps(steps),
         }
+        # The plan's own justification and declared fallback are KEPT: they
+        # are the "why" the reader needs to judge applicability, and the
+        # fallback is what makes a later deviation a DECLARED one.
+        if method.get("why"):
+            row["method_planned"]["why"] = (" ".join(
+                str(method["why"]).split()))[:400]
+        if method.get("fallback"):
+            row["method_planned"]["fallback"] = (" ".join(
+                str(method["fallback"]).split()))[:400]
     # The method ACTUALLY performed, when the run reported one (the script's
     # own receipt, or a harness declaration). It is a SEPARATE fact from the
     # plan: a plan is never copied in as if it had been carried out, and an
     # absent actual method stays absent (unknown), never equal to the plan.
+    # When the actual steps are IDENTICAL to the plan's they are not repeated
+    # (only the pointer is written) — the "same method content only once"
+    # rule, which also makes a real change easier to spot.
     actual_method = getattr(evaluation, "method_actual", None)
     if isinstance(actual_method, dict) and actual_method:
         steps = [str(s) for s in (actual_method.get("steps") or [])]
+        planned_steps = (row.get("method_planned") or {}).get("steps")
+        compact = _compact_method_steps(steps)
         row["method_actual"] = {
             "name": actual_method.get("name"),
             "n_steps": len(steps),
-            "steps": [(" ".join(s.split()))[:160] for s in steps[:3]],
         }
+        if planned_steps is not None and compact == planned_steps:
+            row["method_actual"]["steps"] = "same as method_planned.steps"
+        else:
+            row["method_actual"]["steps"] = compact
     # Whether the method that ran DEVIATED from the plan (a verdict, not the
     # plan copied over the performance). ``None`` when it could not be
     # compared (no plan, or no observed method).
@@ -4239,19 +4566,28 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     # The REAL risk events: which happened, which did not, which are unknown.
     # A predicted probability is never read as an occurrence, and an
     # unknown label stays unknown (never defaulted to "did not happen").
+    #
+    # r12 COMPRESSION: the long explanatory prose (why an un-predicted event
+    # has no Brier score, what a label means) is NOT re-inlined per event.
+    # It is mapped to a SHORT reason code, explained ONCE in the block's
+    # ``risk_reason_legend``. The old form repeated the same Brier sentence
+    # in every pair and every event — hundreds of characters of duplicated
+    # rule text that pushed real evidence out of the budget.
     risk_actual: List[Dict[str, Any]] = []
     for entry in (evaluation.risk or {}).get("scored") or []:
         risk_actual.append({
             "event": entry.get("event"),
             "label": entry.get("label"),
-            "label_basis": entry.get("label_basis"),
+            "label_basis": _risk_label_basis_code(entry.get("label_basis")),
             "predicted_probability": entry.get("predicted_probability"),
+            "brier": entry.get("brier"),
         })
     for entry in (evaluation.risk or {}).get("unscored") or []:
         risk_actual.append({
             "event": entry.get("event"),
             "label": entry.get("label"),
-            "label_basis": entry.get("reason"),
+            "label_basis": _risk_label_basis_code(
+                entry.get("reason") or entry.get("label_basis")),
             "predicted_probability": entry.get("predicted_probability"),
         })
     if risk_actual:

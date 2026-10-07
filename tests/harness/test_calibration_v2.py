@@ -54,7 +54,7 @@ PAYLOAD = {
 }
 
 GROUP = ("strategy_outcome|(unknown)|normalized_objective_gap|1-gap"
-         "|attempt|wm-obs/2")
+         "|attempt|wm-obs/3")
 
 
 def _task(task_id="t1", **coupling):
@@ -509,7 +509,7 @@ class TestWindowAndPublication(CalibrationV2Case):
         after = self.h.calibration_summary()
         # The correction REPUBLISHED the summary: a late TASK verdict moves
         # the separate task-check fact, while the QUALITY observation stays
-        # the solver's own figure (Q1-a / wm-obs/2). So the benefit error is
+        # the solver's own figure (Q1-a / wm-obs/3). So the benefit error is
         # STILL |0.8 - 1.0| = 0.2.
         self.assertTrue(after["validity_corrections"])
         self.assertEqual(after["validity_corrections"][0]["fields"],
@@ -915,7 +915,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary()
         self.assertIn("strategy_outcome|model-a@v1|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/2", summary["groups"])
+                      "|1-gap|attempt|wm-obs/3", summary["groups"])
         evaluation = h.strategy_prediction_evaluations(task_id="t1")[0]
         self.assertEqual(evaluation["model_identity"], "model-a@v1")
 
@@ -1003,7 +1003,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
                  self.h.store.dumps(stored)))
         rebuilt = self.h.calibration_summary(rebuild=True)
         self.assertIn("strategy_outcome|(unknown)|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/2", rebuilt["groups"])
+                      "|1-gap|attempt|wm-obs/3", rebuilt["groups"])
 
     def test_no_published_summary_reports_missing(self):
         context = self.h.build_prediction_context(_task("t1"), "ep1")
@@ -1473,7 +1473,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         calibration = context.strategy_calibration
         self.assertIn(
             "strategy_outcome|model-a@v1|normalized_objective_gap|1-gap"
-            "|attempt|wm-obs/2", calibration["groups"])
+            "|attempt|wm-obs/3", calibration["groups"])
         self.assertTrue(calibration.get("filtered"))
         self.assertFalse(calibration.get("withheld_groups"))
 
@@ -1486,9 +1486,9 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         own = ("strategy_outcome|model-a@v1|normalized_objective_gap"
-               "|1-gap|attempt|wm-obs/2")
+               "|1-gap|attempt|wm-obs/3")
         legacy = ("strategy_outcome|(unknown)|normalized_objective_gap"
-                  "|1-gap|attempt|wm-obs/2")
+                  "|1-gap|attempt|wm-obs/3")
         publish_calibration_summary(
             h, {"groups": {own: {"n_samples": 3},
                            legacy: {"n_samples": 2}},
@@ -1506,7 +1506,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         publish_calibration_summary(
-            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/2":
+            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/3":
                            {"n_samples": 1}},
                 "occurrence": {}, "exclusions": {}}, [])
         block = calibration_summary_for_context(h, model_identity=None)

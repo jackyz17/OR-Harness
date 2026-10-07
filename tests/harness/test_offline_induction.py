@@ -198,7 +198,7 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self.assertEqual(len(h.actions.query()), before_actions + 1)
         self.assertIn("index_sync", result)
 
-    def test_the_relation_write_is_not_counted_twice(self):
+    def test_the_relation_write_is_additive_each_time(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         ids = self._seed(h)
@@ -210,11 +210,15 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         }
         first = h.induce(relations=[relation])
         second = h.induce(relations=[relation])
+        # Knowledge is ADDITIVE: each submission creates its OWN numbered
+        # entry (a re-submission is never collapsed into the first).
         self.assertTrue(first["action"]["knowledge_delta"]["entries_created"])
-        self.assertFalse(second["action"]["knowledge_delta"]["entries_created"])
+        self.assertTrue(second["action"]["knowledge_delta"]["entries_created"])
+        self.assertNotEqual(first["relations"][0]["saved"],
+                            second["relations"][0]["saved"])
         self.assertEqual(second["action"]["business_result"],
-                         "relation_updated")
-        self.assertEqual(h.sbank.count(), 1)
+                         "relation_created")
+        self.assertEqual(h.sbank.count(), 2)
 
     def test_a_dry_run_relation_write_persists_nothing(self):
         h = ORHarness(home=self.home)
@@ -231,17 +235,26 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self.assertEqual(len(h.actions.query()), before_actions)
         self.assertEqual(h.sbank.count(), before_entries)
 
-    def test_submitting_no_relation_writes_nothing_and_says_so(self):
+    def test_submitting_no_relation_writes_no_knowledge_but_maintains(self):
         """The framework never runs a statistical induction behind the
-        agent's back: no relations means no write, reported honestly."""
+        agent's back: no relations means no knowledge write. But a review is
+        still a REAL maintenance event — the lifecycle runs and a review
+        fact is recorded, so utility maintenance is decoupled from creation.
+        """
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         self._seed(h)
-        before = (len(h.actions.query()), h.sbank.count())
+        before_entries = h.sbank.count()
+        before_actions = len(h.actions.query())
         result = h.induce()
         self.assertEqual(result["saved"], 0)
-        self.assertIn("relations", result["skipped"])
-        self.assertEqual((len(h.actions.query()), h.sbank.count()), before)
+        self.assertTrue(result["no_new_knowledge"])
+        # No entry was created...
+        self.assertEqual(h.sbank.count(), before_entries)
+        # ...but the review ran and is recorded as a maintenance action.
+        self.assertEqual(len(h.actions.query()), before_actions + 1)
+        self.assertEqual(result["business_result"], "unchanged")
+        self.assertIn("revisions", result)
 
     def test_a_method_less_relation_is_reported_not_refused(self):
         """The material report is a WARNING: the strategy is saved, and the

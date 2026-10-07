@@ -364,8 +364,13 @@ class TestVerificationChecks(HarnessTestCase):
 
 
 class TestPublishingGate(HarnessTestCase):
-    """The publishing gate on the CLAIM path (the statistical path is gone:
-    knowledge is only written from an agent-formed strategy)."""
+    """Publication is the AGENT's decision, not a framework content gate.
+
+    A submitted claim is offered as knowledge within its declared scope. Any
+    declared check is EVALUATED and RECORDED as the agent's own audit trail
+    (``verified`` / ``fact_checked`` / ``insufficient_evidence`` /
+    ``refuted``) — but the framework never blocks publication on it, and
+    never certifies the conclusion."""
 
     def setUp(self):
         super().setUp()
@@ -393,23 +398,24 @@ class TestPublishingGate(HarnessTestCase):
                 "claim": f"{strategy} holds in this cell",
                 "evidence": evidence}
 
-    def test_unverified_claim_is_not_published(self):
+    def test_unverified_claim_is_published_with_the_state_reported(self):
+        """A claim with no declared check is published; the framework read
+        the cited FACTS (``fact_checked``) and says so — it does not withhold
+        the knowledge on a content judgement."""
         self._seed_two_tasks()
         result = self.h.induce(relations=[self._claim()])
         outcome = result["relations"][0]
         self.assertIsNotNone(outcome.get("saved"))
-        self.assertFalse(outcome["publication"]["published"])
+        self.assertTrue(outcome["publication"]["published"])
         entry = self.h.sbank.get(outcome["saved"])
         # No assertion was declared, so the framework READ the cited FACTS
         # (``fact_checked``) rather than calling it merely ``unverified``.
-        # This claim is NOT a ``conditional_fact``, so a fact read is not
-        # enough to publish a transfer claim: it still is not published.
         self.assertEqual(entry.verification_state, "fact_checked")
-        self.assertFalse(entry.is_published)
-        # Recall does not present it as strategic knowledge...
+        self.assertTrue(entry.is_published)
+        # And recall DOES offer it as knowledge.
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
-        self.assertEqual(s01.evidence, "conditional_stats")
+        self.assertEqual(s01.evidence, "strategic_entry")
 
     def test_verified_claim_is_published(self):
         self._seed_two_tasks()
@@ -427,7 +433,10 @@ class TestPublishingGate(HarnessTestCase):
         s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
 
-    def test_refuted_claim_is_not_published(self):
+    def test_refuted_claim_is_still_offered_with_the_verdict_recorded(self):
+        """A refutation is the agent's OWN audit result, recorded on the
+        entry — it does not silently delete knowledge the agent chose to
+        submit. A reader sees ``refuted`` and weighs it."""
         self._seed_two_tasks()
         claim = self._claim()
         verify = {"claim": "S01 holds in this cell",
@@ -439,19 +448,17 @@ class TestPublishingGate(HarnessTestCase):
                                             task_id="t_bad", strategy_id="S01",
                                             status="infeasible",
                                             feasible=False))
-        claim["evidence"].append({"execution_id": "ex_bad", "role": "evidence"})
+        claim["evidence"].append({"execution_id": "ex_bad",
+                                  "role": "evidence"})
         result = self.h.induce(relations=[claim], verify=verify)
         entry = self.h.sbank.get(result["relations"][0]["saved"])
-        self.assertNotEqual(entry.verification_state, "verified")
-        self.assertFalse(result["relations"][0]["publication"]["published"])
+        self.assertEqual(entry.verification_state, "refuted")
+        # The verdict is RECORDED; publication is still the agent's call.
+        self.assertTrue(result["relations"][0]["publication"]["published"])
 
-    def test_failed_assertion_on_real_evidence_is_refuted_not_published(self):
+    def test_failed_assertion_on_real_evidence_is_refuted(self):
         self._seed_two_tasks()
         claim = self._claim()
-        # The check names a role/status that no cited execution satisfies: a
-        # ``status`` assertion on an ``error`` record now RUNS (it is
-        # decidable on real evidence), so the mismatch is a REFUTATION, not
-        # an undecidable check.
         verify = {"claim": "x", "check": {"assertions": [
             {"kind": "status", "roles": ["evidence"], "status": "optimal"}]}}
         self.h.bank.append(self.make_record(execution_id="ex_bad2",
@@ -461,12 +468,10 @@ class TestPublishingGate(HarnessTestCase):
         result = self.h.induce(relations=[claim], verify=verify)
         entry = self.h.sbank.get(result["relations"][0]["saved"])
         self.assertEqual(entry.verification_state, "refuted")
-        self.assertFalse(entry.is_published)
 
     def test_unmeasured_metric_is_insufficient_not_refuted(self):
         """A check that CANNOT be decided (a probe path that never resolves)
-        is ``insufficient_evidence``, distinct from a refutation, and is not
-        published."""
+        is ``insufficient_evidence``, distinct from a refutation."""
         self._seed_two_tasks()
         claim = self._claim()
         verify = {"claim": "x", "check": {"assertions": [
@@ -475,7 +480,6 @@ class TestPublishingGate(HarnessTestCase):
         result = self.h.induce(relations=[claim], verify=verify)
         entry = self.h.sbank.get(result["relations"][0]["saved"])
         self.assertEqual(entry.verification_state, "insufficient_evidence")
-        self.assertFalse(entry.is_published)
 
     def test_offline_view_can_still_return_candidates(self):
         self._seed_two_tasks()
@@ -486,22 +490,6 @@ class TestPublishingGate(HarnessTestCase):
         s01 = next(r for r in recs if r.strategy_id == "S01")
         self.assertEqual(s01.evidence, "strategic_entry")
         self.assertIn(entry_id, s01.evidence_refs)
-
-    def test_reinducing_without_a_verdict_keeps_the_verdict(self):
-        """Re-submitting the SAME claim without a fresh verdict must not
-        silently demote it."""
-        self._seed_two_tasks()
-        claim = self._claim()
-        verify = {"claim": "c", "check": {"assertions": [
-            {"kind": "status", "roles": ["evidence"], "status": "optimal"}]}}
-        first = self.h.induce(relations=[claim], verify=verify)
-        entry_id = first["relations"][0]["saved"]
-        self.assertEqual(self.h.sbank.get(entry_id).verification_state,
-                         "verified")
-        # Re-submit identically, no verdict: the verdict stands.
-        self.h.induce(relations=[claim])
-        self.assertEqual(self.h.sbank.get(entry_id).verification_state,
-                         "verified")
 
     def test_gating_publishing_does_not_block_execution(self):
         """Gating publishing must not stop the harness from trying.

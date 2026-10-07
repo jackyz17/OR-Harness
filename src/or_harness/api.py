@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import (
     COST_DIMENSIONS,
+    NON_CUMULATIVE_DIMENSIONS,
     CostVector,
     ExecutionRecord,
     FailureRecord,
@@ -656,8 +657,11 @@ class ORHarness:
 
         kept_recs = []
         for rec in result.get("recommendations") or []:
-            refs = [str(r) for r in (rec.get("evidence_refs") or [])
-                    if str(r).startswith("se_")]
+            # Only a strategic_entry row's refs are entry numbers; a
+            # conditional_stats row's refs are execution ids. The row's own
+            # ``evidence`` field distinguishes them — no id-prefix guess.
+            refs = ([str(r) for r in (rec.get("evidence_refs") or [])]
+                    if rec.get("evidence") == "strategic_entry" else [])
             if refs:
                 if all(_keep("strategic_knowledge", r) for r in refs):
                     kept_recs.append(rec)
@@ -5546,7 +5550,9 @@ class ORHarness:
                 prediction_id: Optional[str] = None,
                 method: Optional[Dict[str, Any]] = None,
                 adapted_from: Optional[Sequence[str]] = None,
-                adaptation: Optional[str] = None) -> ExecutionRecord:
+                adaptation: Optional[str] = None,
+                used_entry_ids: Optional[Sequence[Any]] = None
+                ) -> ExecutionRecord:
         """Run one episode and assemble its Execution Evidence record.
 
         The returned record is an evidence unit: the strategy ACTUALLY used,
@@ -5789,6 +5795,16 @@ class ORHarness:
             if adaptation is not None and str(adaptation).strip():
                 reuse["adaptation"] = str(adaptation).strip()
             record.execution_features["reuse_trace"] = reuse
+        # USED KNOWLEDGE (entry numbers the agent declares it ACTUALLY
+        # adopted). Distinct from BOTH recall (``last_consulted_at``) and the
+        # adapted-from citation: this is the agent naming the entries this
+        # attempt's method relied on. ``[]`` is VALID — "no prior knowledge
+        # was adopted" — and is recorded as such rather than left absent, so
+        # a later reader can tell "adopted nothing" from "did not say". An
+        # UNSTATED adoption (``None``) writes nothing: absence is not an
+        # empty declaration.
+        if used_entry_ids is not None:
+            self._record_used_entries(record, used_entry_ids)
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -5951,7 +5967,8 @@ class ORHarness:
                host_usage: Optional[Dict[str, Any]] = None,
                prediction: Optional[PredictionSnapshot] = None,
                method: Optional[Dict[str, Any]] = None,
-               method_actual: Optional[Dict[str, Any]] = None
+               method_actual: Optional[Dict[str, Any]] = None,
+               used_entry_ids: Optional[Sequence[Any]] = None
                ) -> Dict[str, Any]:
         """Append a fact, then run the automatic chain:
         frozen quality checks -> cost backfill -> cost feedback ->
@@ -6030,6 +6047,14 @@ class ORHarness:
             if declared_actual is not None:
                 declared_actual.setdefault("source", "harness_declared")
                 record.method_actual = declared_actual
+        # ADOPTION DECLARATION for a record assembled outside ``execute``:
+        # the entry numbers the attempt relied on. A value already on the
+        # record (from ``execute``) WINS — a later re-declaration never
+        # rewrites what the run recorded. An explicit list (including ``[]``)
+        # is recorded; ``None`` leaves it unstated.
+        if used_entry_ids is not None \
+                and "used_entries" not in record.execution_features:
+            self._record_used_entries(record, used_entry_ids)
         # Frozen quality checks are computed against the interval in force
         # RIGHT NOW and persisted with the fact — nothing downstream
         # re-scores a later execution against a post-hoc interval.
@@ -6324,20 +6349,18 @@ class ORHarness:
         ``notes`` are harness-written applicability notes (free text): kept
         for the reader, never scored.
 
-        Submitting NO relations writes nothing and says so — the framework
-        never runs a statistical induction behind the agent's back.
+        Submitting NO relations writes no knowledge, but it is a REAL review:
+        the maintenance lifecycle (``revise``) STILL runs, so an entry's
+        forward checks, promotion/demotion and dormancy management keep
+        working even when the agent decided to add nothing. The review is
+        recorded as a maintenance action fact (its scope and reason), so the
+        existing attribution chain sees that a review happened and concluded
+        "no new knowledge". The framework never runs a statistical induction
+        behind the agent's back — it only maintains the EXISTING knowledge.
         """
         if not relations:
-            return {
-                "relations": [],
-                "saved": 0,
-                "published": 0,
-                "skipped": ("no relations were submitted: knowledge is only "
-                            "written from an agent-formed strategy "
-                            "(`induce --relation`). Read the material with "
-                            "`orx induction-material`, then submit the "
-                            "strategy you formed."),
-            }
+            return self._record_empty_review(
+                dry_run=dry_run, reason=notes, strategy_id=strategy_id)
         # A relation write is a knowledge write like any other: it gets a
         # maintenance action with PRE and POST knowledge state, a knowledge
         # delta, an index result and the same M6 feedback.
@@ -6406,20 +6429,19 @@ class ORHarness:
         """Save (and optionally verify) structured relation claims.
 
         A relation is knowledge about a STRUCTURAL CONDITION paired with a
-        choice and its consequence — it is not a restatement of one cell's
-        statistics, so it does not go through the statistical admission gate.
-        It carries its own verification, and its publication gate is the
-        cross-task independence requirement: a claim about future tasks needs
-        evidence from at least two distinct tasks. A single-task relation is
-        still SAVED (and may be verified as a fact about that task); it is
-        simply not published as transferable knowledge.
+        choice and its consequence. Each submission is ADDITIVE: it creates a
+        NEW numbered entry, and the framework checks only ADMINISTRATIVE
+        matters (a well-formed claim, cited executions that exist, a valid
+        number, a successful write). Publication is the agent's decision —
+        the framework records the agent's own verification (if any) rather
+        than gating on it.
 
         Nothing here is fabricated: the evidence identity (tasks, family,
-        cell, strategy ids) is derived from the recorded facts, and the
-        verification is computed by the framework from those facts. Evidence
-        is cited by explicit execution id and role — the framework no longer
-        expands a ``bundle_id`` citation, because there is no candidate
-        generator to resolve one.
+        cell, strategy ids) is derived from the recorded facts, and any
+        computed verification is computed by the framework from those facts.
+        Evidence is cited by explicit execution id and role — the framework
+        no longer expands a ``bundle_id`` citation, because there is no
+        candidate generator to resolve one.
         """
         results = []
         created: List[str] = []
@@ -6453,6 +6475,56 @@ class ORHarness:
         if not dry_run:
             out["index_sync"] = index_sync
         return out
+
+    def _record_empty_review(self, *, dry_run: bool, reason: Optional[Any],
+                             strategy_id: Optional[str]) -> Dict[str, Any]:
+        """Record an induction review that concluded NO new knowledge.
+
+        A review with no submission is still a real maintenance event: the
+        offline lifecycle (``revise``) runs so existing knowledge's forward
+        checks, promotion/demotion and dormancy management keep working, and
+        a maintenance action is written naming the review's scope and reason
+        so the attribution chain can see it. NO entry is created and NO
+        fabricated knowledge is written.
+        """
+        result: Dict[str, Any] = {
+            "relations": [], "saved": 0, "published": 0,
+            "no_new_knowledge": True,
+            "note": ("no relations were submitted: this is a review that "
+                     "decided the existing knowledge needs no addition. The "
+                     "lifecycle maintenance below still ran."),
+        }
+        if dry_run:
+            return result
+        maintenance = self._begin_induce_action(strategy_id, False)
+        self.actions.amend_action_params(
+            maintenance["action_id"], knowledge_shape="review_only")
+        outcome = {
+            "business_result": "unchanged",
+            "review": True,
+            "reason": [str(r) for r in (reason or []) if str(r).strip()],
+            "note": ("a review with no new knowledge: the lifecycle was "
+                     "maintained over the EXISTING entries; nothing was "
+                     "created and no statistical induction ran"),
+        }
+        self.actions.end_action(maintenance["action_id"], status="completed",
+                                outcome=outcome)
+        result["action"] = {
+            "action_id": maintenance["action_id"],
+            "business_result": "unchanged",
+            "knowledge_delta": {"entries_created": [], "entries_removed": [],
+                                "entry_changes": []},
+        }
+        result["business_result"] = "unchanged"
+        result["knowledge_delta"] = result["action"]["knowledge_delta"]
+        # The lifecycle maintenance runs UNCONDITIONALLY (with or without a
+        # new entry): utility maintenance is decoupled from creation.
+        try:
+            result["revisions"] = self.induction.revise(
+                strategy_id=strategy_id)
+        except Exception as exc:  # never fail a review for this
+            result["revisions_error"] = f"{type(exc).__name__}: {exc}"
+        return result
 
     def _begin_induce_action(self, strategy_id: Optional[str],
                              all_: bool = False) -> Dict[str, Any]:
@@ -6500,9 +6572,6 @@ class ORHarness:
         # result and delta rather than an empty one.
         relation_rows = result.get("relations") or []
         relations_saved = [r for r in relation_rows if r.get("saved")]
-        relations_published = [
-            r for r in relation_rows
-            if (r.get("publication") or {}).get("published")]
         relation_created_entries = [
             r.get("created_entry") for r in relations_saved
             if r.get("created_entry")]
@@ -6514,8 +6583,9 @@ class ORHarness:
         elif updated:
             business = "updated"
         elif relation_created_entries:
-            business = ("relation_created" if relations_published
-                        else "relation_created_unpublished")
+            # A submitted relation is a NEW numbered entry (knowledge is
+            # additive; the agent decides publication).
+            business = "relation_created"
         elif relations_saved:
             business = "relation_updated"
         elif revised:
@@ -6572,7 +6642,6 @@ class ORHarness:
             "refused_reasons": [r.get("skipped") for r in refused],
             "revisions": len(revised),
             "relations_saved": len(relations_saved),
-            "relations_published": len(relations_published),
             # The REAL executions the induction CITED (derived from each
             # saved relation's verification scope, never re-typed). This is
             # what lets a later reader associate the knowledge change with
@@ -6948,23 +7017,6 @@ class ORHarness:
         """Read-only index health (counts, model id, stale/missing items)."""
         return self.index_sync.health()
 
-    def migrate_relations(self, *, dry_run: bool = False) -> Dict[str, Any]:
-        """One-way migration of legacy entry-level ``relations`` into claim
-        entries (see ``strategy.relation_migration``).
-
-        Idempotent: every relation becomes its OWN claim entry with its
-        verification copied verbatim; a host whose only content was its
-        relations is removed. ``dry_run`` reports and writes nothing. The
-        derived index is refreshed afterwards so a migrated claim is
-        retrievable."""
-        from or_harness.strategy.relation_migration import (
-            migrate_legacy_relations,
-        )
-        report = migrate_legacy_relations(self.sbank, dry_run=dry_run)
-        if not dry_run:
-            report["index_sync"] = self.index_sync.sync_entries()
-        return report
-
     def doctor(self) -> Dict[str, Any]:
         reports = probe_all()
         pending = self.bank.pending()
@@ -6992,6 +7044,54 @@ class ORHarness:
 
     # -- automatic chain internals ------------------------------------------------
 
+    def _record_used_entries(self, record: ExecutionRecord,
+                             used_entry_ids: Optional[Sequence[Any]]
+                             ) -> None:
+        """Record the knowledge NUMBERS the agent declares it ADOPTED.
+
+        Three states are kept apart, never inferred from one another:
+
+        - **recalled**: an entry was surfaced to the agent (its
+          ``last_consulted_at`` moved on the recall path);
+        - **adopted**: the agent NAMES the entry numbers this attempt relied
+          on (``used_entry_ids`` here) — a DECLARATION, not a guess from a
+          shared name;
+        - **outcome**: this attempt's own result (``quality`` / task check).
+
+        An empty list is VALID and recorded as ``[]`` ("adopted no prior
+        knowledge"), so "adopted nothing" is distinguishable from "did not
+        say". A non-empty list is validated against the bank and
+        de-duplicated by number; an id that names no entry is recorded as
+        ``unknown`` (a citation, not a fabricated fact), and existence is
+        the framework's ADMINISTRATIVE check — it does not judge whether the
+        adoption helped (that is the outcome's job).
+        """
+        declared = [str(e).strip() for e in (used_entry_ids or [])
+                    if str(e).strip()]
+        # De-duplicate by number, preserving first-seen order.
+        declared = list(dict.fromkeys(declared))
+        known: List[str] = []
+        unknown: List[str] = []
+        for entry_id in declared:
+            if self.sbank.get(entry_id) is not None:
+                known.append(entry_id)
+            else:
+                unknown.append(entry_id)
+        note = ("entry numbers the agent declared this attempt ADOPTED — a "
+                "declaration, not a guess from a shared name; whether the "
+                "adoption helped is judged by this attempt's own task check "
+                "and calibration, never by the declaration")
+        if not declared:
+            note = ("the agent declared that NO prior knowledge was adopted; "
+                    "an empty adoption is a fact, distinct from recall and "
+                    "from an unstated adoption")
+        record.execution_features["used_entries"] = {
+            "entry_ids": declared,
+            "known_entry_ids": known,
+            "unknown_entry_ids": unknown,
+            "note": note,
+        }
+
     def _check_predictions(self, record: ExecutionRecord) -> List[Dict[str, Any]]:
         """Frozen forward checks: this execution against matching entries'
         intervals, as EVIDENCE.
@@ -7012,10 +7112,26 @@ class ORHarness:
         if record.measurement_scope != "attempt":
             return []
         observed = quality_score(record)
+        # ADOPTION ATTRIBUTION (no name-matching). When the record names the
+        # entries it ADOPTED, the forward check is computed ONLY for those
+        # entries: a share of a strategy name is not adoption, and being
+        # RECALLED is not adoption either. An explicit EMPTY adoption
+        # (``used_entries`` present with ``entry_ids: []``) yields NO forward
+        # checks — "adopted nothing" must not silently count as success.
+        # A record written outside ``execute``/``record`` carries no
+        # ``used_entries`` at all: there adoption is UNSTATED, and the
+        # historical name-match behaviour stands (absence is not the same as
+        # an empty declaration).
+        used = record.execution_features.get("used_entries")
+        declared = None
+        if isinstance(used, dict):
+            declared = set(used.get("known_entry_ids") or [])
         events: List[Dict[str, Any]] = []
         for entry in self.sbank.matching(record.profile_snapshot,
                                          include_dormant=True):
             if entry.strategy_id != record.strategy_id:
+                continue
+            if declared is not None and entry.entry_id not in declared:
                 continue
             lo, hi = entry.quality_interval
             width = max(hi - lo, 1e-6)
@@ -7075,10 +7191,11 @@ class ORHarness:
             })
         complete = {d: (n_measured[d] == len(records) and len(records) > 0)
                     for d in COST_DIMENSIONS}
-        # Latency never appears in total_cost: attempts may overlap, and
-        # end-to-end wait is a separate harness-supplied fact (see below).
+        # Wall-clock spans never appear in total_cost: attempts may overlap,
+        # and end-to-end wait is a separate harness-supplied fact (see below).
         total_cost = {d: (round(total[d], 4) if n_measured[d] > 0 else None)
-                      for d in COST_DIMENSIONS if d != "latency_s"}
+                      for d in COST_DIMENSIONS
+                      if d not in NON_CUMULATIVE_DIMENSIONS}
         return {
             "task_id": task_id,
             "n_attempts": len(records),

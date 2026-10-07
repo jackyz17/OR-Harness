@@ -285,26 +285,23 @@ class TestRetrievalEvidence(ContextCase):
         self.assertEqual(summary["version_conflicts"],
                          ["execution_evidence:ex_1"])
 
-    def test_unverified_knowledge_is_not_surfaced_by_default(self):
+    def test_unverified_knowledge_is_offered_with_its_state(self):
         entry = StrategicEntry(
-            entry_id="se_u", strategy_id="S04",
+            entry_id="", strategy_id="S04",
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.9, quality_interval=(0.5, 1.0),
             expected_cost_hat=self.make_record().cost,
             failure_prob=0.1, status="candidate", support_n=2,
             verification={"state": "unverified", "claim": "c",
                           "conclusion": "no verdict yet"})
-        self.h.sbank.add(entry)
+        eid = self.h.sbank.add(entry)
         ctx = self.h.build_prediction_context(_task(), "ep1")
+        # A submitted claim IS offered knowledge (the agent decides
+        # publication), and its state travels so it is never mistaken.
         ids = {h["evidence_id"] for h in ctx.retrieval.hits}
-        self.assertNotIn("se_u", ids)
-        ctx2 = self.h.build_prediction_context(
-            _task(), "ep1", include_unverified=True)
-        ids2 = {h["evidence_id"] for h in ctx2.retrieval.hits}
-        self.assertIn("se_u", ids2)
-        # Even when surfaced, it stays labelled unverified.
-        item = next(h for h in ctx2.retrieval.hits
-                    if h["evidence_id"] == "se_u")
+        self.assertIn(eid, ids)
+        item = next(h for h in ctx.retrieval.hits
+                    if h["evidence_id"] == eid)
         self.assertNotEqual(item["evidence_class"], "verified_knowledge")
 
     def test_evidence_classes_distinguish_the_five_kinds(self):
@@ -704,35 +701,35 @@ class TestCapabilityEvidenceIsHonest(ContextCase):
         self.assertIsInstance(digest, str)
         self.assertNotIn("capability", digest)
 
-    def test_unverified_knowledge_never_becomes_real_evidence(self):
+    def test_unverified_knowledge_never_becomes_verified_evidence(self):
         entry = StrategicEntry(
-            entry_id="se_u", strategy_id="S04",
+            entry_id="", strategy_id="S04",
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.95, quality_interval=(0.5, 1.0),
             expected_cost_hat=self.make_record().cost,
             failure_prob=0.05, status="candidate", support_n=2,
             verification={"state": "unverified", "claim": "c",
                           "conclusion": "no verdict yet"})
-        self.h.sbank.add(entry)
+        eid = self.h.sbank.add(entry)
         ctx = self.h.build_prediction_context(_task(), "ep1")
-        # It must NOT be surfaced as retrievable evidence by default.
-        self.assertNotIn("se_u", {hit["evidence_id"]
-                                  for hit in ctx.retrieval.hits})
-        # It MAY appear inside the frozen coverage view — that view layers it
-        # as `unverified` on purpose (the frozen target derivation reads it),
-        # so the assertion is that it never reaches a VERIFIED position.
+        # It IS offered (the agent submitted it) but never as VERIFIED
+        # evidence — the evidence class says so.
+        hit = next(h for h in ctx.retrieval.hits
+                   if h["evidence_id"] == eid)
+        self.assertNotEqual(hit["evidence_class"], "verified_knowledge")
+        # And it never reaches a VERIFIED position in the frozen layers.
         layers = ((ctx.snapshot.get("coverage") or {})
                   .get("knowledge_layers") or {})
         verified_ids = {str(e.get("entry_id"))
                         for e in (layers.get("verified") or [])}
         unverified_ids = {str(e.get("entry_id"))
                           for e in (layers.get("unverified") or [])}
-        self.assertNotIn("se_u", verified_ids)
-        self.assertIn("se_u", unverified_ids)
-        # And the memory-content version digests CONTENT, so the revision is
-        # visible in it while the id itself is not echoed back.
+        self.assertNotIn(eid, verified_ids)
+        self.assertIn(eid, unverified_ids)
+        # The memory-content version digests CONTENT, and carries no entry
+        # IDENTITY (only the digest and its composition counts).
         digest_block = ctx.capability_version["knowledge_content"]
-        self.assertNotIn("se_u", str(digest_block))
+        self.assertNotIn("entry_id", json.dumps(digest_block))
         self.assertEqual(digest_block["knowledge_by_layer"].get("unverified"),
                          1)
 
@@ -1070,17 +1067,17 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
     def test_a_revised_entry_does_not_leak_into_a_historical_context(self):
         """P1: a revision AFTER the snapshot must not appear in it."""
         entry = StrategicEntry(
-            entry_id="se_rev", strategy_id="S04",
+            entry_id="", strategy_id="S04",
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.60, quality_interval=(0.5, 1.0),
             expected_cost_hat=self.make_record().cost,
             failure_prob=0.1, status="candidate", support_n=2,
             verification={"state": "verified", "claim": "c",
                           "conclusion": "holds"})
-        self.h.sbank.add(entry)
+        eid = self.h.sbank.add(entry)
         task = _task("t1")
         snap = self.h.snapshot(task, "ep1")      # freezes quality 0.60
-        revised = self.h.sbank.get("se_rev")
+        revised = self.h.sbank.get(eid)
         revised.expected_quality_hat = 0.95
         self.h.sbank.update(revised)             # the entry moves to 0.95
         ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
@@ -1377,7 +1374,7 @@ class TestMemoryContentVersion(ContextCase):
     left the version digest identical.
     """
 
-    def _verified_entry(self, entry_id="se_k", strategy_id="S04",
+    def _verified_entry(self, entry_id="", strategy_id="S04",
                         quality=0.90):
         return StrategicEntry(
             entry_id=entry_id, strategy_id=strategy_id,
@@ -1389,10 +1386,10 @@ class TestMemoryContentVersion(ContextCase):
                           "conclusion": "holds"})
 
     def test_a_quality_revision_moves_the_content_digest(self):
-        self.h.sbank.add(self._verified_entry())
+        eid = self.h.sbank.add(self._verified_entry())
         before = self.h.build_prediction_context(_task(), "ep1")
         d1 = before.capability_version["knowledge_content_digest"]
-        entry = self.h.sbank.get("se_k")
+        entry = self.h.sbank.get(eid)
         entry.expected_quality_hat = 0.55
         self.h.sbank.update(entry)
         after = self.h.build_prediction_context(_task(), "ep1")
@@ -1407,10 +1404,10 @@ class TestMemoryContentVersion(ContextCase):
             ["knowledge_entries"])
 
     def test_an_action_revision_moves_the_content_digest(self):
-        self.h.sbank.add(self._verified_entry())
+        eid = self.h.sbank.add(self._verified_entry())
         d1 = self.h.build_prediction_context(
             _task(), "ep1").capability_version["knowledge_content_digest"]
-        entry = self.h.sbank.get("se_k")
+        entry = self.h.sbank.get(eid)
         entry.applicability = ["use when capacity binds early"]
         self.h.sbank.update(entry)
         d2 = self.h.build_prediction_context(
@@ -1427,9 +1424,9 @@ class TestMemoryContentVersion(ContextCase):
             "a fresh read timestamp is not a content change")
 
     def test_consultation_timestamps_are_excluded(self):
-        self.h.sbank.add(self._verified_entry())
+        eid = self.h.sbank.add(self._verified_entry())
         before = self.h.build_prediction_context(_task(), "ep1")
-        entry = self.h.sbank.get("se_k")
+        entry = self.h.sbank.get(eid)
         entry.last_consulted_at = 1e12          # a read, not a revision
         self.h.sbank.update(entry)
         after = self.h.build_prediction_context(_task(), "ep1")
@@ -1631,16 +1628,22 @@ class TestProviderViewIsDedupedAndBounded(ContextCase):
         self.assertTrue(size["within_bound"])
 
     def test_an_oversized_request_is_trimmed_and_says_what_it_dropped(self):
-        from or_harness.world_model import context as ctx_module
+        import os
         task = {"task_id": "t1", "family": "f",
                 "text": "x" * 4000, "objective": "minimise cost"}
         ctx = self.h.build_prediction_context(task, "ep1")
-        original = ctx_module.MAX_REQUEST_CHARS
-        ctx_module.MAX_REQUEST_CHARS = 3000
+        # r12: the input budget is DEPLOYMENT-CONFIGURED (tokens x an
+        # explicitly labeled chars-per-token estimate), not a hardcoded
+        # character constant. A tiny budget forces the trim.
+        prior = os.environ.get("OR_HARNESS_INPUT_BUDGET_TOKENS")
+        os.environ["OR_HARNESS_INPUT_BUDGET_TOKENS"] = "600"
         try:
             view = ctx.provider_view()
         finally:
-            ctx_module.MAX_REQUEST_CHARS = original
+            if prior is None:
+                os.environ.pop("OR_HARNESS_INPUT_BUDGET_TOKENS", None)
+            else:
+                os.environ["OR_HARNESS_INPUT_BUDGET_TOKENS"] = prior
         self.assertIn("omissions", view)
         blocks = {o["block"] for o in view["omissions"]}
         self.assertTrue(blocks,
@@ -1649,6 +1652,10 @@ class TestProviderViewIsDedupedAndBounded(ContextCase):
         self.assertIn("joint_problem", view)
         self.assertNotIn("joint_problem", blocks)
         self.assertNotIn("strategy_outcome_calibration", blocks)
+        # The budget reports its own derivation, never a bare constant.
+        budget = view["request_size"]["budget"]
+        self.assertEqual(budget["budget_tokens"], 600)
+        self.assertIn("ESTIMATE", budget["estimator"])
 
     def test_compaction_keeps_each_capability_status(self):
         ctx = self.h.build_prediction_context(_task("t1"), "ep1")

@@ -151,9 +151,10 @@ class TestAcceptedOperationRunsDeclaredRelations(MaintenanceCase):
 
 
 class TestKnowledgeDeltaCoversRelations(MaintenanceCase):
-    def test_relation_add_and_revise_both_appear_in_the_delta(self):
-        """#6: a relation ADD and a relation REVISION are knowledge changes
-        and must appear in the delta, by relation id."""
+    def test_relation_add_is_additive_and_recorded_in_the_delta(self):
+        """A relation submission is a knowledge ADD: knowledge is additive,
+        so a second submission (even with changed text) is a NEW numbered
+        entry, and both creations appear in their actions' deltas."""
         self.seed()
         base = {
             "subject": "principle:state",
@@ -163,17 +164,21 @@ class TestKnowledgeDeltaCoversRelations(MaintenanceCase):
         }
         first = self.h.induce(relations=[base])
         entry_id = first["relations"][0]["saved"]
-        # Submitting the same claim again with a CHANGED assertion is a
-        # REVISION of the SAME entry, and the moved text is named in the
-        # delta.
+        self.assertIn(entry_id,
+                      first["knowledge_delta"]["entries_created"])
+        # Submitting the same claim again with a CHANGED assertion is a NEW
+        # entry (never an in-place rewrite), and the new creation is named in
+        # the delta.
         revised = dict(base, claim="keep the inventory AND the deferral "
                                           "state")
         second = self.h.induce(relations=[revised])
-        self.assertEqual(second["relations"][0]["saved"], entry_id)
-        self.assertEqual(second["business_result"], "relation_updated")
-        change = [c for c in second["knowledge_delta"]["entry_changes"]
-                  if c["entry_id"] == entry_id][0]
-        self.assertIn("text", change["changed"]["claim"]["fields"])
+        second_id = second["relations"][0]["saved"]
+        self.assertNotEqual(second_id, entry_id)
+        self.assertEqual(second["business_result"], "relation_created")
+        self.assertIn(second_id,
+                      second["knowledge_delta"]["entries_created"])
+        self.assertNotIn(entry_id,
+                         second["knowledge_delta"]["entries_created"])
 
 
 class TestMaterialReport(MaintenanceCase):

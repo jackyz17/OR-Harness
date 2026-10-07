@@ -54,7 +54,7 @@ class TestSurvivingBehaviour(HarnessTestCase):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         entry = StrategicEntry(
-            entry_id=StrategicEntry.new_id(), strategy_id="S01",
+            entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             expected_quality_hat=0.5,
             verification={"state": "verified", "claim": "x"})

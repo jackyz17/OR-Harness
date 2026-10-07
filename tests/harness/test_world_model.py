@@ -103,7 +103,7 @@ class TestBeliefSnapshot(HarnessTestCase):
         # Later writes: a new execution fact + a new strategic entry.
         h.bank.append(self.make_record(task_id="t1", strategy_id="S01"))
         entry = StrategicEntry(
-            entry_id=StrategicEntry.new_id(), strategy_id="S01",
+            entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             verification={"state": "verified", "claim": "x"})
         h.sbank.add(entry)
@@ -142,7 +142,7 @@ class TestBeliefSnapshot(HarnessTestCase):
         s1 = h.snapshot(_task("t1"), "ep1")
         v1 = s1.coverage.get("knowledge_version")
         h.sbank.add(StrategicEntry(
-            entry_id=StrategicEntry.new_id(), strategy_id="S01",
+            entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             verification={"state": "verified", "claim": "x"}))
         s2 = h.snapshot(_task("t1"), "ep1")
@@ -399,11 +399,12 @@ class TestBudgetLedger(HarnessTestCase):
 
 
 class TestVerifiedKnowledgeView(HarnessTestCase):
-    """Requirement 4/WM-K1: admission gating in the knowledge view."""
+    """Requirement 4/WM-K1: the knowledge view layers by the agent's OWN
+    verification state (it does not gate publication)."""
 
     def _entry(self, verification):
         return StrategicEntry(
-            entry_id=StrategicEntry.new_id(), strategy_id="S01",
+            entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             verification=verification)
 
@@ -414,61 +415,29 @@ class TestVerifiedKnowledgeView(HarnessTestCase):
         legacy = self._entry({})  # no block at all
         unverified = self._entry({"state": "unverified"})
         refuted = self._entry({"state": "refuted"})
-        for e in (verified, legacy, unverified, refuted):
-            h.sbank.add(e)
+        ids = {}
+        for name, e in (("verified", verified), ("legacy", legacy),
+                        ("unverified", unverified), ("refuted", refuted)):
+            ids[name] = h.sbank.add(e)
         profile = self.make_profile()
         layers = verified_knowledge_view(profile, h.sbank)
         self.assertEqual([k["entry_id"] for k in layers["verified"]],
-                         [verified.entry_id])
+                         [ids["verified"]])
         self.assertEqual([k["entry_id"] for k in layers["legacy_unknown"]],
-                         [legacy.entry_id])
+                         [ids["legacy"]])
         self.assertEqual(
             sorted(k["entry_id"] for k in layers["unverified"]),
-            sorted([unverified.entry_id, refuted.entry_id]))
+            sorted([ids["unverified"], ids["refuted"]]))
 
-    def test_stale_after_revision_not_publishable(self):
-        entry = self._entry({"state": "verified", "claim": "c1"})
-        entry.verification["stale_after_revision"] = True
-        self.assertFalse(is_publishable(entry))
-        # Without the stale flag it would be publishable.
-        clean = self._entry({"state": "verified"})
-        self.assertTrue(is_publishable(clean))
-
-    def test_revision_without_a_fresh_verdict_marks_stale(self):
-        """A claim revised substantively without a fresh verdict loses
-        publishability until re-verified (the claim path's stale rule)."""
-        h = ORHarness(home=self.home)
-        self.addCleanup(h.close)
-        for task_id in ("t1", "t2"):
-            h.bank.append(self.make_record(
-                task_id=task_id, strategy_id="S01",
-                profile=self.make_profile(problem_id=task_id)))
-        base = {"subject": "S01",
-                "claim": "S01 solves routing",
-                "evidence": [{"execution_id": r.execution_id, "role": "e"}
-                             for r in h.bank.query()]}
-        verify = {"claim": "S01 solves routing",
-                  "check": {"assertions": [
-                      {"kind": "status", "roles": ["e"],
-                       "status": "optimal"}]}}
-        first = h.induce(relations=[base], verify=verify)
-        entry_id = first["relations"][0]["saved"]
-        self.assertEqual(h.sbank.get(entry_id).verification_state, "verified")
-        self.assertTrue(is_publishable(h.sbank.get(entry_id)))
-        # A substantive change (text) WITHOUT a fresh verdict -> stale.
-        changed = dict(base, claim="S01 solves routing AND packing")
-        h.induce(relations=[changed])
-        entry = h.sbank.get(entry_id)
-        self.assertTrue(entry.verification.get("stale_after_revision"))
-        self.assertFalse(is_publishable(entry))
-        # Re-verify -> publishable again.
-        h.induce(relations=[changed], verify={
-            "claim": "S01 solves routing AND packing",
-            "check": {"assertions": [
-                {"kind": "status", "roles": ["e"], "status": "optimal"}]}})
-        entry = h.sbank.get(entry_id)
-        self.assertFalse(entry.verification.get("stale_after_revision"))
-        self.assertTrue(is_publishable(entry))
+    def test_publication_is_not_a_content_gate(self):
+        """Publication is the agent's decision: ANY submitted entry is
+        offered, whatever its verification state."""
+        for state in ("verified", "fact_checked", "unverified",
+                      "insufficient_evidence", "refuted"):
+            entry = self._entry({"state": state})
+            self.assertTrue(is_publishable(entry),
+                            f"{state} must be offered as knowledge")
+            self.assertTrue(entry.is_published)
 
     def test_identical_resubmission_keeps_the_verdict(self):
         """Re-submitting the SAME claim does not stale it."""
@@ -560,10 +529,10 @@ class TestHarnessIntegration(HarnessTestCase):
         action = h.actions.get(action_info["action_id"])
         self.assertEqual(action.task_id, MAINTENANCE_TASK_ID)
         self.assertTrue(action.episode_id.startswith("maint_"))
-        # Without a verdict the entry is a saved-but-unpublished claim: the
-        # business label says so (unpublished is NOT knowledge growth).
+        # A submitted claim IS published (the agent decides publication), so
+        # the business label records a creation.
         self.assertEqual(action_info["business_result"],
-                         "relation_created_unpublished")
+                         "relation_created")
         # The action carries the real pre-knowledge state and the delta.
         self.assertIn("knowledge_before", action.params)
         self.assertIn("knowledge_delta", action.outcome)
@@ -953,19 +922,26 @@ class TestBugfixRegressions(HarnessTestCase):
                 "evidence": [{"execution_id": e, "role": "e"} for e in ids]}
         first = h.induce(relations=[base])
         entry_id = first["relations"][0]["saved"]
-        # A substantive change to the claim text (a real knowledge move).
+        # A SECOND submission is ADDITIVE: it creates a new entry, it does
+        # not rewrite the first. The delta must show the new creation and
+        # leave the first entry's claim UNCHANGED.
         second = h.induce(relations=[dict(base, claim="second text")])
+        second_id = second["relations"][0]["saved"]
+        self.assertNotEqual(entry_id, second_id)
         action = h.actions.get(second["action"]["action_id"])
-        # Full after-state present with the modified claim text.
+        # Full after-state present with BOTH entries.
         after = action.outcome["knowledge_after"]
         self.assertIn("entries", after)
-        moved = next(e for e in after["entries"]
-                     if e["entry_id"] == entry_id)
-        self.assertIsNotNone(moved.get("claim"))
-        # Per-entry diff shows the changed claim text with before/after.
-        changes = action.outcome["knowledge_delta"]["entry_changes"]
-        change = next(c for c in changes if c["entry_id"] == entry_id)
-        self.assertIn("claim", change["changed"])
+        after_ids = {e["entry_id"] for e in after["entries"]}
+        self.assertIn(entry_id, after_ids)
+        self.assertIn(second_id, after_ids)
+        # The transition reports the NEW entry as created and the first as
+        # untouched (no in-place rewrite).
+        delta = action.outcome["knowledge_delta"]
+        self.assertIn(second_id, delta["entries_created"])
+        self.assertNotIn(entry_id, delta["entries_created"])
+        self.assertFalse(any(c["entry_id"] == entry_id
+                             for c in delta["entry_changes"]))
 
 
 class TestLegacyCompatibility(HarnessTestCase):

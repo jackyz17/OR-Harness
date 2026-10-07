@@ -32,6 +32,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import NON_CUMULATIVE_DIMENSIONS
 from or_harness.strategy.experience_bank import ExperienceBank
 from or_harness.world_model.actions import ActionLog
 
@@ -284,7 +285,8 @@ class BudgetLedger:
             "unattributed": unattributed_summary,
             "total_cost": {d: (round(total[d], 4) if n_measured[d] > 0
                                else None)
-                           for d in COST_DIMENSIONS if d != "latency_s"},
+                           for d in COST_DIMENSIONS
+                           if d not in NON_CUMULATIVE_DIMENSIONS},
             "n_measured": n_measured,
             "unknown_dims": unknown_dims,
             "token_basis": bases or None,

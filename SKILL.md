@@ -102,24 +102,23 @@ Match terminal state to what happened: `completed`, `failed`, `aborted`, or `bud
 
 If the host confirms cancellation, use `record --session --task T --episode E --reason "..."` to archive the stop before close-out. Episode budget exhaustion stops new solving/prediction work; a per-attempt latency overrun permits a retry if the episode still allows it. Checking, recording, and close-out remain finishing operations.
 
+State the knowledge this attempt ADOPTED with `--used-entry-ids 3,5` (or `''` for "adopted none"): this is a DECLARATION, distinct from what recall surfaced (`--adapted-from` cites cases you read). The framework ties the entry numbers to this attempt's result and keeps recall, adoption and outcome apart.
+
 Within an episode, predictor parameters and published calibration stay fixed. Real attempts/checks may inform the next decision, whose input is frozen at that prediction's moment. At close-out, actual outcomes calibrate eligible forecasts for later episodes; unexecuted forecasts are not outcomes. H+ states an anticipated learning gain (`expected|none|insufficient_basis`), not verified improvement or an immediate training signal. Detailed feedback and late corrections: [prediction_context.md](references/prediction_context.md), [episode_closeout.md](references/episode_closeout.md).
 
 ## 4. Offline induction
 
-After close-out, make a brief review when a method, repair, boundary, or new evidence may add value. Start with `orx induction-material --task T` for the task chain and bounded `related_history`; its query uses the recorded method to find related past executions/entries, including failures and cross-cell cases. `--related-top-k` controls the budget (default 5; 0 disables). Read wider batches via `budget.next_cursor` only when useful.
+After close-out, review when a method, repair, boundary, or new evidence may add value. Start with `orx induction-material --task T`: it reports the banks' `memory_state`, the task chain and bounded `related_history` (the query uses the recorded method, including failures and cross-cell cases). `--related-top-k` controls the budget (default 5; 0 disables); read wider via `budget.next_cursor` only when useful. An EMPTY bank is a reported state, not a gate — with no prior knowledge, solve the task and its own evidence is the first material; you are never required to publish a first entry.
 
 Form knowledge from the actual method and relationships:
 
 **condition → operation → reason → expected effect → boundary**
 
-Inspect premises and existing knowledge; add, revise, merge, or submit nothing. A single task can reveal a conditional mathematical technique whose argument you inspect: with no computable assertion the framework reports `fact_checked` (it read the cited facts), and a `conditional_fact` publishes from that read as a scope-limited `single_observation` (`unproven` transferability) — reading a fact is not proving the method, its transfer, or a performance advantage. `cross_task_hint` reports the evidence's task span so you can see whether a claim is single-task or already cross-task; it is a fact to weigh, never a new bar that forces you to widen the sample. A claimed quality/cost/risk advantage needs corresponding comparable measurements; retries are not independent tasks, similarity is not support, and status checks do not prove a method. Runtime publication and assertion formats: [induction.md](references/induction.md).
+Inspect premises and existing knowledge; you may **add, or submit nothing**. Knowledge is ADDITIVE: each `induce --relation` creates a NEW numbered entry (the framework assigns the number); a revision or a contradiction is its own entry, and an existing entry is never rewritten. The framework checks only administrative matters (well-formed, cited executions exist, valid number, successful write) — publication is YOUR decision, and any `check`/`--verify` you supply is recorded as your own audit trail, not a gate. A single task can reveal a conditional method; a claimed quality/cost/risk advantage needs comparable measurements; retries are not independent tasks, similarity is not support. Runtime formats: [induction.md](references/induction.md).
 
-Use one maintenance route:
+Induce only when worth it; `induce` with no relations still runs utility maintenance so existing knowledge's lifecycle keeps working.
 
-- **Direct:** Read material, form the claim, submit `induce --relation`, and inspect verification scope plus `publication.reasons`. Induction handles submissions/revisions; retirement is a separate explicit mutation.
-- **Forecast-assisted, when worth the calls:** Describe the actual operation and relations, `predict-capability`, compare alternatives if needed, then `accept-capability` or `reject-capability`. Acceptance runs the declared operation and binds its fact; do not repeat it through direct induction/retirement/binding.
-
-Evaluate predicted gains later with `evaluate-capability` on qualified real tasks. An admitted entry or accumulated evidence is not itself capability improvement; pending later evidence is not failure. Recording and close-out do not automatically induce strategies.
+Later, reuse an entry by stating it in `--used-entry-ids`; an entry's `verification` block says what was checked. Recording and close-out do not automatically induce strategies.
 
 ## 5. Read references when needed
 

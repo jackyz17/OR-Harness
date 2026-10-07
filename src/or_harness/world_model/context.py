@@ -54,6 +54,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -848,8 +849,11 @@ def _structural_hits(recommendations: Sequence[Dict[str, Any]]
     """
     hits: List[Dict[str, Any]] = []
     for rec in recommendations or []:
-        refs = [str(r) for r in (rec.get("evidence_refs") or [])
-                if str(r).startswith("se_")]
+        # An entry-backed row's refs are entry NUMBERS; the row's own
+        # ``evidence`` field says so. No id-prefix guess is made, so a
+        # number-only identity is handled exactly like any other id.
+        refs = ([str(r) for r in (rec.get("evidence_refs") or [])]
+                if rec.get("evidence") == "strategic_entry" else [])
         if refs:
             for ref in refs:
                 hits.append(_hit("strategic_knowledge", ref, "structural",
@@ -2076,17 +2080,95 @@ def _dedupe_lines(lines: List[str]) -> List[str]:
 #: token); this leaves room for a much larger task while still catching a
 #: request that has grown out of hand. A character count is an ESTIMATE and
 #: is labelled as such — it is never reported as a token count.
-MAX_REQUEST_CHARS = 120_000
+#:
+#: r12: the budget is DEPLOYMENT-CONFIGURABLE, expressed in TOKENS and
+#: converted to a character estimate with an explicit safe margin, rather
+#: than a hardcoded character constant:
+#:
+#: - ``OR_HARNESS_INPUT_BUDGET_TOKENS`` sets the total input budget (the
+#:   system prompt, task, candidate and EVERY evidence block share it, with
+#:   room reserved for the output). The default (64k) is well within the
+#:   deployed 256k context and can be raised toward 128k;
+#: - ``OR_HARNESS_CHARS_PER_TOKEN`` overrides the chars-per-token estimate
+#:   (default 4.0, a conservative WESTERN-text figure that OVER-estimates
+#:   tokens for CJK, leaving a safety margin). It is a labeled estimate,
+#:   NEVER presented as a tokenizer count: a real token count needs the
+#:   endpoint's own tokenizer, which this module does not have.
+DEFAULT_INPUT_BUDGET_TOKENS = 64000
+DEFAULT_CHARS_PER_TOKEN = 4.0
+#: Room reserved for the model's output, so a full input never leaves the
+#: answer starved. Subtracted from the input budget.
+RESERVED_OUTPUT_TOKENS = 4096
+
+
+def _input_budget_chars() -> Tuple[int, Dict[str, Any]]:
+    """The effective input budget in characters, with its derivation.
+
+    Returns ``(chars, basis)``. The basis is reported verbatim so a reader
+    can see the exact estimate and margin rather than an unexplained
+    constant. A non-positive or unparseable configuration falls back to the
+    defaults (never a zero budget, which would drop the whole request).
+    """
+    tokens = _env_int("OR_HARNESS_INPUT_BUDGET_TOKENS",
+                      DEFAULT_INPUT_BUDGET_TOKENS)
+    if tokens <= 0:
+        tokens = DEFAULT_INPUT_BUDGET_TOKENS
+    per_token = _env_float("OR_HARNESS_CHARS_PER_TOKEN",
+                           DEFAULT_CHARS_PER_TOKEN)
+    if per_token <= 0:
+        per_token = DEFAULT_CHARS_PER_TOKEN
+    input_tokens = max(1, tokens - RESERVED_OUTPUT_TOKENS)
+    chars = int(input_tokens * per_token)
+    return chars, {
+        "budget_tokens": tokens,
+        "reserved_output_tokens": RESERVED_OUTPUT_TOKENS,
+        "input_tokens": input_tokens,
+        "chars_per_token": per_token,
+        "bound_chars": chars,
+        "estimator": ("characters = input_tokens x chars_per_token; a "
+                      "LABELED ESTIMATE, never a tokenizer count (a real "
+                      "token count needs the endpoint's own tokenizer)"),
+        "source": ("deployment config (OR_HARNESS_INPUT_BUDGET_TOKENS / "
+                   "OR_HARNESS_CHARS_PER_TOKEN), not a hardcoded model name"),
+    }
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return int(float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return default
+
 
 #: Blocks that may be TRIMMED when the request is oversized, in order. The
 #: problem statement, the candidate and the calibration are never in this
 #: list: they are what the prediction is FOR, and dropping them would make
-#: the answer meaningless rather than cheaper.
+#: the answer meaningless rather than cheaper. r12 adds the FEEDBACK blocks
+#: (paired feedback, reminders, H+ feedback) after the capability blocks:
+#: they are evidence, and under budget pressure evidence before the task is
+#: the right thing to shed — but the block-level count and the omission are
+#: always reported, never silent.
 _TRIMMABLE_BLOCKS = (
     "harness_capability",
     "capability_version",
     "retrieval_evidence",
     "solving_context",
+    "paired_feedback",
+    "hplus_feedback",
+    "prediction_reminders",
 )
 
 
@@ -2097,12 +2179,15 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
     recorded under ``omissions`` with its reason and the source, so an
     agent can tell "the model was not given this" from "this did not
     exist". Nothing is removed silently, and the problem, the candidate and
-    the calibration block are never touched.
+    the calibration block are never touched. The size bound is a
+    DEPLOYMENT-CONFIGURED token budget converted to a labeled character
+    estimate (see :func:`_input_budget_chars`).
     """
+    max_chars, budget_basis = _input_budget_chars()
     size = len(json.dumps(view, ensure_ascii=False, default=str))
     omissions: List[Dict[str, Any]] = []
     for block in _TRIMMABLE_BLOCKS:
-        if size <= MAX_REQUEST_CHARS:
+        if size <= max_chars:
             break
         if block not in view:
             continue
@@ -2113,6 +2198,22 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
             # per-source detail. ``no_evidence`` is a finding about the
             # harness, not noise, so the statuses survive.
             trimmed = _compact_capability(view[block])
+        elif block in ("paired_feedback", "hplus_feedback"):
+            # Feedback blocks carry their own counts; replace with a report
+            # of what was dropped rather than dropping silently.
+            block_dict = view[block] if isinstance(view[block], dict) else {}
+            trimmed = {
+                "omitted_for_size": True,
+                "prior_counts": {
+                    k: block_dict.get(k)
+                    for k in ("n_pairs_total", "n_pairs_included",
+                              "n_pairs_omitted", "n_gains_total",
+                              "n_included")
+                    if k in block_dict},
+                "note": ("this evidence block was dropped to keep the "
+                         "request within its size bound; its counts above "
+                         "record that it existed and how much was withheld"),
+            }
         else:
             trimmed = {"omitted_for_size": True,
                        "note": ("this block was dropped to keep the request "
@@ -2122,17 +2223,19 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
         after = len(json.dumps(trimmed, ensure_ascii=False, default=str))
         omissions.append({
             "block": block,
-            "reason": f"request exceeded {MAX_REQUEST_CHARS} characters "
-                      "(a character ESTIMATE of size, not a token count)",
+            "reason": f"request exceeded {max_chars} characters (an ESTIMATE "
+                      "from the deployment's token budget, not a token count)",
             "chars_removed": max(0, before - after),
         })
         size = len(json.dumps(view, ensure_ascii=False, default=str))
     view["request_size"] = {
         "chars": size,
-        "estimator": "characters (not tokens; a token count needs the "
-                     "endpoint's own tokenizer)",
-        "bound_chars": MAX_REQUEST_CHARS,
-        "within_bound": size <= MAX_REQUEST_CHARS,
+        "estimator": ("characters (not tokens; a token count needs the "
+                      "endpoint's own tokenizer)"),
+        "bound_chars": max_chars,
+        "budget": budget_basis,
+        "within_bound": size <= max_chars,
+        "n_blocks_trimmed": len(omissions),
     }
     if omissions:
         view["omissions"] = omissions

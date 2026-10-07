@@ -180,7 +180,7 @@ class TestFactCheckedAdmission(HarnessTestCase):
         self.assertEqual(entry.evidence, "strategic_entry")
         self.assertEqual(entry.knowledge["verification_state"], FACT_CHECKED)
 
-    def test_transfer_claim_from_facts_alone_is_saved_not_published(self):
+    def test_transfer_claim_from_facts_alone_is_published_with_state(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         h.bank.append(_record("ex_0", task_id="t1"))
@@ -194,9 +194,10 @@ class TestFactCheckedAdmission(HarnessTestCase):
         relation = out["relations"][0]
         self.assertIsNotNone(relation.get("saved"))
         pub = relation["publication"]
-        self.assertFalse(pub["published"])
+        # A submitted claim is published; the framework read the facts and
+        # records that state rather than gating on it.
+        self.assertTrue(pub["published"])
         self.assertEqual(pub["state"], FACT_CHECKED)
-        self.assertTrue(any("fact_checked" in r for r in pub["reasons"]))
 
     def test_declared_assertion_still_publishes_a_transfer_claim(self):
         h = ORHarness(home=self.home)
