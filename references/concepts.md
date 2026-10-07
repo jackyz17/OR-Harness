@@ -22,7 +22,7 @@ The problem stream is externally driven. Changes in demand, capacity, or constra
 
 Represent capability conceptually as `H = F(M, W, Pi, R, T)`: memory, world-model prediction, strategy/planning, retrieval/transfer, and tools/solvers. These sources interact. Counts of executions or entries provide indirect evidence about capability; they do not define a composite capability score. Here `R` denotes retrieval; the `R` in the outcome tuple denotes risk.
 
-`H+` denotes an anticipated capability gain after completing a task and processing its experience. A predicted gain becomes supported only when the resulting knowledge or calibration improves later use.
+`H+` denotes an anticipated capability gain after completing a task and processing its experience. A predicted gain becomes supported only when the resulting knowledge or calibration improves later use. The gain is judged RELATIVE TO THE CURRENT HARNESS: a mature, well-known method can still yield a structural adaptation, a boundary it had not mapped, or a cost experience it lacked — but a new method or one more entry is not by itself a capability gain, and `none` is a reasoned no-gain judgement (`insufficient_basis` when the evidence cannot decide).
 
 ## 2. Understand structure before selecting a strategy
 
@@ -135,4 +135,4 @@ Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counter
 
 Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
 
-Evaluate H+ through later consequences: a derived method that is correctly reused, a calibrated forecast that improves selection, or a verified reduction in cost at comparable quality. Evidence accumulation, knowledge formation, and useful capability gain are separate events, potentially resolved at different times. Pending future evidence is not a failed prediction.
+Evaluate H+ through later consequences: a derived method that is correctly reused, a calibrated forecast that improves selection, or a verified reduction in cost at comparable quality. Evidence accumulation, knowledge formation, and useful capability gain are separate events, potentially resolved at different times. A created or revised entry is a knowledge change, NOT an automatic capability improvement: it is recorded as unverified until a later use demonstrates the effect. An explicit `none` stance is still followed up — the operation's ACTUAL knowledge product is reported beside it as a fact, without treating that product as proof the "no gain" judgement was wrong. Pending future evidence is not a failed prediction.

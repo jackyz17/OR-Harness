@@ -140,6 +140,7 @@ from or_harness.world_model.state import (
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
     KnowledgeRef,
+    put_knowledge_version,
     task_text,
     task_text_digest,
     task_text_from_payload,
@@ -397,6 +398,11 @@ class ORHarness:
         profile = self.profile(task)
         knowledge = verified_knowledge_view(profile, self.sbank)
         harness_state = self._harness_state_view(task, knowledge)
+        # Reuse the UNCHANGED frozen knowledge: store the view once under a
+        # content version and have snapshots reference it by hash instead of
+        # repeating the whole batch. The content hash excludes the per-freeze
+        # ``snapshot_at``, so knowledge that did not change is stored once.
+        knowledge_version = put_knowledge_version(self.store, knowledge)
         budget = self._load_budget(str(task.get("task_id", "")), episode_id)
         budget_state = self.budget.view(
             str(task.get("task_id", "")), episode_id, budget=budget)
@@ -419,7 +425,8 @@ class ORHarness:
             },
             task_progress=progress,
             budget_state=budget_state,
-            coverage=self._coverage_view(profile, knowledge),
+            coverage=self._coverage_view(profile, knowledge,
+                                         knowledge_version=knowledge_version),
             hypothetical=hypothetical,
         )
         with self.store.transaction() as conn:
@@ -448,7 +455,9 @@ class ORHarness:
         return [BeliefSnapshot.from_dict(self.store.loads(r["payload"]))
                 for r in self.store.conn.execute(sql, params).fetchall()]
 
-    def _coverage_view(self, profile, knowledge: Dict[str, Any]) -> Dict[str, Any]:
+    def _coverage_view(self, profile, knowledge: Dict[str, Any], *,
+                       knowledge_version: Optional[str] = None
+                       ) -> Dict[str, Any]:
         """Conditional capability evidence: cell statistics + layered
         knowledge, with coverage gaps. NO composite capability score.
 
@@ -457,10 +466,17 @@ class ORHarness:
         THIS structural cell. It is derived from the evidence, not from a
         directory: a strategy nobody ever ran in this family is not "missing
         evidence", it is simply not part of the memory at all.
+
+        ``knowledge_version`` is the CONTENT HASH of the layered knowledge
+        (excluding per-freeze timestamps). The layers travel by value (the
+        view must stand on its own and survive archiving), but the hash is
+        recorded so a reader can tell two snapshots that froze the SAME
+        knowledge apart from a real revision, and so the shared copy can be
+        reused rather than re-stored.
         """
         cells = self.stats.for_profile(profile)
         seen = self.stats.strategy_ids_in_family(profile.family)
-        return {
+        out = {
             "cell_statistics": {sid: cell.to_dict() for sid, cell
                                 in cells.items()},
             "knowledge_layers": {
@@ -478,6 +494,9 @@ class ORHarness:
                         "list was never tried in this family at all",
             },
         }
+        if knowledge_version:
+            out["knowledge_version"] = knowledge_version
+        return out
 
     def _harness_state_view(self, task: Dict[str, Any],
                             knowledge: Dict[str, Any]) -> Dict[str, Any]:
@@ -489,10 +508,16 @@ class ORHarness:
         the unified capability view is
         :meth:`capability_evidence`, which labels each item's evidential
         status and defines no composite score.
+
+        The knowledge references travel in ``coverage.knowledge_layers``
+        ONLY. Storing the same ``KnowledgeRef`` batch here as well doubled
+        every snapshot's size for no information gain, so this block keeps
+        the experience and tool-config components and the ONE knowledge
+        copy lives in the coverage view (readers that historically looked
+        here fall back to it — see ``frozen_knowledge_view``).
         """
         recent = self.bank.query(task_id=str(task.get("task_id", "")))
         return {
-            "knowledge": knowledge,
             "experience": {
                 "task_execution_count": len(recent),
                 "total_executions": self.bank.count(),
@@ -6548,6 +6573,17 @@ class ORHarness:
             "revisions": len(revised),
             "relations_saved": len(relations_saved),
             "relations_published": len(relations_published),
+            # The REAL executions the induction CITED (derived from each
+            # saved relation's verification scope, never re-typed). This is
+            # what lets a later reader associate the knowledge change with
+            # the online predictions made about those very executions —
+            # without defaulting to "the bound action was the induction".
+            "execution_ids": sorted({
+                str(e.get("execution_id"))
+                for r in relations_saved
+                for e in ((r.get("verification") or {}).get("scope") or {}
+                          ).get("evidence") or []
+                if isinstance(e, dict) and e.get("execution_id")}),
             "verification_results": [
                 {"entry": r.get("created") or r.get("updated"),
                  "verification": r.get("verification")}

@@ -48,6 +48,74 @@ def _stable_digest(payload: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
 
+#: Prefix for a content-addressed frozen knowledge view. The version hash
+#: excludes every reference's per-rebuild ``snapshot_at`` (a timestamp of
+#: the FREEZE, not part of the knowledge), so two freezes of unchanged
+#: knowledge share ONE version id.
+KNOWLEDGE_VERSION_PREFIX = "knowledge_version"
+
+
+def knowledge_version_hash(knowledge: Dict[str, Any]) -> str:
+    """The content hash of a layered knowledge view.
+
+    Excludes each ref's ``snapshot_at`` (rebuilt on every freeze) so a view
+    whose entries are unchanged hashes the SAME however many times it is
+    frozen. The knowledge content (entry id, predicates, expected
+    quality/cost, claim, verification state) is all included, so a real
+    revision yields a new version — which is what lets a reader tell a
+    re-freeze of unchanged knowledge from a revision.
+    """
+    def _strip(layers: Dict[str, Any]) -> Dict[str, Any]:
+        out: Dict[str, Any] = {}
+        for layer, refs in (layers or {}).items():
+            out[layer] = [
+                {k: v for k, v in ref.items() if k != "snapshot_at"}
+                for ref in (refs or []) if isinstance(ref, dict)]
+        return out
+    return _stable_digest(_strip(knowledge or {}))
+
+
+def knowledge_version_key(version_hash: str) -> str:
+    return f"{KNOWLEDGE_VERSION_PREFIX}|{version_hash}"
+
+
+def put_knowledge_version(store, knowledge: Dict[str, Any]) -> str:
+    """Store one content-addressed frozen knowledge view; return its hash.
+
+    Used for a REUSABLE copy of a view whose layers also travel inline (the
+    inline value keeps every reader self-contained and archiving-proof; the
+    stored bump pointer is idempotent by content, so an unchanged view costs
+    one row). The stored copy is a value, never an entry-id reference, so it
+    stays readable after the bank is archived or rewritten.
+    """
+    version = knowledge_version_hash(knowledge)
+    with store.transaction() as conn:
+        existing = conn.execute(
+            "SELECT value FROM meta WHERE key=?",
+            (knowledge_version_key(version),)).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
+                (knowledge_version_key(version), store.dumps(knowledge)))
+    return version
+
+
+def get_knowledge_version(store, version_hash: str
+                          ) -> Optional[Dict[str, Any]]:
+    """The stored frozen knowledge view for a content version, or None."""
+    if not version_hash:
+        return None
+    row = store.conn.execute(
+        "SELECT value FROM meta WHERE key=?",
+        (knowledge_version_key(version_hash),)).fetchone()
+    if row is None:
+        return None
+    try:
+        return store.loads(row["value"])
+    except Exception:  # noqa: BLE001 - a corrupt row reads as absent
+        return None
+
+
 def _labelled(value: Any, provenance: str = "observed",
               epistemic: str = "fact",
               evidence_ref: Optional[str] = None) -> Dict[str, Any]:

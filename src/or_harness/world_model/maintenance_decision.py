@@ -827,8 +827,12 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
     binding.operation_action_id = (
         outcome.get("operation_action_id")
         or params.get("operation_action_id"))
-    operation_result = (outcome.get("operation_result")
-                        or params.get("operation_result") or {})
+    # The knowledge change travels in two shapes: a WRAPPED operation nests
+    # it under ``operation_result``; a DIRECT induction writes it at the top
+    # level of the outcome (the r10 defect read the latter as zero). The
+    # ONE locator accepts both.
+    from or_harness.world_model.trace_archive import knowledge_result_of
+    operation_result = knowledge_result_of(outcome=outcome, params=params)
     binding.business_result = operation_result.get("business_result")
     delta = operation_result.get("knowledge_delta") or {}
     binding.knowledge_delta = copy.deepcopy(delta)
@@ -1080,6 +1084,44 @@ def evaluate_capability_effect(
         evaluation.notes.append(
             "a no-change operation is recorded honestly: it is not a "
             "failure and not an improvement")
+        return evaluation
+
+    # A claim that named NO expected change (an explicit ``none`` stance, or
+    # an unspecified one) is still followable: the operation ran and really
+    # produced knowledge. We report that as a PRODUCT COMPARISON fact — the
+    # claim said "no gain expected", the operation created N entries — which
+    # is NOT an effect verification. Without this, `none` predictions would
+    # be permanently unfollowable because there is no metric to observe.
+    change_metrics = {c.metric for c in (prediction.expected_changes or [])}
+    if not change_metrics:
+        created = list(binding.created_entry_ids)
+        updated = list(binding.updated_entry_ids)
+        retired = list(binding.retired_entry_ids)
+        evaluation.state = "product_compared"
+        evaluation.evidence = {
+            "knowledge_delta": {
+                "entries_created": created,
+                "entries_updated": updated,
+                "entries_retired": retired,
+                "n_created": len(created),
+                "n_updated": len(updated),
+                "n_retired": len(retired),
+            },
+            "business_result": binding.business_result,
+        }
+        produced = bool(created or updated or retired)
+        evaluation.notes.append(
+            "the claim named NO expected change (an explicit 'none' stance "
+            "or an unstated one): there is no metric to verify, so this is "
+            "the ACTUAL knowledge product of the operation, reported as a "
+            "FACT. A non-empty product does NOT make the 'no gain' claim "
+            "false — a new entry is a knowledge change, not a demonstrated "
+            "capability improvement — and effect_verified stays False")
+        if produced:
+            evaluation.exclusion_reasons.append(
+                "the predicted stance was 'no gain' while the operation "
+                "produced a knowledge product; whether that product helps a "
+                "later task is a separate question, unobserved here")
         return evaluation
 
     # The metric this build can actually observe. A prediction whose
@@ -1685,12 +1727,17 @@ def _execution_episode(harness, execution_id: str) -> Optional[str]:
 def _snapshot_knowledge_entry_ids(snapshot: Any) -> List[str]:
     """The entry ids the frozen knowledge view of a snapshot carried.
 
-    The snapshot's ``harness_state.knowledge`` is the layered view the solve
-    was conditioned on (verified / legacy_unknown / unverified), so the ids
-    in it are exactly the knowledge available to that solve.
+    The snapshot's ``coverage.knowledge_layers`` is the layered view the
+    solve was conditioned on (verified / legacy_unknown / unverified), so the
+    ids in it are exactly the knowledge available to that solve. An older
+    snapshot that stored a second copy at ``harness_state.knowledge`` is
+    still read (coverage wins when both exist).
     """
     state = getattr(snapshot, "harness_state", None) or {}
-    knowledge = state.get("knowledge") or {}
+    coverage = getattr(snapshot, "coverage", None) or {}
+    knowledge = coverage.get("knowledge_layers")
+    if not isinstance(knowledge, dict):
+        knowledge = state.get("knowledge") or {}
     out: List[str] = []
     for layer in ("verified", "legacy_unknown", "unverified"):
         for ref in knowledge.get(layer) or []:

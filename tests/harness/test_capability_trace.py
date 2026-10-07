@@ -308,5 +308,96 @@ class TestModelCannotSelfVerify(TraceCase):
                          "the model may not declare its effect verified")
 
 
+# ---------------------------------------------------------------------------
+# 6. the knowledge delta is read in EITHER shape (the r10 defect)
+# ---------------------------------------------------------------------------
+
+
+class TestKnowledgeDeltaIsReadInBothShapes(TraceCase):
+    """A DIRECT induction writes ``outcome.knowledge_delta`` at the top
+    level; a WRAPPED operation nests it under ``operation_result``. Reading
+    only the wrapped shape read a real 1-entry creation as 0."""
+
+    def test_knowledge_result_of_accepts_both_shapes(self):
+        from or_harness.world_model.trace_archive import knowledge_result_of
+        direct = {"business_result": "relation_created",
+                  "knowledge_delta": {"entries_created": ["se_1"]},
+                  "execution_ids": ["ex_a"]}
+        out = knowledge_result_of(outcome=direct, params={})
+        self.assertEqual(out["knowledge_delta"]["entries_created"], ["se_1"])
+        self.assertEqual(out["execution_ids"], ["ex_a"])
+        wrapped = {"operation_result": {
+            "business_result": "created",
+            "knowledge_delta": {"entries_created": ["se_2"]},
+            "execution_ids": ["ex_b"]}}
+        out = knowledge_result_of(outcome=wrapped, params={})
+        self.assertEqual(out["knowledge_delta"]["entries_created"], ["se_2"])
+        self.assertEqual(out["execution_ids"], ["ex_b"])
+
+    def test_direct_induction_is_read_as_one_entry_not_zero(self):
+        """An ``induce`` action's own outcome feeds the H+ reader."""
+        from or_harness.world_model.trace_archive import _operation_entries
+        action = self.h.actions.begin_action(
+            "induce", "__maintenance__", "maint_1", params={})
+        self.h.actions.end_action(action.action_id, status="completed", outcome={
+            "business_result": "relation_created",
+            "knowledge_delta": {"entries_created": ["se_direct_1"],
+                                "entries_removed": [],
+                                "entry_changes": []},
+            "execution_ids": ["ex_direct"],
+        })
+        produced = _operation_entries(self.h, action.action_id)
+        self.assertEqual(produced["created_entry_ids"], ["se_direct_1"])
+        self.assertEqual(produced["actual_execution_ids"], ["ex_direct"])
+
+
+# ---------------------------------------------------------------------------
+# 7. a 'none' stance still gets a product comparison
+# ---------------------------------------------------------------------------
+
+
+class TestNoneStanceIsFollowable(TraceCase):
+
+    def test_none_stance_reports_the_real_product(self):
+        """A claim that named no expected change (the r10 'none' shape) is
+        followed up with the operation's ACTUAL knowledge product — never a
+        silent 'not evaluable', and never a false 'verified'."""
+        self.provider.payload = dict(BASE, capability_gain={
+            "assessment": "none",
+            "claim": "",
+            "basis": ["using an existing tool adds no new capability"],
+        })
+        prediction = self._predict()
+        # A pure 'none' stance claims no content, but it IS a stated stance,
+        # so it is archived for follow-up (never dropped as silence).
+        self.assertFalse(prediction.claims_capability_gain)
+        trace = get_capability_trace(self.h, prediction.prediction_id)
+        self.assertIsNotNone(trace)
+        self.assertEqual(trace.assessment, "none")
+        # Bind a REAL maintenance fact with a knowledge product, through the
+        # public stage-1 API (which persists the binding for stage 2).
+        adoption = self.h.actions.begin_action(
+            "induce", "__maintenance__", "maint_none", params={
+                "capability_prediction_id": prediction.prediction_id})
+        self.h.actions.end_action(adoption.action_id, status="completed",
+                                  outcome={
+            "knowledge_delta": {"entries_created": ["se_new"],
+                                "entry_changes": [], "entries_removed": []},
+            "business_result": "relation_created",
+        })
+        bound = self.h.bind_capability_maintenance(
+            prediction.prediction_id,
+            adoption_action_id=adoption.action_id)
+        self.assertTrue(bound["binding"]["changed"])
+        result = self.h.evaluate_capability_effect(prediction.prediction_id)
+        evaluation = result["evaluation"]
+        # The `none` stance gets a PRODUCT comparison, not nothing.
+        self.assertEqual(evaluation["state"], "product_compared")
+        self.assertEqual(
+            evaluation["evidence"]["knowledge_delta"]["n_created"], 1)
+        # A new entry is a knowledge change, NOT a capability improvement.
+        self.assertFalse(evaluation["effect_verified"])
+
+
 if __name__ == "__main__":
     unittest.main()

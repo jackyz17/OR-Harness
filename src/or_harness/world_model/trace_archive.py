@@ -176,6 +176,48 @@ def _trace_key(prediction_id: str) -> str:
     return f"{TRACE_PREFIX}|{prediction_id}"
 
 
+def knowledge_result_of(*, outcome: Optional[Dict[str, Any]] = None,
+                        params: Optional[Dict[str, Any]] = None
+                        ) -> Dict[str, Any]:
+    """The knowledge-change block of an operation action, in EITHER shape.
+
+    Two writers produce the SAME meaning under different nesting:
+
+    * a DIRECT induction (``api.induce`` / ``_end_induce_action``) writes
+      ``outcome.knowledge_delta`` and ``outcome.execution_ids`` at the TOP
+      level of the action's outcome;
+    * a WRAPPED operation (``bind_capability_maintenance``) writes them
+      inside ``outcome.operation_result``.
+
+    Reading only the wrapped shape made a direct induction that really
+    created one entry read as ZERO — the r10 defect. This locator accepts
+    both, preferring the wrapped block when present (a wrapped operation's
+    own report), then the top-level delta. It never fabricates: when neither
+    carries a delta the result is empty.
+    """
+    outcome = outcome or {}
+    params = params or {}
+    wrapped = (outcome.get("operation_result")
+               or params.get("operation_result") or {})
+    if isinstance(wrapped, dict) and wrapped.get("knowledge_delta"):
+        return dict(wrapped)
+    # The direct shape (or the wrapped shape with no delta of its own).
+    result: Dict[str, Any] = {}
+    delta = outcome.get("knowledge_delta") or params.get("knowledge_delta")
+    if isinstance(delta, dict):
+        result["knowledge_delta"] = delta
+    for key in ("business_result", "execution_ids", "verification",
+                "knowledge_after"):
+        value = outcome.get(key)
+        if value is None:
+            value = params.get(key)
+        if value is not None:
+            result[key] = value
+    if not result and isinstance(wrapped, dict):
+        return dict(wrapped)
+    return result
+
+
 def _put_trace(harness, trace: CapabilityTrace) -> None:
     with harness.store.transaction() as conn:
         conn.execute(
@@ -338,8 +380,7 @@ def _operation_entries(harness, adoption_action_id: Optional[str]
         return empty
     params = action.params or {}
     outcome = action.outcome or {}
-    result = (outcome.get("operation_result")
-              or params.get("operation_result") or {})
+    result = knowledge_result_of(outcome=outcome, params=params)
     delta = result.get("knowledge_delta") or {}
 
     def _ids(records: Any) -> List[str]:
@@ -364,6 +405,47 @@ def _operation_entries(harness, adoption_action_id: Optional[str]
                                  (result.get("execution_ids") or [])],
         "adoption_action_id": adoption_action_id,
     }
+
+
+def operation_action_for(harness, prediction_id: str) -> Optional[Any]:
+    """The operation action whose knowledge the ONLINE gain claim produced.
+
+    Correlates by the REAL execution ids: an online H+ claim is made about
+    an attempt, and the induction that follows cites that attempt's
+    execution. The operation whose outcome names the claim's
+    ``bound_execution_ids`` IS the operation; when none matches, the bound
+    action itself is returned (the attempt really happened, even if it fed
+    no induction) — never a guess.
+    """
+    trace = get_capability_trace(harness, prediction_id)
+    bound = bound_action_of(harness, prediction_id)
+    if bound is None:
+        return None
+    claim_execs = {str(e) for e in (trace.bound_execution_ids or [])} \
+        if trace is not None else set()
+    if bound.linked_execution_id:
+        claim_execs.add(str(bound.linked_execution_id))
+    if claim_execs:
+        best = None
+        for action in harness.actions.query():
+            if action.action_type != "induce":
+                continue
+            if action.action_id == bound.action_id:
+                continue
+            outcome = action.outcome or {}
+            params = action.params or {}
+            cited = {str(e) for e in
+                     (knowledge_result_of(outcome=outcome, params=params)
+                      .get("execution_ids") or [])}
+            if claim_execs & cited:
+                # Prefer the latest matching operation (the one that
+                # actually consolidated this claim's evidence).
+                if best is None or (action.ended_at or 0) >= (best.ended_at
+                                                              or 0):
+                    best = action
+        if best is not None:
+            return best
+    return bound
 
 
 def bound_action_of(harness, prediction_id: str):
@@ -450,7 +532,13 @@ def effect_prediction_of(harness, prediction_id: str, *,
     trace = get_capability_trace(harness, prediction_id)
     if trace is None:
         return None
-    adoption = adoption_action_id or trace.bound_action_id
+    # The operation that produced this claim's knowledge: NOT assumed to be
+    # the bound execution action (which is an attempt, not an induction).
+    # Correlated by the real execution ids the induction cited.
+    correlated = operation_action_for(harness, prediction_id)
+    adoption = (adoption_action_id
+                or (correlated.action_id if correlated is not None else None)
+                or trace.bound_action_id)
     produced = _operation_entries(harness, adoption)
     action = bound_action_of(harness, prediction_id)
     execution_ids = list(trace.bound_execution_ids)

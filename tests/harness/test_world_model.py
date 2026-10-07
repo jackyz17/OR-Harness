@@ -33,6 +33,8 @@ from or_harness.world_model.budget import BudgetLedger  # noqa: E402
 from or_harness.world_model.state import (  # noqa: E402
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
+    get_knowledge_version,
+    knowledge_version_hash,
     verified_knowledge_view,
 )
 
@@ -109,6 +111,71 @@ class TestBeliefSnapshot(HarnessTestCase):
         self.assertEqual(
             reloaded.harness_state["experience"]["total_executions"], 0)
         self.assertEqual(reloaded.coverage["knowledge_layers"]["verified"], [])
+
+    def test_harness_state_does_not_duplicate_the_knowledge_copy(self):
+        """The knowledge references live in ONE place (coverage). Storing a
+        second copy under ``harness_state`` doubled every snapshot for no
+        information gain."""
+        h = self._harness()
+        snap = h.snapshot(_task(), "ep1")
+        self.assertNotIn("knowledge", snap.harness_state)
+        self.assertIn("knowledge_layers", snap.coverage)
+        # The capability view still reads the knowledge (from coverage).
+        evidence = h.capability_evidence(snapshot=snap)
+        self.assertIn(evidence.sources["m"].status,
+                      ("indirect_evidence", "no_evidence"))
+
+    def test_unchanged_knowledge_shares_one_version(self):
+        h = self._harness()
+        s1 = h.snapshot(_task("t1"), "ep1")
+        s2 = h.snapshot(_task("t2"), "ep1")
+        v1 = s1.coverage.get("knowledge_version")
+        v2 = s2.coverage.get("knowledge_version")
+        self.assertTrue(v1)
+        self.assertEqual(v1, v2,
+                         "two freezes of unchanged knowledge share a version")
+        stored = get_knowledge_version(h.store, v1)
+        self.assertIsNotNone(stored)
+
+    def test_a_knowledge_revision_changes_the_version(self):
+        h = self._harness()
+        s1 = h.snapshot(_task("t1"), "ep1")
+        v1 = s1.coverage.get("knowledge_version")
+        h.sbank.add(StrategicEntry(
+            entry_id=StrategicEntry.new_id(), strategy_id="S01",
+            pattern={"predicates": {"family": "routing"}},
+            verification={"state": "verified", "claim": "x"}))
+        s2 = h.snapshot(_task("t1"), "ep1")
+        self.assertNotEqual(s2.coverage.get("knowledge_version"), v1)
+
+    def test_snapshot_at_does_not_change_the_version(self):
+        """The per-freeze timestamp is excluded, so two freezes of the same
+        entries hash identically (that is what makes reuse possible)."""
+        ref = {"entry_id": "se_1", "strategy_id": "S01",
+               "snapshot_at": 1.0, "verified": True}
+        later = dict(ref, snapshot_at=999.0)
+        self.assertEqual(
+            knowledge_version_hash({"verified": [ref], "unverified": []}),
+            knowledge_version_hash({"verified": [later], "unverified": []}))
+
+    def test_frozen_knowledge_survives_a_later_revision(self):
+        """A snapshot's frozen view is a VALUE, so a later bank rewrite does
+        not change what an old snapshot reads back."""
+        from or_harness.world_model.context import frozen_knowledge_view
+        h = self._harness()
+        entry = StrategicEntry(
+            entry_id="se_frozen", strategy_id="S01",
+            pattern={"predicates": {"family": "routing"}},
+            verification={"state": "verified", "claim": "original"},
+            expected_quality_hat=0.4)
+        h.sbank.add(entry)
+        snap = h.snapshot(_task(), "ep1")
+        # The entry is rewritten AFTER the snapshot.
+        entry.expected_quality_hat = 0.9
+        entry.claim = {"text": "revised"}
+        h.sbank.update(entry)
+        frozen = frozen_knowledge_view(h.get_snapshot(snap.snapshot_id))
+        self.assertEqual(frozen["verified"][0]["expected_quality_hat"], 0.4)
 
     def test_same_profile_different_task_digest(self):
         """P is more than the profile: two tasks with identical coupling
