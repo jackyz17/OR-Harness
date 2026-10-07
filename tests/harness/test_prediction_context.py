@@ -524,7 +524,9 @@ class TestOneContextSharedByCandidates(ContextCase):
         self.assertIn("execution_constraints", block)
         # The problem's semantics really arrived, not just a hash.
         self.assertIn("distribution centre", block["joint_problem"]["text"])
-        self.assertEqual(len(block["joint_problem"]["cir"]["relations"]), 1)
+        # CIR is internal: the provider view never carries it (the stored
+        # context still does — see the joint representation itself).
+        self.assertNotIn("cir", block["joint_problem"])
         self.assertIn("sources", block["joint_problem"])
 
     def test_prediction_records_which_frozen_input_it_used(self):
@@ -887,8 +889,13 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         self._advance_state(h, task)          # progress moves on
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         h.predict_outcome(task, spec, "ep1", context=ctx)
-        sent = provider.requests[0]["state"]["task_progress"]
-        # The FROZEN progress is replayed: what the context was built with.
+        # The FROZEN progress is replayed through the frozen context's own
+        # solving_context (the snapshot's duplicate copy is dropped, so the
+        # fact is sent exactly once).
+        request = provider.requests[0]
+        self.assertNotIn("task_progress", request["state"],
+                         "the duplicated X is not sent twice")
+        sent = request["prediction_context"]["solving_context"]["task_progress"]
         self.assertEqual(sent["selected_plan"]["value"]["strategy_id"], "S01")
         self.assertNotIn("current_solution", sent,
                          "progress established later must not appear")
@@ -1659,6 +1666,73 @@ class TestProviderViewIsDedupedAndBounded(ContextCase):
         # Dedup is a VIEW concern: the record still carries everything, so
         # traceability is unaffected.
         self.assertIn("text", ctx.joint.task_payload)
+
+
+class TestCirIsInternal(ContextCase):
+    """CIR drives profiling/retrieval/traceability but is NEVER sent to the
+    model — in any request shape, and never under an alias."""
+
+    def test_provider_view_drops_cir_but_the_stored_context_keeps_it(self):
+        task = dict(_task("t1"), coupling=_cir())
+        ctx = self.h.build_prediction_context(task, "ep1")
+        view = ctx.provider_view()
+        self.assertNotIn("cir", view["joint_problem"])
+        # The stored context still carries it (traceability + internal use).
+        self.assertTrue(ctx.joint.cir.get("present"))
+        self.assertTrue(ctx.joint.cir.get("relations"))
+        omitted = " ".join(view.get("omitted") or [])
+        self.assertIn("joint_problem.cir", omitted)
+
+    def test_cir_is_absent_from_the_strategy_outcome_request(self):
+        task = dict(_task("t1"), coupling=_cir())
+        ctx = self.h.build_prediction_context(task, "ep1")
+        block = ctx.provider_view()
+        joint = block["joint_problem"]
+        # No CIR content channel survives: not as a key, not nested.
+        self.assertNotIn("cir", joint)
+        self.assertNotIn("cir_snapshot", json.dumps(block))
+
+    def test_math_attributes_derived_from_cir_still_reach_the_model(self):
+        """The CIR's MATHEMATICS travel (constraint kinds with origin
+        ``cir``); only the entity/relation lists are withheld."""
+        task = dict(_task("t1"), coupling=_cir())
+        ctx = self.h.build_prediction_context(task, "ep1")
+        view = ctx.provider_view()
+        math = view["joint_problem"].get("math") or {}
+        kinds = math.get("constraint_kinds")
+        self.assertTrue(kinds, "the CIR-derived constraint kinds are sent")
+        origins = math.get("origins") or {}
+        self.assertEqual(origins.get("constraint_kinds"), "cir")
+
+    def test_legacy_single_step_request_has_no_cir_snapshot(self):
+        """The M2 path (``predict_outcome``) sent a second, unbounded CIR
+        copy under ``state.problem_state.cir_snapshot``; that is removed
+        too, and its duplicated X/B are not sent beside the context."""
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = dict(_task("t1"), coupling=_cir())
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(task, spec, "ep1")
+        state = provider.requests[0]["state"]
+        problem_state = state.get("problem_state") or {}
+        self.assertNotIn("cir_snapshot", problem_state)
+        self.assertNotIn("cir_snapshot", json.dumps(state))
+
+    def test_snapshot_duplicate_x_b_is_dropped_when_a_context_is_attached(self):
+        provider = RecordingProvider()
+        h = ORHarness(home=self.home, world_model=provider,
+                      embedding=self.backend)
+        self.addCleanup(h.close)
+        task = _task("t1")
+        ctx = h.build_prediction_context(task, "ep1")
+        spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
+        h.predict_outcome(task, spec, "ep1", context=ctx)
+        state = provider.requests[0]["state"]
+        # X/B travel in the frozen context's solving_context, once.
+        self.assertNotIn("task_progress", state)
+        self.assertNotIn("budget_state", state)
 
 
 if __name__ == "__main__":  # pragma: no cover

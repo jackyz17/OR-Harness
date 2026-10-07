@@ -313,7 +313,9 @@ class TestProtocolReachesProvider(StrategyCase):
         block = self.provider.requests[0]["prediction_context"]
         joint = block["joint_problem"]
         self.assertIn("distribution centre", joint["text"])
-        self.assertTrue(joint["cir"]["relations"])
+        # CIR is internal: the model reads the task text and math attributes,
+        # never the entity/relation lists.
+        self.assertNotIn("cir", joint)
         hits = block["retrieval_evidence"]["hits"]
         self.assertTrue(any(h["content"].get("task_text_excerpt")
                             for h in hits))

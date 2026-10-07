@@ -1,4 +1,4 @@
-# Prediction input context (`wm-context/2`)
+# Prediction input context (`wm-context/3`)
 
 Read this page when a prediction surprised you and you need to know what it was conditioned on: the frozen joint problem representation, the retrieval evidence it carried, the capability evidence behind `H`, and how a context is reused. For the protocol a prediction is written in, see [strategy_outcome.md](strategy_outcome.md); for the field definitions of every prediction, [world_model_contract.md](world_model_contract.md).
 
@@ -6,7 +6,7 @@ Read this page when a prediction surprised you and you need to know what it was 
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
 
-- Context version: `wm-context/2`
+- Context version: `wm-context/3`
 - Joint representation version: `joint/1`
 - Python module: `or_harness.world_model.context`
 - Entry point: `ORHarness.build_prediction_context` / `orx context`
@@ -79,6 +79,8 @@ P is described by three kinds of information, all organised together:
 | **Structural features** | the CIR (entities, decisions, constraints, relations, coupling groups) + the profile + the derivation report | the CIR's **relations stay relations** — they are never compressed into `rc`/`tc`/`rx` and then discarded |
 
 `joint.unknowns` lists the attributes nothing established. `joint.missing` lists what is absent and what that means. `joint.sources` maps each part to where it came from.
+
+**CIR is internal.** The joint representation stores the CIR (entities, decisions, constraints, relations, coupling groups) for profiling, retrieval, effect attribution and historical traceability, but the block is **never sent to the model**: `provider_view()` drops `joint_problem.cir` (and, on the legacy single-step path, `problem_state.cir_snapshot`) and names the omission. The model reads the task text, the math attributes (including the `constraint_kinds` the CIR derived, each with its `cir` origin) and the profile — not the entity/relation lists, and never an alias or summary of them.
 
 `linearity` deserves a caveat that is written into `joint.notes`: it is a **syntactic candidate** read off the declared model's expressions (a product of two declared decision variables). It is not a proof of convexity.
 
@@ -264,7 +266,7 @@ This is the phase's most important engineering boundary.
 
 | Block | What it is | How it reaches the provider |
 |---|---|---|
-| `paired_feedback` | the COMPACT per-episode pairs of CLOSED episodes: conditions, planned method, the ORIGINAL prediction, the REAL observation, the per-field difference, the task-check outcome, the scope, the not-comparable reasons and an evaluation reference | `prediction_execution_pairs` |
+| `paired_feedback` | the COMPACT per-episode pairs of CLOSED episodes: conditions, the PLANNED and the ACTUALLY PERFORMED method (with a deviation verdict), candidate/solver, the ORIGINAL prediction, the REAL observation and its MEASURED cost per dimension, the actual risk events (occurred/not_occurred/unknown), the task-check outcome, the execution status and short failure type, the scope, the not-comparable reasons and an evaluation reference | `prediction_execution_pairs` |
 | `prediction_reminders` | DETERMINISTIC "watch this next time" notes rendered from the measured statistics (never written by a model) | `prediction_reminders` |
 
 **Rules the paired block enforces:**
@@ -273,6 +275,10 @@ This is the phase's most important engineering boundary.
 - **Success AND failure.** A pair whose answer failed the task check is included; a cross-cell or cross-strategy-name case is included. Nothing filters by cell, `strategy_id` or verification state.
 - **An unexecuted candidate never appears.** A predicted-but-unexecuted candidate has no real outcome, and none is fabricated.
 - **One unknown field does not drop the row.** A blocked benefit dimension still leaves the cost ratio and the task-check fact in the row.
+- **Plan vs performance.** `method_planned` is the candidate's plan; `method_actual` is the method the run's own receipt reported, and `method_deviation` is the verdict when they differ. An unreported actual method stays ABSENT — it is never set equal to the plan, and a partial/failed run keeps whatever was observed.
+- **The measured number beside the ratio.** `cost_measured` carries the predicted and actual value per dimension (a ratio alone hides the scale); `cost_observed_unpredicted` carries dimensions the run measured but the prediction did not claim. A ratio never substitutes for the measurement.
+- **Real events, not predicted probabilities.** `risk_actual` lists each predicted event with its observed label (occurred / not_occurred / unknown); an unknown label stays unknown and a probability is never read as an occurrence.
+- **A failure keeps its type.** `execution_status` is the solver's own status and `failure_classes` its short failure labels, kept separate from the task-check verdict.
 - **O(1) read.** The block is DERIVED at publish time (the single calibration publish point) and stored, exactly like the summary, so a prediction read serves it in one row lookup rather than scanning the window. When nothing has been published the block is empty with a `missing` note.
 
 **The reminders are deterministic.** Each names the applicability it was derived under (metric/unit/scope/observation-rule identity), the OBSERVED bias and its direction, a concrete instruction, and the group key as support. A group below the episode threshold yields NO reminder — "insufficient evidence" is not a lesson. The block carries `kind: "derived_reminder"` and `basis: "measured_statistics"` so a reader never mistakes the instruction for an observation, nor for framework-vetted method advice.

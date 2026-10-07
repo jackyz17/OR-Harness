@@ -708,6 +708,11 @@ def capability_evidence_from_legacy_harness_state(
     experience = dict(state.get("experience") or {})
     tools = dict(state.get("tool_config") or {})
     coverage = dict(coverage or {})
+    # New snapshots keep the ONE knowledge copy in the coverage view; an
+    # older snapshot that still carries ``harness_state.knowledge`` is read
+    # from there. Coverage wins when both exist.
+    if not knowledge:
+        knowledge = dict(coverage.get("knowledge_layers") or {})
     out = HarnessCapabilityEvidence(as_of=as_of if as_of is not None
                                     else time.time())
     out.notes.append(

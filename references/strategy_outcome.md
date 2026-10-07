@@ -57,7 +57,7 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
 
 **Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the choice (a different config is a deviation) and the execution association, so a result is never attributed to a configuration that was not the one predicted.
 
-**What the provider receives.** The full frozen context content — the joint problem representation (text, CIR relations, math attributes with origins), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate, an explicit output contract AND a `benefit_convention` block. The framework fixes the task, the candidate, the scope, the evidence sources AND the benefit convention; the model fills prediction content only.
+**What the provider receives.** The full frozen context content — the joint problem representation (text, math attributes with origins; **CIR is internal and never sent**), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate, an explicit output contract AND a `benefit_convention` block. The framework fixes the task, the candidate, the scope, the evidence sources AND the benefit convention; the model fills prediction content only.
 
 **Output semantics.**
 

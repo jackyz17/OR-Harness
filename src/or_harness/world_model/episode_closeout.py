@@ -621,6 +621,16 @@ class RealOutcomeSummary:
     verification: Dict[str, Any] = field(default_factory=dict)
     #: Per-field eligibility: field -> (eligibility, reason).
     eligibility: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    #: The method the LAST in-scope record reported as PERFORMED (from the
+    #: script's own receipt or a harness declaration), copied by value, or
+    #: ``None`` when no record observed one (never a copy of the plan).
+    method_actual: Optional[Dict[str, Any]] = None
+    #: Failure error classes of the last in-scope record (``classify_failure``
+    #: labels), so a failed pair carries its short failure type.
+    failure_classes: List[str] = field(default_factory=list)
+    #: The last in-scope record's solution status (``optimal``/``error``/
+    #: ``timeout``...), a separate fact from the task-check verdict.
+    execution_status: Optional[str] = None
     #: Per-DIMENSION attribution of the binding's identity problems
     #: (``binding_attribution``): which comparison blocks are blocked and
     #: why. A known disagreement on the execution CONDITIONS blocks the
@@ -647,6 +657,9 @@ class RealOutcomeSummary:
             "verification": copy.deepcopy(self.verification),
             "eligibility": copy.deepcopy(self.eligibility),
             "attribution": copy.deepcopy(self.attribution),
+            "method_actual": copy.deepcopy(self.method_actual),
+            "failure_classes": list(self.failure_classes),
+            "execution_status": self.execution_status,
             "notes": list(self.notes),
         }
 
@@ -832,6 +845,21 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         }
     summary.execution_ids = [r.execution_id for r in records]
 
+    # The method that ACTUALLY ran, read from the real records (a script's
+    # ``method_performed`` receipt, or a harness declaration) — never from
+    # the prediction's plan. A partial execution or an encoding-stage
+    # failure keeps whatever method was observed, and an unreported method
+    # stays None (unknown), never a copy of the plan. The LAST in-scope
+    # record is the attempt that produced the window's outcome.
+    if records:
+        actual = getattr(records[-1], "method_actual", None)
+        if isinstance(actual, dict) and actual:
+            summary.method_actual = copy.deepcopy(actual)
+        summary.failure_classes = sorted(
+            {str(f.error_class) for f in (records[-1].failures or [])
+             if f.error_class})
+        summary.execution_status = (records[-1].quality or {}).get("status")
+
     # Scope status: the terminal state of what the prediction covered.
     if action.status == "running":
         summary.scope_status = "running"
@@ -883,15 +911,16 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             # silently made to mean both.
             task_check_failed = 0
             task_check_states: List[Optional[str]] = []
+            skipped_non_quality = 0
             for record in records:
                 quality = record.quality or {}
                 gap = quality.get("gap")
                 status = quality.get("status")
                 if status == "optimal":
                     value = 1.0
-                elif gap is not None and _finite(gap):
+                elif status == "feasible" and gap is not None and _finite(gap):
                     value = max(0.0, 1.0 - float(gap))
-                elif quality.get("feasible"):
+                elif status == "feasible" and quality.get("feasible"):
                     # A feasible solution with no gap/bound: the 0.5
                     # heuristic is NOT an observed quality truth.
                     summary.eligibility["benefit"] = {
@@ -902,12 +931,27 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                     }
                     continue
                 else:
+                    # error / timeout / infeasible / unbounded: NO quality
+                    # observation, even when a stray ``gap`` survived on the
+                    # record. A failed run's gap is not a solution quality —
+                    # reading it would let an error (gap=0 by default) score
+                    # a full 1.0.
+                    skipped_non_quality += 1
                     continue
                 observed.append(value)
                 state = task_check_state(record)
                 task_check_states.append(state)
                 if state == "failed":
                     task_check_failed += 1
+            if skipped_non_quality and not observed:
+                summary.eligibility.setdefault("benefit", {
+                    "eligibility": "not_observable",
+                    "reason": (f"{skipped_non_quality} in-scope execution(s) "
+                               "carried no usable solution status "
+                               "(error/timeout/infeasible/unbounded): a "
+                               "failed run's gap is not a quality "
+                               "observation"),
+                })
             if observed:
                 # Window rule (declared BEFORE evaluation): the LAST
                 # in-scope attempt's qualified solution is the window's
@@ -1457,6 +1501,16 @@ class StrategyPredictionEvaluation:
     #: reading the identity bookkeeping. It is NOT an identity problem: the
     #: attempt really happened, it simply is not the planned method's answer.
     method_deviation: Optional[Dict[str, Any]] = None
+    #: The method the LAST in-scope record reported as PERFORMED, copied by
+    #: value from the real record (never the plan). ``None`` = unobserved.
+    method_actual: Optional[Dict[str, Any]] = None
+    #: Failure error classes of the last in-scope record, so a failed pair
+    #: carries its short failure type alongside the cost.
+    failure_classes: List[str] = field(default_factory=list)
+    #: The last in-scope record's own solution status
+    #: (optimal/feasible/error/timeout/...), a separate fact from the
+    #: task-check verdict.
+    execution_status: Optional[str] = None
     #: Whether ANY part of this prediction may enter the calibration sample
     #: (``state == "evaluated"``). Deliberately narrow: being BOUND (the
     #: prediction is linked to a real action) is a different, weaker fact
@@ -1487,6 +1541,9 @@ class StrategyPredictionEvaluation:
                             or self._derive_eligibility()),
             "attribution": copy.deepcopy(self.attribution),
             "method_deviation": copy.deepcopy(self.method_deviation),
+            "method_actual": copy.deepcopy(self.method_actual),
+            "failure_classes": list(self.failure_classes),
+            "execution_status": self.execution_status,
             "calibratable": bool(self.calibratable or self._derive_calibratable()),
             "exclusion_reasons": list(self.exclusion_reasons),
             "notes": list(self.notes),
@@ -1640,6 +1697,12 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
     evaluation.method_deviation = copy.deepcopy(deviation)
     if deviation is not None:
         evaluation.notes.append(method_deviation_note(deviation))
+    # The actual method and failure type are copied from the REAL summary
+    # (records), never from the plan. Absent stays absent.
+    if summary.method_actual:
+        evaluation.method_actual = copy.deepcopy(summary.method_actual)
+    evaluation.failure_classes = list(summary.failure_classes)
+    evaluation.execution_status = summary.execution_status
 
     def _blocked(dim: str) -> bool:
         return bool(blocked.get(dim))
@@ -4088,6 +4151,30 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             "n_steps": len(steps),
             "steps": [(" ".join(s.split()))[:160] for s in steps[:3]],
         }
+    # The method ACTUALLY performed, when the run reported one (the script's
+    # own receipt, or a harness declaration). It is a SEPARATE fact from the
+    # plan: a plan is never copied in as if it had been carried out, and an
+    # absent actual method stays absent (unknown), never equal to the plan.
+    actual_method = getattr(evaluation, "method_actual", None)
+    if isinstance(actual_method, dict) and actual_method:
+        steps = [str(s) for s in (actual_method.get("steps") or [])]
+        row["method_actual"] = {
+            "name": actual_method.get("name"),
+            "n_steps": len(steps),
+            "steps": [(" ".join(s.split()))[:160] for s in steps[:3]],
+        }
+    # Whether the method that ran DEVIATED from the plan (a verdict, not the
+    # plan copied over the performance). ``None`` when it could not be
+    # compared (no plan, or no observed method).
+    deviation = getattr(evaluation, "method_deviation", None)
+    if isinstance(deviation, dict) and deviation:
+        row["method_deviation"] = copy.deepcopy(deviation)
+    # A failed pair carries its short failure TYPE and the solver's own
+    # status, kept SEPARATE from the task-check verdict.
+    if getattr(evaluation, "failure_classes", None):
+        row["failure_classes"] = list(evaluation.failure_classes)
+    if getattr(evaluation, "execution_status", None):
+        row["execution_status"] = evaluation.execution_status
     # The predicted RISK events (their NAMES), so a pair shows what the model
     # was wary of beside what happened — a fact, never a recommendation.
     risk = getattr(prediction, "risk", None)
@@ -4125,8 +4212,50 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             dim: entry.get("log_ratio")
             for dim, entry in per_dim.items()
             if entry.get("log_ratio") is not None}
+        # The REAL measured spend, per dimension — the absolute value, not
+        # only the error RATIO. A ratio cannot substitute for the measurement
+        # (it hides the scale), so both travel. ``predicted`` is the frozen
+        # claim, ``actual`` the real measurement, and a dimension the
+        # prediction did not carry is simply absent.
+        row["cost_measured"] = {}
+        for dim, entry in per_dim.items():
+            if entry.get("actual") is None:
+                continue
+            row["cost_measured"][dim] = {
+                "predicted": entry.get("predicted"),
+                "actual": entry.get("actual"),
+                "abs_error": entry.get("abs_error"),
+            }
+        if not row["cost_measured"]:
+            row.pop("cost_measured")
     if cost.get("excluded"):
         row["cost_excluded"] = dict(cost.get("excluded"))
+    # The real cost dimensions this evaluation observed but the prediction
+    # did NOT predict (measured facts, not comparable to a claim): carried so
+    # a reader sees the operation's true spend even where a ratio exists.
+    if cost.get("observed_not_predicted"):
+        row["cost_observed_unpredicted"] = copy.deepcopy(
+            cost.get("observed_not_predicted"))
+    # The REAL risk events: which happened, which did not, which are unknown.
+    # A predicted probability is never read as an occurrence, and an
+    # unknown label stays unknown (never defaulted to "did not happen").
+    risk_actual: List[Dict[str, Any]] = []
+    for entry in (evaluation.risk or {}).get("scored") or []:
+        risk_actual.append({
+            "event": entry.get("event"),
+            "label": entry.get("label"),
+            "label_basis": entry.get("label_basis"),
+            "predicted_probability": entry.get("predicted_probability"),
+        })
+    for entry in (evaluation.risk or {}).get("unscored") or []:
+        risk_actual.append({
+            "event": entry.get("event"),
+            "label": entry.get("label"),
+            "label_basis": entry.get("reason"),
+            "predicted_probability": entry.get("predicted_probability"),
+        })
+    if risk_actual:
+        row["risk_actual"] = risk_actual[:8]
     # The attribution's blocked dimensions: WHY a field is not comparable.
     # A row with a blocked field still carries every other field.
     blocked = evaluation.attribution or {}

@@ -204,6 +204,139 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         self.assertEqual(filtered["n_pairs_withheld"], 1)
         self.assertIn("different model identity", filtered["filter_note"])
 
+    def test_pair_carries_the_measured_cost_not_only_the_ratio(self):
+        """The real per-dimension spend travels beside the error ratio: a
+        ratio alone hides the scale."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.amend_action_cost(record.action_id, llm_tokens=500.0,
+                                 solver_runtime_s=2.0)
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        self.provider.requests.clear()
+        self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep2")
+        request = self.provider.requests[-1]
+        row = request["prediction_context"][
+            "prediction_execution_pairs"]["pairs"][0]
+        self.assertIn("cost_measured", row)
+        # The prediction claimed solver_runtime_s=3.0; the measured spend
+        # travels as its own value beside the ratio.
+        self.assertEqual(
+            row["cost_measured"]["solver_runtime_s"]["predicted"], 3.0)
+        self.assertEqual(
+            row["cost_measured"]["solver_runtime_s"]["actual"], 0.01)
+
+    def test_pair_carries_the_actual_risk_event_label(self):
+        """A predicted risk event is paired with what actually happened,
+        and an unknown label stays unknown."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        record = self.solve(task, strategy="S04")
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        self.provider.requests.clear()
+        self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep2")
+        request = self.provider.requests[-1]
+        row = request["prediction_context"][
+            "prediction_execution_pairs"]["pairs"][0]
+        self.assertIn("risk_actual", row)
+        timeout = next(r for r in row["risk_actual"]
+                       if r["event"] == "timeout")
+        # The attempt finished optimal (no timeout observed).
+        self.assertEqual(timeout["label"], "not_occurred")
+        # The PREDICTED probability is carried as its own field, never read
+        # as an occurrence.
+        self.assertEqual(timeout["predicted_probability"], 0.2)
+
+    def test_pair_carries_the_actual_method_when_reported(self):
+        """The method that ACTUALLY ran travels with the pair, separate from
+        the plan; an unreported method stays absent."""
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04",
+                   "method": {"name": "planned method", "steps": ["a", "b"]}},
+            "ep1")
+        # Execute with a script that reports a DIFFERENT performed method.
+        from pathlib import Path
+        work = Path(self.home) / "ws_actual"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json, os\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 100.0,"
+            " 'objective_bound': 100.0, 'runtime_seconds': 0.01,"
+            " 'method_performed': {'action_id': os.environ['OR_ACTION_ID'],"
+            " 'name': 'fallback enumeration', 'steps': ['enumerate']}}, fh)\n",
+            encoding="utf-8")
+        from or_harness.world_model.prediction import ActionSpec  # noqa
+        record = self.h.execute(
+            task, "S04", str(script), str(work), solver="highs",
+            episode_id="ep1", prediction_id=prediction.prediction_id)
+        self.h.record(record)
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        self.h.close_episode("t1", "ep1")
+        self.provider.requests.clear()
+        self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep2")
+        request = self.provider.requests[-1]
+        row = request["prediction_context"][
+            "prediction_execution_pairs"]["pairs"][0]
+        self.assertEqual(row["method_planned"]["name"], "planned method")
+        self.assertEqual(row["method_actual"]["name"],
+                         "fallback enumeration")
+        self.assertIn("method_deviation", row)
+
+
+class TestErrorRunIsNotAFullScore(M4Case):
+    """A failed run's stray gap=0 must never be read as a full-quality
+    solution."""
+
+    def test_error_execution_with_zero_gap_is_not_scored(self):
+        task = _task("t1")
+        prediction = self.h.predict_strategy_outcome(
+            task, {"action_type": "execute_strategy",
+                   "strategy_id": "S04"}, "ep1")
+        # A script that FAILS (exit code 1) but leaves a result.json carrying
+        # gap=0 — the exact shape that would otherwise score Q=1.0.
+        from pathlib import Path
+        work = Path(self.home) / "ws_err"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json, sys\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 100.0,"
+            " 'objective_bound': 100.0, 'mip_gap': 0.0}, fh)\n"
+            "sys.exit(1)\n", encoding="utf-8")
+        record = self.h.execute(
+            task, "S04", str(script), str(work), solver="highs",
+            episode_id="ep1", prediction_id=prediction.prediction_id)
+        self.assertEqual(record.quality.get("status"), "error")
+        self.h.record(record)
+        self.h.bind_strategy_outcome(prediction.prediction_id,
+                                     record.action_id)
+        result = self.h.close_episode("t1", "ep1")
+        evaluation = result["evaluations"][0]
+        # No benefit observation was manufactured from the failed run.
+        self.assertNotEqual(evaluation["benefit"].get("observed"), 1.0)
+        self.assertIn("eligibility",
+                      evaluation.get("benefit", {}) or {"eligibility": None})
+
 
 class TestRemindersReachTheProvider(CalibrationLoopCase):
 

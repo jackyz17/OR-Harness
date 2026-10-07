@@ -75,6 +75,48 @@ def harness_condition(snapshot) -> Dict[str, Any]:
     return out
 
 
+#: Snapshot fields that duplicate a field of the frozen prediction context
+#: when one is attached. They are dropped from the snapshot view so the SAME
+#: fact is not sent twice: ``solving_context.task_progress`` /
+#: ``solving_context.budget_state`` carry the identical frozen values.
+_DUPLICATED_BY_CONTEXT = ("task_progress", "budget_state")
+
+
+def _provider_state_view(snapshot, *, with_context: bool) -> Dict[str, Any]:
+    """The snapshot fields a model is given, with internal content removed.
+
+    Two things never reach the model:
+
+    - ``problem_state.cir_snapshot`` — CIR is INTERNAL. The model reads the
+      task text, the math attributes (including the constraint kinds the CIR
+      derived) and the profile; it does not need the entity/relation lists,
+      and a second (unbounded) copy beside the joint block's is pure weight.
+      The stored snapshot keeps ``cir_snapshot``, so profiling, retrieval and
+      historical traceability are unaffected.
+    - ``task_progress`` / ``budget_state`` — when a frozen prediction context
+      is attached it carries the identical values under ``solving_context``,
+      so sending both would duplicate them.
+    """
+    view: Dict[str, Any] = {}
+    for key in INPUT_VIEW_KEYS:
+        if key == "harness_condition":
+            value = harness_condition(snapshot)
+        else:
+            value = getattr(snapshot, key, None)
+        if with_context and key in _DUPLICATED_BY_CONTEXT:
+            # The context carries the same frozen X/B; do not send it twice.
+            continue
+        if value:
+            view[key] = copy.deepcopy(value)
+    problem_state = view.get("problem_state")
+    if isinstance(problem_state, dict):
+        # CIR is dropped HERE, in the provider-facing view only. The stored
+        # snapshot keeps it for internal profiling, retrieval and the
+        # historical record.
+        problem_state.pop("cir_snapshot", None)
+    return view
+
+
 class PredictionService:
     """Predict / bind / compare over the frozen prediction log."""
 
@@ -131,15 +173,11 @@ class PredictionService:
             return prediction
 
         # Input view: the snapshot's own fields, recorded by key so the
-        # stored prediction shows exactly what the model was given.
-        view: Dict[str, Any] = {}
-        for key in INPUT_VIEW_KEYS:
-            if key == "harness_condition":
-                value = harness_condition(snapshot)
-            else:
-                value = getattr(snapshot, key, None)
-            if value:
-                view[key] = copy.deepcopy(value)
+        # stored prediction shows exactly what the model was given. CIR is
+        # internal and never sent; when a frozen prediction context is
+        # attached, its duplicated X/B are dropped from the snapshot view.
+        view = _provider_state_view(
+            snapshot, with_context=prediction_context is not None)
         request = {
             "action_spec": action_spec.to_dict(),
             "state": view,

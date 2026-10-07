@@ -70,7 +70,11 @@ from or_harness.world_model.contracts import (
 #: the paired prediction-execution feedback block and the deterministic
 #: prediction reminders; a v1 payload lacks them, so a v2 reader refuses it
 #: rather than reading the absence as "no pairs existed".
-PREDICTION_CONTEXT_VERSION = "wm-context/2"
+#:
+#: v3 removes CIR from the provider view (``joint_problem.cir`` is internal
+#: now). The stored joint block still carries it for traceability, so a v3
+#: reader of an older payload simply does not send the block onward.
+PREDICTION_CONTEXT_VERSION = "wm-context/3"
 
 #: Version of the joint problem representation's shape.
 JOINT_REPRESENTATION_VERSION = "joint/1"
@@ -304,9 +308,19 @@ def frozen_knowledge_view(snapshot: Any) -> Dict[str, List[Dict[str, Any]]]:
     read THAT rather than today's bank: an entry that was revised after the
     snapshot would otherwise be reported at its NEW expected quality inside a
     context describing the earlier state.
+
+    Older snapshots kept a SECOND copy at ``harness_state.knowledge``; that
+    copy is no longer written (it doubled every snapshot for no information
+    gain), but a stored snapshot that has it is still read here so history
+    stays available. ``coverage`` wins when both exist.
     """
-    layers = (getattr(snapshot, "coverage", None) or {}).get(
-        "knowledge_layers") or {}
+    coverage = getattr(snapshot, "coverage", None) or {}
+    layers = coverage.get("knowledge_layers")
+    if not isinstance(layers, dict):
+        state = getattr(snapshot, "harness_state", None) or {}
+        layers = (state.get("knowledge")
+                  if isinstance(state.get("knowledge"), dict) else {})
+    layers = layers or {}
     return {
         "verified": copy.deepcopy(list(layers.get("verified") or [])),
         "legacy_unknown": copy.deepcopy(
@@ -318,12 +332,16 @@ def frozen_knowledge_view(snapshot: Any) -> Dict[str, List[Dict[str, Any]]]:
 def frozen_knowledge_available(snapshot: Any) -> bool:
     """Whether a snapshot actually carries a frozen knowledge view.
 
-    An absent/empty ``knowledge_layers`` means the view was never recorded,
-    which is NOT the same as "there was no knowledge" — the caller must
-    report it as missing rather than reading today's bank to fill the gap.
+    An absent/empty knowledge view means it was never recorded, which is NOT
+    the same as "there was no knowledge" — the caller must report it as
+    missing rather than reading today's bank to fill the gap. Both storage
+    locations are accepted so an old snapshot is still recognised.
     """
     coverage = getattr(snapshot, "coverage", None) or {}
-    return isinstance(coverage.get("knowledge_layers"), dict)
+    if isinstance(coverage.get("knowledge_layers"), dict):
+        return True
+    state = getattr(snapshot, "harness_state", None) or {}
+    return isinstance(state.get("knowledge"), dict)
 
 
 def _bounded(items: Sequence[Any], limit: int,
@@ -1417,6 +1435,18 @@ class PredictionContext:
         """
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
+        # CIR is INTERNAL. The model reads the task text, the math
+        # attributes (including the constraint kinds derived from the CIR),
+        # the profile, the candidate/actual methods and the experience — not
+        # the entity/relation/constraint lists themselves. The block is
+        # dropped from the provider view ONLY: the stored context keeps
+        # ``joint.cir`` so an old prediction stays traceable, and internal
+        # profiling/retrieval keep reading it. It is never re-inserted under
+        # an alias.
+        if joint.pop("cir", None) is not None:
+            omitted.append(
+                "joint_problem.cir (CIR is internal; the model reads the "
+                "task text, math attributes and profile instead)")
         view = {
             "context_id": self.context_id,
             "context_version": self.version,
