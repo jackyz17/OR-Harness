@@ -972,10 +972,11 @@ class TestTheJsonModeHintIsRemovable(unittest.TestCase):
                           if k != "response_format"}, without)
         self.assertEqual(list(with_hint),
                          ["model", "messages", "response_format",
-                          "max_tokens", "temperature", "enable_thinking"])
+                          "max_tokens", "temperature", "enable_thinking",
+                          "chat_template_kwargs"])
         self.assertEqual(list(without),
                          ["model", "messages", "max_tokens", "temperature",
-                          "enable_thinking"])
+                          "enable_thinking", "chat_template_kwargs"])
         self.assertEqual(with_hint["temperature"], 0.2)
         self.assertEqual(with_hint["max_tokens"], 2048)
 
@@ -996,7 +997,22 @@ class TestThinkingIsOffUnlessAskedFor(Base):
             provider = self._provider()
             body = _posted_body(provider)
         self.assertIs(body["enable_thinking"], False)
+        # vLLM serving Qwen3 reads the flag from ``chat_template_kwargs``: a
+        # top-level ``enable_thinking`` alone is a no-op there, so reasoning
+        # ate the whole output budget and every prediction came back empty.
+        # BOTH forms are sent — vLLM honours the nested one, other endpoints
+        # the top-level one.
+        self.assertEqual(body["chat_template_kwargs"],
+                         {"enable_thinking": False})
         self.assertFalse(provider.describe()["enable_thinking"])
+
+    def test_thinking_on_sends_neither_form(self):
+        """With the switch ON neither key is sent: the endpoint's own
+        default governs, and no vendor default is asserted."""
+        with _EnvGuard(OR_WM_ENABLE_THINKING="1"):
+            body = _posted_body(self._provider())
+        self.assertNotIn("enable_thinking", body)
+        self.assertNotIn("chat_template_kwargs", body)
 
     def test_the_opt_in_omits_the_key_rather_than_asserting_true(self):
         with _EnvGuard(OR_WM_ENABLE_THINKING="1"):

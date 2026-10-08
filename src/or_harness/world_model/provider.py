@@ -367,11 +367,20 @@ class HttpChatProvider(WorldModelProvider):
             "temperature": self.temperature,
         }
         if not self.enable_thinking:
-            # Ask the endpoint NOT to reason before answering. Sent as an
-            # explicit ``false`` (the default arm); with the switch on the
-            # key is ABSENT, so the endpoint's own default governs and no
-            # vendor default is hard-coded on our side.
+            # Ask the endpoint NOT to reason before answering. vLLM serving
+            # Qwen3 reads the flag from ``chat_template_kwargs``: a
+            # top-level ``enable_thinking`` is a no-op there, so the model
+            # still emits reasoning tokens, and on a large strategy-outcome
+            # prompt (~8.5k) they consume the whole ``max_tokens`` — the
+            # reply ends with ``finish_reason="length"`` and
+            # ``content=null``, which every prediction reads as "model
+            # returned no content". Send BOTH keys: the
+            # ``chat_template_kwargs`` form for vLLM(Qwen3), and the
+            # top-level form which other endpoints read. With the switch on
+            # NEITHER key is sent, so the endpoint's own default governs and
+            # no vendor default is hard-coded on our side.
             body["enable_thinking"] = False
+            body["chat_template_kwargs"] = {"enable_thinking": False}
         req = urllib.request.Request(
             self.base_url + "/chat/completions",
             data=json.dumps(body).encode("utf-8"),
