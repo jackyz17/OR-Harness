@@ -255,9 +255,16 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
                        if r["event"] == "timeout")
         # The attempt finished optimal (no timeout observed).
         self.assertEqual(timeout["label"], "not_occurred")
-        # The PREDICTED probability is carried as its own field, never read
-        # as an occurrence.
-        self.assertEqual(timeout["predicted_probability"], 0.2)
+        # The PREDICTED probability is carried ONCE, in ``risk_predicted``;
+        # ``risk_actual`` only POINTS at it (r15) and never restates the
+        # number as an occurrence.
+        self.assertTrue(timeout["predicted"])
+        self.assertEqual(timeout["probability_ref"],
+                         "risk_predicted[timeout].probability")
+        self.assertNotIn("predicted_probability", timeout)
+        predicted = next(e for e in row["risk_predicted"]
+                         if e["event"] == "timeout")
+        self.assertEqual(predicted["probability"], 0.2)
 
     def test_pair_carries_the_actual_method_when_reported(self):
         """The method that ACTUALLY ran travels with the pair, separate from

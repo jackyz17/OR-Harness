@@ -978,12 +978,27 @@ class ORHarness:
             # episodes (M5). Built from the SAME closed-episode window as
             # the summary above, so it can never carry an active episode's
             # unclosed feedback. It is a read: no model call, no storage.
+            # r15: the pair set is not dumped whole — the RELEVANT, bounded
+            # subset is SELECTED (using the current problem, the recall
+            # already gathered and the candidate(s) this context is for) and
+            # FROZEN, so every candidate of this decision shares one
+            # historical set and a later reuse never re-selects.
             from or_harness.world_model.episode_closeout import (
                 paired_feedback_for_context,
+                paired_feedback_selection_from_block,
             )
-            paired_feedback = paired_feedback_for_context(
+            paired_feedback_block = paired_feedback_for_context(
                 self,
                 model_identity=self.strategy_predictions.model_identity_label)
+            selection_candidates: List[Any] = []
+            if context_spec is not None:
+                selection_candidates.append(context_spec)
+            else:
+                selection_candidates.extend(list(candidates or []))
+            paired_feedback = paired_feedback_selection_from_block(
+                paired_feedback_block, task=effective_task, profile=profile,
+                recall_result=recall_result,
+                candidates=selection_candidates, scope=None)
             # ONLINE H+ follow-up state (M5 delayed supervision): what the
             # harness knows about earlier capability-gain claims, so this
             # prediction can see how its own past H+ stances turned out.

@@ -384,7 +384,24 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "cross-strategy-name case is still evidence about your bias. When a "
     "pair's field is unknown or not comparable, that does NOT invalidate "
     "its other fields. Do NOT read a pair as a menu: it is a record of what "
-    "was predicted and what happened, never a recommendation.\n"
+    "was predicted and what happened, never a recommendation. The pairs "
+    "shown were SELECTED as the most relevant to THIS candidate and problem "
+    "(each carries `selected_reason` and a `relevance` rank; a low rank is "
+    "relevance to you, NOT a claim that two methods are the same), and are "
+    "capped for display — `n_pairs_available` / `n_pairs_included` / "
+    "`n_pairs_omitted` tell you how many existed. A pair's predicted risk "
+    "probabilities live ONCE in `risk_predicted`; `risk_actual` gives the "
+    "OBSERVED label per event and points back with `probability_ref` (a "
+    "`predicted: false` event had NO predicted probability — never read "
+    "that as zero).\n"
+    "RETRIEVAL EVIDENCE: `retrieval_evidence.hits` carries each memory "
+    "item's content ONCE (a verified claim's boundary, method and "
+    "verification scope; an execution's observed outcome and cost). The "
+    "`structural` and `semantic` lists are INDEXES: they keep their own "
+    "signal (applicability for structural, `similarity` for semantic) and "
+    "point at the content (`knowledge_ref` / `claim_ref` / `full_text_ref`) "
+    "rather than repeating it. A similarity is a DISCOVERY signal only, "
+    "never a quality or risk estimate.\n"
     "PREDICTION REMINDERS: a `prediction_reminders` block may carry "
     "DETERMINISTIC 'watch this next time' notes derived from the measured "
     "statistics above (never written by a model). Each states the "
@@ -621,6 +638,43 @@ def build_strategy_outcome_request(
     return _finalize_request_size(request, STRATEGY_OUTCOME_SYSTEM_PROMPT)
 
 
+def _cap_displayed_pairs(request: Dict[str, Any]) -> None:
+    """Bound the DISPLAYED prediction-execution pairs at the request level.
+
+    The selection has already chosen the relevant, bounded set; this is the
+    final call-level safeguard: if a caller supplied a block with MORE pairs
+    than the configured display ceiling (a legacy context, or a direct
+    caller), the sent list is truncated to the ceiling and the omission is
+    REPORTED on the block. It is a DISPLAY ceiling, never a calibration
+    window — the counts stay, so a reader never mistakes the shown pairs for
+    the calibration population.
+    """
+    from or_harness.world_model.episode_closeout import (
+        _paired_feedback_max_pairs,
+    )
+    context = request.get("prediction_context")
+    if not isinstance(context, dict):
+        return
+    block = context.get("prediction_execution_pairs")
+    if not isinstance(block, dict):
+        return
+    pairs = block.get("pairs")
+    if not isinstance(pairs, list):
+        return
+    cap = _paired_feedback_max_pairs()
+    if len(pairs) <= cap:
+        return
+    block["pairs"] = pairs[:cap]
+    block["n_pairs_included"] = len(block["pairs"])
+    block["display_capped"] = {
+        "ceiling": cap,
+        "dropped_for_display": len(pairs) - cap,
+        "note": ("the displayed pairs were capped at the request level "
+                 "(a DISPLAY ceiling, not a calibration sample size); the "
+                 "counts above still describe the selection"),
+    }
+
+
 def _finalize_request_size(request: Dict[str, Any],
                            system_prompt: str) -> Dict[str, Any]:
     """Report the WHOLE request size (system prompt + the assembled body).
@@ -635,6 +689,7 @@ def _finalize_request_size(request: Dict[str, Any],
     than a silent send.
     """
     from or_harness.world_model.context import _input_budget_chars
+    _cap_displayed_pairs(request)
     max_chars, budget_basis = _input_budget_chars()
     body_chars = len(json.dumps(request, ensure_ascii=False, default=str))
     prompt_chars = len(system_prompt or "")

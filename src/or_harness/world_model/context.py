@@ -816,7 +816,13 @@ def classify_evidence(layer: str, row: Dict[str, Any]) -> str:
 
 
 def _version_of(layer: str, row: Dict[str, Any]) -> str:
-    """The content version of one evidence item (or ``unknown``)."""
+    """The content version of one evidence item (or ``unknown``).
+
+    ``unknown`` is a FIRST-CLASS value, not a version: a channel that did
+    not carry the content that identifies the version (the structural
+    channel carries no ``claim_text``) reports ``unknown`` and that must
+    never be read as a version which CONFLICTS with a known one.
+    """
     if layer == "execution_evidence":
         return str(row.get("task_text_digest") or "unknown")
     if layer == "strategic_knowledge":
@@ -901,33 +907,79 @@ def _semantic_hits(vector_recall: Dict[str, Any]) -> List[Dict[str, Any]]:
     return hits
 
 
+def _merge_content(base: Dict[str, Any],
+                   extra: Dict[str, Any]) -> Dict[str, Any]:
+    """Union two rows of ONE memory item, writing each field once.
+
+    The two channels surface the same item as two DIFFERENT row shapes: the
+    structural channel carries the entry's structured claim but no text
+    digest, the semantic channel carries the digest and the similarity.
+    Keeping only the first-arriving row silently DROPPED the other channel's
+    fields — a merged entry made the model blind to exactly the fields that
+    only the other channel had. Here the rows are UNIONED: a key only one
+    side carries is kept, and a key both carry with the SAME value is
+    written once. Two non-empty values for one key are NOT silently
+    resolved — the second is preserved and reported under
+    ``_field_disagreements``.
+    """
+    merged = copy.deepcopy(base)
+    for key, value in (extra or {}).items():
+        if key not in merged or merged[key] in (None, {}, []):
+            merged[key] = copy.deepcopy(value)
+            continue
+        if merged[key] == value:
+            continue
+        conflicts = merged.setdefault("_field_disagreements", {})
+        conflicts[key] = {
+            "kept": copy.deepcopy(merged[key]),
+            "also_seen": copy.deepcopy(value),
+            "note": ("the two channels carried different values for this "
+                     "field; both are kept rather than one silently "
+                     "overwriting the other")}
+    return merged
+
+
 def dedupe_evidence(hits: Sequence[Dict[str, Any]]) -> Tuple[
         List[Dict[str, Any]], Dict[str, Any]]:
-    """Collapse repeated hits by identity, keeping every channel.
+    """Collapse repeated hits by identity, keeping every channel and field.
 
     One memory hit by two channels is ONE piece of evidence with two
     discovery paths — counting it twice would inflate its apparent support.
-    Versions are collected rather than overwritten: two channels reporting
-    different versions of one id is a conflict, reported as such, not
-    silently resolved.
+    The two channels' ROWS are unioned (see :func:`_merge_content`), so a
+    field only one channel carried is never dropped.
+
+    A version CONFLICT is reported only when two KNOWN, DIFFERENT versions
+    were seen. ``unknown`` is a first-class value, not a version: a channel
+    that did not carry the identifying content (the structural channel has
+    no ``claim_text``) reports ``unknown``, and reading that as a
+    disagreement made every cross-channel entry look like a conflict. The
+    unknown is recorded as ``version_unknown`` instead.
     """
     order: List[str] = []
     merged: Dict[str, Dict[str, Any]] = {}
     duplicates: List[Dict[str, Any]] = []
     for hit in hits:
         identity = hit["identity"]
+        version = str(hit.get("version") or "unknown")
         if identity not in merged:
             entry = copy.deepcopy(hit)
-            entry["versions"] = [hit["version"]]
+            entry["versions"] = [version]
+            entry["version_unknown"] = version == "unknown"
             entry["duplicate_count"] = 0
+            entry["content_channels"] = list(hit["channels"])
             merged[identity] = entry
             order.append(identity)
             continue
         entry = merged[identity]
         entry["duplicate_count"] += 1
-        if hit["version"] not in entry["versions"]:
-            entry["versions"].append(hit["version"])
+        entry["content"] = _merge_content(entry["content"], hit["content"])
+        if version not in entry["versions"]:
+            entry["versions"].append(version)
+        if version == "unknown":
+            entry["version_unknown"] = True
         for channel in hit["channels"]:
+            if channel not in entry["content_channels"]:
+                entry["content_channels"].append(channel)
             if channel not in entry["channels"]:
                 entry["channels"].append(channel)
         duplicates.append({"identity": identity,
@@ -935,13 +987,16 @@ def dedupe_evidence(hits: Sequence[Dict[str, Any]]) -> Tuple[
                            "note": "same evidence already carried by "
                                    f"{entry['channels']}"})
     items = [merged[i] for i in order]
-    conflicts = [i for i in items if len(i["versions"]) > 1]
+    conflicts: List[str] = []
     for item in items:
-        if len(item["versions"]) > 1:
+        known = sorted({v for v in item["versions"] if v != "unknown"})
+        if len(known) > 1:
             item["version_conflict"] = (
-                "the same evidence id was reported under different versions "
-                f"({item['versions']}): the channels disagree about which "
-                "content they surfaced")
+                "the same evidence id was reported under two KNOWN, "
+                f"different versions ({known}): the channels disagree about "
+                "which content they surfaced, so both are kept and the "
+                "disagreement is reported rather than silently resolved")
+            conflicts.append(item["identity"])
     execution_tasks = {str(i["content"].get("task_id"))
                        for i in items if i["layer"] == "execution_evidence"}
     summary = {
@@ -949,13 +1004,258 @@ def dedupe_evidence(hits: Sequence[Dict[str, Any]]) -> Tuple[
         "hits_kept": len(items),
         "duplicates_collapsed": len(duplicates),
         "duplicates": duplicates[:20],
-        "version_conflicts": [i["identity"] for i in conflicts],
+        "version_conflicts": conflicts,
+        "version_unknown": [i["identity"] for i in items
+                            if i.get("version_unknown")],
         "distinct_tasks_in_execution_hits": len(execution_tasks),
         "note": ("one memory hit by several channels is ONE piece of "
                  "evidence: support is never inflated by counting channels, "
-                 "and repeat runs of one task_id are not independent tasks"),
+                 "and repeat runs of one task_id are not independent tasks. "
+                 "AUTHORITY: an ``unknown`` version is a channel that did "
+                 "not carry the identifying content, NOT a disagreement"),
     }
     return items, summary
+
+
+def _dedupe_content_text(content: Dict[str, Any]) -> Dict[str, Any]:
+    """Remove text that is EXACTLY repeated inside ONE merged item.
+
+    Three positions carried the SAME claim sentence: the recommendation's
+    structured ``claim``, the semantic channel's rendered ``claim_text``
+    (which is ``"claim: " + claim.text + …``), and the verification
+    record's ``claim`` (the very claim it verified). The claim is written
+    once (``content.claim``); the other two keep a reference. A
+    verification record whose ``claim`` genuinely DIFFERS is left
+    untouched, and a ``claim_text`` that is NOT a rendering of the
+    structured claim (a standalone sentence) is kept.
+    """
+    if not isinstance(content, dict):
+        return content
+    claim = content.get("claim")
+    claim_text = claim.get("text") if isinstance(claim, dict) else None
+    if claim_text and isinstance(content.get("claim_text"), str) \
+            and claim_text in content["claim_text"]:
+        # The rendered text re-states the structured claim plus its
+        # predicates/subject, which are ALSO carried as structured fields.
+        content.pop("claim_text", None)
+        content["claim_text_ref"] = (
+            "content.claim.text (the rendered form only added the "
+            "predicates/subject that travel as structured fields)")
+    if "claim_text_ref" in content:
+        # The rendered form re-stated the claim the structured fields carry;
+        # drop an identical rendered copy wherever the merge left it.
+        content.pop("claim_text", None)
+    knowledge = content.get("knowledge")
+    if isinstance(knowledge, dict):
+        # ``knowledge.claim`` is the entry's claim in its structured form:
+        # when it IS the content's claim it is written once. A genuinely
+        # different sub-claim is kept (the plan forbids dropping a real
+        # difference).
+        if claim is not None and knowledge.get("claim") == claim:
+            knowledge.pop("claim", None)
+            knowledge["claim_ref"] = "content.claim"
+    verification = _verification_of(content)
+    if isinstance(verification, dict):
+        value = verification.get("claim")
+        if value is not None and claim_text is not None \
+                and value == claim_text:
+            verification.pop("claim", None)
+            verification["claim_ref"] = "content.claim.text"
+    return content
+
+
+def _verification_of(content: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The entry's verification record wherever the merge left it.
+
+    A merged item can carry the entry either at ``content.claim`` (the
+    semantic channel's shape) or at ``content.knowledge`` (the structural
+    channel's shape), so the verification record is looked for in both.
+    """
+    if not isinstance(content, dict):
+        return None
+    for holder_key in ("claim", "knowledge"):
+        holder = content.get(holder_key)
+        if isinstance(holder, dict):
+            verification = holder.get("verification")
+            if isinstance(verification, dict):
+                return verification
+    return None
+
+
+def _recompute_version_state(hit: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-derive the version verdict from a hit's collected versions.
+
+    A stored (frozen) context was collapsed by an EARLIER rule that read
+    ``unknown`` as a version, so its hits can carry a baked-in
+    ``version_conflict`` between ``unknown`` and a real digest. That is not
+    a conflict — ``unknown`` is a channel that did not carry the
+    identifying content. The verdict is recomputed from the versions the
+    hit already carries, so a reused context's projection is corrected
+    WITHOUT re-reading any bank.
+    """
+    versions = [str(v) for v in (hit.get("versions")
+                                 or [hit.get("version")]) if v]
+    known = sorted({v for v in versions if v != "unknown"})
+    hit["versions"] = versions or ["unknown"]
+    if len(known) > 1:
+        hit["version_conflict"] = (
+            "the same evidence id was reported under two KNOWN, different "
+            f"versions ({known}): the channels disagree about which content "
+            "they surfaced, so both are kept and the disagreement is "
+            "reported rather than silently resolved")
+    else:
+        hit.pop("version_conflict", None)
+    if "unknown" in versions:
+        hit["version_unknown"] = True
+        hit.setdefault("version_unknown_note", (
+            "at least one channel did not carry the identifying content, so "
+            "its version is UNKNOWN — this is NOT a conflict with the known "
+            "version"))
+    return hit
+
+
+def _project_retrieval_for_provider(view: "RetrievalView") -> Dict[str, Any]:
+    """The duplicate-free retrieval block the provider is actually given.
+
+    The STORED view keeps both channels in full (audit trail). The SENT
+    block carries each item's content ONCE, in ``retrieval_evidence.hits``;
+    the two channel lists become INDEXES that keep their own signal and
+    point at that content:
+
+    - ``structural.recommendations`` keeps the APPLICABILITY verdict and the
+      conditional statistics (which candidate, expected effect, confidence,
+      risk warnings) and points at the entry's content with ``claim_ref`` /
+      ``knowledge_ref``;
+    - ``semantic`` keeps its DISCOVERY signal (similarity, support count,
+      structural match) and points at the content it found with
+      ``full_text_ref``.
+
+    Nothing material is dropped: a field only one channel carried is merged
+    into the single content (``_merge_content``), an identical field is
+    written once, and a genuine version conflict is reported (the merged
+    content keeps both versions' fields under ``_field_disagreements``)
+    rather than silently resolved.
+    """
+    structural = copy.deepcopy(view.structural)
+    semantic = copy.deepcopy(view.semantic)
+    recs = structural.get("recommendations") or []
+
+    semantic_rows: Dict[str, Dict[str, Any]] = {}
+    for row in (semantic.get("execution_evidence") or []):
+        if isinstance(row, dict):
+            semantic_rows[evidence_identity(
+                "execution_evidence", str(row.get("execution_id")))] = row
+    for row in (semantic.get("strategic_knowledge") or []):
+        if isinstance(row, dict):
+            semantic_rows[evidence_identity(  # type: ignore[assignment]
+                "strategic_knowledge", str(row.get("entry_id")))] = row
+    recs_by_entry: Dict[str, Dict[str, Any]] = {}
+    for rec in recs:
+        if isinstance(rec, dict) and rec.get("evidence") == "strategic_entry":
+            for ref in (rec.get("evidence_refs") or []):
+                recs_by_entry.setdefault(str(ref), rec)
+
+    hits: List[Dict[str, Any]] = []
+    for hit in view.hits:
+        identity = str(hit.get("identity"))
+        content = copy.deepcopy(hit.get("content") or {})
+        row = semantic_rows.get(identity)
+        if isinstance(row, dict):
+            # The semantic channel surfaced the same item with fields the
+            # structural row did not carry (the text digest, the
+            # similarity). Union them in rather than keeping only the first.
+            content = _merge_content(content, row)
+        if hit.get("layer") == "strategic_knowledge":
+            rec = recs_by_entry.get(str(hit.get("evidence_id")))
+            if isinstance(rec, dict):
+                for key in ("claim", "knowledge"):
+                    if rec.get(key) is not None:
+                        content = _merge_content(content, {key: rec[key]})
+        content = _dedupe_content_text(content)
+        new_hit = copy.deepcopy(hit)
+        new_hit["content"] = content
+        # A stored (frozen) hit collapsed by the earlier rule may name the
+        # channels whose content it merged; the built ones name the channels
+        # that produced the merge. Either way the field says which content
+        # the single copy carries.
+        declared = list(hit.get("content_channels")
+                        or hit.get("channels") or [])
+        if isinstance(row, dict) and "semantic" not in declared:
+            declared.append("semantic")
+        new_hit["content_channels"] = declared
+        _recompute_version_state(new_hit)
+        # Re-derive the class from the MERGED content: the structural-only
+        # summary lacked ``verification_state``, which once made a verified
+        # entry read as ``legacy``. The complete content is what decides.
+        new_hit["evidence_class"] = classify_evidence(
+            str(new_hit.get("layer")), content)
+        hits.append(new_hit)
+
+    for rec in recs:
+        if not isinstance(rec, dict):
+            continue
+        if rec.pop("claim", None) is not None:
+            rec["claim_ref"] = "content.claim"
+        if rec.pop("knowledge", None) is not None:
+            rec["knowledge_ref"] = "content.knowledge"
+    structural["recommendations"] = recs
+    structural["note"] = (
+        "the entry's full content travels ONCE in `hits`; these rows are the "
+        "APPLICABILITY and conditional-statistics view and point at it with "
+        "`claim_ref` / `knowledge_ref`. " + str(structural.get("note") or ""))
+
+    semantic["execution_evidence"] = [
+        {"execution_id": row.get("execution_id"),
+         "similarity": row.get("similarity"),
+         "structural_match": row.get("structural_match"),
+         "full_text_ref": ("hits[identity=execution_evidence:"
+                           f"{row.get('execution_id')}].content")}
+        for row in (semantic.get("execution_evidence") or [])
+        if isinstance(row, dict)]
+    semantic["strategic_knowledge"] = [
+        {"entry_id": row.get("entry_id"),
+         "similarity": row.get("similarity"),
+         "structural_match": row.get("structural_match"),
+         "support_n": row.get("support_n"),
+         "verification_state": row.get("verification_state"),
+         "full_text_ref": ("hits[identity=strategic_knowledge:"
+                           f"{row.get('entry_id')}].content")}
+        for row in (semantic.get("strategic_knowledge") or [])
+        if isinstance(row, dict)]
+    semantic["note"] = (
+        "similarity is a DISCOVERY signal only; the full content it found is "
+        "carried ONCE in `hits` and referenced with `full_text_ref` (it is "
+        "not repeated here). " + str(semantic.get("note") or ""))
+
+    dedup = copy.deepcopy(view.deduplication)
+    dedup["unique_content"] = len(hits)
+    dedup["content_channels"] = {
+        hit["identity"]: hit["content_channels"] for hit in hits}
+    return {
+        "channels_run": list(view.channels_run),
+        "n_hits": len(hits),
+        "hits": hits,
+        "structural": structural,
+        "semantic": semantic,
+        "deduplication": dedup,
+        "degraded": [dict(d) for d in view.degraded],
+        "missing": list(view.missing),
+        "notes": list(view.notes) + [
+            "each item's content is carried ONCE (in `hits`); the structural "
+            "and semantic lists are indexes that point at it, and a "
+            "cross-channel field is merged rather than one copy winning"],
+        "task_digest": view.task_digest,
+        "recall_digest": view.recall_digest,
+        "evidence_classes": _evidence_classes_of(hits),
+    }
+
+
+def _evidence_classes_of(hits: Sequence[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for hit in hits:
+        key = str(hit.get("evidence_class"))
+        counts[key] = counts.get(key, 0) + 1
+    return counts
 
 
 @dataclass
@@ -1421,14 +1721,17 @@ class PredictionContext:
         evidence really reached the provider" has ONE place to look, and so
         a stored context can be inspected without re-deriving anything.
 
-        TWO rules this view enforces, both about the REQUEST COST:
+        THREE rules this view enforces, all about the REQUEST COST:
 
         - **No content is sent twice.** The problem's text is carried by
           ``joint_problem.text``; the ``task_payload`` copy repeats it
           verbatim, so the view drops the fields the joint block already
-          carries and states which ones under ``omitted``. The stored
-          context keeps the full payload for traceability — the trimming is
-          confined to this view.
+          carries and states which ones under ``omitted``. A memory item
+          retrieved by BOTH channels is carried once in
+          ``retrieval_evidence.hits`` (see
+          :func:`_project_retrieval_for_provider`). The stored context keeps
+          the full payload and both channel lists for traceability — the
+          trimming is confined to this view.
         - **The request has a bounded size.** Everything that enters here
           (the joint block, the retrieval evidence, the capability evidence,
           the calibration block) is measured, and the view reports its own
@@ -1436,6 +1739,10 @@ class PredictionContext:
           a truncated answer. ``max_chars`` trims the OPTIONAL diagnostic
           blocks (never the problem statement, the candidate or the
           calibration) and names what it dropped.
+        - **Content over key names.** The single content is re-classified
+          from its MERGED fields, so a verified entry is never downgraded to
+          ``legacy`` merely because the summarising channel lacked the
+          verification state.
         """
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
@@ -1451,6 +1758,11 @@ class PredictionContext:
             omitted.append(
                 "joint_problem.cir (CIR is internal; the model reads the "
                 "task text, math attributes and profile instead)")
+        # The retrieval block is projected to its duplicate-free layout:
+        # the stored context keeps both channel lists in full, the SENT
+        # block carries each item's content once and points the channels at
+        # it.
+        retrieval_block = _project_retrieval_for_provider(self.retrieval)
         view = {
             "context_id": self.context_id,
             "context_version": self.version,
@@ -1462,7 +1774,7 @@ class PredictionContext:
             "snapshot_id": self.snapshot_id,
             "joint_problem": joint,
             "solving_context": copy.deepcopy(self.solving_context),
-            "retrieval_evidence": self.retrieval.to_dict(),
+            "retrieval_evidence": retrieval_block,
             "harness_capability": copy.deepcopy(self.capability),
             "capability_version": copy.deepcopy(self.capability_version),
             "execution_constraints": copy.deepcopy(self.execution_constraints),

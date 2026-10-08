@@ -56,6 +56,7 @@ Design boundaries (the reasons this module is shaped the way it is):
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import math
 import os
@@ -4595,6 +4596,16 @@ def build_paired_feedback(
             continue
         used += size
         included.append(row)
+    # The rows the SELECTION may consider, in their stable relevance order
+    # (failures/repairs first, then most recent). Each keeps its index so a
+    # selection can return the full row by position and the ordering is
+    # total and stable across processes.
+    selection_ordered = sorted(
+        enumerate(rows),
+        key=lambda t: (0 if _is_failure(t[1][2]) else 1,
+                       -_recency(t[1][0]), t[0]))
+    selection_rows = [(i, row) for i, (_stored, _eval, row)
+                      in selection_ordered]
     out: Dict[str, Any] = {
         "feedback_version": PAIRED_FEEDBACK_VERSION,
         "model_identity": ident,
@@ -4614,6 +4625,12 @@ def build_paired_feedback(
         "basis": ("derived from CLOSED episodes' stored evaluations in the "
                   "current window; no model call, no re-scoring, no new "
                   "storage"),
+        # The per-row SELECTION index: the fields a later relevance choice
+        # needs (which candidate/method, which executions, which task/cell,
+        # whether it failed), kept small and derived from facts already in
+        # the row. This is what lets a prediction request pick the pairs
+        # RELEVANT to it without re-reading the bank.
+        "selection_meta": _selection_meta(selection_rows),
         "pairs": included,
     }
     if omitted:
@@ -4627,6 +4644,485 @@ def build_paired_feedback(
                        "in the window yet: a cold start carries no paired "
                        "feedback (this is absent, not 'nothing matched')")
     return out
+
+
+def _selection_meta(indexed_rows: Sequence[Tuple[int, Dict[str, Any]]]
+                    ) -> List[Dict[str, Any]]:
+    """The lightweight per-row index a later relevance selection reads.
+
+    Deliberately SMALL: it names the candidate/method, the condition handle
+    (task/cell/family/strategy), the executions the pair covers and whether
+    it failed — never the methods' steps or the prediction's numbers, which
+    live in the full row. It is a DERIVED field of the published block, so
+    the read path never has to scan the bank to know what is available.
+    """
+    meta: List[Dict[str, Any]] = []
+    for index, row in indexed_rows:
+        conditions = row.get("conditions") or {}
+        method = row.get("method_planned") or {}
+        meta.append({
+            "index": index,
+            "evaluation_id": row.get("evaluation_id"),
+            "prediction_id": row.get("prediction_id"),
+            "task_id": row.get("task_id"),
+            "scope": row.get("scope"),
+            "strategy_id": conditions.get("strategy_id"),
+            "cell": conditions.get("cell"),
+            "family": conditions.get("family"),
+            "method_name": method.get("name"),
+            "plan_method_words": _method_signature_tokens(
+                [method.get("name")] + list(method.get("steps") or [])),
+            "action_id": row.get("action_id"),
+            "execution_ids": list(row.get("execution_ids") or []),
+            "is_failure": _is_genuine_failure(row),
+        })
+    return meta
+
+
+#: Words too common to identify a method. A method NAME is not proof two
+#: methods are the same; the shared vocabulary is a hint the selection may
+#: use to RANK, never a verdict.
+_METHOD_STOPWORDS = frozenset({
+    "the", "a", "an", "and", "or", "of", "to", "with", "for", "on", "in",
+    "as", "at", "by", "is", "are", "be", "it", "its", "then", "use", "using",
+    "solve", "solver", "solution", "model", "method", "problem", "task",
+    "linear", "integer", "value", "objective", "constraint", "constraints",
+    "variable", "variables", "report", "status", "run", "then", "step",
+})
+
+
+def _method_signature_tokens(parts: Sequence[Any]) -> List[str]:
+    """The stable, comparable tokens of a method description.
+
+    Lowercased word tokens of the name and steps with the SHARED boilerplate
+    removed, so two descriptions of the same approach share tokens while two
+    unrelated ones do not. A token set is a RELEVANCE hint for ranking; it
+    never decides that two methods ARE the same (the plan requires that a
+    name or a ``strategy_id`` alone cannot prove method identity).
+    """
+    tokens: List[str] = []
+    seen: set = set()
+    for part in parts:
+        if part is None:
+            continue
+        for raw in str(part).lower().replace("_", " ").replace("-", " ").split():
+            token = "".join(ch for ch in raw if ch.isalnum())
+            if len(token) < 3 or token in _METHOD_STOPWORDS:
+                continue
+            if token in seen:
+                continue
+            seen.add(token)
+            tokens.append(token)
+    return sorted(tokens)
+
+
+def _strategy_tokens(strategy_id: Any) -> List[str]:
+    """The comparable tokens of a strategy id (weak identity hint)."""
+    return _method_signature_tokens([strategy_id])
+
+
+def _stable_selection_digest(payload: Any) -> str:
+    """A stable digest of a selection signature (never a content hash)."""
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                      default=str)
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+
+
+def selection_signature(candidate_methods: Sequence[Dict[str, Any]],
+                        condition_keys: Sequence[str]) -> str:
+    """The identity of ONE relevance-selection query.
+
+    A council of candidates is compared under a set of conditions; the
+    historical set is chosen ONCE for that query and frozen. This signature
+    lets a REUSED context detect that its frozen choice already answers the
+    query (and skip re-selecting), and lets the request report WHAT it was
+    chosen for. It uses only the candidates' method tokens and the sorted
+    condition keys — never today's bank, so it is stable across a reuse.
+    """
+    methods = []
+    for method in candidate_methods or []:
+        if isinstance(method, dict):
+            methods.append(_method_signature_tokens(
+                [method.get("name")] + list(method.get("steps") or [])))
+        elif method:
+            methods.append(_method_signature_tokens([method]))
+    payload = {
+        "methods": sorted(methods),
+        "conditions": sorted(str(k) for k in (condition_keys or [])),
+    }
+    return _stable_selection_digest(payload)
+
+
+def _row_relevance(row_meta: Dict[str, Any], *,
+                   recall_ids: set,
+                   candidate_tokens: set,
+                   candidate_strategies: set,
+                   task_id: str,
+                   condition_keys: set) -> Tuple[int, List[str]]:
+    """How relevant ONE pair is to the CURRENT decision, with its reasons.
+
+    Returns ``(score, reasons)``. The score is a small, readable ORDINAL —
+    not a weighted model — so the selection is reproducible and a reader can
+    see WHY a pair was preferred:
+
+    - 4: a recall hit named one of the pair's executions (the current
+      retrieval surfaced it directly);
+    - 3: a candidate's DECLARED method shares tokens with the pair's plan;
+    - 2: same task / condition cell as the current problem;
+    - 1: same strategy-id tokens (a WEAK hint, tiebreak only);
+    - 0: no direct signal — retained as BACKGROUND material only if the
+      selection is otherwise empty.
+
+    A shared solver or a name alone never proves method identity: the
+    reasons report the EVIDENCE, and a low score is a low score.
+    """
+    reasons: List[str] = []
+    score = 0
+    ids = set(row_meta.get("execution_ids") or [])
+    if row_meta.get("action_id"):
+        ids.add(str(row_meta["action_id"]))
+    if recall_ids and (ids & recall_ids):
+        score = max(score, 4)
+        reasons.append("a recalled hit names one of this pair's executions")
+    plan_tokens = set(row_meta.get("plan_method_words") or [])
+    if candidate_tokens and (plan_tokens & candidate_tokens):
+        shared = sorted(plan_tokens & candidate_tokens)[:6]
+        score = max(score, 3)
+        reasons.append("the candidate's declared method shares method "
+                       f"tokens {shared} with this pair's plan")
+    if task_id and str(row_meta.get("task_id")) == str(task_id):
+        score = max(score, 2)
+        reasons.append("same task as the current problem")
+    else:
+        cells = {k[5:] for k in condition_keys if k.startswith("cell:")}
+        families = {k[7:] for k in condition_keys
+                    if k.startswith("family:")}
+        row_cell = str(row_meta.get("cell") or "")
+        # The entry's cell is ``class=<c>|rc[..]|tc[..]|rx[..]``; the current
+        # profile's cell token is the ``rc|tc|rx`` part, so the comparison is
+        # a SUBSTRING match on the coupling bins, never a fabricated equality.
+        if row_cell and any(cell and cell in row_cell for cell in cells):
+            score = max(score, 2)
+            reasons.append("same structural cell (coupling bins) as the "
+                           "current problem")
+        elif row_meta.get("family") and row_meta.get("family") in families:
+            score = max(score, 1)
+            reasons.append("same family as the current problem (weaker than "
+                           "a matching structural cell)")
+    strat_tokens = set(_strategy_tokens(row_meta.get("strategy_id")))
+    if candidate_strategies and (strat_tokens & candidate_strategies):
+        score = max(score, 1)
+        reasons.append("same strategy-id tokens (weaker evidence than a "
+                       "matching method description)")
+    return score, reasons
+
+
+def select_paired_feedback(
+        block: Dict[str, Any], *,
+        recall_ids: Sequence[str] = (),
+        candidate_methods: Sequence[Dict[str, Any]] = (),
+        task_id: str = "",
+        condition_keys: Sequence[str] = (),
+        scope: Optional[str] = None,
+        limit: Optional[int] = None,
+        ) -> Dict[str, Any]:
+    """Choose the RELEVANT, bounded history for ONE decision.
+
+    A pure SELECTION over the published block — it forms no query against
+    the bank, computes no calibration and writes nothing back. The result is
+    frozen into the prediction context, so every candidate of one comparison
+    sees the SAME historical set.
+
+    The returned block keeps the published block's shape (``pairs`` and the
+    count fields) so a reader of the request sees the SAME keys — but
+    ``pairs`` now holds only the SELECTED rows, each carrying
+    ``selected_reason``, ``relevance`` and ``background``. The counts
+    distinguish what was AVAILABLE (after the model/scope filter) from what
+    was SELECTED (the display ceiling) from what was OMITTED (relevance or
+    ceiling), so a reader can never mistake the 6 shown for the calibration
+    population.
+
+    The bounded set is chosen by ``_row_relevance``: pairs tied to the
+    current retrieval or to a candidate's declared method first, then the
+    same task/cell, then a weak strategy-id match; among equal rank, failures
+    and repairs are kept BEFORE successes and the most recent come first.
+    Background material (score 0) is added ONLY when nothing relevant exists,
+    and is marked as such. An empty pool yields an EMPTY selection with a
+    ``missing`` note — a cold start never invents history.
+    """
+    meta = list(block.get("selection_meta") or [])
+    pairs = list(block.get("pairs") or [])
+    if not meta and pairs:
+        meta = ensure_selection_meta(block).get("selection_meta") or []
+    cap = limit if limit is not None else _paired_feedback_max_pairs()
+    out: Dict[str, Any] = {
+        "feedback_version": block.get("feedback_version"),
+        "model_identity": block.get("model_identity"),
+        "observation_rule_version": block.get("observation_rule_version"),
+        "identity_note": block.get("identity_note"),
+        "risk_reason_legend": copy.deepcopy(block.get("risk_reason_legend")
+                                            or RISK_REASON_LEGEND),
+        "n_pairs_total": block.get("n_pairs_total", len(pairs)),
+        "n_pairs_withheld": block.get("n_pairs_withheld"),
+        "filter_note": block.get("filter_note"),
+        "pairs": [],
+        "selection": {
+            "limit": cap,
+            "limit_basis": ("a DISPLAY ceiling, not a calibration sample "
+                            "size: the full window remains the calibration "
+                            "population"),
+            "signature": selection_signature(candidate_methods,
+                                             condition_keys),
+            "basis": ("selected from the PUBLISHED block by relevance to "
+                      "the current retrieval, the candidates' declared "
+                      "methods and the current problem; no bank scan, no "
+                      "re-scoring"),
+        },
+        # The identity of the query this selection answers. Frozen with the
+        # selection, so a reused context can show WHAT it chose for and a
+        # reader can tell "chosen for this decision" from "carried along".
+        "selection_signature": selection_signature(candidate_methods,
+                                                   condition_keys),
+    }
+    if not meta and not pairs:
+        out["n_pairs_available"] = 0
+        out["n_pairs_included"] = 0
+        out["n_pairs_omitted"] = 0
+        out["missing"] = ("the published block carries no pairs: a cold "
+                          "start has no paired feedback to select from (this "
+                          "is absent, not 'nothing matched')")
+        return out
+    recall_set = {str(r) for r in (recall_ids or []) if r}
+    candidate_tokens: set = set()
+    candidate_strategies: set = set()
+    for method in candidate_methods or []:
+        if isinstance(method, dict):
+            candidate_tokens |= set(_method_signature_tokens(
+                [method.get("name")] + list(method.get("steps") or [])))
+            if method.get("strategy_id"):
+                candidate_strategies |= set(
+                    _strategy_tokens(method.get("strategy_id")))
+        elif method is not None:
+            # A bare strategy id (a candidate with no method description).
+            candidate_strategies |= set(_strategy_tokens(method))
+    key_set = {str(k) for k in (condition_keys or []) if k}
+
+    scored: List[Tuple[int, int, int, Dict[str, Any], List[str]]] = []
+    scope_omitted = 0
+    for entry in meta:
+        score, reasons = _row_relevance(
+            entry, recall_ids=recall_set,
+            candidate_tokens=candidate_tokens,
+            candidate_strategies=candidate_strategies,
+            task_id=task_id, condition_keys=key_set)
+        # Scope is a hard comparability filter when supplied: an attempt
+        # window-scope statistic describes a different unit.
+        if scope is not None and entry.get("scope") not in (None, scope):
+            scope_omitted += 1
+            continue
+        scored.append((score,
+                       0 if entry.get("is_failure") else 1,
+                       int(entry.get("index") or 0),
+                       entry, reasons))
+    out["n_pairs_available"] = len(scored)
+    if scope_omitted:
+        out["selection"]["scope_omitted"] = scope_omitted
+        out["selection"]["scope_filter"] = str(scope)
+    # HIGHEST relevance first, then genuine FAILURES before successes (a
+    # lesson needs the failures), then stable index.
+    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+
+    selected: List[Dict[str, Any]] = []
+    omitted = 0
+    background = 0
+    used_per_strategy: Dict[str, int] = {}
+
+    def _append(score: int, index: int, entry: Dict[str, Any],
+                reasons: List[str]) -> None:
+        row = copy.deepcopy(pairs[index]) if 0 <= index < len(pairs) else {}
+        row["selected_reason"] = (
+            reasons or ["background material: no direct relevance signal "
+                        "to this problem or candidate"])
+        row["relevance"] = score
+        row["background"] = score == 0
+        selected.append(row)
+
+    # Pass 1: the genuinely RELEVANT pairs, in relevance order but with
+    # failures before successes WITHIN each relevance rank, so the bounded
+    # set never becomes all-success or all-failure. Repeated retries of one
+    # (task, strategy) may hold at most two slots, so one candidate cannot
+    # crowd the others out.
+    for score, _fail, index, entry, reasons in scored:
+        if score == 0:
+            continue
+        if len(selected) >= cap:
+            omitted += 1
+            continue
+        bucket = f"{entry.get('task_id')}|{entry.get('strategy_id')}"
+        if used_per_strategy.get(bucket, 0) >= 2:
+            omitted += 1
+            continue
+        used_per_strategy[bucket] = used_per_strategy.get(bucket, 0) + 1
+        _append(score, index, entry, reasons)
+    # Pass 2: BACKGROUND material (no direct relevance signal). Added ONLY
+    # when the relevant set is EMPTY, in a SMALL bounded number, and every
+    # row is MARKED background — a cold-ish pool points at representative
+    # recent history without passing it off as relevance.
+    if not selected:
+        for score, _fail, index, entry, reasons in scored:
+            if len(selected) >= min(cap, BACKGROUND_PAIR_LIMIT):
+                omitted += 1
+                continue
+            _append(score, index, entry, reasons)
+            background += 1
+    else:
+        omitted += sum(1 for t in scored if t[0] == 0)
+
+    out["pairs"] = selected
+    out["n_pairs_included"] = len(selected)
+    out["n_pairs_omitted"] = omitted
+    out["n_background"] = background
+    out["ordering"] = ("by relevance to THIS decision (recall link, declared "
+                       "method, same task/cell, strategy hint); within a "
+                       "relevance rank, genuine failures and repairs before "
+                       "successes, then the most recent")
+    out["basis"] = block.get("basis")
+    out["note"] = ("relevance ranks failures/repairs before successes and "
+                   "the most recent first within a rank; a low relevance is "
+                   "a LOW RELEVANCE, never a claim that two methods are the "
+                   "same")
+    if background:
+        out["background_note"] = (
+            f"{background} pair(s) are BACKGROUND material (no direct "
+            "relevance signal to this decision) — carried to avoid an empty "
+            "history, never presented as a match")
+    if not selected:
+        out["missing"] = ("no pair was relevant to this decision; the pool "
+                          "exists but nothing matched (reported rather than "
+                          "padding with unrelated history)")
+    return out
+
+
+def ensure_selection_meta(block: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a copy of ``block`` with a ``selection_meta`` index present.
+
+    A block published BEFORE the index existed still has its full ``pairs``;
+    the index is derived from them HERE (no bank read), so the read path
+    never has to scan anything and an old publication stays selectable. The
+    derivation is guarded so a malformed pair is skipped rather than
+    crashing a prediction read.
+    """
+    if block.get("selection_meta"):
+        return block
+    pairs = block.get("pairs") or []
+    rows: List[Tuple[int, Dict[str, Any]]] = []
+    for index, row in enumerate(pairs):
+        if isinstance(row, dict):
+            rows.append((index, row))
+    derived = dict(block)
+    derived["selection_meta"] = _selection_meta(rows)
+    return derived
+
+
+def paired_feedback_selection_from_block(
+        block: Dict[str, Any], *,
+        task: Optional[Dict[str, Any]] = None,
+        profile: Any = None,
+        recall_result: Optional[Dict[str, Any]] = None,
+        candidates: Sequence[Any] = (),
+        scope: Optional[str] = None,
+        signature: Optional[str] = None,
+        ) -> Dict[str, Any]:
+    """Select from an already-read block (no harness read).
+
+    Split out so a REUSED context (which froze its block) and a fresh read
+    both go through the SAME selection, and so the pure selection is testable
+    without a harness. The relevance inputs are the CURRENT problem (task id
+    + structural cell/family), the retrieval ALREADY GATHERED (which
+    executions it surfaced) and the WHOLE candidate set (their declared
+    method tokens and strategy ids) — never today's bank.
+    """
+    recall_ids: List[str] = []
+    for row in ((recall_result or {}).get("vector_recall") or {}).get(
+            "execution_evidence") or []:
+        if isinstance(row, dict) and row.get("execution_id"):
+            recall_ids.append(str(row["execution_id"]))
+    for rec in (recall_result or {}).get("recommendations") or []:
+        if isinstance(rec, dict):
+            for ref in (rec.get("evidence_refs") or []):
+                recall_ids.append(str(ref))
+    candidate_methods: List[Any] = []
+    for candidate in candidates or []:
+        method = getattr(candidate, "method", None)
+        strategy_id = getattr(candidate, "strategy_id", None)
+        if isinstance(candidate, dict):
+            method = candidate.get("method")
+            strategy_id = candidate.get("strategy_id")
+        if isinstance(method, dict) and method:
+            entry = dict(method)
+            if strategy_id:
+                entry["strategy_id"] = strategy_id
+            candidate_methods.append(entry)
+        elif strategy_id:
+            # No method description: the strategy id is a WEAK hint only.
+            candidate_methods.append({"strategy_id": strategy_id})
+    condition_keys: List[str] = []
+    family = getattr(profile, "family", None)
+    if family:
+        condition_keys.append(f"family:{family}")
+    try:
+        from or_harness.strategy.stats import cell_token
+        token = cell_token(profile)
+        if token:
+            condition_keys.append(f"cell:{token}")
+    except Exception:
+        pass
+    selection = select_paired_feedback(
+        ensure_selection_meta(block), recall_ids=recall_ids,
+        candidate_methods=candidate_methods,
+        task_id=str((task or {}).get("task_id", "")),
+        condition_keys=condition_keys, scope=scope)
+    if not candidate_methods:
+        selection["candidate_methods_absent"] = (
+            "no candidate method description was supplied, so the selection "
+            "degraded to recall-linked and recent representative pairs — it "
+            "did NOT guess what a method means")
+    if signature:
+        selection["reused_signature"] = signature
+    return selection
+
+
+#: Default ceiling on the number of SELECTED pairs a request shows. NOT a
+#: calibration window: it bounds the display, while the full published
+#: window stays the calibration population. Overridable by
+#: ``OR_HARNESS_PAIRED_FEEDBACK_MAX``.
+DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS = 6
+
+#: How many BACKGROUND pairs (no direct relevance signal) may stand in when
+#: NOTHING relevant exists. Deliberately small: background material is a
+#: pointer at representative history, not a substitute for relevance.
+BACKGROUND_PAIR_LIMIT = 3
+
+
+def _is_genuine_failure(row: Dict[str, Any]) -> bool:
+    """Whether a pair is a genuine FAILURE (not an unknown risk label).
+
+    A ``risk_actual`` entry whose label is ``None`` is UNKNOWN, not an
+    occurrence — reading it as a failure would promote an unlabelled event
+    to a fact the label never established.
+    """
+    if row.get("failure_classes"):
+        return True
+    if row.get("execution_status") in ("error", "timeout"):
+        return True
+    return any((e.get("label") == "occurred")
+               for e in row.get("risk_actual") or [])
+
+
+def _paired_feedback_max_pairs() -> int:
+    value = _env_int("OR_HARNESS_PAIRED_FEEDBACK_MAX",
+                     DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS)
+    return value if value > 0 else DEFAULT_PAIRED_FEEDBACK_MAX_PAIRS
 
 
 #: Version of the paired-feedback block schema.
@@ -4953,7 +5449,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     if prediction is None:
         return None
     info = prediction.trace.model_info or {}
-    if not info.get("bound_action_id"):
+    bound_action_id = info.get("bound_action_id")
+    if not bound_action_id:
         return None
     benefit = evaluation.benefit or {}
     cost = evaluation.cost or {}
@@ -4963,15 +5460,25 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
         "task_id": evaluation.task_id,
         "episode_id": evaluation.episode_id,
         "scope": evaluation.scope,
-        # The predicting MODEL's identity travels with the pair: another
-        # model's past predictions are not evidence about THIS one, so the
-        # read path filters on it exactly as the calibration summary does.
-        "model_identity": getattr(evaluation, "model_identity", "(unknown)"),
-        "observation_rule_version": getattr(
-            evaluation, "observation_rule_version", None),
-        "conditions": _compact_problem_conditions(evaluation, prediction),
-        "task_check": copy.deepcopy(benefit.get("task_check")),
+        # The action and executions this pair is ABOUT. Not sent as content
+        # bloat: the paid overlap verdicts of a FUTURE request are described
+        # back in *evaluation ids*, so the association ids a pair must keep
+        # are its own action and executions — that is what lets a later
+        # selection recognise "this pair is about an execution I just
+        # recalled" without reading the whole bank again.
+        "action_id": bound_action_id,
     }
+    execution_ids = _evaluation_execution_ids(evaluation)
+    if execution_ids:
+        row["execution_ids"] = list(execution_ids)
+    # The predicting MODEL's identity travels with the pair: another
+    # model's past predictions are not evidence about THIS one, so the
+    # read path filters on it exactly as the calibration summary does.
+    row["model_identity"] = getattr(evaluation, "model_identity", "(unknown)")
+    row["observation_rule_version"] = getattr(
+        evaluation, "observation_rule_version", None)
+    row["conditions"] = _compact_problem_conditions(evaluation, prediction)
+    row["task_check"] = copy.deepcopy(benefit.get("task_check"))
     # The method that was planned, one line: its name, the number of steps
     # and the steps THEMSELVES. r12 keeps EVERY step (up to a cap that a
     # normal method never reaches) and clips only the per-step text, so a
@@ -5018,23 +5525,42 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             row["method_actual"]["steps"] = compact
     # Whether the method that ran DEVIATED from the plan (a verdict, not the
     # plan copied over the performance). ``None`` when it could not be
-    # compared (no plan, or no observed method).
+    # compared (no plan, or no observed method). The verdict's own
+    # ``planned_steps``/``actual_steps`` are the SAME steps already carried
+    # by ``method_planned``/``method_actual``: they are replaced by a
+    # reference so the deviation does not re-inline the whole method.
     deviation = getattr(evaluation, "method_deviation", None)
     if isinstance(deviation, dict) and deviation:
-        row["method_deviation"] = copy.deepcopy(deviation)
+        deviation = copy.deepcopy(deviation)
+        if deviation.pop("planned_steps", None) is not None:
+            deviation["planned_steps_ref"] = "method_planned.steps"
+        if deviation.pop("actual_steps", None) is not None:
+            deviation["actual_steps_ref"] = "method_actual.steps"
+        row["method_deviation"] = deviation
     # A failed pair carries its short failure TYPE and the solver's own
     # status, kept SEPARATE from the task-check verdict.
     if getattr(evaluation, "failure_classes", None):
         row["failure_classes"] = list(evaluation.failure_classes)
     if getattr(evaluation, "execution_status", None):
         row["execution_status"] = evaluation.execution_status
-    # The predicted RISK events (their NAMES), so a pair shows what the model
-    # was wary of beside what happened — a fact, never a recommendation.
+    # The predicted RISK events (their NAMES, when one was carried, and the
+    # probability), so a pair shows what the model was wary of beside what
+    # happened — a fact, never a recommendation. The prediction entry is the
+    # home of the predicted probability when one exists: ``risk_predicted``
+    # names it ONCE, and ``risk_actual`` never restates it.
     risk = getattr(prediction, "risk", None)
+    predicted_events: Dict[str, Dict[str, Any]] = {}
     if risk is not None and getattr(risk, "events", None):
-        row["risk_predicted"] = [
-            {"event": e.event, "probability": e.probability}
-            for e in risk.events][:5]
+        for e in risk.events[:5]:
+            predicted_events[str(e.event)] = {
+                "event": e.event,
+                "probability": e.probability,
+                # A parseable pointer at the home of the probability, so a
+                # reader of ``risk_predicted``/``risk_actual`` never has to
+                # guess where the number lives.
+                "probability_ref": f"risk_predicted[{e.event}].probability",
+            }
+        row["risk_predicted"] = list(predicted_events.values())
     # The ORIGINAL prediction (read-only) and the real observation, with the
     # per-field difference. A field the prediction did not carry is simply
     # absent — never a zero.
@@ -5093,6 +5619,14 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     # A predicted probability is never read as an occurrence, and an
     # unknown label stays unknown (never defaulted to "did not happen").
     #
+    # r15: the predicted probability is NOT restated here. ``risk_predicted``
+    # already carries it (with a ``probability_ref``); repeating it in every
+    # ``risk_actual`` row was the same number stored twice. Only the
+    # OBSERVED facts travel: the label, its short basis code and the Brier
+    # score the observation produced. An event the prediction did NOT name
+    # has NO probability anywhere and is flagged ``predicted: False`` — never
+    # given a probability of zero.
+    #
     # r12 COMPRESSION: the long explanatory prose (why an un-predicted event
     # has no Brier score, what a label means) is NOT re-inlined per event.
     # It is mapped to a SHORT reason code, explained ONCE in the block's
@@ -5100,22 +5634,32 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     # in every pair and every event — hundreds of characters of duplicated
     # rule text that pushed real evidence out of the budget.
     risk_actual: List[Dict[str, Any]] = []
+
+    def _observed_risk(entry: Dict[str, Any], *,
+                       basis: Any) -> Dict[str, Any]:
+        event = str(entry.get("event"))
+        out: Dict[str, Any] = {
+            "event": entry.get("event"),
+            "label": entry.get("label"),
+            "label_basis": _risk_label_basis_code(basis),
+        }
+        if event in predicted_events:
+            out["predicted"] = True
+            out["probability_ref"] = (
+                f"risk_predicted[{event}].probability")
+        else:
+            out["predicted"] = False
+        if entry.get("brier") is not None:
+            out["brier"] = entry.get("brier")
+        return out
+
     for entry in (evaluation.risk or {}).get("scored") or []:
-        risk_actual.append({
-            "event": entry.get("event"),
-            "label": entry.get("label"),
-            "label_basis": _risk_label_basis_code(entry.get("label_basis")),
-            "predicted_probability": entry.get("predicted_probability"),
-            "brier": entry.get("brier"),
-        })
+        risk_actual.append(_observed_risk(
+            entry, basis=entry.get("label_basis")))
     for entry in (evaluation.risk or {}).get("unscored") or []:
-        risk_actual.append({
-            "event": entry.get("event"),
-            "label": entry.get("label"),
-            "label_basis": _risk_label_basis_code(
-                entry.get("reason") or entry.get("label_basis")),
-            "predicted_probability": entry.get("predicted_probability"),
-        })
+        risk_actual.append(_observed_risk(
+            entry, basis=(entry.get("reason")
+                          or entry.get("label_basis"))))
     if risk_actual:
         row["risk_actual"] = risk_actual[:8]
     # The attribution's blocked dimensions: WHY a field is not comparable.
