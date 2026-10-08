@@ -669,6 +669,13 @@ class SafePythonExecutor:
             # ``tool_calls`` (all tool invocations in the declared scope) is
             # the harness's to declare, and must never be below this floor.
             execution_features["tool_calls_lower_bound"] = 1
+        # Whether the script ACTUALLY RAN. A sandbox-policy rejection (or a
+        # workspace it could not clear) never executed the script: the
+        # attempt produced no result and measured nothing. Persisted so a
+        # later reader can tell "this attempt ran and failed" — a real,
+        # observable non-completion — from "this attempt was refused before
+        # it ran", which is NOT an observation of the task at all.
+        execution_features["executed"] = bool(outcome.executed)
         # The configuration that ACTUALLY took effect, split by WHO could
         # observe it, and by HOW WELL the executor knows it. A key the
         # executor did not control and the script did not read back stays

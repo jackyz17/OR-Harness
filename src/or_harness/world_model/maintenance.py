@@ -39,9 +39,10 @@ knowledge bank.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from or_harness.core.schema import (
     GROUPING_FEATURES,
@@ -90,22 +91,28 @@ def _induction_material_budget() -> int:
 #: Characters of task text echoed with each material entry. Enough to name
 #: the problem's semantics and key constraints without the whole prompt.
 _MATERIAL_TEXT_CHARS = 280
-#: Characters kept per method step / failure error. A step is echoed to show
-#: HOW the work was organised, not to reproduce the whole script.
+#: Characters of task text echoed with each material entry — NO LONGER a
+#: truncation limit. r14 returns the task text WHOLE (by version) so a
+#: reviewer sees the cost coefficients and bounds a summary had dropped. The
+#: row is kept only for backward compatibility with callers that read it.
+_MATERIAL_TEXT_CHARS = 280
+#: Characters kept per method step / failure error. NO LONGER limits: r14
+#: returns steps and errors whole. Kept for backward compatibility.
 _MATERIAL_METHOD_STEP_CHARS = 200
-#: Method steps echoed per side (planned / actual).
+#: Method steps echoed per side (planned / actual). NO LONGER a cap.
 _MATERIAL_MAX_STEPS = 8
-#: Characters kept per failure's error text.
+#: Characters kept per failure's error text. NO LONGER a cap.
 _MATERIAL_ERROR_CHARS = 200
-#: Trajectory steps echoed (the recent tail is kept when there are more).
+#: Trajectory steps echoed. NO LONGER a cap.
 _MATERIAL_MAX_TRAJECTORY = 6
 
 
 def _truncate(value: Any, limit: int) -> Any:
     """A string clipped to ``limit`` chars, with an explicit marker.
 
-    Truncation is REPORTED (``…[+N chars]``) rather than silent: a clipped
-    step must not read as if the step ended there.
+    Retained for the few places that still need a bounded echo; the material
+    entry no longer truncates task text, method steps, errors or the
+    trajectory — a reviewer reads the selected records WHOLE.
     """
     text = " ".join(str(value).split())
     if len(text) <= limit:
@@ -113,16 +120,35 @@ def _truncate(value: Any, limit: int) -> Any:
     return text[:limit] + f"…[+{len(text) - limit} chars]"
 
 
-def _compact_cir(cir: Any) -> Dict[str, Any]:
-    """A COUNT-based summary of a CIR, never the whole joint representation.
+#: CIR keys whose CONTENT is kept (not just counted) when the snapshot
+#: carries them. This is the EXISTING retained structure — the constraints'
+#: expressions and kinds, the decisions'/entities' names, the relations and
+#: coupling groups — never a new extraction scheme and never the full CIR.
+#: The material still reports the counts beside them. A CIR that carries no
+#: expression at all degrades to the counts (never fabricated).
+_CIR_KEY_FIELDS: Dict[str, Tuple[str, ...]] = {
+    "constraints": ("id", "kind", "expr", "label", "name"),
+    "decisions": ("id", "name", "kind", "label"),
+    "entities": ("id", "name", "kind", "label"),
+    "relations": ("id", "kind", "source", "target", "detail", "label"),
+    "coupling_groups": ("id", "kind", "members", "resource", "detail"),
+}
 
-    The reviewer needs the problem's SHAPE (how many decisions, constraints,
-    couplings, entities there are) to judge scale, not the full text of every
-    element. Each count is a real field of the CIR; a missing block reports
-    ``unknown`` rather than zero.
+
+def _cir_key_structure(cir: Any) -> Dict[str, Any]:
+    """The problem's SHAPE (counts) alongside its KEY RETAINED structure.
+
+    r14: the counts alone dropped the constraints' expressions and bounds a
+    reviewer needs. This keeps the CIR's EXISTING retained fields (each
+    element's own ``id``/``kind``/``expr``/... from the snapshot) for the
+    elements that carry them — the SAME structure the record already
+    stores, not a new extraction and not the whole CIR. Every element is
+    returned WHOLE (no per-element truncation); the caller's budget bounds
+    the block as a unit. A CIR with no such fields degrades to the counts.
     """
     if not isinstance(cir, dict) or not cir:
         return {"unknown": "no CIR snapshot"}
+
     def _n(key: str) -> Any:
         value = cir.get(key)
         if isinstance(value, list):
@@ -130,6 +156,7 @@ def _compact_cir(cir: Any) -> Dict[str, Any]:
         if isinstance(value, dict):
             return len(value)
         return value if value is not None else 0
+
     summary: Dict[str, Any] = {
         "n_decisions": _n("decisions"),
         "n_constraints": _n("constraints"),
@@ -137,22 +164,51 @@ def _compact_cir(cir: Any) -> Dict[str, Any]:
         "n_entities": _n("entities"),
         "n_relations": _n("relations"),
     }
+    # Retained structure: each element's own identifying/expressing fields.
+    elements: Dict[str, Any] = {}
+    for key, fields in _CIR_KEY_FIELDS.items():
+        raw = cir.get(key)
+        if not isinstance(raw, list):
+            continue
+        kept: List[Dict[str, Any]] = []
+        for item in raw:
+            if isinstance(item, dict):
+                row = {f: item[f] for f in fields if item.get(f) is not None}
+                # Keep any other simple, non-derived field the element
+                # carries so a constraint's coefficients/bounds written
+                # under another key are not lost. Nested structures are
+                # kept whole too (they are the existing content).
+                for k, v in item.items():
+                    if k in row:
+                        continue
+                    if isinstance(v, (str, int, float, bool, list, dict)) \
+                            and v is not None:
+                        row[k] = v
+                if row:
+                    kept.append(row)
+            elif item is not None:
+                kept.append(item)
+        if kept:
+            elements[key] = kept
+    if elements:
+        summary["elements"] = elements
     issues = cir.get("issues")
     if issues:
-        summary["issues"] = [str(i)[:_MATERIAL_METHOD_STEP_CHARS]
-                             for i in (issues if isinstance(issues, list)
-                                       else [issues])][:5]
+        summary["issues"] = list(issues if isinstance(issues, list)
+                                 else [issues])
     return summary
 
 
 def _compact_method(method: Any) -> Optional[Dict[str, Any]]:
-    """A method description with its steps clipped, or None when absent.
+    """A method description returned WHOLE, or None when absent.
 
-    ``why`` (the reason the step works) and ``fallback`` (what to do when it
-    does not) are CARRIED, not dropped: they are the operative knowledge a
-    reviewer needs to judge a mechanism and its premises, and the recall
-    layer already keeps them (dropping them here made the material layer
-    carry less than the discovery layer)."""
+    r14: ``steps``, ``why`` and ``fallback`` are no longer clipped and no
+    longer capped at 8 steps — a reviewer comparing methods needs the
+    ACTUAL steps and the reason a step works, and a bound or premise often
+    sits in a later step. ``why``/``fallback``/``source`` travel in full.
+    The block is counted as a unit against the caller's budget, so an
+    oversized method is bounded as a WHOLE record, never field-by-field.
+    """
     if not isinstance(method, dict):
         return None
     name = method.get("name")
@@ -161,43 +217,38 @@ def _compact_method(method: Any) -> Optional[Dict[str, Any]]:
         return None
     out: Dict[str, Any] = {
         "name": name,
-        "steps": [_truncate(s, _MATERIAL_METHOD_STEP_CHARS)
-                  for s in steps[:_MATERIAL_MAX_STEPS]],
+        "steps": [" ".join(str(s).split()) for s in steps],
         "n_steps": len(steps),
-        "truncated_steps": max(0, len(steps) - _MATERIAL_MAX_STEPS),
+        "truncated_steps": 0,
     }
     why = method.get("why")
     if why:
-        out["why"] = _truncate(str(why), _MATERIAL_METHOD_STEP_CHARS * 2)
+        out["why"] = " ".join(str(why).split())
     fallback = method.get("fallback")
     if fallback:
-        out["fallback"] = _truncate(str(fallback),
-                                    _MATERIAL_METHOD_STEP_CHARS * 2)
+        out["fallback"] = " ".join(str(fallback).split())
     if method.get("source"):
         out["source"] = str(method["source"])
     return out
 
 
 def _compact_checked(checked: Any) -> Any:
-    """A bounded view of a task check's per-field verdicts, or None.
+    """The task check's per-field verdicts, returned WHOLE, or None.
 
-    The check block carries what was actually compared (a reference value, a
-    status, declared domains, an objective recomputation, explicit probes).
-    Keeping a compact form here means the material shows WHY a verdict
-    followed, so a source warning never stands in for the real reason."""
+    r14: no 7-key whitelist and no 8-item cap. The check block carries what
+    was actually compared (a reference value, a status, declared domains, an
+    objective recomputation, explicit probes); every field and every item
+    travels so a source warning never hides the real reason. A non-dict item
+    is echoed whole rather than stringified to 200 chars.
+    """
     if not isinstance(checked, list) or not checked:
         return None
-    out: List[Dict[str, Any]] = []
-    for item in checked[:8]:
-        if not isinstance(item, dict):
-            out.append({"check": str(item)[:_MATERIAL_ERROR_CHARS]})
-            continue
-        row: Dict[str, Any] = {}
-        for key in ("check", "field", "status", "expected", "observed",
-                    "ok", "passed", "reason"):
-            if item.get(key) is not None:
-                row[key] = item[key]
-        out.append(row)
+    out: List[Any] = []
+    for item in checked:
+        if isinstance(item, dict):
+            out.append({k: v for k, v in item.items()})
+        else:
+            out.append(item)
     return out
 
 
@@ -214,19 +265,21 @@ def _profile_summary(profile: Any) -> Dict[str, Any]:
 
 def _material_entry(harness, record: Any,
                     *, previous: Any = None) -> Dict[str, Any]:
-    """One completed task's reviewable material, compact and missing-marked.
+    """One completed task's reviewable material — WHOLE, missing-marked.
+
+    r14: the entry echoes the SELECTED record's full content, not a summary.
+    The task text is returned WHOLE and referenced by version (``task_text``
+    for backward compatibility plus ``task_text_ref``; ``build_induction_
+    material`` also collects the texts into a response-level ``task_texts``
+    map so the same version is echoed ONCE per response, never per attempt).
+    The problem's retained CIR structure, the method steps/why/fallback, the
+    task check's checked fields, the failures and the trajectory all travel
+    WHOLE — a reviewer reads what was actually recorded rather than a
+    fixed-prefix excerpt.
 
     Every field is echoed from the RECORD itself (never re-derived from live
-    state) so the batch is a faithful picture of what was observed. A field
-    the record does not carry is reported as an explicit ``unknown`` marker
-    rather than dropped, so a missing task check never hides a real method.
-
-    The entry is COMPACT on purpose: the full CIR, solution vector, profile
-    and host usage do NOT travel here (they are re-readable from the record
-    by id when a claim needs them). What travels is what a reviewer compares:
-    the problem's shape, the method actually organised, the KEY CHANGES
-    against the previous same-task attempt (code hash, planned method), the
-    outcome with its task check, the failures, and the measured cost.
+    state); a field the record does not carry is reported as an explicit
+    ``unknown`` marker rather than dropped.
 
     ``previous`` (the previous same-task attempt, when one exists) is used
     ONLY to compute the ``changes`` block — the framework reports the code
@@ -243,12 +296,17 @@ def _material_entry(harness, record: Any,
         method_basis = "planned_only"
     else:
         method_basis = "none"
+    # The task text of THIS version, WHOLE. A missing version is reported,
+    # never replaced by another version's text.
     text = None
+    text_ref: Any = {"unknown": "task text not retained for this version"}
     if record.task_text_digest:
         stored = harness.store.get_task_text(record.task_id,
                                              record.task_text_digest)
         if stored is not None:
-            text = _truncate(stored, _MATERIAL_TEXT_CHARS)
+            text = stored
+            text_ref = {"task_id": record.task_id,
+                        "task_text_digest": record.task_text_digest}
     profile = record.profile_snapshot
     code_hash = (record.solver or {}).get("code_hash")
     entry: Dict[str, Any] = {
@@ -258,16 +316,18 @@ def _material_entry(harness, record: Any,
         "family": (profile.family if profile is not None else None),
         "group_key": group_key(profile) if profile is not None else None,
         "created_at": record.created_at,
-        # Task semantics: the text excerpt when the version is retained,
-        # else an explicit marker (never a fabricated summary).
+        # Task semantics: the FULL text of this version (never truncated),
+        # plus a reference so a caller can de-duplicate by version.
         "task_text": text if text is not None
                      else {"unknown": "task text not retained for this "
                                       "version"},
-        # Problem SHAPE (counts), measured BEFORE modeling. Never the whole
-        # CIR — a reviewer reads scale and coupling from the counts.
+        "task_text_ref": text_ref,
+        # Problem structure: the counts AND the CIR's retained key
+        # structure (constraint expressions/kinds, decision/entity names,
+        # relations, coupling groups). Never the full CIR.
         "problem": {
             "profile": _profile_summary(profile),
-            "cir": _compact_cir(record.cir_snapshot),
+            "cir": _cir_key_structure(record.cir_snapshot),
         },
         # Method evidence: the PLAN the agent declared and the method the run
         # reports it ACTUALLY performed (a plan is never promoted to a fact).
@@ -290,37 +350,51 @@ def _material_entry(harness, record: Any,
         # is reported as never-checked, NOT as a pass. The reference
         # provenance (who supplied the reference value) travels with it, and
         # the verdict's OWN details (the checked fields and the conclusion)
-        # are carried so a source warning never hides the real failure
-        # reason.
+        # are carried WHOLE so a source warning never hides the real reason.
         "task_check": {
             "state": (task_check_state(record) or "never_checked"),
             "basis": ((task_check or {}).get("scope") or {}).get("basis"),
             "reference_source": (task_check or {}).get("reference_source"),
-            "conclusion": _truncate(
-                str((task_check or {}).get("conclusion") or ""),
-                _MATERIAL_ERROR_CHARS) or None,
+            "conclusion": (str((task_check or {}).get("conclusion") or "")
+                           or None),
             "checked": _compact_checked((task_check or {}).get("checked")),
         },
         # Flat mirror of the state, kept for callers that read it directly.
         "task_check_state": (task_check_state(record) or "never_checked"),
+        # Failures WHOLE (the error text is not clipped): a reviewer reads
+        # the real failure, and the class/recovery/attempt travel beside it.
         "failures": [
-            {"error": _truncate(f.error, _MATERIAL_ERROR_CHARS),
+            {"error": f.error,
              "error_class": f.error_class,
              "recovery_action": f.recovery_action,
              "attempt": f.attempt}
             for f in (record.failures or [])],
-        "trajectory": [t.to_dict()
-                       for t in (record.trajectory or [])[-_MATERIAL_MAX_TRAJECTORY:]],
+        # Trajectory WHOLE: the gap between planning and result is often the
+        # most informative part, so no "last 6 steps" cap.
+        "trajectory": [t.to_dict() for t in (record.trajectory or [])],
+        # The answer's own variable values, when the run reported them.
+        "solution_variables": (copy.deepcopy(
+            features.get("solution_variables"))
+            if isinstance(features.get("solution_variables"), dict)
+            else None),
+        # Citations of past executions this attempt was adapted from.
+        "reuse_trace": (copy.deepcopy(features.get("reuse_trace"))
+                        if isinstance(features.get("reuse_trace"), dict)
+                        else None),
         "cost": record.cost.to_dict(),
         "cost_measured": (sorted(record.cost.measured)
                           if record.cost.measured is not None else None),
         "measurement_scope": record.measurement_scope,
-        # A read entry point for the FULL record: the material is bounded on
-        # purpose, and the reviewer can always read the whole fact by id
-        # rather than being shown a truncated excerpt with no way to go wider.
+        # Flat mirrors of the most-read fields, kept for callers that read
+        # them directly (consistent with ``task_check_state``): the execution
+        # status and the quality it observed.
+        "status": (record.quality or {}).get("status"),
+        "observed_quality": dict(record.quality or {}),
+        # A read entry point for the FULL record (the material is already
+        # whole, but the raw fact row is still the deepest read path).
         "inspect_hint": (
-            f"bounded excerpt; read the FULL record by id "
-            f"`{record.execution_id}` (its code hash {code_hash})"),
+            f"read the FULL record by id `{record.execution_id}` "
+            f"(its code hash {code_hash})"),
     }
     if previous is not None:
         prev_hash = (previous.solver or {}).get("code_hash")
@@ -340,6 +414,25 @@ def _material_entry(harness, record: Any,
                      "does not interpret what caused them"),
         }
     return entry
+
+
+def _material_entry_by_id(harness, execution_id: str
+                          ) -> Optional[Dict[str, Any]]:
+    """Expand ONE already-selected execution id to its full material entry.
+
+    The SHARED expansion both the current batch and ``related_history`` use,
+    so a retrieved execution and a batch execution carry the SAME field set
+    (a hit is not a lesser summary). Returns ``None`` when the fact is gone
+    or is not part of the evidence set. Read-only.
+    """
+    record = harness.bank.get(execution_id)
+    if record is None:
+        record = harness.bank.get_pending(execution_id)
+    if record is None:
+        return None
+    if str(record.source) not in ("executed", "staged"):
+        return None
+    return _material_entry(harness, record)
 
 
 def _existing_knowledge_for(harness, records: Sequence[Any]
@@ -507,6 +600,12 @@ def build_induction_material(harness, *,
     # a single oversized record cannot stall progress.
     records_newest_first = list(reversed(records))
     entries_newest_first: List[Dict[str, Any]] = []
+    # The response-level task-text version map: a version is echoed ONCE,
+    # however many attempts reference it, and each entry points at it by
+    # ``task_text_ref`` (its ``task_text`` still carries the full text for
+    # callers that read the entry standalone).
+    task_texts: Dict[str, Any] = {}
+    charged_text_keys: set = set()
     used = 0
     stop_index: Optional[int] = None
     for index, record in enumerate(records_newest_first):
@@ -516,11 +615,26 @@ def build_induction_material(harness, *,
         entry["attempt_index"] = None
         entry["independent_task"] = entry["attempts_of_task"] == 1
         entry["cursor"] = _material_cursor(record)
-        size = len(json.dumps(entry, ensure_ascii=False, default=str))
+        # The budget counts the WHOLE entry (task text included). The task
+        # text lives ONCE in the ``task_texts`` map, so a repeating entry is
+        # not billed for it again and a large shared text does not evict
+        # unrelated records; everything else is counted whole (an oversized
+        # method/failure/trajectory is bounded as a unit, never truncated).
+        size = _entry_budget_size(entry, charged_text_keys)
         if entries_newest_first and used + size > budget:
             stop_index = index
             break
         entries_newest_first.append(entry)
+        # Register this version in the response map (deduplicated) now that
+        # the entry is included, and charge it once.
+        ref = entry.get("task_text_ref")
+        if isinstance(ref, dict) and ref.get("task_text_digest") is not None \
+                and isinstance(entry.get("task_text"), str):
+            task_texts.setdefault(
+                f"{ref['task_id']}|{ref['task_text_digest']}",
+                entry["task_text"])
+            charged_text_keys.add(
+                f"{ref['task_id']}|{ref['task_text_digest']}")
         used += size
     budget_dropped = (records_newest_first[stop_index:]
                       if stop_index is not None else [])
@@ -617,6 +731,21 @@ def build_induction_material(harness, *,
                 "passing it back reads the next contiguous batch with no gap "
                 "and no repeat; None means the whole history was returned"),
         },
+        # The task-text VERSION map: each retained version echoed ONCE for
+        # the whole response, keyed ``task_id|task_text_digest``; an entry
+        # references its version via ``task_text_ref``. The same version is
+        # never repeated per attempt.
+        "task_texts": task_texts,
+        "task_texts_note": (
+            "each value is the WHOLE text of one task version, echoed once "
+            "for this response; an entry's ``task_text_ref`` names the "
+            "version it belongs to. A version not retained is absent (the "
+            "entry says so) and is never replaced by another version"),
+        # The SAVED joint H+ block (from the same strategy-outcome
+        # predictions of this batch's executions), for the reviewer to
+        # weigh alongside the evidence. EXPLANATORY ONLY: it never gates
+        # induction, never ranks a candidate and never proves an effect.
+        "joint_hplus": _joint_hplus_for(harness, reviewed),
         "guidance": {
             "structural_contrast": (
                 "compare the constraint relations against the method's steps; "
@@ -632,12 +761,92 @@ def build_induction_material(harness, *,
         },
         "note": ("read a BATCH of completed tasks directly — no candidate "
                  "and no sample-count gate is required. Success, failure, "
-                 "cross-cell and cross-method-name material are all here; a "
-                 "missing field is marked 'unknown', never dropped. When "
-                 "material is omitted, pass budget.next_cursor back as "
-                 "`cursor` to read the next (older) batch. Form the new "
-                 "strategy (condition -> how -> consequence -> boundary) and "
-                 "submit it with `orx induce --relation`."),
+                 "cross-cell and cross-method-name material are all here, "
+                 "each record WHOLE; a missing field is marked 'unknown', "
+                 "never dropped. Shared task-text versions live under "
+                 "`task_texts` (referenced by `task_text_ref`), and the "
+                 "batch's saved joint H+ stances under `joint_hplus` "
+                 "(explanatory, not a gate). When material is omitted, pass "
+                 "budget.next_cursor back as `cursor` to read the next "
+                 "(older) batch. Form the new strategy (condition -> how -> "
+                 "consequence -> boundary) and submit it with `orx induce "
+                 "--relation`."),
+    }
+
+
+def _joint_hplus_for(harness, records: Sequence[Any]) -> Dict[str, Any]:
+    """The SAVED joint H+ (capability-gain) stances of this batch.
+
+    A strategy-outcome prediction carries BOTH the cost/benefit/risk AND the
+    candidate's H+ stance in ONE answer; that stance is archived as a
+    ``CapabilityTrace`` (see ``trace_archive``). This block surfaces it for
+    the reviewer, keyed by the executions they were made for — the SAME
+    binding the evidence uses (``trace.prediction_id`` ->
+    ``candidate.{task_id,episode_id}``; ``trace.bound_execution_ids``).
+
+    It does NOT call a model, does NOT touch the capability-evidence store
+    and does NOT gate anything: an EMPTY ``capability_predictions`` bank does
+    not mean "no H+ was predicted" — the joint block lives here. The FOUR
+    states are kept apart (``expected`` / ``none`` / ``insufficient_basis`` /
+    unstated), and an UNEXECUTED candidate keeps ``bound_execution_ids=[]``
+    with ``executed=False`` (no observation is fabricated).
+    """
+    batch_tasks = {str(r.task_id) for r in records if r is not None}
+    batch_execs = {str(r.execution_id) for r in records if r is not None}
+    if not batch_tasks and not batch_execs:
+        return {"items": [], "n": 0,
+                "note": "no executions in this batch to associate H+ with"}
+    try:
+        from or_harness.world_model.trace_archive import (
+            iter_capability_traces,
+        )
+        traces = iter_capability_traces(harness)
+    except Exception as exc:  # noqa: BLE001 - a degraded read is reported
+        return {"items": [], "n": 0,
+                "failure": {"reason": f"{type(exc).__name__}: {exc}",
+                            "note": ("the joint H+ archive could not be "
+                                     "read; that is NOT 'no gain was "
+                                     "predicted'")}}
+    items: List[Dict[str, Any]] = []
+    for trace in traces:
+        bound = {str(e) for e in (trace.bound_execution_ids or [])}
+        related = (str(trace.task_id) in batch_tasks) or bool(bound & batch_execs)
+        if not related:
+            continue
+        assessment = str(getattr(trace, "assessment", "") or "")
+        items.append({
+            "prediction_id": trace.prediction_id,
+            "strategy_id": trace.strategy_id,
+            "task_id": trace.task_id,
+            "episode_id": trace.episode_id,
+            "assessment": (assessment or "unstated"),
+            "claim": trace.claim,
+            "applies_to": list(trace.applies_to),
+            "expected_changes": copy.deepcopy(trace.expected_changes),
+            "verification_conditions": copy.deepcopy(
+                trace.verification_conditions),
+            "uncertainty": list(trace.uncertainty),
+            "bound_execution_ids": list(trace.bound_execution_ids),
+            "executed": bool(trace.bound_execution_ids),
+            "state": trace.state,
+            "effect_state": trace.effect_state,
+            "effect_verified": bool(trace.effect_verified),
+        })
+    return {
+        "items": items,
+        "n": len(items),
+        "n_expected": sum(1 for i in items
+                          if i["assessment"] == "expected"),
+        "n_none": sum(1 for i in items if i["assessment"] == "none"),
+        "n_insufficient_basis": sum(1 for i in items
+                                    if i["assessment"] == "insufficient_basis"),
+        "n_unstated": sum(1 for i in items if i["assessment"] == "unstated"),
+        "note": ("the SAVED joint H+ stances of this batch's predictions, "
+                 "for the reviewer to weigh. EXPLANATORY ONLY: it does not "
+                 "gate induction, does not rank a candidate and is not a "
+                 "post-hoc effect proof. `expected` does not require "
+                 "publication, `none` does not forbid it, and an unexecuted "
+                 "candidate has no observation (`executed=false`)."),
     }
 
 
@@ -866,12 +1075,70 @@ def _related_history(harness, records: Sequence[Any], *,
                      "or rebuild the index (`orx rebuild-index`)"),
         }
         return base
-    base["executions"] = list(vectors.get("execution_evidence") or [])
+    # The retrieval selects IDS (a discovery signal). The FULL content of
+    # each selected execution is produced by the SAME ``_material_entry``
+    # the batch uses, so a hit is not a lesser summary: the two channels
+    # carry the same field set. The retrieval's own score/excerpt metadata
+    # is kept beside the expansion as DISCOVERY metadata, never in place of
+    # the record.
+    retrieval_hits = list(vectors.get("execution_evidence") or [])
+    expanded: List[Dict[str, Any]] = []
+    for hit in retrieval_hits:
+        execution_id = hit.get("execution_id")
+        entry = (_material_entry_by_id(harness, str(execution_id))
+                 if execution_id else None)
+        if entry is None:
+            # The fact vanished between indexing and now: report the stale
+            # hit rather than dropping it silently.
+            expanded.append({"execution_id": execution_id,
+                             "stale": "the execution is no longer in the "
+                                      "evidence bank"})
+            continue
+        # Discovery metadata (selection signal), never the record itself.
+        entry["discovery"] = {
+            "similarity": hit.get("similarity"),
+            "structural_match": hit.get("structural_match"),
+            "profile_cell": hit.get("profile_cell"),
+            "note": ("similarity is a DISCOVERY signal, not support "
+                     "strength; the record's OWN content above is the "
+                     "material"),
+        }
+        expanded.append(entry)
+    base["executions"] = expanded
     base["knowledge"] = list(vectors.get("strategic_knowledge") or [])
     base["degraded_layers"] = vectors.get("degraded_layers")
     base["no_hits"] = not (base["executions"] or base["knowledge"])
     base["failure"] = None
     return base
+
+
+def _entry_budget_size(entry: Dict[str, Any],
+                       charged_text_keys: set) -> int:
+    """The BUDGET size of one entry: its JSON with the shared task text
+    replaced by its version reference.
+
+    The task text lives ONCE in the response-level ``task_texts`` map; a
+    repeating entry must not be billed for it again, and — crucially — a
+    large shared text must not evict other, unrelated records. The text is
+    charged once, when its version is first seen (``charged_text_keys``
+    tracks which versions have already been charged). Everything else is
+    counted WHOLE, so an oversized method/failure/trajectory is bounded as a
+    unit (the record is skipped and reported) rather than truncated.
+    """
+    text = entry.get("task_text")
+    ref = entry.get("task_text_ref")
+    if text is None or not isinstance(ref, dict) \
+            or ref.get("task_text_digest") is None:
+        return len(json.dumps(entry, ensure_ascii=False, default=str))
+    # Replace the full text with its reference for the size measurement.
+    probe = dict(entry)
+    probe["task_text"] = ref
+    size = len(json.dumps(probe, ensure_ascii=False, default=str))
+    key = f"{ref.get('task_id')}|{ref.get('task_text_digest')}"
+    if key not in charged_text_keys:
+        # First occurrence: the version map pays for the text once.
+        size += len(json.dumps({key: text}, ensure_ascii=False, default=str))
+    return size
 
 
 def _material_cursor(record: Any) -> str:

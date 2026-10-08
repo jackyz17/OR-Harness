@@ -47,7 +47,10 @@ from or_harness.strategy.index_sync import IndexSynchronizer
 from or_harness.strategy.induction import InductionEngine
 from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
-from or_harness.strategy.strategic_bank import StrategicBank
+from or_harness.strategy.strategic_bank import (
+    EFFECT_ATTRIBUTION_VERDICTS,
+    StrategicBank,
+)
 from or_harness.strategy.triggers import solver_advisories
 from or_harness.strategy.vector_recall import (
     VectorRecallUnavailable,
@@ -4350,6 +4353,14 @@ class ORHarness:
                    for d in prediction.trace.call_cost.measured_dims()})
             prediction.trace.model_info[
                 "charged_to_parent_action"] = decision.action_id
+            # The SHARED decision anchor: every candidate predicted under
+            # this decision carries the SAME decision action id, so the
+            # close-out anchors the remaining span at that one recorded
+            # start time rather than each prediction's own ``created_at``
+            # (which differs because the candidates are predicted in a
+            # loop).
+            prediction.trace.model_info["decision_action_id"] = \
+                decision.action_id
             self.strategy_predictions._save(prediction)
 
         for spec in specs:
@@ -6318,7 +6329,8 @@ class ORHarness:
                notes: Optional[List[str]] = None,
                verify: Optional[Dict[str, Any]] = None,
                strategy_id: Optional[str] = None,
-               relations: Optional[Sequence[Dict[str, Any]]] = None
+               relations: Optional[Sequence[Dict[str, Any]]] = None,
+               effect_attributions: Optional[Sequence[Dict[str, Any]]] = None
                ) -> Dict[str, Any]:
         """Submit new strategies / strategy revisions as STRUCTURED claims.
 
@@ -6359,8 +6371,13 @@ class ORHarness:
         behind the agent's back — it only maintains the EXISTING knowledge.
         """
         if not relations:
-            return self._record_empty_review(
+            result = self._record_empty_review(
                 dry_run=dry_run, reason=notes, strategy_id=strategy_id)
+            attributed = self._apply_effect_attributions(
+                effect_attributions, dry_run=dry_run)
+            if attributed:
+                result["effect_attributions"] = attributed
+            return result
         # A relation write is a knowledge write like any other: it gets a
         # maintenance action with PRE and POST knowledge state, a knowledge
         # delta, an index result and the same M6 feedback.
@@ -6400,6 +6417,14 @@ class ORHarness:
                     strategy_id=strategy_id)
             except Exception as exc:  # never fail a real write for this
                 result["revisions_error"] = f"{type(exc).__name__}: {exc}"
+        if effect_attributions:
+            # The agent's OWN use-effect attributions, applied through the
+            # EXISTING lifecycle (a ``refuting`` verdict can demote; the rest
+            # are reported). Not a second scoring system.
+            attributed = self._apply_effect_attributions(
+                effect_attributions, dry_run=dry_run)
+            if attributed:
+                result["effect_attributions"] = attributed
         if not dry_run:
             result["index_sync"] = self.index_sync.sync_entries()
             # The consolidation-stage feedback is scoped to the EVIDENCE this
@@ -6863,6 +6888,55 @@ class ORHarness:
                     "prediction": legacy.to_dict()}
         return None
 
+    def _apply_effect_attributions(
+            self, attributions: Optional[Sequence[Dict[str, Any]]], *,
+            dry_run: bool = False) -> List[Dict[str, Any]]:
+        """Record the agent's OWN use-effect attributions on entries.
+
+        Each item is ``{"entry_id", "verdict", "note"?, "execution_id"?}``.
+        The verdict is one of ``helped|neutral|unrelated|refuting`` and the
+        author is stamped ``by="agent"`` — the framework NEVER writes one.
+        This is the channel that lets a qualitative technique (no numeric
+        prediction) carry a real judgement of how its use turned out, distinct
+        from ``verification_state`` (how far the CLAIM was checked). A
+        ``refuting`` verdict drives the EXISTING demotion transition; the
+        others are reported only, and NONE of them promotes or proves a
+        mathematical result. Returns the recorded items (with the assigned
+        time), or, on ``dry_run``, the items that WOULD be recorded.
+        """
+        recorded: List[Dict[str, Any]] = []
+        for raw in (attributions or []):
+            if not isinstance(raw, dict):
+                continue
+            entry_id = str(raw.get("entry_id") or "").strip()
+            verdict = str(raw.get("verdict") or "").strip()
+            if not entry_id or not verdict:
+                raise ValueError(
+                    "effect_attribution requires entry_id and verdict")
+            if verdict not in EFFECT_ATTRIBUTION_VERDICTS:
+                raise ValueError(
+                    f"unknown effect_attribution verdict {verdict!r} "
+                    f"(expected one of {list(EFFECT_ATTRIBUTION_VERDICTS)})")
+            entry = self.sbank.get(entry_id)
+            if entry is None:
+                raise ValueError(f"unknown entry_id {entry_id!r}: an effect "
+                                 "attribution must name a real entry")
+            item = {
+                "by": "agent",
+                "verdict": verdict,
+                "execution_id": (str(raw["execution_id"])
+                                 if raw.get("execution_id") else None),
+                "note": (str(raw.get("note")).strip()
+                         if raw.get("note") else None),
+                "at": time.time(),
+            }
+            recorded.append({"entry_id": entry_id, **item})
+            if dry_run:
+                continue
+            entry.effect_attribution.append(item)
+            self.sbank.update(entry)
+        return recorded
+
     def retire(self, entry_id: str, reason: str) -> Dict[str, Any]:
         card = self.sbank.retire(entry_id, reason=reason)
         # The entry left the hot store, so its vector must leave the index
@@ -7157,10 +7231,21 @@ class ORHarness:
                     "interval": None,
                     "observed": round(observed, 4),
                     "hit": None,
+                    "adopted": True,
+                    # The objective outcome of THIS adoption, so a maintenance
+                    # consumer can weigh the use without a hit/miss.
+                    "outcome": {
+                        "observed_quality": round(observed, 4),
+                        "task_check": task_check_state(record),
+                        "status": (record.quality or {}).get("status"),
+                        "failure_classes": (record.execution_features or {})
+                        .get("failure_classes"),
+                    },
                     "note": ("this entry declared no quality prediction, so "
                              "no interval hit/miss is computed (a default "
                              "interval is not a forecast); the observation "
-                             "is recorded as adoption evidence"),
+                             "is recorded as ADOPTION evidence (usage fact, "
+                             "not calibration)"),
                 })
                 continue
             lo, hi = entry.quality_interval
@@ -7172,6 +7257,14 @@ class ORHarness:
                 "interval": [lo, hi],
                 "observed": round(observed, 4),
                 "hit": bool(lo - slack <= observed <= hi + slack),
+                "adopted": True,
+                "outcome": {
+                    "observed_quality": round(observed, 4),
+                    "task_check": task_check_state(record),
+                    "status": (record.quality or {}).get("status"),
+                    "failure_classes": (record.execution_features or {})
+                    .get("failure_classes"),
+                },
             })
         return events
 

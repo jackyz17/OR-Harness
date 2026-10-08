@@ -62,6 +62,7 @@ from or_harness.core.schema import (
     evidence_predicates,
     group_key,
     normalize_claim,
+    task_check_state,
     validate_claim,
 )
 from or_harness.strategy.stats import ConditionalStats
@@ -503,6 +504,13 @@ class InductionEngine:
         - ONLY checks against a DECLARED prediction participate (an entry
           that declared no prediction has no interval to be calibrated, so
           its adoption observations are not counted as hits or misses);
+        ONLY checks against a DECLARED prediction participate in the hit/miss
+        track (an entry that declared no prediction has no interval to be
+        calibrated). Its ADOPTIONS are still counted — separately — so a
+        qualitative technique's real use is visible in the maintenance report
+        even though it can never be calibrated. An agent's ``refuting``
+        effect attribution can drive the EXISTING demotion transition; the
+        other verdicts are reported only.
         - a check that missed a DECLARED prediction is a calibration miss:
           three consecutive misses demote to ``suspect``. An arbitrary
           execution failure is NOT such a miss — whether a failure refutes
@@ -521,24 +529,46 @@ class InductionEngine:
         ``dry_run`` returns the same report without writing anything.
         """
         checks_by_entry = self._frozen_checks()
+        adoptions_by_entry = self._adoption_events()
         report: List[Dict[str, Any]] = []
         for entry in self.sbank.list(strategy_id=strategy_id,
                                      include_dormant=True):
-            checks = checks_by_entry.get(entry.entry_id)
-            if not checks:
-                continue  # no forward evidence for this entry yet
-            rebuilt = self._replay(checks)
+            checks = checks_by_entry.get(entry.entry_id) or []
+            adoptions = adoptions_by_entry.get(entry.entry_id) or []
+            has_attribution = bool(entry.effect_attribution)
+            if not checks and not adoptions and not has_attribution:
+                continue  # no forward evidence, use or attribution yet
             probe = StrategicEntry.from_dict(entry.to_dict())
             track = probe.prediction_track
-            track.n_predictions = rebuilt.n_predictions
-            track.n_hits = rebuilt.n_hits
-            track.consecutive_misses = rebuilt.consecutive_misses
-            track.calibration_error = rebuilt.calibration_error
-            newest = max(c["created_at"] for c in checks)
+            if checks:
+                rebuilt = self._replay(checks)
+                track.n_predictions = rebuilt.n_predictions
+                track.n_hits = rebuilt.n_hits
+                track.consecutive_misses = rebuilt.consecutive_misses
+                track.calibration_error = rebuilt.calibration_error
+            # The adoption count comes from the ADOPTION facts (every
+            # explicit adoption), never from the hit/miss track.
+            track.n_adoptions = len(adoptions)
+            # An agent's ``refuting`` attribution drives the EXISTING
+            # demotion transition (never a new scoring threshold); the other
+            # verdicts are reported only and never promote.
+            refuting = [a for a in probe.effect_attribution
+                        if str(a.get("verdict")) == "refuting"]
+            newest = max([c["created_at"] for c in checks]
+                         + [a["created_at"] for a in adoptions]
+                         or [0.0])
             recency = probe.last_consulted_at or probe.created_at
-            transitions = (apply_transitions(probe)
-                           if probe.status != "dormant" or newest > recency
-                           else [])
+            transitions = []
+            if refuting and probe.status != "refuted":
+                # Reuse the EXISTING demotion semantics: an agent-attributed
+                # refutation is the framework's cue to demote, exactly as a
+                # calibration miss streak would. Nothing new is scored.
+                if probe.status != "dormant":
+                    transitions.append(f"{probe.status} -> suspect (agent "
+                                       "attributed a refuting use effect)")
+                    probe.status = "suspect"
+            elif probe.status != "dormant" or newest > recency:
+                transitions = list(apply_transitions(probe))
             item: Dict[str, Any] = {
                 "entry_id": entry.entry_id,
                 "strategy_id": entry.strategy_id,
@@ -548,6 +578,18 @@ class InductionEngine:
                             "consecutive_misses": track.consecutive_misses,
                             "calibration_error": round(track.calibration_error,
                                                        4)},
+                # The USE record: how many explicit adoptions, and how they
+                # turned out. Distinct from the hit/miss track above.
+                "adoptions": {
+                    "n_adoptions": len(adoptions),
+                    "events": adoptions,
+                    "note": ("explicit adoptions (usage facts). They are "
+                             "counted separately from prediction "
+                             "calibration: an adoption is not a hit/miss and "
+                             "never promotes an entry by itself."),
+                },
+                "attributed_effects": [dict(a) for a in
+                                       probe.effect_attribution],
                 "misses": [c["execution_id"] for c in checks if not c["hit"]],
                 "transitions": list(transitions),
             }
@@ -555,10 +597,12 @@ class InductionEngine:
                 report.append(item)
                 continue
             live = entry.prediction_track
-            live.n_predictions = track.n_predictions
-            live.n_hits = track.n_hits
-            live.consecutive_misses = track.consecutive_misses
-            live.calibration_error = track.calibration_error
+            if checks:
+                live.n_predictions = track.n_predictions
+                live.n_hits = track.n_hits
+                live.consecutive_misses = track.consecutive_misses
+                live.calibration_error = track.calibration_error
+            live.n_adoptions = track.n_adoptions
             entry.status = probe.status
             self.sbank.update(entry)
             report.append(item)
@@ -572,7 +616,8 @@ class InductionEngine:
         whose ``hit`` is UNKNOWN (an entry that declared no prediction) is
         NOT a calibration check: it is skipped here, so the forward track
         counts only the runs where a DECLARED prediction was really tested.
-        The adoption outcome itself still lives on the fact."""
+        Those same facts ARE counted as ADOPTIONS by
+        :meth:`_adoption_events` — a usage fact, a different track."""
         by_entry: Dict[str, List[Dict[str, Any]]] = {}
         for rec in self.stats.bank.all():
             if rec.source != "executed":
@@ -594,6 +639,49 @@ class InductionEngine:
                 })
         for checks in by_entry.values():
             checks.sort(key=lambda c: (c["created_at"], c["execution_id"]))
+        return by_entry
+
+    def _adoption_events(self) -> Dict[str, List[Dict[str, Any]]]:
+        """EVERY explicit adoption, grouped by the entry it names.
+
+        An adoption is a USAGE fact: the agent declared this entry number on
+        an execution (``used_entries.known_entry_ids``). It is counted for
+        EVERY such declaration — whether or not the entry declared a numeric
+        prediction — so a qualitative technique's real use is visible even
+        though it can never be calibrated. The per-adoption ``outcome`` (the
+        run's objective result) travels with it; whether the use HELPED or
+        REFUTED the entry is the AGENT's attribution
+        (``StrategicEntry.effect_attribution``), never inferred here.
+        """
+        by_entry: Dict[str, List[Dict[str, Any]]] = {}
+        for rec in self.stats.bank.all():
+            if rec.source != "executed":
+                continue
+            used = rec.execution_features.get("used_entries")
+            if not isinstance(used, dict):
+                continue
+            outcome = {
+                "observed_quality": None,
+                "task_check": task_check_state(rec),
+                "status": (rec.quality or {}).get("status"),
+                "failure_classes": sorted({
+                    str(f.error_class) for f in (rec.failures or [])
+                    if f.error_class}) or None,
+            }
+            try:
+                from or_harness.strategy.stats import quality_score
+                outcome["observed_quality"] = round(quality_score(rec), 4)
+            except Exception:  # noqa: BLE001 - quality is optional here
+                pass
+            for entry_id in (used.get("known_entry_ids") or []):
+                by_entry.setdefault(str(entry_id), []).append({
+                    "execution_id": rec.execution_id,
+                    "task_id": rec.task_id,
+                    "created_at": rec.created_at,
+                    "outcome": outcome,
+                })
+        for events in by_entry.values():
+            events.sort(key=lambda e: (e["created_at"], e["execution_id"]))
         return by_entry
 
     @staticmethod

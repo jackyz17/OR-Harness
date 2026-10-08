@@ -1045,10 +1045,22 @@ def cmd_induce(args) -> int:
                 if not isinstance(parsed, dict):
                     return _fail("--relation must be a JSON object", 2)
                 relations.append(parsed)
+        attributions = None
+        if getattr(args, "attribute_effect", None):
+            attributions = []
+            for raw in args.attribute_effect:
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    return _fail(f"--attribute-effect must be JSON: {exc}", 2)
+                if not isinstance(parsed, dict):
+                    return _fail("--attribute-effect must be a JSON object", 2)
+                attributions.append(parsed)
         result = h.induce(dry_run=args.dry_run, force=args.force,
                           notes=notes, verify=verify,
                           strategy_id=getattr(args, "strategy", None),
-                          relations=relations)
+                          relations=relations,
+                          effect_attributions=attributions)
         return _emit(result, _summarize_induce(result, args))
     finally:
         h.close()
@@ -2836,6 +2848,17 @@ def build_parser() -> argparse.ArgumentParser:
                         "optional 'target_entry_id' REVISES that entry "
                         "unambiguously. The strategy is published on its OWN "
                         "verification plus >=2 independent tasks")
+    p.add_argument("--attribute-effect", action="append", default=None,
+                   metavar="JSON",
+                   help="record the AGENT's own use-effect attribution on an "
+                        "existing entry (repeatable). {\"entry_id\": NUMBER, "
+                        "\"verdict\": helped|neutral|unrelated|refuting, "
+                        "\"execution_id\": ID?, \"note\": TEXT?}. This is "
+                        "SEPARATE from verification_state (which records how "
+                        "far the CLAIM was checked): it records how USING the "
+                        "entry turned out. A 'refuting' verdict drives the "
+                        "existing demotion; the others are reported only. "
+                        "The framework never writes one of these itself.")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

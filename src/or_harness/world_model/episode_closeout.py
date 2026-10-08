@@ -288,30 +288,64 @@ def _observable_benefit_metric(metric: Any) -> Optional[str]:
     return _BENEFIT_METRIC_ALIASES.get(name)
 
 
-def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
+def _attempt_failed_without_result(record: Any) -> bool:
+    """Whether an attempt RAN, failed, and produced no usable result.
+
+    The completion OBSERVATION the task actually happened under: the script
+    really executed (``execution_features.executed`` is not False — a
+    sandbox-policy rejection never ran and is NOT an observation), the
+    solver's own status is a failure (``error``/``timeout``), and the run
+    is not feasible. Together these mean "this attempt did not complete the
+    task" as a KNOWN fact, whatever the task check says (the check may be
+    absent or ``insufficient`` — that is about the ANSWER's validity, not
+    about whether the attempt completed).
+
+    Deliberately NARROW: a crash that never ran (``executed=False``) is NOT
+    this; a feasible-but-unchecked run is NOT this (the answer may be right,
+    its validity is unknown).
+    """
+    features = getattr(record, "execution_features", None) or {}
+    if features.get("executed") is False:
+        return False  # the script never ran: not an observation of the task
+    quality = getattr(record, "quality", None) or {}
+    status = quality.get("status")
+    if status not in ("error", "timeout"):
+        return False
+    if quality.get("feasible"):
+        return False
+    # A qualified solution with a gap would be a usable result; require the
+    # absence of one (no objective, or an explicit infeasible/absent gap).
+    return quality.get("objective") is None
+
+
+def _observe_completion(summary: Any, records: Sequence[Any],
+                        *, scope: str = "attempt") -> None:
     """Observe ``task_result_check_passed`` from the executions themselves.
 
     The observation is the execution's OWN task-check verdict — the check
     the agent already ran. **No check is run here**, and no check is
-    invented: a build that ran no check cannot report a completion, so an
-    unchecked (or ``insufficient``) execution contributes NOTHING rather
-    than a default zero.
+    invented.
 
-    Mapping, and why it is this narrow:
+    Mapping:
 
     * ``passed`` -> 1.0 — a declared basis held on the recorded values.
     * ``failed`` -> 0.0 — the answer was CONFIRMED not to satisfy the task.
-    * ``insufficient`` / no check -> UNKNOWN, excluded from the sample.
-      "The check could not decide" is not a failure and not a success; the
-      reviewer's rule is explicitly that it must not enter the error
-      statistics.
+    * ``insufficient`` / no check -> normally UNKNOWN, excluded from the
+      sample. HOWEVER, when the predicted scope is ONE attempt and that
+      attempt RAN, failed and produced no usable result, "this attempt did
+      not complete the task" is a KNOWN fact regardless of the check — so it
+      observes **0.0** (basis ``confirmed_failed_no_result``). The answer's
+      correctness stays UNKNOWN (no verdict is fabricated). This is only for
+      the ATTEMPT scope: a window/remaining scope must be judged by how the
+      scope ENDED, never by its first failure alone.
 
     The window rule matches the quality channel: the LAST in-scope attempt
-    that carries a verdict is the observation, declared before evaluation
-    rather than chosen per result.
+    that carries a verdict (or a known non-completion) is the observation,
+    declared before evaluation rather than chosen per result.
     """
     observed: List[float] = []
     unknown = 0
+    bases: List[str] = []
     # Per-attempt verdicts in attempt order, so a failure that a LATER
     # attempt recovered from is visible as its own fact. "The task failed at
     # attempt 2 and was completed at attempt 3" is a different story from
@@ -324,16 +358,38 @@ def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
         verdicts.append(state)
         if state == "passed":
             observed.append(1.0)
+            bases.append("task_check_passed")
         elif state == "failed":
             observed.append(0.0)
+            bases.append("task_check_failed")
+        elif state in (None, "insufficient") \
+                and scope == "attempt" and _attempt_failed_without_result(
+                    record):
+            # The attempt RAN and failed with no usable result: a KNOWN
+            # non-completion. The check may be absent or ``insufficient`` —
+            # that concerns the ANSWER's validity, which stays UNKNOWN; the
+            # ATTEMPT's non-completion is what is observed here. Only for
+            # the attempt scope (a window is judged by how it ENDED).
+            observed.append(0.0)
+            bases.append("confirmed_failed_no_result")
+            if state == "insufficient":
+                summary.eligibility.setdefault("benefit_answer_validity", {
+                    "eligibility": "unverified",
+                    "reason": ("the attempt ran and failed without a usable "
+                               "result (a KNOWN non-completion), but the "
+                               "task check was INSUFFICIENT: the answer's "
+                               "correctness is UNKNOWN and is not scored"),
+                })
         else:
             unknown += 1
+            bases.append("unknown")
     if not observed:
         summary.eligibility["benefit"] = {
             "eligibility": "unobserved",
-            "reason": ("no in-scope execution carries a task-check verdict: "
-                       "completion is UNKNOWN (not 0.0) — run `check-task` "
-                       "and it becomes observable"),
+            "reason": ("no in-scope execution carries a task-check verdict "
+                       "and none is a known failed attempt: completion is "
+                       "UNKNOWN (not 0.0) — run `check-task` and it becomes "
+                       "observable"),
         }
         return
     final = observed[-1]
@@ -349,12 +405,16 @@ def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
         "metric": OBSERVABLE_COMPLETION_METRIC,
         "unit": "boolean",
         "observed": final,
-        "rule": "last in-scope attempt carrying a task-check verdict",
-        "scope": "the bound prediction's in-scope execution window",
+        "rule": ("last in-scope attempt carrying a verdict or a known "
+                 "non-completion"),
+        "scope": scope,
+        "completion_scope": scope,
+        "basis": bases[-1],
         "n_observations": len(observed),
         "all_observations": observed,
         "verdicts": [v or "unknown" for v in verdicts],
-        "source": ("the execution's own check-task verdict; no check is run "
+        "source": ("the execution's own check-task verdict, or a confirmed "
+                   "failed attempt with no usable result; no check is run "
                    "by the close-out"),
     }
     if recovered:
@@ -369,13 +429,14 @@ def _observe_completion(summary: Any, records: Sequence[Any]) -> None:
         summary.benefit["unknown_checks"] = unknown
         summary.benefit["unknown_note"] = (
             f"{unknown} in-scope execution(s) had no usable task-check "
-            "verdict and contributed NOTHING to the sample: unchecked or "
-            "insufficient validity is unknown, never a failure")
+            "verdict and did not fail without a result: they contributed "
+            "NOTHING to the sample — unchecked or insufficient validity is "
+            "unknown, never a failure")
     if "benefit" not in summary.eligibility:
         summary.eligibility["benefit"] = {
             "eligibility": "evaluable",
-            "reason": ("task-check verdict observed on the in-scope "
-                       "execution(s)"),
+            "reason": ("task-check verdict or a confirmed failed attempt "
+                       "observed on the in-scope execution(s)"),
         }
 
 
@@ -828,22 +889,42 @@ def _declared_cost_scope(prediction: Any) -> str:
     return scope or "remaining_to_task_end"
 
 
-def _decision_anchor(prediction, anchor_action) -> Optional[float]:
-    """The decision ANCHOR: when the prediction was MADE, not when it bound.
+def _decision_anchor(harness, prediction,
+                     anchor_action) -> Tuple[Optional[float], str]:
+    """The decision ANCHOR and how it was established.
 
-    The prediction covers "this decision -> end of task", so the anchor is
-    the moment the decision was taken (``trace.created_at``). A bound action
-    is only the attempt the prediction tied to; using ITS start would drop
-    every earlier attempt of the same decision (the failed first try before
-    the repaired retry), which is exactly the bug this span fixes. Falls
-    back to the bound action's ``started_at`` for a legacy prediction with
-    no trace timestamp.
+    r14: the anchor is the SHARED decision point, not a per-prediction
+    timestamp. A strategy-outcome decision is recorded as ONE
+    ``select_strategy`` action (``plan_next``), and every candidate predicted
+    under it shares that decision's ``started_at`` — the predictions are
+    created in a loop, so their own ``trace.created_at`` values differ and
+    must NOT be used as "the" anchor. The decision id travels on each
+    prediction's ``trace.model_info`` (written by ``plan_next``).
+
+    Returns ``(anchor_seconds, basis)``:
+
+    * ``decision_action`` — the recorded decision action's ``started_at``
+      (the shared, correct anchor);
+    * ``prediction_created_at_fallback`` — a LEGACY prediction with no
+      decision id: its own ``trace.created_at`` is used but FLAGGED, so a
+      reader knows the candidates were not anchored together;
+    * ``bound_action_started_at_fallback`` — no trace timestamp either;
+    * ``missing`` with ``None`` — nothing to anchor on.
     """
+    info = getattr(getattr(prediction, "trace", None), "model_info", None) \
+        or {}
+    decision_id = info.get("decision_action_id")
+    if decision_id:
+        decision = harness.actions.get(str(decision_id))
+        if decision is not None and decision.started_at is not None:
+            return float(decision.started_at), "decision_action"
     created = getattr(getattr(prediction, "trace", None), "created_at", None)
     if created is not None:
-        return float(created)
+        return float(created), "prediction_created_at_fallback"
     started = getattr(anchor_action, "started_at", None)
-    return float(started) if started is not None else None
+    if started is not None:
+        return float(started), "bound_action_started_at_fallback"
+    return None, "missing"
 
 
 def _cost_scope_records(harness, prediction, action, bound_records,
@@ -877,7 +958,7 @@ def _cost_scope_records(harness, prediction, action, bound_records,
     # attempt.
     episode_records = _episode_executions(
         harness, candidate.task_id, candidate.episode_id)
-    anchor = _decision_anchor(prediction, action)
+    anchor, _basis = _decision_anchor(harness, prediction, action)
     if anchor is not None:
         # Keep executions that started at/after the anchor (the remaining
         # span). An execution with no resolvable action is KEPT when we
@@ -897,9 +978,9 @@ def _cost_scope_records(harness, prediction, action, bound_records,
                 kept.append(record)
         note = (
             "cost scope 'remaining_to_task_end': every in-episode execution "
-            "from the DECISION ANCHOR (when the prediction was made) to the "
-            "end of the task aggregates ONCE (failed attempts and repairs "
-            "included); overlapping ranges are not summed twice")
+            "from the DECISION ANCHOR (the shared select_strategy decision "
+            "action) to the end of the task aggregates ONCE (failed attempts "
+            "and repairs included); overlapping ranges are not summed twice")
         if unplaced:
             note += (f"; {unplaced} execution(s) could not be placed in "
                      "time and were KEPT (dropping them would shrink the "
@@ -927,15 +1008,100 @@ def _action_for_execution(harness, record) -> Optional[Any]:
     return None
 
 
+def _closeout_created_at(harness, task_id: str,
+                         episode_id: Optional[str]) -> Optional[float]:
+    """The stored close-out record's ``created_at`` for this episode, or None.
+
+    Used ONLY to bound the end-of-task search to the ORIGINAL solving phase:
+    an action that ended AFTER the close-out was recorded belongs to a later
+    offline pass (induction, audit, calibration re-evaluation) and must not
+    push the original task's end forward.
+    """
+    try:
+        key = f"episode_closeout|{task_id}|{episode_id or ''}"
+        row = harness.store.conn.execute(
+            "SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        payload = harness.store.loads(row["value"])
+        created = payload.get("created_at")
+        return float(created) if created is not None else None
+    except Exception:  # noqa: BLE001 - a read failure just means "no bound"
+        return None
+
+
+def _task_end_boundary(harness, prediction, episode_id,
+                       anchor: Optional[float],
+                       closeout_created_at: Optional[float] = None
+                       ) -> Tuple[Optional[float], str]:
+    """The REAL end of the task, and how it was established.
+
+    The remaining span runs from the decision anchor to the END OF THE TASK,
+    covering modelling, coding, tool calls, solving, checking, repair and
+    retries. The end is derived, in priority order, from the episode's OWN
+    recorded actions:
+
+    1. ``finish_task`` — the explicit task-termination action. Its
+       ``ended_at`` is the ONLY event that states the task really ended
+       (``basis="finish_task"``).
+    2. otherwise the LATEST ``ended_at`` among the episode's relevant actions
+       (``execute_strategy`` + ``verify``), which covers a check that ran
+       after the last solve (``basis="last_action_not_task_end"``). This is
+       NOT claimed to be the task end — it is the best available boundary and
+       is FLAGGED as such.
+    3. otherwise UNKNOWN (``None``, ``basis="no_end_boundary"``). The
+       close-out's own ``created_at`` is NOT used as a substitute: "the
+       close-out ran" is not "the task ended".
+
+    **Original solving phase only.** Candidate actions are restricted to the
+    prediction's OWN episode and to actions that ended at or before the
+    close-out was recorded, so a LATER offline induction / audit / calibration
+    re-evaluation cannot keep pushing the original task's end into the
+    future.
+    """
+    try:
+        actions = harness.actions.query(episode_id=episode_id)
+    except Exception:  # noqa: BLE001 - a read failure is reported as unknown
+        return None, "no_end_boundary"
+    relevant = [a for a in actions
+                if getattr(a, "action_type", "") in
+                ("execute_strategy", "verify", "finish_task")]
+    if closeout_created_at is not None:
+        relevant = [a for a in relevant
+                    if getattr(a, "ended_at", None) is not None
+                    and float(a.ended_at) <= float(closeout_created_at) + 1e-6
+                    or getattr(a, "ended_at", None) is None]
+    # 1. finish_task is the only explicit termination event.
+    finish_ends = [float(a.ended_at) for a in relevant
+                   if getattr(a, "action_type", "") == "finish_task"
+                   and getattr(a, "ended_at", None) is not None]
+    if finish_ends:
+        end = max(finish_ends)
+        if anchor is None or end >= anchor:
+            return end, "finish_task"
+    # 2. latest relevant action end (NOT claimed to be the task end).
+    ends = [float(a.ended_at) for a in relevant
+            if getattr(a, "ended_at", None) is not None]
+    if ends:
+        end = max(ends)
+        if anchor is None or end >= anchor:
+            return end, "last_action_not_task_end"
+    # 3. no real boundary.
+    return None, "no_end_boundary"
+
+
 def _observe_remaining_latency(summary, harness, prediction, anchor_action,
-                               cost_records, cost_scope) -> None:
+                               cost_records, cost_scope,
+                               *, episode_id: Optional[str] = None,
+                               closeout_created_at: Optional[float] = None
+                               ) -> None:
     """Observe the REAL remaining wall-clock span (anchor -> task end).
 
-    Measured from two REAL timestamps: the DECISION anchor (when the
-    prediction was made) and the END of the observed span (the latest
-    ``ended_at`` among the cost-scope actions/executions). When a boundary
-    is missing the dimension stays UNKNOWN with a reason — the framework
-    never substitutes the script-execution cost for the remaining span.
+    Measured from two REAL timestamps: the SHARED decision anchor and the
+    task's REAL end (``_task_end_boundary``). When the end boundary is not
+    established the dimension stays UNKNOWN with a reason — the framework
+    never substitutes the script-execution cost for the remaining span, and
+    never uses "the close-out ran" as the task end.
 
     Only meaningful for the ``remaining_to_task_end`` scope; an
     ``attempt``/``strategy_window`` cost does not claim the remaining span,
@@ -943,7 +1109,9 @@ def _observe_remaining_latency(summary, harness, prediction, anchor_action,
     """
     if cost_scope != "remaining_to_task_end":
         return
-    anchor = _decision_anchor(prediction, anchor_action)
+    anchor, anchor_basis = _decision_anchor(harness, prediction, anchor_action)
+    end, end_basis = _task_end_boundary(harness, prediction, episode_id,
+                                        anchor, closeout_created_at)
     # An EXPLICITLY MEASURED ``remaining_latency_s`` on the records is the
     # operator's own measurement of the whole span; it takes precedence over
     # the timestamp-derived span, which is a FALLBACK used only when no
@@ -953,77 +1121,81 @@ def _observe_remaining_latency(summary, harness, prediction, anchor_action,
     if (existing.get("comparable") or {}).get("value") is not None:
         # Keep the record's own measurement; add the timestamp span as a
         # SEPARATE diagnostic when it can be derived, never as a rewrite.
-        derived = _derive_remaining_span(harness, anchor, cost_records)
+        derived = (max(0.0, end - anchor)
+                   if anchor is not None and end is not None else None)
+        existing["observed_from"] = {
+            "source": "record.remaining_latency_s",
+            "anchor_basis": anchor_basis,
+            "end_basis": end_basis,
+        }
         if derived is not None:
             existing["timestamp_span"] = {
-                "value": derived,
-                "note": ("anchor -> latest in-scope action's ended_at: a "
-                         "diagnostic beside the record's own measurement; it "
-                         "does NOT replace it")}
-            existing["observed_from"] = {
-                "source": "record.remaining_latency_s",
-                "timestamp_span": derived,
-            }
+                "value": round(derived, 6),
+                "note": ("anchor -> real task end: a diagnostic beside the "
+                         "record's own measurement; it does NOT replace it")}
+            existing["observed_from"]["timestamp_span"] = round(derived, 6)
         return
-    if anchor is None:
-        summary.cost.setdefault("remaining_latency_s", {})
+    if anchor is None or end is None:
+        reason = ("the decision anchor has no start timestamp"
+                  if anchor is None else
+                  "no real task-end boundary (no finish_task, and no action "
+                  "end that precedes the close-out): the remaining span "
+                  "cannot be established, and the script-execution cost is "
+                  "NOT substituted")
         summary.cost["remaining_latency_s"] = {
             "total": None,
-            "comparable": {
-                "value": None,
-                "basis": ("the decision anchor has no start timestamp: the "
-                          "remaining span cannot be established, and the "
-                          "script-execution cost is NOT substituted"),
-                "is_sum": False},
+            "comparable": {"value": None, "basis": reason, "is_sum": False},
             "n_measured": 0, "n_items": len(cost_records),
             "complete": False, "non_cumulative": True, "per_item": None,
             "eligibility": "missing",
+            "observed_from": {"anchor_basis": anchor_basis,
+                              "end_basis": end_basis},
         }
         return
-    # The end of the observed span: the latest real end among the in-scope
-    # executions' actions.
-    span = _derive_remaining_span(harness, anchor, cost_records)
-    if span is None:
-        summary.cost["remaining_latency_s"] = {
-            "total": None,
-            "comparable": {
-                "value": None,
-                "basis": ("no in-scope action recorded an end timestamp: "
-                          "the episode end cannot be placed in time, and the "
-                          "script-execution cost is NOT substituted"),
-                "is_sum": False},
-            "n_measured": 0, "n_items": len(cost_records),
-            "complete": False, "non_cumulative": True, "per_item": None,
-            "eligibility": "missing",
-        }
-        return
+    span = max(0.0, float(end) - float(anchor))
+    complete = end_basis == "finish_task"
     summary.cost["remaining_latency_s"] = {
         "total": None,
         "comparable": {
             "value": round(span, 6),
-            "basis": ("measured from the decision anchor to the latest "
-                      "in-scope action's ended_at: a single real remaining "
-                      "span, never a sum"),
+            "basis": (f"measured from the decision anchor to the task end "
+                      f"({end_basis}): a single real remaining span, never "
+                      "a sum"),
             "is_sum": False},
         "n_measured": 1, "n_items": len(cost_records),
-        "complete": True, "non_cumulative": True,
+        "complete": complete, "non_cumulative": True,
         "per_item": [round(span, 6)],
         "eligibility": "evaluable",
-        "observed_from": {"source": "action timestamps (anchor -> end)"},
+        # A boundary that is not an explicit task-termination event is a
+        # LOWER BOUND: the span may be longer. Reported, never dressed up.
+        "boundary_is_task_end": complete,
+        "observed_from": {"source": "action timestamps",
+                          "anchor_basis": anchor_basis,
+                          "end_basis": end_basis},
     }
+    if not complete:
+        summary.cost["remaining_latency_s"]["boundary_note"] = (
+            "the end boundary is the latest relevant action, NOT an explicit "
+            "task-termination event: the observed span is a LOWER BOUND on "
+            "the remaining time")
 
 
-def _derive_remaining_span(harness, anchor, cost_records
-                           ) -> Optional[float]:
-    """The anchor -> latest-in-scope-end span from real timestamps, or None.
+def _derive_remaining_span(harness, anchor, cost_records,
+                           *, prediction=None, episode_id=None,
+                           closeout_created_at=None) -> Optional[float]:
+    """The anchor -> real-task-end span from real timestamps, or None.
 
     A DIAGNOSTIC/FALLBACK: an explicitly measured ``remaining_latency_s`` on
-    a record takes precedence (it is the operator's own whole-span
-    measurement). This derivation is used only when no record measured the
-    dimension, and it needs BOTH a real anchor and a real end timestamp.
+    a record takes precedence. This derivation is used only when no record
+    measured the dimension, and it needs BOTH the shared anchor and a real
+    task-end boundary (see :func:`_task_end_boundary`).
     """
     if anchor is None:
         return None
+    if prediction is not None:
+        end, _basis = _task_end_boundary(harness, prediction, episode_id,
+                                         anchor, closeout_created_at)
+        return None if end is None else max(0.0, float(end) - float(anchor))
     end_candidates: List[float] = []
     for record in cost_records:
         action_for = _action_for_execution(harness, record)
@@ -1230,7 +1402,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                            "it did not measure"),
             }
         elif observable == OBSERVABLE_COMPLETION_METRIC:
-            _observe_completion(summary, records)
+            _observe_completion(summary, records, scope=candidate.scope)
         else:
             observed: List[float] = []
             # The TASK-check outcome is a SEPARATE fact, never a rewrite of
@@ -1350,7 +1522,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         if observable == OBSERVABLE_COMPLETION_METRIC or observable is None \
                 and str(benefit.metric or "") in (
                     "task_result_check_passed", "task_check_passed"):
-            _observe_completion(summary, records)
+            _observe_completion(summary, records, scope=candidate.scope)
         elif observable == OBSERVABLE_BENEFIT_METRIC:
             # Declared as a completion claim but measured by a QUALITY
             # metric: the two do not mean the same thing, so this is a
@@ -1364,7 +1536,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                            "never interchanged"),
             }
         else:
-            _observe_completion(summary, records)
+            _observe_completion(summary, records, scope=candidate.scope)
     elif benefit is not None:
         if benefit.kind == "valid_progress":
             # Progress is a claim about intermediate movement, which this
@@ -1414,14 +1586,21 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     summary.cost["scope"] = cost_scope
     summary.cost["scope_note"] = scope_note
     summary.cost_records = [r.execution_id for r in cost_records]
-    # The REMAINING wall-clock span (anchor -> end of task), MEASURED from
+    # The REMAINING wall-clock span (anchor -> REAL task end), MEASURED from
     # real timestamps when they exist. This is the observation the primary
     # latency dimension needs: without it a model could predict ten minutes
     # as thirty seconds and never see an error. It is a SINGLE span, never
-    # a sum, and it is left UNKNOWN (with a reason) when either boundary is
-    # missing — the framework never downgrades to the script-execution cost.
+    # a sum; the end is an explicit task-termination event when one exists
+    # (else a flagged lower bound), and it is left UNKNOWN (with a reason)
+    # when a real boundary is missing — the framework never downgrades to
+    # the script-execution cost, and never treats "the close-out ran" as the
+    # task end.
+    closeout_created_at = _closeout_created_at(harness, candidate.task_id,
+                                               candidate.episode_id)
     _observe_remaining_latency(summary, harness, prediction, action,
-                               cost_records, cost_scope)
+                               cost_records, cost_scope,
+                               episode_id=candidate.episode_id,
+                               closeout_created_at=closeout_created_at)
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -2379,24 +2558,48 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 and not _blocked("benefit"):
             lo, hi = benefit.interval
             observed = summary.benefit["observed"]
-            evaluation.interval = {
-                "eligibility": "evaluable",
-                "predicted_interval": [lo, hi],
-                "observed": observed,
-                "covered": bool(lo <= observed <= hi),
-                # The interval's OWN semantics travel with the block, so its
-                # coverage is read under the meaning the prediction declared
-                # (an outcome interval and a mean interval make different
-                # claims and are never averaged together).
-                "interval_kind": benefit.interval_kind,
-                "interval_coverage": benefit.interval_coverage,
-                # Width is reported alongside coverage: a "covered" verdict
-                # from a mile-wide interval is not the same evidence as one
-                # from a tight interval, and coverage alone cannot tell them
-                # apart.
-                "width": round(float(hi) - float(lo), 6),
-            }
-            n_compared += 1
+            # SEMANTICS BY KIND. An ``outcome`` interval is a claim about
+            # ONE run's value, so a single observation decides coverage. A
+            # ``mean`` interval is a claim about the AVERAGE over repeated
+            # runs — a single observation is NOT its claim (its own
+            # definition says so), and this build has NO mean-observation
+            # channel, so a mean interval is NOT covered/uncovered by one
+            # value: it is reported UNOBSERVABLE with the reason. It never
+            # enters a coverage numerator or denominator on a single value.
+            if benefit.interval_kind == "mean":
+                evaluation.interval = {
+                    "eligibility": "unobservable",
+                    "predicted_interval": [lo, hi],
+                    "observed": observed,
+                    "interval_kind": "mean",
+                    "interval_coverage": benefit.interval_coverage,
+                    "width": round(float(hi) - float(lo), 6),
+                    "reason": ("a MEAN interval claims the average over "
+                               "repeated runs; a single observation does "
+                               "not decide its coverage, and this build has "
+                               "no mean-observation channel. The interval is "
+                               "recorded and grouped by kind, never scored "
+                               "on one value"),
+                }
+            else:
+                evaluation.interval = {
+                    "eligibility": "evaluable",
+                    "predicted_interval": [lo, hi],
+                    "observed": observed,
+                    "covered": bool(lo <= observed <= hi),
+                    # The interval's OWN semantics travel with the block, so
+                    # its coverage is read under the meaning the prediction
+                    # declared (an outcome interval and a mean interval make
+                    # different claims and are never averaged together).
+                    "interval_kind": benefit.interval_kind,
+                    "interval_coverage": benefit.interval_coverage,
+                    # Width is reported alongside coverage: a "covered"
+                    # verdict from a mile-wide interval is not the same
+                    # evidence as one from a tight interval, and coverage
+                    # alone cannot tell them apart.
+                    "width": round(float(hi) - float(lo), 6),
+                }
+                n_compared += 1
         else:
             if "observed" not in summary.benefit:
                 evaluation.interval = {

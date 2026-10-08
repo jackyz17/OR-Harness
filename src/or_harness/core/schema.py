@@ -1480,10 +1480,23 @@ class PredictionTrack:
     n_hits: int = 0
     consecutive_misses: int = 0
     calibration_error: float = 0.0
+    #: Explicit ADOPTIONS of the entry (a record that DECLARED it used this
+    #: entry id). It is deliberately SEPARATE from ``n_predictions``: an
+    #: adoption is a usage fact, not a prediction-calibration sample, and it
+    #: must never be mixed into the hit/miss track (a default interval would
+    #: otherwise read as a hit). A claim-only entry with no declared quality
+    #: prediction still accumulates adoptions, so its real use is visible even
+    #: though it can never be calibrated. Adoption NEVER promotes an entry by
+    #: itself — see ``apply_transitions``.
+    n_adoptions: int = 0
 
     @property
     def hit_rate(self) -> float:
         return self.n_hits / self.n_predictions if self.n_predictions else 0.0
+
+    def record_adoption(self) -> None:
+        """Count ONE explicit adoption. Never touches the hit/miss track."""
+        self.n_adoptions += 1
 
     def record(self, hit: bool, calibration_err: float = 0.0) -> None:
         self.n_predictions += 1
@@ -1502,6 +1515,7 @@ class PredictionTrack:
             "hit_rate": round(self.hit_rate, 4),
             "consecutive_misses": self.consecutive_misses,
             "calibration_error": round(self.calibration_error, 4),
+            "n_adoptions": self.n_adoptions,
         }
 
     @classmethod
@@ -1512,6 +1526,7 @@ class PredictionTrack:
             n_hits=int(data.get("n_hits", 0)),
             consecutive_misses=int(data.get("consecutive_misses", 0)),
             calibration_error=float(data.get("calibration_error", 0.0)),
+            n_adoptions=int(data.get("n_adoptions", 0)),
         )
 
 
@@ -1579,6 +1594,18 @@ class StrategicEntry:
     quality_estimated: bool = False
     expected_quality_hat: float = 0.5
     quality_interval: Tuple[float, float] = (0.0, 1.0)
+    #: The agent's OWN attributions of how this entry's USE turned out.
+    #: SEPARATE from ``verification_state`` (which says how far the entry's
+    #: CLAIM was checked, not whether using it helped). Each entry is
+    #: ``{"by": "agent", "execution_id": str, "verdict":
+    #: "helped"|"neutral"|"unrelated"|"refuting", "note": str, "at": float}``.
+    #: ONLY the agent writes these (``by`` must be ``"agent"`` — the
+    #: framework never fabricates an effect judgement); a ``refuting``
+    #: verdict can drive the EXISTING demotion transition, and the other
+    #: verdicts are reported only. This is the channel that lets a
+    #: qualitative technique (one that declares no numeric prediction) carry
+    #: a real judgement of its effect without a second scoring system.
+    effect_attribution: List[Dict[str, Any]] = field(default_factory=list)
     expected_cost_hat: CostVector = field(default_factory=CostVector)
     #: Per-dimension multiplicative cost interval: actual cost is expected
     #: within [lo * hat, hi * hat] per dimension. v1 uses a fixed 2x band
@@ -1711,6 +1738,10 @@ class StrategicEntry:
                 "quality_estimated": bool(self.quality_estimated),
                 "quality_hat": self.expected_quality_hat,
                 "quality_interval": [self.quality_interval[0], self.quality_interval[1]],
+                # The agent's OWN use-effect attributions (see the field
+                # docstring). Empty when the agent has attributed nothing.
+                "effect_attribution": [dict(e) for e in
+                                       self.effect_attribution],
                 "cost_hat": self.expected_cost_hat.to_dict(),
                 "cost_interval": {d: [lo, hi] for d, (lo, hi)
                                   in self.cost_interval.items()},
@@ -1779,6 +1810,9 @@ class StrategicEntry:
             quality_estimated=bool(expected.get("quality_estimated", False)),
             expected_quality_hat=float(expected.get("quality_hat", 0.5)),
             quality_interval=(float(interval[0]), float(interval[1])),
+            effect_attribution=[dict(e) for e in
+                                (expected.get("effect_attribution") or [])
+                                if isinstance(e, dict)],
             expected_cost_hat=cost_hat,
             cost_interval=cost_interval,
             failure_prob=float(expected.get("failure_prob", 0.5)),

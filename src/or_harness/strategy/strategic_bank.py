@@ -45,6 +45,12 @@ DEMOTE_CONSECUTIVE_MISSES = 3
 DORMANT_AFTER_TASKS = 10
 SUSPECT_SCORE_FACTOR = 0.5
 
+#: The verdicts an AGENT may attach to how an entry's USE turned out. These
+#: are the agent's own attributions (never the framework's): ``helped`` /
+#: ``neutral`` / ``unrelated`` are REPORTED, and ``refuting`` can drive the
+#: EXISTING demotion transition. No new score or threshold is introduced.
+EFFECT_ATTRIBUTION_VERDICTS = ("helped", "neutral", "unrelated", "refuting")
+
 
 def apply_transitions(entry: StrategicEntry) -> List[str]:
     """Automatic lifecycle transitions for the entry's CURRENT track.
@@ -345,6 +351,18 @@ class StrategicBank:
         state = entry.verification_state
         if state == "refuted" and entry.status == "validated":
             raise StorageError("a refuted claim may never be 'validated'")
+        # An agent use-effect attribution must be a KNOWN verdict, and the
+        # agent must be its author (the framework never fabricates one).
+        for attribution in (entry.effect_attribution or []):
+            verdict = str(attribution.get("verdict") or "")
+            if verdict not in EFFECT_ATTRIBUTION_VERDICTS:
+                raise StorageError(
+                    f"illegal effect_attribution verdict {verdict!r} "
+                    f"(expected one of {list(EFFECT_ATTRIBUTION_VERDICTS)})")
+            if str(attribution.get("by") or "") != "agent":
+                raise StorageError(
+                    "effect_attribution must be authored by the agent "
+                    f"(by='agent'), got {attribution.get('by')!r}")
 
     @staticmethod
     def _decode(row: Any) -> StrategicEntry:

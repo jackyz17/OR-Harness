@@ -21,6 +21,13 @@ Inspect task semantics and constraint relationships, the actual method, outcomes
 - Three facts stay separate: `no_hits: true` (ran, matched nothing — **not** proof that no counterexample exists), `failure` (could not run at all — reported with a hint, never as "nothing similar exists"), and `degraded_layers`.
 - `--related-top-k K` sets the budget (default 5; `0` disables the channel and restores the plain whole-batch behaviour). A `similarity` value is a DISCOVERY signal, never support strength; a hit does not raise a claim's support, and the reviewer still predicts, executes and checks what it picks.
 
+**Read WHOLE records, not a summary.** The material returns each SELECTED record's full content: the WHOLE task text (by version), the problem's retained CIR structure (constraint expressions/kinds, decision/entity names, relations, coupling groups) beside its counts, the method's full `steps`/`why`/`fallback`, the task check's checked fields and conclusion, the failures and the trajectory. Reading fewer, complete records beats reading many summaries that dropped the decisive bound or reason.
+
+- **Task texts are VERSIONED.** `task_texts` holds each retained version ONCE for the response, keyed `task_id|task_text_digest`; an entry references its version by `task_text_ref`. A version not retained is reported (`unknown`) and is **never** replaced by another version's text.
+- **The full CIR is NOT recovered.** What you get is the EXISTING retained structure plus the counts — cost coefficients and bounds are read from the WHOLE task text and the method, and are not required to appear in `problem.cir`.
+- **Reading volume is bounded by selection, not by clipping.** `--limit`, `--related-top-k` and the character budget control how many records come back; when the budget is reached, WHOLE records are omitted (reported with `omitted_execution_ids` + `next_cursor`), never silently truncated field-by-field.
+- **The batch's saved joint H+ is included** under `joint_hplus`: the H+ stances from the SAME strategy predictions that were made for these executions, with their `assessment` kept apart (`expected` / `none` / `insufficient_basis` / unstated). It is EXPLANATORY — weigh it yourself; it does not gate induction, does not require publication, and is not a post-hoc effect proof.
+
 - `execute --method` records a plan. A matching `method_performed` receipt or inspected execution artifacts support what actually ran. Keep the source explicit; a plan alone is not performed-method evidence.
 - A solver status and an independent `task_check` are separate facts. An absent task check is unobserved, not passed. An `error` does not establish model infeasibility.
 - Several attempts with one `task_id` form one task chain. Preserve failed attempts and their costs; do not count retries as independent tasks.
@@ -71,6 +78,26 @@ To justify reducing two-dimensional search to one-dimensional enumeration, check
 Inspect the actual model and code to confirm these premises and steps. Record the argument and its source in the claim or applicability note. Merely checking `Y >= 0`, a feasible solution, or an `optimal` status does not verify this reduction.
 
 A loose but valid outer bound can preserve correctness while increasing cost. A bound that excludes feasible solutions, omitted feasibility constraints, or an unjustified boundary choice can destroy solution preservation. Extending the method beyond an interval-valued subproblem requires a new argument.
+
+**Counter-check example (a derived argument, not a built-in rule).** For a minimise problem with `X >= Y + 200`, `Y >= 0`, and positive costs `50X + 30Y`, rewrite the objective as `50X + 30Y >= 50(Y + 200) + 30Y = 10000 + 80Y >= 10000`; then verify `(X, Y) = (200, 0)` satisfies the REMAINING constraints to conclude the bound is attained. Note that "X is more expensive than Y" is NOT a necessary condition here — swapping the two cost coefficients still yields the same boundary solution, so a claim that rests on the cost ORDER would be a false generalisation. This is an example of how to DERIVE and counter-check a bound; it is not a framework rule. Derive a technique from the TASK like this AFTER the fact is fine as an argument, but it must be kept distinct from the method the run ACTUALLY performed: do not claim the run used this derivation, or that it measured a speed-up, unless a recorded `method_actual` receipt says so.
+
+**Recording a method (`method_actual` / `--method`).** Write the ACTUAL modelling, transformation, bound, search or verification treatment AND the reason it works — not "set up variables -> call MILP -> read result". For example:
+
+```json
+{
+  "name": "bound-then-monotone-enumeration",
+  "steps": [
+    "derive Y <= (1000 - 300) / 3 = 233 from X >= 2Y + 300 and X + Y <= 1000",
+    "enumerate integer Y in [0, 233]",
+    "for each Y, solve the X subproblem over its feasible interval",
+    "keep the best objective across Y (monotone boundary in X)"
+  ],
+  "why": "the two constraints bound Y independently of the objective, so a finite one-dimensional scan covers every feasible (X, Y)",
+  "fallback": "run the full two-variable MILP when the derived bound fails to hold"
+}
+```
+
+A plan is INTENT, not a performed method: the framework keeps `method_planned` and `method_actual` separate and never copies the plan into the actual, so record the performed method through the run's own `method_performed` receipt (or `--method-actual`) when you have it.
 
 ### Empirical example: lower cost at comparable quality
 
@@ -178,6 +205,7 @@ Use `conditions.predicates` for the supported profile keys: `family`, `resource_
 - Read offered entries through ordinary recall recommendations, including their claim, verification state, provenance, and semantic premises. Treat unknown applicability as requiring inspection.
 - **Declare adoption**: when a run uses an entry, pass its number in `execute --used-entry-ids` / `record --used-entry-ids` (e.g. `3,5`). This is a DECLARATION, distinct from being recalled (`--adapted-from` cites cases you READ). Passing an empty list (`''`) records "adopted no prior knowledge" as a fact. **Attribution is by NUMBER, never by a shared name**: an entry called `method:monotone_reduction` adopted by a run called `milp_pulp_cbc` is checked normally. A run that does not declare its adoption produces no forward check.
 - **Three things are kept apart**: (1) the **adoption record** (which entry numbers a run relied on), (2) the run's **outcome** (answer check, cost, failures), and (3) **prediction calibration** (does the run's observed quality fall in a DECLARED interval). A missing prediction closes (3) only — the adoption record and its outcome still accumulate. An entry that declared no prediction is never scored hit/miss, and **an arbitrary execution failure is NOT automatically a counterexample to the knowledge** — that attribution is your analysis.
+- **A fourth, agent-owned judgement: the USE effect.** Verification state records how far the CLAIM was checked, NOT whether USING the entry helped. Record that with `induce --attribute-effect` (repeatable): `{"entry_id": NUMBER, "verdict": helped|neutral|unrelated|refuting, "execution_id"?: ID, "note"?: TEXT}`. The framework never writes one of these itself. A `refuting` verdict drives the existing demotion (the same transition a miss streak uses); the other verdicts are reported only — none promotes, and none proves a mathematical result. This is the channel that lets a **qualitative technique** (one with no numeric prediction) carry a real judgement of its effect without a second scoring system: such an entry still accumulates **adoptions** (a usage fact, counted separately from `n_predictions`), so its real use is visible in the maintenance report even though it can never be calibrated.
 - A claim that contradicts or refines an existing one is a NEW entry: do not rewrite the earlier one. Assess a new miss against the full claimed conditions; a task violating a necessary premise is outside the method's scope, while a relevant failure within scope may warrant a new, narrower claim.
-- Forward calibration of a DECLARED prediction adjusts an entry's confidence from later observations — it is what promotes (≥5 checks, ≥70% hits) and demotes (3 consecutive misses of a declared prediction) an entry. It does NOT depend on, nor replace, the agent's verification state; the two are separate records.
+- Forward calibration of a DECLARED prediction adjusts an entry's confidence from later observations — it is what promotes (≥5 checks, ≥70% hits) and demotes (3 consecutive misses of a declared prediction) an entry. It does NOT depend on, nor replace, the agent's verification state or the agent's use-effect attribution; the three are separate records. **Adoptions never promote on their own.**
 - Retired patterns remain in the cold archive. Use `--force` only when new evidence or a changed environment justifies reopening the claim; record the reason.

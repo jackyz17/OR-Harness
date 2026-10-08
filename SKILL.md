@@ -116,7 +116,7 @@ Form knowledge from the actual method and relationships:
 
 Inspect premises and existing knowledge; you may **add, or submit nothing**. Knowledge is ADDITIVE: each `induce --relation` creates a NEW numbered entry (the framework assigns the number); a revision or a contradiction is its own entry, and an existing entry is never rewritten. The framework checks only administrative matters (well-formed, cited executions exist, valid number, successful write) — publication is YOUR decision, and any `check`/`--verify` you supply is recorded as your own audit trail, not a gate. A single task can reveal a conditional method; a claimed quality/cost/risk advantage needs comparable measurements; retries are not independent tasks, similarity is not support. Runtime formats: [induction.md](references/induction.md).
 
-Induce only when worth it; `induce` with no relations still runs utility maintenance so existing knowledge's lifecycle keeps working.
+Induce only when worth it; `induce` with no relations still runs utility maintenance so existing knowledge's lifecycle keeps working. State how an entry's USE turned out with `induce --attribute-effect` (`helped|neutral|unrelated|refuting`) — a judgement SEPARATE from what was checked; `refuting` drives the existing demotion, and a qualitative entry with no numeric prediction still accumulates adoptions (a usage fact, not a hit/miss).
 
 Later, reuse an entry by stating it in `--used-entry-ids`; an entry's `verification` block says what was checked. Recording and close-out do not automatically induce strategies.
 
