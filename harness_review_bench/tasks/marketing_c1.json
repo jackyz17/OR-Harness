@@ -1,0 +1,14 @@
+{
+  "candidate_id": "milp_direct",
+  "method": "Direct MILP formulation with Highspy",
+  "steps": [
+    "Formulate as MILP: Min A+P subject to 4A+5P>=100, A-P<=50, A,P integers >=0",
+    "Implement using highspy addVariable/addConstr API with integer variables",
+    "Solve and return optimal A, P and total spending"
+  ],
+  "solver": "highspy",
+  "config": {
+    "solver": "highs",
+    "time_limit": 30
+  }
+}

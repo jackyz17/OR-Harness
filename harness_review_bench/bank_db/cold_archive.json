@@ -1,0 +1,7 @@
+[
+ {
+  "pattern_hash": "c39c6297567e0751",
+  "entry_number": 5,
+  "payload": "{\"archived_at\":1791459713.1267967,\"entry_id\":\"5\",\"evidence_summary\":{\"hit_rate\":0.0,\"n_predictions\":0,\"predicates\":{\"family\":\"resource_allocation\",\"resource_coupling\":\"[unknown]\",\"route_complexity\":\"[unknown]\",\"temporal_coupling\":\"[unknown]\"},\"provenance\":[\"ex_829b925ba0e6\",\"ex_f4b21b645261\",\"ex_fc4d9e22486e\"],\"support_n\":0},\"outcome\":\"retired\",\"pattern_hash\":\"c39c6297567e0751\",\"predicates\":{\"family\":\"resource_allocation\",\"resource_coupling\":\"[unknown]\",\"route_complexity\":\"[unknown]\",\"temporal_coupling\":\"[unknown]\"},\"reason\":\"API\\u8c03\\u7528\\u5e8f\\u5217\\u7ec6\\u8282\\u4e0d\\u5c5e\\u4e8e\\u7b56\\u7565\\u5e93\\uff0c\\u5e94\\u5b58\\u5728\\u4e8e\\u4ee3\\u7801/\\u6587\\u6863\\u4e2d\\uff1b\\u8be5\\u6761\\u76ee\\u5e94\\u5220\\u9664\\u4ee5\\u4fdd\\u6301\\u7b56\\u7565\\u5e93\\u6e05\\u6d01\",\"strategy_id\":\"cand_26845f0d\"}"
+ }
+]

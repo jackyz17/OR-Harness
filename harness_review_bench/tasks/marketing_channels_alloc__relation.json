@@ -1,0 +1,29 @@
+{
+  "subject": "method:direct_exact_solve_small_linear_allocation",
+  "kind": "conditional_fact",
+  "claim": "For a SMALL linear allocation MILP - two integer decision variables, one shared budget/capacity cap, at most one linear difference (effort/precedence) constraint, linear cost objective (structural cell class=milp, resource_coupling=1.0) - model it directly as one integer program and solve with a mature exact solver (CP-SAT or a HiGHS MILP) at zero MIP gap: it returns a PROVEN-OPTIMAL allocation at negligible solver runtime (~0.06 s). Decomposition, heuristics, or per-case reformulation are unnecessary. Confirmed on two DISTINCT tasks under two different family labels: (resource_allocation) optimal 10000 at (x=200,y=0); (planning) optimal 8350 at (X=167,Y=0); both matched their declared bench references. Propensity: transfer by structure (cell), not by family label.",
+  "method": {
+    "name": "direct_exact_solve_small_linear_allocation",
+    "steps": [
+      "declare the two allocation variables as non-negative INTEGER variables (unit costs and the cap are read back from the task text)",
+      "encode the single shared capacity constraint (sum <= cap) and the linear difference constraint (coef1*X - coef2*Y >= rhs) as hard linear constraints",
+      "minimize the linear cost objective with a mature exact solver (CP-SAT, or HiGHS MIP with mip_rel_gap=mip_abs_gap=0)",
+      "report the solver status, proven optimum, and the (X, Y) allocation values"
+    ],
+    "why": "the model is a tiny, fully linear MIP, so exact branch-and-bound closes at the root; no decomposition or heuristic is warranted.",
+    "fallback": "if the exact solver is unavailable, enumerate the (small) integer domain of one variable and take the cost-monotone boundary of the other."
+  },
+  "evidence": [
+    {"execution_id": "ex_134ddf044098", "role": "supporting"},
+    {"execution_id": "ex_59a44b58cb24", "role": "supporting"}
+  ],
+  "conditions": {
+    "predicates": {"resource_coupling": 1.0},
+    "note": "Boundary: applies to tiny (2-decision) linear allocation instances; larger or multi-resource coupled allocations may need decomposition. The two observations carry different family labels (resource_allocation vs planning), so propagate by structural cell, not family."
+  },
+  "check": {
+    "assertions": [
+      {"kind": "status", "roles": ["supporting"], "status": "optimal"}
+    ]
+  }
+}

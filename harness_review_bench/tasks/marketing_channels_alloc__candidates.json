@@ -1,0 +1,41 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "name": "cp_sat_integer",
+    "steps": [
+      "declare integer variables X (channel X effectiveness) and Y (channel Y effectiveness) with non-negative domains",
+      "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+      "minimize the linear cost 50*X + 100*Y with OR-Tools CP-SAT as an exact integer solver",
+      "report optimal objective value and the (X, Y) allocation"
+    ],
+    "solver": "ortools",
+    "config": {"time_limit": 60},
+    "scope": "attempt"
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_direct_highs",
+    "steps": [
+      "declare non-negative integer variables X and Y",
+      "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+      "minimize 50*X + 100*Y with the HiGHS MIP solver at zero MIP gap",
+      "report proven optimum and the (X, Y) allocation"
+    ],
+    "solver": "highs",
+    "config": {"time_limit": 60, "mip_rel_gap": 0, "mip_abs_gap": 0},
+    "scope": "attempt"
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "bounded_enumeration",
+    "steps": [
+      "derive a finite integer upper bound for Y from the two linear constraints",
+      "for each integer Y, derive the feasible integer interval for X and evaluate its cost-monotone boundary",
+      "track the feasible (X, Y) pair minimizing 50*X + 100*Y",
+      "report the best pair and its cost as the optimum"
+    ],
+    "solver": "python",
+    "config": {"time_limit": 60},
+    "scope": "attempt"
+  }
+]

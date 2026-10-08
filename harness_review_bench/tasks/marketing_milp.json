@@ -1,0 +1,18 @@
+{
+  "strategy_id": "milp_highs_direct",
+  "task_id": "marketing_campaign_20261008_v2",
+  "episode_id": "ep002",
+  "method": {
+    "name": "MILP with Highspy direct formulation",
+    "steps": [
+      "Define integer variables A (advertising spend >= 0) and P (promotion spend >= 0)",
+      "C1: 4*A + 5*P >= 100  (effectiveness constraint: each $1 gives 4/5 impact points)",
+      "C2: A - P <= 50        (balance: advertising cannot exceed promotion by more than $50)",
+      "Minimize A + P (total spending) using HiGHS solver at zero MIP gap"
+    ]
+  },
+  "config": {
+    "solver": "highs",
+    "time_limit": 30
+  }
+}

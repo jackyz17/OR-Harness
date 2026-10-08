@@ -1,0 +1,28 @@
+{
+ "result": {
+  "bank": "retention",
+  "policy": {
+   "window": 50,
+   "late_check_grace_days": 30.0,
+   "archive_max_file_bytes": 67108864,
+   "archive_max_total_bytes": 1073741824,
+   "archive_retention_days": 365.0,
+   "auto_archive_threshold": 200,
+   "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk"
+  },
+  "online": {
+   "n_window_episodes": 8,
+   "n_closeouts_total": 8,
+   "n_closeouts_archived": 0,
+   "n_contract_predictions": 18,
+   "n_prediction_contexts": 13
+  },
+  "archive": {
+   "directory": "/home/ubuntu/.openclaw/workspace/or_harness_home/archive/calibration",
+   "files": [],
+   "total_bytes": 0
+  },
+  "note": "three separate scopes: the WINDOW decides which closed episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps bound what history is kept on disk. Registry tombstones stay online permanently so a repeated close is still idempotent"
+ },
+ "summary": "Online: 8 window episode(s), 8 closed total, 18 prediction(s), 13 context(s). Archive: 0 file(s), 0 bytes. Three separate scopes — see `policy`."
+}

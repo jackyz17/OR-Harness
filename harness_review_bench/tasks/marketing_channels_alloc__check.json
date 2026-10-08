@@ -1,0 +1,7 @@
+{
+  "reference_status": "optimal",
+  "reference_objective": 8350.0,
+  "tolerance": 0.00835,
+  "reference_source": "bench_declared",
+  "reference_version": "orarla_item2_v1"
+}

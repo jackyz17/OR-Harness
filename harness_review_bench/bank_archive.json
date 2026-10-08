@@ -1,0 +1,39 @@
+{
+ "result": {
+  "bank": "archive",
+  "count": 1,
+  "cards": [
+   {
+    "pattern_hash": "c39c6297567e0751",
+    "strategy_id": "cand_26845f0d",
+    "predicates": {
+     "family": "resource_allocation",
+     "resource_coupling": "[unknown]",
+     "route_complexity": "[unknown]",
+     "temporal_coupling": "[unknown]"
+    },
+    "outcome": "retired",
+    "reason": "API调用序列细节不属于策略库，应存在于代码/文档中；该条目应删除以保持策略库清洁",
+    "entry_id": "5",
+    "evidence_summary": {
+     "hit_rate": 0.0,
+     "n_predictions": 0,
+     "predicates": {
+      "family": "resource_allocation",
+      "resource_coupling": "[unknown]",
+      "route_complexity": "[unknown]",
+      "temporal_coupling": "[unknown]"
+     },
+     "provenance": [
+      "ex_829b925ba0e6",
+      "ex_f4b21b645261",
+      "ex_fc4d9e22486e"
+     ],
+     "support_n": 0
+    },
+    "archived_at": 1791459713.1267967
+   }
+  ]
+ },
+ "summary": "1 card in archive bank. A card blocks re-inducing that same pattern; lift it with `induce --force` when the environment has genuinely drifted."
+}

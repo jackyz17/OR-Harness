@@ -1,0 +1,4645 @@
+{
+ "result": {
+  "bank": "predictions",
+  "count": 18,
+  "legacy_predictions": [],
+  "strategy_predictions": [
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_311b23906998",
+    "prediction_type": "strategy_outcome",
+    "status": "invalid",
+    "prediction_made": false,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_37e66142",
+     "solver": "highs",
+     "method": {
+      "name": "milp_direct_highs",
+      "steps": [
+       "declare non-negative integer variables x (project X units) and y (project Y units)",
+       "encode resource_cap: x + y <= 1000; excess: x - y >= 200; bounds x <= 700, y <= 500",
+       "minimize 50*x + 30*y with the HiGHS MIP solver at zero MIP gap",
+       "report proven optimum and the (x, y) values"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_xy_allocation_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "solution_quality",
+     "metric": "normalized_objective_gap",
+     "unit": "1-gap",
+     "value": 1.0,
+     "interval": [
+      1.0,
+      1.0
+     ],
+     "interval_kind": "outcome",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "declared",
+      "value": 0.0,
+      "ref": null,
+      "note": "declared convention: optimal status is a gap of 0, so Q = 1 - 0 = 1.0",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method encodes the exact constraints from the task text (x+y<=1000, x-y>=200, x<=700, y<=500, non-negative integers) and minimizes the exact cost function (50x+30y).",
+      "The problem is a small 2-variable MILP with a bounded integer domain; HiGHS will find the proven optimum with zero gap essentially instantly.",
+      "The model matches the task: the question asks for minimum cost satisfying all constraints, and the method minimizes exactly that objective under exactly those constraints."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 3000.0,
+      "tool_calls": 1.0,
+      "solver_runtime_s": 0.1,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 15.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The method is a straightforward 2-variable MILP with standard HiGHS API. The main risk is a minor scripting error (variable declaration, constraint sign, or output parsing). The problem is small enough that any error would be immediately visible in the solver output.",
+       "notes": [
+        "No prior execution history for this harness (task_execution_count=0), so no track record of script reliability."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The model faithfully encodes all stated constraints and the correct objective. The only way the answer would fail the task check is if the script mis-encodes a constraint (e.g., wrong inequality direction) or mis-reports the solution. Given the simplicity, this is low probability.",
+       "notes": [
+        "The constraint x - y >= 200 is the most error-prone (sign/direction), but it is a standard form."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "A 2-variable MILP with bounds [0,700] and [0,500] is solved in milliseconds by HiGHS. The 120s executor timeout is not a realistic risk.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The feasible region is non-empty (e.g., x=200, y=0 satisfies all constraints). The solver will not report infeasibility.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.03,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "HiGHS is listed as an available solver family. The risk is a missing Python package or import error in the sandbox, but this is a standard, well-supported solver.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "No budget is declared (budget_status=no_budget_declared), so this event cannot occur.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "No calibration data or paired feedback exists for this model (n_window_episodes=0, n_pairs_total=0), so all probability estimates are based on structural reasoning about the problem and method, not on measured history.",
+      "The problem is extremely small and well-structured, which reduces execution randomness.",
+      "The knowledge gap reflects the absence of any prior execution evidence for this harness configuration."
+     ],
+     "missing": {
+      "cost.llm_tokens": "No tokenizer available; estimate based on typical script length for a 2-variable MILP."
+     },
+     "notes": [
+      "The benefit prediction (Q=1.0) is high-confidence because the method is a direct, correct encoding of the task and the solver is appropriate for the problem size.",
+      "The main uncertainty is in the cost dimensions, which are estimates without a tokenizer or prior execution data.",
+      "execution_randomness (self-reported, uncalibrated): 0.05",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "This is a standard, well-known MILP formulation with a mature solver. The run would not produce any structural adaptation, new boundary mapping, or cost experience the harness lacks."
+     ],
+     "basis": [
+      "The method (milp_direct_highs) is a canonical approach for a small 2-variable MILP. HiGHS is a mature, well-supported solver. The problem has no unusual structure (no coupling, no temporal dimension, no route complexity). A successful run would confirm what is already known: that HiGHS solves small MILPs correctly and quickly. No new understanding, boundary, or cost experience would form that would improve a later decision."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_292c9debd33f",
+     "input_version": "7b6fa36debd452c1",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791450480.927239,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "joint_problem.text",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "candidate.method.steps",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "execution_constraints.available_solver_families.milp",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "harness_capability.sources.t.detail.available_solver_families",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "cost.latency_s": "latency_s is one attempt's sandbox wall-clock, a different measurement from remaining_latency_s; not predicted separately to avoid scope confusion."
+     },
+     "call_cost": {
+      "llm_tokens": 9850.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 32.86155570670962,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_latency_s": 32.8616,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1649.0,
+       "llm_tokens": 9850.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 8201.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_2794f0149497",
+      "decision_action_id": "ac_2794f0149497",
+      "effective_input_digest": "7b6fa36debd452c1",
+      "parse_error": "the model's payload failed validation; see notes",
+      "prediction_context_id": "ctx_c797f1f6197b",
+      "prediction_context_task_digest": "7b6fa36debd452c1",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "7b6fa36debd452c1",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed: no real window exists to score against"
+     ]
+    },
+    "notes": [
+     "validation: unknown cost dimension 'basis'"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_ee131b70093c",
+    "prediction_type": "strategy_outcome",
+    "status": "invalid",
+    "prediction_made": false,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_310f3156",
+     "solver": "python",
+     "method": {
+      "name": "bounded_enumeration",
+      "steps": [
+       "derive the finite feasible integer ranges: y in 0..500 and x in 0..700",
+       "loop over all (x, y) integer pairs and keep those satisfying x + y <= 1000 and x - y >= 200",
+       "track the feasible pair that minimizes cost 50*x + 30*y",
+       "report the best pair and its cost as the optimum"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_xy_allocation_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "solution_quality",
+     "metric": "normalized_objective_gap",
+     "unit": "1-gap",
+     "value": 1.0,
+     "interval": [
+      1.0,
+      1.0
+     ],
+     "interval_kind": "outcome",
+     "interval_coverage": 0.95,
+     "baseline": {
+      "kind": "no_knowledge",
+      "value": 0.0,
+      "ref": null,
+      "note": "No prior solution exists; a correct exhaustive enumeration of the finite integer feasible set yields the true optimum, so the normalized gap is 0 and Q = 1.0.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method is a complete bounded enumeration over x in 0..700 and y in 0..500, which is a finite set of 351,001 pairs. Exhaustive search over the entire feasible integer space guarantees the global optimum for this linear objective, so the solver's normalized gap would be 0 (Q=1.0) if the script runs correctly.",
+      "The benefit convention is solution_quality / normalized_objective_gap; this prediction reports the quality of the model solution, not the task-result check."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 2500.0,
+      "tool_calls": 1.0,
+      "solver_runtime_s": 2.0,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 15.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "The method is a simple nested loop in Python. The main risk is a coding error (off-by-one in bounds, wrong inequality direction, or integer vs float handling). The problem is small and the logic is straightforward, so the probability is low but non-zero for a fresh script.",
+       "notes": [
+        "A successful past run of a similar method does not remove today's risk, but the simplicity of the enumeration reduces it."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "The task check would fail if the enumeration does not correctly model the constraints (e.g., x - y >= 200 vs x - y > 200, or x + y <= 1000 vs < 1000) or if the cost formula is wrong. The constraints are clearly stated in the task text, so the risk is low but present due to implementation fidelity.",
+       "notes": [
+        "The solver's optimality (gap=0) does not guarantee the task check passes if the model is mis-specified."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "The enumeration space is 701 * 501 = 351,201 pairs. A Python loop over this space with simple arithmetic takes well under 1 second. The executor timeout is 120 seconds. No timeout risk.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "The script uses only Python built-ins (range, min, arithmetic). No external solver or library is required. The risk is minimal, limited to sandbox policy issues.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "The feasible region is non-empty (e.g., x=200, y=0 satisfies all constraints). The enumeration will find feasible pairs. No infeasibility risk.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_required",
+       "basis": "No budget is declared (budget_status: no_budget_declared). No budget exhaustion risk.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "No calibration data or paired feedback is available (n_window_episodes=0, n_pairs_total=0), so the prediction rests on the method's logical soundness and the problem's small scale rather than empirical history.",
+      "The method is deterministic (exhaustive enumeration), so execution randomness is low.",
+      "The knowledge gap reflects the absence of any prior experience with this specific task or similar enumeration strategies in the harness memory."
+     ],
+     "missing": {
+      "benefit.interval_coverage": "No calibration data to justify a specific coverage level; 0.95 is a reasonable estimate for a deterministic method on a small problem."
+     },
+     "notes": [
+      "The prediction is highly confident in the method's correctness but acknowledges the small risk of implementation error in a fresh script.",
+      "execution_randomness (self-reported, uncalibrated): 0.05",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a standard, well-known technique (bounded enumeration) for small integer problems. It does not introduce any new structural adaptation, boundary mapping, or cost experience that the harness lacks."
+     ],
+     "basis": [
+      "Bounded enumeration is a mature, textbook method for small-scale integer optimization. The harness already has access to MILP and CP-SAT solvers, which are more general. This run would not teach the harness anything new about problem structure, solver selection, or cost management."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_292c9debd33f",
+     "input_version": "7b6fa36debd452c1",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791450513.4543288,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "joint_problem.text",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "joint_problem.profile.problem_class",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "execution_constraints.available_solver_families",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "execution_constraints.executor.timeout_seconds",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "benefit.baseline.value": "No prior solution or baseline exists; using no_knowledge with value 0.0 as a placeholder for 'no prior quality'."
+     },
+     "call_cost": {
+      "llm_tokens": 9822.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 32.5068976264447,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_latency_s": 32.5069,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1631.0,
+       "llm_tokens": 9822.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 8191.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_2794f0149497",
+      "decision_action_id": "ac_2794f0149497",
+      "effective_input_digest": "7b6fa36debd452c1",
+      "parse_error": "the model's payload failed validation; see notes",
+      "prediction_context_id": "ctx_c797f1f6197b",
+      "prediction_context_task_digest": "7b6fa36debd452c1",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "7b6fa36debd452c1",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed: no real window exists to score against"
+     ]
+    },
+    "notes": [
+     "validation: unknown cost dimension 'basis'"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_25099bcfdeb8",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_1a4a96fe",
+     "solver": "ortools",
+     "method": {
+      "name": "cp_sat_integer",
+      "steps": [
+       "create CP-SAT integer variables x in 0..700 and y in 0..500",
+       "add linear constraints x + y <= 1000 and x - y >= 200",
+       "minimize the linear objective 50*x + 30*y with OR-Tools CP-SAT",
+       "report optimal objective value and the (x, y) values"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_xy_allocation_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "solution_quality",
+     "metric": "normalized_objective_gap",
+     "unit": "1-gap",
+     "value": 1.0,
+     "interval": [
+      1.0,
+      1.0
+     ],
+     "interval_kind": "outcome",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "no_knowledge",
+      "value": 0.0,
+      "ref": null,
+      "note": "No prior solution exists; baseline gap is 1.0 (Q=0.0). CP-SAT on this small MILP is expected to prove optimality, yielding gap 0 (Q=1.0).",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The problem is a small 2-variable integer linear program with linear constraints and objective. CP-SAT is well-suited and will almost certainly find the optimal solution and prove it, resulting in a normalized gap of 0 and Q=1.0.",
+      "The method steps correctly model the constraints: x in [0,700], y in [0,500], x+y<=1000, x-y>=200, minimize 50x+30y."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 2000.0,
+      "tool_calls": 1.0,
+      "solver_runtime_s": 0.5,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 15.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The method is straightforward and uses a mature solver (OR-Tools CP-SAT). The main risk is a minor coding error in the script (e.g., wrong variable bounds or constraint sign), but the problem is simple enough that this is unlikely.",
+       "notes": [
+        "No prior execution history for this specific script, but the method is standard and low-complexity."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The model correctly captures all stated constraints. The only risk is if the task check expects a specific rounding or format that the script does not produce, but the method step says 'report optimal objective value', which should satisfy the check.",
+       "notes": [
+        "The task asks for the answer rounded to the nearest dollar; the objective is already integer-valued (50x+30y with integer x,y), so rounding is trivial."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The problem has only 2 variables and a small search space. CP-SAT will solve it in milliseconds, well within the 120-second executor timeout.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The constraints are clearly feasible (e.g., x=200, y=0 satisfies all constraints). CP-SAT will find a feasible solution.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "OR-Tools is listed as an available solver family. The risk is a missing Python package or import error, but this is low given the tool is explicitly available.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "No budget is declared, so this event is not applicable.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "No prior execution history for this exact problem or script.",
+      "The method is standard and the problem is small, so execution randomness is low.",
+      "Knowledge gap is moderate because there is no retrieval evidence or calibration data, but the problem structure is simple and well-understood."
+     ],
+     "missing": {
+      "cost.llm_tokens": "Exact token count depends on the script length and LLM interactions, which are not specified."
+     },
+     "notes": [
+      "The prediction is based on the problem's simplicity and the maturity of CP-SAT for small MILPs.",
+      "execution_randomness (self-reported, uncalibrated): 0.05",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a standard application of CP-SAT to a small MILP. No new structural adaptation, boundary mapping, or cost experience is expected."
+     ],
+     "basis": [
+      "The problem is a simple 2-variable MILP, and CP-SAT is a mature solver for this class. The execution will not produce new understanding or improve any metric beyond what is already known."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_292c9debd33f",
+     "input_version": "7b6fa36debd452c1",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791450541.0527778,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "joint_problem.text",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "joint_problem.profile.problem_class",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "execution_constraints.available_solver_families",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "candidate.method.steps",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "cost.latency_s": "Not predicted because it is a different measurement (one attempt's sandbox wall-clock) and not the primary dimension for cost comparison."
+     },
+     "call_cost": {
+      "llm_tokens": 9612.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 27.575824515894055,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791450657.3609266,
+      "binding_unknown": null,
+      "bound_action_id": "ac_8bbd73b47b89",
+      "bound_action_id_before_execution": "ac_8bbd73b47b89",
+      "call_latency_s": 27.5758,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1428.0,
+       "llm_tokens": 9612.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 8184.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_2794f0149497",
+      "config_observed": {},
+      "config_unknown": null,
+      "decision_action_id": "ac_2794f0149497",
+      "effective_input_digest": "7b6fa36debd452c1",
+      "method_observed": {
+       "actual_name": "cp_sat_integer",
+       "actual_steps": [
+        "create CP-SAT integer variables x in 0..700 and y in 0..500",
+        "add linear constraints x + y <= 1000 and x - y >= 200",
+        "minimize the linear objective 50*x + 30*y with OR-Tools CP-SAT",
+        "report optimal objective value and the (x, y) values"
+       ],
+       "planned_name": "cp_sat_integer",
+       "planned_steps": [
+        "create CP-SAT integer variables x in 0..700 and y in 0..500",
+        "add linear constraints x + y <= 1000 and x - y >= 200",
+        "minimize the linear objective 50*x + 30*y with OR-Tools CP-SAT",
+        "report optimal objective value and the (x, y) values"
+       ],
+       "reason": "the performed steps are the plan's steps, in order",
+       "verdict": "identical"
+      },
+      "prediction_context_id": "ctx_c797f1f6197b",
+      "prediction_context_task_digest": "7b6fa36debd452c1",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "7b6fa36debd452c1",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_f3c90ad2d857",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_6247b808",
+     "solver": "ortools",
+     "method": {
+      "name": "cp_sat_integer",
+      "steps": [
+       "declare integer variables X (channel X effectiveness) and Y (channel Y effectiveness) with non-negative domains",
+       "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+       "minimize the linear cost 50*X + 100*Y with OR-Tools CP-SAT as an exact integer solver",
+       "report optimal objective value and the (X, Y) allocation"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_channels_budget_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.9,
+     "interval": [
+      0.8,
+      1.0
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Prior execution ex_59a44b58cb24 on a structurally similar 2-variable MILP (same profile cell) achieved optimal status and passed the task check.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the task constraints: X+Y<=2000, 3X-2Y>=500, and minimizes 50X+100Y with integer variables.",
+      "The primary risk is a misinterpretation of the 'effort' constraint or the budget constraint, but the candidate's steps explicitly encode the linear forms derived from the text."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.06,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The script is new code. While the method is standard, syntax errors or environment issues in the fresh script are possible. Prior similar run had 0 failures, but n=1 is weak evidence.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "Risk that the modelled constraints do not perfectly match the task's semantic intent (e.g., 'effort' vs 'budget' units). The prior similar task passed, but the specific coefficients differ.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time",
+       "basis": "CP-SAT on a 2-variable problem is instantaneous (<0.1s). Executor timeout is 120s.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "model_verdict",
+       "basis": "The constraints X+Y<=2000 and 3X-2Y>=500 are clearly feasible (e.g., X=200, Y=0 satisfies 3*200-0=600>=500 and 200<=2000).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "execution_block",
+       "basis": "OR-Tools is listed as available. Low risk of missing modules.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "budget",
+       "basis": "No budget declared for the episode.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The structural match is strong (same cell), but the specific task text differs slightly in coefficients and narrative.",
+      "The prior execution is the only evidence point (n=1)."
+     ],
+     "missing": {},
+     "notes": [
+      "The 'effort' constraint interpretation is the main source of uncertainty for task_check_failed.",
+      "execution_randomness (self-reported, uncalibrated): 0.0",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a standard application of CP-SAT to a small MILP, which the harness has already demonstrated in a similar context."
+     ],
+     "basis": [
+      "The harness already has a verified execution (ex_59a44b58cb24) for a structurally identical problem class. Repeating this method does not add new structural understanding or boundary mapping."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_3f8eb4ee0bd5",
+     "input_version": "06299376499137d4",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791452893.0029314,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "harness_capability.sources.t",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 16679.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 29.980491276830435,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791452978.7355413,
+      "binding_unknown": null,
+      "bound_action_id": "ac_0c4da083be81",
+      "bound_action_id_before_execution": "ac_0c4da083be81",
+      "call_latency_s": 29.9805,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1224.0,
+       "llm_tokens": 16679.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 15455.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_7ae21da95833",
+      "config_observed": {},
+      "config_unknown": null,
+      "decision_action_id": "ac_7ae21da95833",
+      "effective_input_digest": "06299376499137d4",
+      "method_observed": {
+       "actual_name": "cp_sat_integer",
+       "actual_steps": [
+        "declare integer variables X and Y with non-negative domains",
+        "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+        "minimize the linear cost 50*X + 100*Y with OR-Tools CP-SAT",
+        "report optimal objective value and the (X, Y) allocation"
+       ],
+       "planned_name": "cp_sat_integer",
+       "planned_steps": [
+        "declare integer variables X (channel X effectiveness) and Y (channel Y effectiveness) with non-negative domains",
+        "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+        "minimize the linear cost 50*X + 100*Y with OR-Tools CP-SAT as an exact integer solver",
+        "report optimal objective value and the (X, Y) allocation"
+       ],
+       "reason": "the performed step text differs from the plan's. This is a DESCRIPTION difference: it does not by itself mean a different method ran, and nothing blocks a comparison on it",
+       "verdict": "differs"
+      },
+      "prediction_context_id": "ctx_9ee4e74dacb6",
+      "prediction_context_task_digest": "06299376499137d4",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "06299376499137d4",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_e465ac65065d",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_d20426f6",
+     "solver": "highs",
+     "method": {
+      "name": "milp_direct_highs",
+      "steps": [
+       "declare non-negative integer variables X and Y",
+       "encode budget_limit: X + Y <= 2000 and effort_req: 3*X - 2*Y >= 500",
+       "minimize 50*X + 100*Y with the HiGHS MIP solver at zero MIP gap",
+       "report proven optimum and the (X, Y) allocation"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_channels_budget_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.9,
+     "interval": [
+      0.8,
+      1.0
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Similar 2-variable MILP execution (ex_59a44b58cb24) passed the task check with optimal status.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the task constraints (X+Y<=2000, 3X-2Y>=500) and objective (min 50X+100Y).",
+      "HiGHS is a mature solver capable of solving this small MILP to proven optimality."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.05,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework",
+       "basis": "New script for HiGHS; similar CP-SAT script succeeded, but HiGHS API usage may differ slightly.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework",
+       "basis": "Model formulation appears correct; low risk of logical error in constraint encoding.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework",
+       "basis": "Problem is very small (2 variables); solver runtime expected to be negligible.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework",
+       "basis": "Feasible region is non-empty (e.g., X=200, Y=0 satisfies constraints).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework",
+       "basis": "HiGHS is listed as available in the harness capability evidence.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "Only one similar execution exists in the evidence base (n=1).",
+      "The specific solver (HiGHS) was not used in the similar execution (CP-SAT was used), introducing slight uncertainty about API stability."
+     ],
+     "missing": {},
+     "notes": [
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [],
+     "basis": [
+      "The method is a standard direct MILP solve, a capability already demonstrated by the harness in a similar context."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_3f8eb4ee0bd5",
+     "input_version": "06299376499137d4",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791452911.4423006,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "harness_capability.sources.t.detail.available_solver_families",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 16371.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 18.415376156568527,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_latency_s": 18.4154,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 930.0,
+       "llm_tokens": 16371.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 15441.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_7ae21da95833",
+      "decision_action_id": "ac_7ae21da95833",
+      "effective_input_digest": "06299376499137d4",
+      "prediction_context_id": "ctx_9ee4e74dacb6",
+      "prediction_context_task_digest": "06299376499137d4",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "06299376499137d4",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed: no real window exists to score against"
+     ]
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_4a652dd193a4",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_77841199",
+     "solver": "python",
+     "method": {
+      "name": "bounded_enumeration",
+      "steps": [
+       "derive a finite integer upper bound for Y from the two linear constraints",
+       "for each integer Y, derive the feasible integer interval for X and evaluate its cost-monotone boundary",
+       "track the feasible (X, Y) pair minimizing 50*X + 100*Y",
+       "report the best pair and its cost as the optimum"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_channels_budget_2026_10_08",
+     "episode_id": "ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Based on 1 similar execution (ex_59a44b58cb24) where a similar MILP was solved optimally and the task check passed. The current task has a more complex constraint structure (3x vs 2x) which introduces a higher risk of modeling error compared to the simple difference constraint in the reference case.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method 'bounded_enumeration' is mathematically sound for this small-scale integer problem.",
+      "The primary risk is not solver failure but correct interpretation of the constraint 'effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points'. This phrasing is ambiguous and could be interpreted as X - 2Y >= 500 or 3X - 2Y >= 500 or similar. If the harness misinterprets this, the task check will fail."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.1,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.5
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The script is simple Python enumeration. The risk is low but non-zero due to potential syntax errors or logic bugs in the bound derivation.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.15,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The constraint text is ambiguous ('three times greater than twice... yielding a difference of at least 500'). If the modeler interprets the inequality incorrectly, the solution will be optimal for the wrong model and fail the task check.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "Enumeration of a small integer space is computationally trivial and will not exceed the 120s timeout.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The problem is a standard budget allocation with a minimum difference constraint. Feasible solutions exist (e.g., X=500, Y=0 satisfies X-2Y>=500 and X+Y<=2000).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "Standard Python environment. Low risk of missing modules or sandbox issues.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "No budget declared, and the task is small.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The constraint interpretation is the main source of uncertainty.",
+      "The reference execution used a different constraint structure (simple difference), so the transfer of success is not guaranteed."
+     ],
+     "missing": {},
+     "notes": [
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [],
+     "basis": [
+      "The method is a standard enumeration technique for small MILPs. The harness already has evidence of solving similar problems with CP-SAT. This run does not introduce a new structural adaptation or boundary mapping."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_3f8eb4ee0bd5",
+     "input_version": "06299376499137d4",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791452934.8444695,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 16625.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 23.379238091409206,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_latency_s": 23.3792,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1196.0,
+       "llm_tokens": 16625.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 15429.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_7ae21da95833",
+      "decision_action_id": "ac_7ae21da95833",
+      "effective_input_digest": "06299376499137d4",
+      "prediction_context_id": "ctx_9ee4e74dacb6",
+      "prediction_context_task_digest": "06299376499137d4",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "06299376499137d4",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed: no real window exists to score against"
+     ]
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_e5b9d27bb28f",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "milp_highs_direct",
+     "solver": null,
+     "method": {
+      "name": "MILP with Highspy direct formulation",
+      "steps": [
+       "Define integer variables A (advertising spend >= 0) and P (promotion spend >= 0)",
+       "C1: 4*A + 5*P >= 100  (effectiveness constraint: each $1 gives 4/5 impact points)",
+       "C2: A - P <= 50        (balance: advertising cannot exceed promotion by more than $50)",
+       "Minimize A + P (total spending) using HiGHS solver at zero MIP gap"
+      ]
+     },
+     "config": {
+      "solver": "highs",
+      "time_limit": 30
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_campaign_20261008_v2",
+     "episode_id": "ep002",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.9,
+     "interval": [
+      0.8,
+      1.0
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Two sibling small-scale marketing allocation MILPs solved optimally with CP-SAT and passed task checks; this candidate uses HiGHS on an equivalent 2-variable integer model.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the task: minimize total spend A+P subject to 4A+5P>=100 and A-P<=50 with integer variables.",
+      "The solver (HiGHS) is available and the problem is small enough to solve to optimality quickly."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.05,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "Fresh script for HiGHS formulation; past CP-SAT scripts succeeded but this is a different solver interface.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "Model formulation appears correct; risk is low but non-zero due to potential misinterpretation of 'effectiveness' coefficients.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "2-variable MILP solves in milliseconds; 30s limit is ample.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "Feasible region is non-empty (e.g., A=0, P=20 satisfies both constraints).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "HiGHS is listed as available; low risk of missing module.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "No direct HiGHS execution evidence for this exact problem shape; relying on CP-SAT sibling evidence.",
+      "Task text has potential ambiguity in effectiveness coefficients (2x vs 4x/5x), but candidate interpretation is consistent with standard reading."
+     ],
+     "missing": {},
+     "notes": [
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "HiGHS vs CP-SAT performance on tiny MILPs is not differentiated in evidence."
+     ],
+     "basis": [
+      "The method is a standard MILP formulation already demonstrated on sibling problems; no new structural adaptation or boundary mapping is introduced."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_68349ecd35ce",
+     "input_version": "0c3387c21f7cfc75",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791457326.0881896,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[1]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 19778.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 25.48319344781339,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791457343.9048026,
+      "binding_unknown": {
+       "config": {
+        "time_limit": {
+         "actual": null,
+         "predicted": 30,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_f15834f9cc7a",
+      "bound_action_id_before_execution": "ac_f15834f9cc7a",
+      "call_latency_s": 25.4832,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1027.0,
+       "llm_tokens": 19778.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 18751.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_observed": {
+       "solver": {
+        "actual": "highs",
+        "predicted": "highs"
+       }
+      },
+      "config_unknown": [
+       "time_limit"
+      ],
+      "effective_input_digest": "0c3387c21f7cfc75",
+      "method_observed": null,
+      "prediction_context_id": "ctx_0d0d390e0685",
+      "prediction_context_task_digest": "0c3387c21f7cfc75",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "a33c383717bae888",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_f3d46dd6c3fd",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "milp_highs_direct",
+     "solver": null,
+     "method": {
+      "name": "MILP with Highspy direct formulation",
+      "steps": [
+       "Define integer variables A (advertising spend >= 0) and P (promotion spend >= 0)",
+       "C1: 4*A + 5*P >= 100  (effectiveness constraint: each $1 gives 4/5 impact points)",
+       "C2: A - P <= 50        (balance: advertising cannot exceed promotion by more than $50)",
+       "Minimize A + P (total spending) using HiGHS solver at zero MIP gap"
+      ]
+     },
+     "config": {
+      "solver": "highs",
+      "time_limit": 30
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_campaign_20261008_v2",
+     "episode_id": "ep002",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "current_solution",
+      "value": 0.0,
+      "ref": null,
+      "note": "Current solution is in error state (feasible=false, status=error). The candidate attempts to solve the model correctly.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The task text contains a contradiction: it defines effectiveness as 'twice advertising plus three times promotion' (2A+3P) but then states 'each unit of money spent on advertising contributes 4 impact points and each unit spent on promotion contributes 5 impact points' (4A+5P). The candidate uses the 4A+5P formulation. If the task check validates against the 2A+3P formulation, the answer will be incorrect. If it validates against the 4A+5P formulation (or just checks the total spend for the stated constraints), it may pass. Given the ambiguity, there is a significant risk of task_check_failed.",
+      "The previous attempt (milp_highs_direct) resulted in an error, suggesting potential implementation issues with this specific solver/method combination in this harness, or a modelling error that was not corrected."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.1,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 5.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.15,
+       "severity": 1.0,
+       "severity_unit": "",
+       "basis": "The previous attempt with the same strategy_id 'milp_highs_direct' resulted in an error status. While the method is sound, the specific implementation or environment interaction may be unstable. The calibration data shows 0 occurrences of implementation_failure in the window, but the specific history of this task/strategy suggests a non-zero risk.",
+       "notes": [
+        "Previous execution ex_ede4dd28e26d had status 'error'."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.3,
+       "severity": 1.0,
+       "severity_unit": "",
+       "basis": "The task text is ambiguous regarding the effectiveness coefficients (2A+3P vs 4A+5P). The candidate uses 4A+5P. If the ground truth or check uses 2A+3P, the solution will be wrong. Additionally, the previous attempt failed, indicating the model might not have been solved correctly before.",
+       "notes": [
+        "Ambiguity in task definition: 'twice... plus three times' vs '4 impact points... 5 impact points'."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "",
+       "basis": "The problem is a small 2-variable MILP. HiGHS should solve it in milliseconds. The time limit is 30s, which is ample.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "",
+       "basis": "The constraints 4A+5P >= 100 and A-P <= 50 with A,P >= 0 are clearly feasible (e.g., A=0, P=20).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "",
+       "basis": "HiGHS is a standard solver available in the harness. Low risk of environment issues unless the specific 'highspy' interface is broken, which is covered under implementation_failure.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The task text ambiguity is a major source of uncertainty for the task check outcome.",
+      "The previous failure of the same strategy suggests potential implementation fragility, but the cause is unknown."
+     ],
+     "missing": {
+      "task_check_criteria": "It is unclear which formulation (2A+3P or 4A+5P) the task check will use."
+     },
+     "notes": [
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.4",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "If the task check fails due to the ambiguity, it might highlight a need for better task disambiguation capabilities, but that is a process improvement, not a direct capability gain from this run."
+     ],
+     "basis": [
+      "The method (MILP with HiGHS) is standard and already known to the harness. The previous attempt failed, so this run is a retry/repair, not a new capability introduction."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_497202f2e857",
+     "input_version": "0c3387c21f7cfc75",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791457421.3050735,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "solving_context.task_progress.current_solution",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[1]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "cost.latency_s": "Not predicted as it is a component of the attempt, not the remaining scope, and the previous attempt's latency was very low (0.12s) but this is a new attempt."
+     },
+     "call_cost": {
+      "llm_tokens": 20675.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 33.063132874667645,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791457427.0567665,
+      "binding_unknown": {
+       "config": {
+        "time_limit": {
+         "actual": null,
+         "predicted": 30,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_fecf6ff1edc1",
+      "bound_action_id_before_execution": "ac_fecf6ff1edc1",
+      "call_latency_s": 33.0631,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1417.0,
+       "llm_tokens": 20675.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 19258.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_observed": {
+       "solver": {
+        "actual": "highs",
+        "predicted": "highs"
+       }
+      },
+      "config_unknown": [
+       "time_limit"
+      ],
+      "effective_input_digest": "0c3387c21f7cfc75",
+      "method_observed": null,
+      "prediction_context_id": "ctx_cc4b53f57a0e",
+      "prediction_context_task_digest": "0c3387c21f7cfc75",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "a33c383717bae888",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_788f79f1125b",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "milp_highs_v3",
+     "solver": "highs",
+     "method": {
+      "name": "MILP with Highspy direct formulation",
+      "steps": [
+       "Define integer variables A (advertising spend >= 0) and P (promotion spend >= 0)",
+       "C1: 2*A + 3*P >= 100 (effectiveness constraint per task text)",
+       "C2: A - P <= 50 (balance: advertising cannot exceed promotion by more than $50)",
+       "Minimize A + P (total spending) using HiGHS solver at zero MIP gap"
+      ]
+     },
+     "config": {
+      "time_limit": 30
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_campaign_20261008_v3",
+     "episode_id": "ep003",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "current_solution",
+      "value": 0.0,
+      "ref": null,
+      "note": "no solution exists yet; baseline is the current state of the task",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The candidate uses the correct effectiveness coefficients (2A + 3P >= 100) as stated in the task text, unlike the previous v2 attempts which used 4A + 5P. This addresses the primary modelling risk.",
+      "The previous v2 execution (ex_1fe734d7532c) passed the task check with the same solver and structure, suggesting the method is sound when the coefficients are correct.",
+      "The previous v2 execution (ex_ede4dd28e26d) failed due to a status string formatting issue (HighsModelStatus.kOptimal vs 'optimal'). The candidate must ensure the status is written as a canonical string to avoid this implementation failure."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 15000.0,
+      "tool_calls": 5.0,
+      "solver_runtime_s": 0.05,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.5
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.15,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The previous v2 run (ex_ede4dd28e26d) failed due to an illegal status string. If the candidate does not apply the 'highspy_status_string_fix' knowledge, it will fail similarly. The knowledge entry is available but not guaranteed to be applied.",
+       "notes": [
+        "The fix is known and documented in strategic_knowledge:3."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.1,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The model formulation is correct (2A+3P>=100, A-P<=50, min A+P). The main risk is if the solver returns a non-integer solution or if the task check has strict rounding requirements that are not met. The task asks for rounding to the nearest dollar.",
+       "notes": [
+        "The previous v2 run passed the task check with the correct solver status."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The problem is a small 2-variable MILP. Solver runtime is negligible (<0.1s). Time limit is 30s.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The constraints are feasible (e.g., A=0, P=34 satisfies 3*34>=100 and 0-34<=50).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "Standard HiGHS environment. No specific risk indicators.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "No budget declared.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The main uncertainty is whether the implementation will correctly handle the status string formatting, given the previous failure.",
+      "The task check's specific requirements for rounding are not fully detailed, but the previous run passed with a similar setup."
+     ],
+     "missing": {},
+     "notes": [
+      "The candidate's method is well-supported by previous successful runs on similar tasks.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.2",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a direct reuse of a previously successful strategy with a corrected coefficient. No new structural understanding is expected."
+     ],
+     "basis": [
+      "The candidate is a direct application of a known method to a similar problem. The only change is the coefficient in the effectiveness constraint, which is a parameter change, not a structural innovation."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_d4f4416e18ff",
+     "input_version": "7262d060868dcafd",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791458012.8847158,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 27760.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 34.24989855475724,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791458018.790202,
+      "binding_unknown": {
+       "config": {
+        "time_limit": {
+         "actual": null,
+         "predicted": 30,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_e42223e669be",
+      "bound_action_id_before_execution": "ac_e42223e669be",
+      "call_latency_s": 34.2499,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1321.0,
+       "llm_tokens": 27760.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 26439.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_observed": {},
+      "config_unknown": [
+       "time_limit"
+      ],
+      "effective_input_digest": "7262d060868dcafd",
+      "method_observed": {
+       "actual_name": "MILP with Highspy direct formulation",
+       "actual_steps": [
+        "Define integer variables A (advertising) and P (promotion) >= 0",
+        "C1: 2*A + 3*P >= 100 (effectiveness)",
+        "C2: A - P <= 50 (balance)",
+        "Minimize A + P using HiGHS solver"
+       ],
+       "planned_name": "MILP with Highspy direct formulation",
+       "planned_steps": [
+        "Define integer variables A (advertising spend >= 0) and P (promotion spend >= 0)",
+        "C1: 2*A + 3*P >= 100 (effectiveness constraint per task text)",
+        "C2: A - P <= 50 (balance: advertising cannot exceed promotion by more than $50)",
+        "Minimize A + P (total spending) using HiGHS solver at zero MIP gap"
+       ],
+       "reason": "the performed step text differs from the plan's. This is a DESCRIPTION difference: it does not by itself mean a different method ran, and nothing blocks a comparison on it",
+       "verdict": "differs"
+      },
+      "prediction_context_id": "ctx_0348e49a6d0d",
+      "prediction_context_task_digest": "7262d060868dcafd",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "cf0676d6a7bdbc0e",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_3ba7121a0a92",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_26845f0d",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_v3",
+      "steps": [
+       "Define integer variables X (campaign X resources) and Y (campaign Y resources) with X>=0, Y>=0",
+       "C1: X + Y <= 1000 (total resource budget cap)",
+       "C2: X - 2*Y >= 300 (X at least twice Y plus 300)",
+       "Minimize objective: 4*X + 3*Y (cost per unit for X is 4, for Y is 3)",
+       "Solve with HiGHS MILP solver at zero MIP gap",
+       "Report optimal objective value and (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "cand_marketing_20261008_a"
+      }
+     },
+     "config": {
+      "mip_gap": 0
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_resource_allocation_20261008",
+     "episode_id": "ep_marketing_20261008",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.92,
+     "interval": [
+      0.85,
+      0.98
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "3/3 comparable small linear allocation MILP executions passed the task check; the model is structurally identical to ex_59a44b58cb24 (similarity 0.78) and ex_134ddf044098 (similarity 0.68), both solved optimally with gap 0.0",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the task: X+Y<=1000, X-2Y>=300, minimize 4X+3Y with integer variables. The constraint X-2Y>=300 is correctly interpreted from 'X must be at least twice Y plus 300'.",
+      "The solver (HiGHS MILP) is mature and has solved structurally identical problems at zero gap in prior executions.",
+      "The primary risk is a transcription error in the constraint coefficients or objective, but the method steps are explicit and match the task text."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.06,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The method is a direct, well-understood MILP formulation. Prior executions of the same method (cp_sat_integer, milp_highs_v3) had 0 implementation failures. The only risk is a typo in the script, which is low probability given the explicit steps.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.08,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The model is structurally identical to 3 prior tasks that all passed. The constraint interpretation (X-2Y>=300) is the most likely source of error if the task text is misread, but the method steps explicitly state the correct constraint. The objective (4X+3Y) is also explicitly stated.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time_limit",
+       "basis": "The problem has 2 integer variables and 2 linear constraints. Prior executions of identical problems solved in <0.06s. The 120s timeout is far exceeded.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "infeasibility",
+       "basis": "The feasible region is non-empty (e.g., X=300, Y=0 satisfies all constraints). The solver will find a feasible solution.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "sandbox_failure",
+       "basis": "HiGHS is listed as an available solver family. Prior executions using HiGHS (ex_17b06e0f8965) ran successfully. The risk is a missing module or sandbox policy issue, which is low.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "budget_exceeded",
+       "basis": "No budget is declared for this episode. The cost is negligible (2 variables, 2 constraints).",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The method is well-supported by 3 prior executions of structurally identical problems, all of which passed the task check with gap 0.0.",
+      "The constraint interpretation (X-2Y>=300) is the main source of uncertainty, but the method steps explicitly state the correct constraint.",
+      "The solver (HiGHS) is mature and has been used successfully on similar problems."
+     ],
+     "missing": {},
+     "notes": [
+      "The primary uncertainty is whether the task check will verify the constraint interpretation correctly. If the check is strict about the exact form of the constraint, a minor transcription error could cause a failure.",
+      "execution_randomness (self-reported, uncalibrated): 0.05",
+      "knowledge_gap (self-reported, uncalibrated): 0.15",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a direct application of a well-known technique (small MILP solved by a mature exact solver) that has been verified on multiple prior tasks. No new structural adaptation, boundary mapping, or cost experience is expected."
+     ],
+     "basis": [
+      "The method (milp_highs_v3) is a direct, well-understood MILP formulation that has been successfully applied to 3 structurally identical problems in prior executions.",
+      "The strategic knowledge entries (direct_exact_solve_small_linear_allocation, direct_integer_program_small_linear_allocation) are already verified and cover this problem structure.",
+      "No new solver, method, or structural insight is introduced by this candidate."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_ca00295b54a4",
+     "input_version": "ace124221bb209de",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791458400.010422,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2] (ex_59a44b58cb24, similarity 0.78, optimal, task_check passed)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3] (ex_134ddf044098, similarity 0.68, optimal, task_check passed)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[4] (ex_17b06e0f8965, similarity 0.59, optimal, task_check passed)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0] (milp_highs_direct, conditional_stats, quality 0.5, failure_prob 0.0)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1] (milp_highs_v3, conditional_stats, quality 1.0, failure_prob 0.0)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[5] (strategic_knowledge:2, direct_exact_solve_small_linear_allocation, verified)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[6] (strategic_knowledge:1, direct_integer_program_small_linear_allocation, verified)",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 28440.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 42.046779250726104,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791458427.6796231,
+      "binding_unknown": {
+       "config": {
+        "mip_gap": {
+         "actual": null,
+         "predicted": 0,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_5852a97dc808",
+      "bound_action_id_before_execution": "ac_5852a97dc808",
+      "call_latency_s": 42.0468,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1721.0,
+       "llm_tokens": 28440.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 26719.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_normalized": [
+       "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+      ],
+      "config_observed": {},
+      "config_unknown": [
+       "mip_gap"
+      ],
+      "effective_input_digest": "ace124221bb209de",
+      "method_observed": null,
+      "prediction_context_id": "ctx_0b1ad362b3cc",
+      "prediction_context_task_digest": "ace124221bb209de",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "ace124221bb209de",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": [
+     "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_e55e3e5e09b1",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_26845f0d",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_v3",
+      "steps": [
+       "Define integer variables X (campaign X resources) and Y (campaign Y resources) with X>=0, Y>=0",
+       "C1: X + Y <= 1000 (total resource budget cap)",
+       "C2: X - 2*Y >= 300 (X at least twice Y plus 300)",
+       "Minimize objective: 4*X + 3*Y (cost per unit for X is 4, for Y is 3)",
+       "Solve with HiGHS MILP solver at zero MIP gap",
+       "Report optimal objective value and (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "cand_marketing_20261008_a"
+      }
+     },
+     "config": {
+      "mip_gap": 0
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_resource_allocation_20261008",
+     "episode_id": "ep_marketing_20261008",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 0.85,
+      "ref": null,
+      "note": "Prior predictions for this exact task/strategy (sp_3ba7121a0a92) and structurally identical sibling tasks (ex_59a44b58cb24, ex_134ddf044098) all passed the task check. The current attempt failed due to a specific API misuse (vartype keyword), which is correctable in the next attempt.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the constraints: X+Y<=1000, X-2Y>=300, Min 4X+3Y.",
+      "The previous failure was an implementation error (Highs.addVariable vartype), not a modeling error. The candidate steps imply a corrected implementation."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.05,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.1,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "The previous attempt failed with a TypeError on Highs.addVariable. While the method is sound, the specific API usage is prone to version-specific errors. A 10% risk remains that the script still contains a similar API mismatch or syntax error.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.1,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "If the implementation succeeds, the model is correct. The risk is low but non-zero due to potential subtle coding errors in constraint coefficients or variable bounds.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time",
+       "basis": "The problem is a 2-variable MILP. Solver runtime is negligible (<0.1s). No timeout risk.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "model_verdict",
+       "basis": "The constraints X+Y<=1000 and X-2Y>=300 are feasible (e.g., X=300, Y=0). No infeasibility risk.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "sandbox_error",
+       "basis": "HiGHS is available in the environment. Low risk of missing dependencies.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "High confidence in the mathematical model correctness based on task text analysis.",
+      "Moderate uncertainty in the implementation stability due to the previous API error."
+     ],
+     "missing": {},
+     "notes": [
+      "The main uncertainty is whether the new script correctly handles the HiGHS API for integer variables.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.2",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a standard direct solve for a small MILP, which is already a known capability."
+     ],
+     "basis": [
+      "The strategy is a direct application of a known method (MILP with HiGHS) to a small problem. No new structural adaptation or boundary mapping is expected."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_accfe081fa9e",
+     "input_version": "ace124221bb209de",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791458494.68917,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "solving_context.errors",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 28486.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 31.053070172667503,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791458499.7065504,
+      "binding_unknown": {
+       "config": {
+        "mip_gap": {
+         "actual": null,
+         "predicted": 0,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_711d5c4cbb9b",
+      "bound_action_id_before_execution": "ac_711d5c4cbb9b",
+      "call_latency_s": 31.0531,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1132.0,
+       "llm_tokens": 28486.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 27354.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_normalized": [
+       "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+      ],
+      "config_observed": {},
+      "config_unknown": [
+       "mip_gap"
+      ],
+      "effective_input_digest": "ace124221bb209de",
+      "method_observed": null,
+      "prediction_context_id": "ctx_b3907a42a123",
+      "prediction_context_task_digest": "ace124221bb209de",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "ace124221bb209de",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": [
+     "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_867b11973347",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_26845f0d",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_v3",
+      "steps": [
+       "Define integer variables X (campaign X resources) and Y (campaign Y resources) with X>=0, Y>=0",
+       "C1: X + Y <= 1000 (total resource budget cap)",
+       "C2: X - 2*Y >= 300 (X at least twice Y plus 300)",
+       "Minimize objective: 4*X + 3*Y (cost per unit for X is 4, for Y is 3)",
+       "Solve with HiGHS MILP solver at zero MIP gap",
+       "Report optimal objective value and (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "cand_marketing_20261008_a"
+      }
+     },
+     "config": {
+      "mip_gap": 0
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_resource_allocation_20261008",
+     "episode_id": "ep_marketing_20261008",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "current_solution",
+      "value": 0.0,
+      "ref": null,
+      "note": "current solution status is error (infeasible/failed); this candidate is a fresh attempt",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method correctly models the task: X+Y<=1000, X-2Y>=300, minimize 4X+3Y with integer variables. The constraint 'X must be at least twice Y plus 300' is correctly encoded as X - 2Y >= 300.",
+      "The previous attempt (cand_26845f0d) failed due to a HiGHS API error (changeColumnsIntegrality vs changeColsIntegrality). This candidate uses the same strategy_id but the method steps are identical to milp_highs_v3 which succeeded in ex_17b06e0f8965. The risk is whether the implementation will use the correct API call.",
+      "The problem is a small 2-variable MILP that is trivially solvable. The main risk is implementation failure due to API misuse, not solver difficulty."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.002,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 1.5
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.15,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The previous attempt with the same strategy_id failed due to a HiGHS API error (changeColumnsIntegrality). The method steps are identical to milp_highs_v3 which succeeded, but the implementation may still use the wrong API call. The error was specific to the HiGHS Python interface version.",
+       "notes": [
+        "The error was AttributeError: 'Highs' object has no attribute 'changeColumnsIntegrality'. Did you mean: 'changeColsIntegrality'?",
+        "This is a known API difference between HiGHS versions. If the harness uses the correct API, this risk is eliminated."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The model is correctly specified. The only way the task check would fail is if the implementation has a bug in the constraint encoding or objective function. Given the simplicity of the problem and the correct method steps, this risk is low.",
+       "notes": [
+        "The constraint X - 2Y >= 300 is correctly encoded from 'X must be at least twice Y plus 300'",
+        "The objective 4X + 3Y matches the cost structure"
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The problem is a 2-variable MILP with trivial constraints. Solver runtime is expected to be <0.01s. No timeout risk.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The constraints are feasible: X=300, Y=0 satisfies X+Y<=1000 and X-2Y>=300. The solver will find a feasible solution.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "HiGHS is available in the environment (milp_highs_v3 succeeded in ex_17b06e0f8965). Low risk of environment failure.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The method is well-understood and has been successfully applied to similar problems",
+      "The main uncertainty is whether the implementation will use the correct HiGHS API call",
+      "The previous attempt failed due to an API error, which is a known issue"
+     ],
+     "missing": {
+      "implementation_details": "The exact implementation code is not visible, so I cannot confirm whether the API error will be avoided"
+     },
+     "notes": [
+      "The calibration data shows that this model tends to under-predict benefit (mean_benefit_signed_error = 0.133333 for task_result_check_passed). I have adjusted my prediction upward accordingly.",
+      "The cost predictions are based on similar executions (ex_59a44b58cb24, ex_134ddf044098) which had high LLM token usage due to the agent's reasoning process.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "If the implementation fails due to the API error, this run will not produce a new capability gain."
+     ],
+     "basis": [
+      "The method (milp_highs_v3) has already been successfully applied to similar problems (ex_17b06e0f8965). This run will not introduce a new method or a new structural adaptation.",
+      "The main value of this run is to confirm that the implementation can avoid the API error, which is a one-time fix, not a capability gain."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_6c12d5c07c0a",
+     "input_version": "ace124221bb209de",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791458801.333988,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "solving_context.task_progress.errors",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "strategy_outcome_calibration.groups.strategy_outcome|Qwen3.8-27B|task_result_check_passed|boolean|attempt|wm-obs/3",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "cost.llm_tokens": "The LLM token cost is highly variable and depends on the agent's reasoning process. I have provided an estimate based on similar executions, but it is uncertain.",
+      "cost.tool_calls": "The number of tool calls depends on the agent's implementation strategy. I have provided an estimate based on similar executions, but it is uncertain."
+     },
+     "call_cost": {
+      "llm_tokens": 29446.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 42.301257099956274,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791458807.801023,
+      "binding_unknown": {
+       "config": {
+        "mip_gap": {
+         "actual": null,
+         "predicted": 0,
+         "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+       }
+      },
+      "bound_action_id": "ac_d14a6b2fe28a",
+      "bound_action_id_before_execution": "ac_d14a6b2fe28a",
+      "call_latency_s": 42.3013,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1716.0,
+       "llm_tokens": 29446.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 27730.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_normalized": [
+       "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+      ],
+      "config_observed": {},
+      "config_unknown": [
+       "mip_gap"
+      ],
+      "effective_input_digest": "ace124221bb209de",
+      "method_observed": null,
+      "prediction_context_id": "ctx_2f5bb80278d5",
+      "prediction_context_task_digest": "ace124221bb209de",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "ace124221bb209de",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": [
+     "no strategy_id was supplied, so the framework allocated cand_26845f0d from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_10333787812a",
+    "prediction_type": "strategy_outcome",
+    "status": "invalid",
+    "prediction_made": false,
+    "has_predicted_content": false,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_6bf96e59",
+     "solver": null,
+     "method": {
+      "name": "milp_highs_v3",
+      "steps": [
+       "Define integer variables X (budget for channel X) and Y (budget for channel Y) with X>=0, Y>=0, integer",
+       "C1: X + Y <= 5000  (total budget cap)",
+       "C2: 3*X + 4*Y >= 12000  (effectiveness constraint; coefficients are literal 3 and 4)",
+       "C3: 5*X - 2*Y <= 10000  (balance constraint)",
+       "Minimize objective: 200*X + 150*Y",
+       "Solve with HiGHS MILP solver at zero MIP gap (mip_gap=0, mip_abs_gap=0)",
+       "Report optimal objective value and (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "milp_highs_v3_marketing_001"
+      }
+     },
+     "config": {
+      "mip_abs_gap": 0,
+      "mip_gap": 0,
+      "solver": "highspy",
+      "timeout": 30
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_budget_alloc_001",
+     "episode_id": "marketing_budget_001",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": null,
+    "cost": null,
+    "risk": null,
+    "uncertainty": null,
+    "capability_gain": null,
+    "claims_capability_gain": false,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_8c903edc3e93",
+     "input_version": "919f0797c319b384",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791460178.7777362,
+     "evidence_basis": [],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 35457.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 51.223664071410894,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 2048.0,
+       "llm_tokens": 35457.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 33409.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_normalized": [
+       "no strategy_id was supplied, so the framework allocated cand_6bf96e59 from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+      ],
+      "effective_input_digest": "919f0797c319b384",
+      "effective_parameters": {
+       "max_tokens": 2048,
+       "model": "Qwen3.8-27B",
+       "provider_timeout_s": 150.0,
+       "temperature": 0.2,
+       "timeout_s": 150.0
+      },
+      "error": "model content is not valid JSON: Unterminated string starting at: line 105 column 5 (char 6921)",
+      "failure": {
+       "content_kind": "text",
+       "detail": "model content is not valid JSON: Unterminated string starting at: line 105 column 5 (char 6921)",
+       "effective": {
+        "max_tokens": 2048,
+        "model": "Qwen3.8-27B",
+        "provider_timeout_s": 150.0,
+        "temperature": 0.2,
+        "timeout_s": 150.0
+       },
+       "finish_reason": "length",
+       "kind": "truncated",
+       "raw_content_chars": 6950,
+       "reasoning_tokens": 0
+      },
+      "prediction_context_id": "ctx_e35ba0a978a7",
+      "prediction_context_task_digest": "919f0797c319b384",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "919f0797c319b384",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed"
+     ]
+    },
+    "notes": [
+     "prediction failed: model content is not valid JSON: Unterminated string starting at: line 105 column 5 (char 6921)",
+     "no strategy_id was supplied, so the framework allocated cand_6bf96e59 from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_ca4828cad7f4",
+    "prediction_type": "strategy_outcome",
+    "status": "invalid",
+    "prediction_made": false,
+    "has_predicted_content": false,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_dbed91f7",
+     "solver": null,
+     "method": {
+      "name": "milp_highs_v3",
+      "steps": [
+       "Integer variables X,Y >= 0; C1: X+Y<=5000; C2: 3X+4Y>=12000; C3: 5X-2Y<=10000; Min 200X+150Y; HiGHS MILP, zero gap"
+      ],
+      "extra": {
+       "candidate_id": "milp_highs_v3_mb001"
+      }
+     },
+     "config": {
+      "mip_gap": 0,
+      "solver": "highspy",
+      "timeout": 30
+     },
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_budget_alloc_001",
+     "episode_id": "marketing_budget_001",
+     "scope": "attempt",
+     "scope_basis": "default",
+     "window_id": null
+    },
+    "benefit": null,
+    "cost": null,
+    "risk": null,
+    "uncertainty": null,
+    "capability_gain": null,
+    "claims_capability_gain": false,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_c5a56c4118b2",
+     "input_version": "919f0797c319b384",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791460345.201897,
+     "evidence_basis": [],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 35491.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 51.25176536478102,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 2048.0,
+       "llm_tokens": 35491.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 33443.0,
+       "reasoning_tokens": 0.0
+      },
+      "config_normalized": [
+       "no strategy_id was supplied, so the framework allocated cand_dbed91f7 from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+      ],
+      "effective_input_digest": "919f0797c319b384",
+      "effective_parameters": {
+       "max_tokens": 2048,
+       "model": "Qwen3.8-27B",
+       "provider_timeout_s": 150.0,
+       "temperature": 0.2,
+       "timeout_s": 150.0
+      },
+      "error": "model content is not valid JSON: Unterminated string starting at: line 114 column 7 (char 6802)",
+      "failure": {
+       "content_kind": "text",
+       "detail": "model content is not valid JSON: Unterminated string starting at: line 114 column 7 (char 6802)",
+       "effective": {
+        "max_tokens": 2048,
+        "model": "Qwen3.8-27B",
+        "provider_timeout_s": 150.0,
+        "temperature": 0.2,
+        "timeout_s": 150.0
+       },
+       "finish_reason": "length",
+       "kind": "truncated",
+       "raw_content_chars": 6851,
+       "reasoning_tokens": 0
+      },
+      "prediction_context_id": "ctx_ef27134f3850",
+      "prediction_context_task_digest": "919f0797c319b384",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "919f0797c319b384",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed"
+     ]
+    },
+    "notes": [
+     "prediction failed: model content is not valid JSON: Unterminated string starting at: line 114 column 7 (char 6802)",
+     "no strategy_id was supplied, so the framework allocated cand_dbed91f7 from the METHOD content ('milp_highs_v3'). This does NOT mean the framework holds this method to be the same as any historical one, and no two methods are merged by name similarity"
+    ]
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_447af862f222",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_acf02a4b",
+     "solver": "ortools",
+     "method": {
+      "name": "cp_sat_direct_integer",
+      "steps": [
+       "declare non-negative INTEGER variables X (budget on channel X) and Y (budget on channel Y)",
+       "encode C1 budget cap: X + Y <= 1000",
+       "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000 (literal coefficients 2 and 3 from the task text)",
+       "minimize the linear cost 10*X + 20*Y (unit costs $10 for X, $20 for Y) with OR-Tools CP-SAT as an exact integer solver",
+       "report optimal objective value and the (X, Y) allocation"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_xy_budget_20261008",
+     "episode_id": "marketing_xy_ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Structural cell class=milp|rc[0.75,1.00] shows 2/2 optimal task-check passes for structurally identical 2-variable linear allocation MILPs (ex_134ddf044098, ex_59a44b58cb24). Discounted to 0.85 due to the specific risk of misinterpreting the 'cost per unit of effectiveness' phrasing in the task text, which could lead to an incorrect objective function.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method matches the task structure: 2 integer variables, 1 capacity constraint, 1 requirement constraint, linear objective.",
+      "The primary risk is semantic: the task states 'cost per unit of effectiveness for channel X is $10'. If the harness interprets X as 'effectiveness units' rather than 'budget dollars', the objective and constraints will be scaled incorrectly, leading to a task_check_failed despite a 'proven optimal' solver status.",
+      "If the harness correctly interprets X and Y as budget dollars (consistent with 'budget for channel X'), the model is trivially solvable and the check should pass."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.06,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "OR-Tools CP-SAT is available and mature. The script is simple. Past similar executions (ex_134ddf044098) had 0 implementation failures. The 0.05 probability accounts for potential sandbox environment quirks or minor coding errors in the fresh script.",
+       "notes": []
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.15,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The task text contains ambiguous phrasing: 'cost per unit of effectiveness for channel X is $10'. If the modeler defines X as 'effectiveness' instead of 'budget', the objective becomes 10*X + 20*Y where X is effectiveness, but the constraint is 2*X + 3*Y >= 2000 (effectiveness). This would be a valid MILP but the 'minimum total cost' would be calculated on effectiveness units, not dollars, or the scaling would be wrong relative to the 'budget' interpretation. Given the explicit 'budget for channel X' in the effectiveness definition, the 'budget' interpretation is more likely, but the 'cost per unit of effectiveness' phrase is a trap. Past similar tasks passed, but this specific phrasing variation introduces semantic risk.",
+       "notes": []
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time_limit",
+       "basis": "2-variable MILP solves in <0.1s. Executor timeout is 120s.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "verdict",
+       "basis": "The constraints X+Y<=1000 and 2X+3Y>=2000 are feasible (e.g., X=0, Y=1000 gives 3000>=2000).",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "sandbox_error",
+       "basis": "OR-Tools is listed as available. Low probability of missing module or sandbox policy block.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "budget_limit",
+       "basis": "No budget declared for the episode.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The structural match is strong (same cell, same method family).",
+      "The semantic ambiguity in the task text ('cost per unit of effectiveness') is the main source of uncertainty for the task check outcome.",
+      "Calibration data is insufficient (n<5) to adjust probabilities significantly."
+     ],
+     "missing": {},
+     "notes": [
+      "The 'cost per unit of effectiveness' phrase is the key differentiator from the past successful executions which had clearer cost definitions.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "If the task check fails due to the semantic ambiguity, it might induce a new knowledge entry about 'cost per unit' phrasing, but this is a failure case, not a capability gain from the method itself."
+     ],
+     "basis": [
+      "The method is a direct application of a verified, mature strategy (direct_exact_solve_small_linear_allocation) to a structurally identical problem. No new structural adaptation or boundary mapping is expected."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_aa8f2a6a1e6d",
+     "input_version": "36b33d6974ef2889",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791460811.7251527,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3] (ex_134ddf044098)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1] (cand_1a4a96fe stats)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2] (cand_6247b808 stats)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0] (strategic_knowledge:2)",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs[6] (cand_6247b808 success)",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 33422.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 42.000230982899666,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791460890.3630073,
+      "binding_unknown": null,
+      "bound_action_id": "ac_f34f12e09adc",
+      "bound_action_id_before_execution": "ac_f34f12e09adc",
+      "call_latency_s": 42.0002,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1606.0,
+       "llm_tokens": 33422.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 31816.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_b8d3cf4e1a20",
+      "config_observed": {},
+      "config_unknown": null,
+      "decision_action_id": "ac_b8d3cf4e1a20",
+      "effective_input_digest": "36b33d6974ef2889",
+      "method_observed": {
+       "actual_name": "cp_sat_direct_integer",
+       "actual_steps": [
+        "declare non-negative integer variables X and Y",
+        "encode C1 budget cap: X + Y <= 1000",
+        "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000",
+        "minimize 10*X + 20*Y with OR-Tools CP-SAT as an exact integer solver",
+        "report optimal objective value and the (X, Y) allocation"
+       ],
+       "planned_name": "cp_sat_direct_integer",
+       "planned_steps": [
+        "declare non-negative INTEGER variables X (budget on channel X) and Y (budget on channel Y)",
+        "encode C1 budget cap: X + Y <= 1000",
+        "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000 (literal coefficients 2 and 3 from the task text)",
+        "minimize the linear cost 10*X + 20*Y (unit costs $10 for X, $20 for Y) with OR-Tools CP-SAT as an exact integer solver",
+        "report optimal objective value and the (X, Y) allocation"
+       ],
+       "reason": "the performed step text differs from the plan's. This is a DESCRIPTION difference: it does not by itself mean a different method ran, and nothing blocks a comparison on it",
+       "verdict": "differs"
+      },
+      "prediction_context_id": "ctx_cb5f8dfe79f6",
+      "prediction_context_task_digest": "36b33d6974ef2889",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "36b33d6974ef2889",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_bf6a6a83b689",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_cf82ceca",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_direct",
+      "steps": [
+       "declare non-negative INTEGER variables X and Y",
+       "encode C1 budget cap: X + Y <= 1000",
+       "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000",
+       "minimize 10*X + 20*Y with the HiGHS MIP solver at zero MIP gap",
+       "report proven optimum and the (X, Y) allocation"
+      ]
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "marketing_xy_budget_20261008",
+     "episode_id": "marketing_xy_ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 1.0,
+      "ref": null,
+      "note": "Structural cell class=milp|rc[0.75,1.00] shows 100% task check pass rate on 2 distinct executions (ex_134ddf044098, ex_59a44b58cb24) using the same direct exact solve method. Current candidate uses HiGHS instead of CP-SAT but the structural match is identical.",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method matches the task structure: 2 integer variables, 1 capacity constraint, 1 requirement constraint, linear objective.",
+      "The constraint coefficients (2, 3) and costs (10, 20) are correctly identified from the task text.",
+      "The solver (HiGHS) is available and mature for this problem size."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.06,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_cycles",
+       "basis": "Historical occurrence rate for implementation_failure is 0.25 (2/8 executions), but those were on different tasks with more complex constraints. This task is simpler (2 variables, 2 constraints) and the method is well-established. The specific risk is in the script generation, not the solver.",
+       "notes": [
+        "The method is a direct MILP formulation, which is less error-prone than decomposition or heuristic approaches."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "Historical occurrence rate for task_check_failed is 0.0 (0/5 labelled executions). The structural cell has a 100% pass rate. The main risk is a misinterpretation of the task constraints, but the coefficients are clearly stated in the text.",
+       "notes": [
+        "The task check verifies that the solution satisfies the original task requirements, not just the model constraints."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time_limit",
+       "basis": "The solver runtime for similar problems is ~0.06s, well within the 120s executor timeout. No historical timeouts observed.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "infeasibility",
+       "basis": "The problem is feasible: X=1000, Y=0 gives effectiveness 2000 and cost 10000. The constraints are not contradictory.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "environment_error",
+       "basis": "Historical occurrence rate is 0.0 (0/8 executions). HiGHS is a standard solver available in the environment.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The structural cell has only 2 distinct executions, so the statistics are based on a small sample.",
+      "The current candidate uses HiGHS, while the historical executions used CP-SAT. The solver difference is minor for this problem size, but it introduces some uncertainty."
+     ],
+     "missing": {},
+     "notes": [
+      "The task is small and well-defined, so the uncertainty is low.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.2",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a direct application of a known technique to a similar problem. No new structural adaptation or boundary mapping is expected."
+     ],
+     "basis": [
+      "The method is a direct MILP formulation, which is a standard approach for this problem class.",
+      "The structural cell has already been verified on 2 distinct tasks, so this run is likely to confirm existing knowledge rather than add new insights."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_aa8f2a6a1e6d",
+     "input_version": "36b33d6974ef2889",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791460852.6355894,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[7]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "strategy_outcome_calibration.groups.strategy_outcome|Qwen3.8-27B|task_result_check_passed|boolean|attempt|wm-obs/3",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[7]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 33252.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 40.887871166691184,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "call_latency_s": 40.8879,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1478.0,
+       "llm_tokens": 33252.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 31774.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_b8d3cf4e1a20",
+      "decision_action_id": "ac_b8d3cf4e1a20",
+      "effective_input_digest": "36b33d6974ef2889",
+      "prediction_context_id": "ctx_cb5f8dfe79f6",
+      "prediction_context_task_digest": "36b33d6974ef2889",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "36b33d6974ef2889",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": false,
+     "not_comparable_reasons": [
+      "the candidate has not been executed: no real window exists to score against"
+     ]
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_762c248cd90e",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_14d9ab17",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_covering_allocation",
+      "steps": [
+       "Define integer variables X (project X units) and Y (project Y units) with X>=0, Y>=0, both integer",
+       "C1: X + Y <= 5000 (total investment budget cap)",
+       "C2: 10*X + 30*Y >= 20000 (environmental output requirement)",
+       "Minimize objective: 50*X + 60*Y (cost per unit for X is 50, for Y is 60)",
+       "Solve with HiGHS MILP solver at zero MIP gap",
+       "Report optimal objective value and the (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "cand_energy_ilp",
+       "execution_config": {
+        "mip_gap": 0,
+        "solver_runtime_limit_s": 10
+       }
+      }
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "energy_investment_001",
+     "episode_id": "energy_ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.85,
+     "interval": [
+      0.7,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "conditional_stats",
+      "value": 0.5,
+      "ref": null,
+      "note": "structural recommendation for milp_highs_v3 (same solver family, same structural cell) shows expected quality 1.0 and failure_prob 0.0 over n=2 executions; the current candidate uses the same HiGHS solver and a structurally identical 2-variable covering allocation",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method matches the task: two integer variables, one budget cap, one covering requirement, linear cost objective — a small MILP that HiGHS solves exactly at zero gap.",
+      "The constraint coefficients (10, 30, 20000) and costs (50, 60) are correctly transcribed from the task text.",
+      "The feasible region is non-empty (e.g., X=2000, Y=0 satisfies both constraints), so the solver should find a proven-optimal solution.",
+      "Calibration reminder: past predictions under this metric were over-predicted by ~0.15 on average; the 0.85 value reflects this adjustment from the nominal 1.0 structural expectation."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.002,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 1.5
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.05,
+       "severity": 1.0,
+       "severity_unit": "rework_attempts",
+       "basis": "The method is a standard HiGHS MILP formulation with well-known API; the script is straightforward. Past execution failures for this strategy family were due to model errors (wrong constraint transcription), not solver or environment issues. The current candidate's constraints are simple and correctly stated.",
+       "notes": [
+        "The main risk is a transcription error in the constraint coefficients, but the steps explicitly state the correct values from the task text."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.1,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The task asks for the minimum total cost rounded to the nearest whole number. The solver will return the exact optimal objective value. The risk is if the task check expects a specific format or if there is an ambiguity in the problem statement that the model does not capture. However, the problem is well-defined and the method directly solves it.",
+       "notes": [
+        "The task check likely verifies the numerical answer against a known optimum. Since the method is exact, the answer should be correct."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "time_limit",
+       "basis": "The solver runtime limit is 10 seconds, and the problem is a 2-variable MILP that HiGHS solves in milliseconds. No timeout risk.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "infeasibility",
+       "basis": "The feasible region is non-empty (e.g., X=2000, Y=0 satisfies X+Y<=5000 and 10X+30Y>=20000). The solver will not report infeasibility.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "environment_error",
+       "basis": "HiGHS is a mature solver available in the harness. The risk of environment failure is low but non-zero due to potential sandbox policy issues or missing dependencies.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "budget_exceeded",
+       "basis": "No budget is declared for this episode, so budget exhaustion is not a risk.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The method is well-understood and the problem is small, so execution randomness is low.",
+      "The knowledge gap is moderate because the structural recommendation is for a slightly different strategy ID (milp_highs_v3) but the same solver and problem structure."
+     ],
+     "missing": {},
+     "notes": [
+      "The main uncertainty is whether the task check will pass, which depends on the exact format of the expected answer.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.2",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "The method is a standard application of a mature solver to a small problem, so no new capability is expected."
+     ],
+     "basis": [
+      "The method is a direct application of HiGHS to a 2-variable MILP, which is a well-known and well-supported use case. The harness already has experience with similar problems, so no new capability is expected."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_17643eef044c",
+     "input_version": "9ba6e5a9823a80a6",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791461931.8103175,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[7]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[8]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "strategy_outcome_calibration.groups.strategy_outcome|Qwen3.8-27B|task_result_check_passed|boolean|attempt|wm-obs/3",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[7]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[8]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {},
+     "call_cost": {
+      "llm_tokens": 33650.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 43.37976035103202,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791461953.2279856,
+      "binding_unknown": null,
+      "bound_action_id": "ac_ce3ac497a45a",
+      "bound_action_id_before_execution": "ac_ce3ac497a45a",
+      "call_latency_s": 43.3798,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1666.0,
+       "llm_tokens": 33650.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 31984.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_2c3629d44500",
+      "config_observed": {},
+      "config_unknown": null,
+      "decision_action_id": "ac_2c3629d44500",
+      "effective_input_digest": "9ba6e5a9823a80a6",
+      "method_observed": null,
+      "prediction_context_id": "ctx_9c080bc2d2f5",
+      "prediction_context_task_digest": "9ba6e5a9823a80a6",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "9ba6e5a9823a80a6",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   },
+   {
+    "contract_version": "wm-contract/1",
+    "prediction_id": "sp_bd7120755250",
+    "prediction_type": "strategy_outcome",
+    "status": "valid",
+    "prediction_made": true,
+    "has_predicted_content": true,
+    "service_available": true,
+    "provider_configured": true,
+    "service_implemented": true,
+    "scope": "attempt",
+    "candidate": {
+     "action_type": "execute_strategy",
+     "strategy_id": "cand_afd96a17",
+     "solver": "highs",
+     "method": {
+      "name": "milp_highs_covering_allocation_v2",
+      "steps": [
+       "Define integer variables X (project X units) and Y (project Y units) with X>=0, Y>=0, both integer",
+       "C1: X + Y <= 5000 (total investment budget cap)",
+       "C2: 10*X + 30*Y >= 20000 (environmental output requirement)",
+       "Minimize objective: 50*X + 60*Y (cost per unit for X is 50, for Y is 60)",
+       "Solve with HiGHS MILP solver at zero MIP gap",
+       "Report optimal objective value and the (X, Y) allocation"
+      ],
+      "extra": {
+       "candidate_id": "cand_energy_ilp_v2",
+       "execution_config": {
+        "mip_gap": 0,
+        "solver_runtime_limit_s": 10
+       }
+      }
+     },
+     "config": {},
+     "preconditions": [],
+     "expected_scope": [],
+     "stop_conditions": [],
+     "task_id": "energy_investment_001",
+     "episode_id": "energy_ep1",
+     "scope": "attempt",
+     "scope_basis": "legacy_attempt",
+     "window_id": null
+    },
+    "benefit": {
+     "kind": "effective_completion",
+     "metric": "task_result_check_passed",
+     "unit": "boolean",
+     "value": 0.75,
+     "interval": [
+      0.5,
+      0.95
+     ],
+     "interval_kind": "mean",
+     "interval_coverage": 0.9,
+     "baseline": {
+      "kind": "current_solution",
+      "value": 0.0,
+      "ref": null,
+      "note": "current solution status is error (infeasible/failed); this candidate is a fresh attempt",
+      "metric": null,
+      "unit": null
+     },
+     "feasible": true,
+     "progress_shape": null,
+     "notes": [
+      "The method matches the task structure: two integer variables, one budget cap, one covering requirement, linear cost objective. This is a small MILP that HiGHS should solve to proven optimality at negligible runtime.",
+      "The primary risk is implementation: the previous attempt (cand_14d9ab17) failed with AttributeError: type object 'Highs' has no attribute 'ObjSense', indicating the harness's HiGHS wrapper has API compatibility issues. This candidate uses the same solver family (highs) and may hit the same or similar API errors.",
+      "The calibration reminder indicates past predictions were over-predicted by 0.1529 on average for task_result_check_passed. Adjusting from a naive 0.90 down to 0.75 accounts for this bias and the known implementation risk.",
+      "The model itself is correct: the constraints and objective are properly specified for the task. If the script runs without API errors, the solver should return an optimal solution that passes the task check."
+     ]
+    },
+    "cost": {
+     "expected": {
+      "llm_tokens": 1500000.0,
+      "tool_calls": 25.0,
+      "solver_runtime_s": 0.05,
+      "retries": 0.0,
+      "latency_s": 0.0,
+      "remaining_latency_s": 2.0
+     },
+     "expected_measured": [
+      "llm_tokens",
+      "remaining_latency_s",
+      "retries",
+      "solver_runtime_s",
+      "tool_calls"
+     ],
+     "scope": "remaining_to_task_end",
+     "notes": [
+      "predicted by the model under the strategy-outcome protocol; the measured mask marks PREDICTED dimensions, not observed ones. scope=remaining_to_task_end (decision anchor -> end of task): the close-out observes the SAME span, not one attempt"
+     ]
+    },
+    "risk": {
+     "events": [
+      {
+       "event": "implementation_failure",
+       "probability": 0.25,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The previous attempt in this episode failed with AttributeError: type object 'Highs' has no attribute 'ObjSense', indicating the harness's HiGHS wrapper has API compatibility issues. This candidate uses the same solver family (highs) and may hit the same or similar API errors. The occurrence rate for implementation_failure is 0.2222 across the window, and the mean predicted probability was 0.10, suggesting this risk is real but not dominant.",
+       "notes": [
+        "The specific error (ObjSense attribute) suggests the harness code is using a deprecated or incorrect HiGHS API. If the candidate's script uses the same wrapper, it will likely fail similarly."
+       ]
+      },
+      {
+       "event": "task_check_failed",
+       "probability": 0.1,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The model is correctly specified for the task. If the solver runs successfully, it should return an optimal solution that satisfies all constraints and passes the task check. The risk is low but non-zero due to potential rounding issues or edge cases in the integer solution.",
+       "notes": [
+        "The task asks for the answer rounded to the nearest whole number. The solver should return an integer solution, so rounding should not be an issue."
+       ]
+      },
+      {
+       "event": "timeout",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The problem is a small 2-variable MILP. HiGHS should solve it in milliseconds, well within the 10-second solver runtime limit and 120-second executor timeout.",
+       "notes": []
+      },
+      {
+       "event": "solver_reported_infeasible",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The problem is feasible. For example, X=2000, Y=0 satisfies X+Y<=5000 and 10*X+30*Y>=20000. The solver should find a feasible solution.",
+       "notes": []
+      },
+      {
+       "event": "environment_failure",
+       "probability": 0.02,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "The HiGHS solver is available in the environment (listed in available_solver_families). The risk is low but non-zero due to potential sandbox policy issues or missing dependencies.",
+       "notes": []
+      },
+      {
+       "event": "budget_exhausted",
+       "probability": 0.0,
+       "severity": 1.0,
+       "severity_unit": "task_failure",
+       "basis": "No budget is declared for this episode, so budget exhaustion is not a risk.",
+       "notes": []
+      }
+     ],
+     "notes": []
+    },
+    "uncertainty": {
+     "source": "model_self_report",
+     "execution_randomness": null,
+     "knowledge_gap": null,
+     "basis": [
+      "The method is well-understood and the problem is small, so execution randomness is low.",
+      "The main uncertainty is whether the harness's HiGHS wrapper will work correctly, given the previous API error. This is a knowledge gap about the harness's implementation, not the method itself."
+     ],
+     "missing": {
+      "cost.llm_tokens": "The exact token count depends on the script's complexity and the harness's implementation, which is not fully known.",
+      "cost.tool_calls": "The exact number of tool calls depends on the script's structure and the harness's implementation, which is not fully known."
+     },
+     "notes": [
+      "The previous attempt's error (AttributeError: type object 'Highs' has no attribute 'ObjSense') is a strong signal that the harness's HiGHS wrapper may have API compatibility issues. This is the main source of uncertainty.",
+      "execution_randomness (self-reported, uncalibrated): 0.1",
+      "knowledge_gap (self-reported, uncalibrated): 0.3",
+      "the model's self-reported uncertainty is recorded as an UNCALIBRATED estimate in these notes, never as a measured probability; it is not used as one anywhere"
+     ]
+    },
+    "capability_gain": {
+     "assessment": "none",
+     "claim": "No new capability gain expected.",
+     "applies_to": [],
+     "expected_changes": [],
+     "evidence_required": [],
+     "verification_conditions": [],
+     "degradation_risk": {
+      "events": [],
+      "notes": []
+     },
+     "uncertainty": [
+      "If the candidate succeeds, it may provide a verified example of a covering allocation MILP solved with HiGHS, which could be useful for future similar problems. However, this is not a new capability, as the method is already well-understood and the problem is small."
+     ],
+     "basis": [
+      "The method is a standard direct MILP solve, which is already well-understood and has been verified on similar problems. No new structural adaptation, boundary mapping, or cost experience is expected."
+     ],
+     "notes": [],
+     "claimed": true
+    },
+    "claims_capability_gain": true,
+    "trace": {
+     "prediction_kind": "strategy_outcome",
+     "input_snapshot_id": "bs_106b3dd819ce",
+     "input_version": "9ba6e5a9823a80a6",
+     "prediction_version": "wm-so/1",
+     "prompt_template_version": null,
+     "created_at": 1791462106.7902365,
+     "evidence_basis": [
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[7]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "retrieval_evidence.hits[8]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "solving_context.task_progress.errors",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "strategy_outcome_calibration.groups.strategy_outcome|Qwen3.8-27B|task_result_check_passed|boolean|attempt|wm-obs/3",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[0]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[1]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[2]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[3]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[4]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[5]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[6]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[7]",
+       "note": null
+      },
+      {
+       "ref_type": "context_evidence",
+       "ref_id": "prediction_execution_pairs.pairs[8]",
+       "note": null
+      }
+     ],
+     "unsupported_fields": {
+      "cost.remaining_latency_s": "The exact remaining latency depends on the script's complexity, the harness's implementation, and whether retries are needed, which is not fully known."
+     },
+     "call_cost": {
+      "llm_tokens": 34514.0,
+      "tool_calls": 0.0,
+      "solver_runtime_s": 0.0,
+      "retries": 0.0,
+      "latency_s": 48.63668793812394,
+      "remaining_latency_s": 0.0
+     },
+     "call_cost_measured": [
+      "latency_s",
+      "llm_tokens"
+     ],
+     "model_info": {
+      "association_phase": "linked_before_execution",
+      "binding_mismatch": null,
+      "binding_recorded_at": 1791462116.9733284,
+      "binding_unknown": null,
+      "bound_action_id": "ac_74f377aefc37",
+      "bound_action_id_before_execution": "ac_74f377aefc37",
+      "call_latency_s": 48.6367,
+      "call_usage": {
+       "basis": "provider_total",
+       "cached_tokens": null,
+       "completion_tokens": 1928.0,
+       "llm_tokens": 34514.0,
+       "note": "llm_tokens is the FULL口径 total (prompt + completion); reasoning/cached tokens are sub-facts already inside those sides and are never added again",
+       "prompt_tokens": 32586.0,
+       "reasoning_tokens": 0.0
+      },
+      "charged_to_parent_action": "ac_949cd9b15df3",
+      "config_observed": {},
+      "config_unknown": null,
+      "decision_action_id": "ac_949cd9b15df3",
+      "effective_input_digest": "9ba6e5a9823a80a6",
+      "method_observed": null,
+      "prediction_context_id": "ctx_4e080c48223e",
+      "prediction_context_task_digest": "9ba6e5a9823a80a6",
+      "prediction_context_version": "wm-context/3",
+      "problem_identity_digest": "9ba6e5a9823a80a6",
+      "provider_model": "Qwen3.8-27B",
+      "provider_name": "http-chat"
+     },
+     "comparable": true,
+     "not_comparable_reasons": []
+    },
+    "notes": []
+   }
+  ],
+  "capability_predictions": []
+ },
+ "summary": "18 predictions in predictions bank. Legacy M2: 0, strategy-outcome (wm-so/1): 18, capability-evolution (wm-ce/1): 0. Separate logs, separate questions — only the wm-so/1 channel feeds `orx calibration`."
+}

@@ -1,0 +1,29 @@
+{
+  "subject": "method:direct_exact_solve_small_covering_allocation",
+  "kind": "conditional_fact",
+  "claim": "Condition: a TINY (two-decision) linear allocation MILP that minimises a positive linear cost cX*X + cY*Y subject to (i) a shared cap X + Y <= C and (ii) a weighted-sum COVERING requirement aX*X + aY*Y >= R (e.g. effectiveness 2*X + 3*Y >= 2000). Operation: declare both decision variables as non-negative INTEGERs and solve the single integer program directly with a mature exact solver (CP-SAT, or a HiGHS MIP at zero gap). Reason: the feasible set is a small integer polygon and the objective is linear, so exact branch-and-bound closes at the root; no decomposition or heuristic is warranted. Expected effect: a PROVEN-OPTIMAL allocation at negligible solver runtime; the optimum fills the channel with the smaller cost-per-required-unit ratio ci/ai up to the shared cap (here X: 10/2 = 5 per point < Y: 20/3 ~ 6.67, so X is filled to the cap -> X=1000, Y=0, cost = 10*1000 = 10000). Boundary: still only two fully-linear decision variables with one cap and ONE covering requirement; larger, multi-resource, or multi-constraint coupled allocations are outside this claim. DISTINCT from entries 1/2, which scope the same direct-solve method to a difference/precedence constraint (coef1*X - coef2*Y >= rhs); this entry records that the method ALSO covers a weighted-sum >= requirement. Observed: task marketing_xy_budget_20261008, CP-SAT at zero gap, status optimal, objective 10000 at (X=1000, Y=0), task check passed.",
+  "method": {
+    "name": "direct_exact_solve_small_covering_allocation",
+    "steps": [
+      "declare X and Y as non-negative INTEGER decision variables",
+      "encode the shared cap: X + Y <= C",
+      "encode the weighted-sum covering requirement: aX*X + aY*Y >= R",
+      "set the linear objective cX*X + cY*Y and solve directly with an exact solver (CP-SAT, or HiGHS MIP at zero MIP gap)",
+      "report status, proven optimum, and the (X,Y) allocation"
+    ],
+    "why": "a tiny fully-linear MILP closes at the root under exact branch-and-bound; the optimum sits on the covering boundary of the channel with the smallest c/a ratio, capped by C",
+    "fallback": "enumerate the finite integer domain of one variable and take the cost-minimising boundary of the other"
+  },
+  "evidence": [
+    {"execution_id": "ex_a0d2552998f7", "role": "support"}
+  ],
+  "conditions": {
+    "predicates": {"family": "linear_programming", "resource_coupling": [1.0, 1.0]},
+    "note": "Applicability checked against the task CIR (class=milp, resource_coupling=1.0) and the executed code. The ratio-rule premise is a single covering constraint with a shared cap; cost-order conclusions must be re-derived per instance (see the induction counter-check warning on cost-order generalisation). Transfer by structural cell, not by family label."
+  },
+  "check": {
+    "assertions": [
+      {"kind": "status", "roles": ["support"], "status": "optimal"}
+    ]
+  }
+}

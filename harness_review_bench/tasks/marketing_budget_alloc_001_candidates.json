@@ -1,0 +1,21 @@
+[
+  {
+    "candidate_id": "milp_highs_v3_marketing_001",
+    "method": "milp_highs_v3",
+    "steps": [
+      "Define integer variables X (budget for channel X) and Y (budget for channel Y) with X>=0, Y>=0, integer",
+      "C1: X + Y <= 5000  (total budget cap)",
+      "C2: 3*X + 4*Y >= 12000  (effectiveness constraint; coefficients are literal 3 and 4)",
+      "C3: 5*X - 2*Y <= 10000  (balance constraint)",
+      "Minimize objective: 200*X + 150*Y",
+      "Solve with HiGHS MILP solver at zero MIP gap (mip_gap=0, mip_abs_gap=0)",
+      "Report optimal objective value and (X, Y) allocation"
+    ],
+    "config": {
+      "solver": "highspy",
+      "mip_gap": 0,
+      "mip_abs_gap": 0,
+      "timeout": 30
+    }
+  }
+]

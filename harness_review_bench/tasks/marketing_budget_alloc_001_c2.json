@@ -1,0 +1,8 @@
+{
+  "candidate_id": "milp_highs_v3_mb001",
+  "method": "milp_highs_v3",
+  "steps": [
+    "Integer variables X,Y >= 0; C1: X+Y<=5000; C2: 3X+4Y>=12000; C3: 5X-2Y<=10000; Min 200X+150Y; HiGHS MILP, zero gap"
+  ],
+  "config": {"solver": "highspy", "mip_gap": 0, "timeout": 30}
+}

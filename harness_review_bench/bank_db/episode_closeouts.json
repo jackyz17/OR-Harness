@@ -1,0 +1,74 @@
+[
+ {
+  "task_id": "marketing_xy_allocation_2026_10_08",
+  "episode_id": "ep1",
+  "closed_at": 1791450729.605001,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_e8cd8076a6ba\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_channels_budget_2026_10_08",
+  "episode_id": "ep1",
+  "closed_at": 1791453026.0744152,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_c78e780f9895\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_campaign_20261008_v2",
+  "episode_id": "ep002",
+  "closed_at": 1791457448.9130087,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_32c14c5c279b\", \"ev_563c27a77e96\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_campaign_20261008_v3",
+  "episode_id": "ep003",
+  "closed_at": 1791458034.7253022,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_2f7700833fbd\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_resource_allocation_20261008",
+  "episode_id": "ep_marketing_20261008",
+  "closed_at": 1791458840.2475307,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_9e9f29602164\", \"ev_f167329b2f58\", \"ev_9e99282e25f9\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_budget_alloc_001",
+  "episode_id": "marketing_budget_001",
+  "closed_at": 1791460427.5522249,
+  "terminal_state": "completed",
+  "evaluation_ids": "[]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "marketing_xy_budget_20261008",
+  "episode_id": "marketing_xy_ep1",
+  "closed_at": 1791460923.2692327,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_27c7a0321fc9\"]",
+  "published": 1,
+  "archived": 0
+ },
+ {
+  "task_id": "energy_investment_001",
+  "episode_id": "energy_ep1",
+  "closed_at": 1791462132.5018413,
+  "terminal_state": "completed",
+  "evaluation_ids": "[\"ev_8367de334702\", \"ev_e23cf3c19536\"]",
+  "published": 1,
+  "archived": 0
+ }
+]

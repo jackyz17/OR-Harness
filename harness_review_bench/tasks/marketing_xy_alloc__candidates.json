@@ -1,0 +1,41 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_direct_highs",
+    "steps": [
+      "declare non-negative integer variables x (project X units) and y (project Y units)",
+      "encode resource_cap: x + y <= 1000; excess: x - y >= 200; bounds x <= 700, y <= 500",
+      "minimize 50*x + 30*y with the HiGHS MIP solver at zero MIP gap",
+      "report proven optimum and the (x, y) values"
+    ],
+    "solver": "highs",
+    "config": {"time_limit": 60, "mip_rel_gap": 0, "mip_abs_gap": 0},
+    "scope": "attempt"
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "bounded_enumeration",
+    "steps": [
+      "derive the finite feasible integer ranges: y in 0..500 and x in 0..700",
+      "loop over all (x, y) integer pairs and keep those satisfying x + y <= 1000 and x - y >= 200",
+      "track the feasible pair that minimizes cost 50*x + 30*y",
+      "report the best pair and its cost as the optimum"
+    ],
+    "solver": "python",
+    "config": {"time_limit": 60},
+    "scope": "attempt"
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "cp_sat_integer",
+    "steps": [
+      "create CP-SAT integer variables x in 0..700 and y in 0..500",
+      "add linear constraints x + y <= 1000 and x - y >= 200",
+      "minimize the linear objective 50*x + 30*y with OR-Tools CP-SAT",
+      "report optimal objective value and the (x, y) values"
+    ],
+    "solver": "ortools",
+    "config": {"time_limit": 60},
+    "scope": "attempt"
+  }
+]

@@ -1,0 +1,30 @@
+[
+  {
+    "action_type": "execute_strategy",
+    "name": "cp_sat_direct_integer",
+    "steps": [
+      "declare non-negative INTEGER variables X (budget on channel X) and Y (budget on channel Y)",
+      "encode C1 budget cap: X + Y <= 1000",
+      "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000 (literal coefficients 2 and 3 from the task text)",
+      "minimize the linear cost 10*X + 20*Y (unit costs $10 for X, $20 for Y) with OR-Tools CP-SAT as an exact integer solver",
+      "report optimal objective value and the (X, Y) allocation"
+    ],
+    "solver": "ortools",
+    "config": {"time_limit": 60, "num_search_workers": 1},
+    "scope": "attempt"
+  },
+  {
+    "action_type": "execute_strategy",
+    "name": "milp_highs_direct",
+    "steps": [
+      "declare non-negative INTEGER variables X and Y",
+      "encode C1 budget cap: X + Y <= 1000",
+      "encode C2 effectiveness requirement: 2*X + 3*Y >= 2000",
+      "minimize 10*X + 20*Y with the HiGHS MIP solver at zero MIP gap",
+      "report proven optimum and the (X, Y) allocation"
+    ],
+    "solver": "highs",
+    "config": {"time_limit": 60, "mip_rel_gap": 0, "mip_abs_gap": 0},
+    "scope": "attempt"
+  }
+]

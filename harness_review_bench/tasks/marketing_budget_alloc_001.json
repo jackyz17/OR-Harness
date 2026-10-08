@@ -1,0 +1,6 @@
+{
+  "task_id": "marketing_budget_alloc_001",
+  "family": "linear_programming",
+  "episode": "marketing_budget_001",
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, must be at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel X is $200 and for channel Y is $150, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints."
+}

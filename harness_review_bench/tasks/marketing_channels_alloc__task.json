@@ -1,0 +1,30 @@
+{
+  "task_id": "marketing_channels_budget_2026_10_08",
+  "family": "planning",
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
+  "model": "SETS:\n j in Channels = {X, Y}\nPARAMETERS:\n cap\n min_effort\nVARIABLES:\n u[j] integer >= 0\nOBJECTIVE:\n minimize 50*u[X] + 100*u[Y]\nCONSTRAINTS:\n C1: u[X] + u[Y] <= cap\n C2: 3*u[X] - 2*u[Y] >= min_effort",
+  "coupling": {
+    "entities": [
+      {"name": "budget_pool", "kind": "resource", "attrs": {"capacity": 2000, "unit": "dollars"}},
+      {"name": "channel_X", "kind": "channel", "attrs": {"unit_cost": 50}},
+      {"name": "channel_Y", "kind": "channel", "attrs": {"unit_cost": 100}}
+    ],
+    "decisions": [
+      {"name": "X", "kind": "allocation", "indexes": [], "attrs": {"unit_cost": 50, "domain": "integer"}},
+      {"name": "Y", "kind": "allocation", "indexes": [], "attrs": {"unit_cost": 100, "domain": "integer"}}
+    ],
+    "constraints": [
+      {"id": "C_budget", "kind": "capacity", "expr": "X + Y <= 2000", "attrs": {}},
+      {"id": "C_effort", "kind": "precedence", "expr": "3*X - 2*Y >= 500", "attrs": {}}
+    ],
+    "relations": [
+      {"source": "X", "target": "budget_pool", "type": "uses_resource", "evidence": "semantic", "detail": "allocation X consumes the shared budget pool"},
+      {"source": "Y", "target": "budget_pool", "type": "uses_resource", "evidence": "semantic", "detail": "allocation Y consumes the shared budget pool"},
+      {"source": "X", "target": "channel_X", "type": "depends_on", "evidence": "declared", "detail": "X is the effectiveness allocated to channel X"},
+      {"source": "Y", "target": "channel_Y", "type": "depends_on", "evidence": "declared", "detail": "Y is the effectiveness allocated to channel Y"}
+    ],
+    "coupling_groups": [
+      {"type": "shared_bottleneck", "members": ["X", "Y"], "resource": "budget_pool", "implication": "one aggregate budget constraint covers both channel allocations"}
+    ]
+  }
+}

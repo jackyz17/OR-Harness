@@ -1,0 +1,62 @@
+[
+ {
+  "text_digest": "b17c63efaa674c17",
+  "task_id": "marketing_xy_allocation_2026_10_08",
+  "text": "A marketing company is planning to allocate resources between two projects: X and Y. The total resource allocation for both projects cannot exceed 1000 units due to budget constraints. Project X requires a minimum excess of 200 units over project Y to ensure its success. Each unit of resource allocation costs $50 for project X and $30 for project Y. Both projects can only be allocated whole numbers of resources due to the indivisible nature of these resources. Moreover, the maximum resource allocation for project X is 700 units and for project Y is 500 units due to operational constraints. Given these conditions, what is the minimum cost (in dollars) required for resource allocation that satisfies all given constraints? Provide your answer rounded to the nearest dollar.",
+  "created_at": 1791450655.3445902
+ },
+ {
+  "text_digest": "7f338d867788b865",
+  "task_id": "marketing_channels_budget_2026_10_08",
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $2000. Additionally, to meet the campaign's reach and frequency objectives, the effort from channel X should be three times greater than twice the effort from channel Y, yielding a difference of at least 500 points. Given that the cost per unit of effectiveness for channel $X$ is $50 and for channel $Y$ is $100, and the marketing manager aims to minimize the total cost while meeting all constraints (note: budgets allocated are integers). What would be the minimum total cost in dollars?",
+  "created_at": 1791452976.9282482
+ },
+ {
+  "text_digest": "528d0260626f928e",
+  "task_id": "marketing_campaign_20261008",
+  "text": "A marketing manager is planning a campaign with two main strategies: advertising and promotion. The manager has determined that the effectiveness of the campaign, measured in impact points, must be at least 100 and can be calculated as twice the amount spent on advertising plus three times the amount spent on promotion. Additionally, to maintain a balanced strategy, the spending on advertising cannot exceed that on promotion by more than $50$. Given that each unit of money spent on advertising contributes $4$ impact points and each unit spent on promotion contributes $5$ impact points, how much should the manager spend in total to achieve the minimum required effectiveness while adhering to these constraints (Advertising and Promotion are integers)? Please provide your answer rounded to the nearest dollar.",
+  "created_at": 1791456628.4338872
+ },
+ {
+  "text_digest": "bf92d04f7909db85",
+  "task_id": "marketing_campaign_20261008",
+  "text": "marketing campaign problem",
+  "created_at": 1791456725.9688427
+ },
+ {
+  "text_digest": "0c3387c21f7cfc75",
+  "task_id": "marketing_campaign_20261008_v2",
+  "text": "A marketing manager is planning a campaign with two main strategies: advertising and promotion. The manager has determined that the effectiveness of the campaign, measured in impact points, must be at least 100 and can be calculated as twice the amount spent on advertising plus three times the amount spent on promotion. Additionally, to maintain a balanced strategy, the spending on advertising cannot exceed that on promotion by more than $50$. Given that each unit of money spent on advertising contributes $4$ impact points and each unit spent on promotion contributes $5$ impact points, how much should the manager spend in total to achieve the minimum required effectiveness while adhering to these constraints (Advertising and Promotion are integers)? Please provide your answer rounded to the nearest dollar.",
+  "created_at": 1791457160.4097981
+ },
+ {
+  "text_digest": "7262d060868dcafd",
+  "task_id": "marketing_campaign_20261008_v3",
+  "text": "A marketing manager is planning a campaign with two main strategies: advertising and promotion. The manager has determined that the effectiveness of the campaign, measured in impact points, must be at least 100 and can be calculated as twice the amount spent on advertising plus three times the amount spent on promotion. Additionally, to maintain a balanced strategy, the spending on advertising cannot exceed that on promotion by more than $50$. Given that each unit of money spent on advertising contributes $4$ impact points and each unit spent on promotion contributes $5$ impact points, how much should the manager spend in total to achieve the minimum required effectiveness while adhering to these constraints (Advertising and Promotion are integers)? Please provide your answer rounded to the nearest dollar.",
+  "created_at": 1791458018.6200666
+ },
+ {
+  "text_digest": "ace124221bb209de",
+  "task_id": "marketing_resource_allocation_20261008",
+  "text": "A marketing firm is planning the distribution of resources between two campaigns: X and Y. The total resources allocated to both campaigns cannot exceed 1000 units due to budget constraints. Furthermore, due to the differing demands of each campaign, the resources allocated to campaign X must be at least twice as many as those allocated to campaign Y plus an additional 300 units. The costs associated with each unit of resource for campaigns X and Y are 4 and 3 units respectively. Given that the allocations for both campaigns must be whole numbers due to indivisible nature of the resources, and all constraints must be satisfied: What is the minimum total cost required for this allocation strategy? Provide your answer rounded to nearest whole number.",
+  "created_at": 1791458427.430158
+ },
+ {
+  "text_digest": "919f0797c319b384",
+  "task_id": "marketing_budget_alloc_001",
+  "text": "A marketing manager is planning the distribution of the budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $5000. Additionally, to meet the campaign's reach and frequency objectives, the combined effectiveness score, calculated as 3 times the budget for channel X plus 4 times the budget for channel Y, must be at least 12000 points. At the same time, to maintain balance in campaign design, 5 times the budget allocated to channel X minus twice that allocated to channel Y should not exceed 10000 points. Given that cost per unit of effectiveness for channel X is $200 and for channel Y is $150, and given that budgets can only be distributed in whole dollars due to accounting regulations, find out what is minimum total cost while meeting all constraints.",
+  "created_at": 1791460370.0828798
+ },
+ {
+  "text_digest": "5c9f423c1274c937",
+  "task_id": "marketing_xy_budget_20261008",
+  "text": "A marketing manager is planning the distribution of budget between two advertising channels for an upcoming campaign. The total budget for both channels combined is constrained to a maximum of $1000. To meet the campaign's reach and frequency objectives, the combined effort of these channels must yield a minimum effectiveness score, calculated as 2 times the budget for channel X plus 3 times the budget for channel Y, of at least 2000 points. Given that the cost per unit of effectiveness for channel X is $10 and for channel Y is $20, and the marketing manager aims to minimize the total cost while meeting all constraints (X,Y are integers due to indivisible nature of budget units). Find the minimum total cost in dollars, rounded to nearest dollar.",
+  "created_at": 1791460888.4589016
+ },
+ {
+  "text_digest": "9ba6e5a9823a80a6",
+  "task_id": "energy_investment_001",
+  "text": "An energy company is planning to invest in two types of renewable energy projects, X and Y. The total investment for both projects cannot exceed 5000 units due to budget constraints. To achieve a certain environmental impact, the combined output of 10 units from project X and 30 units from project Y must be at least 20000 units. Each unit of investment in project X and Y incurs costs of 50 and 60 units respectively. The company aims to minimize the total cost while adhering to these constraints, given that all investments are whole numbers due to the indivisible nature of resources. What is the minimum total cost required for this scenario? Provide your answer rounded to the nearest whole number.",
+  "created_at": 1791461952.9616873
+ }
+]
