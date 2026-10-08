@@ -530,17 +530,22 @@ class TestEndToEndCLI(HarnessTestCase):
                     "evidence": [{"execution_id": e1["execution_id"],
                                   "role": "evidence"},
                                  {"execution_id": e2["execution_id"],
-                                  "role": "evidence"}]}
+                                  "role": "evidence"}],
+                    # A DECLARED prediction is what makes the interval
+                    # checkable later; without it a run produces no hit/miss.
+                    "prediction": {"value": 0.9, "interval": [0.5, 1.0]}}
         proc = run_orx(self.home, "induce", "--relation",
                        json.dumps(relation))
         entry_id = json.loads(proc.stdout)["result"]["relations"][0]["saved"]
         self.assertIsNotNone(entry_id)
 
-        # Recording a matching execution writes a FROZEN check (evidence
-        # only) — the entry's status/track are untouched by `record`.
+        # Recording an execution that DECLARES it adopted the entry writes a
+        # FROZEN check (evidence only) — the entry's status/track are
+        # untouched by `record`.
         proc = run_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
-                       "--workspace", str(self.work), "--solver", "highs")
+                       "--workspace", str(self.work), "--solver", "highs",
+                       "--used-entry-ids", entry_id)
         ex = json.loads(proc.stdout)["result"]["execution"]
         px = self.work / "e3.json"; px.write_text(json.dumps(ex))
         proc = run_orx(self.home, "record", "--execution", str(px))

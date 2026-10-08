@@ -68,7 +68,9 @@ A retrieved item keeps its evidence status. Text similarity exposes material to 
 
 When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. An empty bank is a reported state, never a gate: with no prior knowledge, solve the task and its own evidence becomes the first material, and you are never required to publish a first entry. Keep uncertainty explicit and obtain evidence through execution.
 
-Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. The framework ties a declared adoption to the run's result and never counts a mere recall — or a shared method name — as reuse succeeded.
+Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. Attribution is by NUMBER, never by a shared method name: an entry named `method:monotone_reduction` adopted by a run named `milp_pulp_cbc` is still tied to the run. The framework never counts a mere recall — or a shared name — as reuse succeeded.
+
+A further distinction: the adoption record and its outcome accumulate independently of prediction CALIBRATION. A hit/miss is computed only when the entry DECLARED a prediction and the run observed a quality; an entry with no declared prediction is never scored against a default interval, and an execution failure is not automatically a counterexample to the knowledge — whether a failure refutes a claim is the agent's analysis, not an automatic verdict.
 
 Task texts and embedding indexes support discovery within these two layers. They do not form another bank of outcome facts or strategic beliefs.
 

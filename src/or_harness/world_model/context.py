@@ -2160,13 +2160,16 @@ def _env_float(name: str, default: float) -> float:
 #: (paired feedback, reminders, H+ feedback) after the capability blocks:
 #: they are evidence, and under budget pressure evidence before the task is
 #: the right thing to shed — but the block-level count and the omission are
-#: always reported, never silent.
+#: always reported, never silent. The names are the PROVIDER-VIEW keys
+#: (``prediction_execution_pairs`` etc.), not the stored-context keys
+#: (``paired_feedback``): trimming the stored name found nothing and left the
+#: real block in place.
 _TRIMMABLE_BLOCKS = (
     "harness_capability",
     "capability_version",
     "retrieval_evidence",
     "solving_context",
-    "paired_feedback",
+    "prediction_execution_pairs",
     "hplus_feedback",
     "prediction_reminders",
 )
@@ -2198,7 +2201,7 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
             # per-source detail. ``no_evidence`` is a finding about the
             # harness, not noise, so the statuses survive.
             trimmed = _compact_capability(view[block])
-        elif block in ("paired_feedback", "hplus_feedback"):
+        elif block in ("prediction_execution_pairs", "hplus_feedback"):
             # Feedback blocks carry their own counts; replace with a report
             # of what was dropped rather than dropping silently.
             block_dict = view[block] if isinstance(view[block], dict) else {}
@@ -2231,7 +2234,11 @@ def _bound_request(view: Dict[str, Any]) -> Dict[str, Any]:
     view["request_size"] = {
         "chars": size,
         "estimator": ("characters (not tokens; a token count needs the "
-                      "endpoint's own tokenizer)"),
+                      "endpoint's own tokenizer). This is the CONTEXT "
+                      "fragment only; the whole request (system prompt + "
+                      "candidate + body) is measured on the built request's "
+                      "own `request_size`"),
+        "scope": "prediction_context fragment",
         "bound_chars": max_chars,
         "budget": budget_basis,
         "within_bound": size <= max_chars,

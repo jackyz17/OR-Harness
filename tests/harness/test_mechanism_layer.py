@@ -43,6 +43,7 @@ class TestCostPredictionLoop(HarnessTestCase):
             entry_id="",
             strategy_id="S01",
             pattern={"predicates": predicates},
+            quality_estimated=True,
             expected_quality_hat=1.0,
             quality_interval=(0.5, 1.0),
             expected_cost_hat=CostVector(
@@ -123,14 +124,16 @@ class TestCostPredictionLoop(HarnessTestCase):
         self.assertNotIn("cost_feedback", outcome)
 
     def test_quality_misses_demote_at_next_induce(self):
-        """Quality misses accumulate as EVIDENCE online and demote the entry
-        at the next offline knowledge write — never during record."""
+        """Quality misses of a DECLARED prediction accumulate as EVIDENCE
+        online and demote the entry at the next offline knowledge write —
+        never during record. The check exists because the run DECLARED it
+        adopted the entry (by number), not because of a shared name."""
         entry_id = self._entry_with_cost(tokens_hat=1500.0)
         for i in range(3):
             rec = self.make_record(task_id=f"tq{i}", strategy_id="S01", gap=0.9,
                                    cost=CostVector(llm_tokens=1500),
                                    cost_measured=MEASURED_ALL)
-            outcome = self.h.record(rec)
+            outcome = self.h.record(rec, used_entry_ids=[entry_id])
             # Online: evidence written, knowledge untouched.
             self.assertTrue(outcome["prediction_checks"])
             self.assertEqual(self.h.sbank.get(entry_id).status, "candidate")

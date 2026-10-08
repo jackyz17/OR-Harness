@@ -7093,8 +7093,8 @@ class ORHarness:
         }
 
     def _check_predictions(self, record: ExecutionRecord) -> List[Dict[str, Any]]:
-        """Frozen forward checks: this execution against matching entries'
-        intervals, as EVIDENCE.
+        """Frozen forward checks: this execution against the DECLARED
+        predictions of the entries it ADOPTED, as EVIDENCE.
 
         Online the harness only accumulates: each check is computed against
         the interval in force at this moment and written onto the fact
@@ -7102,36 +7102,66 @@ class ORHarness:
         demoted, tightened, or awakened here — ``InductionEngine.revise``
         replays these checks at the next offline induction.
 
-        Isolation rules (mirroring the cost-feedback contract):
-        - the strategy that ACTUALLY ran owns the check (A never audits B);
-        - only attempt-scope executions produce checks: a task-scope total
-          never audits attempt-scope knowledge;
-        - dormant entries are included — a matching execution is evidence
-          about the pattern, and waking the entry is an offline decision.
+        ATTRIBUTION — adoption, never a name:
+        - a check exists ONLY for an entry the record DECLARED it adopted
+          (``execution_features.used_entries.known_entry_ids``). A shared
+          strategy name is not adoption, and being recalled is not adoption:
+          an entry whose id differs from the executed strategy
+          (``method:monotone_reduction`` vs ``milp_pulp_cbc``) is checked
+          normally when the agent adopts it by NUMBER.
+        - a record that did NOT declare its adoption produces NO forward
+          checks. "Did not say" must not silently fall back to a name match.
+
+        CALIBRATION — only against a DECLARED prediction:
+        - an entry that never declared a quality prediction
+          (``quality_estimated=False``) has an interval that is a default,
+          not a forecast. No hit/miss is computed against it (its default
+          interval would otherwise score EVERY observation as a hit). Its
+          adoption, cost and failures are still recorded as evidence — the
+          adoption outcome accumulates independently of prediction
+          calibration, and whether a failure REFUTES the knowledge is the
+          agent's analysis, never an automatic verdict.
+
+        Isolation rules (unchanged):
+        - only attempt-scope executions produce checks;
+        - dormant entries are eligible (a matching execution is evidence
+          about the pattern; waking is an offline decision).
         """
         if record.measurement_scope != "attempt":
             return []
         observed = quality_score(record)
-        # ADOPTION ATTRIBUTION (no name-matching). When the record names the
-        # entries it ADOPTED, the forward check is computed ONLY for those
-        # entries: a share of a strategy name is not adoption, and being
-        # RECALLED is not adoption either. An explicit EMPTY adoption
-        # (``used_entries`` present with ``entry_ids: []``) yields NO forward
-        # checks — "adopted nothing" must not silently count as success.
-        # A record written outside ``execute``/``record`` carries no
-        # ``used_entries`` at all: there adoption is UNSTATED, and the
-        # historical name-match behaviour stands (absence is not the same as
-        # an empty declaration).
         used = record.execution_features.get("used_entries")
-        declared = None
-        if isinstance(used, dict):
-            declared = set(used.get("known_entry_ids") or [])
+        if not isinstance(used, dict):
+            # Adoption was never declared: the record does not say what it
+            # adopted, so there is no basis for a forward check. An entry is
+            # never inferred from a shared strategy name.
+            return []
+        declared = [str(e) for e in (used.get("known_entry_ids") or [])]
+        if not declared:
+            # An explicit EMPTY adoption (``entry_ids: []``) is a fact:
+            # nothing was adopted, so there is nothing to check.
+            return []
         events: List[Dict[str, Any]] = []
-        for entry in self.sbank.matching(record.profile_snapshot,
-                                         include_dormant=True):
-            if entry.strategy_id != record.strategy_id:
-                continue
-            if declared is not None and entry.entry_id not in declared:
+        for entry_id in declared:
+            entry = self.sbank.get(entry_id)
+            if entry is None:
+                continue  # an unknown number is a citation, not a fact
+            if not entry.quality_estimated:
+                # No DECLARED prediction: the interval is a default, not a
+                # forecast. Record the observation WITHOUT a hit/miss so the
+                # adoption outcome and cost stay visible while prediction
+                # calibration stays unknown.
+                events.append({
+                    "entry_id": entry.entry_id,
+                    "predicted": None,
+                    "interval": None,
+                    "observed": round(observed, 4),
+                    "hit": None,
+                    "note": ("this entry declared no quality prediction, so "
+                             "no interval hit/miss is computed (a default "
+                             "interval is not a forecast); the observation "
+                             "is recorded as adoption evidence"),
+                })
                 continue
             lo, hi = entry.quality_interval
             width = max(hi - lo, 1e-6)

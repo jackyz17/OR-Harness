@@ -278,16 +278,26 @@ class InductionEngine:
         effective_subject = subject
         if not effective_subject and len(resolved["strategy_ids"]) == 1:
             effective_subject = resolved["strategy_ids"][0]
+        entry = self._new_claim_entry(
+            effective_subject or "claim", predicates, records)
+        # An optional DECLARED prediction (a point estimate + interval the
+        # agent states BEFORE the run). Only a declared prediction makes the
+        # entry's interval checkable later; without it the entry carries no
+        # prediction and no hit/miss is ever computed against its defaults.
+        declared_prediction = raw.get("prediction")
+        if isinstance(declared_prediction, dict):
+            self._apply_declared_prediction(entry, declared_prediction)
         if dry_run:
             return {"saved": None,
                     "would_create": (effective_subject or "claim"),
                     "claim": claim,
+                    "quality_estimated": entry.quality_estimated,
+                    "expected_quality_hat": entry.expected_quality_hat,
+                    "quality_interval": list(entry.quality_interval),
                     "material": material_gate,
                     "check_note": check_note,
                     "publication": self._claim_publication_placeholder(
                         claim, verification)}
-        entry = self._new_claim_entry(
-            effective_subject or "claim", predicates, records)
         # The cold archive still vetoes re-creating a RETIRED generalization
         # from the same (strategy, predicates) — an administrative
         # anti-resurrection guard, overridable with ``force``.
@@ -362,7 +372,11 @@ class InductionEngine:
         ``claim_only`` (``support_n == 0``) and makes no expected-value claim.
         The cited executions' statistics stay readable through
         ``ConditionalStats`` (which the world model still reads); they are not
-        dressed up as an entry estimate here."""
+        dressed up as an entry estimate here. In particular it carries NO
+        quality prediction (``quality_estimated`` stays False): its default
+        point estimate / interval are NOT a forecast, so no hit or miss is
+        ever computed against them. A prediction the agent really declared is
+        applied separately (``_apply_declared_prediction``)."""
         return StrategicEntry(
             # Identity is ASSIGNED by the bank on ``add``: the framework owns
             # the number, so no id is invented here (the placeholder is
@@ -370,6 +384,7 @@ class InductionEngine:
             entry_id="",
             strategy_id=str(subject or "claim"),
             pattern={"predicates": dict(predicates)},
+            quality_estimated=False,
             expected_quality_hat=0.0,
             quality_interval=(0.0, 1.0),
             expected_cost_hat=CostVector(measured=set()),
@@ -379,6 +394,37 @@ class InductionEngine:
             verification=empty_verification(),
             claim=None,
         )
+
+    @staticmethod
+    def _apply_declared_prediction(entry: StrategicEntry,
+                                   prediction: Dict[str, Any]) -> None:
+        """Record an explicitly DECLARED quality prediction on the entry.
+
+        The agent states a point estimate and/or an interval BEFORE the run;
+        only a DECLARED prediction makes the entry's interval checkable
+        later. A declaration with neither a usable ``value`` nor a usable
+        ``interval`` is ignored (the entry keeps ``quality_estimated=False``)
+        rather than fabricating a prediction from a default. Bounds are
+        clamped to [0, 1] and an inverted interval is swapped, so a malformed
+        declaration cannot make every observation a miss or every observation
+        a hit."""
+        value = prediction.get("value")
+        interval = prediction.get("interval")
+        declared = False
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            entry.expected_quality_hat = min(1.0, max(0.0, float(value)))
+            declared = True
+        if isinstance(interval, (list, tuple)) and len(interval) == 2:
+            try:
+                lo, hi = float(interval[0]), float(interval[1])
+            except (TypeError, ValueError):
+                lo = hi = None
+            if lo is not None and hi is not None:
+                lo, hi = min(lo, hi), max(lo, hi)
+                entry.quality_interval = (min(1.0, max(0.0, lo)),
+                                          min(1.0, max(0.0, hi)))
+                declared = True
+        entry.quality_estimated = declared
 
     def _claim_veto(self, entry: StrategicEntry) -> Optional[Dict[str, Any]]:
         card = self.sbank.archive_vetoes(entry.strategy_id,
@@ -454,9 +500,13 @@ class InductionEngine:
         - the forward track (n_predictions / hits / consecutive misses /
           calibration error) is REBUILT from the frozen checks — never
           re-scored against the entry's current interval;
-        - a check that missed is a CONTENT miss: the claim covered that task
-          when the execution ran, so the failure is evidence against the
-          claim. Three consecutive content misses demote to ``suspect``;
+        - ONLY checks against a DECLARED prediction participate (an entry
+          that declared no prediction has no interval to be calibrated, so
+          its adoption observations are not counted as hits or misses);
+        - a check that missed a DECLARED prediction is a calibration miss:
+          three consecutive misses demote to ``suspect``. An arbitrary
+          execution failure is NOT such a miss — whether a failure refutes
+          the knowledge is the agent's analysis, and it never demotes here;
         - promotion (n >= 5 checks, hit rate >= 0.7) and demotion are applied
           HERE, through the same rules the per-event API uses
           (:func:`apply_transitions`);
@@ -518,7 +568,11 @@ class InductionEngine:
         """Frozen forward checks in the Evidence Bank, grouped by entry.
 
         Each check carries the fact it came from (execution id, creation
-        time) so the replay can order the checks chronologically."""
+        time) so the replay can order the checks chronologically. A check
+        whose ``hit`` is UNKNOWN (an entry that declared no prediction) is
+        NOT a calibration check: it is skipped here, so the forward track
+        counts only the runs where a DECLARED prediction was really tested.
+        The adoption outcome itself still lives on the fact."""
         by_entry: Dict[str, List[Dict[str, Any]]] = {}
         for rec in self.stats.bank.all():
             if rec.source != "executed":
@@ -527,12 +581,16 @@ class InductionEngine:
                 entry_id = str(raw.get("entry_id", ""))
                 if not entry_id:
                     continue
+                if raw.get("hit") is None:
+                    # No declared prediction -> no hit/miss to replay. The
+                    # observation is adoption evidence, not calibration.
+                    continue
                 by_entry.setdefault(entry_id, []).append({
                     "execution_id": rec.execution_id,
                     "created_at": rec.created_at,
                     "hit": bool(raw.get("hit", False)),
                     "observed": float(raw.get("observed", 0.0)),
-                    "predicted": float(raw.get("predicted", 0.0)),
+                    "predicted": float(raw.get("predicted") or 0.0),
                 })
         for checks in by_entry.values():
             checks.sort(key=lambda c: (c["created_at"], c["execution_id"]))

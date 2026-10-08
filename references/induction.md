@@ -142,6 +142,8 @@ The following is a template. Replace the execution ID and example family with re
 
 Keep the reusable method and its conditional argument distinct from the task-specific observation. A single task can reveal a conditional method; its `single_observation` / `unproven` provenance is not a correctness verdict, and more independent tasks widen the scope (the distinct-task count is reported as a FACT, never a threshold).
 
+**Declared prediction (optional).** Add `"prediction": {"value": q, "interval": [lo, hi]}` ONLY when you are stating a quality prediction the runs can be calibrated against. It sets `quality_estimated=True` and is what makes the interval checkable: later, a run that DECLARED it adopted this entry is compared against this interval. Omit it and the entry carries no prediction — no hit/miss is ever computed against its defaults, and it is never promoted on them.
+
 A `check` block you include is your audit trail, for example a measured cost comparison:
 
 ```json
@@ -174,7 +176,8 @@ Use `conditions.predicates` for the supported profile keys: `family`, `resource_
 ## 5. Reuse, declare adoption, and manage
 
 - Read offered entries through ordinary recall recommendations, including their claim, verification state, provenance, and semantic premises. Treat unknown applicability as requiring inspection.
-- **Declare adoption**: when a run uses an entry, pass its number in `execute --used-entry-ids` / `record --used-entry-ids` (e.g. `3,5`). This is a DECLARATION, distinct from being recalled (`--adapted-from` cites cases you READ). Passing an empty list (`''`) records "adopted no prior knowledge" as a fact. The framework ties the numbers to that attempt's result; recall, adoption and outcome are kept apart, and an adoption that does not help is not counted as a success.
+- **Declare adoption**: when a run uses an entry, pass its number in `execute --used-entry-ids` / `record --used-entry-ids` (e.g. `3,5`). This is a DECLARATION, distinct from being recalled (`--adapted-from` cites cases you READ). Passing an empty list (`''`) records "adopted no prior knowledge" as a fact. **Attribution is by NUMBER, never by a shared name**: an entry called `method:monotone_reduction` adopted by a run called `milp_pulp_cbc` is checked normally. A run that does not declare its adoption produces no forward check.
+- **Three things are kept apart**: (1) the **adoption record** (which entry numbers a run relied on), (2) the run's **outcome** (answer check, cost, failures), and (3) **prediction calibration** (does the run's observed quality fall in a DECLARED interval). A missing prediction closes (3) only — the adoption record and its outcome still accumulate. An entry that declared no prediction is never scored hit/miss, and **an arbitrary execution failure is NOT automatically a counterexample to the knowledge** — that attribution is your analysis.
 - A claim that contradicts or refines an existing one is a NEW entry: do not rewrite the earlier one. Assess a new miss against the full claimed conditions; a task violating a necessary premise is outside the method's scope, while a relevant failure within scope may warrant a new, narrower claim.
-- Forward calibration adjusts an entry's confidence from later observations; it does not replace claim-specific verification. Review lifecycle changes returned by induction.
+- Forward calibration of a DECLARED prediction adjusts an entry's confidence from later observations — it is what promotes (≥5 checks, ≥70% hits) and demotes (3 consecutive misses of a declared prediction) an entry. It does NOT depend on, nor replace, the agent's verification state; the two are separate records.
 - Retired patterns remain in the cold archive. Use `--force` only when new evidence or a changed environment justifies reopening the claim; record the reason.

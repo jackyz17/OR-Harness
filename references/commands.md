@@ -301,7 +301,7 @@ orx record --session --task T --reason TEXT [--episode E] [--cancelled]
 
 **Purpose / effects:** Append an execution fact, or record a confirmed host stop. Prefer `--from-staged` to retain the original payload. `--execution` accepts a bare record, execute envelope, or legacy one-level form. Discarding pending material is a separate explicit mode, not a substitute for recording a real failed attempt.
 
-**Execution record:** Applies cost backfill (replace by default), freezes quality checks against matching entries onto `execution_features.quality_feedback`, and compares measured cost with the frozen historical prediction under `cost_feedback`. Checks cover the actual strategy and attempt scope. Recording neither interprets the method nor promotes/demotes knowledge; later induction replays feedback.
+**Execution record:** Applies cost backfill (replace by default), freezes quality checks against the entries this run **DECLARED it adopted** (`--used-entry-ids`) onto `execution_features.quality_feedback`, and compares measured cost with the frozen historical prediction under `cost_feedback`. A check exists ONLY for a declared adoption, and a hit/miss is computed ONLY against a DECLARED prediction (an entry with no declared prediction records the observation with `hit=null`, never a default-interval hit). Recording neither interprets the method nor promotes/demotes knowledge; later induction replays feedback.
 
 `--method` declares the plan; `--method-actual` declares observed performance. Existing record values, including script receipts, are not overwritten. `--used-entry-ids` declares the knowledge ENTRY NUMBERS this attempt ADOPTED (e.g. `3,5`; `''` records "adopted none"), tying them to this attempt's result; a value the record already carries is never overwritten. Explicit `execution_features.contrast` marks contrast evidence; there is no per-record retention label.
 
@@ -411,6 +411,7 @@ Solver quality remains the solver's measurement. Task failure is a separate `ben
            "steps":["retain boundary-state variables","enforce inter-window balance"]},
  "evidence":[{"execution_id":"ex_before","role":"before"},
              {"execution_id":"ex_after","role":"after"}],
+ "prediction":{"value":0.85,"interval":[0.7,1.0]},
  "conditions":{"predicates":{"family":"scheduling"},
                "note":"Check the actual state equations and boundary conditions."},
  "check":{"assertions":[{"kind":"status","roles":["after"],
@@ -418,6 +419,8 @@ Solver quality remains the solver's measurement. Task failure is a separate `ben
 ```
 
 Replace illustrative IDs with recorded facts and choose assertions that actually cover your claim. An optimal status assertion checks that status only; it does not certify the method. `claim` and evidence are required; each citation needs execution ID and a free-form role. The framework derives tasks/family/cell/strategy IDs from facts; there is no bundle-ID citation or same-name/same-cell bar. Optional `subject` names the claim; there is no `target_entry_id` revision path — a re-submission is a SEPARATE entry. A `check` block (embedded or `--verify`) is RECORDED as your audit trail, never a publication gate.
+
+**Declared prediction (`prediction`):** an OPTIONAL `{"value": q, "interval": [lo, hi]}` you state BEFORE the run. It sets `quality_estimated=True` on the entry and is what makes the interval checkable later: only a run that DECLARED it adopted this entry, and only this declared interval, produce a hit/miss. Omit it and the entry carries no prediction — no hit/miss is ever computed against its defaults.
 
 Supported predicate keys are `family`, `resource_coupling`, `temporal_coupling`, `route_complexity`. Omitted conditions inherit evidence-cell conditions. Put semantic premises in the claim/`conditions.note`, inspect them before reuse, and do not invent predicate keys that the applicability evaluator cannot resolve. `--note` adds reader-facing applicability notes, not scores. Missing method evidence produces a warning rather than a fabricated technique. An empty bank is NOT a gate: with no prior knowledge you may still submit the first entry, and you are never required to.
 
@@ -427,7 +430,7 @@ Supported predicate keys are `family`, `resource_coupling`, `temporal_coupling`,
 
 Kind is a descriptive label; publication is the agent's decision and does not prove mathematical correctness, causality, transfer, or cost advantage. A one-task conditional method needs an inspected argument/premises; empirical advantage needs appropriate independent comparison. Do not fabricate tasks or overstate claims.
 
-**Revision / recovery:** Knowledge is additive — a re-submission is a NEW numbered entry, and there is no in-place revision or merge. `--force` is the explicit cold-archive-veto override; it does not prove the claim. Dry-run writes neither memory nor index. `induce` with no relation creates no new claim but STILL runs the utility lifecycle and records the review (existing-entry lifecycle replay: promotion at ≥5 checks / ≥70% hits with a verified claim; demotion at 3 consecutive misses; dormancy wakeup). Deferred index sync is recoverable through `rebuild-index`. Inspect the result before reusing it.
+**Revision / recovery:** Knowledge is additive — a re-submission is a NEW numbered entry, and there is no in-place revision or merge. `--force` is the explicit cold-archive-veto override; it does not prove the claim. Dry-run writes neither memory nor index. `induce` with no relation creates no new claim but STILL runs the utility lifecycle and records the review (existing-entry lifecycle replay: promotion at ≥5 **declared-prediction** checks / ≥70% hits — promotion does NOT require the agent's verification state; demotion at 3 consecutive misses of a declared prediction; dormancy wakeup). Deferred index sync is recoverable through `rebuild-index`. Inspect the result before reusing it.
 
 ### `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
 

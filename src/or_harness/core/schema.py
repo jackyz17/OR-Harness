@@ -1570,6 +1570,13 @@ class StrategicEntry:
     entry_id: str
     strategy_id: str
     pattern: Dict[str, Any]  # {"predicates": {"family": ..., "<dim>": [lo, hi]}}
+    #: Whether this entry carries an explicitly DECLARED quality prediction
+    #: (a point estimate AND an interval the agent stated BEFORE the run).
+    #: A claim-only entry, or any entry whose prediction was never declared,
+    #: leaves this False: its default ``expected_quality_hat`` / interval are
+    #: NOT a prediction, and no hit/miss may be computed against them. This
+    #: is what keeps "no prediction" from reading as a successful forecast.
+    quality_estimated: bool = False
     expected_quality_hat: float = 0.5
     quality_interval: Tuple[float, float] = (0.0, 1.0)
     expected_cost_hat: CostVector = field(default_factory=CostVector)
@@ -1698,6 +1705,10 @@ class StrategicEntry:
             "strategy_id": self.strategy_id,
             "pattern": {"predicates": self.predicates},
             "expected": {
+                # Whether a quality prediction was DECLARED (see the field
+                # docstring). Absent in a payload reads as False — an
+                # undeclared prediction never counts as one.
+                "quality_estimated": bool(self.quality_estimated),
                 "quality_hat": self.expected_quality_hat,
                 "quality_interval": [self.quality_interval[0], self.quality_interval[1]],
                 "cost_hat": self.expected_cost_hat.to_dict(),
@@ -1765,6 +1776,7 @@ class StrategicEntry:
             entry_id=str(data["entry_id"]),
             strategy_id=str(data["strategy_id"]),
             pattern={"predicates": predicates},
+            quality_estimated=bool(expected.get("quality_estimated", False)),
             expected_quality_hat=float(expected.get("quality_hat", 0.5)),
             quality_interval=(float(interval[0]), float(interval[1])),
             expected_cost_hat=cost_hat,

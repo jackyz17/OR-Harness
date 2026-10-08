@@ -259,5 +259,136 @@ class TestColdStart(NumberedCase):
         self.assertEqual(self.h.sbank.count(), 1)
 
 
+class TestUnknownNumberIsKeptAsCitation(NumberedCase):
+    def test_unknown_number_is_kept_as_a_citation(self):
+        code, ws = None, None
+        work = Path(self.home) / "ws_cite"
+        work.mkdir(parents=True, exist_ok=True)
+        script = work / "solve.py"
+        script.write_text(
+            "import json\n"
+            "with open('result.json', 'w') as fh:\n"
+            "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
+            " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
+            encoding="utf-8")
+        record = self.h.execute(
+            {"task_id": "t1", "family": "routing",
+             "annotations": {"coupling": {"resource_coupling": 0.9}}},
+            "S01", str(script), str(work), solver="highs", episode_id="ep1",
+            used_entry_ids=["99"])
+        used = record.execution_features["used_entries"]
+        self.assertEqual(used["unknown_entry_ids"], ["99"])
+        self.assertEqual(used["known_entry_ids"], [])
+
+
+class TestAdoptionAttributionIgnoresName(NumberedCase):
+    """The P1-A defect: feedback was blocked by a shared strategy name."""
+
+    def test_adopted_entry_with_a_different_name_records_feedback(self):
+        # Knowledge entry named ``method:monotone_reduction``, execution
+        # named ``milp_pulp_cbc``: adopting the entry by NUMBER must still
+        # produce a forward check.
+        eid = self.h.sbank.add(StrategicEntry(
+            entry_id="", strategy_id="method:monotone_reduction",
+            pattern={"predicates": {}}, quality_estimated=True,
+            expected_quality_hat=0.9, quality_interval=(0.8, 1.0),
+            verification={"state": "verified", "claim": "c"}))
+        rec = self.make_record(execution_id="ex_x", task_id="t1",
+                               strategy_id="milp_pulp_cbc", gap=0.9)
+        rec.execution_features["used_entries"] = {
+            "entry_ids": [eid], "known_entry_ids": [eid],
+            "unknown_entry_ids": []}
+        checks = self.h._check_predictions(rec)
+        self.assertEqual([c["entry_id"] for c in checks], [eid])
+        # The failed run (observed 0) is a MISS of the declared 0.8-1.0
+        # interval, not a silent hit.
+        self.assertFalse(checks[0]["hit"])
+
+
+class TestNoDeclaredPredictionIsUnknown(NumberedCase):
+    """The P1-B defect: a default [0,1] interval scored every run a hit."""
+
+    def test_default_interval_does_not_score_a_failed_run(self):
+        eid = self.h.sbank.add(self.entry("method:x", verified=False))
+        self.assertFalse(self.h.sbank.get(eid).quality_estimated)
+        rec = self.make_record(execution_id="ex_f", task_id="t1",
+                               strategy_id="method:x", feasible=False,
+                               status="error", objective=None, gap=None)
+        rec.execution_features["used_entries"] = {
+            "entry_ids": [eid], "known_entry_ids": [eid],
+            "unknown_entry_ids": []}
+        checks = self.h._check_predictions(rec)
+        self.assertEqual(len(checks), 1)
+        self.assertIsNone(checks[0]["hit"], "no declared prediction -> unknown")
+        # And the replay counts NO calibration miss/hit for it.
+        rec.created_at = 1.0
+        self.h.bank.append(rec)
+        self.assertEqual(self.h.induction._frozen_checks().get(eid), None)
+
+    def test_declared_prediction_is_checkable(self):
+        eid = self.h.sbank.add(self.entry("method:y"))
+        self.h.sbank.get(eid)
+        out = self.h.induce(relations=[{
+            "subject": "method:y", "claim": "y holds",
+            "evidence": [{"execution_id": "ex_missing", "role": "e"}]}])
+        # (cited execution does not exist -> refused administratively)
+        self.assertIsNone(out["relations"][0].get("saved"))
+
+
+class TestLifecycleNotGatedByVerification(NumberedCase):
+    """The P2-A defect: promotion required the framework's verified state."""
+
+    def test_fact_checked_entry_can_be_validated(self):
+        eid = self.h.sbank.add(StrategicEntry(
+            entry_id="", strategy_id="S01",
+            pattern={"predicates": {"family": "routing"}},
+            quality_estimated=True, expected_quality_hat=0.9,
+            quality_interval=(0.5, 1.0),
+            verification={"state": "fact_checked", "claim": "c"}))
+        for _ in range(5):
+            entry, transitions = self.h.sbank.record_prediction(eid, hit=True)
+        self.assertEqual(entry.status, "validated")
+        self.assertIn("promoted:candidate->validated", transitions)
+
+    def test_no_prediction_never_promotes(self):
+        eid = self.h.sbank.add(StrategicEntry(
+            entry_id="", strategy_id="S01",
+            pattern={"predicates": {"family": "routing"}},
+            quality_estimated=False,
+            verification={"state": "verified", "claim": "c"}))
+        for _ in range(5):
+            entry, transitions = self.h.sbank.record_prediction(eid, hit=True)
+        self.assertEqual(entry.status, "candidate")
+
+
+class TestRequestBudgetCountsWholeRequest(NumberedCase):
+    def test_trim_hits_the_real_feedback_key(self):
+        """The trim list must name the PROVIDER-VIEW key
+        (``prediction_execution_pairs``), not the stored key."""
+        import os
+        from or_harness.world_model import context as ctx_module
+        self.assertIn("prediction_execution_pairs",
+                      ctx_module._TRIMMABLE_BLOCKS)
+        self.assertNotIn("paired_feedback", ctx_module._TRIMMABLE_BLOCKS)
+
+    def test_whole_request_size_is_reported(self):
+        from or_harness.world_model.strategy_prediction import (
+            build_strategy_outcome_request, STRATEGY_OUTCOME_SYSTEM_PROMPT,
+        )
+        ctx = self.h.build_prediction_context(
+            {"task_id": "t1", "family": "routing",
+             "annotations": {"coupling": {"resource_coupling": 0.9}}}, "ep1")
+        from or_harness.world_model.contracts import CandidateRef
+        cand = CandidateRef(action_type="execute_strategy", strategy_id="S01",
+                            task_id="t1", episode_id="ep1")
+        req = build_strategy_outcome_request(ctx, cand)
+        size = req["request_size"]
+        self.assertIn("system_prompt_chars", size)
+        self.assertGreaterEqual(size["system_prompt_chars"],
+                                len(STRATEGY_OUTCOME_SYSTEM_PROMPT))
+        self.assertGreaterEqual(size["chars"],
+                                size["system_prompt_chars"])
+
+
 if __name__ == "__main__":
     unittest.main()

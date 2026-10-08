@@ -62,12 +62,18 @@ def apply_transitions(entry: StrategicEntry) -> List[str]:
         entry.status = "candidate"
         transitions.append("awakened:dormant->candidate")
     if (entry.status == "candidate"
+            and entry.quality_estimated
             and entry.prediction_track.n_predictions >= PROMOTE_MIN_PREDICTIONS
-            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE
-            and entry.verification_state == "verified"):
-        # Forward calibration alone never promotes: the claim itself must
-        # have passed admission verification. (Demotion below is unaffected —
-        # observed misses are evidence regardless of admission state.)
+            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE):
+        # Promotion is FORWARD CALIBRATION of a DECLARED prediction: the
+        # entry declared a quality prediction, later runs adopted it, and
+        # enough of them landed inside the interval. It deliberately does
+        # NOT require the agent's verification state: ``verification`` is a
+        # record of what the agent checked, not a lifecycle gate, and an
+        # entry that never declared a prediction (``quality_estimated=False``)
+        # has nothing to calibrate and is never promoted here. (Demotion
+        # below is unaffected — observed misses of a declared prediction are
+        # evidence regardless of admission state.)
         entry.status = "validated"
         transitions.append("promoted:candidate->validated")
     if (entry.status in ("candidate", "validated")
@@ -330,16 +336,13 @@ class StrategicBank:
         lo, hi = entry.quality_interval
         if not (0.0 <= lo <= hi <= 1.0):
             raise StorageError("quality_interval must satisfy 0 <= lo <= hi <= 1")
-        # Admission invariant: a validated entry must have PASSED admission
-        # verification, and a refuted claim may never be validated. Forward
-        # calibration (n>=5 checks, hit rate) tracks how the entry's
-        # predictions fared — it can never substitute for verifying the
-        # claim itself.
+        # Invariant: a REFUTED claim may never be `validated`. Promotion is
+        # driven by forward calibration of a DECLARED prediction, NOT by the
+        # agent's verification state (``verified`` / ``fact_checked`` /
+        # ``unverified`` are records of what the agent checked, and none of
+        # them is a lifecycle gate). Only an explicit refutation — evidence
+        # that the claim does NOT hold — blocks validation.
         state = entry.verification_state
-        if entry.status == "validated" and state != "verified":
-            raise StorageError(
-                "status='validated' requires verification.state='verified' "
-                f"(got {state!r})")
         if state == "refuted" and entry.status == "validated":
             raise StorageError("a refuted claim may never be 'validated'")
 
