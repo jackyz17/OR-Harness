@@ -487,6 +487,10 @@ BENEFIT_CONVENTION: Dict[str, Any] = {
     },
 }
 
+#: The COST span every candidate predicts under by default: from the
+#: decision's anchor to the END of the task (see ``COST_SCOPE_CONVENTION``).
+COST_SCOPE_DEFAULT = "remaining_to_task_end"
+
 #: The SHARED cost scope every candidate of one decision predicts under.
 #: ONE anchor (the decision point) and ONE end (the end of the task), so a
 #: candidate cannot silently measure a different span from its peers. The
@@ -611,6 +615,56 @@ def build_strategy_outcome_request(
     if benefit_baseline_hint:
         request["benefit_baseline_hint"] = copy.deepcopy(
             benefit_baseline_hint)
+    return _finalize_request_size(request, STRATEGY_OUTCOME_SYSTEM_PROMPT)
+
+
+def _finalize_request_size(request: Dict[str, Any],
+                           system_prompt: str) -> Dict[str, Any]:
+    """Report the WHOLE request size (system prompt + the assembled body).
+
+    The context's own ``_bound_request`` measures only the ``prediction_context``
+    fragment, so a request could stay "within bound" while the CANDIDATE, the
+    system prompt and the output contract pushed the real total far over: the
+    budget has to be checked AFTER the full request is assembled, once.
+    Returns the request unchanged apart from a ``request_size`` block that
+    reflects the true total, and — when the total is STILL over the bound
+    after the block-level trim — an explicit ``over_budget`` diagnostic rather
+    than a silent send.
+    """
+    from or_harness.world_model.context import _input_budget_chars
+    max_chars, budget_basis = _input_budget_chars()
+    body_chars = len(json.dumps(request, ensure_ascii=False, default=str))
+    prompt_chars = len(system_prompt or "")
+    total = body_chars + prompt_chars
+    # The context fragment reports its own size; fold it into the total so a
+    # reader sees both the fragment and the whole request.
+    fragment = (request.get("prediction_context") or {}).get("request_size")
+    block: Dict[str, Any] = {
+        "chars": total,
+        "body_chars": body_chars,
+        "system_prompt_chars": prompt_chars,
+        "context_fragment_chars": (fragment or {}).get("chars"),
+        "estimator": ("characters = system prompt + JSON body string length; "
+                      "an ESTIMATE, never a tokenizer count"),
+        "bound_chars": max_chars,
+        "budget": budget_basis,
+        "within_bound": total <= max_chars,
+    }
+    if total > max_chars:
+        # The full request is over budget even after the context's
+        # block-level trim. This is a CONDITION to report, not a silent send:
+        # the model would be given evidence beyond the deployment's declared
+        # bound.
+        block["over_budget"] = {
+            "excess_chars": total - max_chars,
+            "note": ("the FULL request (system prompt + candidate + context) "
+                     "exceeds the configured input bound even after the "
+                     "context's optional blocks were trimmed; the deployment's "
+                     "bound is not guaranteed and the caller should raise "
+                     "OR_HARNESS_INPUT_BUDGET_TOKENS, shorten the candidate/ "
+                     "system prompt, or narrow the context"),
+        }
+    request["request_size"] = block
     return request
 
 
@@ -794,9 +848,13 @@ def parse_strategy_outcome_payload(
             else:
                 cost = ExpectedCost(
                     expected=vector, measured=sorted(dims),
+                    scope=COST_SCOPE_DEFAULT,
                     notes=["predicted by the model under the strategy-outcome "
                            "protocol; the measured mask marks PREDICTED "
-                           "dimensions, not observed ones"])
+                           "dimensions, not observed ones. scope="
+                           + COST_SCOPE_DEFAULT + " (decision anchor -> end "
+                           "of task): the close-out observes the SAME span, "
+                           "not one attempt"])
         elif not problems:
             unsupported["cost"] = ("no recognized cost dimension was "
                                    "predicted")

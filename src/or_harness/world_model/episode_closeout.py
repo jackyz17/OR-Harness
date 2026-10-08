@@ -636,10 +636,13 @@ class RealOutcomeSummary:
     #: Benefit-relevant observations, with the metric/unit the PREDICTION
     # declared (the comparison must use the prediction's own yardstick).
     benefit: Dict[str, Any] = field(default_factory=dict)
-    #: Real cost, scoped to the prediction's declared scope; auxiliary
-    # overhead reported separately (it is real spend, but not what the
-    # prediction spoke about).
+    #: Real cost, scoped to the prediction's DECLARED cost span (not the
+    #: benefit scope); auxiliary overhead reported separately (it is real
+    #: spend, but not what the prediction spoke about).
     cost: Dict[str, Any] = field(default_factory=dict)
+    #: The executions whose spend the cost comparison covers (the observed
+    #: span), separate from ``execution_ids`` (the BENEFIT scope's records).
+    cost_records: List[str] = field(default_factory=list)
     auxiliary_cost: Dict[str, Any] = field(default_factory=dict)
     #: Observed risk events: occurred / not_occurred / unknown + basis.
     #: One row per event the PREDICTION named, plus the framework-observed
@@ -687,6 +690,7 @@ class RealOutcomeSummary:
             "scope_status": self.scope_status,
             "benefit": copy.deepcopy(self.benefit),
             "cost": copy.deepcopy(self.cost),
+            "cost_records": list(self.cost_records),
             "auxiliary_cost": copy.deepcopy(self.auxiliary_cost),
             "risk_events": copy.deepcopy(self.risk_events),
             "observed_events": copy.deepcopy(self.observed_events),
@@ -729,27 +733,306 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
                     excluded += 1
                     continue
             values.append(float(getattr(cost, dim)))
-        # Wall-clock spans (latency_s / remaining_latency_s) are NEVER
-        # summed: overlapping prediction ranges would double-count the same
-        # remaining span, and per-attempt figures measured against an
-        # episode-level answer are disjoint from it. The per-item values
-        # stay in ``values`` so the count and completeness are still
-        # reported; only the TOTAL is withheld as a sum. The items are
-        # reported individually elsewhere.
-        non_cumulative = dim in NON_CUMULATIVE_DIMENSIONS
-        dims[dim] = {
-            "total": (None if non_cumulative
-                      else (round(sum(values), 6) if values else None)),
-            "n_measured": len(values),
-            "n_items": len(vectors),
-            "complete": bool(vectors) and len(values) == len(vectors),
-            "non_cumulative": non_cumulative,
-            "per_item": ([round(v, 6) for v in values]
-                         if non_cumulative else None),
-        }
+        dims[dim] = _aggregated_dim(dim, values, len(vectors))
         if excluded:
             dims[dim]["excluded"] = excluded
     return dims
+
+
+def _aggregated_dim(dim: str, values: Sequence[float],
+                    n_items: int) -> Dict[str, Any]:
+    """One dimension's aggregate, WITH an explicit comparable value.
+
+    "Cannot be summed" is not "cannot be compared". For a CUMULATIVE
+    dimension the comparable value IS the sum over the items that measured
+    it. For a WALL-CLOCK span (``latency_s`` / ``remaining_latency_s``) the
+    value is NEVER summed — overlapping prediction ranges would double-count
+    the same span — but a SINGLE explicitly measured span (the common case:
+    one real remaining-time measurement backfilled on the record) IS a
+    comparable observation and participates in calibration. When several
+    DISTINCT spans are present they cannot be combined, and no comparable
+    value is produced (the reason is stated); identical spans reported more
+    than once collapse to that one value.
+
+    ``comparable`` is the ONE field a consumer should read for a
+    comparison; ``total`` is kept for cumulative dimensions and stays
+    ``None`` for a non-cumulative one (it is not a sum).
+    """
+    non_cumulative = dim in NON_CUMULATIVE_DIMENSIONS
+    if non_cumulative:
+        distinct = sorted({round(v, 6) for v in values})
+        if len(distinct) == 1:
+            comparable: Optional[float] = distinct[0]
+            basis = ("one explicit wall-clock measurement; a span is "
+                     "compared as itself and never summed across "
+                     "overlapping ranges")
+        elif len(distinct) > 1:
+            comparable = None
+            basis = (f"{len(distinct)} DISTINCT measured spans: overlapping "
+                     "wall-clock ranges are never summed or combined, so no "
+                     "single comparable value is produced")
+        else:
+            comparable = None
+            basis = "not measured on the real scope"
+        total = None
+    else:
+        comparable = round(sum(values), 6) if values else None
+        basis = "sum over the items that measured it"
+        total = comparable
+    out: Dict[str, Any] = {
+        "total": total,
+        "comparable": {"value": comparable, "basis": basis,
+                       "is_sum": not non_cumulative},
+        "n_measured": len(values),
+        "n_items": n_items,
+        # For a cumulative dimension "complete" means every item measured
+        # it; for a wall-clock span it means a single comparable value
+        # exists (one explicit span, or consistent repeats).
+        "complete": (bool(n_items) and len(values) == n_items
+                     if not non_cumulative
+                     else comparable is not None),
+        "non_cumulative": non_cumulative,
+        "per_item": ([round(v, 6) for v in values] if non_cumulative
+                     else None),
+    }
+    if not non_cumulative and values:
+        out["partial"] = len(values) != n_items
+    return out
+
+
+def _predicted_cost_dims(predicted_cost: Any) -> set:
+    """Dimensions a cost prediction declared, with COMPONENT de-duplication.
+
+    When the prediction declared BOTH a container (``remaining_latency_s``)
+    and its component (``solver_runtime_s``), the component is not compared
+    on top of the whole: the part and the whole are one spend, and scoring
+    both would double-bill it. The component stays in the stored prediction
+    (its diagnostic value is real) — it is only dropped from the COMPARISON.
+    """
+    from or_harness.core.schema import chargeable_dimensions
+    if predicted_cost is None or predicted_cost.expected is None:
+        return set()
+    return chargeable_dimensions(predicted_cost.expected.measured_dims())
+
+
+def _declared_cost_scope(prediction: Any) -> str:
+    """The span a prediction's cost covers (``ExpectedCost.scope``).
+
+    Defaults to ``remaining_to_task_end`` when the prediction carried no
+    cost block: the build's cost contract is the remaining task, so an
+    absent declaration is read as the default rather than silently narrowed
+    to one attempt.
+    """
+    cost = getattr(prediction, "cost", None)
+    scope = str(getattr(cost, "scope", "") or "")
+    return scope or "remaining_to_task_end"
+
+
+def _decision_anchor(prediction, anchor_action) -> Optional[float]:
+    """The decision ANCHOR: when the prediction was MADE, not when it bound.
+
+    The prediction covers "this decision -> end of task", so the anchor is
+    the moment the decision was taken (``trace.created_at``). A bound action
+    is only the attempt the prediction tied to; using ITS start would drop
+    every earlier attempt of the same decision (the failed first try before
+    the repaired retry), which is exactly the bug this span fixes. Falls
+    back to the bound action's ``started_at`` for a legacy prediction with
+    no trace timestamp.
+    """
+    created = getattr(getattr(prediction, "trace", None), "created_at", None)
+    if created is not None:
+        return float(created)
+    started = getattr(anchor_action, "started_at", None)
+    return float(started) if started is not None else None
+
+
+def _cost_scope_records(harness, prediction, action, bound_records,
+                        candidate, cost_scope
+                        ) -> Tuple[List[Any], str]:
+    """The execution records whose spend the predicted cost is compared to.
+
+    The span is chosen by the DECLARED cost scope, never by the benefit
+    scope, so a ``remaining_to_task_end`` cost is observed against the whole
+    remaining task (failed attempts and repairs included), not the first
+    attempt. Overlap is avoided by keying on the execution itself: each
+    in-episode execution contributes ONCE, whoever else also covers it.
+
+    Returns ``(records, note)``. When the declared span cannot be observed
+    the note says so and the records are the best available; the comparison
+    itself is decided by completeness in the evaluation layer, so an
+    unobservable span never fabricates a number.
+    """
+    if cost_scope == "attempt":
+        return list(bound_records), (
+            "cost scope 'attempt': the bound action's own execution only")
+    if cost_scope == "strategy_window":
+        return list(bound_records), (
+            "cost scope 'strategy_window': the declared selection round's "
+            "window")
+    # remaining_to_task_end: the WHOLE episode's executions, from the
+    # DECISION ANCHOR (when the prediction was made) to the end of the task.
+    # Every execution that belongs to this task/episode contributes its
+    # spend ONCE — a failed first attempt and the repaired retry both count,
+    # so a predicted remaining total is not compared against the first
+    # attempt.
+    episode_records = _episode_executions(
+        harness, candidate.task_id, candidate.episode_id)
+    anchor = _decision_anchor(prediction, action)
+    if anchor is not None:
+        # Keep executions that started at/after the anchor (the remaining
+        # span). An execution with no resolvable action is KEPT when we
+        # cannot place it in time, since dropping it would shrink the
+        # remaining spend the prediction actually spoke about — the note
+        # records that.
+        kept: List[Any] = []
+        unplaced = 0
+        for record in episode_records:
+            action_for = _action_for_execution(harness, record)
+            if action_for is None or getattr(action_for, "started_at", None) \
+                    is None:
+                unplaced += 1
+                kept.append(record)
+                continue
+            if float(action_for.started_at) >= float(anchor) - 1e-6:
+                kept.append(record)
+        note = (
+            "cost scope 'remaining_to_task_end': every in-episode execution "
+            "from the DECISION ANCHOR (when the prediction was made) to the "
+            "end of the task aggregates ONCE (failed attempts and repairs "
+            "included); overlapping ranges are not summed twice")
+        if unplaced:
+            note += (f"; {unplaced} execution(s) could not be placed in "
+                     "time and were KEPT (dropping them would shrink the "
+                     "real remaining spend)")
+        return kept, note
+    return episode_records, (
+        "cost scope 'remaining_to_task_end': the decision anchor has no "
+        "timestamp, so all in-episode executions aggregate (each counted "
+        "once); the remaining span cannot be narrowed")
+
+
+def _action_for_execution(harness, record) -> Optional[Any]:
+    """The action that linked ONE execution, or None.
+
+    Used only to place an execution relative to the decision anchor; a
+    resolution failure is reported by the CALLER, never hidden.
+    """
+    try:
+        actions = harness.actions.query(task_id=record.task_id)
+    except Exception:  # noqa: BLE001 - a read failure must not crash close-out
+        return None
+    for action in actions:
+        if action.linked_execution_id == record.execution_id:
+            return action
+    return None
+
+
+def _observe_remaining_latency(summary, harness, prediction, anchor_action,
+                               cost_records, cost_scope) -> None:
+    """Observe the REAL remaining wall-clock span (anchor -> task end).
+
+    Measured from two REAL timestamps: the DECISION anchor (when the
+    prediction was made) and the END of the observed span (the latest
+    ``ended_at`` among the cost-scope actions/executions). When a boundary
+    is missing the dimension stays UNKNOWN with a reason — the framework
+    never substitutes the script-execution cost for the remaining span.
+
+    Only meaningful for the ``remaining_to_task_end`` scope; an
+    ``attempt``/``strategy_window`` cost does not claim the remaining span,
+    so no ``remaining_latency_s`` is invented for it.
+    """
+    if cost_scope != "remaining_to_task_end":
+        return
+    anchor = _decision_anchor(prediction, anchor_action)
+    # An EXPLICITLY MEASURED ``remaining_latency_s`` on the records is the
+    # operator's own measurement of the whole span; it takes precedence over
+    # the timestamp-derived span, which is a FALLBACK used only when no
+    # record measured it. Overwriting a real backfilled measurement with a
+    # narrower derived span would drop the observation the report needs.
+    existing = summary.cost.get("remaining_latency_s") or {}
+    if (existing.get("comparable") or {}).get("value") is not None:
+        # Keep the record's own measurement; add the timestamp span as a
+        # SEPARATE diagnostic when it can be derived, never as a rewrite.
+        derived = _derive_remaining_span(harness, anchor, cost_records)
+        if derived is not None:
+            existing["timestamp_span"] = {
+                "value": derived,
+                "note": ("anchor -> latest in-scope action's ended_at: a "
+                         "diagnostic beside the record's own measurement; it "
+                         "does NOT replace it")}
+            existing["observed_from"] = {
+                "source": "record.remaining_latency_s",
+                "timestamp_span": derived,
+            }
+        return
+    if anchor is None:
+        summary.cost.setdefault("remaining_latency_s", {})
+        summary.cost["remaining_latency_s"] = {
+            "total": None,
+            "comparable": {
+                "value": None,
+                "basis": ("the decision anchor has no start timestamp: the "
+                          "remaining span cannot be established, and the "
+                          "script-execution cost is NOT substituted"),
+                "is_sum": False},
+            "n_measured": 0, "n_items": len(cost_records),
+            "complete": False, "non_cumulative": True, "per_item": None,
+            "eligibility": "missing",
+        }
+        return
+    # The end of the observed span: the latest real end among the in-scope
+    # executions' actions.
+    span = _derive_remaining_span(harness, anchor, cost_records)
+    if span is None:
+        summary.cost["remaining_latency_s"] = {
+            "total": None,
+            "comparable": {
+                "value": None,
+                "basis": ("no in-scope action recorded an end timestamp: "
+                          "the episode end cannot be placed in time, and the "
+                          "script-execution cost is NOT substituted"),
+                "is_sum": False},
+            "n_measured": 0, "n_items": len(cost_records),
+            "complete": False, "non_cumulative": True, "per_item": None,
+            "eligibility": "missing",
+        }
+        return
+    summary.cost["remaining_latency_s"] = {
+        "total": None,
+        "comparable": {
+            "value": round(span, 6),
+            "basis": ("measured from the decision anchor to the latest "
+                      "in-scope action's ended_at: a single real remaining "
+                      "span, never a sum"),
+            "is_sum": False},
+        "n_measured": 1, "n_items": len(cost_records),
+        "complete": True, "non_cumulative": True,
+        "per_item": [round(span, 6)],
+        "eligibility": "evaluable",
+        "observed_from": {"source": "action timestamps (anchor -> end)"},
+    }
+
+
+def _derive_remaining_span(harness, anchor, cost_records
+                           ) -> Optional[float]:
+    """The anchor -> latest-in-scope-end span from real timestamps, or None.
+
+    A DIAGNOSTIC/FALLBACK: an explicitly measured ``remaining_latency_s`` on
+    a record takes precedence (it is the operator's own whole-span
+    measurement). This derivation is used only when no record measured the
+    dimension, and it needs BOTH a real anchor and a real end timestamp.
+    """
+    if anchor is None:
+        return None
+    end_candidates: List[float] = []
+    for record in cost_records:
+        action_for = _action_for_execution(harness, record)
+        if action_for is not None and getattr(action_for, "ended_at", None) \
+                is not None:
+            end_candidates.append(float(action_for.ended_at))
+    if not end_candidates:
+        return None
+    return max(0.0, max(end_candidates) - float(anchor))
 
 
 def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
@@ -1111,8 +1394,34 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         }
 
     # -- cost observations ------------------------------------------------
-    in_scope_costs = [r.cost for r in records]
-    summary.cost = _aggregate_costs(in_scope_costs, records)
+    # The observation span follows the prediction's DECLARED cost scope, so
+    # a predicted span is compared against the SAME real span:
+    #
+    # - ``remaining_to_task_end`` (the default): the cost from the
+    #   prediction's anchor to the END of the episode. A predicted total of
+    #   300 tokens is compared against the WHOLE remaining spend (the failed
+    #   first attempt PLUS the repaired retry), never the first attempt
+    #   alone. Overlapping ranges are never summed: cumulative dimensions
+    #   sum the in-episode executions ONCE each, and a wall-clock span uses
+    #   a single explicit measurement.
+    # - ``attempt``: the bound action's own execution.
+    # - ``strategy_window``: the declared selection round's window.
+    cost_scope = _declared_cost_scope(prediction)
+    cost_records, scope_note = _cost_scope_records(
+        harness, prediction, action, records, candidate, cost_scope)
+    in_scope_costs = [r.cost for r in cost_records]
+    summary.cost = _aggregate_costs(in_scope_costs, cost_records)
+    summary.cost["scope"] = cost_scope
+    summary.cost["scope_note"] = scope_note
+    summary.cost_records = [r.execution_id for r in cost_records]
+    # The REMAINING wall-clock span (anchor -> end of task), MEASURED from
+    # real timestamps when they exist. This is the observation the primary
+    # latency dimension needs: without it a model could predict ten minutes
+    # as thirty seconds and never see an error. It is a SINGLE span, never
+    # a sum, and it is left UNKNOWN (with a reason) when either boundary is
+    # missing — the framework never downgrades to the script-execution cost.
+    _observe_remaining_latency(summary, harness, prediction, action,
+                               cost_records, cost_scope)
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -1886,7 +2195,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
     else:
         per_dim: Dict[str, Any] = {}
         excluded: Dict[str, str] = {}
-        predicted_dims = predicted_cost.expected.measured_dims()
+        predicted_dims = _predicted_cost_dims(predicted_cost)
         for dim in sorted(predicted_dims):
             real = summary.cost.get(dim) or {}
             # A value that was DECLARED (an ``agent_estimate``) or recorded
@@ -1901,10 +2210,24 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                     "which is not a measured truth: the total they would "
                     "have contributed to is not scored against")
                 continue
-            if real.get("total") is None:
-                excluded[dim] = ("not measured on the real scope"
-                                 if real.get("n_items") else
-                                 "no real execution to measure it")
+            # The COMPARABLE value, not the (possibly withheld) sum: a
+            # wall-clock span offers its single explicit measurement here
+            # even though it is never summed. "Cannot be summed" is not
+            # "cannot be compared".
+            comparable = (real.get("comparable") or {})
+            actual_value = comparable.get("value")
+            if actual_value is None:
+                reason = comparable.get("basis")
+                if real.get("n_items") and not real.get("n_measured"):
+                    excluded[dim] = ("not measured on the real scope"
+                                     + (f" ({reason})" if reason else ""))
+                elif real.get("n_items"):
+                    excluded[dim] = (
+                        "no single comparable value on the real scope: "
+                        + (reason or "the measured values cannot be "
+                                     "combined"))
+                else:
+                    excluded[dim] = "no real execution to measure it"
                 continue
             if not real.get("complete"):
                 excluded[dim] = ("partially measured on the real scope "
@@ -1913,7 +2236,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                                  "total is not a truth to score against")
                 continue
             p = float(getattr(predicted_cost.expected, dim))
-            a = float(real["total"])
+            a = float(actual_value)
             entry: Dict[str, Any] = {
                 "predicted": round(p, 6),
                 "actual": round(a, 6),

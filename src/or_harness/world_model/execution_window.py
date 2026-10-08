@@ -327,19 +327,38 @@ def _aggregate(costs: Sequence[Optional[CostVector]]) -> Dict[str, Any]:
     n_measured: Dict[str, int] = {dim: 0 for dim in COST_DIMENSIONS}
     accumulate_measured_costs([c for c in costs if c is not None],
                               total, n_measured)
+    # Per-dimension measured values, so a wall-clock span can offer a
+    # COMPARABLE value (a single explicit span) without being summed.
+    measured_values: Dict[str, List[float]] = {
+        dim: [] for dim in COST_DIMENSIONS}
+    for cost in costs:
+        if cost is None:
+            continue
+        for dim in cost.measured_dims():
+            measured_values[dim].append(float(getattr(cost, dim)))
     for dim in COST_DIMENSIONS:
         # Wall-clock spans (latency_s / remaining_latency_s) are never
-        # summed by ``accumulate_measured_costs``: their ``total`` stays the
-        # placeholder 0.0, so it must be reported as NOT a sum rather than
-        # as a zero. ``non_cumulative`` marks the dimension for readers.
+        # summed — overlapping ranges would double-count the same span — but
+        # a SINGLE explicit span IS comparable. ``total`` stays None for a
+        # non-cumulative dimension (it is not a sum); ``comparable`` carries
+        # the value a consumer should read.
         non_cumulative = dim in NON_CUMULATIVE_DIMENSIONS
+        if non_cumulative:
+            distinct = sorted({round(v, 6) for v in measured_values[dim]})
+            comparable_value = distinct[0] if len(distinct) == 1 else None
+            complete = comparable_value is not None
+        else:
+            comparable_value = (round(total[dim], 6)
+                                if n_measured[dim] else None)
+            complete = bool(costs) and n_measured[dim] == len(costs)
         dims[dim] = {
             "total": (None if non_cumulative
                       else (round(total[dim], 6) if n_measured[dim]
                             else None)),
+            "comparable": comparable_value,
             "n_measured": n_measured[dim],
             "n_items": len(costs),
-            "complete": bool(costs) and n_measured[dim] == len(costs),
+            "complete": complete,
             "partial": bool(n_measured[dim])
                        and n_measured[dim] != len(costs),
             "non_cumulative": non_cumulative,

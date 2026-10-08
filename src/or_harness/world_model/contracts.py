@@ -185,6 +185,14 @@ LEARNING_OPERATION_TYPES = ("induce", "revise", "reverify", "retire")
 #: Measurement scopes a prediction may declare.
 PREDICTION_SCOPES = ("attempt", "strategy_window")
 
+#: Which SPAN a predicted cost covers (``ExpectedCost.scope``), so the
+#: close-out observes the SAME span. ``remaining_to_task_end`` is the
+#: build's default: the cost from the decision's anchor to the END of the
+#: task, covering later modelling, coding, tool calls, solving, checking,
+#: repair and retries. Comparing a remaining-cost prediction against a
+#: single attempt (or the reverse) is a unit error and is refused.
+COST_SCOPE_KINDS = ("remaining_to_task_end", "attempt", "strategy_window")
+
 #: Legacy ``measurement_scope`` values with NO contract equivalent. Reading
 #: one must report it as UNSUPPORTED: silently shrinking a whole-task
 #: measurement to a single attempt would compare two different units while
@@ -1456,10 +1464,25 @@ class ExpectedCost:
     Kept SEPARATE from :attr:`PredictionTrace.call_cost` — the prediction
     call's own real spend. Conflating the two would either hide the
     prediction's cost or bill the candidate for a call it never made.
+
+    ``scope`` names WHICH span the predicted values cover, so the close-out
+    can observe the SAME span instead of defaulting to a single attempt:
+
+    - ``"remaining_to_task_end"`` (the build's default, r13): the cost from
+      THIS decision's anchor to the END of the task, covering the later
+      modelling, coding, tool calls, solving, checking, repair and retries.
+      The observation is the SAME remaining span, not the first attempt.
+    - ``"attempt"``: ONE solve attempt (a legacy/explicit narrow claim).
+    - ``"strategy_window"``: the whole window of one selection round.
+
+    The scope is DECLARED with the prediction, never re-chosen after the
+    result is seen: comparing a remaining-cost prediction against a single
+    attempt is a unit error, and so is the reverse.
     """
 
     expected: Optional[CostVector] = None
     measured: List[str] = field(default_factory=list)
+    scope: str = "remaining_to_task_end"
     notes: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -1467,6 +1490,7 @@ class ExpectedCost:
             "expected": (self.expected.to_dict()
                          if self.expected is not None else None),
             "expected_measured": list(self.measured),
+            "scope": self.scope,
             "notes": list(self.notes),
         }
 
@@ -1480,7 +1504,12 @@ class ExpectedCost:
                     if d in COST_DIMENSIONS]
         if vector is not None:
             vector.measured = set(measured)
-        return cls(expected=vector, measured=measured,
+        scope = str(data.get("scope") or "remaining_to_task_end")
+        if scope not in COST_SCOPE_KINDS:
+            # An unreadable scope is NOT silently coerced to a compatible
+            # one: it is kept as-is so the close-out refuses to compare it.
+            scope = str(data.get("scope") or "")
+        return cls(expected=vector, measured=measured, scope=scope,
                    notes=[str(n) for n in (data.get("notes") or [])])
 
 
