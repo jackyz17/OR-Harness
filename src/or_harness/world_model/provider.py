@@ -269,7 +269,7 @@ class HttpChatProvider(WorldModelProvider):
     name = "http-chat"
 
     def __init__(self, base_url: str, model: str, api_key: str, *,
-                 timeout_s: float = 300.0, max_output_tokens: int = 2048,
+                 timeout_s: float = 300.0, max_output_tokens: int = 8192,
                  temperature: float = 0.2):
         self.base_url = base_url.rstrip("/")
         self.model = model

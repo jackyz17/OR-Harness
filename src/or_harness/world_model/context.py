@@ -2098,7 +2098,7 @@ DEFAULT_INPUT_BUDGET_TOKENS = 64000
 DEFAULT_CHARS_PER_TOKEN = 4.0
 #: Room reserved for the model's output, so a full input never leaves the
 #: answer starved. Subtracted from the input budget.
-RESERVED_OUTPUT_TOKENS = 4096
+RESERVED_OUTPUT_TOKENS = 8192
 
 
 def _input_budget_chars() -> Tuple[int, Dict[str, Any]]:

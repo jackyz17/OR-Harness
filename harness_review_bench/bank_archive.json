@@ -1,8 +1,0 @@
-{
- "result": {
-  "bank": "archive",
-  "count": 0,
-  "cards": []
- },
- "summary": "0 cards in archive bank. A card blocks re-inducing that same pattern; lift it with `induce --force` when the environment has genuinely drifted."
-}

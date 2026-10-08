@@ -1,7 +1,0 @@
-{
- "id": 7,
- "question": "A marketing manager is planning a new campaign and has two channels to choose from, $X$ and $Y$. Both channels have different costs per unit of effectiveness: $\\$5$ for channel $X$ and $\\$3$ for channel $Y$. The total effectiveness score, calculated as the sum of the units allocated to each channel, must be at least 1000 points. Furthermore, the difference in units between channel X and twice that of channel Y should not exceed 500 units to maintain a balanced strategy. Given these constraints and aiming to minimize the total cost (assuming both X and Y are integers due to budget limitations), what would be the minimum cost needed for this campaign? Provide your answer rounded to the nearest dollar.",
- "answer": "3000",
- "difficulty": null,
- "category": "planning"
-}
