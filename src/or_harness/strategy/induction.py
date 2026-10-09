@@ -8,12 +8,12 @@ material (``ORHarness.induction_material`` — the methods actually performed,
 the outcomes, the failures, the before/after changes, the same-task attempt
 chains, the existing strategies) and submits the strategy in its own words.
 
-ONE entry is ONE strategy: :meth:`InductionEngine.submit_relation` either
-creates a new entry or revises an existing one under the same derived
-identity, and two independent strategies never share an entry. There is NO
-statistical path that turns a cell's means into a technique — the framework
-will not derive a method from a strategy name and a number. This is the only
-place knowledge changes.
+ONE entry is ONE strategy: :meth:`InductionEngine.submit_relation` ALWAYS
+creates a NEW entry (knowledge is ADDITIVE — it never revises or merges an
+existing one; a revision is a separate entry), and two independent strategies
+never share an entry. There is NO statistical path that turns a cell's means
+into a technique — the framework will not derive a method from a strategy
+name and a number. This is the only place knowledge changes.
 
 A strategy is a reusable modelling, decomposition, search, checking or
 repair technique — not necessarily the whole plan of one execution and not
@@ -168,6 +168,49 @@ def relation_material_gate(relation: Dict[str, Any],
     }
 
 
+#: Phrases that mark a claim as a PLACEHOLDER rather than knowledge.
+#: "no new knowledge" / "no new entry" / "nothing to add" are the empty-review
+#: verdict said in prose; writing them as an ENTRY fabricates knowledge. The
+#: guard below refuses such a submission at the SHAPE level, so the honest way
+#: to say "nothing new" — running the review with no ``--relation`` — is the
+#: only way to record it. Kept DELIBERATELY specific: a broad phrase like
+#: "nothing new" appears inside real claims and would be a false positive.
+_PLACEHOLDER_CLAIM_MARKERS = (
+    "no new knowledge", "no new entry", "no new entries",
+    "no new strategy", "no additional knowledge", "no new findings",
+    "nothing to add",
+)
+
+
+def _placeholder_claim_reason(claim: Dict[str, Any]) -> Optional[str]:
+    """Why a submitted claim is a PLACEHOLDER (or has an empty method).
+
+    SHAPE ONLY, never a value judgement: a placeholder phrase or an EMPTY
+    ``method.steps`` list means the payload is not a claim but a "nothing to
+    record" note dressed as one. A real claim — with method steps, or with no
+    ``method`` field at all (a conditional fact stated in prose) — passes.
+    The SUBJECT is excluded from the scan on purpose: a subject like
+    ``principle:keep_existing_state`` names the technique, not a placeholder.
+    """
+    text = str(claim.get("text") or "").strip().lower()
+    if text and any(marker in text for marker in _PLACEHOLDER_CLAIM_MARKERS):
+        return ("the claim text is a PLACEHOLDER ('no new knowledge' / "
+                "'nothing to add'): 'nothing new to record' is expressed by "
+                "running the review with NO --relation (an empty review), "
+                "never by writing a placeholder entry")
+    method = claim.get("method")
+    if isinstance(method, dict) and "steps" in method:
+        steps = method.get("steps")
+        if isinstance(steps, (list, tuple)) and not [
+                s for s in steps if str(s).strip()]:
+            return ("the claim declares an EMPTY method (no non-empty "
+                    "'method.steps'): a method claim needs its actual steps, "
+                    "and 'no method to report' is expressed by omitting the "
+                    "method field with an empty review, never by an empty "
+                    "step list")
+    return None
+
+
 class InductionEngine:
     def __init__(self, stats: ConditionalStats, sbank: StrategicBank):
         self.stats = stats
@@ -225,6 +268,19 @@ class InductionEngine:
             "method": raw.get("method"),
             "evidence": raw.get("evidence"),
         })
+        # SHAPE GUARD (never a value judgement). A claim that is a PLACEHOLDER
+        # ("no new knowledge" / "no new entry") or that declares an EMPTY
+        # method is refused as a malformed submission: the framework does not
+        # write a placeholder entry, because "no new knowledge" is expressed
+        # by running the review with NO relation (an empty review), never by
+        # fabricating an entry. This is SHAPE only — whether the knowledge is
+        # WORTH publishing stays the agent's decision (see the module
+        # docstring); a real claim with a method, or a claim with no method
+        # field at all (a conditional fact stated in prose), passes.
+        placeholder = _placeholder_claim_reason(claim)
+        if placeholder is not None:
+            return {"saved": None, "skipped": placeholder,
+                    "shape_guard": "placeholder_or_empty_method"}
         # Unify the two check syntaxes BEFORE any verification runs, so the
         # embedded form is never dropped on the floor.
         verify, check_note = _resolve_relation_check(raw, verify)

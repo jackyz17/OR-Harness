@@ -2834,7 +2834,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="submit a STRUCTURED strategy (repeatable). "
                         "{\"claim\": TEXT, \"evidence\": [{\"execution_id\": "
                         "ID, \"role\": ROLE}, ...], \"subject\": NAME?, "
-                        "\"target_entry_id\": ID?, "
                         "\"conditions\": {\"predicates\": {...}, \"note\": "
                         "TEXT}?, \"check\": {\"assertions\": [...]}?, "
                         "\"kind\": NAME?}. The role names the part each "
@@ -2844,10 +2843,15 @@ def build_parser() -> argparse.ArgumentParser:
                         "recorded facts — different names and cells may be "
                         "cited together. An optional free-form 'subject' "
                         "(e.g. 'principle:cross_period_state') carries a "
-                        "strategy that belongs to no single strategy id; an "
-                        "optional 'target_entry_id' REVISES that entry "
-                        "unambiguously. The strategy is published on its OWN "
-                        "verification plus >=2 independent tasks")
+                        "strategy that belongs to no single strategy id. "
+                        "Submission ALWAYS creates a NEW numbered entry — it "
+                        "never revises or merges an existing one; to replace "
+                        "an entry, `orx retire` it and resubmit. A claim is "
+                        "published on its OWN verification (the declared "
+                        "checks holding), NOT on a task count: a "
+                        "single-observation conditional_fact may publish "
+                        "(§2), and only an ADVANTAGE claim needs comparable "
+                        "measurements.")
     p.add_argument("--attribute-effect", action="append", default=None,
                    metavar="JSON",
                    help="record the AGENT's own use-effect attribution on an "

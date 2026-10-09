@@ -12,7 +12,7 @@ Read a bounded batch from the evidence bank:
 orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K]
 ```
 
-Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Optionally declare that no new knowledge is needed (`orx induce` with no relations): the review still runs the utility lifecycle and is recorded. Review `existing_knowledge` before deciding whether to add or leave it unchanged.
+Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Optionally declare that no new knowledge is needed (`orx induce` with no relations): the review still runs the utility lifecycle and is recorded. When nothing new is worth recording, this empty review is the **ONLY** correct form — never create a "no new knowledge" / "adopt" placeholder entry (the framework refuses such a placeholder, or an empty method, at submission). Review `existing_knowledge` before deciding whether to add or leave it unchanged.
 
 **One task at a time, without losing cross-task material.** For a fast per-task review, read THIS task's chain with `--task T`. The response then fills `related_history` with a SMALL semantically related set from other tasks, so the narrowing does not hide a comparable method, a failure, or a boundary case:
 
@@ -114,16 +114,19 @@ The framework computes declared assertions over recorded facts. Choose assertion
 | `probe` with `roles`, `path`, and `equals` / `min` / `max` / `in` | The referenced record values satisfy the declared condition |
 | `status` with `roles` and `status` | The referenced execution statuses match |
 | `comparison` with `metric`, `roles_a`, `roles_b`, `direction`, and `min_gap` | The measured difference between the specified sides |
-| `code_unchanged` with `roles` | The referenced records share a code hash |
+| `code_unchanged` with `roles` | The referenced records share a code hash — **only** for a claim that the SAME script/code was REUSED |
+| `code_changed` with `roles` | The referenced records span ≥2 DIFFERENT code hashes — for a claim that the formulation WAS changed |
+
+Choose the assertion that MATCHES the claim. A claim about a CHANGE must use `code_changed`; running `code_unchanged` against it makes the assertion fail and reports the wrong thing (a refuted ASSERTION, not a refuted claim). `code_changed`/`code_unchanged` are symmetric: each is the other's failure case, and a record without a code hash makes either ``insufficient_evidence``.
 
 For a comparison, `direction` describes side A relative to side B. `mode: "paired"` uses same-task pairs; unmatched records do not establish paired support. `aggregation: "all"` requires every pair to meet the condition; `"mean"` checks the batch average. Match the wording to that scope.
 
-Report the verdict accurately:
+Report the verdict accurately. These states describe **your DECLARED assertion only** — never the validity of the knowledge:
 
 - `verified`: the declared computable assertions passed within their recorded scope.
 - `fact_checked`: execution facts were read; the method argument and causal or transferable claims were not thereby certified.
 - `insufficient_evidence`: a required fact, metric, probe path, or comparison counterpart was unavailable.
-- `refuted`: a computable assertion failed on relevant evidence.
+- `refuted`: a computable assertion FAILED on relevant evidence. This refutes the **ASSERTION**, not necessarily the natural-language claim. When you see `refuted`, first self-check that the assertion MATCHES the claim (e.g. `code_unchanged` is inapplicable to a claim about CHANGING the formulation — use `code_changed`); a mismatch is an assertion error, not a knowledge failure.
 
 Keep agent-checked derivations and premises distinct from framework-computed checks. The current runtime has no automatic mathematical-proof verdict. A natural-language argument must be inspected on its merits; do not represent it as framework-certified correctness. Identify unchecked claim parts even when other assertions pass.
 
@@ -133,12 +136,13 @@ Submit one strategy with `orx induce --relation '<json>'`. Use actual execution 
 
 **Knowledge is ADDITIVE.** Each submission creates a NEW entry with a NUMBER the framework assigns (`1`, `2`, …). The number is the entry's identity: you do not invent it, a re-submission is a SEPARATE entry (never an in-place rewrite), and a revision or a contradiction is its own entry. A retired number is never reused. To point at an existing entry, cite its number in `--used-entry-ids` when you adopt it.
 
-**The framework checks only administrative matters at submission:**
+**The framework checks only administrative matters and payload SHAPE at submission:**
 
 - the claim payload is well-formed and storable;
 - every cited execution id exists and is real `executed` evidence;
 - the assigned number is valid;
-- the write (and the later index sync) succeeds.
+- the write (and the later index sync) succeeds;
+- **shape**: a placeholder claim (`no new knowledge` / `nothing to add`) or an empty `method.steps` is refused. This is SHAPE only, never a value judgement — "nothing new" is recorded by the empty review (no `--relation`), and whether a real claim is WORTH publishing is still YOUR call.
 
 **Publication is YOUR decision.** A submitted claim is offered within the scope you declared — the framework does NOT gate on the content and does NOT certify the conclusion. Any `check` block (or a standalone `--verify`) you supply is EVALUATED and RECORDED as your own audit trail on the entry's `verification` block (`verified` / `fact_checked` / `insufficient_evidence` / `refuted`); it is never required to publish. With no declared check, the framework reads the cited facts (`fact_checked`) and says so. A claim it cannot decide is stored as `insufficient_evidence`, honestly labelled.
 

@@ -95,6 +95,10 @@ class TestCodeUnchangedAssertion(unittest.TestCase):
                    {"execution_id": "ex_2", "role": "a"}],
             assertions=[{"kind": "code_unchanged", "roles": ["a"]}])
         self.assertEqual(report["state"], REFUTED)
+        # The refutation names the ASSERTION, not the natural-language claim:
+        # a claim about CHANGING the formulation must use code_changed.
+        self.assertIn("refutes the ASSERTION", report["conclusion"])
+        self.assertIn("code_changed", report["conclusion"])
 
     def test_missing_hash_is_insufficient(self):
         record = _rec("ex_1")
@@ -103,6 +107,39 @@ class TestCodeUnchangedAssertion(unittest.TestCase):
             "c", evidence=[record],
             roles=[{"execution_id": "ex_1", "role": "a"}],
             assertions=[{"kind": "code_unchanged", "roles": ["a"]}])
+
+
+class TestCodeChangedAssertion(unittest.TestCase):
+    """The SYMMETRIC primitive: a claim about a CHANGE is checked with
+    ``code_changed``, not ``code_unchanged``."""
+
+    def test_two_different_hashes_verifies(self):
+        report = verify_relation(
+            "c", evidence=[_rec("ex_lp", code_hash="lp_pulp_cbc"),
+                           _rec("ex_milp", code_hash="milp_pulp_cbc")],
+            roles=[{"execution_id": "ex_lp", "role": "cont"},
+                   {"execution_id": "ex_milp", "role": "int"}],
+            assertions=[{"kind": "code_changed", "roles": ["cont", "int"]}])
+        self.assertEqual(report["state"], VERIFIED)
+
+    def test_same_hash_refutes(self):
+        report = verify_relation(
+            "c", evidence=[_rec("ex_1", code_hash="same"),
+                           _rec("ex_2", code_hash="same")],
+            roles=[{"execution_id": "ex_1", "role": "a"},
+                   {"execution_id": "ex_2", "role": "a"}],
+            assertions=[{"kind": "code_changed", "roles": ["a"]}])
+        self.assertEqual(report["state"], REFUTED)
+        self.assertIn("SAME code", report["conclusion"])
+
+    def test_missing_hash_is_insufficient(self):
+        record = _rec("ex_1")
+        record["solver"] = {"name": "highs"}  # no code hash
+        report = verify_relation(
+            "c", evidence=[record, _rec("ex_2", code_hash="h2")],
+            roles=[{"execution_id": "ex_1", "role": "a"},
+                   {"execution_id": "ex_2", "role": "b"}],
+            assertions=[{"kind": "code_changed", "roles": ["a", "b"]}])
         self.assertEqual(report["state"], INSUFFICIENT)
 
 

@@ -25,8 +25,10 @@ Terminology discipline (do not blur):
                     failure risk, with prediction intervals and calibration
                     tracking. Mutation happens at INDUCTION time only: online
                     execution records new evidence (frozen checks on the
-                    facts) and touches no entry; the next induction creates,
-                    refreshes, and revises entries from that evidence, and a
+                    facts) and touches no entry; the next induction CREATES a
+                    new entry from that evidence (knowledge is ADDITIVE — an
+                    existing entry's core content is never revised or merged,
+                    only its lifecycle state is refreshed in place), and a
                     claim's applicability is read off the evidence that
                     supports it. Admission never depends on the survival of
                     the original evidence rows. Never stores raw execution
@@ -1538,13 +1540,15 @@ class StrategicEntry:
     The Strategic Knowledge unit: derived (not primary) knowledge — a
     revisable belief. Mutation happens at INDUCTION time only: online
     execution records evidence (frozen checks on the facts) and touches no
-    entry; ``orx induce`` creates, refreshes, and revises entries, replaying
-    that evidence. The entry keeps lightweight origin metadata
+    entry; ``orx induce`` CREATES a new entry from that evidence (knowledge is
+    ADDITIVE: an existing entry's core content is never rewritten or merged —
+    a revision is its own entry), and refreshes the LIFECYCLE state of
+    existing entries in place. The entry keeps lightweight origin metadata
     (``provenance`` = optional representative execution ids, ``support_n``);
     its continued validity does NOT depend on the survival of those evidence
     rows, and exact reconstruction of past entries is never required: an
-    existing entry is REFRESHED in place from whatever evidence is currently
-    retained (``induce`` re-reads the predicates on refresh), and a
+    existing entry's lifecycle is REFRESHED in place from whatever evidence is
+    currently retained (``induce`` re-reads the predicates on refresh), and a
     full-bank wipe is not offered because it would replace long-term
     knowledge with a recent-window restatement. Not a restatement of statistics — a claim about the future,
     with an interval, calibration tracking, and cross-group feature
@@ -1844,6 +1848,12 @@ class StrategicEntry:
 #: (status, task check, code hash, failure classes, method basis) but no
 #: computable assertion was declared, so it can publish only a single
 #: observation (a ``conditional_fact``), never a transfer claim.
+#: ``refuted`` means a DECLARED, COMPUTABLE ASSERTION did not hold on the
+#: referenced evidence. It is NOT a verdict on the knowledge's validity: the
+#: assertion may simply not match the claim (e.g. ``code_unchanged`` run
+#: against a claim about CHANGING the formulation). A refuted state is a
+#: signal to re-check assertion-vs-claim alignment, not to discard the
+#: claim.
 VERIFICATION_STATES = ("unverified", "verified", "fact_checked",
                        "insufficient_evidence", "refuted")
 

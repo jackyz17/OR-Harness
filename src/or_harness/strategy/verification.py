@@ -644,8 +644,11 @@ def _verify_rule(purpose: Optional[str], claim: str,
             if state == "refuted":
                 return _report(REFUTED, purpose=purpose, claim=claim,
                                checks=checks, evidence=evidence,
-                               conclusion=("the claim did not hold on the "
-                                           f"independent comparison: {reason}"))
+                               conclusion=("the DECLARED check did not hold "
+                                           "on the independent comparison "
+                                           f"({reason}): the ASSERTION failed, "
+                                           "which is not by itself a verdict "
+                                           "on the natural-language claim"))
     return _decision(purpose, claim, checks, evidence,
                      ("the declared check passed on real execution evidence"
                       + (" and an independent comparison" if supports else "")))
@@ -702,7 +705,10 @@ def _verify_repair(purpose: Optional[str], claim: str,
     if state == "refuted":
         return _report(REFUTED, purpose=purpose, claim=claim, checks=checks,
                        evidence=evidence,
-                       conclusion=f"the repaired result fails the check: {reason}")
+                       conclusion=("the repaired result fails the check "
+                                   f"({reason}): the ASSERTION failed, which "
+                                   "is not by itself a verdict on the "
+                                   "natural-language claim"))
     return _decision(purpose, claim, checks, evidence,
                      "the repair produced a usable success on the same task "
                      "where the original failed")
@@ -859,10 +865,19 @@ ASSERTION_PROBE = "probe"
 ASSERTION_STATUS = "status"
 ASSERTION_COMPARISON = "comparison"
 #: ``code_unchanged``: every record of the named role(s) reports the SAME
-#: executed code hash. A claim that says "the code was not changed" is
-#: checkable when the executions carry a code hash — an ``optimal`` status
-#: alone never backs such a claim.
+#: executed code hash. This assertion is APPLICABLE ONLY to a claim that says
+#: the SAME script/code was reused (e.g. "the formulation was not changed").
+#: A claim that says the formulation CHANGED needs its symmetric partner
+#: below — running ``code_unchanged`` against a claim about a CHANGED
+#: formulation makes the assertion fail and once read as "the CLAIM was
+#: refuted". A record that carries no code hash makes the claim
+#: unverifiable (INSUFFICIENT), never verified by default.
 ASSERTION_CODE_UNCHANGED = "code_unchanged"
+#: ``code_changed`` (the SYMMETRIC primitive): the named role(s) span at
+#: least TWO DIFFERENT executed code hashes. It backs a claim that the
+#: formulation was actually CHANGED; a claim about a change must not be
+#: checked with ``code_unchanged``.
+ASSERTION_CODE_CHANGED = "code_changed"
 
 #: Aggregation modes for a comparison assertion.
 AGGREGATION_ALL = "all"
@@ -1022,6 +1037,37 @@ def _assertion_checks(assertion: Dict[str, Any],
                 "the referenced executions ran DIFFERENT code: "
                 + "; ".join(f"{h[:12]}… in {sorted(ids)}"
                             for h, ids in sorted(hashes.items())))
+        return VERIFIED, None
+
+    if kind == ASSERTION_CODE_CHANGED:
+        # "The code was CHANGED." The SYMMETRIC partner of code_unchanged:
+        # the named role(s) span at least two DIFFERENT code hashes. A record
+        # that recorded no hash makes the claim unverifiable (INSUFFICIENT),
+        # never verified by default — and a claim about a change must use
+        # THIS kind, not code_unchanged.
+        records = _role_records(roles)
+        if records is None:
+            checks.append({"check": "assertion_scope", "source": FRAMEWORK,
+                           "kind": kind, "roles": roles,
+                           "problem": ("no roles named" if not roles
+                                       else "a named role has no evidence")})
+            return INSUFFICIENT, _no_evidence_reason(roles)
+        hashes: Dict[str, List[str]] = {}
+        for fact in records:
+            code_hash = fact.get("code_hash")
+            checks.append({"check": "assertion_code_hash", "source": FRAMEWORK,
+                           "execution_id": fact["execution_id"],
+                           "code_hash": code_hash, "ok": code_hash is not None})
+            if code_hash is None:
+                return INSUFFICIENT, (
+                    f"{fact['execution_id']} recorded no code hash, so "
+                    "whether the code was changed cannot be established")
+            hashes.setdefault(code_hash, []).append(fact["execution_id"])
+        if len(hashes) < 2:
+            return REFUTED, (
+                "the referenced executions ran the SAME code, not different "
+                "code: " + "; ".join(f"{h[:12]}… in {sorted(ids)}"
+                                     for h, ids in sorted(hashes.items())))
         return VERIFIED, None
 
     if kind == ASSERTION_COMPARISON:
@@ -1261,7 +1307,8 @@ def _normalize_assertion(raw: Any,
 #: Kinds the framework understands, used only to recognise a single-key
 #: wrapper (never to broaden what is computed).
 _KNOWN_ASSERTION_KINDS = (ASSERTION_PROBE, ASSERTION_STATUS,
-                          ASSERTION_COMPARISON, ASSERTION_CODE_UNCHANGED)
+                          ASSERTION_COMPARISON, ASSERTION_CODE_UNCHANGED,
+                          ASSERTION_CODE_CHANGED)
 
 
 def _fact_check_report(claim: str, records: List[Dict[str, Any]],
@@ -1488,8 +1535,15 @@ def verify_relation(claim: str,
                 if i not in verified_assertions and i != index]
             return _relation_report(REFUTED, claim, checks, assertion_list,
                                     scope=scope,
-                                    conclusion=("the claim did not hold on "
-                                                "real evidence: " + str(reason)))
+                                    conclusion=(
+                                        "a DECLARED assertion did not hold on "
+                                        "the referenced evidence (" + str(reason)
+                                        + "). This refutes the ASSERTION, not "
+                                        "necessarily the natural-language claim "
+                                        "— check that the assertion matches the "
+                                        "claim (e.g. code_unchanged is "
+                                        "inapplicable to a claim about CHANGING "
+                                        "the formulation; use code_changed)"))
         verified_assertions.append(index)
     scope["assertions_checked"] = verified_assertions
     scope["assertions_unchecked"] = []
@@ -2117,4 +2171,5 @@ __all__ = ["verify_candidate", "verify_relation", "verify_task_result",
            "REFUTED", "PURPOSE_RULE", "PURPOSE_REPAIR", "PURPOSE_COST_SAVING",
            "PURPOSE_RELATION", "TASK_CHECK_PASSED", "TASK_CHECK_FAILED",
            "TASK_CHECK_INSUFFICIENT", "TASK_INTENTS", "INTENT_RELAXATION",
-           "INTENT_INTERMEDIATE", "ASSERTION_CODE_UNCHANGED"]
+           "INTENT_INTERMEDIATE", "ASSERTION_CODE_UNCHANGED",
+           "ASSERTION_CODE_CHANGED"]
