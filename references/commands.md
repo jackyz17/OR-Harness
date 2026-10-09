@@ -32,7 +32,8 @@ Avoid duplicate work:
 | Close the episode | `close-episode` | Writes evaluations/calibration; performs retention |
 | Optional input/baseline | `context`, `predict-cost`, `snapshot`, `budget` | Context/snapshot persist; budget declaration writes; cost baseline reads |
 | Offline knowledge | `induction-material`, `induce`, `retire` | Material reads; induction/retirement change knowledge |
-| Optional maintenance forecasts | `predict-capability`, `compare-capability`, `accept-capability`, `reject-capability`, `bind-capability`, `evaluate-capability` | Forecast, compare, decide, bind facts, then evaluate later effects |
+| Optional maintenance forecasts | `predict-capability`, `compare-capability`, `accept-capability`, `reject-capability` | Forecast, compare, decide |
+| H+ follow-up (delayed supervision) | `bind-capability`, `evaluate-capability` | **stage-1 `bind-capability` runs right after close-out** to bind the FACT; **stage-2 `evaluate-capability` runs later** against qualified task-episodes to judge the EFFECT. Not optional when a claim exists |
 | Inspect and diagnose | `doctor`, `contract`, `inspect`, `calibration` | Read/build views; `calibration --rebuild` writes |
 | Repair/report | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` | Writes links, costs, actions, or correction history |
 | Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window` | Explicit maintenance; `--dry-run` writes nothing |
@@ -462,11 +463,15 @@ Kind is a descriptive label; publication is the agent's decision and does not pr
 
 **Purpose / effects:** Bind a real maintenance fact when the operation ran outside `accept-capability`. Captures actual operation/end time, created/revised/retired entries, admission verdict, cost, and scope agreement. Idempotent; no model call. It cannot set `effect_verified`.
 
+**When (stage-1):** triggered **right after close-out**, called explicitly (NOT inside `close-episode`). Bind only the candidate that actually executed; an unexecuted claim stays `pending` and is not bound.
+
 **Online H+:** `--prediction sp_...` binds the real attempt from its original gain trace (`prediction_source:"online_trace"`); no separate capability prediction is required. Stored maintenance forecasts report source `stored`. Evaluate later useful performance, not merely entry creation.
 
 ### `orx evaluate-capability --prediction ID [--tasks ID,...] [--paired JSON] [--allow-descriptive]`
 
 **Purpose / effects:** Persist later-effect evaluation. Uses closed task-episodes whose actual work ran after the operation, under produced knowledge, within frozen targeting and outside its source evidence. The unit is task-episode, not prediction count; repeated predictions for one execution do not add independent tasks.
+
+**When (stage-2):** triggered **later, on a rolling basis**, once a qualified later task-episode has closed (an unreached horizon stays `pending` — not a failure). Keep it bounded: evaluate the oldest ≤K claims per episode, or sweep at checkpoints.
 
 **Read / next:** Horizon not reached stays `pending`. Paired treated/reference evidence must cite real tasks and compatible metric/unit; it supplies the observed difference. Only `observed_improvement` sets `effect_verified`; descriptive movement, insufficient evidence and refutation are separate. `--allow-descriptive` explicitly limits the conclusion. Final verdicts short-circuit repeats; pending results may be evaluated later. Online `sp_...` traces use the original claim/conditions, never a hindsight forecast. No extra call is needed after a final verdict.
 
