@@ -728,7 +728,7 @@ class TestWorldModelConfigurationIsReachable(Base):
         saved = os.environ.pop("OR_WM_MAX_TOKENS", None)
         try:
             # 1. adapter default when nothing is set
-            self.assertEqual(cli_module._wm_max_tokens(self._args()), 2048)
+            self.assertEqual(cli_module._wm_max_tokens(self._args()), 8192)
             # 2. environment variable wins over the default
             os.environ["OR_WM_MAX_TOKENS"] = "8192"
             self.assertEqual(cli_module._wm_max_tokens(self._args()), 8192)
@@ -978,7 +978,7 @@ class TestTheJsonModeHintIsRemovable(unittest.TestCase):
                          ["model", "messages", "max_tokens", "temperature",
                           "enable_thinking", "chat_template_kwargs"])
         self.assertEqual(with_hint["temperature"], 0.2)
-        self.assertEqual(with_hint["max_tokens"], 2048)
+        self.assertEqual(with_hint["max_tokens"], 8192)
 
 
 class TestThinkingIsOffUnlessAskedFor(Base):
@@ -1029,7 +1029,7 @@ class TestThinkingIsOffUnlessAskedFor(Base):
                        OR_WM_NO_RESPONSE_FORMAT=None):
             body = _posted_body(self._provider())
         self.assertEqual(body["response_format"], {"type": "json_object"})
-        self.assertEqual(body["max_tokens"], 2048)
+        self.assertEqual(body["max_tokens"], 8192)
         self.assertEqual(body["temperature"], 0.2)
         self.assertEqual(sorted(body), sorted(
             ["model", "messages", "response_format", "max_tokens",

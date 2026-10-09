@@ -128,7 +128,7 @@ def _wm_max_tokens(args) -> int:
     The precedence is explicit and reported, because the value changes what
     the endpoint is ASKED for and a silent fallback would make a truncated
     answer look like a model failure. The default is deliberately left at
-    the adapter's own default (2048): a larger budget is a deployment
+    the adapter's own default (8192): a larger budget is a deployment
     decision, not something this build should assume for every model.
     """
     explicit = getattr(args, "wm_max_tokens", None)
@@ -2476,7 +2476,7 @@ def build_parser() -> argparse.ArgumentParser:
                         metavar="N",
                         help="output token budget for a world-model call "
                              "(precedence: this flag > $OR_WM_MAX_TOKENS > "
-                             "the adapter default 2048). A larger budget "
+                             "the adapter default 8192). A larger budget "
                              "costs more and is a deployment decision: set "
                              "it explicitly rather than assuming every model "
                              "needs it")
