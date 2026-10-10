@@ -25,10 +25,15 @@ engine over field names:
   dimensions (benefit / risk / interval) but PRESERVES cost: a different
   condition really did run and really did cost what it cost, and the user's
   rule is that the spend and the failure stay on record.
-* an UNKNOWN config key changes nothing unless it names the APPROACH (see
-  :data:`APPROACH_CONFIG_KEYS`). An unreported ``time_limit`` or ``seed``
-  does not invalidate an observation; an unreported ``relaxation`` does,
-  because the answer may not be the predicted approach's answer.
+* an UNKNOWN config key changes nothing, whether it names an effort knob
+  or the APPROACH: an unreported value is a missing receipt, not a
+  disagreement, and identity is decided by the structured fields. It is
+  REPORTED so a reader can see it was not confirmed.
+* a ``config`` key that DUPLICATES a structured identity field
+  (``config.solver`` restating the top-level ``solver``) is NEITHER a
+  mismatch nor an unknown: the two spellings need not agree and the
+  duplicate does not enter the judgement (see
+  :data:`DUPLICATE_CONFIG_KEYS`).
 * an unknown ``episode_id`` changes nothing: the observation is the bound
   action's own execution, and a MISSING label is a receipt the run did not
   fill in, not a proven mismatch.
@@ -64,6 +69,24 @@ APPROACH_CONFIG_KEYS: FrozenSet[str] = frozenset({
     "heuristic", "cutting_plane", "warm_start",
 })
 
+#: Config keys that DUPLICATE a structured identity field and therefore must
+#: not be judged as a config disagreement. ``solver`` is carried by the
+#: candidate's TOP-LEVEL ``solver`` (and by the action's own
+#: ``params.solver``); when a caller ALSO writes ``config.solver`` the two
+#: spellings need not agree (``pulp_cbc`` in config vs the normalized
+#: ``pulp`` at the top level) and that is NOT a different configuration.
+#: Such a key is neither a mismatch nor a blocking unknown: it is reported as
+#: a duplicate field and does not enter the identity judgement. This matters
+#: on the HISTORY path too — an OLD prediction that stored a
+#: ``config.solver`` conflict must stop blocking the outcome dimensions when
+#: it is re-derived.
+DUPLICATE_CONFIG_KEYS: FrozenSet[str] = frozenset({"solver"})
+
+#: The wording used wherever a duplicate field is skipped, so the reader can
+#: see WHY it did not block.
+DUPLICATE_FIELD_NOTE = ("duplicate field, not part of the identity "
+                        "judgement")
+
 #: Dimension impact of a KNOWN disagreement, by identity field.
 #:
 #: A disagreement about WHICH THING was predicted (the task, the action
@@ -93,10 +116,12 @@ MISMATCH_IMPACT: Dict[str, FrozenSet[str]] = {
 #: Dimension impact of an UNCONFIRMED (unknown) field.
 #:
 #: An unknown field is a MISSING RECEIPT, not a disagreement. It blocks
-#: only the comparison it really makes unreadable: an unreported effort
-#: knob (``time_limit``, ``seed``) blocks nothing; an unreported APPROACH
-#: knob blocks the benefit. A task-level unknown that leaves the outcome
-#: unreadable blocks the outcome and keeps cost.
+#: NOTHING by itself: an unreported ``time_limit`` / ``seed`` / any config
+#: key (including one that sounds like the approach) is a caveat, never
+#: grounds to discard a real attempt — identity is decided by the STRUCTURED
+#: fields, not by a missing prose knob. A task-level unknown that leaves the
+#: outcome unreadable (``effective_input``) blocks the outcome and keeps
+#: cost.
 UNKNOWN_IMPACT: Dict[str, FrozenSet[str]] = {
     "action_type": _NONE,
     "task_id": _NONE,
@@ -166,9 +191,35 @@ def binding_attribution(mismatch: Mapping[str, Any],
         fields[field] = {"kind": kind, "blocks": sorted(dims),
                          "reason": reason}
 
+    def _config_key_skipped(key: str) -> Optional[Dict[str, Any]]:
+        """A ``config`` key that DUPLICATES a structured identity field.
+
+        ``config.solver`` restates the candidate's TOP-LEVEL ``solver``; the
+        two spellings need not agree and that is not a different
+        configuration. It is neither a mismatch nor a blocking unknown, so it
+        is recorded (so a reader sees WHY) and returns ``True`` to signal
+        "skip this key".
+        """
+        if key not in DUPLICATE_CONFIG_KEYS:
+            return None
+        fields[f"config.{key}"] = {
+            "kind": "duplicate",
+            "blocks": [],
+            "reason": (f"config.{key} restates the candidate's top-level "
+                       f"{key!r}: {DUPLICATE_FIELD_NOTE} (the top-level "
+                       "value is the one compared)"),
+        }
+        notes.append(
+            f"config.{key} is a {DUPLICATE_FIELD_NOTE}: it restates the "
+            f"top-level {key!r} and is neither a mismatch nor a blocking "
+            "unknown")
+        return fields[f"config.{key}"]
+
     for name, entry in (mismatch or {}).items():
         if name == "config":
             for key in (entry or {}):
+                if _config_key_skipped(str(key)) is not None:
+                    continue
                 _add(f"config.{key}", "mismatch",
                      _field_impact("config", kind="mismatch",
                                    config_key=str(key)),
@@ -186,6 +237,8 @@ def binding_attribution(mismatch: Mapping[str, Any],
                 key = str(key)
                 if f"config.{key}" in fields:
                     continue          # a known disagreement already governs
+                if _config_key_skipped(key) is not None:
+                    continue
                 _add(f"config.{key}", "unknown",
                      _field_impact("config", kind="unknown", config_key=key),
                      _unknown_config_reason(key))
@@ -196,7 +249,8 @@ def binding_attribution(mismatch: Mapping[str, Any],
         _add(name, "unknown", _field_impact(name, kind="unknown"),
              _unknown_reason(name))
 
-    soft = sorted(f for f, e in fields.items() if not e["blocks"])
+    soft = sorted(f for f, e in fields.items()
+                  if not e["blocks"] and e["kind"] != "duplicate")
     if soft:
         notes.append(
             "these identity fields could not be confirmed but block "

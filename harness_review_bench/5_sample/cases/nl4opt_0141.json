@@ -1,0 +1,233 @@
+{
+  "task_id": "nl4opt_0141",
+  "prediction_id": "sp_604727cf9787",
+  "created_at_local": "2026-10-09 22:31:26",
+  "why_selected": "stored evaluation has benefit=identity_mismatch on config.solver; predicted config.solver='CBC', bound-action params.solver='pulp_cbc', execution solver.name={'code_hash': '25d5ea472a693c90', 'name': 'pulp_cbc'}",
+  "candidate": {
+    "action_type": "execute_strategy",
+    "config": {
+      "formulation": "MILP",
+      "solver": "CBC",
+      "solver_family": "pulp",
+      "variable_type": "Integer"
+    },
+    "episode_id": "ep1",
+    "expected_scope": [],
+    "method": {
+      "name": "milp_pulp_cbc_integer",
+      "steps": [
+        "Define M (mangos) and G (guavas) as Integer LP variables, lower bound 0",
+        "Objective: maximize profit = 3*M + 4*G",
+        "Budget constraint: 5*M + 3*G <= 20000",
+        "Min mango constraint: M >= 100",
+        "Max mango constraint: M <= 150",
+        "Guava ratio constraint: G <= M/3 (at most one-third of mangos)",
+        "Solve with PuLP/CBC and write result to result.json"
+      ]
+    },
+    "preconditions": [],
+    "scope": "attempt",
+    "scope_basis": "default",
+    "solver": "pulp_cbc",
+    "stop_conditions": [],
+    "strategy_id": "cand_16a36a02",
+    "task_id": "nl4opt_0141",
+    "window_id": null
+  },
+  "predicted_block": null,
+  "binding": {
+    "bound_action_id": "ac_d25b3cd47142",
+    "binding_mismatch": {
+      "config": {
+        "solver": {
+          "actual": "pulp_cbc",
+          "predicted": "CBC"
+        }
+      }
+    },
+    "binding_unknown": {
+      "config": {
+        "formulation": {
+          "actual": null,
+          "predicted": "MILP",
+          "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        },
+        "solver_family": {
+          "actual": null,
+          "predicted": "pulp",
+          "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        },
+        "variable_type": {
+          "actual": null,
+          "predicted": "Integer",
+          "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+      }
+    },
+    "config_observed": {
+      "solver": {
+        "actual": "pulp_cbc",
+        "predicted": "CBC"
+      }
+    },
+    "config_unknown": [
+      "formulation",
+      "solver_family",
+      "variable_type"
+    ],
+    "method_observed": null,
+    "problem_identity_digest": "5d11a8b849d8c9b7"
+  },
+  "action": {
+    "action_id": "ac_d25b3cd47142",
+    "action_type": "execute_strategy",
+    "params_solver": "pulp_cbc",
+    "params_execution_config_values": {
+      "script_timeout_s": 120.0,
+      "solver": "pulp_cbc"
+    },
+    "params_full": {
+      "execution_config": {
+        "action_id": "ac_d25b3cd47142",
+        "executor_configured": {
+          "solver_timeout_s": 60.0
+        },
+        "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+        "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+        "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+        "sources": {
+          "script_timeout_s": "executor",
+          "solver": "executor",
+          "solver_timeout_s": "executor_configured"
+        },
+        "stale_result_cleared": true,
+        "values": {
+          "script_timeout_s": 120.0,
+          "solver": "pulp_cbc"
+        }
+      },
+      "method_planned": {
+        "name": "milp_pulp_cbc_integer",
+        "source": "candidate",
+        "steps": [
+          "Define M (mangos) and G (guavas) as Integer LP variables, lower bound 0",
+          "Objective: maximize profit = 3*M + 4*G",
+          "Budget constraint: 5*M + 3*G <= 20000",
+          "Min mango constraint: M >= 100",
+          "Max mango constraint: M <= 150",
+          "Guava ratio constraint: G <= M/3 (at most one-third of mangos)",
+          "Solve with PuLP/CBC and write result to result.json"
+        ]
+      },
+      "prediction_bound_at": 1791556326.4256423,
+      "prediction_id": "sp_604727cf9787",
+      "solver": "pulp_cbc",
+      "strategy_id": "cand_16a36a02"
+    }
+  },
+  "execution": {
+    "execution_id": "ex_ebb25e1aee80",
+    "solver_name": "pulp_cbc",
+    "solver_raw": {
+      "code_hash": "25d5ea472a693c90",
+      "name": "pulp_cbc"
+    },
+    "method_planned": {
+      "name": "milp_pulp_cbc_integer",
+      "source": "candidate",
+      "steps": [
+        "Define M (mangos) and G (guavas) as Integer LP variables, lower bound 0",
+        "Objective: maximize profit = 3*M + 4*G",
+        "Budget constraint: 5*M + 3*G <= 20000",
+        "Min mango constraint: M >= 100",
+        "Max mango constraint: M <= 150",
+        "Guava ratio constraint: G <= M/3 (at most one-third of mangos)",
+        "Solve with PuLP/CBC and write result to result.json"
+      ]
+    },
+    "method_actual": null,
+    "quality": {
+      "feasible": false,
+      "gap": null,
+      "objective": null,
+      "problems": [],
+      "status": "error"
+    },
+    "failures": [
+      {
+        "attempt": 1,
+        "error": "Traceback (most recent call last): | AttributeError: module 'pulp' has no attribute 'LpStatusFeasible'. Did you mean: 'LpStatusInfeasible'?",
+        "error_class": "model",
+        "recovery_action": null
+      }
+    ]
+  },
+  "evaluation": {
+    "evaluation_id": "ev_8dc85a63d592",
+    "state": "evaluated",
+    "benefit": {
+      "eligibility": "identity_mismatch",
+      "identity_fields": [
+        "config.solver"
+      ],
+      "metric": "task_result_check_passed",
+      "predicted": 0.85,
+      "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth",
+      "unit": "boolean"
+    },
+    "cost_eligibility": "evaluable",
+    "risk_eligibility": null,
+    "interval_eligibility": "identity_mismatch",
+    "attribution": {
+      "benefit": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "interval": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "risk": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ]
+    },
+    "eligibility_block": {
+      "benefit": {
+        "eligibility": "identity_mismatch",
+        "metric": "task_result_check_passed",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      },
+      "cost": {
+        "dimensions": {
+          "llm_tokens": {
+            "eligibility": "evaluable"
+          },
+          "remaining_latency_s": {
+            "eligibility": "unobserved",
+            "reason": "partially measured on the real scope (1/2): an incomplete total is not a truth to score against"
+          },
+          "retries": {
+            "eligibility": "unobserved",
+            "reason": "partially measured on the real scope (1/2): an incomplete total is not a truth to score against"
+          },
+          "tool_calls": {
+            "eligibility": "evaluable"
+          }
+        },
+        "eligibility": "evaluable"
+      },
+      "interval": {
+        "eligibility": "identity_mismatch",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      }
+    }
+  },
+  "task_text": "A food truck owner can spend at most $20000 on mangos and guavas. A mango costs the food truck owner $5 and a guava costs him $3. Spices are added and each mango is sold for a profit of $3 while each guava is sold for a profit of $4. The owner estimates that at least 100 mangos but at the most 150 are sold each month. He also estimates that the number of guavas sold is at most a third of the mangos sold. How many mangos and guavas should be sold in order to maximize the profit?"
+}

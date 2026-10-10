@@ -1,0 +1,207 @@
+{
+  "task_id": "nl4opt_0184",
+  "prediction_id": "sp_24e25ee97e49",
+  "created_at_local": "2026-10-10 01:48:28",
+  "why_selected": "stored evaluation has benefit=identity_mismatch on config.solver; predicted config.solver='CBC_CMD', bound-action params.solver='pulp', execution solver.name={'code_hash': 'ceaffc2f260581b9', 'name': 'pulp'}",
+  "candidate": {
+    "action_type": "execute_strategy",
+    "config": {
+      "msg": 0,
+      "solver": "CBC_CMD"
+    },
+    "episode_id": "ep1",
+    "expected_scope": [],
+    "method": {
+      "name": "milp_pulp_cbc",
+      "steps": [
+        "Define M (medium carts) and L (large carts) as integer variables >= 0",
+        "Constraint horses: 2*M + 4*L <= 60",
+        "Constraint ratio: M == 3*L",
+        "Constraint minimum: M >= 5, L >= 5",
+        "Objective: maximize 30*M + 70*L",
+        "Solve with PuLP CBC solver",
+        "Write result.json using literal open('result.json', 'w') path"
+      ]
+    },
+    "preconditions": [],
+    "scope": "attempt",
+    "scope_basis": "default",
+    "solver": "pulp",
+    "stop_conditions": [],
+    "strategy_id": "cand_9c75d9d8",
+    "task_id": "nl4opt_0184",
+    "window_id": null
+  },
+  "predicted_block": null,
+  "binding": {
+    "bound_action_id": "ac_1ff80944c479",
+    "binding_mismatch": {
+      "config": {
+        "solver": {
+          "actual": "pulp",
+          "predicted": "CBC_CMD"
+        }
+      }
+    },
+    "binding_unknown": {
+      "config": {
+        "msg": {
+          "actual": null,
+          "predicted": 0,
+          "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+      }
+    },
+    "config_observed": {
+      "solver": {
+        "actual": "pulp",
+        "predicted": "CBC_CMD"
+      }
+    },
+    "config_unknown": [
+      "msg"
+    ],
+    "method_observed": null,
+    "problem_identity_digest": "f101be3e06710473"
+  },
+  "action": {
+    "action_id": "ac_1ff80944c479",
+    "action_type": "execute_strategy",
+    "params_solver": "pulp",
+    "params_execution_config_values": {
+      "script_timeout_s": 120.0,
+      "solver": "pulp"
+    },
+    "params_full": {
+      "execution_config": {
+        "action_id": "ac_1ff80944c479",
+        "executor_configured": {
+          "solver_timeout_s": 60.0
+        },
+        "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+        "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+        "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+        "sources": {
+          "script_timeout_s": "executor",
+          "solver": "executor",
+          "solver_timeout_s": "executor_configured"
+        },
+        "values": {
+          "script_timeout_s": 120.0,
+          "solver": "pulp"
+        }
+      },
+      "method_planned": {
+        "name": "milp_pulp_cbc",
+        "source": "candidate",
+        "steps": [
+          "Define M (medium carts) and L (large carts) as integer variables >= 0",
+          "Constraint horses: 2*M + 4*L <= 60",
+          "Constraint ratio: M == 3*L",
+          "Constraint minimum: M >= 5, L >= 5",
+          "Objective: maximize 30*M + 70*L",
+          "Solve with PuLP CBC solver",
+          "Write result.json using literal open('result.json', 'w') path"
+        ]
+      },
+      "prediction_bound_at": 1791568124.836704,
+      "prediction_id": "sp_24e25ee97e49",
+      "solver": "pulp",
+      "strategy_id": "cand_9c75d9d8"
+    }
+  },
+  "execution": {
+    "execution_id": "ex_8062aea8d6c4",
+    "solver_name": "pulp",
+    "solver_raw": {
+      "code_hash": "ceaffc2f260581b9",
+      "name": "pulp"
+    },
+    "method_planned": {
+      "name": "milp_pulp_cbc",
+      "source": "candidate",
+      "steps": [
+        "Define M (medium carts) and L (large carts) as integer variables >= 0",
+        "Constraint horses: 2*M + 4*L <= 60",
+        "Constraint ratio: M == 3*L",
+        "Constraint minimum: M >= 5, L >= 5",
+        "Objective: maximize 30*M + 70*L",
+        "Solve with PuLP CBC solver",
+        "Write result.json using literal open('result.json', 'w') path"
+      ]
+    },
+    "method_actual": null,
+    "quality": {
+      "feasible": true,
+      "gap": 0.0,
+      "objective": 960.0,
+      "problems": [],
+      "status": "optimal"
+    },
+    "failures": []
+  },
+  "evaluation": {
+    "evaluation_id": "ev_c8245f480efd",
+    "state": "evaluated",
+    "benefit": {
+      "eligibility": "identity_mismatch",
+      "identity_fields": [
+        "config.solver"
+      ],
+      "metric": "task_result_check_passed",
+      "predicted": 0.85,
+      "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth",
+      "unit": "boolean"
+    },
+    "cost_eligibility": "evaluable",
+    "risk_eligibility": null,
+    "interval_eligibility": "identity_mismatch",
+    "attribution": {
+      "benefit": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "interval": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "risk": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ]
+    },
+    "eligibility_block": {
+      "benefit": {
+        "eligibility": "identity_mismatch",
+        "metric": "task_result_check_passed",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      },
+      "cost": {
+        "dimensions": {
+          "llm_tokens": {
+            "eligibility": "evaluable"
+          },
+          "remaining_latency_s": {
+            "eligibility": "unobserved",
+            "reason": "partially measured on the real scope (1/2): an incomplete total is not a truth to score against"
+          },
+          "tool_calls": {
+            "eligibility": "evaluable"
+          }
+        },
+        "eligibility": "evaluable"
+      },
+      "interval": {
+        "eligibility": "identity_mismatch",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      }
+    }
+  },
+  "task_text": "A factory transports rice to the city in horse-drawn carts that are either medium or large size. A medium sized cart requires 2 horses and can carry 30 kg of rice. A large sized cart requires 4 horses and can carry 70 kg of rice. The factory has 60 horses available. Because the horses don't get along well, the number of medium sized carts must be three times the number of large sized carts. In addition, there must be at least 5 medium sized carts and at least 5 large sized carts. How many of each cart size should be used to maximize the amount of rice that can be transported?"
+}

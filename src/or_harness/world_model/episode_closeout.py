@@ -4287,6 +4287,40 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
                       "config key no longer erases an unambiguous "
                       "observation)"),
         }
+    else:
+        # The STATE alone is not enough: a corrected rule can UNBLOCK the
+        # outcome dimensions while the sample stays ``evaluated`` (a
+        # duplicate-field conflict used to block benefit/interval/risk but
+        # still left cost, so the state never moved from ``evaluated``). A
+        # rebuild that only compared the state would then MISS the
+        # correction. Compare the ATTRIBUTION and the per-field ELIGIBILITY
+        # index too, so an unblocked dimension is reported even when the
+        # state is unchanged.
+        stored_attribution = stored.attribution or {}
+        derived_attribution = derived.attribution or {}
+        if stored_attribution != derived_attribution:
+            changed["attribution"] = {
+                "stored": copy.deepcopy(stored_attribution),
+                "derived": copy.deepcopy(derived_attribution),
+                "note": ("the identity-attribution rules changed which "
+                         "dimensions a binding problem blocks; the stored "
+                         "evaluation is kept as history and the derived "
+                         "record is what calibration counts"),
+            }
+        stored_elig = (stored.eligibility_summary
+                       or stored._derive_eligibility())
+        derived_elig = (derived.eligibility_summary
+                        or derived._derive_eligibility())
+        if stored_elig != derived_elig:
+            changed["eligibility"] = {
+                "stored": copy.deepcopy(stored_elig),
+                "derived": copy.deepcopy(derived_elig),
+                "note": ("a field's eligibility moved even though the "
+                         "overall state did not (e.g. benefit/interval/risk "
+                         "were blocked by a duplicate-field conflict and are "
+                         "now evaluable, while cost kept the sample at "
+                         "``evaluated``)"),
+            }
     if not changed:
         return derived, None
     return derived, {
@@ -4303,11 +4337,17 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
             + ("; the stored STATE changed because the attribution rules "
                "now block only the dimensions a problem really invalidates"
                if "state" in changed else
-               ("; a cost dimension's measurement moved (a late host-usage "
-                "amend), so more of the real spend is now scored"
-                if "cost" in changed else
-                ". A task-result verdict changed after the evaluation was "
-                "written"))),
+               ("; the blocked dimensions or a field's eligibility moved "
+                "under the corrected attribution rules (a duplicate "
+                "config field no longer blocks the outcome), even though "
+                "the overall state did not"
+                if ("attribution" in changed or "eligibility" in changed)
+                else
+                ("; a cost dimension's measurement moved (a late host-usage "
+                 "amend), so more of the real spend is now scored"
+                 if "cost" in changed else
+                 ". A task-result verdict changed after the evaluation was "
+                 "written")))),
         "stored_state": stored_state,
         "derived_state": derived_state,
     }

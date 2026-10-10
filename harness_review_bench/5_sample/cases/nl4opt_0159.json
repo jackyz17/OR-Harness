@@ -1,0 +1,217 @@
+{
+  "task_id": "nl4opt_0159",
+  "prediction_id": "sp_1f7ba9392300",
+  "created_at_local": "2026-10-09 23:47:15",
+  "why_selected": "stored evaluation has benefit=identity_mismatch on config.solver; predicted config.solver='pulp_CBC', bound-action params.solver='pulp', execution solver.name={'code_hash': '757334fe225496be', 'name': 'pulp'}",
+  "candidate": {
+    "action_type": "execute_strategy",
+    "config": {
+      "sense": "maximize",
+      "solver": "pulp_CBC"
+    },
+    "episode_id": "ep1",
+    "expected_scope": [],
+    "method": {
+      "name": "lp_pulp_cbc_product_mix",
+      "steps": [
+        "Import pulp",
+        "Define W,V as LpVariable(lowBound=0, cat=Continuous)",
+        "Set objective 50*W+20*V maximize",
+        "Add W<=100",
+        "Add V<=170",
+        "Add W+V<=150",
+        "Solve with PULP_CBC_CMD",
+        "Write result.json with literal path"
+      ]
+    },
+    "preconditions": [],
+    "scope": "attempt",
+    "scope_basis": "default",
+    "solver": "pulp",
+    "stop_conditions": [],
+    "strategy_id": "cand_edaf7078",
+    "task_id": "nl4opt_0159",
+    "window_id": null
+  },
+  "predicted_block": null,
+  "binding": {
+    "bound_action_id": "ac_dcab27628542",
+    "binding_mismatch": {
+      "config": {
+        "solver": {
+          "actual": "pulp",
+          "predicted": "pulp_CBC"
+        }
+      }
+    },
+    "binding_unknown": {
+      "config": {
+        "sense": {
+          "actual": null,
+          "predicted": "maximize",
+          "reason": "the executed action records no value for this config key, so the predicted configuration cannot be confirmed for it"
+        }
+      }
+    },
+    "config_observed": {
+      "solver": {
+        "actual": "pulp",
+        "predicted": "pulp_CBC"
+      }
+    },
+    "config_unknown": [
+      "sense"
+    ],
+    "method_observed": null,
+    "problem_identity_digest": "cff8284a3e46944a"
+  },
+  "action": {
+    "action_id": "ac_dcab27628542",
+    "action_type": "execute_strategy",
+    "params_solver": "pulp",
+    "params_execution_config_values": {
+      "script_timeout_s": 120.0,
+      "solver": "pulp"
+    },
+    "params_full": {
+      "execution_config": {
+        "action_id": "ac_dcab27628542",
+        "executor_configured": {
+          "solver_timeout_s": 60.0
+        },
+        "executor_configured_note": "these values were HANDED to the script by the executor (through the environment). The framework cannot observe whether the solver honoured them, so they are not evidence that the solver used them: only a value the script READ BACK appears under 'script_reported'",
+        "note": "the configuration that actually took effect, split by observer: 'executor' keys are the ones the sandbox set (a script may not overwrite them), 'script_reported' keys are the values the solve script read back from the solver. A key absent here is UNKNOWN — never a copy of the predicted config",
+        "receipt": "the solve script reported no config (or its receipt carried no matching action_id stamp): script-internal parameters stay unknown",
+        "sources": {
+          "script_timeout_s": "executor",
+          "solver": "executor",
+          "solver_timeout_s": "executor_configured"
+        },
+        "values": {
+          "script_timeout_s": 120.0,
+          "solver": "pulp"
+        }
+      },
+      "method_planned": {
+        "name": "lp_pulp_cbc_product_mix",
+        "source": "candidate",
+        "steps": [
+          "Import pulp",
+          "Define W,V as LpVariable(lowBound=0, cat=Continuous)",
+          "Set objective 50*W+20*V maximize",
+          "Add W<=100",
+          "Add V<=170",
+          "Add W+V<=150",
+          "Solve with PULP_CBC_CMD",
+          "Write result.json with literal path"
+        ]
+      },
+      "prediction_bound_at": 1791560840.1462245,
+      "prediction_id": "sp_1f7ba9392300",
+      "solver": "pulp",
+      "strategy_id": "cand_edaf7078"
+    }
+  },
+  "execution": {
+    "execution_id": "ex_7725f9e444b3",
+    "solver_name": "pulp",
+    "solver_raw": {
+      "code_hash": "757334fe225496be",
+      "name": "pulp"
+    },
+    "method_planned": {
+      "name": "lp_pulp_cbc_product_mix",
+      "source": "candidate",
+      "steps": [
+        "Import pulp",
+        "Define W,V as LpVariable(lowBound=0, cat=Continuous)",
+        "Set objective 50*W+20*V maximize",
+        "Add W<=100",
+        "Add V<=170",
+        "Add W+V<=150",
+        "Solve with PULP_CBC_CMD",
+        "Write result.json with literal path"
+      ]
+    },
+    "method_actual": null,
+    "quality": {
+      "feasible": false,
+      "gap": null,
+      "objective": null,
+      "problems": [],
+      "status": "error"
+    },
+    "failures": [
+      {
+        "attempt": 1,
+        "error": "Traceback (most recent call last): | AttributeError: module 'pulp' has no attribute 'LpStatusFeasible'. Did you mean: 'LpStatusInfeasible'?",
+        "error_class": "model",
+        "recovery_action": null
+      }
+    ]
+  },
+  "evaluation": {
+    "evaluation_id": "ev_1aee0ecb94b9",
+    "state": "evaluated",
+    "benefit": {
+      "eligibility": "identity_mismatch",
+      "identity_fields": [
+        "config.solver"
+      ],
+      "metric": "task_result_check_passed",
+      "predicted": 0.7,
+      "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth",
+      "unit": "boolean"
+    },
+    "cost_eligibility": "evaluable",
+    "risk_eligibility": null,
+    "interval_eligibility": "identity_mismatch",
+    "attribution": {
+      "benefit": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "interval": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ],
+      "risk": [
+        {
+          "field": "config.solver",
+          "kind": "mismatch"
+        }
+      ]
+    },
+    "eligibility_block": {
+      "benefit": {
+        "eligibility": "identity_mismatch",
+        "metric": "task_result_check_passed",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      },
+      "cost": {
+        "dimensions": {
+          "llm_tokens": {
+            "eligibility": "evaluable"
+          },
+          "remaining_latency_s": {
+            "eligibility": "unobserved",
+            "reason": "partially measured on the real scope (1/2): an incomplete total is not a truth to score against"
+          },
+          "tool_calls": {
+            "eligibility": "evaluable"
+          }
+        },
+        "eligibility": "evaluable"
+      },
+      "interval": {
+        "eligibility": "identity_mismatch",
+        "reason": "the binding could not establish config.solver for this comparison: the real outcome may not be this prediction's truth"
+      }
+    }
+  },
+  "task_text": "A audio company make two types of headphones: wired headphones and wireless headphones. Two different teams make each type of headphones. The wired team can make at most 100 wired headphones per day and the wireless team can make at most 170 wireless headphones per day. Both teams require use of a shared audio testing machine, and this machine can be used to make a maximum of 150 headphones per day. The profit per wired headphone is $50 and the profit per wireless headphone $20. How many of each headphone should be made to maximize profit?"
+}

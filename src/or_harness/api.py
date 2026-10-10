@@ -2008,6 +2008,18 @@ class ORHarness:
         executor_configured = dict(
             observed_config.get("executor_configured") or {})
         for key, value in (candidate.config or {}).items():
+            # DUPLICATE FIELD: the solver is carried by the candidate's
+            # TOP-LEVEL ``solver`` (compared against the action's own
+            # ``params.solver`` above). When a caller ALSO writes it into
+            # ``config`` it is the same fact typed twice, and the two
+            # spellings need not agree (``pulp_cbc`` in config vs the
+            # normalized ``pulp`` at the top level) — that disagreement is
+            # NOT a different configuration, so it must not enter the
+            # identity comparison. The top-level check stands; config.solver
+            # is neither matched nor mistaken for a mismatch. It is never
+            # used to INFER or overwrite the top-level solver.
+            if key == "solver":
+                continue
             # Legacy actions recorded a few keys flat in params; keep
             # reading those so an old record still binds the way it did.
             if key in observed_values:

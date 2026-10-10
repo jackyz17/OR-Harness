@@ -165,6 +165,8 @@ Top-level `name`/`steps` normalize into `method={name,steps,why?,fallback?}`; st
 
 The full shape supports `action_type:"execute_strategy"`, task/episode identity, `strategy_id`, `method`, `solver`, `config`, and `scope:"attempt"`. Legacy `ActionSpec` preserves execution params and budget hints; an unmappable scope such as `task` is refused. Method-like content in config is moved to method; unknown execution-parameter keys are refused. Conflicting top-level and nested method declarations, a named method without steps, or neither ID nor method content are rejected before a model call. A bare ID alone does not describe a cold-start method: supply the actual steps.
 
+**Field responsibilities — do not duplicate.** `solver` (top level) is the declared solver / calling interface. `method` is the modelling form, variable domains, objective, constraints and the method steps. `config` is the execution parameters: time limit, random seed, solve precision, and comparable knobs. Put the solver ONLY at the top level: a `config.solver` copies it, and the two spellings need not agree — so a duplicate is neither matched nor mistaken for a mismatch (it does not block the outcome). Genuine execution params (`warm_start`, `msg`, `time_limit`, `seed`, `mip_gap`, …) stay in `config`; only keys that name no execution parameter at all are refused.
+
 ### `orx [--world-model URL::MODEL] predict-strategy --task t.json --candidate c.json [--episode ep1] [--context CTX_ID] [--cir cir.json]`
 
 **Purpose / effects:** Make and persist one `wm-so/1` candidate forecast and its real call usage. Builds a fresh context by default; an explicit context is checked against task/version/episode and effective CIR. Provider input contains the frozen content, not just IDs.
