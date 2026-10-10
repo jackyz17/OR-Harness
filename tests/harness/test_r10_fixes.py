@@ -228,10 +228,12 @@ class TestPaginationContiguity(HarnessTestCase):
         return h
 
     def _walk(self, h, budget=None, limit=None):
+        old = os.environ.get("OR_HARNESS_INDUCTION_MATERIAL_CHARS")
         if budget is not None:
             os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = str(budget)
         else:
             os.environ.pop("OR_HARNESS_INDUCTION_MATERIAL_CHARS", None)
+        self.addCleanup(self._restore_budget, old)
         seen, cursor, pages = [], None, 0
         while True:
             out = h.induction_material(limit=limit, cursor=cursor)
@@ -241,6 +243,18 @@ class TestPaginationContiguity(HarnessTestCase):
             if cursor is None or pages > 60:
                 break
         return seen
+
+    @staticmethod
+    def _restore_budget(old):
+        """Restore ``OR_HARNESS_INDUCTION_MATERIAL_CHARS`` after a walk.
+
+        Without this the small walk budget LEAKED into every later test in
+        the process, making tests that read the DEFAULT budget order-
+        dependent (a genuine hygiene bug this restores)."""
+        if old is None:
+            os.environ.pop("OR_HARNESS_INDUCTION_MATERIAL_CHARS", None)
+        else:
+            os.environ["OR_HARNESS_INDUCTION_MATERIAL_CHARS"] = old
 
     def test_limit_pages_without_gap_or_repeat(self):
         h = self._seed()

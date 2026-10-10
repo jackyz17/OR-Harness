@@ -403,10 +403,146 @@ def _scan(index, layer: str, query_vector: List[float]) -> List[Tuple[Any, float
     return scored
 
 
+def _extra_priority(row: Dict[str, Any], first_method_name: Any) -> int:
+    """How strongly a SAME-task extra row should fill a remaining slot.
+
+    Higher is better and, when slots remain, a representative that shows a
+    recorded FAILURE, an error status or a DIFFERENT method than the task's
+    first-selected attempt is preferred over one that merely scores higher:
+    the extra window exists to show a repair or a method change, not a third
+    near-identical success. This reads only EXISTING row fields — it never
+    infers that a change CAUSED an outcome.
+    """
+    score = 0
+    if int(row.get("failures") or 0) > 0:
+        score += 2
+    if str(row.get("status") or "") == "error":
+        score += 1
+    name = (row.get("method") or {}).get("name")
+    if name and first_method_name and name != first_method_name:
+        score += 2
+    return score
+
+
+def _select_representatives(rows: Sequence[Dict[str, Any]], *, top_k: int,
+                            per_task_max: int
+                            ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Select up to ``top_k`` resolved execution rows, task-representative.
+
+    Selection happens BEFORE the final cut (the caller passes the whole
+    resolved candidate list, in similarity order), so a task that would have
+    filled every slot with its top hits still leaves room for OTHER tasks:
+
+    - **First pass** — one row per distinct ``task_id`` (the best-scoring, as
+      ``rows`` is already similarity-ordered).
+    - **Second pass** — while slots remain, take the next-best row of a SAME
+      task, up to ``per_task_max`` per task, preferring a recorded
+      failure / error / method change (:func:`_extra_priority`).
+    - **Unknown task ids** share ONE bucket named ``unknown`` so several
+      unidentified rows are not inflated into several independent tasks.
+    - Slots are never padded with material that was not retrieved.
+
+    Returns the selected rows and a facts-only report (counts and the
+    per-task cap) — the selection is a READING WINDOW fact, never a support
+    strength, a promotion gate or an induction threshold.
+    """
+    if top_k <= 0:
+        return [], {"per_task_max": per_task_max, "n_distinct_tasks": 0,
+                    "n_unknown_task": 0, "same_task_second_picks": 0}
+    per_task_max = max(1, int(per_task_max))
+    first: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    extras: Dict[str, List[Dict[str, Any]]] = {}
+    unknown = 0
+    for row in rows:
+        key = str(row.get("task_id") or "unknown")
+        if key == "unknown":
+            unknown += 1
+        if key not in first:
+            first[key] = row
+            order.append(key)
+            extras[key] = []
+        else:
+            extras[key].append(row)
+    selected: List[Dict[str, Any]] = []
+    for key in order:
+        if len(selected) >= top_k:
+            break
+        selected.append(first[key])
+    second_picks = 0
+    used: Dict[str, int] = {key: 1 for key in order}
+    if len(selected) < top_k and per_task_max > 1:
+        pool: List[Tuple[int, float, str, Dict[str, Any]]] = []
+        for key in order:
+            first_name = (first[key].get("method") or {}).get("name")
+            for row in extras[key]:
+                pool.append((_extra_priority(row, first_name),
+                             float(row.get("similarity") or 0.0), key, row))
+        # A representative failure/method-change first, then by similarity.
+        pool.sort(key=lambda t: (-t[0], -t[1]))
+        for _prio, _sim, key, row in pool:
+            if len(selected) >= top_k:
+                break
+            if used.get(key, 0) >= per_task_max:
+                continue
+            selected.append(row)
+            used[key] = used.get(key, 0) + 1
+            second_picks += 1
+    report = {
+        "per_task_max": per_task_max,
+        "n_selected": len(selected),
+        "n_distinct_tasks": len(order),
+        "n_unknown_task": unknown,
+        "same_task_second_picks": second_picks,
+        "note": ("task-representative selection BEFORE the final cut: one "
+                 "row per task first, then a second same-task attempt when "
+                 "slots remain, preferring a recorded failure or a method "
+                 "change. An unknown task id shares ONE bucket. The counts "
+                 "are READING-WINDOW facts only — they never raise a "
+                 "claim's support, gate induction or license promotion."),
+    }
+    return selected, report
+
+
+def _diversified_execution_rows(harness, scan: Sequence[Tuple[Any, float]],
+                                *, top_k: int, per_task_max: int,
+                                excluded: set,
+                                task_profile: Optional[ProblemProfile],
+                                query_cell: Optional[str]
+                                ) -> Tuple[List[Dict[str, Any]], int, int,
+                                           Dict[str, Any]]:
+    """Resolve candidates in similarity order, then pick task representatives.
+
+    Only RESOLVED rows (with a live record and an unchanged document digest)
+    enter the selection, so a stale or excluded item never occupies a slot.
+    Returns ``(rows, excluded_hits, stale_count, selection_report)``. The
+    resolution order follows ``scan``; no candidate below the eventual cut is
+    examined beyond what the selection needs.
+    """
+    candidates: List[Dict[str, Any]] = []
+    excluded_hits = 0
+    stale = 0
+    for item, score in scan:
+        if excluded and str(item.get("id")) in excluded:
+            excluded_hits += 1
+            continue
+        row = _execution_entry(harness, item, score, task_profile, query_cell)
+        if row is None:
+            stale += 1
+            continue
+        candidates.append(row)
+    rows, report = _select_representatives(candidates, top_k=top_k,
+                                           per_task_max=per_task_max)
+    report["excluded_self_hits"] = excluded_hits
+    report["stale"] = stale
+    return rows, excluded_hits, stale, report
+
+
 def recall_vectors(harness, task_text: str, *, top_k: int = 5,
                    include_unverified: bool = False,
                    task_profile: Optional[ProblemProfile] = None,
-                   exclude_execution_ids: Optional[Sequence[str]] = None
+                   exclude_execution_ids: Optional[Sequence[str]] = None,
+                   diversify: bool = False, per_task_max: int = 2
                    ) -> Dict[str, Any]:
     """Embedding-first discovery over both memory layers.
 
@@ -421,6 +557,15 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
     a batch's own methods would otherwise retrieve that very batch (an
     identical document scores highest) and the "related history" channel
     would degrade into self-repetition. Knowledge hits are unaffected.
+
+    ``diversify`` (default ``False`` — the online recall path is UNCHANGED)
+    selects execution hits to be TASK-REPRESENTATIVE before the final cut:
+    one row per ``task_id`` first, then a second same-task attempt while
+    slots remain, preferring a recorded failure or a method change. Without
+    it, one task's near-identical attempts fill the whole window. The
+    selection is a reading-window fact reported under
+    ``execution_selection`` — it never raises a claim's support, gates
+    induction or licenses promotion.
     """
     backend = getattr(harness, "embedding_index", None)
     if backend is None:
@@ -457,20 +602,32 @@ def recall_vectors(harness, task_text: str, *, top_k: int = 5,
     excluded_hits = 0
 
     if LAYER_EXECUTION in usable:
-        for item, score in _scan(backend, LAYER_EXECUTION, query_vector):
-            if len(result["execution_evidence"]) >= top_k:
-                break
-            if excluded and str(item.get("id")) in excluded:
-                # Dropped BEFORE the top_k cut, so a self-hit never occupies
-                # a slot a real related execution could have taken.
-                excluded_hits += 1
-                continue
-            row = _execution_entry(harness, item, score, task_profile,
-                                   query_cell)
-            if row is None:
-                stale[LAYER_EXECUTION] += 1
-                continue
-            result["execution_evidence"].append(row)
+        scan = _scan(backend, LAYER_EXECUTION, query_vector)
+        if diversify:
+            rows, excluded_hits, stale_exec, report = \
+                _diversified_execution_rows(
+                    harness, scan, top_k=top_k, per_task_max=per_task_max,
+                    excluded=excluded, task_profile=task_profile,
+                    query_cell=query_cell)
+            result["execution_evidence"] = rows
+            result["execution_selection"] = report
+            stale[LAYER_EXECUTION] = stale_exec
+        else:
+            for item, score in scan:
+                if len(result["execution_evidence"]) >= top_k:
+                    break
+                if excluded and str(item.get("id")) in excluded:
+                    # Dropped BEFORE the top_k cut, so a self-hit never
+                    # occupies a slot a real related execution could have
+                    # taken.
+                    excluded_hits += 1
+                    continue
+                row = _execution_entry(harness, item, score, task_profile,
+                                       query_cell)
+                if row is None:
+                    stale[LAYER_EXECUTION] += 1
+                    continue
+                result["execution_evidence"].append(row)
 
     if LAYER_STRATEGIC in usable:
         for item, score in _scan(backend, LAYER_STRATEGIC, query_vector):

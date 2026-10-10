@@ -435,20 +435,60 @@ def _material_entry_by_id(harness, execution_id: str
     return _material_entry(harness, record)
 
 
+def _knowledge_entry_full(entry, *, related_by: Sequence[str],
+                          discovery: Optional[Dict[str, Any]] = None
+                          ) -> Dict[str, Any]:
+    """ONE strategic entry expanded WHOLE, via the entry's own serializer.
+
+    Uses ``StrategicEntry.to_dict()`` so the FULL claim (text, kind,
+    conditions, method with its steps/why/fallback, evidence refs and the
+    derived identity), the applicability notes, the risk conditions, the
+    verification block, the expected quality/cost/failure, the provenance
+    and the effect attribution all travel — reusing the entry's EXISTING
+    serialization instead of a second hand-picked field list that could drop
+    one on a later change.
+
+    ``status`` / ``verification_state`` / ``support_n`` are echoed AS
+    STORED: a hit, a full expansion or a de-duplication never turns an
+    unverified entry into verified, and reading is NOT online adoption —
+    nothing here writes and nothing moves ``last_consulted_at``.
+    """
+    item: Dict[str, Any] = {
+        "entry_id": entry.entry_id,
+        "strategy_id": entry.strategy_id,
+        "status": entry.status,
+        "verification_state": entry.verification_state,
+        "support_n": entry.support_n,
+        # The reference the related_history knowledge channel points at, so
+        # the SAME body is never sent twice across the two sections.
+        "body_ref": f"existing_knowledge[{entry.entry_id}]",
+        "related_by": list(related_by),
+        # The FULL entry, single-sourced from its own serializer.
+        "body": entry.to_dict(),
+    }
+    if discovery:
+        item["discovery"] = discovery
+    return item
+
+
 def _existing_knowledge_for(harness, records: Sequence[Any]
                             ) -> List[Dict[str, Any]]:
     """Existing entries that could RELATE to this batch, with the WHY.
 
     Lets a reviewer see what knowledge ALREADY exists before deciding to add,
-    revise or leave alone — including the claim text and verification state,
-    so an entry that a new counterexample would change is visible.
+    revise or leave alone. Each matched entry is expanded WHOLE
+    (:func:`_knowledge_entry_full`) — full claim, method, conditions, evidence
+    and verification — not a projection that dropped its method or scope.
 
     Matching is by CONTENT and provenance, not method-name equality alone:
     ``strategy_id`` equality, a claim that CITES one of this batch's
-    executions, or overlapping applicability predicates. A claim-only entry
-    with a free-form subject is therefore still offered for revision when its
-    evidence or conditions overlap — the reviewer is never blind to a
-    revisable entry just because its name differs from the strategy id.
+    executions, or overlapping applicability predicates. The family is a
+    matching HINT only: it never vetoes a cross-family semantic hit, which
+    the caller merges from the SAME read's retrieval
+    (:func:`_merge_existing_knowledge`). A claim-only entry with a free-form
+    subject is therefore still offered for revision when its evidence or
+    conditions overlap — the reviewer is never blind to a revisable entry
+    just because its name differs from the strategy id.
     """
     seen: set = set()
     out: List[Dict[str, Any]] = []
@@ -472,18 +512,79 @@ def _existing_knowledge_for(harness, records: Sequence[Any]
         if not matches:
             continue
         seen.add(entry.entry_id)
-        out.append({
-            "entry_id": entry.entry_id,
-            "strategy_id": entry.strategy_id,
-            "claim_text": ((entry.claim or {}).get("text") or None),
-            "kind": ((entry.claim or {}).get("kind") or None),
-            "predicates": entry.predicates,
-            "support_n": entry.support_n,
-            "verification_state": entry.verification_state,
-            "status": entry.status,
-            "related_by": matches,
-        })
+        out.append(_knowledge_entry_full(entry, related_by=matches))
     return out
+
+
+def _merge_existing_knowledge(harness, records: Sequence[Any],
+                              knowledge_refs: Sequence[Dict[str, Any]]
+                              ) -> List[Dict[str, Any]]:
+    """UNION the structural matches with this read's SEMANTIC knowledge hits.
+
+    The two channels used to be SPLIT — a structural projection under
+    ``existing_knowledge`` and the semantic hits under
+    ``related_history.knowledge`` — so an entry reached only by text was
+    never offered as existing knowledge, and a cross-family hit stayed
+    invisible beside a same-family projection. Here both are merged by
+    ``entry_id`` into the ONE ``existing_knowledge`` list, each kept WHOLE
+    exactly once:
+
+    - an entry matched by BOTH channels keeps ONE body, with the semantic
+      reason and its similarity/structural metadata attached beside the
+      structural reasons;
+    - a semantic hit NOT matched structurally is ADDED with
+      ``related_by=["semantic"]`` — the family hint never vetoes it;
+    - de-duplication is by ``entry_id`` ONLY. The framework NEVER declares
+      two different numbers "the same knowledge" and never drops one of
+      them; a semantic id that can no longer be resolved (retired/archived
+      between indexing and now) is REPORTED, not silently removed.
+
+    No extra embedding call is made: ``knowledge_refs`` come from the SAME
+    retrieval ``related_history`` already ran for this read.
+    """
+    items = _existing_knowledge_for(harness, records)
+    by_id: Dict[str, Dict[str, Any]] = {it["entry_id"]: it for it in items}
+    for ref in knowledge_refs:
+        entry_id = str(ref.get("entry_id") or "")
+        if not entry_id:
+            continue
+        discovery = {
+            "similarity": ref.get("similarity"),
+            "structural_match": ref.get("structural_match"),
+            "reusable": ref.get("reusable"),
+            "note": ("semantic discovery: a similarity hit is a DISCOVERY "
+                     "signal, not support strength"),
+        }
+        entry = harness.sbank.get(entry_id)
+        if entry is None:
+            # The knowledge left the bank between indexing and now: report
+            # the stale reference rather than dropping it silently.
+            if entry_id not in by_id:
+                stale: Dict[str, Any] = {
+                    "entry_id": entry_id,
+                    "strategy_id": ref.get("strategy_id"),
+                    "stale": ("the entry is no longer in the strategic bank "
+                              "(retired or archived); its indexed vector "
+                              "survives until the index is rebuilt"),
+                    "related_by": ["semantic"],
+                    "discovery": discovery,
+                }
+                items.append(stale)
+                by_id[entry_id] = stale
+            else:
+                by_id[entry_id].setdefault("discovery", discovery)
+            continue
+        if entry_id in by_id:
+            item = by_id[entry_id]
+            if "semantic" not in item["related_by"]:
+                item["related_by"].append("semantic")
+            item["discovery"] = discovery
+        else:
+            item = _knowledge_entry_full(entry, related_by=["semantic"],
+                                         discovery=discovery)
+            items.append(item)
+            by_id[entry_id] = item
+    return items
 
 
 def build_induction_material(harness, *,
@@ -671,11 +772,22 @@ def build_induction_material(harness, *,
     # RELATED HISTORY. Narrowing the batch to one task speeds the read up;
     # the retrieval below puts cross-task material back so the narrowing
     # never blinds the reviewer to a comparable method, a failure or a
-    # boundary case on ANOTHER task.
+    # boundary case on ANOTHER task. It runs BEFORE the knowledge assembly
+    # so its ONE retrieval also feeds the semantic knowledge hits into the
+    # unified ``existing_knowledge`` — no second embedding query is made.
     related_history = _related_history(
         harness, reviewed, related_top_k=related_top_k)
     memory_state = _memory_state(harness, related_history,
                                  n_records=len(material))
+    # UNIFIED EXISTING KNOWLEDGE. The structural matches (strategy_id /
+    # cites-this-evidence / same-family) are UNIONed by entry_id with this
+    # read's SEMANTIC knowledge hits, so an entry reached only by text — a
+    # cross-family hit in particular — is offered as existing knowledge too,
+    # expanded WHOLE exactly once. ``related_history.knowledge`` keeps only
+    # references into this list, so no body is sent twice.
+    existing_knowledge = _merge_existing_knowledge(
+        harness, [r for r in reviewed if r is not None],
+        related_history.get("knowledge") or [])
     return {
         "count": len(material),
         "total_completed": total,
@@ -714,8 +826,18 @@ def build_induction_material(harness, *,
         # reviewer sees the whole history of one instance (not only the
         # final success).
         "task_chains": {t: task_chains[t] for t in tasks},
-        "existing_knowledge": _existing_knowledge_for(
-            harness, [r for r in reviewed if r is not None]),
+        "existing_knowledge": existing_knowledge,
+        "existing_knowledge_note": (
+            "the union of the structural matches (strategy_id / cites this "
+            "batch's evidence / same family) and this read's SEMANTIC "
+            "knowledge hits, merged by entry_id and expanded WHOLE through "
+            "the entry's own serializer — one body per entry. `related_by` "
+            "lists every reason it is here (the family is a HINT, never a "
+            "veto); a semantic-only hit is added, not filtered out. status / "
+            "verification_state / support_n are as STORED: a hit, a full "
+            "expansion or a de-duplication never verifies an entry or adds "
+            "support, and reading is not adoption. `related_history."
+            "knowledge` points back at these bodies by `body_ref`."),
         "related_history": related_history,
         "budget": {
             "chars_used": used,
@@ -850,26 +972,64 @@ def _joint_hplus_for(harness, records: Sequence[Any]) -> Dict[str, Any]:
     }
 
 
-def _query_text_for(records: Sequence[Any]) -> Dict[str, Any]:
+def _stored_task_text(harness, record: Any) -> Optional[str]:
+    """The record's OWN task text, read by its version digest, or None.
+
+    Reads the SAVED text (never a re-extraction from the full CIR): the
+    record names its ``task_text_digest`` and the store returns that
+    version's text. A record whose version was not retained returns None —
+    the query then reports the missing text instead of substituting another
+    version.
+    """
+    digest = getattr(record, "task_text_digest", None)
+    if harness is None or not digest:
+        return None
+    try:
+        return harness.store.get_task_text(record.task_id, digest)
+    except Exception:  # noqa: BLE001 - a degraded read is reported upstream
+        return None
+
+
+def _query_text_for(records: Sequence[Any],
+                    harness: Any = None) -> Dict[str, Any]:
     """Build the retrieval query from THIS batch's own recorded content.
 
     The query is assembled from what the records already carry — the METHOD
     that ran (``method_actual`` preferred, else ``method_planned`` with a
-    basis marker) and the structural summary (family + coupling cell). It is
-    deliberately NOT built from the outcome, the task number or the solver
-    name, so the search is not biased toward successes or toward one tool;
-    the solver and failure text can still be put in the query by the agent,
-    which may rewrite it freely.
+    ``planned_only`` basis marker) and the problem's own nature: the saved
+    TASK TEXT (bounded) plus the structural summary (family + coupling cell).
+    It is deliberately NOT built from the outcome, the task number or the
+    solver name, so the search is not biased toward successes or toward one
+    tool; the solver and failure text can still be put in the query by the
+    agent, which may rewrite it freely.
 
     NO model call is made: the text is a deterministic join of recorded
-    fields. A record that reports no method yields a query with an explicit
+    fields. A record that reports no method yields an explicit
     ``method: null`` marker — the plan is never presented as the performed
     fact.
+
+    r20 fixes to the repeated-attempt query:
+
+    - steps are de-duplicated deterministically (identical text kept once) so
+      a repeated step cannot fill the whole query;
+    - the steps of DIFFERENT attempts are interleaved round-robin, so a later
+      attempt's changed method is not buried under the first attempt's long
+      step list;
+    - the problem's nature participates via the saved task text and the
+      structural coupling features (not only ``family``);
+    - the query text is length-bounded, and the bound applies ONLY to this
+      query — it never rewrites or clips the evidence/knowledge bodies;
+    - a missing task text / structure / performed method is reported
+      (``missing``), not silently dropped: degraded reads stay possible.
     """
     names: List[str] = []
-    steps: List[str] = []
+    per_attempt_steps: List[List[str]] = []
     basis = "none"
     family = None
+    coupling: Dict[str, Any] = {}
+    seen_names: set = set()
+    seen_steps: set = set()
+    task_text: Optional[str] = None
     for record in records:
         actual = getattr(record, "method_actual", None)
         planned = getattr(record, "method_planned", None)
@@ -885,33 +1045,115 @@ def _query_text_for(records: Sequence[Any]) -> Dict[str, Any]:
                 basis = "performed" if basis != "performed" else basis
             elif basis == "none":
                 basis = "planned_only"
-            if chosen.get("name"):
-                names.append(str(chosen["name"]))
-            steps.extend(str(s) for s in (chosen.get("steps") or [])
-                         if str(s).strip())
+            name = str(chosen.get("name") or "").strip()
+            if name and name not in seen_names:
+                seen_names.add(name)
+                names.append(name)
+            steps: List[str] = []
+            for s in (chosen.get("steps") or []):
+                text = " ".join(str(s).split())
+                if text and text not in seen_steps:
+                    seen_steps.add(text)
+                    steps.append(text)
+            per_attempt_steps.append(steps)
         profile = getattr(record, "profile_snapshot", None)
-        if family is None and profile is not None:
-            family = getattr(profile, "family", None)
+        if profile is not None:
+            if family is None:
+                family = getattr(profile, "family", None)
+            if not coupling:
+                coupling = {f: getattr(profile, f, None)
+                            for f in GROUPING_FEATURES}
+        if task_text is None:
+            task_text = _stored_task_text(harness, record)
+    # Round-robin the attempts so a later attempt's changed method is not
+    # buried under the first attempt's long step list.
+    ordered_steps: List[str] = []
+    index = 0
+    while True:
+        added = False
+        for steps in per_attempt_steps:
+            if index < len(steps):
+                ordered_steps.append(steps[index])
+                added = True
+        if not added:
+            break
+        index += 1
+        if len(ordered_steps) >= _QUERY_MAX_STEPS:
+            break
+    missing: List[str] = []
+    if not names and not ordered_steps:
+        missing.append("method")
+    elif basis != "performed":
+        missing.append("performed_method")
+    if not task_text:
+        missing.append("task_text")
+    if not (family or any(v is not None for v in coupling.values())):
+        missing.append("structure")
     parts: List[str] = []
+    if task_text:
+        parts.append("task " + _clip(task_text, _QUERY_MAX_TASK_CHARS))
     if names:
-        parts.append("methods " + ", ".join(dict.fromkeys(names)))
-    if steps:
-        parts.append("steps " + "; ".join(steps[:_MATERIAL_MAX_STEPS * 2]))
-    if family:
-        parts.append(f"family {family}")
+        parts.append("methods " + ", ".join(names))
+    if ordered_steps:
+        parts.append("steps " + "; ".join(ordered_steps[:_QUERY_MAX_STEPS]))
+    structural = _query_structure_text(family, coupling)
+    if structural:
+        parts.append(structural)
     text = " ".join(parts).strip()
+    text = _clip(text, _QUERY_MAX_CHARS)
     return {
         "text": text,
         "method": ({"name": names[0] if names else "",
-                    "steps": steps[:8], "basis": basis}
-                   if names or steps else None),
+                    "steps": ordered_steps[:_QUERY_MAX_STEPS],
+                    "basis": basis}
+                   if names or ordered_steps else None),
         "basis": basis,
-        "note": ("query built from THIS batch's recorded method and family; "
-                 "no model call, and the outcome/task number/solver name are "
-                 "NOT used so the search is not biased toward successes")
+        "structure": structural or None,
+        "missing": missing,
+        "note": ("query built from THIS batch's recorded method (steps "
+                 "de-duplicated and interleaved across attempts), the saved "
+                 "task text and the structural coupling; no model call, and "
+                 "the outcome/task number/solver name are NOT used so the "
+                 "search is not biased toward successes")
         if text else "no method or structure recorded on this batch: the "
                      "related-history query is empty",
     }
+
+
+#: Query-text bounds. These clip ONLY the retrieval query; the material's
+#: evidence and knowledge bodies are read WHOLE and are never rewritten.
+_QUERY_MAX_STEPS = 16
+_QUERY_MAX_TASK_CHARS = 600
+_QUERY_MAX_CHARS = 2400
+
+
+def _clip(text: str, limit: int) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit]
+
+
+def _query_structure_text(family: Any,
+                          coupling: Dict[str, Any]) -> str:
+    """The structural part of the query: family plus the coupling features.
+
+    ``family`` alone is a coarse hint; the coupling features
+    (``GROUPING_FEATURES``) are what makes two tasks the SAME structural cell,
+    so a search keyed on the problem's nature includes them. Values are read
+    off the stored profile verbatim — never re-derived.
+    """
+    parts: List[str] = []
+    if family:
+        parts.append(f"family {family}")
+    for name in GROUPING_FEATURES:
+        value = coupling.get(name)
+        if value is None:
+            continue
+        label = name.replace("_", " ")
+        try:
+            parts.append(f"{label} {float(value):.2f}")
+        except (TypeError, ValueError):
+            parts.append(f"{label} {value}")
+    return " ".join(parts)
 
 
 def _memory_state(harness, related_history: Dict[str, Any], *,
@@ -1033,7 +1275,7 @@ def _related_history(harness, records: Sequence[Any], *,
                      if related_top_k <= 0 else
                      "no records in this batch to build a query from"),
         }
-    query = _query_text_for(valid)
+    query = _query_text_for(valid, harness)
     base = {
         "enabled": True,
         "top_k": int(related_top_k),
@@ -1063,7 +1305,14 @@ def _related_history(harness, records: Sequence[Any], *,
             harness, query["text"],
             top_k=int(related_top_k), include_unverified=True,
             task_profile=getattr(valid[-1], "profile_snapshot", None),
-            exclude_execution_ids=batch_ids)
+            exclude_execution_ids=batch_ids,
+            # Task-representative selection BEFORE the cut: one execution per
+            # task first (then a second same-task attempt while slots remain,
+            # preferring a failure or a method change), so one task's
+            # near-identical attempts cannot fill the whole window. The
+            # ONLINE recall path leaves this OFF — this is the induction
+            # channel's own reading policy, not a global recall change.
+            diversify=True, per_task_max=2)
     except Exception as exc:  # noqa: BLE001 - a degraded channel is reported
         base["executions"] = []
         base["knowledge"] = []
@@ -1105,8 +1354,37 @@ def _related_history(harness, records: Sequence[Any], *,
         }
         expanded.append(entry)
     base["executions"] = expanded
-    base["knowledge"] = list(vectors.get("strategic_knowledge") or [])
+    # The knowledge channel keeps REFERENCES into the unified
+    # ``existing_knowledge`` (assembled once, right after this call): the
+    # entry's body is sent ONCE there, and the retrieval signal
+    # (similarity/structural_match/reusable) travels here beside the
+    # ``body_ref`` pointer. Nothing is duplicated and the discovery metadata
+    # is preserved.
+    base["knowledge"] = [
+        {
+            "entry_id": hit.get("entry_id"),
+            "strategy_id": hit.get("strategy_id"),
+            "similarity": hit.get("similarity"),
+            "structural_match": hit.get("structural_match"),
+            "reusable": hit.get("reusable"),
+            "status": hit.get("status"),
+            "verification_state": hit.get("verification_state"),
+            "support_n": hit.get("support_n"),
+            "body_ref": f"existing_knowledge[{hit.get('entry_id')}]",
+            "note": ("a reference to the entry's FULL body in "
+                     "``existing_knowledge`` (sent once); similarity is a "
+                     "DISCOVERY signal, not support strength. status / "
+                     "verification_state / support_n are echoed as STORED"),
+        }
+        for hit in (vectors.get("strategic_knowledge") or [])
+    ]
     base["degraded_layers"] = vectors.get("degraded_layers")
+    # The task-representative selection facts (how many executions, how many
+    # distinct tasks, how many same-task second picks, how many unknown-task
+    # rows). A READING-WINDOW fact only: it never raises support, gates
+    # induction or licenses promotion.
+    if vectors.get("execution_selection"):
+        base["execution_selection"] = vectors["execution_selection"]
     base["no_hits"] = not (base["executions"] or base["knowledge"])
     base["failure"] = None
     return base

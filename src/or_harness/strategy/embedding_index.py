@@ -309,12 +309,24 @@ def document_entry(entry: StrategicEntry) -> str:
     """The retrieval document of one strategic entry (knowledge text).
 
     Composed ENTIRELY of text that ALREADY EXISTS on the entry: the
-    harness-written ``applicability`` notes, the entry's structured relation
-    claims, its own recorded actions, and a readable transcription of its
-    predicates. No new summarization step is invented — a generated
-    paraphrase would be unverifiable content masquerading as the claim — and
-    nothing is pulled from a built-in directory: a method's name and
-    description are not evidence about what ran.
+    harness-written ``applicability`` notes, the entry's STRUCTURED method
+    (its ``name``, every ``step``, the ``why`` and the ``fallback``) and
+    ``conditions`` note, its structured relation claims, its own recorded
+    actions, and a readable transcription of its predicates. No new
+    summarization step is invented — a generated paraphrase would be
+    unverifiable content masquerading as the claim — and nothing is pulled
+    from a built-in directory: a method's name and description are not
+    evidence about what ran.
+
+    r20: the entry's ``claim.method`` STEPS and ``claim.conditions`` were
+    stored but never reached this document, so a method's later premise or a
+    boundary note sat on the entry and was unsearchable. They are appended
+    here verbatim (concatenation, no generation) with a deterministic
+    line-level de-duplication, so a repeated step is not charged twice while
+    genuinely different content is kept. Editing any of these fields moves
+    the digest, so the existing stale-vector rule drops the old vector — the
+    index must be rebuilt for the knowledge layer (``orx rebuild-index
+    --layer strategic``), never silently treated as fresh.
     """
     parts: List[str] = []
     parts.extend(str(note) for note in entry.applicability if str(note).strip())
@@ -328,11 +340,55 @@ def document_entry(entry: StrategicEntry) -> str:
     claim_text = str(claim.get("text") or "").strip()
     if claim_text:
         parts.append("claim: " + claim_text)
+    # The claim's CONDITIONS note (the stated applicability boundary), when
+    # the claim carries one. Read verbatim; never a derived condition.
+    conditions = claim.get("conditions") or {}
+    cond_note = str(conditions.get("note") or "").strip()
+    if cond_note:
+        parts.append("conditions: " + cond_note)
+    # The claim's STRUCTURED METHOD (name + steps + why + fallback). This is
+    # the reusable "how"; leaving it out of the document made a recorded
+    # method unsearchable.
+    method = claim.get("method")
+    if isinstance(method, dict):
+        name = str(method.get("name") or "").strip()
+        steps = [str(s).strip() for s in (method.get("steps") or [])
+                 if str(s).strip()]
+        if name:
+            parts.append("method: " + name)
+        if steps:
+            parts.append("steps: " + "; ".join(steps))
+        why = str(method.get("why") or "").strip()
+        if why:
+            parts.append("why: " + why)
+        fallback = str(method.get("fallback") or "").strip()
+        if fallback:
+            parts.append("fallback: " + fallback)
     if entry.actions:
         parts.append("actions: " + " ".join(str(a) for a in entry.actions))
     parts.append(readable_predicates(entry.predicates))
     parts.append(f"strategy {entry.strategy_id}")
-    return " ".join(part for part in parts if part and str(part).strip())
+    return _join_document_parts(parts)
+
+
+def _join_document_parts(parts: List[str]) -> str:
+    """Join document parts, dropping EXACT duplicate lines deterministically.
+
+    A light guard against the same text being appended twice (e.g. an
+    applicability note that repeats a claim sentence): parts that are
+    byte-identical are kept ONCE, in first-seen order. This compares the
+    literal strings only — it never declares two DIFFERENT strings to be the
+    same knowledge, so genuinely distinct content always survives.
+    """
+    seen: set = set()
+    kept: List[str] = []
+    for part in parts:
+        text = str(part or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        kept.append(text)
+    return " ".join(kept)
 
 
 def readable_predicates(predicates: Dict[str, Any]) -> str:
