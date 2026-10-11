@@ -65,6 +65,26 @@ class BudgetLedger:
         recorded = [r for r in self.bank.query(task_id=task_id)
                     if r.source == "executed"
                     and r.measurement_scope == "attempt"]
+        # ONE read of this task's actions, reused for every execution's
+        # episode attribution AND for the action-cost rollup below. Reading
+        # the WHOLE action log per execution (the old
+        # ``_episode_of_execution`` loop) made the work grow with TOTAL
+        # action history even though the budget is one task: the fix is to
+        # read the task's own actions once and index them by linked
+        # execution. ``query(task_id=...)`` is the existing indexed path —
+        # no new index system is introduced.
+        task_actions = [a for a in self.actions.query(task_id=task_id)
+                        if a.source != "hypothetical"]
+        episode_of: Dict[str, Optional[str]] = {}
+        for act in task_actions:
+            # Match the EXACT rule the per-execution helper used: only an
+            # ``execute_strategy`` action attributes an execution to an
+            # episode. Other action types may also carry a
+            # ``linked_execution_id`` (e.g. an ``own``-rollup cost action),
+            # and they must not change attribution.
+            if act.linked_execution_id is not None \
+                    and act.action_type == "execute_strategy":
+                episode_of[str(act.linked_execution_id)] = act.episode_id
         if episode_id is not None:
             # Episode scoping: an execution belongs to an episode via its
             # execute_strategy action. Executions with NO action linkage
@@ -73,15 +93,13 @@ class BudgetLedger:
             # make a fresh episode start "exceeded". They are reported
             # SEPARATELY (unattributed) instead of being folded in.
             recorded = [r for r in recorded
-                        if self._episode_of_execution(r.execution_id)
-                        == episode_id]
+                        if episode_of.get(r.execution_id) == episode_id]
         recorded_ids = {r.execution_id for r in recorded}
         staged = [p for p in self.bank.pending(task_id=task_id)
                   if p.execution_id not in recorded_ids]
         if episode_id is not None:
             staged = [p for p in staged
-                      if self._episode_of_execution(p.execution_id)
-                      == episode_id]
+                      if episode_of.get(p.execution_id) == episode_id]
         # Unattributed executions: same task, no episode linkage. Reported
         # as their own line so the caller sees the real history without it
         # being charged to this episode.
@@ -89,8 +107,7 @@ class BudgetLedger:
             unattributed = [r for r in self.bank.query(task_id=task_id)
                             if r.source == "executed"
                             and r.measurement_scope == "attempt"
-                            and self._episode_of_execution(r.execution_id)
-                            is None]
+                            and episode_of.get(r.execution_id) is None]
         else:
             unattributed = []
 
@@ -118,8 +135,7 @@ class BudgetLedger:
         # execution) is counted here. A cost of None means UNKNOWN, not
         # zero: the action still participates in the completeness judgment.
         action_costs: List[Dict[str, Any]] = []
-        actions = [a for a in self.actions.query(task_id=task_id)
-                   if a.source != "hypothetical"]
+        actions = task_actions
         if episode_id is not None:
             actions = [a for a in actions if a.episode_id == episode_id]
         for act in actions:
@@ -367,7 +383,16 @@ class BudgetLedger:
 
     def _episode_of_execution(self, execution_id: str) -> Optional[str]:
         """The episode a recorded/staged execution belongs to (via its
-        execute_strategy action), or None when no action recorded it."""
+        execute_strategy action), or None when no action recorded it.
+
+        Kept as a SINGLE-execution helper for callers that hold one id and
+        no task scope. ``consumption`` no longer calls it per execution: it
+        reads the task's actions ONCE and indexes them by linked execution
+        (see the ``episode_of`` map there), so the budget no longer rescans
+        the whole action log per execution. This helper still reads the task
+        ``None`` (all tasks) only when a caller has no task to scope by —
+        the budget path always has one.
+        """
         for act in self.actions.query():
             if (act.action_type == "execute_strategy"
                     and act.linked_execution_id == execution_id):

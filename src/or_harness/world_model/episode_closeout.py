@@ -1031,7 +1031,7 @@ def _closeout_created_at(harness, task_id: str,
         return None
 
 
-def _task_end_boundary(harness, prediction, episode_id,
+def _task_end_boundary(harness, task_id: str, episode_id: Optional[str],
                        anchor: Optional[float],
                        closeout_created_at: Optional[float] = None
                        ) -> Tuple[Optional[float], str]:
@@ -1054,19 +1054,27 @@ def _task_end_boundary(harness, prediction, episode_id,
        close-out's own ``created_at`` is NOT used as a substitute: "the
        close-out ran" is not "the task ended".
 
-    **Original solving phase only.** Candidate actions are restricted to the
-    prediction's OWN episode and to actions that ended at or before the
-    close-out was recorded, so a LATER offline induction / audit / calibration
-    re-evaluation cannot keep pushing the original task's end into the
-    future.
+    **FULL identity only.** Candidates are restricted to the prediction's OWN
+    ``(task_id, episode_id)``. Reading only by ``episode_id`` let a second
+    task that reused the same episode label (e.g. ``ep1``) leak its
+    ``finish_task`` boundary into this task; reading with a ``None`` episode
+    and no task filter degenerated into "all tasks". ``None`` and ``""`` both
+    mean "no episode" and are matched EXPLICITLY, never as "no filter".
+
+    **Original solving phase only.** Candidate actions are restricted to
+    actions that ended at or before the close-out was recorded, so a LATER
+    offline induction / audit / calibration re-evaluation cannot keep pushing
+    the original task's end into the future.
     """
     try:
-        actions = harness.actions.query(episode_id=episode_id)
+        actions = harness.actions.query(task_id=task_id)
     except Exception:  # noqa: BLE001 - a read failure is reported as unknown
         return None, "no_end_boundary"
+    want_episode = str(episode_id or "")
     relevant = [a for a in actions
                 if getattr(a, "action_type", "") in
-                ("execute_strategy", "verify", "finish_task")]
+                ("execute_strategy", "verify", "finish_task")
+                and str(getattr(a, "episode_id", None) or "") == want_episode]
     if closeout_created_at is not None:
         relevant = [a for a in relevant
                     if getattr(a, "ended_at", None) is not None
@@ -1111,8 +1119,9 @@ def _observe_remaining_latency(summary, harness, prediction, anchor_action,
     if cost_scope != "remaining_to_task_end":
         return
     anchor, anchor_basis = _decision_anchor(harness, prediction, anchor_action)
-    end, end_basis = _task_end_boundary(harness, prediction, episode_id,
-                                        anchor, closeout_created_at)
+    end, end_basis = _task_end_boundary(
+        harness, prediction.candidate.task_id, episode_id,
+        anchor, closeout_created_at)
     # An EXPLICITLY MEASURED ``remaining_latency_s`` on the records is the
     # operator's own measurement of the whole span; it takes precedence over
     # the timestamp-derived span, which is a FALLBACK used only when no
@@ -1182,7 +1191,7 @@ def _observe_remaining_latency(summary, harness, prediction, anchor_action,
 
 
 def _derive_remaining_span(harness, anchor, cost_records,
-                           *, prediction=None, episode_id=None,
+                           *, prediction=None, task_id=None, episode_id=None,
                            closeout_created_at=None) -> Optional[float]:
     """The anchor -> real-task-end span from real timestamps, or None.
 
@@ -1194,8 +1203,9 @@ def _derive_remaining_span(harness, anchor, cost_records,
     if anchor is None:
         return None
     if prediction is not None:
-        end, _basis = _task_end_boundary(harness, prediction, episode_id,
-                                         anchor, closeout_created_at)
+        end, _basis = _task_end_boundary(
+            harness, prediction.candidate.task_id, episode_id,
+            anchor, closeout_created_at)
         return None if end is None else max(0.0, float(end) - float(anchor))
     end_candidates: List[float] = []
     for record in cost_records:
@@ -1834,7 +1844,8 @@ def _scope_aggregate(units: Dict[str, Dict[str, Any]],
 def observe_episode_events(harness, records: Sequence[Any], *,
                            task_id: str,
                            episode_id: Optional[str],
-                           scope_complete: bool
+                           scope_complete: bool,
+                           budget_cache: Optional[Dict[Any, Any]] = None
                            ) -> Dict[str, Any]:
     """The FRAMEWORK's own observation of the risk events of one scope.
 
@@ -1847,6 +1858,12 @@ def observe_episode_events(harness, records: Sequence[Any], *,
     execution-unit events: a scope that has not finished has no absence
     evidence, so those labels stay unknown. The budget event is decided by
     the ledger alone (its unit is the episode).
+
+    ``budget_cache`` (optional) is a PUBLISH-SCOPED map ``(task, episode) ->
+    budget view`` shared within ONE calibration publication, so the episode's
+    ledger (and its action read) is computed once for the whole publish
+    rather than once per prediction. It is created and discarded by the
+    caller; nothing is cached across commands or across publications.
     """
     per_unit = _execution_event_observations(records)
     execution_ids = [str(r.execution_id) for r in records]
@@ -1886,8 +1903,14 @@ def observe_episode_events(harness, records: Sequence[Any], *,
         "units": {},
     }
     if declared_budget:
-        budget_view = harness.budget.view(task_id, episode_id,
-                                          budget=declared_budget)
+        cache_key = (str(task_id), str(episode_id or ""))
+        if budget_cache is not None and cache_key in budget_cache:
+            budget_view = budget_cache[cache_key]
+        else:
+            budget_view = harness.budget.view(task_id, episode_id,
+                                              budget=declared_budget)
+            if budget_cache is not None:
+                budget_cache[cache_key] = budget_view
         budget_status = budget_view.get("status")
         if budget_status == "exceeded":
             budget_entry["label"] = "occurred"
@@ -3300,7 +3323,8 @@ def _collect_observation_units(evaluation, unit_observations
                 bucket["unknown"].add(key)
 
 
-def _observation_summary(harness, window: Sequence[Dict[str, Any]]
+def _observation_summary(harness, window: Sequence[Dict[str, Any]],
+                         *, budget_cache: Optional[Dict[Any, Any]] = None
                          ) -> Dict[str, Any]:
     """The framework's occurrence tally over a window, from LIVE FACTS.
 
@@ -3343,7 +3367,8 @@ def _observation_summary(harness, window: Sequence[Dict[str, Any]]
         observed = observe_episode_events(harness, records,
                                           task_id=task_id,
                                           episode_id=episode_id,
-                                          scope_complete=True)
+                                          scope_complete=True,
+                                          budget_cache=budget_cache)
         for event_name, observation in observed["events"].items():
             units = observation.get("units") or {}
             unit_ids = observation.get("unit_ids") or []
@@ -3472,7 +3497,8 @@ def _episode_executions(harness, task_id: str,
 def build_calibration_summary(harness, *,
                               min_samples: int =
                               DEFAULT_MIN_CALIBRATION_SAMPLES,
-                              policy: Optional[CalibrationPolicy] = None
+                              policy: Optional[CalibrationPolicy] = None,
+                              derived: Optional[Dict[str, Any]] = None
                               ) -> Dict[str, Any]:
     """Aggregate the WINDOW's evaluations into a versioned summary.
 
@@ -3518,17 +3544,34 @@ def build_calibration_summary(harness, *,
     """
     policy = policy or CalibrationPolicy.from_env()
     window = calibration_window(harness, policy)
-    evaluations = _evaluations_for_window(harness, window)
+    if derived is not None and derived.get("window") is not None:
+        window = derived["window"]
+    # A caller that ALREADY derived this window (e.g. ``republish_calibration``,
+    # which also builds the paired feedback) passes the derived map so the
+    # live derivation runs ONCE per evaluation for the whole publish. Without
+    # it, this function derives its own — the independent-call path is
+    # unchanged.
+    if derived is not None and derived.get("evaluations") is not None:
+        evaluations = derived["evaluations"]
+    else:
+        evaluations = _evaluations_for_window(harness, window)
+    derived = derived or _derive_window_evaluations(harness, evaluations,
+                                                    window)
+    budget_cache: Dict[Any, Any] = derived.setdefault("budget_cache", {})
+    by_id: Dict[str, Any] = derived.setdefault("by_id", {})
     groups: Dict[str, Dict[str, Any]] = {}
     exclusions: Dict[str, int] = {}
     corrected: List[Dict[str, Any]] = []
     for stored_evaluation in evaluations:
-        # LIVE DERIVATION. The stored evaluation is history; what the
-        # calibration reads is re-derived from the CURRENT facts, so a late
-        # task check (in either direction) is reflected without rewriting
-        # anything. The derived record is the one that counts; the stored
-        # one is only the fallback when re-derivation is impossible.
-        evaluation, live_changed = _live_evaluation(harness, stored_evaluation)
+        # LIVE DERIVATION (shared when supplied). The stored evaluation is
+        # history; what the calibration reads is re-derived from the CURRENT
+        # facts, so a late task check (in either direction) is reflected
+        # without rewriting anything. The derived record is the one that
+        # counts; the stored one is only the fallback when re-derivation is
+        # impossible.
+        evaluation, live_changed = by_id.get(
+            stored_evaluation.evaluation_id) or _live_evaluation(
+                harness, stored_evaluation)
         if live_changed is not None \
                 and live_changed.get("kind") in ("live_rederivation",
                                                  "rule_rebuild"):
@@ -3858,7 +3901,7 @@ def build_calibration_summary(harness, *,
 
     # The framework's OWN occurrence statistics, per event name, counted by
     # observation unit (never by prediction count) from the CURRENT facts.
-    live = _observation_summary(harness, window)
+    live = _observation_summary(harness, window, budget_cache=budget_cache)
     occurrence = live["occurrence"]
 
     return {
@@ -4047,14 +4090,24 @@ def republish_calibration(harness, *,
     """
     policy = policy or CalibrationPolicy.from_env()
     window = calibration_window(harness, policy)
+    # DERIVE ONCE for the whole publish: the window's evaluations are read
+    # and live-derived a single time, then SHARED by the calibration summary
+    # and the paired feedback. Both used to re-derive every evaluation
+    # (and the episode's budget ledger) independently, so the O(window)
+    # derivation ran twice per evaluation. ``derived`` is created here and
+    # released when this function returns — nothing is cached across
+    # publications, so a changed fact is never served from a stale cache.
+    evaluations = _evaluations_for_window(harness, window)
+    derived = _derive_window_evaluations(harness, evaluations, window)
     summary = build_calibration_summary(
-        harness, min_samples=min_calibration_samples, policy=policy)
+        harness, min_samples=min_calibration_samples, policy=policy,
+        derived=derived)
     summary["published_at"] = time.time()
     publish_calibration_summary(harness, summary, window)
     # The paired feedback is DERIVED here (the single publish point) and
     # stored, so a prediction read serves it in O(1) instead of re-deriving
     # it from the window on every context build.
-    pairs = build_paired_feedback(harness, policy=policy)
+    pairs = build_paired_feedback(harness, policy=policy, derived=derived)
     pairs["published_at"] = summary["published_at"]
     publish_paired_feedback(harness, pairs)
     return summary
@@ -4521,10 +4574,34 @@ def _compact_problem_conditions(evaluation, prediction) -> Dict[str, Any]:
     return conditions
 
 
+def _derive_window_evaluations(harness, evaluations, window=None
+                               ) -> Dict[str, Any]:
+    """Derive the LIVE evaluation of every window evaluation ONCE.
+
+    Returns ``{"by_id": {evaluation_id: (evaluation, correction)},
+    "budget_cache": {…}, "evaluations": [...], "window": [...]}``.
+    ``republish_calibration`` builds this ONCE and hands it to BOTH the
+    calibration summary and the paired feedback, so the window is located
+    once, its evaluation payloads are read once and the live derivation
+    (``summarize_real_outcome``, which reads the action log and the
+    episode's budget ledger) runs once per evaluation per publish instead of
+    once per builder. The public builders still call this themselves when no
+    derived material is supplied, so their independent use is unchanged.
+    """
+    return {
+        "by_id": {str(e.evaluation_id): _live_evaluation(harness, e)
+                  for e in evaluations},
+        "budget_cache": {},
+        "evaluations": list(evaluations),
+        "window": list(window) if window is not None else None,
+    }
+
+
 def build_paired_feedback(
         harness, *,
         budget_chars: Optional[int] = None,
         policy: Optional[CalibrationPolicy] = None,
+        derived: Optional[Dict[str, Any]] = None,
         ) -> Dict[str, Any]:
     """DERIVE the compact per-episode prediction-execution pairs.
 
@@ -4573,11 +4650,21 @@ def build_paired_feedback(
         _paired_feedback_budget()
     policy = policy or CalibrationPolicy.from_env()
     window = calibration_window(harness, policy, readonly=True)
-    evaluations = _evaluations_for_window(harness, window)
+    if derived is not None and derived.get("window") is not None:
+        window = derived["window"]
+    if derived is not None and derived.get("evaluations") is not None:
+        evaluations = derived["evaluations"]
+    else:
+        evaluations = _evaluations_for_window(harness, window)
+    # Reuse the publish-scoped derivation when supplied, so the live
+    # evaluation runs once per evaluation for the whole publish; otherwise
+    # derive our own (independent-call path unchanged).
+    derived = derived or _derive_window_evaluations(harness, evaluations,
+                                                    window)
     rows: List[Dict[str, Any]] = []
     n_total = 0
     for stored_evaluation in evaluations:
-        evaluation, _ = _live_evaluation(harness, stored_evaluation)
+        evaluation, _ = derived["by_id"][stored_evaluation.evaluation_id]
         if evaluation.state == "pending":
             # A running scope has no real outcome: not a pair yet.
             continue
