@@ -336,29 +336,35 @@ class TestNoDeclaredPredictionIsUnknown(NumberedCase):
 
 
 class TestLifecycleNotGatedByVerification(NumberedCase):
-    """The P2-A defect: promotion required the framework's verified state."""
+    """The P2-A defect: promotion required the framework's verified state.
 
-    def test_fact_checked_entry_can_be_validated(self):
+    r21: promotion is now the AGENT's explicit management request (calibration
+    no longer drives maturity), and it stays independent of the framework's
+    ``verification`` state."""
+
+    def test_agent_promotes_a_fact_checked_entry(self):
         eid = self.h.sbank.add(StrategicEntry(
             entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
             quality_estimated=True, expected_quality_hat=0.9,
             quality_interval=(0.5, 1.0),
             verification={"state": "fact_checked", "claim": "c"}))
-        for _ in range(5):
-            entry, transitions = self.h.sbank.record_prediction(eid, hit=True)
+        entry, transitions = self.h.sbank.apply_lifecycle_action(
+            eid, "promote", reason="used on a later task, worked")
         self.assertEqual(entry.status, "validated")
-        self.assertIn("promoted:candidate->validated", transitions)
+        self.assertTrue(any(t.startswith("promoted") for t in transitions))
 
-    def test_no_prediction_never_promotes(self):
+    def test_calibration_alone_never_promotes(self):
         eid = self.h.sbank.add(StrategicEntry(
             entry_id="", strategy_id="S01",
             pattern={"predicates": {"family": "routing"}},
-            quality_estimated=False,
+            quality_estimated=True, expected_quality_hat=0.9,
+            quality_interval=(0.5, 1.0),
             verification={"state": "verified", "claim": "c"}))
         for _ in range(5):
             entry, transitions = self.h.sbank.record_prediction(eid, hit=True)
         self.assertEqual(entry.status, "candidate")
+        self.assertEqual(transitions, [])
 
 
 class TestRequestBudgetCountsWholeRequest(NumberedCase):

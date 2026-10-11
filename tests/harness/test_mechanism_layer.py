@@ -123,11 +123,13 @@ class TestCostPredictionLoop(HarnessTestCase):
         outcome = self.h.record(rec, prediction=snapshot)
         self.assertNotIn("cost_feedback", outcome)
 
-    def test_quality_misses_demote_at_next_induce(self):
+    def test_quality_misses_are_recorded_but_do_not_demote(self):
         """Quality misses of a DECLARED prediction accumulate as EVIDENCE
-        online and demote the entry at the next offline knowledge write —
-        never during record. The check exists because the run DECLARED it
-        adopted the entry (by number), not because of a shared name."""
+        online and are replayed at the next offline knowledge write — but
+        r21: they NO LONGER change maturity (calibration is a diagnostic).
+        The check exists because the run DECLARED it adopted the entry (by
+        number), not because of a shared name. Maturity moves only on the
+        agent's explicit request."""
         entry_id = self._entry_with_cost(tokens_hat=1500.0)
         for i in range(3):
             rec = self.make_record(task_id=f"tq{i}", strategy_id="S01", gap=0.9,
@@ -145,11 +147,17 @@ class TestCostPredictionLoop(HarnessTestCase):
             "evidence": [{"execution_id": "ex_c1", "role": "evidence"},
                          {"execution_id": "ex_c2", "role": "evidence"}]}])
         entry = self.h.sbank.get(entry_id)
-        self.assertEqual(entry.status, "suspect")
+        # The calibration is REPLAYED (3 consecutive misses visible)...
+        self.assertEqual(entry.status, "candidate")
         revisions = [r for r in result["revisions"] if r["entry_id"] == entry_id]
         self.assertEqual(len(revisions), 1)
         self.assertEqual(revisions[0]["forward"]["consecutive_misses"], 3)
-        self.assertIn("demoted:->suspect", revisions[0]["transitions"])
+        # ...but it does NOT demote by itself.
+        self.assertNotIn("demoted:->suspect", revisions[0]["transitions"])
+        # The agent's explicit demote does.
+        self.h.sbank.apply_lifecycle_action(
+            entry_id, "demote", reason="declared interval missed repeatedly")
+        self.assertEqual(self.h.sbank.get(entry_id).status, "suspect")
 
 
 class TestFailureClassificationPersistence(HarnessTestCase):

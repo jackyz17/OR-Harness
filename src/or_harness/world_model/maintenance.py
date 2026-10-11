@@ -435,6 +435,82 @@ def _material_entry_by_id(harness, execution_id: str
     return _material_entry(harness, record)
 
 
+def _usage_for_entries(harness, entry_ids: Sequence[str]
+                       ) -> Dict[str, Dict[str, Any]]:
+    """The USE record for the SELECTED entry ids: adoptions + effect verdicts.
+
+    Reuses the SAME scan shape as ``InductionEngine._adoption_events`` — an
+    explicit adoption is a record that DECLARED the entry number on an
+    execution (``execution_features.used_entries.known_entry_ids``) — but
+    keeps only the entries this read selected, so no extra per-entry pass is
+    run. Returns, per entry id:
+
+    - ``n_adoptions``: explicit adoptions;
+    - ``n_known_tasks``: DISTINCT task ids among them (a repeated run of one
+      task is not several independent tasks);
+    - ``recent_outcomes``: a bounded, chronological list of the run outcomes
+      (task check / status), so a reader can see how the uses turned out
+      WITHOUT the framework drawing a conclusion;
+    - ``attributed_effects``: the entry's OWN ``effect_attribution`` (the
+      agent's judgements), copied verbatim;
+    - ``unattributed``: True when there are adoptions but NO agent
+      attribution yet ("no judgement recorded" — NEVER implicitly a
+      ``helped``/``neutral``).
+
+    Nothing here writes; an adoption is NOT a hit/miss and never support.
+    """
+    if not entry_ids:
+        return {}
+    wanted = {str(e) for e in entry_ids}
+    per_entry: Dict[str, Dict[str, Any]] = {
+        eid: {"n_adoptions": 0, "n_known_tasks": 0, "recent_outcomes": [],
+              "adoptions_by_execution": []} for eid in wanted}
+    for rec in harness.bank.all():
+        if rec.source != "executed":
+            continue
+        used = (rec.execution_features or {}).get("used_entries")
+        if not isinstance(used, dict):
+            continue
+        for entry_id in (used.get("known_entry_ids") or []):
+            entry_id = str(entry_id)
+            if entry_id not in wanted:
+                continue
+            bucket = per_entry[entry_id]
+            bucket["n_adoptions"] += 1
+            bucket["adoptions_by_execution"].append({
+                "execution_id": rec.execution_id,
+                "task_id": rec.task_id,
+                "at": rec.created_at,
+                "task_check": task_check_state(rec),
+                "status": (rec.quality or {}).get("status"),
+            })
+    for entry_id, bucket in per_entry.items():
+        events = bucket.pop("adoptions_by_execution")
+        events.sort(key=lambda e: (e["at"], e["execution_id"]))
+        bucket["n_known_tasks"] = len({e["task_id"] for e in events
+                                       if e.get("task_id")})
+        bucket["recent_outcomes"] = events[-5:]
+        entry = harness.sbank.get(entry_id)
+        attributions = [dict(a) for a in (entry.effect_attribution
+                                          if entry else [])]
+        bucket["attributed_effects"] = attributions
+        # "No judgement recorded" is its own state, never neutral/helped.
+        bucket["unattributed"] = bool(events) and not attributions
+    return per_entry
+
+
+def _attach_usage(harness, items: List[Dict[str, Any]]) -> None:
+    """Attach the USE record to each selected existing-knowledge item."""
+    entry_ids = [it["entry_id"] for it in items
+                 if isinstance(it.get("entry_id"), str)
+                 and it["entry_id"].isdigit()]
+    usage = _usage_for_entries(harness, entry_ids)
+    for item in items:
+        record = usage.get(item.get("entry_id"))
+        if record is not None:
+            item["usage"] = record
+
+
 def _knowledge_entry_full(entry, *, related_by: Sequence[str],
                           discovery: Optional[Dict[str, Any]] = None
                           ) -> Dict[str, Any]:
@@ -788,6 +864,12 @@ def build_induction_material(harness, *,
     existing_knowledge = _merge_existing_knowledge(
         harness, [r for r in reviewed if r is not None],
         related_history.get("knowledge") or [])
+    # Attach the USE record (adoptions, task spread, run outcomes and the
+    # agent's own effect verdicts) to each selected entry, so the reviewer can
+    # judge an entry's effect from accumulated use — and see "no judgement
+    # recorded" as its own state, never an implicit helped. Reuses the
+    # adoption scan over this read's selected ids; no extra per-entry pass.
+    _attach_usage(harness, existing_knowledge)
     return {
         "count": len(material),
         "total_completed": total,

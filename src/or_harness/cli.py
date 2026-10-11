@@ -2857,12 +2857,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="record the AGENT's own use-effect attribution on an "
                         "existing entry (repeatable). {\"entry_id\": NUMBER, "
                         "\"verdict\": helped|neutral|unrelated|refuting, "
-                        "\"execution_id\": ID?, \"note\": TEXT?}. This is "
+                        "\"execution_id\": ID?, \"note\": TEXT?, "
+                        "\"lifecycle_action\": promote|demote|keep?, "
+                        "\"evidence_execution_ids\": [ID]?}. This is "
                         "SEPARATE from verification_state (which records how "
                         "far the CLAIM was checked): it records how USING the "
-                        "entry turned out. A 'refuting' verdict drives the "
-                        "existing demotion; the others are reported only. "
-                        "The framework never writes one of these itself.")
+                        "entry turned out. A management request "
+                        "(`lifecycle_action`) is an ADMINISTRATIVE check "
+                        "only: the entry must exist, a named execution must "
+                        "be recorded, and the cited executions must have "
+                        "DECLARED adoption of the entry (--used-entry-ids); "
+                        "the framework never judges whether the evidence "
+                        "supports the move. `promote` -> validated, `demote` "
+                        "-> suspect, `keep` leaves the status; it never "
+                        "rewrites verification_state. The framework never "
+                        "writes one of these itself.")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
@@ -3393,8 +3402,38 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _argparse_hint(argv: Sequence[str]) -> Optional[str]:
+    """A targeted message for ONE known argparse mistake, or None.
+
+    Only ``induce`` with a ``--task`` flag: ``--task`` is an
+    ``induction-material`` argument, and ``induce`` has no such option. The
+    hint names the right two commands instead of leaving the agent to retry
+    the same wrong one (no alias is added, and no command parser is
+    duplicated). Any other argv returns None and flows into the normal
+    parser unchanged.
+    """
+    tokens = list(argv)
+    if "induce" not in tokens:
+        return None
+    if not any(t == "--task" or t.startswith("--task=") for t in tokens):
+        return None
+    return ("`induce` has no `--task` option. `--task` belongs to "
+            "`induction-material`: read the material with `orx "
+            "induction-material --task <ID>`, then manage existing knowledge "
+            "with `orx induce --note \"...\"` (and optional "
+            "`--attribute-effect`). Adoption is declared on the run with "
+            "`--used-entry-ids`.")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
+    # A targeted hint for one common mistake, BEFORE argparse's generic
+    # "unrecognized arguments": ``--task`` belongs to ``induction-material``,
+    # not ``induce``. This reuses the existing parser (no second command
+    # layer, no meaningless alias) — it only explains the right command.
+    hint = _argparse_hint(argv if argv is not None else sys.argv[1:])
+    if hint is not None:
+        return _fail(hint, 2)
     args = parser.parse_args(argv)
     try:
         return args.func(args)

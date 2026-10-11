@@ -45,20 +45,41 @@ DEMOTE_CONSECUTIVE_MISSES = 3
 DORMANT_AFTER_TASKS = 10
 SUSPECT_SCORE_FACTOR = 0.5
 
+#: The lifecycle actions an AGENT may request through an effect attribution.
+#: They are ADMINISTRATIVE requests: the agent states, from the accumulated
+#: USE evidence and its own reasoning, how the entry's maturity should move.
+#: ``promote`` -> validated, ``demote`` -> suspect, ``keep`` -> leave the
+#: status as it is (so a prior management decision is not silently undone).
+#: Promotion is NEVER automatic and NEVER driven by adoption counts or a
+#: prediction hit rate — the agent must compare premises, operation, effect,
+#: cross-task support and boundary, and the framework only checks that the
+#: request names real adopted evidence.
+LIFECYCLE_ACTIONS = ("promote", "demote", "keep")
+
 #: The verdicts an AGENT may attach to how an entry's USE turned out. These
 #: are the agent's own attributions (never the framework's): ``helped`` /
-#: ``neutral`` / ``unrelated`` are REPORTED, and ``refuting`` can drive the
-#: EXISTING demotion transition. No new score or threshold is introduced.
+#: ``neutral`` / ``unrelated`` are REPORTED, and ``refuting`` is a NEGATIVE
+#: judgement that the agent may attach (it no longer moves lifecycle state by
+#: itself — a management request does). No new score or threshold is
+#: introduced.
 EFFECT_ATTRIBUTION_VERDICTS = ("helped", "neutral", "unrelated", "refuting")
 
 
 def apply_transitions(entry: StrategicEntry) -> List[str]:
-    """Automatic lifecycle transitions for the entry's CURRENT track.
+    """The ONLY automatic lifecycle transition: dormancy wakeup.
 
-    One definition, two callers: the per-event API
-    (:meth:`StrategicBank.record_prediction`) and the offline revalidation
-    pass (``InductionEngine.revise``) — so promotion, demotion, and dormancy
-    wakeup can never drift apart between the two.
+    r21: the automatic rules that changed an entry's MATURITY from prediction
+    calibration (``candidate --(n>=5 & hit_rate>=0.7)--> validated`` and
+    ``any hot --(3 consecutive misses)--> suspect``) are REMOVED. Prediction
+    calibration measures how a DECLARED forecast fared; it is NOT a measure of
+    whether USING the knowledge helped, and the two meanings are kept apart.
+    Calibration is now a DIAGNOSTIC (replayed and reported by ``revise``), and
+    maturity changes only by the AGENT's explicit management request
+    (``lifecycle_action`` on an effect attribution —
+    :meth:`StrategicBank.apply_lifecycle_action`).
+
+    ``dormant -> candidate`` wakeup stays automatic: a matching execution is
+    evidence the pattern is live again, and waking is not a promotion.
 
     Retirement is never automatic: it stays the harness's explicit call via
     :meth:`StrategicBank.retire`.
@@ -67,26 +88,8 @@ def apply_transitions(entry: StrategicEntry) -> List[str]:
     if entry.status == "dormant":
         entry.status = "candidate"
         transitions.append("awakened:dormant->candidate")
-    if (entry.status == "candidate"
-            and entry.quality_estimated
-            and entry.prediction_track.n_predictions >= PROMOTE_MIN_PREDICTIONS
-            and entry.prediction_track.hit_rate >= PROMOTE_MIN_HIT_RATE):
-        # Promotion is FORWARD CALIBRATION of a DECLARED prediction: the
-        # entry declared a quality prediction, later runs adopted it, and
-        # enough of them landed inside the interval. It deliberately does
-        # NOT require the agent's verification state: ``verification`` is a
-        # record of what the agent checked, not a lifecycle gate, and an
-        # entry that never declared a prediction (``quality_estimated=False``)
-        # has nothing to calibrate and is never promoted here. (Demotion
-        # below is unaffected — observed misses of a declared prediction are
-        # evidence regardless of admission state.)
-        entry.status = "validated"
-        transitions.append("promoted:candidate->validated")
-    if (entry.status in ("candidate", "validated")
-            and entry.prediction_track.consecutive_misses >= DEMOTE_CONSECUTIVE_MISSES):
-        entry.status = "suspect"
-        transitions.append(f"demoted:->{entry.status}")
     return transitions
+
 
 
 class StrategicBank:
@@ -220,12 +223,16 @@ class StrategicBank:
                           ) -> Tuple[StrategicEntry, List[str]]:
         """Record ONE forward check against this entry's prediction.
 
-        This is the per-event API of the lifecycle. The automatic record
-        chain no longer calls it: recording writes the frozen check into the
-        EXECUTION evidence instead (``quality_feedback`` on the fact) and
-        ``InductionEngine.revise`` replays a whole batch of checks at the next
-        offline induction. Both callers apply exactly the same transition
-        rules (:func:`apply_transitions`).
+        r21: this records the CALIBRATION sample only. It does NOT change the
+        entry's maturity — a hit rate is a diagnostic of a declared forecast,
+        not a measure of whether USING the knowledge helped, and the two are
+        no longer bound. The only automatic transition left is the dormancy
+        wakeup (:func:`apply_transitions`).
+
+        The automatic record chain no longer calls it: recording writes the
+        frozen check into the EXECUTION evidence instead (``quality_feedback``
+        on the fact) and ``InductionEngine.revise`` replays a whole batch of
+        checks at the next offline induction.
 
         Retirement is *not* automatic — the harness confirms irreversible
         disposal explicitly via :meth:`retire`.
@@ -237,6 +244,55 @@ class StrategicBank:
         transitions = apply_transitions(entry)
         self.update(entry)
         return entry, transitions
+
+    def apply_lifecycle_action(self, entry_id: str, action: str, *,
+                               reason: Optional[str] = None
+                               ) -> Tuple[StrategicEntry, List[str]]:
+        """Apply ONE explicit AGENT management request to an entry's status.
+
+        The maturity counterpart of ``record_prediction`` (which only records
+        calibration). ``action`` is one of :data:`LIFECYCLE_ACTIONS`:
+
+        - ``promote`` -> ``validated`` (``candidate``/``suspect`` only;
+          already-``validated`` is a no-op; ``dormant`` is awakened through
+          the EXISTING wakeup, never resurrected from the cold archive);
+        - ``demote`` -> ``suspect`` (unless already ``dormant``/retired);
+        - ``keep`` -> status unchanged.
+
+        The framework REQUIRES a positive reason (``reason``) and performs no
+        logical certification: whether the accumulated USE evidence supports
+        the move is the agent's judgement. It does not rewrite
+        ``verification_state`` and does not touch the claim, number, evidence
+        or prediction track.
+        """
+        if action not in LIFECYCLE_ACTIONS:
+            raise StorageError(
+                f"illegal lifecycle action {action!r} "
+                f"(expected one of {list(LIFECYCLE_ACTIONS)})")
+        if not (reason and str(reason).strip()):
+            raise StorageError(
+                f"lifecycle action {action!r} requires a non-empty reason")
+        entry = self.get(entry_id)
+        if entry is None:
+            raise StorageError(f"unknown entry_id {entry_id!r}")
+        transitions: List[str] = []
+        if entry.status == "dormant":
+            # Reuse the existing wakeup; a dormant entry is not promoted from
+            # a stale state in one step (the caller re-issues the request).
+            transitions.extend(apply_transitions(entry))
+        if action == "promote":
+            if entry.status != "validated":
+                transitions.append(f"promoted:->validated "
+                                   f"(agent: {str(reason).strip()})")
+                entry.status = "validated"
+        elif action == "demote":
+            if entry.status != "suspect":
+                transitions.append(f"demoted:->suspect "
+                                   f"(agent: {str(reason).strip()})")
+                entry.status = "suspect"
+        self.update(entry)
+        return entry, transitions
+
 
     def retire(self, entry_id: str, reason: str,
                outcome: str = "retired") -> ColdArchiveCard:
@@ -342,17 +398,18 @@ class StrategicBank:
         lo, hi = entry.quality_interval
         if not (0.0 <= lo <= hi <= 1.0):
             raise StorageError("quality_interval must satisfy 0 <= lo <= hi <= 1")
-        # Invariant: a REFUTED claim may never be `validated`. Promotion is
-        # driven by forward calibration of a DECLARED prediction, NOT by the
-        # agent's verification state (``verified`` / ``fact_checked`` /
-        # ``unverified`` are records of what the agent checked, and none of
-        # them is a lifecycle gate). Only an explicit refutation — evidence
-        # that the claim does NOT hold — blocks validation.
+        # Invariant: a REFUTED claim may never be `validated`. This is about
+        # the CLAIM's verification, NOT about knowledge utility: an
+        # assertion failing is not the agent judging the knowledge useless,
+        # and the two meanings are kept apart. Management (promote/demote)
+        # never rewrites ``verification_state`` to force a promotion through;
+        # only an actual refuted state blocks ``validated``.
         state = entry.verification_state
         if state == "refuted" and entry.status == "validated":
             raise StorageError("a refuted claim may never be 'validated'")
         # An agent use-effect attribution must be a KNOWN verdict, and the
-        # agent must be its author (the framework never fabricates one).
+        # agent must be its author (the framework never fabricates one). An
+        # optional management request must be a KNOWN action.
         for attribution in (entry.effect_attribution or []):
             verdict = str(attribution.get("verdict") or "")
             if verdict not in EFFECT_ATTRIBUTION_VERDICTS:
@@ -363,6 +420,11 @@ class StrategicBank:
                 raise StorageError(
                     "effect_attribution must be authored by the agent "
                     f"(by='agent'), got {attribution.get('by')!r}")
+            action = attribution.get("lifecycle_action")
+            if action is not None and str(action) not in LIFECYCLE_ACTIONS:
+                raise StorageError(
+                    f"illegal effect_attribution lifecycle_action {action!r} "
+                    f"(expected one of {list(LIFECYCLE_ACTIONS)})")
 
     @staticmethod
     def _decode(row: Any) -> StrategicEntry:

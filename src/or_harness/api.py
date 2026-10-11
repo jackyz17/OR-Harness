@@ -49,6 +49,7 @@ from or_harness.strategy.selector import Selector, is_publishable
 from or_harness.strategy.stats import ConditionalStats, quality_score
 from or_harness.strategy.strategic_bank import (
     EFFECT_ATTRIBUTION_VERDICTS,
+    LIFECYCLE_ACTIONS,
     StrategicBank,
 )
 from or_harness.strategy.triggers import solver_advisories
@@ -6399,15 +6400,23 @@ class ORHarness:
         """
         if not relations:
             result = self._record_empty_review(
-                dry_run=dry_run, reason=notes, strategy_id=strategy_id)
-            attributed = self._apply_effect_attributions(
-                effect_attributions, dry_run=dry_run)
-            if attributed:
-                result["effect_attributions"] = attributed
+                dry_run=dry_run, reason=notes, strategy_id=strategy_id,
+                effect_attributions=effect_attributions)
             return result
         # A relation write is a knowledge write like any other: it gets a
         # maintenance action with PRE and POST knowledge state, a knowledge
         # delta, an index result and the same M6 feedback.
+        #
+        # ORDER (r21): VALIDATE the effect attributions FIRST (a bad payload
+        # must not leave a half-written state), begin the action, then submit
+        # the relations, RECORD the attributions (before ``revise`` so the
+        # management events are replayed and the entry is written once),
+        # run the lifecycle maintenance, and only THEN snapshot the POST
+        # knowledge state — so the delta / business result / index all see the
+        # SAME state that the management just produced.
+        validated_attributions = [
+            self._validate_effect_attribution(raw)
+            for raw in (effect_attributions or [])]
         maintenance = None
         if not dry_run:
             maintenance = self._begin_induce_action(strategy_id, False)
@@ -6424,7 +6433,25 @@ class ORHarness:
                     maintenance["action_id"], status="failed",
                     outcome={"error": traceback.format_exc(limit=3)})
             raise
+        # Record the agent's OWN use-effect attributions (and their optional
+        # management requests) BEFORE the lifecycle pass, so a promote/demote
+        # is replayed THIS time and the entry is written once. ``revise``
+        # applies the status change; nothing is applied twice.
+        attributed = self._record_validated_attributions(
+            validated_attributions, dry_run=dry_run)
+        if attributed:
+            result["effect_attributions"] = attributed
         if maintenance is not None:
+            # Offline LIFECYCLE maintenance: calibration is replayed and any
+            # pending management event is applied (promotion/demotion,
+            # dormancy wakeup). This is management of EXISTING knowledge.
+            try:
+                revisions = self.induction.revise(strategy_id=strategy_id)
+            except Exception as exc:  # never fail a real write for this
+                revisions = None
+                result["revisions_error"] = f"{type(exc).__name__}: {exc}"
+            if revisions is not None:
+                result["revisions"] = revisions
             result["action"] = self._end_induce_action(maintenance, result)
             # Surface the transition at the TOP level too, so a caller (and
             # ``accept_capability_operation``) reads the same
@@ -6435,23 +6462,6 @@ class ORHarness:
                               result["action"]["knowledge_delta"])
             result.setdefault("knowledge_after",
                               result["action"]["knowledge_after"])
-            # Offline LIFECYCLE maintenance: the entries this write covers
-            # have their frozen forward checks replayed (promotion, demotion,
-            # dormancy wakeup). This is management of EXISTING knowledge, not
-            # a new strategy.
-            try:
-                result["revisions"] = self.induction.revise(
-                    strategy_id=strategy_id)
-            except Exception as exc:  # never fail a real write for this
-                result["revisions_error"] = f"{type(exc).__name__}: {exc}"
-        if effect_attributions:
-            # The agent's OWN use-effect attributions, applied through the
-            # EXISTING lifecycle (a ``refuting`` verdict can demote; the rest
-            # are reported). Not a second scoring system.
-            attributed = self._apply_effect_attributions(
-                effect_attributions, dry_run=dry_run)
-            if attributed:
-                result["effect_attributions"] = attributed
         if not dry_run:
             result["index_sync"] = self.index_sync.sync_entries()
             # The consolidation-stage feedback is scoped to the EVIDENCE this
@@ -6529,16 +6539,26 @@ class ORHarness:
         return out
 
     def _record_empty_review(self, *, dry_run: bool, reason: Optional[Any],
-                             strategy_id: Optional[str]) -> Dict[str, Any]:
+                             strategy_id: Optional[str],
+                             effect_attributions: Optional[
+                                 Sequence[Dict[str, Any]]] = None
+                             ) -> Dict[str, Any]:
         """Record an induction review that concluded NO new knowledge.
 
         A review with no submission is still a real maintenance event: the
-        offline lifecycle (``revise``) runs so existing knowledge's forward
-        checks, promotion/demotion and dormancy management keep working, and
-        a maintenance action is written naming the review's scope and reason
-        so the attribution chain can see it. NO entry is created and NO
-        fabricated knowledge is written.
+        offline lifecycle (``revise``) runs so existing knowledge's calibration
+        is replayed and any management request is applied, and a maintenance
+        action is written naming the review's scope and reason so the
+        attribution chain can see it. NO entry is created and NO fabricated
+        knowledge is written. The agent may ALSO attach use-effect
+        attributions (and management requests) to this review, since utility
+        management of existing knowledge is exactly what a no-new-knowledge
+        review is for.
         """
+        # VALIDATE first (a bad payload writes nothing).
+        validated_attributions = [
+            self._validate_effect_attribution(raw)
+            for raw in (effect_attributions or [])]
         result: Dict[str, Any] = {
             "relations": [], "saved": 0, "published": 0,
             "no_new_knowledge": True,
@@ -6551,32 +6571,34 @@ class ORHarness:
         maintenance = self._begin_induce_action(strategy_id, False)
         self.actions.amend_action_params(
             maintenance["action_id"], knowledge_shape="review_only")
-        outcome = {
-            "business_result": "unchanged",
-            "review": True,
-            "reason": [str(r) for r in (reason or []) if str(r).strip()],
-            "note": ("a review with no new knowledge: the lifecycle was "
-                     "maintained over the EXISTING entries; nothing was "
-                     "created and no statistical induction ran"),
-        }
-        self.actions.end_action(maintenance["action_id"], status="completed",
-                                outcome=outcome)
-        result["action"] = {
-            "action_id": maintenance["action_id"],
-            "business_result": "unchanged",
-            "knowledge_delta": {"entries_created": [], "entries_removed": [],
-                                "entry_changes": []},
-        }
-        result["business_result"] = "unchanged"
-        result["knowledge_delta"] = result["action"]["knowledge_delta"]
-        # The lifecycle maintenance runs UNCONDITIONALLY (with or without a
-        # new entry): utility maintenance is decoupled from creation.
+        # Record the agent's attributions BEFORE the lifecycle pass, so any
+        # management event is replayed THIS time and the entry is written once.
+        attributed = self._record_validated_attributions(validated_attributions)
+        if attributed:
+            result["effect_attributions"] = attributed
+        revised: List[Dict[str, Any]] = []
         try:
-            result["revisions"] = self.induction.revise(
-                strategy_id=strategy_id)
+            revised = self.induction.revise(strategy_id=strategy_id)
         except Exception as exc:  # never fail a review for this
             result["revisions_error"] = f"{type(exc).__name__}: {exc}"
+        result["revisions"] = revised
+        # The action's POST snapshot and delta see the state the management
+        # just produced. It is ended ONCE, with the review's reason folded in.
+        result["action"] = self._end_induce_action(
+            maintenance, result, extra_outcome={
+                "review": True,
+                "reason": [str(r) for r in (reason or []) if str(r).strip()],
+                "note": ("a review with no new knowledge: the lifecycle was "
+                         "maintained over the EXISTING entries; nothing was "
+                         "created and no statistical induction ran"),
+            })
+        result["business_result"] = result["action"]["business_result"]
+        result["knowledge_delta"] = result["action"]["knowledge_delta"]
+        result["knowledge_after"] = result["action"].get("knowledge_after")
+        if not dry_run:
+            result["index_sync"] = self.index_sync.sync_entries()
         return result
+
 
     def _begin_induce_action(self, strategy_id: Optional[str],
                              all_: bool = False) -> Dict[str, Any]:
@@ -6598,10 +6620,16 @@ class ORHarness:
                 "knowledge_before": knowledge_before}
 
     def _end_induce_action(self, maintenance: Dict[str, Any],
-                           result: Dict[str, Any]) -> Dict[str, Any]:
+                           result: Dict[str, Any],
+                           extra_outcome: Optional[Dict[str, Any]] = None
+                           ) -> Dict[str, Any]:
         """End the maintenance induce action: business result, verification
         outcomes, and the knowledge delta (before vs after), plus the POST
         snapshot of the knowledge state.
+
+        ``extra_outcome`` merges caller-specific fields (e.g. a review's
+        ``reason``) into the persisted outcome, so the action is ended ONCE
+        with the full picture.
 
         Business-result labels distinguish CANDIDATES from VERIFIED
         knowledge: ``created`` counts only entries whose admission verdict
@@ -6722,6 +6750,8 @@ class ORHarness:
             # this induction, not just which ids moved.
             "knowledge_after": knowledge_after,
         }
+        if extra_outcome:
+            outcome.update(extra_outcome)
         # Induction cost is UNKNOWN unless the harness amends it explicitly
         # (amend_action_cost) — never fabricated for report completeness.
         self.actions.end_action(
@@ -6917,52 +6947,181 @@ class ORHarness:
 
     def _apply_effect_attributions(
             self, attributions: Optional[Sequence[Dict[str, Any]]], *,
-            dry_run: bool = False) -> List[Dict[str, Any]]:
+            dry_run: bool = False,
+            defer_lifecycle: bool = False) -> List[Dict[str, Any]]:
         """Record the agent's OWN use-effect attributions on entries.
 
-        Each item is ``{"entry_id", "verdict", "note"?, "execution_id"?}``.
-        The verdict is one of ``helped|neutral|unrelated|refuting`` and the
-        author is stamped ``by="agent"`` — the framework NEVER writes one.
-        This is the channel that lets a qualitative technique (no numeric
-        prediction) carry a real judgement of how its use turned out, distinct
-        from ``verification_state`` (how far the CLAIM was checked). A
-        ``refuting`` verdict drives the EXISTING demotion transition; the
-        others are reported only, and NONE of them promotes or proves a
-        mathematical result. Returns the recorded items (with the assigned
-        time), or, on ``dry_run``, the items that WOULD be recorded.
+        Each item is ``{"entry_id", "verdict", "note"?, "execution_id"?,
+        "lifecycle_action"?, "evidence_execution_ids"?}``. The verdict is one
+        of ``helped|neutral|unrelated|refuting`` and the author is stamped
+        ``by="agent"`` — the framework NEVER writes one. This is the channel
+        that lets a qualitative technique (no numeric prediction) carry a
+        real judgement of how its use turned out, distinct from
+        ``verification_state`` (how far the CLAIM was checked).
+
+        r21 MANAGEMENT: an OPTIONAL ``lifecycle_action``
+        (``promote|demote|keep``) is the agent's explicit maturity request.
+        When present, the framework performs an ADMINISTRATIVE check only:
+
+        - the entry must exist;
+        - a named ``execution_id`` must be an actually recorded execution;
+        - every ``evidence_execution_ids`` must have DECLARED adoption of
+          this entry number (a recall-only or shared-name reference is
+          refused);
+        - the request must carry a non-empty ``note`` (the agent's reason)
+          AND at least one real execution reference.
+
+        The framework never certifies that the accumulated evidence really
+        supports the move — that is the agent's judgement. It never rewrites
+        ``verification_state`` and never touches the claim/number/evidence.
+
+        ``defer_lifecycle``: when the caller will run ``revise`` right after
+        (which replays the attributions and applies the management events in
+        chronological order), the live status change is DEFERRED to that
+        pass so the entry is written once and the result/delta/snapshot see a
+        single consistent state. Otherwise the action is applied here.
+
+        Returns the recorded items (with the assigned time), or, on
+        ``dry_run``, the items that WOULD be recorded.
         """
         recorded: List[Dict[str, Any]] = []
-        for raw in (attributions or []):
-            if not isinstance(raw, dict):
-                continue
-            entry_id = str(raw.get("entry_id") or "").strip()
-            verdict = str(raw.get("verdict") or "").strip()
-            if not entry_id or not verdict:
-                raise ValueError(
-                    "effect_attribution requires entry_id and verdict")
-            if verdict not in EFFECT_ATTRIBUTION_VERDICTS:
-                raise ValueError(
-                    f"unknown effect_attribution verdict {verdict!r} "
-                    f"(expected one of {list(EFFECT_ATTRIBUTION_VERDICTS)})")
-            entry = self.sbank.get(entry_id)
-            if entry is None:
-                raise ValueError(f"unknown entry_id {entry_id!r}: an effect "
-                                 "attribution must name a real entry")
-            item = {
-                "by": "agent",
-                "verdict": verdict,
-                "execution_id": (str(raw["execution_id"])
-                                 if raw.get("execution_id") else None),
-                "note": (str(raw.get("note")).strip()
-                         if raw.get("note") else None),
-                "at": time.time(),
-            }
-            recorded.append({"entry_id": entry_id, **item})
+        validated = [self._validate_effect_attribution(raw)
+                     for raw in (attributions or [])]
+        for plan in validated:
+            item = plan["item"]
+            recorded.append({"entry_id": plan["entry_id"], **item})
             if dry_run:
+                continue
+            entry = self.sbank.get(plan["entry_id"])
+            entry.effect_attribution.append(item)
+            self.sbank.update(entry)
+            if plan["lifecycle_action"] and not defer_lifecycle:
+                self.sbank.apply_lifecycle_action(
+                    plan["entry_id"], plan["lifecycle_action"],
+                    reason=item["note"])
+        return recorded
+
+    def _record_validated_attributions(
+            self, validated: Sequence[Dict[str, Any]], *,
+            dry_run: bool = False) -> List[Dict[str, Any]]:
+        """Record PRE-VALIDATED attributions WITHOUT applying management.
+
+        Used by the ``induce`` paths, which run ``revise`` right after: the
+        recorded items are replayed there in chronological order (so the
+        management event lands exactly once and the entry is written once).
+        Returns the recorded items (or the would-be items on ``dry_run``).
+        """
+        recorded: List[Dict[str, Any]] = []
+        for plan in validated:
+            item = plan["item"]
+            recorded.append({"entry_id": plan["entry_id"], **item})
+            if dry_run:
+                continue
+            entry = self.sbank.get(plan["entry_id"])
+            if entry is None:
                 continue
             entry.effect_attribution.append(item)
             self.sbank.update(entry)
         return recorded
+
+    def _validate_effect_attribution(self, raw: Dict[str, Any]
+                                     ) -> Dict[str, Any]:
+        """Validate ONE effect attribution (verdict + optional management).
+
+        Raises ``ValueError`` (a correctable structural error) when the
+        payload is malformed, the entry is unknown, a referenced execution is
+        not recorded, or a management request lacks real adopted evidence.
+        No logical certification is performed.
+        """
+        if not isinstance(raw, dict):
+            raise ValueError("effect_attribution must be a JSON object")
+        entry_id = str(raw.get("entry_id") or "").strip()
+        verdict = str(raw.get("verdict") or "").strip()
+        if not entry_id or not verdict:
+            raise ValueError(
+                "effect_attribution requires entry_id and verdict")
+        if verdict not in EFFECT_ATTRIBUTION_VERDICTS:
+            raise ValueError(
+                f"unknown effect_attribution verdict {verdict!r} "
+                f"(expected one of {list(EFFECT_ATTRIBUTION_VERDICTS)})")
+        entry = self.sbank.get(entry_id)
+        if entry is None:
+            raise ValueError(f"unknown entry_id {entry_id!r}: an effect "
+                             "attribution must name a real entry")
+        execution_id = (str(raw["execution_id"]).strip()
+                        if raw.get("execution_id") else None)
+        if execution_id and self._recorded_execution(execution_id) is None:
+            raise ValueError(
+                f"execution_id {execution_id!r} is not a recorded execution: "
+                "an effect attribution may only cite real facts")
+        action = raw.get("lifecycle_action")
+        action = str(action).strip() if action else None
+        note = (str(raw.get("note")).strip() if raw.get("note") else None)
+        evidence_ids = [str(e).strip() for e
+                        in (raw.get("evidence_execution_ids") or [])
+                        if str(e).strip()]
+        if action is not None:
+            if action not in LIFECYCLE_ACTIONS:
+                raise ValueError(
+                    f"unknown lifecycle_action {action!r} "
+                    f"(expected one of {list(LIFECYCLE_ACTIONS)})")
+            # A management request must rest on REAL adopted use, not on a
+            # bare status string: it needs a reason and at least one cited
+            # execution that DECLARED adoption of THIS entry.
+            if not note:
+                raise ValueError(
+                    f"lifecycle_action {action!r} requires a non-empty note: "
+                    "state the agent's reason from the accumulated use")
+            cited = list(dict.fromkeys(evidence_ids
+                                       + ([execution_id] if execution_id
+                                          else [])))
+            if not cited:
+                raise ValueError(
+                    f"lifecycle_action {action!r} requires execution_id or "
+                    "evidence_execution_ids naming real adoptions")
+            adopted = [e for e in cited
+                       if self._declared_adoption(entry_id, e)]
+            if not adopted:
+                raise ValueError(
+                    f"lifecycle_action {action!r} cites no execution that "
+                    f"declared adoption of entry {entry_id!r}: a recall-only "
+                    "or shared-name reference is not adoption (declare it "
+                    "with `--used-entry-ids`)")
+        item = {
+            "by": "agent",
+            "verdict": verdict,
+            "execution_id": execution_id,
+            "note": note,
+            "at": time.time(),
+        }
+        if action is not None:
+            item["lifecycle_action"] = action
+            item["evidence_execution_ids"] = evidence_ids
+        return {"entry_id": entry_id, "item": item,
+                "lifecycle_action": action}
+
+    def _recorded_execution(self, execution_id: str):
+        """The stored execution record for ``execution_id``, or None."""
+        record = self.bank.get(execution_id)
+        if record is None:
+            record = self.bank.get_pending(execution_id)
+        if record is None:
+            return None
+        if str(record.source) not in ("executed", "staged"):
+            return None
+        return record
+
+    def _declared_adoption(self, entry_id: str, execution_id: str) -> bool:
+        """True when ``execution_id`` DECLARED adoption of ``entry_id``."""
+        record = self._recorded_execution(execution_id)
+        if record is None:
+            return False
+        used = (record.execution_features or {}).get("used_entries")
+        if not isinstance(used, dict):
+            return False
+        return str(entry_id) in [str(e) for e
+                                 in (used.get("known_entry_ids") or [])]
+
 
     def retire(self, entry_id: str, reason: str) -> Dict[str, Any]:
         card = self.sbank.retire(entry_id, reason=reason)

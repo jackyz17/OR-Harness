@@ -255,32 +255,43 @@ class TestStrategicBank(HarnessTestCase):
         self.assertEqual([e.entry_id for e in self.sbank.matching(other_family)],
                          [l2])
 
-    def test_promotion(self):
-        """Forward calibration of a DECLARED prediction promotes: five checks
-        with a good hit rate validate the entry. Promotion does NOT depend on
-        the agent's verification state."""
+    def test_calibration_does_not_promote(self):
+        """r21: a DECLARED prediction's hit rate is a DIAGNOSTIC. Five hits
+        no longer promote — maturity moves only on the agent's explicit
+        management request."""
         eid = self.sbank.add(self.make_entry(verified=True))
         transitions = []
         for _ in range(PROMOTE_MIN_PREDICTIONS):
             entry, tr = self.sbank.record_prediction(eid, hit=True)
             transitions.extend(tr)
-        self.assertEqual(entry.status, "validated")
-        self.assertIn("promoted:candidate->validated", transitions)
+        self.assertEqual(entry.status, "candidate")
+        self.assertNotIn("promoted:candidate->validated", transitions)
         self.assertGreaterEqual(entry.prediction_track.hit_rate, PROMOTE_MIN_HIT_RATE)
 
-    def test_calibration_promotes_without_framework_verification(self):
-        """An entry whose claim the agent did NOT mark verified (e.g.
-        ``fact_checked``) still promotes on forward calibration: correctness
-        review and lifecycle are separate."""
-        eid = self.sbank.add(self.make_entry(verified=False))
-        for _ in range(PROMOTE_MIN_PREDICTIONS):
-            entry, transitions = self.sbank.record_prediction(eid, hit=True)
+    def test_explicit_promote_validates(self):
+        """The AGENT's explicit management request promotes; no calibration
+        is needed and none is fabricated."""
+        eid = self.sbank.add(self.make_entry(verified=True))
+        entry, tr = self.sbank.apply_lifecycle_action(
+            eid, "promote", reason="used on two tasks, effect confirmed")
         self.assertEqual(entry.status, "validated")
-        self.assertIn("promoted:candidate->validated", transitions)
+        self.assertTrue(any(t.startswith("promoted") for t in tr))
+        # idempotent: promoting an already-validated entry is a no-op.
+        entry, tr2 = self.sbank.apply_lifecycle_action(
+            eid, "promote", reason="again")
+        self.assertEqual(entry.status, "validated")
+        self.assertEqual(tr2, [])
 
-    def test_no_declared_prediction_never_promotes(self):
+    def test_management_requires_a_reason(self):
+        eid = self.sbank.add(self.make_entry())
+        with self.assertRaises(StorageError):
+            self.sbank.apply_lifecycle_action(eid, "promote", reason="")
+        with self.assertRaises(StorageError):
+            self.sbank.apply_lifecycle_action(eid, "nonsense", reason="x")
+
+    def test_no_declared_prediction_never_promotes_on_calibration(self):
         """An entry that declared no quality prediction has nothing to
-        calibrate, so it is never promoted on a default interval."""
+        calibrate, so it is never promoted by calibration."""
         eid = self.sbank.add(self.make_entry(quality_estimated=False))
         for _ in range(PROMOTE_MIN_PREDICTIONS):
             entry, transitions = self.sbank.record_prediction(eid, hit=True)
@@ -289,8 +300,7 @@ class TestStrategicBank(HarnessTestCase):
 
     def test_validated_allows_any_non_refuted_state(self):
         """``validated`` only forbids a REFUTED claim; a fact_checked or
-        unverified entry may be validated by calibration."""
-        # A fact_checked claim validates cleanly.
+        unverified entry may be validated by the agent's management."""
         eid = self.sbank.add(self.make_entry(status="validated"))
         self.assertEqual(self.sbank.get(eid).status, "validated")
 
@@ -301,19 +311,29 @@ class TestStrategicBank(HarnessTestCase):
         with self.assertRaises(StorageError):
             self.sbank.add(entry)
 
-    def test_no_early_promotion(self):
+    def test_calibration_never_promotes_early(self):
+        """Fewer than the old threshold no longer matters: calibration does
+        not promote at ANY count now."""
         eid = self.sbank.add(self.make_entry())
         for _ in range(PROMOTE_MIN_PREDICTIONS - 1):
             entry, _ = self.sbank.record_prediction(eid, hit=True)
         self.assertEqual(entry.status, "candidate")
 
-    def test_demotion_after_consecutive_misses(self):
+    def test_consecutive_misses_do_not_demote(self):
+        """r21: a calibration miss streak is a diagnostic; it no longer
+        demotes. Only the agent's explicit demote (or a refuting verdict)
+        moves the entry to suspect."""
         eid = self.sbank.add(self.make_entry(status="validated", verified=True))
         for i in range(DEMOTE_CONSECUTIVE_MISSES):
             entry, tr = self.sbank.record_prediction(eid, hit=False,
                                                      calibration_err=0.4)
+        self.assertEqual(entry.status, "validated")
+        self.assertEqual(tr, [])
+        # The agent's explicit demote does it.
+        entry, tr2 = self.sbank.apply_lifecycle_action(
+            eid, "demote", reason="effect not reproduced")
         self.assertEqual(entry.status, "suspect")
-        self.assertTrue(any(t.startswith("demoted") for t in tr))
+        self.assertTrue(any(t.startswith("demoted") for t in tr2))
 
     def test_dormant_and_wakeup(self):
         entry = self.make_entry()
@@ -328,8 +348,11 @@ class TestStrategicBank(HarnessTestCase):
         affected = self.sbank.age()
         self.assertEqual(affected, [eid])
         self.assertEqual(self.sbank.get(eid).status, "dormant")
-        # A prediction event wakes it up.
-        entry, tr = self.sbank.record_prediction(eid, hit=True)
+        # A prediction event no longer wakes it (calibration is diagnostic
+        # only); an explicit management request does, through the existing
+        # wakeup. ``keep`` wakes WITHOUT promoting.
+        entry, tr = self.sbank.apply_lifecycle_action(
+            eid, "keep", reason="live again on a new task")
         self.assertEqual(entry.status, "candidate")
         self.assertIn("awakened:dormant->candidate", tr)
 

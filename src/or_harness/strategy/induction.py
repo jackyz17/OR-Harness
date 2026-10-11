@@ -564,16 +564,22 @@ class InductionEngine:
         track (an entry that declared no prediction has no interval to be
         calibrated). Its ADOPTIONS are still counted — separately — so a
         qualitative technique's real use is visible in the maintenance report
-        even though it can never be calibrated. An agent's ``refuting``
-        effect attribution can drive the EXISTING demotion transition; the
-        other verdicts are reported only.
-        - a check that missed a DECLARED prediction is a calibration miss:
-          three consecutive misses demote to ``suspect``. An arbitrary
-          execution failure is NOT such a miss — whether a failure refutes
-          the knowledge is the agent's analysis, and it never demotes here;
-        - promotion (n >= 5 checks, hit rate >= 0.7) and demotion are applied
-          HERE, through the same rules the per-event API uses
-          (:func:`apply_transitions`);
+        even though it can never be calibrated.
+        - r21: calibration is a DIAGNOSTIC. The forward track (n_predictions /
+          hits / consecutive misses / calibration error) is replayed and
+          reported, but it NO LONGER changes an entry's maturity — a hit rate
+          measures a declared forecast, not whether USING the knowledge
+          helped. Maturity changes only by the AGENT's explicit management
+          request (``lifecycle_action`` on an effect attribution). An
+          arbitrary execution failure is not a miss and never demotes here;
+        - the entry's status is re-derived by replaying its EFFECT
+          ATTRIBUTIONS in chronological order: the LAST effective management
+          event decides (an explicit ``promote`` / ``demote``, or a
+          ``refuting`` verdict as a demotion cue). A historical ``refuting``
+          does NOT permanently pin the entry at ``suspect`` — a LATER valid
+          management event can lift it, while the earlier negative event
+          stays visible in ``attributed_effects`` (nothing is deleted or
+          rewritten);
         - a dormant entry wakes when matching evidence is newer than its
           recency mark (``last_consulted_at`` or ``created_at``) — the same
           mark dormancy aging uses.
@@ -605,26 +611,33 @@ class InductionEngine:
             # The adoption count comes from the ADOPTION facts (every
             # explicit adoption), never from the hit/miss track.
             track.n_adoptions = len(adoptions)
-            # An agent's ``refuting`` attribution drives the EXISTING
-            # demotion transition (never a new scoring threshold); the other
-            # verdicts are reported only and never promote.
-            refuting = [a for a in probe.effect_attribution
-                        if str(a.get("verdict")) == "refuting"]
             newest = max([c["created_at"] for c in checks]
                          + [a["created_at"] for a in adoptions]
                          or [0.0])
             recency = probe.last_consulted_at or probe.created_at
-            transitions = []
-            if refuting and probe.status != "refuted":
-                # Reuse the EXISTING demotion semantics: an agent-attributed
-                # refutation is the framework's cue to demote, exactly as a
-                # calibration miss streak would. Nothing new is scored.
-                if probe.status != "dormant":
-                    transitions.append(f"{probe.status} -> suspect (agent "
-                                       "attributed a refuting use effect)")
-                    probe.status = "suspect"
-            elif probe.status != "dormant" or newest > recency:
+            transitions: List[str] = []
+            if probe.status == "dormant" and newest > recency:
                 transitions = list(apply_transitions(probe))
+            # Consume any attribution that has NOT YET been applied (the
+            # ``applied_at`` stamp marks the ones a previous pass consumed),
+            # in chronological order, so a request lands ONCE and a later
+            # request can lift an earlier demotion.
+            pending = sorted(
+                (a for a in probe.effect_attribution
+                 if not a.get("applied_at")),
+                key=lambda a: (float(a.get("at") or 0.0),
+                               str(a.get("execution_id") or "")))
+            for attr in pending:
+                before = probe.status
+                self._apply_management_event(probe, attr)
+                attr["applied_at"] = attr.get("at")
+                if probe.status != before:
+                    transitions.append(
+                        f"{before} -> {probe.status} "
+                        f"(attribution: {attr.get('verdict')}"
+                        + (f"/{attr.get('lifecycle_action')}"
+                           if attr.get("lifecycle_action") else "")
+                        + ")")
             item: Dict[str, Any] = {
                 "entry_id": entry.entry_id,
                 "strategy_id": entry.strategy_id,
@@ -633,7 +646,8 @@ class InductionEngine:
                             "hit_rate": round(track.hit_rate, 4),
                             "consecutive_misses": track.consecutive_misses,
                             "calibration_error": round(track.calibration_error,
-                                                       4)},
+                                                       4),
+                            "calibratable": bool(track.n_predictions)},
                 # The USE record: how many explicit adoptions, and how they
                 # turned out. Distinct from the hit/miss track above.
                 "adoptions": {
@@ -660,9 +674,42 @@ class InductionEngine:
                 live.calibration_error = track.calibration_error
             live.n_adoptions = track.n_adoptions
             entry.status = probe.status
+            # Persist the ``applied_at`` stamps so a consumed management
+            # event is not replayed on a later pass (the event itself stays
+            # in the list, visible and unchanged — nothing is deleted).
+            entry.effect_attribution = [dict(a)
+                                        for a in probe.effect_attribution]
             self.sbank.update(entry)
             report.append(item)
         return report
+
+    @staticmethod
+    def _apply_management_event(entry: StrategicEntry,
+                                attr: Dict[str, Any]) -> None:
+        """Apply ONE effect attribution's management effect to ``entry``.
+
+        Replayed chronologically by :meth:`revise`. An explicit
+        ``lifecycle_action`` (``promote`` / ``demote`` / ``keep``) is the
+        AGENT's management decision; a ``refuting`` verdict is a NEGATIVE
+        judgement and is read as a demotion cue (the existing semantics), but
+        it is no longer permanent — a LATER valid event can lift it. Nothing
+        is scored here and no verification state is rewritten.
+        """
+        status = entry.status
+        action = attr.get("lifecycle_action")
+        verdict = str(attr.get("verdict") or "")
+        if action == "keep":
+            return
+        if action == "promote":
+            if status != "dormant":
+                entry.status = "validated"
+            return
+        if action == "demote":
+            if status != "dormant":
+                entry.status = "suspect"
+            return
+        if verdict == "refuting" and status not in ("dormant", "refuted"):
+            entry.status = "suspect"
 
     def _frozen_checks(self) -> Dict[str, List[Dict[str, Any]]]:
         """Frozen forward checks in the Evidence Bank, grouped by entry.

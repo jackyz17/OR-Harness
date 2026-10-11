@@ -508,16 +508,16 @@ class TestAdoptionMaintenance(HarnessTestCase):
                       embedding=LocalHashEmbeddingBackend())
         self.addCleanup(h.close)
         entry = self._qualified_entry(h)
+        # r21: the refuting verdict is applied IN THE SAME induce call (the
+        # lifecycle pass runs after the attribution is recorded), so the
+        # entry is already suspect when the call returns.
         h.induce(effect_attributions=[
             {"entry_id": entry.entry_id, "verdict": "refuting",
              "note": "using it did not help on this instance"}])
         stored = h.sbank.get(entry.entry_id)
         self.assertEqual(len(stored.effect_attribution), 1)
         self.assertEqual(stored.effect_attribution[0]["by"], "agent")
-        report = self._engine(h).revise()
-        item = [r for r in report if r["entry_id"] == entry.entry_id][0]
-        self.assertTrue(item["transitions"])
-        self.assertEqual(h.sbank.get(entry.entry_id).status, "suspect")
+        self.assertEqual(stored.status, "suspect")
 
 
 class TestIntervalByKind(unittest.TestCase):
