@@ -1161,9 +1161,41 @@ class ORHarness:
         # a declared budget is read the same way here as everywhere else.
         declared = self._load_budget(task_id, episode_id)
         budget = self.budget.view(task_id, episode_id, budget=declared)
+        consumption = budget.get("consumption") or {}
+        episode_dims = [d for d in (declared or {}) if d != "latency_s"]
+        unknown_dims = list(consumption.get("unknown_dims") or [])
+        episode_unknown = [d for d in unknown_dims if d in episode_dims]
         return {
             "declared_budget": copy.deepcopy(declared) if declared else None,
             "budget_status": budget.get("status"),
+            # The FROZEN budget CONDITION a ``budget_exhausted`` prediction is
+            # about: the declared limits (and the episode-scoped subset), the
+            # KNOWN consumption (a LOWER BOUND whenever a dimension is
+            # unmeasured), whether the remaining budget is CONFIRMED, and the
+            # unmeasured dimensions WITH their located reason. The model may
+            # decline to predict when no valid condition exists; a probability
+            # is never defaulted to 0.
+            "budget_condition": {
+                "declared_limits": (copy.deepcopy(declared)
+                                    if declared else None),
+                "episode_dimensions": episode_dims,
+                "known_consumption_lower_bound": {
+                    d: (consumption.get("total_cost") or {}).get(d)
+                    for d in episode_dims},
+                "remaining_budget_confirmed": bool(declared)
+                and not episode_unknown,
+                "unknown_dimensions": episode_unknown,
+                "unknown_dimension_reasons": {
+                    d: (consumption.get("unknown_dim_reasons") or {}).get(d)
+                    for d in episode_unknown},
+                "note": ("the condition a budget_exhausted prediction is "
+                         "about: from this decision to the end of the solving "
+                         "episode. A known consumption with an unmeasured "
+                         "declared dimension is a LOWER BOUND and the "
+                         "remaining budget is NOT confirmed; with no valid "
+                         "condition the model may decline to predict (never "
+                         "a default probability of 0)"),
+            },
             "available_solver_families": available_families(),
             "executor": {
                 "timeout_seconds": getattr(self.executor, "timeout_seconds",
@@ -1772,7 +1804,7 @@ class ORHarness:
     def calibration_summary(self, *, min_samples: Optional[int] = None,
                             rebuild: bool = False
                             ) -> Dict[str, Any]:
-        """The published experience-calibration summary (wm-calib/2).
+        """The published experience-calibration summary (wm-calib/3).
 
         By default this READS the published summary — one row lookup, no
         history scan. The published object is rebuilt whenever the window
@@ -6338,7 +6370,15 @@ class ORHarness:
 
         Returns the execution id when a staged fact was annotated (so the
         caller stops there), or None when there is no staged attempt to
-        annotate."""
+        annotate.
+
+        The host's stated REAL cost is ALSO backfilled onto the staged fact
+        (via ``amend_pending_cost``) when one was supplied: without it the
+        stopped attempt's real spend was invisible to the budget ledger, so
+        the episode could read ``unconfirmed`` forever and no budget label
+        could be produced even with a confirmed stop (the r23 gap). The
+        numbers are the host's receipt, marked measured with provenance;
+        nothing is fabricated and no session total is split."""
         if not attempted_execution_id:
             return None
         staged = self.bank.get_pending(attempted_execution_id)
@@ -6349,6 +6389,15 @@ class ORHarness:
                 "reason": fingerprint["reason"],
                 "cancelled": fingerprint["cancelled"],
             }})
+        receipt_cost = fingerprint.get("cost") or {}
+        if receipt_cost:
+            try:
+                self.bank.amend_pending_cost(
+                    attempted_execution_id,
+                    {d: float(v) for d, v in receipt_cost.items()},
+                    source="agent_observed")
+            except Exception:  # noqa: BLE001 - the stop itself must land
+                pass
         recorded.append({"execution_id": attempted_execution_id,
                          "shape": "staged_attempt_annotated"})
         return attempted_execution_id

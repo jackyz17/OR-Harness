@@ -4,7 +4,7 @@ Read this page when you are ending a task episode, reading the published calibra
 
 **Status: implemented.** This is the fourth phase of the reconstruction: after the unified contract (phase 1), the frozen prediction input context (phase 2) and the strategy-outcome prediction service (phase 3, wm-so/1), this phase closes the loop — a real episode ends, its bound predictions are evaluated against their real outcomes field by field, and the aggregate becomes experience calibration that later episodes read.
 
-- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/2`; risk-event vocabulary: `wm-events/2`; observation rules: `wm-obs/2`; context: `wm-context/3`
+- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/3`; risk-event vocabulary: `wm-events/3`; observation rules: `wm-obs/4`; context: `wm-context/3`
 - Python module: `or_harness.world_model.episode_closeout`
 - API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary` / `archive_calibration` / `calibration_retention`
 - CLI: `orx close-episode` / `orx calibration` / `orx inspect --bank evaluations` / `orx archive-calibration` / `orx inspect --bank retention`
@@ -158,20 +158,24 @@ The summary reports two numbers that are never conflated:
 
 An event the model never predicted still counts in `occurrence` and can never produce a Brier score.
 
-### The risk-event vocabulary (`wm-events/2`)
+### The risk-event vocabulary (`wm-events/3`)
 
-| Event | Unit | Source | Note |
-|---|---|---|---|
-| `environment_failure` | execution | `error_class == 'environment'` | A record with no recorded class stays UNKNOWN |
-| `implementation_failure` | execution | `error_class == 'model'` | The harness's own code failed — NOT a modelling error |
-| `timeout` | execution | `status == 'timeout'` | An observation, not a verdict on the strategy |
-| `solver_reported_infeasible` | execution | `status == 'infeasible'` | A verdict, not by itself a failure |
-| `task_check_failed` | execution | `task_check.state` | The CHECK RESULT only; kind/scope/basis travel with it |
-| `budget_exhausted` | episode | the declared budget view | Only a scope matching the ledger's (the episode) can be scored |
+| Event | Unit | Range | Source | Note |
+|---|---|---|---|---|
+| `environment_failure` | execution | the execution | `error_class == 'environment'` | A record with no recorded class stays UNKNOWN |
+| `implementation_failure` | execution | the execution | `error_class == 'model'` | The harness's own code failed — NOT a modelling error |
+| `timeout` | execution | the execution | `status == 'timeout'` | An observation, not a verdict on the strategy |
+| `solver_reported_infeasible` | execution | the execution | `status == 'infeasible'` | A verdict, not by itself a failure |
+| `task_check_failed` | execution | the execution | `task_check.state` | The CHECK RESULT only; kind/scope/basis travel with it |
+| `budget_exhausted` | episode | `episode_to_task_end` | the declared budget view | Independent of a candidate's execution scope; scored on the EPISODE verdict |
 
 **Retired** (no label, no alias): `model_invalid` (a solver error or a failed check cannot establish that the MODEL was wrong — use `task_check_failed` for the check result), `no_feasible_solution` (ambiguous between a reported infeasibility and a failure to find a solution), `model_failure` (renamed `implementation_failure`). The prediction prompt lists ONLY the observable names and explicitly forbids inventing the retired ones.
 
-**Scope matching.** The budget ledger is episode-scoped, so an attempt- or strategy-window-scope prediction is NOT scored against it — the label stays unknown with an explicit `scope_mismatch` basis, while the framework still records the FACT under `occurrence`. This round deliberately builds no per-attempt budget system.
+**The event RANGE is independent of the candidate scope.** A candidate's `scope` says how MUCH of the run a prediction is about (`attempt` / `strategy_window`); an event's RANGE says WHAT the event measures. `budget_exhausted` measures the WHOLE remaining episode (from this decision's anchor to the task end), so an attempt- or strategy-window-scope prediction that declared it IS scored against the episode ledger (the `wm-events/3` fix). It is never a claim that the candidate alone caused the whole episode's spend, and no per-attempt budget system is built.
+
+**The budget label is episode-scoped, three-valued.** `occurred` when a measured EPISODE-scoped dimension is over its limit OR an explicit budget-termination receipt (a proactive host cancel that reached a hard cap) exists; `not_occurred` when the episode ended with every declared EPISODE-scoped dimension measured and within limits; otherwise `unknown` (no episode-budget condition, or a relevant episode dimension unmeasured — a known consumption with an unmeasured declared dimension is a LOWER BOUND, not a confirmed remaining budget). A single per-attempt `latency_s` overrun is a DIFFERENT event and never decides this one; a missing per-attempt dimension never blocks an otherwise-complete episode verdict. An aborted run with no stated cause is NOT a budget stop — its free-text reason is never read as a cap.
+
+**A changed budget is non-comparable, not silently re-based.** `budget_exhausted` is a claim about the budget DECLARED when the prediction was frozen. If the declaration changed afterwards, the frozen condition is kept and the label is withheld with an explicit non-comparable reason; a new limit never overwrites the original prediction's condition. The prediction input carries the frozen condition (limits, known consumption as a lower bound, whether the remaining budget is confirmed, and the unmeasured dimensions WITH their located reason) so the model may DECLINE to predict rather than default to 0.
 
 **When later episodes see it.** A NEW `PredictionContext` carries the published summary's CONTENT under `strategy_outcome_calibration` — a SINGLE-ROW read, no history scan. The block is filtered twice: by the ATTACHED provider's model identity (another model's errors are not evidence about this one, and the withheld keys are named under `withheld_groups`) and, in the request, by the candidate's scope. Stored contexts never change: episode 1's context keeps what it froze.
 
@@ -246,7 +250,7 @@ orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 - **Planner suggestion vs close-out evaluation (open)**: a candidate with no comparable benefit or failing quality checks can still be SUGGESTED by the planner's conservative yardstick. The close-out's evaluation does NOT depend on the planner's utility or the suggestion — eligibility is decided by the prediction–outcome match and the measurement basis only. Automatic recommendation reliability is not yet claimed.
 - **Scoring rules are decision rules, not measurements (open)**: "unknown cost charged the peak share / unknown risk the full weight" are DECISION RULES, not measured facts. The calibration summary reports measured errors only; it never presents those rules as observations.
 - **No framework channel can adjudicate a MODELLING error (open)**: a task check reports whether its DECLARED bases held, not whether the model was wrong — the cause (misread task, implementation bug, unmet requirement, wrong reference) is the agent's diagnosis. That is why `model_invalid` is retired rather than derived, and why a risk the framework cannot observe keeps label `unknown`.
-- **Budget risk is episode-scoped only (open)**: this round keeps the episode-level over-budget FACT and marks narrower-scope predictions `scope_mismatch`. A per-attempt budget system is deliberately out of scope.
+- **Budget risk is episode-scoped (open)**: the episode-level over-budget FACT is scored on a prediction that declared `budget_exhausted`, whatever the candidate's execution scope (`wm-events/3`), and the label reads the episode-scoped verdict plus an explicit termination receipt. A per-attempt budget system is deliberately out of scope; a per-attempt `latency_s` overrun is never reported as budget exhaustion.
 - Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE, and the correction is FIELD-SCOPED: the benefit observation is re-derived (to `0.0` for a confirmed-wrong answer) while the measured cost is preserved, the correction is applied only to the execution it names, and the published summary is republished when the episode is still in the window. Rewriting the stored evaluation itself remains refused.
 - **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
 - **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.

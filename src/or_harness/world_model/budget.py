@@ -265,6 +265,13 @@ class BudgetLedger:
                    + len(prediction_costs))
         unknown_dims = [d for d in COST_DIMENSIONS
                         if n_items > 0 and n_measured[d] < n_items]
+        # LOCATED reasons: which ITEM left each unknown dimension unmeasured,
+        # so a caller can act on the real gap (a host receipt to supply, an
+        # action whose cost is genuinely not applicable) instead of guessing.
+        # This only NAMES the missing items — the verdict is unchanged.
+        unknown_dim_reasons = self._unknown_dim_reasons(
+            per_attempt, action_costs, prediction_costs, unknown_dims,
+            n_measured, n_items)
         unattributed_summary = None
         if unattributed:
             unattributed_summary = {
@@ -305,6 +312,7 @@ class BudgetLedger:
                            if d not in NON_CUMULATIVE_DIMENSIONS},
             "n_measured": n_measured,
             "unknown_dims": unknown_dims,
+            "unknown_dim_reasons": unknown_dim_reasons,
             "token_basis": bases or None,
             "token_basis_mixed": len(bases) > 1,
             "token_basis_note": (
@@ -398,6 +406,73 @@ class BudgetLedger:
                     and act.linked_execution_id == execution_id):
                 return act.episode_id
         return None
+
+    def _unknown_dim_reasons(
+            self, per_attempt: List[Dict[str, Any]],
+            action_costs: List[Dict[str, Any]],
+            prediction_costs: List[Dict[str, Any]],
+            unknown_dims: List[str],
+            n_measured: Dict[str, int], n_items: int
+            ) -> Dict[str, List[Dict[str, Any]]]:
+        """Locate WHICH items left each unknown dimension unmeasured.
+
+        Purely diagnostic: it names the missing item (its kind and id) so a
+        caller can act on the REAL gap — supply a host receipt, or confirm a
+        dimension genuinely does not apply. It changes no verdict and
+        fabricates nothing; the ``unknown_dims`` judgment above is
+        authoritative.
+        """
+        if not unknown_dims or n_items <= 0:
+            return {}
+        items: List[Dict[str, Any]] = []
+        for row in per_attempt:
+            items.append({
+                "kind": "staged_execution" if row.get("staged")
+                        else "recorded_execution",
+                "id": row.get("execution_id"),
+                "measured": set(row.get("cost_measured") or []),
+                "source": ("pending_executions" if row.get("staged")
+                           else "executions"),
+            })
+        for row in action_costs:
+            items.append({
+                "kind": "action",
+                "id": row.get("action_id"),
+                "action_type": row.get("action_type"),
+                "measured": set(row.get("cost_measured") or []),
+                "cost_unknown": row.get("cost") is None,
+                "source": "action_records",
+            })
+        for row in prediction_costs:
+            items.append({
+                "kind": "prediction_call",
+                "id": row.get("prediction_id"),
+                "measured": set(row.get("cost_measured") or []),
+                "cost_unknown": row.get("cost") is None,
+                "source": "prediction rows",
+            })
+        out: Dict[str, List[Dict[str, Any]]] = {}
+        for dim in unknown_dims:
+            missing = []
+            for item in items:
+                if dim in item["measured"]:
+                    continue
+                entry = {
+                    "kind": item["kind"],
+                    "id": item.get("id"),
+                    "source": item.get("source"),
+                    "reason": ("no measured value for this dimension "
+                               "(unknown, never zero)"),
+                }
+                if item.get("action_type"):
+                    entry["action_type"] = item["action_type"]
+                if item.get("cost_unknown"):
+                    entry["note"] = ("the item carries no cost at all: its "
+                                     "spend on this dimension is UNKNOWN")
+                missing.append(entry)
+            if missing:
+                out[dim] = missing
+        return out
 
     # -- status ----------------------------------------------------------------
 

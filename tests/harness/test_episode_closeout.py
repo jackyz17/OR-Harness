@@ -75,7 +75,7 @@ GOOD_PAYLOAD = {
 #: provider name standing in for a version. The trailing observation-rules
 #: version is part of the key (samples under different rules never pool).
 GROUP_PREFIX = "strategy_outcome|(unknown)|"
-OBS_RULE = "|wm-obs/3"
+OBS_RULE = "|wm-obs/4"
 
 
 class StubProvider(WorldModelProvider):
@@ -890,9 +890,10 @@ class TestUnobservedIsNotALabel(M4Case):
                       unscored["model_invalid"]["reason"])
 
     def test_unconfirmed_budget_keeps_label_unknown(self):
-        """An UNCONFIRMED ledger (partially unmeasured cost) is not
-        evidence of no exhaustion: the label stays unknown and the event
-        is excluded from scoring."""
+        """An UNCONFIRMED ledger (a declared EPISODE dimension unmeasured) is
+        not evidence of no exhaustion: the label stays unknown, the reason
+        names the unmeasured dimension, and the event is excluded from
+        scoring."""
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "budget_exhausted", "probability": 0.5}]
@@ -915,19 +916,23 @@ class TestUnobservedIsNotALabel(M4Case):
         self.assertEqual(view["status"], "unconfirmed")
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        # NOT scored. The prediction declares attempt scope while the
-        # ledger is episode-scoped, so the scope itself does not match:
-        # the label stays unknown and the reason says so.
+        # NOT scored: the measured spend is within limits but a declared
+        # EPISODE dimension is unmeasured, so no label is fabricated.
         self.assertEqual(risk["scored"], [])
-        self.assertIn("budget_exhausted",
-                      {e["event"] for e in risk["unscored"]})
-        self.assertTrue(any("scope_mismatch" in e["reason"]
-                            for e in risk["unscored"]))
+        unscored = {e["event"]: e for e in risk["unscored"]}
+        self.assertIn("budget_exhausted", unscored)
+        self.assertIn("unmeasured", unscored["budget_exhausted"]["reason"])
+        self.assertIn("llm_tokens",
+                      unscored["budget_exhausted"]["reason"])
+        # The framework records the FACT with the located gap.
+        observed = risk["observed_units"]["budget_exhausted"]
+        self.assertIsNone(observed["label"])
+        self.assertEqual(observed["range"], "episode_to_task_end")
 
     def test_confirmed_within_budget_is_a_framework_observation(self):
         """A CONFIRMED within-budget ledger IS a not_occurred observation —
-        recorded by the FRAMEWORK, counted by observation unit, even though
-        no attempt-scope prediction may be scored against it."""
+        recorded by the FRAMEWORK, counted by observation unit, and scored
+        because the budget event has its own range."""
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "budget_exhausted", "probability": 0.5}]
@@ -953,10 +958,13 @@ class TestUnobservedIsNotALabel(M4Case):
         self.assertEqual(view["status"], "ok")
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        # The attempt-scope prediction is NOT scored against the
-        # episode-scoped ledger...
-        self.assertEqual(risk["scored"], [])
-        # ...but the framework still OBSERVED the event, by its own unit.
+        # The attempt-scope prediction IS scored against the episode-scoped
+        # budget event (its range is independent of the candidate scope).
+        scored = {e["event"]: e for e in risk["scored"]}
+        self.assertIn("budget_exhausted", scored)
+        self.assertEqual(scored["budget_exhausted"]["label"],
+                         "not_occurred")
+        # The framework still OBSERVED the event, by its own unit.
         observation = risk["observed_units"]["budget_exhausted"]
         self.assertEqual(observation["label"], "not_occurred")
         self.assertEqual(observation["unit"], "episode")
@@ -965,9 +973,8 @@ class TestUnobservedIsNotALabel(M4Case):
     def test_budget_exhausted_is_observable_by_the_framework(self):
         # budget_exhausted HAS a channel: a declared budget exceeded by
         # real consumption is an observed event. The observation is the
-        # framework's, counted by episode, and is reported in the
-        # occurrence statistics even though the attempt-scope prediction
-        # may not be scored against the episode-wide ledger.
+        # framework's, counted by episode, and the event is SCORED because
+        # its range is independent of the candidate's execution scope.
         payload = json.loads(json.dumps(GOOD_PAYLOAD))
         payload["risk"]["events"] = [
             {"event": "budget_exhausted", "probability": 0.5}]
@@ -989,9 +996,12 @@ class TestUnobservedIsNotALabel(M4Case):
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["observed_units"]["budget_exhausted"]["label"],
                          "occurred")
-        self.assertEqual(risk["scored"], [],
-                         "an attempt-scope prediction is not scored against "
-                         "the episode-scoped budget ledger")
+        # The event is SCORED: its range is independent of the candidate
+        # scope, so an attempt-scope prediction is evaluated on the episode
+        # budget verdict.
+        scored = {e["event"]: e for e in risk["scored"]}
+        self.assertIn("budget_exhausted", scored)
+        self.assertEqual(scored["budget_exhausted"]["label"], "occurred")
         summary = h.calibration_summary()
         occurrence = summary["occurrence"]["budget_exhausted"]
         self.assertEqual(occurrence["observation_unit"], "episode")

@@ -1,4 +1,4 @@
-"""Calibration v2 (wm-calib/2): event semantics, counting units, retention.
+"""Calibration v2 (wm-calib/3): event semantics, counting units, retention.
 
 This suite is the executable statement of the six review corrections that
 reshaped the close-out layer. Each test class asserts ONE of them, so a
@@ -8,9 +8,11 @@ future change that re-breaks a correction fails here first:
    ``task_check_failed`` and nothing else. The retired ``model_invalid`` name
    is never aliased onto it, and an execution failure is named by what was
    observed (``environment_failure`` / ``implementation_failure``).
-2. **Budget scope is matched, not assumed.** ``budget_exhausted``'s ledger is
-   episode-scoped; an attempt- or window-scope prediction is NOT scored
-   against it, while the framework still records the fact.
+2. **The budget event has its OWN range.** ``budget_exhausted`` is episode
+   scoped, but its range is INDEPENDENT of a candidate's execution scope
+   (``wm-events/3``): an attempt- or window-scope prediction that declared it
+   IS scored against the episode ledger, while the label itself is decided
+   only by the EPISODE-scoped dimensions.
 3. **The window is located, then read.** A prediction read is a single-row
    lookup of the PUBLISHED summary; a correction inside the window
    republishes it, so a late verdict reaches later predictions.
@@ -54,7 +56,7 @@ PAYLOAD = {
 }
 
 GROUP = ("strategy_outcome|(unknown)|normalized_objective_gap|1-gap"
-         "|attempt|wm-obs/3")
+         "|attempt|wm-obs/4")
 
 
 def _task(task_id="t1", **coupling):
@@ -348,15 +350,18 @@ class TestEventSemantics(CalibrationV2Case):
 
 
 # ---------------------------------------------------------------------------
-# 2. budget scope is matched, not assumed
+# 2. the budget event has its OWN range (independent of the candidate scope)
 # ---------------------------------------------------------------------------
 
 
 class TestBudgetScope(CalibrationV2Case):
 
-    def test_window_scope_is_not_an_automatic_exemption(self):
-        """A strategy-window prediction is NOT scored against the
-        episode-scoped budget ledger: a window is not the whole episode."""
+    def test_window_scope_budget_is_scored_once_the_event_range_is_frozen(self):
+        """A strategy-window prediction IS scored against the episode-scoped
+        budget ledger: the budget event's RANGE (``episode_to_task_end``) is
+        independent of the candidate's execution scope, so a window
+        prediction that declared the event is evaluated on the episode
+        verdict (``wm-events/3``)."""
         task = _task("t1")
         payload = json.loads(json.dumps(PAYLOAD))
         payload["risk"]["events"] = [
@@ -378,16 +383,18 @@ class TestBudgetScope(CalibrationV2Case):
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        self.assertEqual(evaluation["risk"]["scored"], [])
-        unscored = {e["event"]: e for e in evaluation["risk"]["unscored"]}
-        self.assertIn("scope_mismatch", unscored["budget_exhausted"]
-                      ["reason"])
+        # The window-scope prediction IS scored on the episode budget event.
+        scored = {e["event"]: e for e in evaluation["risk"]["scored"]}
+        self.assertIn("budget_exhausted", scored)
+        self.assertEqual(scored["budget_exhausted"]["label"], "occurred")
+        self.assertEqual(scored["budget_exhausted"]["observation_range"],
+                         "episode_to_task_end")
         # The FACT is still recorded by the framework, by its own unit.
         observed = evaluation["risk"]["observed_units"]["budget_exhausted"]
         self.assertEqual(observed["label"], "occurred")
         self.assertEqual(observed["unit"], "episode")
 
-    def test_attempt_scope_is_not_scored_against_the_episode_ledger(self):
+    def test_attempt_scope_budget_is_scored_against_the_episode_ledger(self):
         task = _task("t1")
         payload = json.loads(json.dumps(PAYLOAD))
         payload["risk"]["events"] = [
@@ -407,10 +414,14 @@ class TestBudgetScope(CalibrationV2Case):
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
-        self.assertEqual(risk["scored"], [])
-        self.assertTrue(all("scope_mismatch" in e["reason"]
-                            for e in risk["unscored"]
-                            if e["event"] == "budget_exhausted"))
+        # An ATTEMPT-scope prediction IS scored against the episode-scoped
+        # budget event: the event's range is independent of the candidate's
+        # scope (wm-events/3). The label reads the EPISODE verdict.
+        scored = {e["event"]: e for e in risk["scored"]}
+        self.assertIn("budget_exhausted", scored)
+        self.assertEqual(scored["budget_exhausted"]["label"], "occurred")
+        self.assertEqual(scored["budget_exhausted"]["observation_range"],
+                         "episode_to_task_end")
 
 
 # ---------------------------------------------------------------------------
@@ -915,7 +926,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary()
         self.assertIn("strategy_outcome|model-a@v1|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/3", summary["groups"])
+                      "|1-gap|attempt|wm-obs/4", summary["groups"])
         evaluation = h.strategy_prediction_evaluations(task_id="t1")[0]
         self.assertEqual(evaluation["model_identity"], "model-a@v1")
 
@@ -977,8 +988,8 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         self.assertEqual(summary["applicability"], "global_diagnostic")
         self.assertIn("NOT a claim about the conditional",
                       summary["applicability_note"])
-        self.assertEqual(summary["calibration_version"], "wm-calib/2")
-        self.assertEqual(summary["event_vocabulary_version"], "wm-events/2")
+        self.assertEqual(summary["calibration_version"], "wm-calib/3")
+        self.assertEqual(summary["event_vocabulary_version"], "wm-events/3")
 
     def test_legacy_evaluation_without_identity_goes_to_unknown(self):
         """An evaluation stored before the identity existed must not have a
@@ -1003,7 +1014,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
                  self.h.store.dumps(stored)))
         rebuilt = self.h.calibration_summary(rebuild=True)
         self.assertIn("strategy_outcome|(unknown)|normalized_objective_gap"
-                      "|1-gap|attempt|wm-obs/3", rebuilt["groups"])
+                      "|1-gap|attempt|wm-obs/4", rebuilt["groups"])
 
     def test_no_published_summary_reports_missing(self):
         context = self.h.build_prediction_context(_task("t1"), "ep1")
@@ -1046,7 +1057,7 @@ class TestRetentionCli(CalibrationV2Case):
         code, payload = self._run(["calibration", "--rebuild"])
         self.assertEqual(code, 0)
         self.assertEqual(payload["result"]["calibration_version"],
-                         "wm-calib/2")
+                         "wm-calib/3")
 
 
 # ---------------------------------------------------------------------------
@@ -1473,7 +1484,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         calibration = context.strategy_calibration
         self.assertIn(
             "strategy_outcome|model-a@v1|normalized_objective_gap|1-gap"
-            "|attempt|wm-obs/3", calibration["groups"])
+            "|attempt|wm-obs/4", calibration["groups"])
         self.assertTrue(calibration.get("filtered"))
         self.assertFalse(calibration.get("withheld_groups"))
 
@@ -1486,9 +1497,9 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         own = ("strategy_outcome|model-a@v1|normalized_objective_gap"
-               "|1-gap|attempt|wm-obs/3")
+               "|1-gap|attempt|wm-obs/4")
         legacy = ("strategy_outcome|(unknown)|normalized_objective_gap"
-                  "|1-gap|attempt|wm-obs/3")
+                  "|1-gap|attempt|wm-obs/4")
         publish_calibration_summary(
             h, {"groups": {own: {"n_samples": 3},
                            legacy: {"n_samples": 2}},
@@ -1506,7 +1517,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         )
         h = self.h
         publish_calibration_summary(
-            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/3":
+            h, {"groups": {"strategy_outcome|other@v9|m|u|attempt|wm-obs/4":
                            {"n_samples": 1}},
                 "occurrence": {}, "exclusions": {}}, [])
         block = calibration_summary_for_context(h, model_identity=None)

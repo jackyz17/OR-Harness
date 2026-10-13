@@ -576,6 +576,50 @@ class ExperienceBank:
             (execution_id,)).fetchone()
         return self._decode(row) if row else None
 
+    def amend_pending_cost(self, execution_id: str,
+                           dimensions: Dict[str, float], *,
+                           source: str = "agent_observed",
+                           basis: Optional[str] = None
+                           ) -> Optional[ExecutionRecord]:
+        """Backfill the REAL cost of a STAGED (not yet recorded) attempt.
+
+        ``update_cost`` only amends RECORDED facts (it reads the
+        ``executions`` table); a staged attempt that the host had to stop
+        before ``record`` lives only in ``pending_executions``. Without this
+        channel its real spend was invisible to the budget ledger, so a
+        budget could read ``unconfirmed`` forever and no label could be
+        produced even with a confirmed stop (the r23 gap).
+
+        It AMENDS the staged fact in place (re-staging the same
+        ``execution_id``) and adds nothing: the numbers are the host's real
+        receipt, marked measured, with per-dimension provenance recorded so
+        a declared estimate stays distinguishable from a measurement. It
+        never fabricates a value and never splits a session total."""
+        record = self.get_pending(execution_id)
+        if record is None:
+            return None
+        unknown = set(dimensions) - set(COST_DIMENSIONS)
+        if unknown:
+            raise StorageError(f"unknown cost dimensions: {sorted(unknown)}")
+        if source not in COST_SOURCES:
+            raise StorageError(f"unknown cost source {source!r} "
+                               f"(expected one of {list(COST_SOURCES)})")
+        for dim, value in dimensions.items():
+            setattr(record.cost, dim, float(value))
+        record.cost.mark_measured(*dimensions)
+        provenance = dict(record.execution_features.get("cost_provenance")
+                          or {})
+        for dim in dimensions:
+            entry = {"source": source, "mode": "replace",
+                     "amended_at": time.time(),
+                     "channel": "session_stop_receipt"}
+            if basis is not None and dim == "llm_tokens":
+                entry["basis"] = str(basis)
+            provenance[dim] = entry
+        record.execution_features["cost_provenance"] = provenance
+        self.stage_pending(record)
+        return record
+
     def clear_pending(self, execution_id: str) -> None:
         """Remove a staged execution after it was recorded (or explicitly
         discarded by the harness)."""

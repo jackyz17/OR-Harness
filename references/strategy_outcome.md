@@ -204,7 +204,7 @@ orx record --session --task T --episode E \
 
 This archives the REAL termination, in one of three honest shapes, never fabricating a solve result:
 
-1. an already-STAGED attempt (named with `--attempted-execution`) is ANNOTATED (`session_interrupted`) — its observed cost and partial result are not rewritten;
+1. an already-STAGED attempt (named with `--attempted-execution`) is ANNOTATED (`session_interrupted`) and, when the host supplied the real cost (`--override`), that cost is BACKFILLED onto the staged fact as its measured receipt — its observed result is not rewritten. Without the receipt a stopped attempt's real spend is invisible to the budget ledger, so supply it: the numbers are the host's measurement, never fabricated and never split from a session total;
 2. a `running` execute action with no staged fact (a kill that landed BEFORE staging) is ended as an honest interruption (`status="failed"`, `outcome.interrupted=true`, result marked `unobservable`) — the cost incurred is kept;
 3. NO execute attempt at all (the session spent its budget editing code / calling the world model) is recorded as a non-execution `finish_task` action — no `execute_strategy` is invented.
 

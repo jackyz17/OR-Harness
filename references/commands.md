@@ -385,7 +385,7 @@ Solver quality remains the solver's measurement. Task failure is a separate `ben
 
 ### `orx calibration [--min-samples N] [--rebuild]`
 
-**Purpose / effects:** Read published `wm-calib/2`; `--rebuild` explicitly recomputes and republishes for migration/repair. Default window: newest 50 closed task-episodes (`OR_CALIBRATION_WINDOW`). New prediction contexts receive the published summary automatically.
+**Purpose / effects:** Read published `wm-calib/3`; `--rebuild` explicitly recomputes and republishes for migration/repair. Default window: newest 50 closed task-episodes (`OR_CALIBRATION_WINDOW`). New prediction contexts receive the published summary automatically.
 
 **Read:** Groups separate model identity, metric, unit, and scope. Statistics include signed benefit error, cost log ratio, interval coverage/width, per-event Brier, and predicted probability versus occurrence over the same scored denominator. Separate `occurrence` reports its own observation-unit counts/denominator; do not mix those rates. Below minimum support: `insufficient_evidence`, `reliability:null`. `applicability:"global_diagnostic"` does not imply per-strategy reliability or guaranteed prediction improvement. Legacy knowledge-prediction statistics are separate.
 

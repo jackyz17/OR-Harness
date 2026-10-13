@@ -94,7 +94,15 @@ EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
 #: model-identity grouping key and the versioned risk-event vocabulary. A
 #: v1 summary and a v2 summary count different things under the same event
 #: names, so they are never pooled.
-CALIBRATION_SUMMARY_VERSION = "wm-calib/2"
+#:
+#: ``wm-calib/3`` opens the ``budget_exhausted`` Brier channel: the event
+#: now has its OWN range (see ``wm-events/3``) so a prediction declaring an
+#: attempt/strategy-window candidate scope can be scored against the
+#: episode-scoped ledger, and the label is decided from the ledger's
+#: EPISODE-scoped verdict rather than a bare ``status`` string. A summary
+#: built under ``wm-calib/2`` never scored the event, so the two are never
+#: pooled.
+CALIBRATION_SUMMARY_VERSION = "wm-calib/3"
 
 #: Version of the FRAMEWORK's risk-event vocabulary. Bumped whenever an
 #: event's MEANING or its observation channel changes: a summary built
@@ -102,7 +110,14 @@ CALIBRATION_SUMMARY_VERSION = "wm-calib/2"
 #: same name would then count two different things. ``model_invalid`` used
 #: to mean "the solver reported an error", which is not a modelling
 #: verdict and was retired in v2.
-EVENT_VOCABULARY_VERSION = "wm-events/2"
+#:
+#: ``wm-events/3`` gives ``budget_exhausted`` a RANGE INDEPENDENT of any
+#: candidate's own execution scope (see ``OBSERVABLE_RISK_EVENT_RANGES``),
+#: so the event is no longer stuck at ``scope_mismatch``, and pins its
+#: label to the EPISODE-scoped budget dimensions only (a per-attempt
+#: latency overrun is NOT this event). A ``wm-events/2`` label and a
+#: ``wm-events/3`` label mean different things, so they are never pooled.
+EVENT_VOCABULARY_VERSION = "wm-events/3"
 
 #: Version of the OBSERVATION RULES: how a prediction's declared metric is
 #: turned into a real observation. Bumped whenever a rule changes what an
@@ -121,7 +136,16 @@ EVENT_VOCABULARY_VERSION = "wm-events/2"
 #: does NOT represent effective completion. A ``wm-obs/2`` sample and a
 #: ``wm-obs/3`` sample describe different primary benefits, so they are
 #: never pooled.
-OBSERVATION_RULE_VERSION = "wm-obs/3"
+#:
+#: ``wm-obs/4`` (r23) changes how the ``budget_exhausted`` RISK label is
+#: derived: it reads the episode-scoped budget dimensions (and an explicit
+#: budget-termination receipt) rather than a bare ``status`` string, so a
+#: single per-attempt latency overrun no longer counts as episode-budget
+#: exhaustion, and a missing per-attempt dimension no longer blocks an
+#: otherwise-complete episode verdict. The rule change alters what a
+#: ``budget_exhausted`` label MEANS, so ``wm-obs/3`` and ``wm-obs/4``
+#: samples are never pooled.
+OBSERVATION_RULE_VERSION = "wm-obs/4"
 
 #: Terminal states an episode may be closed under. Only ``completed``
 #: claims success; the others are honest endings, never dressed up.
@@ -251,12 +275,35 @@ OBSERVABLE_RISK_EVENTS: Dict[str, Dict[str, Any]] = {
         "unit": "episode",
         "source": "the episode's declared budget view (measured real "
                   "consumption)",
-        "applicability": "only a prediction whose DECLARED scope matches the "
-                         "budget ledger's scope (the episode)",
-        "measured": "every dimension the declared budget names is measured",
-        "note": "the ledger is episode-scoped, so an attempt- or "
-                "strategy-window-scope prediction has NO matching budget "
-                "range: its label stays unknown with a scope_mismatch basis",
+        # The event's RANGE is INDEPENDENT of any candidate's execution
+        # scope: a candidate is ONE attempt or ONE strategy window, but this
+        # event describes the WHOLE remaining episode. Conflating the two
+        # (comparing ``candidate.scope`` with the ledger's scope) left the
+        # event stuck at ``scope_mismatch`` for every prediction, so the
+        # channel was closed forever (the r23 defect). The range below is
+        # frozen with the observation RULES (``wm-events/3``): a prediction
+        # may be scored against the episode ledger whatever its candidate
+        # scope, PROVIDED it declared this event before the run.
+        "range": "episode_to_task_end",
+        "range_note": ("from this decision's anchor, adopting the candidate "
+                       "and continuing to solve, check, repair and retry "
+                       "until the solving episode ends: whether the EPISODE "
+                       "budget is exceeded or a hard budget limit stops it. "
+                       "This is NOT a claim that the candidate alone caused "
+                       "the whole episode's consumption"),
+        "applicability": "any prediction that declared this event before the "
+                         "run, whatever its candidate scope",
+        "measured": ("the EPISODE-scoped budget dimensions are measured (or "
+                     "an explicit budget-termination receipt exists). A "
+                     "per-attempt dimension (latency_s) is NOT part of this "
+                     "event and never decides it"),
+        "note": ("the ledger is episode-scoped. The label reads the "
+                 "EPISODE-scoped verdict: an occurred label requires a "
+                 "measured episode dimension over its limit OR an explicit "
+                 "budget-termination receipt; a not_occurred label requires "
+                 "the episode to have ended with every relevant episode "
+                 "dimension measured and within limits. Otherwise the label "
+                 "is UNKNOWN (never a fabricated not_occurred)"),
     },
 }
 
@@ -441,21 +488,34 @@ def _observe_completion(summary: Any, records: Sequence[Any],
         }
 
 
-#: The scope the BUDGET LEDGER actually measures. ``budget.view`` aggregates
-#: the whole episode (its own recorded attempts plus the prediction calls),
-#: so its unit is the episode. A prediction can only be scored against
-#: ``budget_exhausted`` when its declared scope equals this — and NO
-#: prediction scope currently does (``attempt`` and ``strategy_window`` are
-#: both narrower). This round deliberately does not build a per-attempt
-#: budget system, so the event's FACT is still recorded (see
-#: ``observe_episode_events``) while its Brier channel stays closed with an
-#: explicit scope_mismatch basis rather than borrowing the episode verdict.
-BUDGET_LEDGER_SCOPE = "episode"
+#: The RANGE each observable risk event describes, INDEPENDENT of any
+#: candidate's execution scope (``CandidateRef.scope`` ∈ attempt /
+#: strategy_window). The candidate scope says how MUCH of the run one
+#: prediction is about; an event's range says WHAT the event measures.
+#: These are different axes and are never conflated.
+#:
+#: Execution-unit events describe ONE execution (their observed range is the
+#: execution itself). ``budget_exhausted`` describes the WHOLE remaining
+#: episode from the decision anchor to the task end, so its range is not the
+#: candidate's scope. Reading ``candidate.scope`` against the ledger's scope
+#: is what closed the budget channel forever (the r23 defect); the fix gives
+#: the event its OWN, frozen range instead of inventing a new candidate
+#: scope.
+OBSERVABLE_RISK_EVENT_RANGES: Dict[str, str] = {
+    "environment_failure": "execution",
+    "implementation_failure": "execution",
+    "timeout": "execution",
+    "solver_reported_infeasible": "execution",
+    "task_check_failed": "execution",
+    "budget_exhausted": "episode_to_task_end",
+}
 
 
-def _budget_scope_matches(candidate: Any) -> bool:
-    """Whether a prediction's declared scope matches the budget ledger."""
-    return str(getattr(candidate, "scope", "attempt")) == BUDGET_LEDGER_SCOPE
+def _event_range(name: str) -> Optional[str]:
+    """The frozen RANGE of an observable event, or None if not observable."""
+    if name not in OBSERVABLE_RISK_EVENTS:
+        return None
+    return OBSERVABLE_RISK_EVENT_RANGES.get(name)
 
 
 def _normalize_event_name(name: Any) -> str:
@@ -1218,6 +1278,86 @@ def _derive_remaining_span(harness, anchor, cost_records,
     return max(0.0, max(end_candidates) - float(anchor))
 
 
+def _frozen_declared_budget(harness, prediction) -> Optional[Dict[str, Any]]:
+    """The budget DECLARED when the prediction's context was frozen.
+
+    Read from the frozen belief snapshot the prediction recorded
+    (``trace.input_snapshot_id`` -> ``budget_state.budget``), so the
+    prediction's OWN condition is recoverable even after the declaration
+    changed. Returns ``None`` when no snapshot (or no declaration) is
+    available — the comparability check then cannot run and says so."""
+    snapshot_id = str(getattr(prediction.trace, "input_snapshot_id", "")
+                      or "")
+    if not snapshot_id:
+        return None
+    try:
+        snap = harness.get_snapshot(snapshot_id)
+    except Exception:  # noqa: BLE001 - a read failure means "not available"
+        return None
+    if snap is None:
+        return None
+    state = getattr(snap, "budget_state", None) or {}
+    declared = state.get("budget")
+    if not isinstance(declared, dict):
+        return None
+    return {str(k): float(v) for k, v in declared.items() if v is not None}
+
+
+def _annotate_budget_comparability(harness, prediction, summary) -> None:
+    """Mark the budget event INCOMPARABLE when the declared budget changed.
+
+    The ``budget_exhausted`` event is a claim about the budget in force when
+    the prediction was FROZEN. If the current declaration differs from the
+    frozen one, today's ledger verdict does not answer the prediction's
+    question: the frozen conditions are kept and the mismatch is stated, and
+    the event's label is withheld (an explicit, non-comparable reason rather
+    than a silently re-based label). A new limit NEVER overwrites the
+    original prediction's condition. Only this event is touched; the
+    measured cost of the scope is untouched.
+    """
+    frozen = _frozen_declared_budget(harness, prediction)
+    if frozen is None:
+        return  # nothing frozen to compare against: leave the label as-is
+    current = harness._load_budget(prediction.candidate.task_id,
+                                   prediction.candidate.episode_id)
+    if current is None:
+        comparable = False
+        reason = ("the frozen prediction declared a budget but none is "
+                  "declared now: the event's condition cannot be reproduced")
+    elif {k: float(v) for k, v in frozen.items()} == \
+            {k: float(v) for k, v in current.items()}:
+        return  # same conditions: the ledger verdict is comparable
+    else:
+        comparable = False
+        reason = (
+            "the declared budget CHANGED after this prediction was frozen "
+            f"(frozen={frozen}, now={ {k: float(v) for k, v in current.items()} }): "
+            "the current ledger verdict answers a DIFFERENT question, so "
+            "the label is withheld rather than re-based on the new limits")
+    for row in summary.risk_events:
+        if row.get("canonical_event") != "budget_exhausted":
+            continue
+        row["label"] = None
+        row["label_basis"] = reason
+        row["comparability"] = {
+            "comparable": comparable,
+            "frozen_budget": frozen,
+            "current_budget": ({k: float(v) for k, v in current.items()}
+                               if current else None),
+        }
+    observation = summary.observed_events.get("budget_exhausted")
+    if isinstance(observation, dict):
+        observation["comparability"] = {
+            "comparable": comparable,
+            "frozen_budget": frozen,
+            "current_budget": ({k: float(v) for k, v in current.items()}
+                               if current else None),
+            "note": ("the budget event is judged against the FROZEN "
+                     "declaration; a changed declaration makes the current "
+                     "verdict non-comparable for this prediction"),
+        }
+
+
 def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     """Build the real-outcome summary of ONE bound prediction.
 
@@ -1646,6 +1786,13 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     summary.observed_events = observed["events"]
     summary.risk_events = _pair_predicted_events(
         prediction, observed, candidate)
+    # BUDGET-CONDITION COMPARABILITY. The event is a claim about the budget
+    # DECLARED when the prediction was frozen. If that declaration changed
+    # afterwards, the current ledger verdict is NOT a comparable label: the
+    # frozen conditions are kept and the mismatch is stated, rather than a
+    # new limit silently overwriting the original prediction's condition.
+    # Only this event is affected — the execution/budget facts are untouched.
+    _annotate_budget_comparability(harness, prediction, summary)
     # A per-prediction label is never the whole story: the framework's own
     # observation is kept so the calibration layer can count OCCURRENCE
     # RATES by observation unit (an execution observed once is one unit,
@@ -1841,6 +1988,156 @@ def _scope_aggregate(units: Dict[str, Dict[str, Any]],
                                "observation")
 
 
+#: The EPISODE-scoped cumulative budget dimensions. A budget-exhausted event
+#: is decided ONLY by these: ``latency_s`` is per-attempt and lives on its
+#: own scope, so it never decides an episode-budget verdict.
+def _episode_budget_dims(budget: Dict[str, float]) -> List[str]:
+    return [d for d in budget if d != "latency_s" and d in COST_DIMENSIONS]
+
+
+def _episode_dims_confirmed(
+        consumption: Dict[str, Any], declared: Dict[str, float]
+        ) -> Tuple[bool, List[Dict[str, Any]]]:
+    """Whether every DECLARED episode-scoped dimension is measured, with the
+    missing ones listed. A dimension that no contributing item measured (or
+    that some measured and others did not) is a gap; a per-attempt dimension
+    is NOT part of this judgment."""
+    unknown = set(consumption.get("unknown_dims") or [])
+    missing: List[Dict[str, Any]] = []
+    for dim in sorted(_episode_budget_dims(declared)):
+        if dim in unknown:
+            missing.append({
+                "dimension": dim,
+                "scope": "episode",
+                "source": ("no measured consumption or an unmeasured "
+                           "contributing item (see the consumption view)"),
+            })
+    return (not missing), missing
+
+
+def _budget_termination_receipt(term: Optional[Dict[str, Any]]
+                                ) -> Optional[Dict[str, Any]]:
+    """A CONFIRMED budget-hard-stop receipt, or None.
+
+    Only a structured, host-recorded termination mark counts: a proactive
+    cancel (``cancelled``) reaches a budget cap and has the next call
+    refused, leaving the count AT the limit rather than above it. An
+    ABORTED run with no stated cause is NOT this — its reason is free text
+    and is never read as a budget cap. A ``completed`` run is never a hard
+    stop.
+    """
+    if not isinstance(term, dict):
+        return None
+    if term.get("cancelled") is True:
+        return {"basis": "recorded_budget_termination",
+                "reason": term.get("reason")}
+    return None
+
+
+def _budget_label(harness, task_id: str, episode_id: Optional[str],
+                  declared_budget: Dict[str, float],
+                  budget_view: Dict[str, Any], *, scope_complete: bool
+                  ) -> Tuple[Optional[str], str, Dict[str, Any]]:
+    """The three-valued ``budget_exhausted`` label over an episode.
+
+    Rules (``wm-events/3``), decided ONLY by the EPISODE-scoped budget:
+
+    - **occurred** — a measured episode-scoped cumulative dimension is over
+      its limit, OR a CONFIRMED budget-termination receipt exists. A missing
+      OTHER dimension does not erase a confirmed overrun.
+    - **not_occurred** — the episode is COMPLETE and every declared
+      episode-scoped dimension is measured and within limits.
+    - **unknown** — no episode-budget conditions, or measured spend is
+      within limits with a relevant episode dimension still unmeasured, or
+      the conditions/termination cannot be confirmed.
+
+    A single per-attempt ``latency_s`` overrun never decides this event; a
+    missing per-attempt dimension never blocks a complete episode verdict.
+
+    Returns ``(label, basis, detail)`` where ``detail`` carries the
+    evidence and any ``unknown_dimensions`` with a locatable reason.
+    """
+    consumption = budget_view.get("consumption") or {}
+    declared_dims = list(_episode_budget_dims(declared_budget))
+    exceeded_episode = [dict(d) for d in (budget_view.get("exceeded_dims")
+                                          or [])
+                        if d.get("scope") == "episode"]
+    detail: Dict[str, Any] = {
+        "declared_episode_dimensions": declared_dims,
+        "range": _event_range("budget_exhausted"),
+    }
+    # 1. happened: a measured episode dimension over its limit.
+    if exceeded_episode:
+        detail["exceeded_dimensions"] = exceeded_episode
+        detail["basis_kind"] = "episode_dimension_over_limit"
+        dims = ", ".join(str(d.get("dimension")) for d in exceeded_episode)
+        return ("occurred",
+                f"a measured EPISODE-scoped dimension exceeded its limit "
+                f"({dims}); other unknown dimensions do not erase a "
+                "confirmed episode-budget overrun",
+                detail)
+    # 2. happened: an explicit budget-termination receipt (a proactive host
+    #    cancel that reached a hard cap and had the next call refused).
+    terminated = getattr(harness, "_episode_termination",
+                         None)
+    term = None
+    if callable(terminated):
+        term = terminated(task_id, episode_id) \
+            or (terminated(task_id, None) if episode_id is not None else None)
+    receipt = _budget_termination_receipt(term)
+    if receipt is not None:
+        detail["termination_receipt"] = receipt
+        detail["basis_kind"] = "budget_termination_receipt"
+        return ("occurred",
+                "an explicit budget-termination receipt was recorded "
+                f"({receipt.get('reason')!r}): reaching a hard budget limit "
+                "and refusing the next call is a confirmed stop even when "
+                "the measured total sits AT the limit",
+                detail)
+    # 3. no EPISODE-scoped dimension was declared at all (only a
+    #    per-attempt limit): there is no episode budget to exhaust, which is
+    #    "no valid episode-budget condition", not a confirmed absence.
+    if not declared_dims:
+        detail["basis_kind"] = "no_episode_budget_dimension"
+        return (None,
+                "the declared budget names no EPISODE-scoped dimension "
+                "(only a per-attempt limit): there is no episode budget to "
+                "exhaust, so the label stays unknown",
+                detail)
+    # 4. not happened: the episode is complete and every declared episode
+    #    dimension was measured within its limit.
+    confirmed, missing = _episode_dims_confirmed(consumption,
+                                                 declared_budget)
+    if scope_complete and confirmed:
+        detail["basis_kind"] = "complete_within_limits"
+        totals = {d: (consumption.get("total_cost") or {}).get(d)
+                  for d in declared_dims}
+        detail["measured_totals"] = totals
+        return ("not_occurred",
+                "the episode ended and every declared EPISODE-scoped "
+                "dimension was measured within its limit",
+                detail)
+    # 5. unknown: within limits (or nothing measured) but a relevant episode
+    #    dimension is unmeasured, or the episode has not completed.
+    if missing:
+        detail["unknown_dimensions"] = missing
+        detail["basis_kind"] = "episode_dimension_unmeasured"
+        names = ", ".join(str(m["dimension"]) for m in missing)
+        reason = (f"declared EPISODE-scoped dimension(s) are unmeasured "
+                  f"({names}): actual remaining episode budget is not "
+                  "confirmed, so no label is fabricated")
+        if not scope_complete:
+            reason += (". The episode has not completed, so the absence of "
+                       "exhaustion is not evidence either")
+        return None, reason, detail
+    detail["basis_kind"] = "episode_incomplete"
+    return (None,
+            "the episode has not completed: measured spend is within "
+            "limits but the absence of exhaustion is not evidence yet, so "
+            "the label stays unknown",
+            detail)
+
+
 def observe_episode_events(harness, records: Sequence[Any], *,
                            task_id: str,
                            episode_id: Optional[str],
@@ -1882,6 +2179,7 @@ def observe_episode_events(harness, records: Sequence[Any], *,
         events[name] = {
             "event": name,
             "unit": "execution",
+            "range": _event_range(name),
             "label": label,
             "label_basis": basis,
             "unit_ids": list(execution_ids),
@@ -1890,13 +2188,18 @@ def observe_episode_events(harness, records: Sequence[Any], *,
             # occurred and one not_occurred, not as two occurrences.
             "units": units,
         }
-    # The budget ledger: unit = episode. THREE states, as before, but
-    # recorded as a framework fact whether or not any prediction named it.
+    # The budget ledger: unit = episode. The label is decided from the
+    # EPISODE-scoped budget dimensions (and an explicit budget-termination
+    # receipt), NEVER from a bare ``status`` string: ``exceeded`` can also
+    # mean a single per-attempt latency overrun, which is a DIFFERENT event.
+    # Recorded as a framework fact whether or not any prediction named it.
     declared_budget = (harness._load_budget(task_id, episode_id) or {})
     episode_unit = f"{task_id}|{episode_id or ''}"
     budget_entry: Dict[str, Any] = {
         "event": "budget_exhausted",
         "unit": "episode",
+        "range": _event_range("budget_exhausted"),
+        "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
         "label": None,
         "label_basis": "",
         "unit_ids": [episode_unit],
@@ -1911,21 +2214,12 @@ def observe_episode_events(harness, records: Sequence[Any], *,
                                               budget=declared_budget)
             if budget_cache is not None:
                 budget_cache[cache_key] = budget_view
-        budget_status = budget_view.get("status")
-        if budget_status == "exceeded":
-            budget_entry["label"] = "occurred"
-            budget_entry["label_basis"] = (
-                "the declared budget was exceeded by measured real "
-                "consumption")
-        elif budget_status == "ok":
-            budget_entry["label"] = "not_occurred"
-            budget_entry["label_basis"] = (
-                "the declared budget was confirmed within limits (every "
-                "declared dimension measured)")
-        else:
-            budget_entry["label_basis"] = (
-                f"budget status {budget_status!r}: consumption cannot be "
-                "confirmed in either direction, so the label stays unknown")
+        label, basis, detail = _budget_label(
+            harness, task_id, episode_id, declared_budget, budget_view,
+            scope_complete=scope_complete)
+        budget_entry["label"] = label
+        budget_entry["label_basis"] = basis
+        budget_entry.update(detail)
     else:
         budget_entry["label_basis"] = (
             "no budget was declared for this episode, so no budget event "
@@ -1974,21 +2268,14 @@ def _pair_predicted_events(prediction, observed: Dict[str, Any],
                         "no observation channel exists for it, so its label "
                         "stays unknown and it is never scored"))
         else:
-            # The budget event is decided by the LEDGER, whose scope is the
-            # episode. A prediction whose DECLARED scope is narrower has no
-            # matching budget range: the label stays unknown with an
-            # explicit scope_mismatch basis instead of borrowing the
-            # episode-wide verdict.
-            if canonical == "budget_exhausted" \
-                    and not _budget_scope_matches(candidate):
-                label = None
-                basis = (
-                    f"scope_mismatch: the budget ledger is EPISODE-scoped, "
-                    f"and this prediction declares scope "
-                    f"{getattr(candidate, 'scope', 'attempt')!r}. The "
-                    "episode-wide budget verdict is not this scope's "
-                    "outcome, so the label stays unknown")
-            elif observation is None:
+            # An observable event is decided by the LEDGER / executions, not
+            # by the candidate's own execution scope. ``budget_exhausted``
+            # in particular has its OWN range (``episode_to_task_end``,
+            # independent of ``candidate.scope``): the label is the
+            # framework's episode-budget verdict, so a prediction that
+            # declared this event before the run is scored against it
+            # whatever its candidate scope (see ``wm-events/3``).
+            if observation is None:
                 label = None
                 basis = "the framework recorded no observation for this event"
             else:
@@ -1999,6 +2286,7 @@ def _pair_predicted_events(prediction, observed: Dict[str, Any],
             "canonical_event": canonical,
             "predicted": True,
             "observation_unit": (definition or {}).get("unit"),
+            "observation_range": _event_range(canonical),
             "predicted_probability": event.probability,
             "label": label,
             "label_basis": basis,
@@ -2484,6 +2772,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             continue
         observed_units[name] = {
             "unit": observation.get("unit"),
+            "range": observation.get("range"),
             "label": observation.get("label"),
             "n_units": len(observation.get("unit_ids") or []),
             "label_basis": observation.get("label_basis"),
@@ -2494,6 +2783,9 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             # three occurrences.
             "units": copy.deepcopy(observation.get("units") or {}),
         }
+        if observation.get("comparability") is not None:
+            observed_units[name]["comparability"] = copy.deepcopy(
+                observation["comparability"])
     risk = prediction.risk
     if risk is None or not risk.events:
         evaluation.risk = {
@@ -2553,6 +2845,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             scored.append({
                 "event": observed_event["event"],
                 "canonical_event": observed_event.get("canonical_event"),
+                "observation_range": observed_event.get("observation_range"),
                 "predicted_probability": round(float(probability), 6),
                 "label": label,
                 "label_basis": observed_event["label_basis"],
@@ -2561,6 +2854,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             n_compared += 1
         evaluation.risk = {
             "eligibility": ("evaluable" if scored else "unobserved"),
+            "event_vocabulary_version": EVENT_VOCABULARY_VERSION,
             "scored": scored,
             "unscored": unscored,
             "observed_units": observed_units,

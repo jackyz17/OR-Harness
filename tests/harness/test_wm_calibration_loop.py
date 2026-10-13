@@ -461,8 +461,8 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
 class TestObservationRules(CalibrationLoopCase):
 
     def test_quality_survives_a_failed_task_check(self):
-        """wm-obs/3: the solver's quality figure is never rewritten by a
-        task check; the check is a separate fact."""
+        """wm-obs/3 (kept in wm-obs/4): the solver's quality figure is
+        never rewritten by a task check; the check is a separate fact."""
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
@@ -478,7 +478,7 @@ class TestObservationRules(CalibrationLoopCase):
         self.assertEqual(evaluation["benefit"]["task_check"]["state"],
                          "failed")
         self.assertEqual(evaluation["observation_rule_version"],
-                         "wm-obs/3")
+                         "wm-obs/4")
 
     def test_interval_kind_is_carried_and_versioned(self):
         """An interval's kind/coverage travel with it, and the group key
