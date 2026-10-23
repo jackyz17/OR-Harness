@@ -854,14 +854,14 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         h, provider = self._provider()
         task = _task("t1")
         ctx = h.build_prediction_context(task, "ep1")
-        self.assertEqual(ctx.snapshot["task_progress"], {})
+        self.assertEqual(ctx.solving_context["task_progress"], {})
         self._advance_state(h, task)          # state moves on
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         h.predict_outcome(task, spec, "ep1", context=ctx)
         sent = provider.requests[0]["state"].get("task_progress")
         self.assertIn(sent, (None, {}),
                       "the frozen X must not pick up later progress")
-        self.assertEqual(ctx.snapshot["task_progress"], {},
+        self.assertEqual(ctx.solving_context["task_progress"], {},
                          "the frozen context itself is untouched")
 
     def test_reused_context_records_the_context_snapshot_id(self):
@@ -1080,7 +1080,8 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
         revised = self.h.sbank.get(eid)
         revised.expected_quality_hat = 0.95
         self.h.sbank.update(revised)             # the entry moves to 0.95
-        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap)
+        ctx = self.h.build_prediction_context(task, "ep1", snapshot=snap,
+            context_spec=ActionSpec("execute_strategy", "t1", strategy_id="S04"))
         blob = str(ctx.to_dict())
         self.assertNotIn("0.95", blob,
                          "a later revision must not enter a context that "

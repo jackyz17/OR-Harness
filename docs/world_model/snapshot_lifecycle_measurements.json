@@ -1,0 +1,219 @@
+{
+  "fixture": "one fixed candidate and one actual retrieved knowledge hit; 1/10/100 same-cell strategies",
+  "baseline_source_sha256": "760b2654e43c0dd44326fe5ac4e34c93ba5117ec9487687b91c83975f04a0ed9",
+  "measured": "JSON UTF-8 payload bytes; full request character estimate including system prompt",
+  "model_or_solver_called": false,
+  "physical_vacuum_performed": false,
+  "cases": [
+    {
+      "same_cell_strategies": 1,
+      "before": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 3703,
+          "rows": 1
+        },
+        "executions": {
+          "payload_bytes": 1111,
+          "rows": 1
+        },
+        "knowledge_versions": {
+          "payload_bytes": 470,
+          "rows": 1
+        },
+        "prediction_contexts": {
+          "payload_bytes": 19689,
+          "rows": 1
+        }
+      },
+      "after": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "condition_values": {
+          "payload_bytes": 8457,
+          "rows": 8
+        },
+        "executions": {
+          "payload_bytes": 1111,
+          "rows": 1
+        },
+        "frozen_conditions": {
+          "payload_bytes": 1563,
+          "rows": 1
+        },
+        "knowledge_availability": {
+          "payload_bytes": 50,
+          "rows": 1
+        },
+        "knowledge_versions": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "prediction_contexts": {
+          "payload_bytes": 1195,
+          "rows": 1
+        },
+        "runtime_inputs": {
+          "payload_bytes": 16186,
+          "rows": 1
+        }
+      },
+      "old_initial_payload_bytes": 23862,
+      "new_initial_payload_bytes": 27451,
+      "old_five_action_payload_delta": 43024,
+      "new_five_action_payload_delta": 13763,
+      "new_payload_after_consumption": 25030,
+      "old_request_chars": 39381,
+      "new_request_chars": 39563
+    },
+    {
+      "same_cell_strategies": 10,
+      "before": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 9545,
+          "rows": 1
+        },
+        "executions": {
+          "payload_bytes": 11146,
+          "rows": 10
+        },
+        "knowledge_versions": {
+          "payload_bytes": 470,
+          "rows": 1
+        },
+        "prediction_contexts": {
+          "payload_bytes": 25533,
+          "rows": 1
+        }
+      },
+      "after": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "condition_values": {
+          "payload_bytes": 8457,
+          "rows": 8
+        },
+        "executions": {
+          "payload_bytes": 11146,
+          "rows": 10
+        },
+        "frozen_conditions": {
+          "payload_bytes": 1564,
+          "rows": 1
+        },
+        "knowledge_availability": {
+          "payload_bytes": 50,
+          "rows": 1
+        },
+        "knowledge_versions": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "prediction_contexts": {
+          "payload_bytes": 1195,
+          "rows": 1
+        },
+        "runtime_inputs": {
+          "payload_bytes": 16190,
+          "rows": 1
+        }
+      },
+      "old_initial_payload_bytes": 35548,
+      "new_initial_payload_bytes": 27456,
+      "old_five_action_payload_delta": 72234,
+      "new_five_action_payload_delta": 13769,
+      "new_payload_after_consumption": 25037,
+      "old_request_chars": 39383,
+      "new_request_chars": 39565
+    },
+    {
+      "same_cell_strategies": 100,
+      "before": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 67956,
+          "rows": 1
+        },
+        "executions": {
+          "payload_bytes": 111496,
+          "rows": 100
+        },
+        "knowledge_versions": {
+          "payload_bytes": 470,
+          "rows": 1
+        },
+        "prediction_contexts": {
+          "payload_bytes": 83947,
+          "rows": 1
+        }
+      },
+      "after": {
+        "action_records": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "belief_snapshots": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "condition_values": {
+          "payload_bytes": 8457,
+          "rows": 8
+        },
+        "executions": {
+          "payload_bytes": 111496,
+          "rows": 100
+        },
+        "frozen_conditions": {
+          "payload_bytes": 1564,
+          "rows": 1
+        },
+        "knowledge_availability": {
+          "payload_bytes": 50,
+          "rows": 1
+        },
+        "knowledge_versions": {
+          "payload_bytes": 0,
+          "rows": 0
+        },
+        "prediction_contexts": {
+          "payload_bytes": 1195,
+          "rows": 1
+        },
+        "runtime_inputs": {
+          "payload_bytes": 16191,
+          "rows": 1
+        }
+      },
+      "old_initial_payload_bytes": 152373,
+      "new_initial_payload_bytes": 27457,
+      "old_five_action_payload_delta": 364285,
+      "new_five_action_payload_delta": 13775,
+      "new_payload_after_consumption": 25043,
+      "old_request_chars": 39386,
+      "new_request_chars": 39565
+    }
+  ]
+}

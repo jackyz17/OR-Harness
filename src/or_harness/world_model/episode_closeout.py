@@ -1286,21 +1286,14 @@ def _frozen_declared_budget(harness, prediction) -> Optional[Dict[str, Any]]:
     prediction's OWN condition is recoverable even after the declaration
     changed. Returns ``None`` when no snapshot (or no declaration) is
     available — the comparability check then cannot run and says so."""
-    snapshot_id = str(getattr(prediction.trace, "input_snapshot_id", "")
-                      or "")
-    if not snapshot_id:
+    from or_harness.world_model.conditions import prediction_conditions
+    state = prediction_conditions(harness.store, prediction).get("budget_state")
+    if not isinstance(state, dict):
         return None
-    try:
-        snap = harness.get_snapshot(snapshot_id)
-    except Exception:  # noqa: BLE001 - a read failure means "not available"
-        return None
-    if snap is None:
-        return None
-    state = getattr(snap, "budget_state", None) or {}
     declared = state.get("budget")
-    if not isinstance(declared, dict):
-        return None
-    return {str(k): float(v) for k, v in declared.items() if v is not None}
+    if isinstance(declared, dict):
+        return {str(k): float(v) for k, v in declared.items() if v is not None}
+    return {} if state.get("status") == "no_budget_declared" else None
 
 
 def _annotate_budget_comparability(harness, prediction, summary) -> None:
@@ -1316,11 +1309,15 @@ def _annotate_budget_comparability(harness, prediction, summary) -> None:
     measured cost of the scope is untouched.
     """
     frozen = _frozen_declared_budget(harness, prediction)
-    if frozen is None:
-        return  # nothing frozen to compare against: leave the label as-is
     current = harness._load_budget(prediction.candidate.task_id,
                                    prediction.candidate.episode_id)
-    if current is None:
+    if frozen is None:
+        comparable = False
+        reason = ("the historical frozen budget condition is unavailable: "
+                  "comparability is UNKNOWN; today's budget cannot replace it")
+    elif frozen == {} and current is None:
+        return  # both explicitly undeclared; keep the original unknown-event reason
+    elif current is None:
         comparable = False
         reason = ("the frozen prediction declared a budget but none is "
                   "declared now: the event's condition cannot be reproduced")

@@ -237,8 +237,9 @@ def main() -> int:
     # insufficient evidence, never a guessed figure.
     ctx2 = h.build_prediction_context(task, "ep2")
     calibration = ctx2.strategy_calibration
+    from or_harness.world_model.episode_closeout import OBSERVATION_RULE_VERSION
     group = calibration["groups"][
-        "strategy_outcome|(unknown)|normalized_objective_gap|1-gap|attempt"]
+        "strategy_outcome|(unknown)|normalized_objective_gap|1-gap|attempt|" + OBSERVATION_RULE_VERSION]
     print(f"episode-2 context      : {ctx2.context_id}")
     print(f"calibration samples    : {group['n_samples']} "
           f"({group['n_distinct_episodes']} distinct episode, "

@@ -598,11 +598,14 @@ class TestCalibrationChannel(M4Case):
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
-        stored = self.h.get_prediction_context(ctx1.context_id)
-        self.assertEqual(json.dumps(stored.to_dict(), sort_keys=True),
-                         frozen,
-                         "a stored context is never rewritten by later "
-                         "episodes' feedback")
+        from or_harness.world_model.conditions import ContextExpired, get_value
+        with self.assertRaises(ContextExpired):
+            self.h.get_prediction_context(ctx1.context_id)
+        header = self.h.store.loads(self.h.store.get_prediction_context(ctx1.context_id))
+        stored = get_value(self.h.store, header["feedback_versions"]["calibration"])
+        self.assertEqual(stored, ctx1.strategy_calibration)
+        self.assertEqual(json.dumps(ctx1.to_dict(), sort_keys=True), frozen,
+                         "closing releases the runtime input without rebasing its frozen values")
 
     def test_active_episode_does_not_see_own_feedback(self):
         task = _task("t1")
@@ -941,6 +944,7 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
+        h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
@@ -950,7 +954,6 @@ class TestUnobservedIsNotALabel(M4Case):
         # dimension — the ledger verdict is then a real "ok", not an
         # "unconfirmed".
         h.bank.update_cost(record.execution_id, llm_tokens=10)
-        h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
         view = h.budget.view("t1", "ep1",
@@ -983,13 +986,14 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
+        h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04")
-        # Declared AFTER the run: this test checks the LABEL for a budget
-        # exceeded by real consumption, not the start gate.
-        h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
+        # The declared limit was frozen before the forecast; observed
+        # usage arrives afterwards and establishes the real overrun.
+        h.bank.update_cost(record.execution_id, llm_tokens=5000, source="agent_observed")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")

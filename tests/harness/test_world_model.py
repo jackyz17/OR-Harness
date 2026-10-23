@@ -110,7 +110,8 @@ class TestBeliefSnapshot(HarnessTestCase):
         reloaded = h.get_snapshot(snap.snapshot_id)
         self.assertEqual(
             reloaded.harness_state["experience"]["total_executions"], 0)
-        self.assertEqual(reloaded.coverage["knowledge_layers"]["verified"], [])
+        self.assertTrue(reloaded.coverage["conditions_only"])
+        self.assertNotIn("knowledge_layers", reloaded.coverage)
 
     def test_harness_state_does_not_duplicate_the_knowledge_copy(self):
         """The knowledge references live in ONE place (coverage). Storing a
@@ -125,28 +126,30 @@ class TestBeliefSnapshot(HarnessTestCase):
         self.assertIn(evidence.sources["m"].status,
                       ("indirect_evidence", "no_evidence"))
 
-    def test_unchanged_knowledge_shares_one_version(self):
+    def test_unchanged_knowledge_does_not_create_batch_versions(self):
         h = self._harness()
-        s1 = h.snapshot(_task("t1"), "ep1")
-        s2 = h.snapshot(_task("t2"), "ep1")
-        v1 = s1.coverage.get("knowledge_version")
-        v2 = s2.coverage.get("knowledge_version")
-        self.assertTrue(v1)
-        self.assertEqual(v1, v2,
-                         "two freezes of unchanged knowledge share a version")
-        stored = get_knowledge_version(h.store, v1)
-        self.assertIsNotNone(stored)
+        h.snapshot(_task("t1"), "ep1")
+        h.snapshot(_task("t2"), "ep1")
+        self.assertEqual(h.store.conn.execute(
+            "SELECT count(*) FROM meta WHERE key LIKE 'knowledge_version|%'"
+        ).fetchone()[0], 0)
+        self.assertEqual(h.store.conn.execute(
+            "SELECT count(*) FROM belief_snapshots").fetchone()[0], 0)
 
-    def test_a_knowledge_revision_changes_the_version(self):
+    def test_availability_metadata_changes_only_on_applicability_change(self):
         h = self._harness()
-        s1 = h.snapshot(_task("t1"), "ep1")
-        v1 = s1.coverage.get("knowledge_version")
-        h.sbank.add(StrategicEntry(
-            entry_id="", strategy_id="S01",
-            pattern={"predicates": {"family": "routing"}},
-            verification={"state": "verified", "claim": "x"}))
-        s2 = h.snapshot(_task("t1"), "ep1")
-        self.assertNotEqual(s2.coverage.get("knowledge_version"), v1)
+        entry = StrategicEntry(entry_id="", strategy_id="S01",
+            pattern={"predicates": {"family": "routing"}})
+        h.sbank.add(entry)
+        h.snapshot(_task("t1"), "ep1")
+        before = h.store.conn.execute("SELECT count(*) FROM knowledge_availability").fetchone()[0]
+        entry.expected_quality_hat = 0.9
+        h.sbank.update(entry)
+        h.snapshot(_task("t1"), "ep1")
+        self.assertEqual(h.store.conn.execute("SELECT count(*) FROM knowledge_availability").fetchone()[0], before)
+        entry.pattern = {"predicates": {"family": "other"}}
+        h.sbank.update(entry)
+        self.assertGreater(h.store.conn.execute("SELECT count(*) FROM knowledge_availability").fetchone()[0], before)
 
     def test_snapshot_at_does_not_change_the_version(self):
         """The per-freeze timestamp is excluded, so two freezes of the same
@@ -174,8 +177,12 @@ class TestBeliefSnapshot(HarnessTestCase):
         entry.expected_quality_hat = 0.9
         entry.claim = {"text": "revised"}
         h.sbank.update(entry)
-        frozen = frozen_knowledge_view(h.get_snapshot(snap.snapshot_id))
+        frozen = frozen_knowledge_view(snap)
         self.assertEqual(frozen["verified"][0]["expected_quality_hat"], 0.4)
+        # Reading a receipt never substitutes today's revised knowledge.
+        receipt = h.get_snapshot(snap.snapshot_id)
+        self.assertTrue(receipt.coverage["conditions_only"])
+        self.assertEqual(frozen_knowledge_view(receipt)["verified"], [])
 
     def test_same_profile_different_task_digest(self):
         """P is more than the profile: two tasks with identical coupling

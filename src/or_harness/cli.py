@@ -2343,10 +2343,17 @@ def cmd_context(args) -> int:
     h = _harness(args)
     try:
         if args.context_id:
+            if args.audit:
+                raw = h.store.get_prediction_context(args.context_id)
+                if raw is None:
+                    return _fail(f"unknown context_id {args.context_id!r}")
+                return _emit(h.store.loads(raw), "Stored input audit manifest; released inputs cannot be replayed.")
             ctx = h.get_prediction_context(args.context_id)
             if ctx is None:
                 return _fail(f"unknown context_id {args.context_id!r}")
             return _emit(ctx.to_dict(), _summarize_context(ctx, stored=True))
+        if args.audit:
+            return _fail("--audit requires --context-id")
         if not args.task:
             return _fail("orx context requires --task (to build) or "
                          "--context-id (to read)")
@@ -2364,6 +2371,25 @@ def cmd_context(args) -> int:
         return _emit(ctx.to_dict(), _summarize_context(ctx))
     finally:
         h.close()
+
+
+def cmd_maintain_snapshots(args) -> int:
+    from or_harness.core.storage import resolve_home
+    from or_harness.world_model.snapshot_maintenance import maintain_snapshots
+    out = maintain_snapshots(resolve_home(args.home), apply=args.apply,
+                             backup=args.backup, vacuum=args.vacuum,
+                             expire_open_days=args.expire_open_days)
+    return _emit(out, f"{'Applied' if args.apply else 'Preview'}: "
+                 f"{out['candidate_rows']} recoverable legacy snapshots; "
+                 f"{len(out['protected'])} protected. Payload bytes and physical space are separate.")
+
+
+def cmd_fork_memory(args) -> int:
+    from or_harness.core.storage import resolve_home
+    from or_harness.world_model.snapshot_maintenance import fork_memory
+    out = fork_memory(resolve_home(args.home), args.destination)
+    return _emit(out, "Created an isolated question home from the fixed base; "
+                 "reuse it for this question's retries only.")
 
 
 def _summarize_context(ctx, *, stored: bool = False) -> str:
@@ -3399,6 +3425,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-persist", action="store_true",
                    help="build without writing the context to the store")
     p.set_defaults(func=cmd_context)
+    p.add_argument("--audit", action="store_true", help="read the stored audit manifest, including released inputs")
+    p = sub.add_parser("maintain-snapshots", help="preview or explicitly compact recoverable legacy snapshots")
+    p.add_argument("--apply", action="store_true", help="apply after an integrity-checked SQLite backup")
+    p.add_argument("--backup", help="new backup file path (required with --apply)")
+    p.add_argument("--vacuum", action="store_true", help="separately reclaim physical pages after application")
+    p.add_argument("--expire-open-days", type=float, help="explicitly expire inactive legacy views older than this many days; pending facts remain")
+    p.set_defaults(func=cmd_maintain_snapshots)
+    p = sub.add_parser("fork-memory", help="create a fresh isolated home for one fixed-memory test question")
+    p.add_argument("--destination", required=True, help="new home outside the fixed base")
+    p.set_defaults(func=cmd_fork_memory)
     return parser
 
 

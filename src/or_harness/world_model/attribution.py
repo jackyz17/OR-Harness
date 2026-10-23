@@ -123,6 +123,9 @@ MISMATCH_IMPACT: Dict[str, FrozenSet[str]] = {
 #: outcome unreadable (``effective_input``) blocks the outcome and keeps
 #: cost.
 UNKNOWN_IMPACT: Dict[str, FrozenSet[str]] = {
+    # Without the frozen source, an imagined forecast cannot be certified
+    # as a real feedback sample. The execution/cost fact itself is retained.
+    "input_state": _ALL,
     "action_type": _NONE,
     "task_id": _NONE,
     "timing": _NONE,

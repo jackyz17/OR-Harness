@@ -605,7 +605,7 @@ class TestLateCorrection(TaskCheckCase):
         # A context built now reads the published summary (no correction).
         before = self.h.build_prediction_context(
             _task("t1"), "ep2").strategy_calibration
-        self.assertEqual(before["validity_corrections"], [])
+        self.assertEqual(before["validity_correction_summary"]["count"], 0)
 
         self.h.check_task_result(
             record.execution_id,
@@ -614,9 +614,8 @@ class TestLateCorrection(TaskCheckCase):
         # call: the correction republished the summary.
         after = self.h.build_prediction_context(
             _task("t1"), "ep2").strategy_calibration
-        self.assertTrue(after["validity_corrections"])
-        self.assertEqual(after["validity_corrections"][0]["fields"],
-                         ["benefit"])
+        self.assertGreater(after["validity_correction_summary"]["count"], 0)
+        self.assertEqual(after["validity_correction_summary"]["fields"], {"benefit": 1})
         # The first context is frozen and unchanged.
         self.assertNotEqual(after, before)
 

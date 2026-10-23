@@ -235,7 +235,8 @@ def main() -> int:
           f"{json.dumps(block['execution_constraints'], sort_keys=True)[:160]}...")
     assert block["context_version"] == PREDICTION_CONTEXT_VERSION
     assert "distribution centre" in block["joint_problem"]["text"]
-    assert block["joint_problem"]["cir"]["relations"]
+    assert "cir" not in block["joint_problem"]  # internal CIR is never model input
+    assert ctx2.joint.cir["relations"]
     assert "hits" in block["retrieval_evidence"]
     assert block["harness_capability"]["score_scheme"] == "no_composite_score"
     # No source is dressed up as direct evidence in this phase.
@@ -345,7 +346,7 @@ def main() -> int:
         ActionSpec("execute_strategy", "ctx_demo_1", strategy_id="S01"),
         "ep1", context=frozen)
     request = provider.requests[before_calls]
-    print(f"frozen context progress : {frozen.snapshot['task_progress']}")
+    print(f"frozen context progress : {frozen.solving_context['task_progress']}")
     print(f"request state progress  : "
           f"{request['state'].get('task_progress')}")
     print(f"snapshot id matches ctx : "
@@ -398,7 +399,7 @@ def main() -> int:
                                      measured={"llm_tokens"}),
         failure_prob=0.1, status="candidate", support_n=2,
         verification={"state": "verified", "claim": "c", "conclusion": "holds"})
-    h.sbank.add(entry)
+    demo_entry_id = h.sbank.add(entry)
     first = h.build_prediction_context(TASK, "ep1")
     d_before = first.capability_version["knowledge_content_digest"]
     # Re-read with no revision: the digest must NOT move.
@@ -409,7 +410,7 @@ def main() -> int:
     assert reread.capability_version["knowledge_content_digest"] == d_before, (
         "a re-read is not a content change")
     # Revise the SAME entry: the digest MUST move, the count must not.
-    revised = h.sbank.get("se_demo")
+    revised = h.sbank.get(demo_entry_id)
     revised.expected_quality_hat = 0.55
     h.sbank.update(revised)
     second = h.build_prediction_context(TASK, "ep1")
@@ -436,19 +437,20 @@ def main() -> int:
                                      measured={"llm_tokens"}),
         failure_prob=0.1, status="candidate", support_n=2,
         verification={"state": "verified", "claim": "c", "conclusion": "holds"})
-    h.sbank.add(hist_entry)
+    hist_entry_id = h.sbank.add(hist_entry)
     hist_snap = h.snapshot(hist_task, "ep1")     # freezes quality 0.60
-    moved = h.sbank.get("se_hist")
+    moved = h.sbank.get(hist_entry_id)
     moved.expected_quality_hat = 0.95            # the entry is revised later
     h.sbank.update(moved)
     historical = h.build_prediction_context(hist_task, "ep1",
-                                            snapshot=hist_snap)
+                                            snapshot=hist_snap,
+        context_spec=ActionSpec("execute_strategy", hist_task["task_id"], strategy_id="S01"))
     frozen_layers = ((historical.snapshot.get("coverage") or {})
                      .get("knowledge_layers") or {})
     frozen_by_id = {e.get("entry_id"): e.get("expected_quality_hat")
                     for e in (frozen_layers.get("verified") or [])}
     print(f"entry revised to        : 0.95")
-    print(f"frozen value for se_hist: {frozen_by_id.get('se_hist')}")
+    print(f"frozen value for se_hist: {frozen_by_id.get(hist_entry_id)}")
     print(f"revision leaked in      : {'0.95' in str(historical.to_dict())}")
     print(f"retrieval rebuilt from  : "
           f"{historical.execution_constraints['retrieval_bounding']['rebuilt_from']}")
@@ -456,7 +458,7 @@ def main() -> int:
     for item in historical.missing:
         if "MISSING" in item:
             print(f"   - {item[:88]}...")
-    assert frozen_by_id.get("se_hist") == 0.60, (
+    assert frozen_by_id.get(hist_entry_id) == 0.60, (
         "the frozen view keeps the value the entry had at snapshot time")
     assert "0.95" not in str(historical.to_dict()), (
         "a later revision must not enter a historical context")

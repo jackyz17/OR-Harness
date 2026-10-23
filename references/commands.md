@@ -351,9 +351,9 @@ Legacy reports accept optional prompt/completion/reasoning/cached totals, model/
 
 ### `orx snapshot --task t.json [--episode ep1]`
 
-**Purpose / effects:** Optional persistence of a deeply frozen belief snapshot. Stores capability evidence `H`, problem/profile and task payload `P`, runtime progress field `X`, budget field `B`, and coverage. Progress includes selected plan, model, solution, and verification, each labelled by provenance and epistemic status. Later writes do not change the snapshot.
+**Purpose / effects:** Return the current temporary belief view and persist a lightweight condition receipt with shared problem/progress values and compact budget facts. Full coverage and knowledge bodies are not added to historical snapshot storage. Progress includes selected plan, model, solution, and verification, each labelled by provenance and epistemic status. Later writes do not change the snapshot.
 
-**Read / next:** Use it to inspect accumulated state or explicitly build a historical context. The default prediction/planning path captures its own inputs; a separate snapshot is unnecessary there. A task missing `task_id` / `family` is refused. Legacy `X` is progress here, not conceptual Q/C/R; coverage is not an aggregate capability score.
+**Read / next:** Use the returned temporary object to inspect current state. Reading a new receipt later explicitly reports that full coverage was not retained; complete legacy snapshots remain readable. Use `context` for cross-process prediction-input reuse. The default prediction/planning path captures its own inputs; a separate snapshot is unnecessary there. A task missing `task_id` / `family` is refused. Legacy `X` is progress here, not conceptual Q/C/R; coverage is not an aggregate capability score.
 
 ### `orx action --report TYPE --task t.json [--episode ep1] [--params JSON] [--outcome JSON] [--cost JSON] | --amend-cost ACTION_ID --cost JSON`
 
@@ -553,3 +553,12 @@ orx contract --payload prediction.json
 **Purpose / effects:** Bound evidence by whole episodes (default 800, `OR_EVIDENCE_WINDOW_EPISODES`), ordered by registry close time. Evicts obsolete vectors and unreferenced text versions with facts; never solve sources. Idempotent/recoverable.
 
 **Bounds / next:** Protects calibration-window episodes, unchecked episodes in late-check grace, and young unclosed episodes. Unclosed protection expires after default 30 days (`OR_EVIDENCE_OPEN_GRACE_DAYS`), reported as `evicted_unclosed`. Keeps an oversized single episode intact; episode count is not a byte guarantee. Expired evidence references do not refute knowledge. Close-out runs this last after publication/archive with a cheap count guard; force a pass after import when needed. Dry-run writes nothing; zero evictions is success.
+
+
+## Input lifecycle and fixed-memory maintenance
+
+- `orx context --context-id CTX --audit` reads the stored manifest, including after consumption/expiry. Ordinary reuse of an expired input returns exit code 2, never an empty substitute.
+- `orx --home BASE fork-memory --destination NEW_HOME` creates one isolated test-question copy using SQLite backup and copies its fixed index/archive/artifacts. Repeat from BASE for the next question; retries keep the same question home.
+- `orx --home COPY maintain-snapshots` is a read-only preview. `--apply --backup NEW_FILE` explicitly compacts recoverable legacy views; `--vacuum` separately requests physical reclamation. `--expire-open-days N` explicitly previews/applies inactive legacy-view expiry without deleting pending attempts or completing actions.
+
+Exact lifecycle, protection rules, limits and copy-first commands: [snapshot_lifecycle.md](snapshot_lifecycle.md). Main-bank application is a separate user-initiated maintenance operation.

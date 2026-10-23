@@ -133,6 +133,8 @@ class StrategicBank:
                 "VALUES (?,?,?,?,?)",
                 (entry.entry_id, entry.strategy_id, self._scope_token(entry),
                  entry.status, self.store.dumps(entry.to_dict())))
+            from or_harness.world_model.conditions import record_availability
+            record_availability(conn, self.store, entry.entry_id, entry.predicates)
         return entry.entry_id
 
     def next_number(self) -> int:
@@ -160,6 +162,8 @@ class StrategicBank:
                  self.store.dumps(entry.to_dict()), entry.entry_id))
             if cur.rowcount == 0:
                 raise StorageError(f"unknown entry_id {entry.entry_id!r}")
+            from or_harness.world_model.conditions import record_availability
+            record_availability(conn, self.store, entry.entry_id, entry.predicates)
 
     def get(self, entry_id: str) -> Optional[StrategicEntry]:
         row = self.store.conn.execute(
@@ -324,6 +328,9 @@ class StrategicBank:
                  self.store.dumps(card.to_dict())))
             conn.execute("DELETE FROM strategic_entries WHERE entry_id=?",
                          (entry_id,))
+            from or_harness.world_model.conditions import record_availability
+            record_availability(conn, self.store, entry_id, entry.predicates,
+                                present=False)
         return card
 
     def age(self, dormant_after: int = DORMANT_AFTER_TASKS) -> List[str]:

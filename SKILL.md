@@ -68,6 +68,8 @@ CHECK -> RECORD (every attempt, including failures)   |
 
 **Comparison path:** `plan-next --task t.json --episode E --candidates cs.json`, then `choose-next --decision ACTION_ID --prediction ID`. Use a prediction ID returned in that decision's `result.plan.candidates[]`, then execute with that same ID. Planning has horizon 1; re-plan after real observations when needed.
 
+Full prediction views are temporary and shared per decision; execution facts and light frozen conditions retain the history. `choose-next` or successful episode close releases the working input. An expired context needs a new decision; inspect its manifest with `context --context-id CTX --audit`. Fixed-memory tests fork a fresh home per question (`fork-memory`); old-view cleanup is explicit and preview-first (`maintain-snapshots`). See [lifecycle and operations](references/snapshot_lifecycle.md).
+
 Use one path for a decision. Default prediction/planning already builds its context; explicit `context`, `snapshot`, historical `predict-cost`, and manual binding are optional inspection/reuse/recovery tools. Do not call them all in sequence. For an invalid forecast, inspect `result.failure.kind` and correct the cause before another call. Command formats and failures: [commands.md](references/commands.md).
 
 ### Read memory as evidence

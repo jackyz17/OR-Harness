@@ -82,7 +82,7 @@ def harness_condition(snapshot) -> Dict[str, Any]:
 _DUPLICATED_BY_CONTEXT = ("task_progress", "budget_state")
 
 
-def _provider_state_view(snapshot, *, with_context: bool) -> Dict[str, Any]:
+def _provider_state_view(snapshot, *, with_context: bool, strategy_id=None) -> Dict[str, Any]:
     """The snapshot fields a model is given, with internal content removed.
 
     Two things never reach the model:
@@ -114,6 +114,18 @@ def _provider_state_view(snapshot, *, with_context: bool) -> Dict[str, Any]:
         # snapshot keeps it for internal profiling, retrieval and the
         # historical record.
         problem_state.pop("cir_snapshot", None)
+        problem_state.pop("task_input", None)  # internal shared recovery artifact
+    coverage = view.get("coverage")
+    if isinstance(coverage, dict):
+        cells = coverage.get("cell_statistics") or {}
+        coverage["cell_statistics"] = {
+            sid: {key: value for key, value in cell.items() if key != "execution_ids"}
+            for sid, cell in cells.items() if sid == strategy_id}
+        coverage["knowledge_layers"] = {
+            layer: [ref for ref in refs if ref.get("strategy_id") == strategy_id]
+            for layer, refs in (coverage.get("knowledge_layers") or {}).items()}
+        coverage.pop("coverage_gaps", None)
+        coverage.pop("knowledge_version", None)
     return view
 
 
@@ -158,6 +170,8 @@ class PredictionService:
         compatibility is what keeps the ``x-b-only`` ablation and every
         existing provider unchanged.
         """
+        from or_harness.world_model.conditions import save_snapshot
+        save_snapshot(self.store, snapshot)
         if action_spec.action_type not in SUPPORTED_ACTION_TYPES:
             prediction = OutcomePrediction(
                 prediction_id=OutcomePrediction.new_id(),
@@ -177,7 +191,8 @@ class PredictionService:
         # internal and never sent; when a frozen prediction context is
         # attached, its duplicated X/B are dropped from the snapshot view.
         view = _provider_state_view(
-            snapshot, with_context=prediction_context is not None)
+            snapshot, with_context=prediction_context is not None,
+            strategy_id=action_spec.strategy_id)
         request = {
             "action_spec": action_spec.to_dict(),
             "state": view,
@@ -380,13 +395,10 @@ class PredictionService:
         if not snapshot_id:
             return None
         try:
-            row = self.store.conn.execute(
-                "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
-                (snapshot_id,)).fetchone()
-            if row is None:
+            from or_harness.world_model.conditions import read_snapshot
+            snap = read_snapshot(self.store, snapshot_id)
+            if snap is None:
                 return None
-            from or_harness.world_model.state import BeliefSnapshot
-            snap = BeliefSnapshot.from_dict(self.store.loads(row["payload"]))
             value = (snap.problem_state or {}).get("task_digest")
             return str(value) if value else None
         except Exception:
@@ -419,18 +431,15 @@ class PredictionService:
         # conditional outlook (second step of a rollout), never a real
         # one-step feedback sample: it must not be bound to a real action.
         try:
-            row = self.store.conn.execute(
-                "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
-                (prediction.input_snapshot_id,)).fetchone()
-            if row is not None:
-                from or_harness.world_model.state import BeliefSnapshot
-                snap = BeliefSnapshot.from_dict(
-                    self.store.loads(row["payload"]))
-                if snap.hypothetical:
+            from or_harness.world_model.conditions import read_snapshot
+            marked_hypothetical = prediction.model_info.get("hypothetical") is True
+            snap = None if marked_hypothetical else read_snapshot(self.store, prediction.input_snapshot_id)
+            if snap is not None or marked_hypothetical:
+                if marked_hypothetical or snap.hypothetical:
                     prediction.bound_action_id = action.action_id
                     prediction.binding_mismatch = {
                         "input_snapshot": {
-                            "snapshot_id": snap.snapshot_id,
+                            "snapshot_id": prediction.input_snapshot_id,
                             "hypothetical": True,
                             "reason": "prediction conditioned on a "
                                       "hypothetical successor state: a "
@@ -679,6 +688,11 @@ class PredictionService:
     # -- persistence / query ---------------------------------------------------
 
     def _save(self, prediction: OutcomePrediction) -> None:
+        from or_harness.world_model.conditions import read_snapshot, compact_budget
+        snap = read_snapshot(self.store, prediction.input_snapshot_id)
+        if snap is not None:
+            prediction.model_info.setdefault("hypothetical", snap.hypothetical)
+            prediction.model_info.setdefault("frozen_budget_state", compact_budget(snap.budget_state))
         payload = OutcomePrediction.from_dict(prediction.to_dict())
         self.store.put_world_model_prediction(
             payload.prediction_id, payload.action_spec.task_id,
