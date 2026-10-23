@@ -183,6 +183,8 @@ An event the model never predicted still counts in `occurrence` and can never pr
 
 **The window bounds the READ, not just the sample.** The occurrence tally reads the facts ONCE for the whole window (per-task, SQL-filtered) rather than rescanning the bank per episode, so closing or rebuilding costs what the window holds rather than what the history holds. The published-summary read was already a single-row lookup.
 
+**The archive check does not rescan the action log.** Deciding whether an episode is still awaiting a task verdict needs, per execution, the action it belongs to. That association is resolved from a PASS-SCOPED, task-scoped `{execution_id: action}` index built ONCE per task (`_execution_action_index`, over the existing indexed `actions.query(task_id=...)`), never a per-execution full-log read. So a close-out's archive check (and the evidence-window pass, which shares the same index) costs what the WINDOW holds, not what the action history holds — even when the grace period holds every candidate and nothing is archived.
+
 **A preview never writes.** `archive-calibration --dry-run` and `inspect --bank retention` are pure reads: neither performs the legacy-store registry migration. A pre-registry store therefore previews as an empty window plus a `pending_migration` note naming the explicit step (`orx calibration --rebuild`, or one real archive pass) that performs it.
 
 **Corrections republish, and correct the RIGHT field.** A late task check, an exclusion or a restore on an episode still IN the window rebuilds and republishes the summary. The stored evaluation is never rewritten; the summary uses a LIVE re-derivation instead:

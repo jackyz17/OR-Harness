@@ -6376,10 +6376,14 @@ def archive_calibration_detail(harness, *,
     to_write: List[Dict[str, Any]] = []
     to_clean: List[Dict[str, Any]] = []
     held_for_late_check: List[Dict[str, Any]] = []
+    # PASS-SCOPED execution->action index: the whole candidate loop shares
+    # ONE task-scoped read per task instead of a full-log scan per execution.
+    action_index_cache: Dict[str, Dict[str, Any]] = {}
     for row in candidates:
         task_id = str(row["task_id"])
         episode_id = row["episode_id"]
-        if _episode_awaits_check(harness, task_id, episode_id):
+        if _episode_awaits_check(harness, task_id, episode_id,
+                                 index_cache=action_index_cache):
             # An episode with an unchecked execution may still receive a
             # late verdict: keep it online until the grace period expires.
             if row["closed_at"] > cutoff:
@@ -6463,17 +6467,64 @@ def archive_calibration_detail(harness, *,
     return result
 
 
+def _execution_action_index(harness, task_id: str,
+                            cache: Optional[Dict[str, Dict[str, Any]]] = None
+                            ) -> Dict[str, Any]:
+    """A ``{execution_id: ActionRecord}`` map for ONE task, read ONCE.
+
+    ``ActionLog.by_execution`` reads the WHOLE action log (no ``WHERE``)
+    and decodes every payload to find one execution's action, so calling it
+    per execution made an archive check scan the entire action history once
+    per execution (the slowdown). This builds the task's map from the
+    EXISTING indexed ``actions.query(task_id=...)`` path — no new column,
+    index or schema change.
+
+    ``cache`` (optional) is a PASS-SCOPED ``{task_id: index}`` map shared
+    within ONE archive / evidence-window traversal, so a task's actions are
+    read once for the whole pass rather than once per episode. It is created
+    and discarded by the caller; nothing is cached across commands.
+
+    **Newest action wins.** ``query`` returns oldest-first, so later
+    assignments overwrite earlier ones — the SAME "take the latest action"
+    rule ``by_execution`` applies (it reads ``ORDER BY started_at DESC``).
+    """
+    if cache is not None and task_id in cache:
+        return cache[task_id]
+    index: Dict[str, Any] = {}
+    for action in harness.actions.query(task_id=task_id):
+        linked = getattr(action, "linked_execution_id", None)
+        if linked:
+            index[str(linked)] = action
+    if cache is not None:
+        cache[task_id] = index
+    return index
+
+
 def _episode_awaits_check(harness, task_id: str,
-                          episode_id: Optional[str]) -> bool:
+                          episode_id: Optional[str],
+                          action_index: Optional[Dict[str, Any]] = None,
+                          index_cache: Optional[Dict[str, Dict[str, Any]]]
+                          = None) -> bool:
     """Whether any execution of the episode still lacks a task verdict.
 
     This is the DIRECTED exception the grace period applies to: an episode
     all of whose executions carry a verdict cannot benefit from a late
     check, so it is not held online. Only episodes genuinely awaiting a
     verdict are kept.
+
+    The episode's executions come from the task-scoped ``bank.query``; the
+    action each execution belongs to is resolved through ONE task-scoped
+    index (``_execution_action_index``) instead of a per-execution
+    full-log scan. Pass ``action_index`` (or ``index_cache``) to reuse the
+    read across an episode set. The judgment is unchanged: an action that
+    names a DIFFERENT episode is skipped; an execution with no resolvable
+    action is judged by its own task-check state.
     """
+    if action_index is None:
+        action_index = _execution_action_index(harness, task_id,
+                                               index_cache)
     for record in harness.bank.query(task_id=task_id):
-        action = harness.actions.by_execution(record.execution_id)
+        action = action_index.get(str(record.execution_id))
         if action is not None and episode_id is not None \
                 and action.episode_id != episode_id:
             continue
@@ -6701,6 +6752,9 @@ def enforce_evidence_window(harness, *,
     to_evict: List[Dict[str, Any]] = []
     protected: List[Dict[str, Any]] = []
     eligible: List[Dict[str, Any]] = []
+    # PASS-SCOPED execution->action index, shared across the whole registry
+    # traversal (the same reuse the archive pass uses).
+    action_index_cache: Dict[str, Dict[str, Any]] = {}
     for row in registry:
         identity = (str(row["task_id"]), str(row["episode_id"] or ""))
         if identity in window_ids:
@@ -6709,7 +6763,8 @@ def enforce_evidence_window(harness, *,
                               "reason": "inside the calibration window"})
             continue
         if _episode_awaits_check(harness, identity[0],
-                                 row["episode_id"]) \
+                                 row["episode_id"],
+                                 index_cache=action_index_cache) \
                 and row["closed_at"] > latency_cutoff:
             protected.append({"task_id": identity[0],
                               "episode_id": row["episode_id"],
