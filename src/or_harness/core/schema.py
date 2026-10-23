@@ -1417,6 +1417,13 @@ class ExecutionRecord:
         raw_snapshot = data.get("prediction_snapshot")
         snapshot = (PredictionSnapshot.from_dict(raw_snapshot)
                     if isinstance(raw_snapshot, dict) else None)
+        features = dict(data.get("execution_features") or {})
+        created_at = data.get("created_at")
+        if created_at is None:
+            # A legacy export without work time must not become a "later"
+            # execution merely because it was read today. Zero is only a
+            # serialization sentinel; consumers use the explicit marker.
+            features["created_at_unknown"] = True
         return cls(
             execution_id=str(data["execution_id"]),
             task_id=str(data["task_id"]),
@@ -1427,8 +1434,8 @@ class ExecutionRecord:
             cost=cost,
             failures=[FailureRecord.from_dict(f) for f in (data.get("failures") or [])],
             solver=dict(data.get("solver") or {}),
-            execution_features=dict(data.get("execution_features") or {}),
-            created_at=float(data.get("created_at", time.time())),
+            execution_features=features,
+            created_at=float(created_at) if created_at is not None else 0.0,
             source=source,
             cir_snapshot=(dict(data["cir_snapshot"])
                           if data.get("cir_snapshot") else None),

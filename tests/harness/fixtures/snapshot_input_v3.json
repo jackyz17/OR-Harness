@@ -1,0 +1,1958 @@
+{
+  "cases": [
+    {
+      "candidate_statistics": {
+        "execution_ids": [
+          "ex_fixed_000"
+        ],
+        "fail_rate": 0.0,
+        "fallback_triggered": 0,
+        "group_key": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+        "mean_cost": {
+          "latency_s": 0.0,
+          "llm_tokens": 10.0,
+          "remaining_latency_s": 0.0,
+          "retries": 0.0,
+          "solver_runtime_s": 0.0,
+          "tool_calls": 0.0
+        },
+        "mean_quality": 1.0,
+        "mean_retries": 0.0,
+        "n": 1,
+        "n_feasible": 1,
+        "n_measured": {
+          "latency_s": 0,
+          "llm_tokens": 1,
+          "remaining_latency_s": 0,
+          "retries": 0,
+          "solver_runtime_s": 0,
+          "tool_calls": 0
+        },
+        "scale_ranges": {
+          "n_constraints": [
+            5.0,
+            5.0
+          ],
+          "n_int_vars": [
+            10.0,
+            10.0
+          ],
+          "n_vars": [
+            10.0,
+            10.0
+          ]
+        },
+        "solver_runtime_by_provenance": {},
+        "std_quality": 0.0,
+        "strategy_id": "candidate",
+        "task_checks": {}
+      },
+      "cell_evidence": {
+        "candidate": {
+          "distinct_tasks": 1,
+          "executions": 1
+        }
+      },
+      "knowledge_targets": [
+        {
+          "candidate_changes": [
+            "narrows",
+            "revises",
+            "refutes"
+          ],
+          "cell_token": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+          "distinct_tasks": 1,
+          "entry_id": "1",
+          "expected_quality_hat": 0.8,
+          "interval_width": 0.4,
+          "kind": "existing_entry",
+          "quality_interval": [
+            0.6,
+            1.0
+          ],
+          "reason": "interval width 0.400 exceeds the floor allowed at the next support level (0.350): more evidence can legitimately tighten or move the claim",
+          "strategy_id": "candidate",
+          "support_n": 2
+        }
+      ],
+      "provider_semantics": {
+        "capability_version": {
+          "harness_config_digest": "9028f7d75efc1ebb",
+          "knowledge_content": {
+            "digest": "cbbf3717f5bd3736",
+            "excluded_keys": [
+              "snapshot_at",
+              "created_at",
+              "last_consulted_at",
+              "last_consulted",
+              "consulted_at",
+              "as_of"
+            ],
+            "executions": 0,
+            "knowledge_by_layer": {
+              "entry": 1,
+              "verified": 1
+            },
+            "knowledge_entries": 2,
+            "note": "the digest covers the decision-relevant CONTENT of the memory actually consulted (entry fields \u2014 including applicability and actions \u2014 and retrieved hits), with read timestamps excluded: a knowledge revision moves it, a re-read does not. Only the digest and its composition are carried, never the digested content",
+            "retrieval_hits": 1
+          },
+          "knowledge_content_digest": "cbbf3717f5bd3736",
+          "note": "this is a version IDENTITY (what configuration, model, tools and memory content the evidence was read under), not a capability level; a content digest is not an ability measurement and a read timestamp is not a change",
+          "prompt_template_version": "wm2/2",
+          "provider": {
+            "provider": "not-configured"
+          },
+          "tools": []
+        },
+        "degraded": [
+          {
+            "part": "retrieval.semantic",
+            "reason": "no embedding backend configured"
+          }
+        ],
+        "effective_input_digest": "71359bbc03e28884",
+        "episode_id": "e",
+        "execution_constraints": {
+          "available_solver_families": {},
+          "budget_condition": {
+            "declared_limits": null,
+            "episode_dimensions": [],
+            "known_consumption_lower_bound": {},
+            "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+            "remaining_budget_confirmed": false,
+            "unknown_dimension_reasons": {},
+            "unknown_dimensions": []
+          },
+          "budget_status": "no_budget_declared",
+          "declared_budget": null,
+          "executor": {
+            "timeout_seconds": 120,
+            "workspace_policy": "solve scripts must live inside their execution workspace"
+          },
+          "note": "declared budget and real tool availability: these constrain what can be executed, they do not predict what it would achieve",
+          "retrieval_bounding": {
+            "dropped": 0,
+            "dropped_items": [],
+            "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "unbounded_kept": 0
+          }
+        },
+        "harness_capability": {
+          "notes": [
+            "derived from a legacy harness_state: every item is evidence ABOUT H, not a measured capability level",
+            "capability evidence assembled for a prediction context: every item is evidence ABOUT H with an explicit status, never a level"
+          ],
+          "score_scheme": "no_composite_score",
+          "sources": {
+            "m": {
+              "detail": {
+                "cells_with_evidence": 1,
+                "experience": {
+                  "task_execution_count": 0,
+                  "total_executions": 1
+                },
+                "knowledge_ref_counts": {
+                  "legacy_unknown": 0,
+                  "unverified": 0,
+                  "verified": 1
+                }
+              },
+              "evidence": [
+                {
+                  "note": "1 reference(s)",
+                  "ref_id": "verified",
+                  "ref_type": "knowledge_layer"
+                }
+              ],
+              "notes": [
+                "knowledge REFERENCES and experience VOLUME: usable knowledge is not the same as referenced knowledge"
+              ],
+              "source": "m",
+              "status": "indirect_evidence"
+            },
+            "pi": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "pi",
+              "status": "no_evidence"
+            },
+            "r": {
+              "detail": {
+                "applicability_labels": {
+                  "unlabelled": 1
+                },
+                "channels_run": [
+                  "structural"
+                ],
+                "evidence_classes": {
+                  "legacy_knowledge": 1
+                },
+                "hits": 1
+              },
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts",
+                "retrieval channels RAN and their hits carry applicability labels; a hit count or a similarity is not evidence that a transfer succeeded"
+              ],
+              "source": "r",
+              "status": "indirect_evidence"
+            },
+            "t": {
+              "detail": {},
+              "evidence": [],
+              "notes": [],
+              "source": "t",
+              "status": "no_evidence"
+            },
+            "w_or": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "w_or",
+              "status": "no_evidence"
+            }
+          },
+          "version": null
+        },
+        "hplus_feedback": {
+          "basis": "derived from the online capability-gain traces; the claim is the ORIGINAL one, never re-predicted",
+          "feedback_version": "wm-hplusfb/1",
+          "gains": [],
+          "missing": "no online capability-gain claim has been archived in this store: the block is EMPTY BY ABSENCE, not because every claim was 'none'",
+          "n_bound": 0,
+          "n_effect_verified": 0,
+          "n_gains_total": 0,
+          "n_included": 0,
+          "n_pending": 0,
+          "note": "an online H+ is EXPLANATORY: it never ranked the candidate and it is not capability evidence. `pending` means the real follow-up has not happened yet \u2014 it is NOT a failure, and a new trace is NOT an improvement. `effect_verified` is the only state that confirms the claim was borne out"
+        },
+        "joint_problem": {
+          "derivation": {
+            "resource_coupling": {
+              "origin": "supplied",
+              "value": 0.3
+            },
+            "route_complexity": {
+              "origin": "supplied",
+              "value": 0.2
+            },
+            "semantic_coupling": {
+              "note": "semantic coupling is never derived (business semantics are invisible to structure); supply annotations.coupling.semantic_coupling to keep it in the profile \u2014 it informs your own judgment and never conditions the statistics",
+              "origin": "null",
+              "value": null
+            },
+            "temporal_coupling": {
+              "origin": "supplied",
+              "value": 0.1
+            }
+          },
+          "has_model": false,
+          "math": {
+            "constraint_kinds": [],
+            "integrality": "integer",
+            "linearity": null,
+            "notes": [],
+            "objective_kind": null,
+            "origins": {
+              "integrality": "spec"
+            },
+            "unknowns": [
+              "linearity",
+              "objective_kind",
+              "constraint_kinds"
+            ]
+          },
+          "missing": [
+            "CIR: no relational structure supplied",
+            "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+            "math.linearity: unknown (not established by any source)",
+            "math.objective_kind: unknown (not established by any source)",
+            "math.constraint_kinds: unknown (not established by any source)"
+          ],
+          "model_digest": null,
+          "notes": [
+            "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling"
+          ],
+          "profile": {
+            "annotations": {
+              "coupling": {
+                "resource_coupling": 0.3,
+                "route_complexity": 0.2,
+                "temporal_coupling": 0.1
+              },
+              "profiling": {
+                "origin": {
+                  "resource_coupling": "supplied",
+                  "route_complexity": "supplied",
+                  "semantic_coupling": "null",
+                  "temporal_coupling": "supplied"
+                }
+              }
+            },
+            "family": "routing",
+            "problem_class": "mixed",
+            "problem_id": "fixture",
+            "resource_coupling": 0.3,
+            "risk_features": {},
+            "route_complexity": 0.2,
+            "scale_features": {
+              "n_constraints": 5.0,
+              "n_int_vars": 10.0,
+              "n_vars": 10.0
+            },
+            "semantic_coupling": null,
+            "source": "harness_supplied",
+            "temporal_coupling": 0.1
+          },
+          "sources": {
+            "cir": "none",
+            "derivation": "profiler",
+            "math.constraint_kinds": "unknown",
+            "math.integrality": "spec",
+            "math.linearity": "unknown",
+            "math.objective_kind": "unknown",
+            "model": "none",
+            "profile": "profiler",
+            "text": "task_payload"
+          },
+          "task_digest": "71359bbc03e28884",
+          "task_id": "fixture",
+          "task_payload": {
+            "description": "Minimize cost with capacity 10.",
+            "family": "routing",
+            "spec": {
+              "n_constraints": 5,
+              "n_int_vars": 10,
+              "n_vars": 10
+            }
+          },
+          "text": "Minimize cost with capacity 10. {\"n_constraints\": 5, \"n_int_vars\": 10, \"n_vars\": 10}",
+          "text_digest": "71359bbc03e28884",
+          "unknowns": [
+            "linearity",
+            "objective_kind",
+            "constraint_kinds"
+          ],
+          "version": "joint/1"
+        },
+        "missing": [
+          "CIR: no relational structure supplied",
+          "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+          "math.linearity: unknown (not established by any source)",
+          "math.objective_kind: unknown (not established by any source)",
+          "math.constraint_kinds: unknown (not established by any source)",
+          "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+        ],
+        "notes": [
+          "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling",
+          "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+          "this context is the FROZEN input of a prediction; building it performed no model call, no solver execution and no induction"
+        ],
+        "omitted": [
+          "joint_problem.task_payload.task_id (identical to joint_problem.task_id)",
+          "joint_problem.cir (CIR is internal; the model reads the task text, math attributes and profile instead)"
+        ],
+        "prediction_execution_pairs": {
+          "feedback_version": "wm-pairs/1",
+          "filter_note": null,
+          "identity_note": null,
+          "missing": "the published block carries no pairs: a cold start has no paired feedback to select from (this is absent, not 'nothing matched')",
+          "model_identity": null,
+          "n_pairs_available": 0,
+          "n_pairs_included": 0,
+          "n_pairs_omitted": 0,
+          "n_pairs_total": 0,
+          "n_pairs_withheld": null,
+          "observation_rule_version": null,
+          "pairs": [],
+          "risk_reason_legend": {
+            "class_not_recorded": "the execution did not record this failure class",
+            "environment_failure": "an ENVIRONMENT failure (sandbox policy / missing module / unavailable backend)",
+            "error_class_unknown": "the failure's error_class is unknown/unrecorded: the cause is not inferred from the error text",
+            "implementation_failure": "the harness's OWN code failed (an implementation failure, NOT a modelling error)",
+            "no_infeasibility": "the solver did not report infeasibility here",
+            "no_task_check": "no task check is on record for this execution: task validity is UNKNOWN, never a failure",
+            "predicted_without_probability": "the prediction named the event but gave no probability: it is observed, not scored",
+            "reported_infeasibility": "the solver reported infeasibility (a verdict, not by itself a strategy failure)",
+            "task_check_failed": "a declared task check ran on real values and did not hold",
+            "time_limit": "the executor's time limit fired",
+            "unpredicted_no_brier": "the model did not predict this event: it is observed by the framework and counted in the occurrence rate, but no Brier score can be computed without a probability"
+          },
+          "selection": {
+            "basis": "selected from the PUBLISHED block by relevance to the current retrieval, the candidates' declared methods and the current problem; no bank scan, no re-scoring",
+            "limit": 6,
+            "limit_basis": "a DISPLAY ceiling, not a calibration sample size: the full window remains the calibration population",
+            "signature": "279670176e3f107a"
+          },
+          "selection_signature": "279670176e3f107a"
+        },
+        "prediction_reminders": [],
+        "retrieval_evidence": {
+          "channels_run": [
+            "structural"
+          ],
+          "deduplication": {
+            "content_channels": {
+              "strategic_knowledge:1": [
+                "structural"
+              ]
+            },
+            "distinct_tasks_in_execution_hits": 0,
+            "duplicates": [],
+            "duplicates_collapsed": 0,
+            "hits_kept": 1,
+            "hits_seen": 1,
+            "note": "one memory hit by several channels is ONE piece of evidence: support is never inflated by counting channels, and repeat runs of one task_id are not independent tasks. AUTHORITY: an ``unknown`` version is a channel that did not carry the identifying content, NOT a disagreement",
+            "unique_content": 1,
+            "version_conflicts": [],
+            "version_unknown": [
+              "strategic_knowledge:1"
+            ]
+          },
+          "degraded": [
+            {
+              "part": "retrieval.semantic",
+              "reason": "no embedding backend configured"
+            }
+          ],
+          "evidence_classes": {
+            "legacy_knowledge": 1
+          },
+          "hits": [
+            {
+              "channels": [
+                "structural"
+              ],
+              "content": {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "entry_id": "1",
+                "evidence": "strategic_entry",
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge": {
+                  "actions": [],
+                  "applicability": [],
+                  "claim": null,
+                  "entry_id": "1",
+                  "estimate": {
+                    "distinct_tasks": null,
+                    "estimated": true,
+                    "evidence_executions": null,
+                    "failure_prob": 0.5,
+                    "note": "a statistical estimate backs this entry",
+                    "quality_hat": 0.8,
+                    "statistical_support_n": 2
+                  },
+                  "fallback_strategy_id": null,
+                  "note": "content read from the entry that backs this recommendation; empty lists mean the memory does not record it",
+                  "predicates": {
+                    "family": "routing"
+                  },
+                  "status": "candidate",
+                  "strategy_type": null,
+                  "support_n": 2,
+                  "verification": {
+                    "assertions": [],
+                    "checked": null,
+                    "checks": [],
+                    "claim": "fixture",
+                    "conclusion": null,
+                    "evidence": [],
+                    "not_covered": null,
+                    "purpose": null,
+                    "scope": {},
+                    "stale_after_revision": false,
+                    "stale_reason": null,
+                    "state": "verified",
+                    "verified_at": null
+                  },
+                  "verification_state": "verified"
+                },
+                "relations": [],
+                "reusable": true,
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              },
+              "content_channels": [
+                "structural"
+              ],
+              "duplicate_count": 0,
+              "evidence_class": "legacy_knowledge",
+              "evidence_id": "1",
+              "identity": "strategic_knowledge:1",
+              "layer": "strategic_knowledge",
+              "version": "unknown",
+              "version_unknown": true,
+              "version_unknown_note": "at least one channel did not carry the identifying content, so its version is UNKNOWN \u2014 this is NOT a conflict with the known version",
+              "versions": [
+                "unknown"
+              ]
+            }
+          ],
+          "missing": [
+            "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+          ],
+          "n_hits": 1,
+          "notes": [
+            "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "each item's content is carried ONCE (in `hits`); the structural and semantic lists are indexes that point at it, and a cross-channel field is merged rather than one copy winning"
+          ],
+          "recall_digest": "f2b646dbef3ed119",
+          "semantic": {
+            "execution_evidence": [],
+            "note": "similarity is a DISCOVERY signal only; the full content it found is carried ONCE in `hits` and referenced with `full_text_ref` (it is not repeated here). ",
+            "reason": "no embedding backend configured",
+            "status": "degraded",
+            "strategic_knowledge": []
+          },
+          "structural": {
+            "available_solver_families": [],
+            "coupling_warnings": [],
+            "note": "the entry's full content travels ONCE in `hits`; these rows are the APPLICABILITY and conditional-statistics view and point at it with `claim_ref` / `knowledge_ref`. the structural channel decides APPLICABILITY from the profile; its scores are evidence-based estimates, not measurements",
+            "recommendations": [
+              {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "cost_basis_dims": [
+                  "llm_tokens"
+                ],
+                "cost_known_dims": [
+                  "llm_tokens"
+                ],
+                "cross_family": false,
+                "evidence": "strategic_entry",
+                "evidence_refs": [
+                  "1"
+                ],
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge_ref": "content.knowledge",
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              }
+            ],
+            "retrieval_bounding": {
+              "dropped": 0,
+              "dropped_items": [],
+              "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+              "unbounded_kept": 0
+            },
+            "solver_advisories": [],
+            "status": "ok"
+          },
+          "task_digest": "71359bbc03e28884"
+        },
+        "solving_context": {
+          "budget_state": {
+            "attempt_limited": false,
+            "budget": null,
+            "consumption": {
+              "action_costs": [],
+              "aggregation_note": "cumulative dimensions summed over measured recorded AND staged executions (deduplicated by execution_id) plus own-cost actions; macro reference costs are not re-counted; latency never summed (a declared latency budget is judged per-attempt, see view); unknown dimensions reported as null, never zero",
+              "attempts": [],
+              "episode_id": "e",
+              "n_attempts": 0,
+              "n_measured": {
+                "latency_s": 0,
+                "llm_tokens": 0,
+                "remaining_latency_s": 0,
+                "retries": 0,
+                "solver_runtime_s": 0,
+                "tool_calls": 0
+              },
+              "n_recorded": 0,
+              "n_staged": 0,
+              "prediction_call_costs": [],
+              "task_id": "fixture",
+              "token_basis": null,
+              "token_basis_mixed": false,
+              "token_basis_note": null,
+              "total_cost": {
+                "llm_tokens": null,
+                "retries": null,
+                "solver_runtime_s": null,
+                "tool_calls": null
+              },
+              "unattributed": null,
+              "unattributed_prediction_costs": null,
+              "unknown_dim_reasons": {},
+              "unknown_dims": []
+            },
+            "episode_exhausted": false,
+            "episode_id": "e",
+            "exceeded_dims": [],
+            "status": "no_budget_declared",
+            "status_note": "no budget declared: consumption is aggregated but not judged",
+            "task_id": "fixture"
+          },
+          "note": "X is the episode's accumulated solving context frozen BEFORE this prediction; a hypothetical snapshot's progress never appears here",
+          "task_progress": {}
+        },
+        "sources": {
+          "problem_state_version": "71359bbc03e28884",
+          "profile": "profiler",
+          "retrieval": "structural",
+          "snapshot": "<id>",
+          "task_version": "71359bbc03e28884"
+        },
+        "strategy_outcome_calibration": {
+          "applicability": "global_diagnostic",
+          "calibration_version": "wm-calib/3",
+          "event_vocabulary_version": "wm-events/3",
+          "exclusions": {},
+          "groups": {},
+          "missing": "no calibration summary has been published yet: no closed episode has been evaluated in this store, or the summary predates this version. Run `orx calibration --rebuild` to build one from the current window",
+          "n_evaluated": 0,
+          "n_evaluations_total": 0,
+          "n_window_episodes": 0,
+          "note": "no published calibration is available; the context records the gap rather than scanning history to fill it",
+          "observation_rule_version": "wm-obs/4",
+          "occurrence": {},
+          "protocol": "wm-so/1",
+          "window": {
+            "archive_max_file_bytes": 67108864,
+            "archive_max_total_bytes": 1073741824,
+            "archive_retention_days": 365.0,
+            "auto_archive_threshold": 200,
+            "late_check_grace_days": 30.0,
+            "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk",
+            "window": 50
+          }
+        },
+        "task_digest": "71359bbc03e28884",
+        "task_id": "fixture"
+      },
+      "strategies": 1
+    },
+    {
+      "candidate_statistics": {
+        "execution_ids": [
+          "ex_fixed_000"
+        ],
+        "fail_rate": 0.0,
+        "fallback_triggered": 0,
+        "group_key": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+        "mean_cost": {
+          "latency_s": 0.0,
+          "llm_tokens": 10.0,
+          "remaining_latency_s": 0.0,
+          "retries": 0.0,
+          "solver_runtime_s": 0.0,
+          "tool_calls": 0.0
+        },
+        "mean_quality": 1.0,
+        "mean_retries": 0.0,
+        "n": 1,
+        "n_feasible": 1,
+        "n_measured": {
+          "latency_s": 0,
+          "llm_tokens": 1,
+          "remaining_latency_s": 0,
+          "retries": 0,
+          "solver_runtime_s": 0,
+          "tool_calls": 0
+        },
+        "scale_ranges": {
+          "n_constraints": [
+            5.0,
+            5.0
+          ],
+          "n_int_vars": [
+            10.0,
+            10.0
+          ],
+          "n_vars": [
+            10.0,
+            10.0
+          ]
+        },
+        "solver_runtime_by_provenance": {},
+        "std_quality": 0.0,
+        "strategy_id": "candidate",
+        "task_checks": {}
+      },
+      "cell_evidence": {
+        "candidate": {
+          "distinct_tasks": 1,
+          "executions": 1
+        }
+      },
+      "knowledge_targets": [
+        {
+          "candidate_changes": [
+            "narrows",
+            "revises",
+            "refutes"
+          ],
+          "cell_token": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+          "distinct_tasks": 1,
+          "entry_id": "1",
+          "expected_quality_hat": 0.8,
+          "interval_width": 0.4,
+          "kind": "existing_entry",
+          "quality_interval": [
+            0.6,
+            1.0
+          ],
+          "reason": "interval width 0.400 exceeds the floor allowed at the next support level (0.350): more evidence can legitimately tighten or move the claim",
+          "strategy_id": "candidate",
+          "support_n": 2
+        }
+      ],
+      "provider_semantics": {
+        "capability_version": {
+          "harness_config_digest": "9028f7d75efc1ebb",
+          "knowledge_content": {
+            "digest": "cbbf3717f5bd3736",
+            "excluded_keys": [
+              "snapshot_at",
+              "created_at",
+              "last_consulted_at",
+              "last_consulted",
+              "consulted_at",
+              "as_of"
+            ],
+            "executions": 0,
+            "knowledge_by_layer": {
+              "entry": 1,
+              "verified": 1
+            },
+            "knowledge_entries": 2,
+            "note": "the digest covers the decision-relevant CONTENT of the memory actually consulted (entry fields \u2014 including applicability and actions \u2014 and retrieved hits), with read timestamps excluded: a knowledge revision moves it, a re-read does not. Only the digest and its composition are carried, never the digested content",
+            "retrieval_hits": 1
+          },
+          "knowledge_content_digest": "cbbf3717f5bd3736",
+          "note": "this is a version IDENTITY (what configuration, model, tools and memory content the evidence was read under), not a capability level; a content digest is not an ability measurement and a read timestamp is not a change",
+          "prompt_template_version": "wm2/2",
+          "provider": {
+            "provider": "not-configured"
+          },
+          "tools": []
+        },
+        "degraded": [
+          {
+            "part": "retrieval.semantic",
+            "reason": "no embedding backend configured"
+          }
+        ],
+        "effective_input_digest": "71359bbc03e28884",
+        "episode_id": "e",
+        "execution_constraints": {
+          "available_solver_families": {},
+          "budget_condition": {
+            "declared_limits": null,
+            "episode_dimensions": [],
+            "known_consumption_lower_bound": {},
+            "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+            "remaining_budget_confirmed": false,
+            "unknown_dimension_reasons": {},
+            "unknown_dimensions": []
+          },
+          "budget_status": "no_budget_declared",
+          "declared_budget": null,
+          "executor": {
+            "timeout_seconds": 120,
+            "workspace_policy": "solve scripts must live inside their execution workspace"
+          },
+          "note": "declared budget and real tool availability: these constrain what can be executed, they do not predict what it would achieve",
+          "retrieval_bounding": {
+            "dropped": 0,
+            "dropped_items": [],
+            "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "unbounded_kept": 0
+          }
+        },
+        "harness_capability": {
+          "notes": [
+            "derived from a legacy harness_state: every item is evidence ABOUT H, not a measured capability level",
+            "capability evidence assembled for a prediction context: every item is evidence ABOUT H with an explicit status, never a level"
+          ],
+          "score_scheme": "no_composite_score",
+          "sources": {
+            "m": {
+              "detail": {
+                "cells_with_evidence": 10,
+                "experience": {
+                  "task_execution_count": 0,
+                  "total_executions": 10
+                },
+                "knowledge_ref_counts": {
+                  "legacy_unknown": 0,
+                  "unverified": 0,
+                  "verified": 1
+                }
+              },
+              "evidence": [
+                {
+                  "note": "1 reference(s)",
+                  "ref_id": "verified",
+                  "ref_type": "knowledge_layer"
+                }
+              ],
+              "notes": [
+                "knowledge REFERENCES and experience VOLUME: usable knowledge is not the same as referenced knowledge"
+              ],
+              "source": "m",
+              "status": "indirect_evidence"
+            },
+            "pi": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "pi",
+              "status": "no_evidence"
+            },
+            "r": {
+              "detail": {
+                "applicability_labels": {
+                  "unlabelled": 1
+                },
+                "channels_run": [
+                  "structural"
+                ],
+                "evidence_classes": {
+                  "legacy_knowledge": 1
+                },
+                "hits": 1
+              },
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts",
+                "retrieval channels RAN and their hits carry applicability labels; a hit count or a similarity is not evidence that a transfer succeeded"
+              ],
+              "source": "r",
+              "status": "indirect_evidence"
+            },
+            "t": {
+              "detail": {},
+              "evidence": [],
+              "notes": [],
+              "source": "t",
+              "status": "no_evidence"
+            },
+            "w_or": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "w_or",
+              "status": "no_evidence"
+            }
+          },
+          "version": null
+        },
+        "hplus_feedback": {
+          "basis": "derived from the online capability-gain traces; the claim is the ORIGINAL one, never re-predicted",
+          "feedback_version": "wm-hplusfb/1",
+          "gains": [],
+          "missing": "no online capability-gain claim has been archived in this store: the block is EMPTY BY ABSENCE, not because every claim was 'none'",
+          "n_bound": 0,
+          "n_effect_verified": 0,
+          "n_gains_total": 0,
+          "n_included": 0,
+          "n_pending": 0,
+          "note": "an online H+ is EXPLANATORY: it never ranked the candidate and it is not capability evidence. `pending` means the real follow-up has not happened yet \u2014 it is NOT a failure, and a new trace is NOT an improvement. `effect_verified` is the only state that confirms the claim was borne out"
+        },
+        "joint_problem": {
+          "derivation": {
+            "resource_coupling": {
+              "origin": "supplied",
+              "value": 0.3
+            },
+            "route_complexity": {
+              "origin": "supplied",
+              "value": 0.2
+            },
+            "semantic_coupling": {
+              "note": "semantic coupling is never derived (business semantics are invisible to structure); supply annotations.coupling.semantic_coupling to keep it in the profile \u2014 it informs your own judgment and never conditions the statistics",
+              "origin": "null",
+              "value": null
+            },
+            "temporal_coupling": {
+              "origin": "supplied",
+              "value": 0.1
+            }
+          },
+          "has_model": false,
+          "math": {
+            "constraint_kinds": [],
+            "integrality": "integer",
+            "linearity": null,
+            "notes": [],
+            "objective_kind": null,
+            "origins": {
+              "integrality": "spec"
+            },
+            "unknowns": [
+              "linearity",
+              "objective_kind",
+              "constraint_kinds"
+            ]
+          },
+          "missing": [
+            "CIR: no relational structure supplied",
+            "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+            "math.linearity: unknown (not established by any source)",
+            "math.objective_kind: unknown (not established by any source)",
+            "math.constraint_kinds: unknown (not established by any source)"
+          ],
+          "model_digest": null,
+          "notes": [
+            "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling"
+          ],
+          "profile": {
+            "annotations": {
+              "coupling": {
+                "resource_coupling": 0.3,
+                "route_complexity": 0.2,
+                "temporal_coupling": 0.1
+              },
+              "profiling": {
+                "origin": {
+                  "resource_coupling": "supplied",
+                  "route_complexity": "supplied",
+                  "semantic_coupling": "null",
+                  "temporal_coupling": "supplied"
+                }
+              }
+            },
+            "family": "routing",
+            "problem_class": "mixed",
+            "problem_id": "fixture",
+            "resource_coupling": 0.3,
+            "risk_features": {},
+            "route_complexity": 0.2,
+            "scale_features": {
+              "n_constraints": 5.0,
+              "n_int_vars": 10.0,
+              "n_vars": 10.0
+            },
+            "semantic_coupling": null,
+            "source": "harness_supplied",
+            "temporal_coupling": 0.1
+          },
+          "sources": {
+            "cir": "none",
+            "derivation": "profiler",
+            "math.constraint_kinds": "unknown",
+            "math.integrality": "spec",
+            "math.linearity": "unknown",
+            "math.objective_kind": "unknown",
+            "model": "none",
+            "profile": "profiler",
+            "text": "task_payload"
+          },
+          "task_digest": "71359bbc03e28884",
+          "task_id": "fixture",
+          "task_payload": {
+            "description": "Minimize cost with capacity 10.",
+            "family": "routing",
+            "spec": {
+              "n_constraints": 5,
+              "n_int_vars": 10,
+              "n_vars": 10
+            }
+          },
+          "text": "Minimize cost with capacity 10. {\"n_constraints\": 5, \"n_int_vars\": 10, \"n_vars\": 10}",
+          "text_digest": "71359bbc03e28884",
+          "unknowns": [
+            "linearity",
+            "objective_kind",
+            "constraint_kinds"
+          ],
+          "version": "joint/1"
+        },
+        "missing": [
+          "CIR: no relational structure supplied",
+          "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+          "math.linearity: unknown (not established by any source)",
+          "math.objective_kind: unknown (not established by any source)",
+          "math.constraint_kinds: unknown (not established by any source)",
+          "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+        ],
+        "notes": [
+          "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling",
+          "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+          "this context is the FROZEN input of a prediction; building it performed no model call, no solver execution and no induction"
+        ],
+        "omitted": [
+          "joint_problem.task_payload.task_id (identical to joint_problem.task_id)",
+          "joint_problem.cir (CIR is internal; the model reads the task text, math attributes and profile instead)"
+        ],
+        "prediction_execution_pairs": {
+          "feedback_version": "wm-pairs/1",
+          "filter_note": null,
+          "identity_note": null,
+          "missing": "the published block carries no pairs: a cold start has no paired feedback to select from (this is absent, not 'nothing matched')",
+          "model_identity": null,
+          "n_pairs_available": 0,
+          "n_pairs_included": 0,
+          "n_pairs_omitted": 0,
+          "n_pairs_total": 0,
+          "n_pairs_withheld": null,
+          "observation_rule_version": null,
+          "pairs": [],
+          "risk_reason_legend": {
+            "class_not_recorded": "the execution did not record this failure class",
+            "environment_failure": "an ENVIRONMENT failure (sandbox policy / missing module / unavailable backend)",
+            "error_class_unknown": "the failure's error_class is unknown/unrecorded: the cause is not inferred from the error text",
+            "implementation_failure": "the harness's OWN code failed (an implementation failure, NOT a modelling error)",
+            "no_infeasibility": "the solver did not report infeasibility here",
+            "no_task_check": "no task check is on record for this execution: task validity is UNKNOWN, never a failure",
+            "predicted_without_probability": "the prediction named the event but gave no probability: it is observed, not scored",
+            "reported_infeasibility": "the solver reported infeasibility (a verdict, not by itself a strategy failure)",
+            "task_check_failed": "a declared task check ran on real values and did not hold",
+            "time_limit": "the executor's time limit fired",
+            "unpredicted_no_brier": "the model did not predict this event: it is observed by the framework and counted in the occurrence rate, but no Brier score can be computed without a probability"
+          },
+          "selection": {
+            "basis": "selected from the PUBLISHED block by relevance to the current retrieval, the candidates' declared methods and the current problem; no bank scan, no re-scoring",
+            "limit": 6,
+            "limit_basis": "a DISPLAY ceiling, not a calibration sample size: the full window remains the calibration population",
+            "signature": "279670176e3f107a"
+          },
+          "selection_signature": "279670176e3f107a"
+        },
+        "prediction_reminders": [],
+        "retrieval_evidence": {
+          "channels_run": [
+            "structural"
+          ],
+          "deduplication": {
+            "content_channels": {
+              "strategic_knowledge:1": [
+                "structural"
+              ]
+            },
+            "distinct_tasks_in_execution_hits": 0,
+            "duplicates": [],
+            "duplicates_collapsed": 0,
+            "hits_kept": 1,
+            "hits_seen": 1,
+            "note": "one memory hit by several channels is ONE piece of evidence: support is never inflated by counting channels, and repeat runs of one task_id are not independent tasks. AUTHORITY: an ``unknown`` version is a channel that did not carry the identifying content, NOT a disagreement",
+            "unique_content": 1,
+            "version_conflicts": [],
+            "version_unknown": [
+              "strategic_knowledge:1"
+            ]
+          },
+          "degraded": [
+            {
+              "part": "retrieval.semantic",
+              "reason": "no embedding backend configured"
+            }
+          ],
+          "evidence_classes": {
+            "legacy_knowledge": 1
+          },
+          "hits": [
+            {
+              "channels": [
+                "structural"
+              ],
+              "content": {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "entry_id": "1",
+                "evidence": "strategic_entry",
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge": {
+                  "actions": [],
+                  "applicability": [],
+                  "claim": null,
+                  "entry_id": "1",
+                  "estimate": {
+                    "distinct_tasks": null,
+                    "estimated": true,
+                    "evidence_executions": null,
+                    "failure_prob": 0.5,
+                    "note": "a statistical estimate backs this entry",
+                    "quality_hat": 0.8,
+                    "statistical_support_n": 2
+                  },
+                  "fallback_strategy_id": null,
+                  "note": "content read from the entry that backs this recommendation; empty lists mean the memory does not record it",
+                  "predicates": {
+                    "family": "routing"
+                  },
+                  "status": "candidate",
+                  "strategy_type": null,
+                  "support_n": 2,
+                  "verification": {
+                    "assertions": [],
+                    "checked": null,
+                    "checks": [],
+                    "claim": "fixture",
+                    "conclusion": null,
+                    "evidence": [],
+                    "not_covered": null,
+                    "purpose": null,
+                    "scope": {},
+                    "stale_after_revision": false,
+                    "stale_reason": null,
+                    "state": "verified",
+                    "verified_at": null
+                  },
+                  "verification_state": "verified"
+                },
+                "relations": [],
+                "reusable": true,
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              },
+              "content_channels": [
+                "structural"
+              ],
+              "duplicate_count": 0,
+              "evidence_class": "legacy_knowledge",
+              "evidence_id": "1",
+              "identity": "strategic_knowledge:1",
+              "layer": "strategic_knowledge",
+              "version": "unknown",
+              "version_unknown": true,
+              "version_unknown_note": "at least one channel did not carry the identifying content, so its version is UNKNOWN \u2014 this is NOT a conflict with the known version",
+              "versions": [
+                "unknown"
+              ]
+            }
+          ],
+          "missing": [
+            "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+          ],
+          "n_hits": 1,
+          "notes": [
+            "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "each item's content is carried ONCE (in `hits`); the structural and semantic lists are indexes that point at it, and a cross-channel field is merged rather than one copy winning"
+          ],
+          "recall_digest": "962a6062dd9b10a0",
+          "semantic": {
+            "execution_evidence": [],
+            "note": "similarity is a DISCOVERY signal only; the full content it found is carried ONCE in `hits` and referenced with `full_text_ref` (it is not repeated here). ",
+            "reason": "no embedding backend configured",
+            "status": "degraded",
+            "strategic_knowledge": []
+          },
+          "structural": {
+            "available_solver_families": [],
+            "coupling_warnings": [],
+            "note": "the entry's full content travels ONCE in `hits`; these rows are the APPLICABILITY and conditional-statistics view and point at it with `claim_ref` / `knowledge_ref`. the structural channel decides APPLICABILITY from the profile; its scores are evidence-based estimates, not measurements",
+            "recommendations": [
+              {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "cost_basis_dims": [
+                  "llm_tokens"
+                ],
+                "cost_known_dims": [
+                  "llm_tokens"
+                ],
+                "cross_family": false,
+                "evidence": "strategic_entry",
+                "evidence_refs": [
+                  "1"
+                ],
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge_ref": "content.knowledge",
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              }
+            ],
+            "retrieval_bounding": {
+              "dropped": 0,
+              "dropped_items": [],
+              "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+              "unbounded_kept": 0
+            },
+            "solver_advisories": [],
+            "status": "ok"
+          },
+          "task_digest": "71359bbc03e28884"
+        },
+        "solving_context": {
+          "budget_state": {
+            "attempt_limited": false,
+            "budget": null,
+            "consumption": {
+              "action_costs": [],
+              "aggregation_note": "cumulative dimensions summed over measured recorded AND staged executions (deduplicated by execution_id) plus own-cost actions; macro reference costs are not re-counted; latency never summed (a declared latency budget is judged per-attempt, see view); unknown dimensions reported as null, never zero",
+              "attempts": [],
+              "episode_id": "e",
+              "n_attempts": 0,
+              "n_measured": {
+                "latency_s": 0,
+                "llm_tokens": 0,
+                "remaining_latency_s": 0,
+                "retries": 0,
+                "solver_runtime_s": 0,
+                "tool_calls": 0
+              },
+              "n_recorded": 0,
+              "n_staged": 0,
+              "prediction_call_costs": [],
+              "task_id": "fixture",
+              "token_basis": null,
+              "token_basis_mixed": false,
+              "token_basis_note": null,
+              "total_cost": {
+                "llm_tokens": null,
+                "retries": null,
+                "solver_runtime_s": null,
+                "tool_calls": null
+              },
+              "unattributed": null,
+              "unattributed_prediction_costs": null,
+              "unknown_dim_reasons": {},
+              "unknown_dims": []
+            },
+            "episode_exhausted": false,
+            "episode_id": "e",
+            "exceeded_dims": [],
+            "status": "no_budget_declared",
+            "status_note": "no budget declared: consumption is aggregated but not judged",
+            "task_id": "fixture"
+          },
+          "note": "X is the episode's accumulated solving context frozen BEFORE this prediction; a hypothetical snapshot's progress never appears here",
+          "task_progress": {}
+        },
+        "sources": {
+          "problem_state_version": "71359bbc03e28884",
+          "profile": "profiler",
+          "retrieval": "structural",
+          "snapshot": "<id>",
+          "task_version": "71359bbc03e28884"
+        },
+        "strategy_outcome_calibration": {
+          "applicability": "global_diagnostic",
+          "calibration_version": "wm-calib/3",
+          "event_vocabulary_version": "wm-events/3",
+          "exclusions": {},
+          "groups": {},
+          "missing": "no calibration summary has been published yet: no closed episode has been evaluated in this store, or the summary predates this version. Run `orx calibration --rebuild` to build one from the current window",
+          "n_evaluated": 0,
+          "n_evaluations_total": 0,
+          "n_window_episodes": 0,
+          "note": "no published calibration is available; the context records the gap rather than scanning history to fill it",
+          "observation_rule_version": "wm-obs/4",
+          "occurrence": {},
+          "protocol": "wm-so/1",
+          "window": {
+            "archive_max_file_bytes": 67108864,
+            "archive_max_total_bytes": 1073741824,
+            "archive_retention_days": 365.0,
+            "auto_archive_threshold": 200,
+            "late_check_grace_days": 30.0,
+            "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk",
+            "window": 50
+          }
+        },
+        "task_digest": "71359bbc03e28884",
+        "task_id": "fixture"
+      },
+      "strategies": 10
+    },
+    {
+      "candidate_statistics": {
+        "execution_ids": [
+          "ex_fixed_000"
+        ],
+        "fail_rate": 0.0,
+        "fallback_triggered": 0,
+        "group_key": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+        "mean_cost": {
+          "latency_s": 0.0,
+          "llm_tokens": 10.0,
+          "remaining_latency_s": 0.0,
+          "retries": 0.0,
+          "solver_runtime_s": 0.0,
+          "tool_calls": 0.0
+        },
+        "mean_quality": 1.0,
+        "mean_retries": 0.0,
+        "n": 1,
+        "n_feasible": 1,
+        "n_measured": {
+          "latency_s": 0,
+          "llm_tokens": 1,
+          "remaining_latency_s": 0,
+          "retries": 0,
+          "solver_runtime_s": 0,
+          "tool_calls": 0
+        },
+        "scale_ranges": {
+          "n_constraints": [
+            5.0,
+            5.0
+          ],
+          "n_int_vars": [
+            10.0,
+            10.0
+          ],
+          "n_vars": [
+            10.0,
+            10.0
+          ]
+        },
+        "solver_runtime_by_provenance": {},
+        "std_quality": 0.0,
+        "strategy_id": "candidate",
+        "task_checks": {}
+      },
+      "cell_evidence": {
+        "candidate": {
+          "distinct_tasks": 1,
+          "executions": 1
+        }
+      },
+      "knowledge_targets": [
+        {
+          "candidate_changes": [
+            "narrows",
+            "revises",
+            "refutes"
+          ],
+          "cell_token": "class=mixed|rc[0.25,0.50]|tc[0.00,0.25]|rx[0.00,0.25]",
+          "distinct_tasks": 1,
+          "entry_id": "1",
+          "expected_quality_hat": 0.8,
+          "interval_width": 0.4,
+          "kind": "existing_entry",
+          "quality_interval": [
+            0.6,
+            1.0
+          ],
+          "reason": "interval width 0.400 exceeds the floor allowed at the next support level (0.350): more evidence can legitimately tighten or move the claim",
+          "strategy_id": "candidate",
+          "support_n": 2
+        }
+      ],
+      "provider_semantics": {
+        "capability_version": {
+          "harness_config_digest": "9028f7d75efc1ebb",
+          "knowledge_content": {
+            "digest": "cbbf3717f5bd3736",
+            "excluded_keys": [
+              "snapshot_at",
+              "created_at",
+              "last_consulted_at",
+              "last_consulted",
+              "consulted_at",
+              "as_of"
+            ],
+            "executions": 0,
+            "knowledge_by_layer": {
+              "entry": 1,
+              "verified": 1
+            },
+            "knowledge_entries": 2,
+            "note": "the digest covers the decision-relevant CONTENT of the memory actually consulted (entry fields \u2014 including applicability and actions \u2014 and retrieved hits), with read timestamps excluded: a knowledge revision moves it, a re-read does not. Only the digest and its composition are carried, never the digested content",
+            "retrieval_hits": 1
+          },
+          "knowledge_content_digest": "cbbf3717f5bd3736",
+          "note": "this is a version IDENTITY (what configuration, model, tools and memory content the evidence was read under), not a capability level; a content digest is not an ability measurement and a read timestamp is not a change",
+          "prompt_template_version": "wm2/2",
+          "provider": {
+            "provider": "not-configured"
+          },
+          "tools": []
+        },
+        "degraded": [
+          {
+            "part": "retrieval.semantic",
+            "reason": "no embedding backend configured"
+          }
+        ],
+        "effective_input_digest": "71359bbc03e28884",
+        "episode_id": "e",
+        "execution_constraints": {
+          "available_solver_families": {},
+          "budget_condition": {
+            "declared_limits": null,
+            "episode_dimensions": [],
+            "known_consumption_lower_bound": {},
+            "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+            "remaining_budget_confirmed": false,
+            "unknown_dimension_reasons": {},
+            "unknown_dimensions": []
+          },
+          "budget_status": "no_budget_declared",
+          "declared_budget": null,
+          "executor": {
+            "timeout_seconds": 120,
+            "workspace_policy": "solve scripts must live inside their execution workspace"
+          },
+          "note": "declared budget and real tool availability: these constrain what can be executed, they do not predict what it would achieve",
+          "retrieval_bounding": {
+            "dropped": 0,
+            "dropped_items": [],
+            "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "unbounded_kept": 0
+          }
+        },
+        "harness_capability": {
+          "notes": [
+            "derived from a legacy harness_state: every item is evidence ABOUT H, not a measured capability level",
+            "capability evidence assembled for a prediction context: every item is evidence ABOUT H with an explicit status, never a level"
+          ],
+          "score_scheme": "no_composite_score",
+          "sources": {
+            "m": {
+              "detail": {
+                "cells_with_evidence": 100,
+                "experience": {
+                  "task_execution_count": 0,
+                  "total_executions": 100
+                },
+                "knowledge_ref_counts": {
+                  "legacy_unknown": 0,
+                  "unverified": 0,
+                  "verified": 1
+                }
+              },
+              "evidence": [
+                {
+                  "note": "1 reference(s)",
+                  "ref_id": "verified",
+                  "ref_type": "knowledge_layer"
+                }
+              ],
+              "notes": [
+                "knowledge REFERENCES and experience VOLUME: usable knowledge is not the same as referenced knowledge"
+              ],
+              "source": "m",
+              "status": "indirect_evidence"
+            },
+            "pi": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "pi",
+              "status": "no_evidence"
+            },
+            "r": {
+              "detail": {
+                "applicability_labels": {
+                  "unlabelled": 1
+                },
+                "channels_run": [
+                  "structural"
+                ],
+                "evidence_classes": {
+                  "legacy_knowledge": 1
+                },
+                "hits": 1
+              },
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts",
+                "retrieval channels RAN and their hits carry applicability labels; a hit count or a similarity is not evidence that a transfer succeeded"
+              ],
+              "source": "r",
+              "status": "indirect_evidence"
+            },
+            "t": {
+              "detail": {},
+              "evidence": [],
+              "notes": [],
+              "source": "t",
+              "status": "no_evidence"
+            },
+            "w_or": {
+              "detail": {},
+              "evidence": [],
+              "notes": [
+                "no observation of this source exists in the legacy state: left at no_evidence rather than inferred from unrelated counts"
+              ],
+              "source": "w_or",
+              "status": "no_evidence"
+            }
+          },
+          "version": null
+        },
+        "hplus_feedback": {
+          "basis": "derived from the online capability-gain traces; the claim is the ORIGINAL one, never re-predicted",
+          "feedback_version": "wm-hplusfb/1",
+          "gains": [],
+          "missing": "no online capability-gain claim has been archived in this store: the block is EMPTY BY ABSENCE, not because every claim was 'none'",
+          "n_bound": 0,
+          "n_effect_verified": 0,
+          "n_gains_total": 0,
+          "n_included": 0,
+          "n_pending": 0,
+          "note": "an online H+ is EXPLANATORY: it never ranked the candidate and it is not capability evidence. `pending` means the real follow-up has not happened yet \u2014 it is NOT a failure, and a new trace is NOT an improvement. `effect_verified` is the only state that confirms the claim was borne out"
+        },
+        "joint_problem": {
+          "derivation": {
+            "resource_coupling": {
+              "origin": "supplied",
+              "value": 0.3
+            },
+            "route_complexity": {
+              "origin": "supplied",
+              "value": 0.2
+            },
+            "semantic_coupling": {
+              "note": "semantic coupling is never derived (business semantics are invisible to structure); supply annotations.coupling.semantic_coupling to keep it in the profile \u2014 it informs your own judgment and never conditions the statistics",
+              "origin": "null",
+              "value": null
+            },
+            "temporal_coupling": {
+              "origin": "supplied",
+              "value": 0.1
+            }
+          },
+          "has_model": false,
+          "math": {
+            "constraint_kinds": [],
+            "integrality": "integer",
+            "linearity": null,
+            "notes": [],
+            "objective_kind": null,
+            "origins": {
+              "integrality": "spec"
+            },
+            "unknowns": [
+              "linearity",
+              "objective_kind",
+              "constraint_kinds"
+            ]
+          },
+          "missing": [
+            "CIR: no relational structure supplied",
+            "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+            "math.linearity: unknown (not established by any source)",
+            "math.objective_kind: unknown (not established by any source)",
+            "math.constraint_kinds: unknown (not established by any source)"
+          ],
+          "model_digest": null,
+          "notes": [
+            "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling"
+          ],
+          "profile": {
+            "annotations": {
+              "coupling": {
+                "resource_coupling": 0.3,
+                "route_complexity": 0.2,
+                "temporal_coupling": 0.1
+              },
+              "profiling": {
+                "origin": {
+                  "resource_coupling": "supplied",
+                  "route_complexity": "supplied",
+                  "semantic_coupling": "null",
+                  "temporal_coupling": "supplied"
+                }
+              }
+            },
+            "family": "routing",
+            "problem_class": "mixed",
+            "problem_id": "fixture",
+            "resource_coupling": 0.3,
+            "risk_features": {},
+            "route_complexity": 0.2,
+            "scale_features": {
+              "n_constraints": 5.0,
+              "n_int_vars": 10.0,
+              "n_vars": 10.0
+            },
+            "semantic_coupling": null,
+            "source": "harness_supplied",
+            "temporal_coupling": 0.1
+          },
+          "sources": {
+            "cir": "none",
+            "derivation": "profiler",
+            "math.constraint_kinds": "unknown",
+            "math.integrality": "spec",
+            "math.linearity": "unknown",
+            "math.objective_kind": "unknown",
+            "model": "none",
+            "profile": "profiler",
+            "text": "task_payload"
+          },
+          "task_digest": "71359bbc03e28884",
+          "task_id": "fixture",
+          "task_payload": {
+            "description": "Minimize cost with capacity 10.",
+            "family": "routing",
+            "spec": {
+              "n_constraints": 5,
+              "n_int_vars": 10,
+              "n_vars": 10
+            }
+          },
+          "text": "Minimize cost with capacity 10. {\"n_constraints\": 5, \"n_int_vars\": 10, \"n_vars\": 10}",
+          "text_digest": "71359bbc03e28884",
+          "unknowns": [
+            "linearity",
+            "objective_kind",
+            "constraint_kinds"
+          ],
+          "version": "joint/1"
+        },
+        "missing": [
+          "CIR: no relational structure supplied",
+          "mathematical model: not written yet \u2014 the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+          "math.linearity: unknown (not established by any source)",
+          "math.objective_kind: unknown (not established by any source)",
+          "math.constraint_kinds: unknown (not established by any source)",
+          "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+        ],
+        "notes": [
+          "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone \u2014 an absent CIR is not evidence of weak coupling",
+          "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+          "this context is the FROZEN input of a prediction; building it performed no model call, no solver execution and no induction"
+        ],
+        "omitted": [
+          "joint_problem.task_payload.task_id (identical to joint_problem.task_id)",
+          "joint_problem.cir (CIR is internal; the model reads the task text, math attributes and profile instead)"
+        ],
+        "prediction_execution_pairs": {
+          "feedback_version": "wm-pairs/1",
+          "filter_note": null,
+          "identity_note": null,
+          "missing": "the published block carries no pairs: a cold start has no paired feedback to select from (this is absent, not 'nothing matched')",
+          "model_identity": null,
+          "n_pairs_available": 0,
+          "n_pairs_included": 0,
+          "n_pairs_omitted": 0,
+          "n_pairs_total": 0,
+          "n_pairs_withheld": null,
+          "observation_rule_version": null,
+          "pairs": [],
+          "risk_reason_legend": {
+            "class_not_recorded": "the execution did not record this failure class",
+            "environment_failure": "an ENVIRONMENT failure (sandbox policy / missing module / unavailable backend)",
+            "error_class_unknown": "the failure's error_class is unknown/unrecorded: the cause is not inferred from the error text",
+            "implementation_failure": "the harness's OWN code failed (an implementation failure, NOT a modelling error)",
+            "no_infeasibility": "the solver did not report infeasibility here",
+            "no_task_check": "no task check is on record for this execution: task validity is UNKNOWN, never a failure",
+            "predicted_without_probability": "the prediction named the event but gave no probability: it is observed, not scored",
+            "reported_infeasibility": "the solver reported infeasibility (a verdict, not by itself a strategy failure)",
+            "task_check_failed": "a declared task check ran on real values and did not hold",
+            "time_limit": "the executor's time limit fired",
+            "unpredicted_no_brier": "the model did not predict this event: it is observed by the framework and counted in the occurrence rate, but no Brier score can be computed without a probability"
+          },
+          "selection": {
+            "basis": "selected from the PUBLISHED block by relevance to the current retrieval, the candidates' declared methods and the current problem; no bank scan, no re-scoring",
+            "limit": 6,
+            "limit_basis": "a DISPLAY ceiling, not a calibration sample size: the full window remains the calibration population",
+            "signature": "279670176e3f107a"
+          },
+          "selection_signature": "279670176e3f107a"
+        },
+        "prediction_reminders": [],
+        "retrieval_evidence": {
+          "channels_run": [
+            "structural"
+          ],
+          "deduplication": {
+            "content_channels": {
+              "strategic_knowledge:1": [
+                "structural"
+              ]
+            },
+            "distinct_tasks_in_execution_hits": 0,
+            "duplicates": [],
+            "duplicates_collapsed": 0,
+            "hits_kept": 1,
+            "hits_seen": 1,
+            "note": "one memory hit by several channels is ONE piece of evidence: support is never inflated by counting channels, and repeat runs of one task_id are not independent tasks. AUTHORITY: an ``unknown`` version is a channel that did not carry the identifying content, NOT a disagreement",
+            "unique_content": 1,
+            "version_conflicts": [],
+            "version_unknown": [
+              "strategic_knowledge:1"
+            ]
+          },
+          "degraded": [
+            {
+              "part": "retrieval.semantic",
+              "reason": "no embedding backend configured"
+            }
+          ],
+          "evidence_classes": {
+            "legacy_knowledge": 1
+          },
+          "hits": [
+            {
+              "channels": [
+                "structural"
+              ],
+              "content": {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "entry_id": "1",
+                "evidence": "strategic_entry",
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge": {
+                  "actions": [],
+                  "applicability": [],
+                  "claim": null,
+                  "entry_id": "1",
+                  "estimate": {
+                    "distinct_tasks": null,
+                    "estimated": true,
+                    "evidence_executions": null,
+                    "failure_prob": 0.5,
+                    "note": "a statistical estimate backs this entry",
+                    "quality_hat": 0.8,
+                    "statistical_support_n": 2
+                  },
+                  "fallback_strategy_id": null,
+                  "note": "content read from the entry that backs this recommendation; empty lists mean the memory does not record it",
+                  "predicates": {
+                    "family": "routing"
+                  },
+                  "status": "candidate",
+                  "strategy_type": null,
+                  "support_n": 2,
+                  "verification": {
+                    "assertions": [],
+                    "checked": null,
+                    "checks": [],
+                    "claim": "fixture",
+                    "conclusion": null,
+                    "evidence": [],
+                    "not_covered": null,
+                    "purpose": null,
+                    "scope": {},
+                    "stale_after_revision": false,
+                    "stale_reason": null,
+                    "state": "verified",
+                    "verified_at": null
+                  },
+                  "verification_state": "verified"
+                },
+                "relations": [],
+                "reusable": true,
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              },
+              "content_channels": [
+                "structural"
+              ],
+              "duplicate_count": 0,
+              "evidence_class": "legacy_knowledge",
+              "evidence_id": "1",
+              "identity": "strategic_knowledge:1",
+              "layer": "strategic_knowledge",
+              "version": "unknown",
+              "version_unknown": true,
+              "version_unknown_note": "at least one channel did not carry the identifying content, so its version is UNKNOWN \u2014 this is NOT a conflict with the known version",
+              "versions": [
+                "unknown"
+              ]
+            }
+          ],
+          "missing": [
+            "semantic retrieval: did NOT run \u2014 the structural channel alone is present, and its result must not be read as 'no similar memory exists'"
+          ],
+          "n_hits": 1,
+          "notes": [
+            "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+            "each item's content is carried ONCE (in `hits`); the structural and semantic lists are indexes that point at it, and a cross-channel field is merged rather than one copy winning"
+          ],
+          "recall_digest": "7b1d588c03aff8ef",
+          "semantic": {
+            "execution_evidence": [],
+            "note": "similarity is a DISCOVERY signal only; the full content it found is carried ONCE in `hits` and referenced with `full_text_ref` (it is not repeated here). ",
+            "reason": "no embedding backend configured",
+            "status": "degraded",
+            "strategic_knowledge": []
+          },
+          "structural": {
+            "available_solver_families": [],
+            "coupling_warnings": [],
+            "note": "the entry's full content travels ONCE in `hits`; these rows are the APPLICABILITY and conditional-statistics view and point at it with `claim_ref` / `knowledge_ref`. the structural channel decides APPLICABILITY from the profile; its scores are evidence-based estimates, not measurements",
+            "recommendations": [
+              {
+                "basis": "entry 1 (candidate, hit_rate=0.00, n=0)",
+                "confidence": 0.4,
+                "cost_basis_dims": [
+                  "llm_tokens"
+                ],
+                "cost_known_dims": [
+                  "llm_tokens"
+                ],
+                "cross_family": false,
+                "evidence": "strategic_entry",
+                "evidence_refs": [
+                  "1"
+                ],
+                "expected": {
+                  "cost": {
+                    "latency_s": 0.0,
+                    "llm_tokens": 10.0,
+                    "remaining_latency_s": 0.0,
+                    "retries": 0.0,
+                    "solver_runtime_s": 0.0,
+                    "tool_calls": 0.0
+                  },
+                  "failure_prob": 0.5,
+                  "quality": 0.8
+                },
+                "knowledge_ref": "content.knowledge",
+                "risk_warnings": [],
+                "strategy_id": "candidate"
+              }
+            ],
+            "retrieval_bounding": {
+              "dropped": 0,
+              "dropped_items": [],
+              "note": "this retrieval was bounded to the frozen moment; no memory postdating it was encountered",
+              "unbounded_kept": 0
+            },
+            "solver_advisories": [],
+            "status": "ok"
+          },
+          "task_digest": "71359bbc03e28884"
+        },
+        "solving_context": {
+          "budget_state": {
+            "attempt_limited": false,
+            "budget": null,
+            "consumption": {
+              "action_costs": [],
+              "aggregation_note": "cumulative dimensions summed over measured recorded AND staged executions (deduplicated by execution_id) plus own-cost actions; macro reference costs are not re-counted; latency never summed (a declared latency budget is judged per-attempt, see view); unknown dimensions reported as null, never zero",
+              "attempts": [],
+              "episode_id": "e",
+              "n_attempts": 0,
+              "n_measured": {
+                "latency_s": 0,
+                "llm_tokens": 0,
+                "remaining_latency_s": 0,
+                "retries": 0,
+                "solver_runtime_s": 0,
+                "tool_calls": 0
+              },
+              "n_recorded": 0,
+              "n_staged": 0,
+              "prediction_call_costs": [],
+              "task_id": "fixture",
+              "token_basis": null,
+              "token_basis_mixed": false,
+              "token_basis_note": null,
+              "total_cost": {
+                "llm_tokens": null,
+                "retries": null,
+                "solver_runtime_s": null,
+                "tool_calls": null
+              },
+              "unattributed": null,
+              "unattributed_prediction_costs": null,
+              "unknown_dim_reasons": {},
+              "unknown_dims": []
+            },
+            "episode_exhausted": false,
+            "episode_id": "e",
+            "exceeded_dims": [],
+            "status": "no_budget_declared",
+            "status_note": "no budget declared: consumption is aggregated but not judged",
+            "task_id": "fixture"
+          },
+          "note": "X is the episode's accumulated solving context frozen BEFORE this prediction; a hypothetical snapshot's progress never appears here",
+          "task_progress": {}
+        },
+        "sources": {
+          "problem_state_version": "71359bbc03e28884",
+          "profile": "profiler",
+          "retrieval": "structural",
+          "snapshot": "<id>",
+          "task_version": "71359bbc03e28884"
+        },
+        "strategy_outcome_calibration": {
+          "applicability": "global_diagnostic",
+          "calibration_version": "wm-calib/3",
+          "event_vocabulary_version": "wm-events/3",
+          "exclusions": {},
+          "groups": {},
+          "missing": "no calibration summary has been published yet: no closed episode has been evaluated in this store, or the summary predates this version. Run `orx calibration --rebuild` to build one from the current window",
+          "n_evaluated": 0,
+          "n_evaluations_total": 0,
+          "n_window_episodes": 0,
+          "note": "no published calibration is available; the context records the gap rather than scanning history to fill it",
+          "observation_rule_version": "wm-obs/4",
+          "occurrence": {},
+          "protocol": "wm-so/1",
+          "window": {
+            "archive_max_file_bytes": 67108864,
+            "archive_max_total_bytes": 1073741824,
+            "archive_retention_days": 365.0,
+            "auto_archive_threshold": 200,
+            "late_check_grace_days": 30.0,
+            "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk",
+            "window": 50
+          }
+        },
+        "task_digest": "71359bbc03e28884",
+        "task_id": "fixture"
+      },
+      "strategies": 100
+    }
+  ],
+  "source_fingerprint": "760b2654e43c0dd44326fe5ac4e34c93ba5117ec9487687b91c83975f04a0ed9"
+}

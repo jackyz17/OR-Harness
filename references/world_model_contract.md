@@ -219,3 +219,6 @@ The contract is one phase of a larger reconstruction. These are deliberately abs
 One legacy path survives read-only: the `predict_outcome` payload reader serves OLD records, while `wm-so/1` ([strategy_outcome.md](strategy_outcome.md)) is the path every agent-facing flow uses.
 
 Related pages: the frozen input context is [prediction_context.md](prediction_context.md), the strategy-outcome service is [strategy_outcome.md](strategy_outcome.md), the close-out and calibration rules are [episode_closeout.md](episode_closeout.md), and every command is in [commands.md](commands.md).
+
+
+Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.

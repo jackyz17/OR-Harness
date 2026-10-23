@@ -140,6 +140,46 @@ CREATE TABLE IF NOT EXISTS prediction_contexts (
 );
 CREATE INDEX IF NOT EXISTS idx_contexts_task ON prediction_contexts(task_id);
 
+-- Lightweight facts and bounded, consumable prediction inputs. Neither is
+-- a memory bank. Historical belief_snapshots remain readable, never rewritten
+-- by opening a store. Values are shared only when actually referenced.
+CREATE TABLE IF NOT EXISTS condition_values (
+    value_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS frozen_conditions (
+    snapshot_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    episode_id TEXT,
+    task_digest TEXT,
+    problem_identity_digest TEXT,
+    hypothetical INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_conditions_progress
+    ON frozen_conditions(task_id, episode_id, hypothetical, problem_identity_digest, created_at);
+CREATE TABLE IF NOT EXISTS runtime_inputs (
+    context_id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL,
+    episode_id TEXT,
+    expires_at REAL NOT NULL,
+    payload TEXT NOT NULL,
+    in_use INTEGER NOT NULL DEFAULT 0,
+    lease_until REAL NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_expiry ON runtime_inputs(expires_at);
+-- Only applicability metadata, once per change: no knowledge body or stats.
+CREATE TABLE IF NOT EXISTS knowledge_availability (
+    revision INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id TEXT NOT NULL,
+    version TEXT NOT NULL,
+    payload TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_availability_entry
+    ON knowledge_availability(entry_id, revision);
+
 -- World-model M3: strategy-outcome predictions under the wm-so/1 protocol.
 -- A LOG table like world_model_predictions: a prediction is a frozen
 -- hypothesis, never knowledge, and nothing here enters either bank. Stored
@@ -310,15 +350,32 @@ class Store:
 
     @contextlib.contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
-        """Locked write transaction; rolls back on error."""
+        """Locked transaction; nested helpers use savepoints, never commit outer work."""
         with self.locked():
             conn = self.conn
+            nested = conn.in_transaction
+            depth = getattr(self._local, "transaction_depth", 0)
+            savepoint = f"or_harness_{depth}"
+            self._local.transaction_depth = depth + 1
             try:
+                if nested:
+                    conn.execute(f"SAVEPOINT {savepoint}")
+                else:
+                    conn.execute("BEGIN IMMEDIATE")
                 yield conn
-                conn.commit()
+                if nested:
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    conn.commit()
             except Exception:
-                conn.rollback()
+                if nested:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                else:
+                    conn.rollback()
                 raise
+            finally:
+                self._local.transaction_depth = depth
 
     # -- helpers -----------------------------------------------------------------
 

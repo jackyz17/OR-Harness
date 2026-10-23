@@ -620,10 +620,13 @@ def main() -> int:
             "basis": "explicit agent choice"}
     h.accept_capability_operation(recommendation2)
     h.bind_capability_maintenance(contradicted.prediction_id)
+    # Work must happen AFTER this second maintenance operation too; an
+    # earlier task cannot validate it merely because it is cited again.
+    _close_later_episode(h, "m5_later_refuted", quality_value=0.95)
     h.record_capability_paired_evaluation(
         contradicted.prediction_id, metric="resource_cost",
         reference_value=5.0, treated_value=9.0, unit="s",
-        reference_task_ids=["m5_later"],
+        reference_task_ids=["m5_later_refuted"],
         note="the paired window moved the other way")
     refuted = h.evaluate_capability_effect(contradicted.prediction_id)
     print(f"refuted prediction     : {refuted['evaluation']['state']} — a "

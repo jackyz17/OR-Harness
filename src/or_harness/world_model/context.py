@@ -75,7 +75,8 @@ from or_harness.world_model.contracts import (
 #: v3 removes CIR from the provider view (``joint_problem.cir`` is internal
 #: now). The stored joint block still carries it for traceability, so a v3
 #: reader of an older payload simply does not send the block onward.
-PREDICTION_CONTEXT_VERSION = "wm-context/3"
+PREDICTION_CONTEXT_VERSION = "wm-context/4"
+SUPPORTED_CONTEXT_VERSIONS = ("wm-context/3", PREDICTION_CONTEXT_VERSION)
 
 #: Version of the joint problem representation's shape.
 JOINT_REPRESENTATION_VERSION = "joint/1"
@@ -1744,6 +1745,7 @@ class PredictionContext:
           ``legacy`` merely because the summarising channel lacked the
           verification state.
         """
+        from or_harness.world_model.conditions import calibration_projection
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
         # CIR is INTERNAL. The model reads the task text, the math
@@ -1778,7 +1780,7 @@ class PredictionContext:
             "harness_capability": copy.deepcopy(self.capability),
             "capability_version": copy.deepcopy(self.capability_version),
             "execution_constraints": copy.deepcopy(self.execution_constraints),
-            "strategy_outcome_calibration": copy.deepcopy(
+            "strategy_outcome_calibration": calibration_projection(
                 self.strategy_calibration),
             "prediction_execution_pairs": copy.deepcopy(
                 self.paired_feedback),
@@ -1819,7 +1821,8 @@ class PredictionContext:
             "prediction_reminders": copy.deepcopy(
                 self.prediction_reminders),
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),
-            "snapshot": copy.deepcopy(self.snapshot),
+            ("snapshot" if self.version == "wm-context/3" else "conditions"):
+                copy.deepcopy(self.snapshot),
             "cell_evidence": copy.deepcopy(self.cell_evidence),
             "sources": dict(self.sources),
             "degraded": [dict(d) for d in self.degraded],
@@ -1834,7 +1837,7 @@ class PredictionContext:
         if not isinstance(data, dict):
             raise ValueError("PredictionContext must be a JSON object")
         version = str(data.get("context_version", ""))
-        if version != PREDICTION_CONTEXT_VERSION:
+        if version not in SUPPORTED_CONTEXT_VERSIONS:
             raise UnsupportedContextVersion(version or "(absent)")
         if not data.get("context_id"):
             raise ValueError("PredictionContext.context_id is required")
@@ -1866,7 +1869,7 @@ class PredictionContext:
                 list(data.get("prediction_reminders") or [])),
             hplus_feedback=copy.deepcopy(
                 dict(data.get("hplus_feedback") or {})),
-            snapshot=copy.deepcopy(dict(data.get("snapshot") or {})),
+            snapshot=copy.deepcopy(dict(data.get("conditions") or data.get("snapshot") or {})),
             cell_evidence=copy.deepcopy(dict(data.get("cell_evidence") or {})),
             sources={str(k): str(v) for k, v in
                      (data.get("sources") or {}).items()},
@@ -2012,6 +2015,7 @@ def build_context(
     them from banks that may have moved since.
     """
     from or_harness.world_model.state import task_text_digest
+    from or_harness.world_model.conditions import calibration_projection
 
     digest = task_text_digest(task)
     joint = build_joint_representation(
@@ -2079,7 +2083,7 @@ def build_context(
         execution_constraints=copy.deepcopy(execution_constraints or {}),
         knowledge_targets=frozen_targets,
         reliability=copy.deepcopy(reliability or {}),
-        strategy_calibration=copy.deepcopy(strategy_calibration or {}),
+        strategy_calibration=calibration_projection(strategy_calibration or {}),
         paired_feedback=copy.deepcopy(paired_feedback or {}),
         prediction_reminders=copy.deepcopy(list(prediction_reminders or [])),
         hplus_feedback=copy.deepcopy(hplus_feedback or {}),
@@ -2121,17 +2125,16 @@ def snapshot_conditions(snapshot: Any) -> Dict[str, Any]:
     they are not prediction conditions, and the joint representation already
     carries the problem's own content.
     """
+    problem = getattr(snapshot, "problem_state", None) or {}
     return {
+        "condition_version": "wm-conditions/1",
         "task_id": str(getattr(snapshot, "task_id", "") or ""),
         "episode_id": getattr(snapshot, "episode_id", None),
         "snapshot_id": str(getattr(snapshot, "snapshot_id", "") or ""),
-        "task_progress": copy.deepcopy(
-            getattr(snapshot, "task_progress", None) or {}),
-        "budget_state": copy.deepcopy(
-            getattr(snapshot, "budget_state", None) or {}),
-        "coverage": copy.deepcopy(getattr(snapshot, "coverage", None) or {}),
-        "harness_state": copy.deepcopy(
-            getattr(snapshot, "harness_state", None) or {}),
+        "task_digest": problem.get("task_digest"),
+        "problem_identity_digest": problem.get("problem_identity_digest"),
+        "hypothetical": getattr(snapshot, "hypothetical", None),
+        "harness_state": copy.deepcopy(getattr(snapshot, "harness_state", None) or {}),
     }
 
 
@@ -2156,13 +2159,19 @@ def snapshot_from_context(context: "PredictionContext") -> Any:
         {"task_id": context.task_id},
         context.episode_id,
         harness_state=copy.deepcopy(frozen.get("harness_state") or {}),
-        problem_state={"task_digest": context.task_digest},
-        task_progress=copy.deepcopy(frozen.get("task_progress") or {}),
-        budget_state=copy.deepcopy(frozen.get("budget_state") or {}),
+        problem_state={"task_digest": context.task_digest,
+                       "problem_identity_digest": frozen.get("problem_identity_digest"),
+                       "profile": copy.deepcopy(context.joint.profile),
+                       "task_payload": copy.deepcopy(context.joint.task_payload)},
+        task_progress=copy.deepcopy(frozen.get("task_progress")
+                                    or context.solving_context.get("task_progress") or {}),
+        budget_state=copy.deepcopy(frozen.get("budget_state")
+                                   or context.solving_context.get("budget_state") or {}),
         coverage=copy.deepcopy(frozen.get("coverage") or {}),
         snapshot_id=(str(frozen.get("snapshot_id") or "")
                      or context.snapshot_id or None),
         created_at=context.created_at,
+        hypothetical=bool(frozen.get("hypothetical", False)),
     )
 
 
@@ -2292,7 +2301,6 @@ def cell_evidence_from_stats(stats: Any, profile: Optional[ProblemProfile],
         task_ids = sorted({str(getattr(r, "task_id", "")) for r in records})
         out[str(strategy_id)] = {
             "distinct_tasks": len(task_ids),
-            "task_ids": task_ids,
             "executions": len(records),
         }
     return out

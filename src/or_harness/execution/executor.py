@@ -676,6 +676,7 @@ class SafePythonExecutor:
         # observable non-completion — from "this attempt was refused before
         # it ran", which is NOT an observation of the task at all.
         execution_features["executed"] = bool(outcome.executed)
+
         # The configuration that ACTUALLY took effect, split by WHO could
         # observe it, and by HOW WELL the executor knows it. A key the
         # executor did not control and the script did not read back stays
@@ -808,7 +809,7 @@ class SafePythonExecutor:
                          "It is an observation, kept separate from the "
                          "planned method — a plan is not a performed method"),
             }
-        return ExecutionRecord(
+        record = ExecutionRecord(
             execution_id=ExecutionRecord.new_id(),
             task_id=task_id, strategy_id=strategy_id,
             profile_snapshot=profile, trajectory=trajectory,
@@ -822,6 +823,10 @@ class SafePythonExecutor:
             solver_runtime_provenance=runtime_provenance,
             method_planned=method_planned_norm,
             method_actual=normalize_method(method_actual))
+        # Transient only: never serialized into an execution payload.
+        record._captured_output = {"stdout_clip": outcome.stdout,
+                                   "stderr_clip": outcome.stderr}
+        return record
 
     # -- static sandbox policy -------------------------------------------------------
 

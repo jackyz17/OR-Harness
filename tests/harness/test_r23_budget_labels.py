@@ -158,9 +158,9 @@ class TestBudgetChannelScoring(R23Case):
 
     def test_attempt_scope_is_scored_on_a_real_budget_result(self):
         task = _task("t1")
+        self.h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
         prediction = self.predict(task)
         record, action_id = self.record_execution(task, llm_tokens=5000)
-        self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -174,10 +174,10 @@ class TestBudgetChannelScoring(R23Case):
 
     def test_window_scope_is_scored_on_a_real_budget_result(self):
         task = _task("t1")
+        self.h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
         prediction = self.predict(task, scope="strategy_window",
                                   window_id="win::t1::ep1::S04")
         record, action_id = self.record_execution(task, llm_tokens=5000)
-        self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -223,9 +223,9 @@ class TestBudgetChannelScoring(R23Case):
         """The episode ended and every declared episode dimension was
         measured within its limit: ``not_occurred``."""
         task = _task("t1")
+        self.h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
         prediction = self.predict(task)
         record, action_id = self.record_execution(task, llm_tokens=5)
-        self.h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
         self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]

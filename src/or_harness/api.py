@@ -145,7 +145,6 @@ from or_harness.world_model.state import (
     MAINTENANCE_TASK_ID,
     BeliefSnapshot,
     KnowledgeRef,
-    put_knowledge_version,
     task_text,
     task_text_digest,
     task_text_from_payload,
@@ -344,7 +343,8 @@ class ORHarness:
 
     def _episode_progress(self, task_id: str,
                           episode_id: Optional[str],
-                          *, task_digest: Optional[str] = None
+                          *, task_digest: Optional[str] = None,
+                          problem_identity: Optional[str] = None
                           ) -> Dict[str, Any]:
         """The episode's CURRENT information state (X): the latest real
         task_progress among this episode's snapshots.
@@ -367,24 +367,15 @@ class ORHarness:
         """
         if episode_id is None:
             return {}
-        best: Optional[BeliefSnapshot] = None
-        for snap in self.snapshots(task_id=task_id):
-            if snap.episode_id != episode_id or snap.hypothetical:
-                continue
-            recorded = (snap.problem_state or {}).get("task_digest")
-            if (task_digest is not None and recorded is not None
-                    and recorded != task_digest):
-                continue
-            if best is None or (snap.created_at, snap.snapshot_id) > \
-                    (best.created_at, best.snapshot_id):
-                best = snap
-        if best is None:
-            return {}
-        return copy.deepcopy(best.task_progress)
+        from or_harness.world_model.conditions import latest_snapshot
+        best = latest_snapshot(self.store, task_id, episode_id,
+                               task_digest=task_digest, problem_identity=problem_identity)
+        return copy.deepcopy(best.task_progress) if best else {}
 
     def snapshot(self, task: Dict[str, Any], episode_id: Optional[str] = None,
                  *, task_progress: Optional[Dict[str, Any]] = None,
-                 hypothetical: bool = False) -> BeliefSnapshot:
+                 hypothetical: bool = False, persist: bool = True,
+                 include_memory: bool = True) -> BeliefSnapshot:
         """Freeze and persist the current information state for this task.
 
         The snapshot is the ``b_t`` the world model will condition on: H
@@ -400,65 +391,70 @@ class ORHarness:
         the other keys earlier actions established. ``hypothetical=True``
         marks a rollout successor state — excluded from real-state queries
         and from episode progress inheritance."""
-        profile = self.profile(task)
-        knowledge = verified_knowledge_view(profile, self.sbank)
-        harness_state = self._harness_state_view(task, knowledge)
-        # Reuse the UNCHANGED frozen knowledge: store the view once under a
-        # content version and have snapshots reference it by hash instead of
-        # repeating the whole batch. The content hash excludes the per-freeze
-        # ``snapshot_at``, so knowledge that did not change is stored once.
-        knowledge_version = put_knowledge_version(self.store, knowledge)
-        budget = self._load_budget(str(task.get("task_id", "")), episode_id)
-        budget_state = self.budget.view(
-            str(task.get("task_id", "")), episode_id, budget=budget)
-        progress = self._episode_progress(
-            str(task.get("task_id", "")), episode_id,
-            task_digest=task_text_digest(task))
-        if task_progress:
-            progress.update(copy.deepcopy(task_progress))
-        snap = BeliefSnapshot.build(
-            task, episode_id,
-            harness_state=harness_state,
-            problem_state={
-                "profile": profile.to_dict(),
-                # The PROBLEM's identity at freeze time, excluding the
-                # post-strategy model artifact. The binding check compares
-                # the prediction's value against this one, so writing the
-                # model after choosing the strategy is not reported as a
-                # change of problem while a real change still is.
-                "problem_identity_digest": problem_identity_version(task),
-            },
-            task_progress=progress,
-            budget_state=budget_state,
-            coverage=self._coverage_view(profile, knowledge,
-                                         knowledge_version=knowledge_version),
-            hypothetical=hypothetical,
-        )
-        with self.store.transaction() as conn:
-            conn.execute(
-                "INSERT INTO belief_snapshots "
-                "(snapshot_id, task_id, episode_id, created_at, payload) "
-                "VALUES (?,?,?,?,?)",
-                (snap.snapshot_id, snap.task_id, snap.episode_id,
-                 snap.created_at, self.store.dumps(snap.to_dict())))
-        return snap
+        # The receipt and the availability high-water mark describe the
+        # same bank state, even if another process is publishing knowledge.
+        with self.store.locked():
+            profile = self.profile(task)
+            knowledge = (verified_knowledge_view(profile, self.sbank) if include_memory else {
+                "available": [{"entry_id": entry.entry_id, "predicates": entry.predicates}
+                              for entry in self.sbank.matching(profile, include_dormant=True)]})
+            harness_state = self._harness_state_view(task, knowledge)
+            budget = self._load_budget(str(task.get("task_id", "")), episode_id)
+            budget_state = self.budget.view(
+                str(task.get("task_id", "")), episode_id, budget=budget)
+            progress = self._episode_progress(
+                str(task.get("task_id", "")), episode_id,
+                task_digest=task_text_digest(task),
+                problem_identity=problem_identity_version(task))
+            if task_progress:
+                progress.update(copy.deepcopy(task_progress))
+            snap = BeliefSnapshot.build(
+                task, episode_id,
+                harness_state=harness_state,
+                problem_state={
+                    "profile": profile.to_dict(),
+                    "task_input": copy.deepcopy(task),
+                    # The PROBLEM's identity at freeze time, excluding the
+                    # post-strategy model artifact. The binding check compares
+                    # the prediction's value against this one, so writing the
+                    # model after choosing the strategy is not reported as a
+                    # change of problem while a real change still is.
+                    "problem_identity_digest": problem_identity_version(task),
+                },
+                task_progress=progress,
+                budget_state=budget_state,
+                coverage=(self._coverage_view(profile, knowledge)
+                          if include_memory else {}),
+                hypothetical=hypothetical,
+            )
+            if persist:
+                from or_harness.world_model.conditions import (
+                    freeze_availability, save_snapshot,
+                )
+                revision = freeze_availability(self.store, knowledge)
+                save_snapshot(self.store, snap, availability_revision=revision)
+            return snap
 
     def get_snapshot(self, snapshot_id: str) -> Optional[BeliefSnapshot]:
-        row = self.store.conn.execute(
-            "SELECT payload FROM belief_snapshots WHERE snapshot_id=?",
-            (snapshot_id,)).fetchone()
-        return (BeliefSnapshot.from_dict(self.store.loads(row["payload"]))
-                if row else None)
+        """Read a lightweight condition receipt or a complete legacy snapshot.
+
+        New receipts explicitly mark coverage as unavailable; this never
+        fabricates a historical prediction input from the current bank.
+        """
+        from or_harness.world_model.conditions import read_snapshot
+        return read_snapshot(self.store, snapshot_id)
 
     def snapshots(self, *, task_id: Optional[str] = None) -> List[BeliefSnapshot]:
-        sql = "SELECT payload FROM belief_snapshots"
-        params: List[Any] = []
-        if task_id is not None:
-            sql += " WHERE task_id=?"
-            params.append(task_id)
-        sql += " ORDER BY created_at ASC, snapshot_id ASC"
-        return [BeliefSnapshot.from_dict(self.store.loads(r["payload"]))
-                for r in self.store.conn.execute(sql, params).fetchall()]
+        ids = []
+        for table in ("frozen_conditions", "belief_snapshots"):
+            sql = f"SELECT snapshot_id FROM {table}"
+            params = []
+            if task_id is not None:
+                sql += " WHERE task_id=?"
+                params.append(task_id)
+            ids.extend(r["snapshot_id"] for r in self.store.conn.execute(sql, params))
+        return sorted((self.get_snapshot(key) for key in set(ids)),
+                      key=lambda snap: (snap.created_at, snap.snapshot_id))
 
     def _coverage_view(self, profile, knowledge: Dict[str, Any], *,
                        knowledge_version: Optional[str] = None
@@ -848,7 +844,7 @@ class ORHarness:
                     ". Build a new context from the current input instead of "
                     "reusing a snapshot taken under a different structure.")
         if snapshot is None:
-            snapshot = self.snapshot(effective_task, episode_id)
+            snapshot = self.snapshot(effective_task, episode_id, persist=persist)
 
         bounding: Dict[str, Any] = {}
         if recall_result is not None:
@@ -1096,6 +1092,26 @@ class ORHarness:
             retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
+        selected_entries = {str(target.entry_id) for target in frozen_targets
+                            if getattr(target, "entry_id", None)}
+        selected_entries.update(str(hit.get("content", {}).get("entry_id"))
+                                for hit in context.retrieval.hits)
+        if historical:
+            selected_entries.update(str(ref.get("entry_id")) for refs in knowledge.values()
+                                    for ref in refs if ref.get("strategy_id") in strategies)
+        selected_strategies = set(strategies)
+        selected_strategies.update(str(hit.get("content", {}).get("strategy_id"))
+                                   for hit in context.retrieval.hits)
+        cells = (snapshot.coverage or {}).get("cell_statistics") or {}
+        context.snapshot["coverage"] = {
+            "cell_statistics": {sid: {k: copy.deepcopy(v) for k, v in cell.items()
+                                      if k != "execution_ids"}
+                                for sid, cell in cells.items() if sid in selected_strategies},
+            "knowledge_layers": {layer: [copy.deepcopy(ref) for ref in refs
+                if str(ref.get("entry_id")) in selected_entries]
+                for layer, refs in knowledge.items()},
+            "projection": "candidate-related statistics; support lists omitted",
+        }
         if bounding:
             context.execution_constraints = {
                 **(context.execution_constraints or {}),
@@ -1111,10 +1127,8 @@ class ORHarness:
             "this context is the FROZEN input of a prediction; building it "
             "performed no model call, no solver execution and no induction")
         if persist:
-            self.store.put_prediction_context(
-                context.context_id, context.task_id, context.episode_id,
-                self.store.dumps(context.to_dict()),
-                created_at=context.created_at)
+            from or_harness.world_model.conditions import persist_context
+            persist_context(self.store, context)
         return context
 
     def get_prediction_context(self,
@@ -1124,21 +1138,22 @@ class ORHarness:
         The version is CHECKED, not guessed at: a payload written by a build
         that used a different context schema is refused rather than
         half-read."""
-        raw = self.store.get_prediction_context(context_id)
-        if raw is None:
-            return None
-        return PredictionContext.from_dict(self.store.loads(raw))
+        from or_harness.world_model.conditions import read_context
+        return read_context(self.store, context_id)
 
     def prediction_contexts(self, *, task_id: Optional[str] = None,
                             episode_id: Optional[str] = None
                             ) -> List[PredictionContext]:
-        """Every stored context (newest first), optionally filtered."""
-        out: List[PredictionContext] = []
+        """Active inputs and readable legacy contexts; released manifests
+        remain available through Store.get_prediction_context/inspect."""
+        from or_harness.world_model.conditions import ContextExpired
+        out = []
         for raw in self.store.prediction_contexts_for(task_id=task_id,
-                                                      episode_id=episode_id):
+                                                     episode_id=episode_id):
+            data = self.store.loads(raw)
             try:
-                out.append(PredictionContext.from_dict(self.store.loads(raw)))
-            except (UnsupportedContextVersion, ValueError):
+                out.append(self.get_prediction_context(data["context_id"]))
+            except ContextExpired:
                 continue
         return out
 
@@ -1745,12 +1760,22 @@ class ORHarness:
             DEFAULT_MIN_CALIBRATION_SAMPLES,
             close_episode,
         )
-        return close_episode(
+        result = close_episode(
             self, task_id, episode_id, terminal_state=terminal_state,
             finish_action_id=finish_action_id,
             min_calibration_samples=(min_calibration_samples
                                      if min_calibration_samples is not None
                                      else DEFAULT_MIN_CALIBRATION_SAMPLES))
+
+        if result.get("unfinished_actions"):
+            return result
+
+        from or_harness.world_model.conditions import release_context
+        for row in self.store.conn.execute(
+                "SELECT context_id FROM runtime_inputs WHERE task_id=? AND episode_id IS ?",
+                (task_id, episode_id)).fetchall():
+            release_context(self.store, row["context_id"], reason="closed")
+        return result
 
     def episode_closeout_record(self, task_id: str,
                                 episode_id: Optional[str] = None
@@ -1977,6 +2002,15 @@ class ORHarness:
             model_info["episode_backfilled_from_action"] = True
         mismatch: Dict[str, Any] = {}
         unknown: Dict[str, Any] = {}
+        from or_harness.world_model.conditions import prediction_conditions
+        frozen_facts = prediction_conditions(self.store, prediction)
+        hypothetical = frozen_facts.get("hypothetical")
+        if hypothetical is None:
+            unknown["input_state"] = {"predicted": None, "actual": action.source,
+                "reason": "the historical input records no recoverable real/hypothetical source"}
+        if hypothetical is True or action.source == "hypothetical":
+            mismatch["input_state"] = {"hypothetical": True,
+                                       "reason": "hypothetical state is not real feedback"}
         # Action type: the prediction is about executing a strategy; a
         # bound action of another type is a different thing entirely.
         if action.action_type != candidate.action_type:
@@ -2153,7 +2187,7 @@ class ORHarness:
         # written AFTER the strategy is selected — the false mismatch the
         # field run hit. A real change (task text, data, CIR, candidate
         # config) still differs.
-        predicted_input = model_info.get("problem_identity_digest")
+        predicted_input = frozen_facts.get("problem_identity_digest")
         actual_digest = None
         if action.pre_snapshot_id:
             pre_snap = self.get_snapshot(action.pre_snapshot_id)
@@ -2217,7 +2251,7 @@ class ORHarness:
             model_info["window_not_comparable_reasons"] = list(
                 window.not_comparable_reasons)
             prediction.trace.comparable = bool(
-                window.comparable and not mismatch)
+                window.comparable and not mismatch and "input_state" not in unknown)
             prediction.trace.not_comparable_reasons = list(
                 window.not_comparable_reasons) if not window.comparable else (
                 [] if not mismatch else
@@ -2228,7 +2262,7 @@ class ORHarness:
             model_info["binding_unknown"] = unknown or None
             comparable = bool(action.linked_execution_id
                               and action.status != "running"
-                              and not mismatch)
+                              and not mismatch and "input_state" not in unknown)
             prediction.trace.comparable = comparable
             prediction.trace.not_comparable_reasons = (
                 [] if comparable else
@@ -2236,6 +2270,10 @@ class ORHarness:
                   "predicted candidate"] if mismatch else
                  ["the bound action has no completed linked execution to "
                   "score against"]))
+        if "input_state" in unknown:
+            prediction.trace.not_comparable_reasons = [unknown["input_state"]["reason"]] + [
+                reason for reason in prediction.trace.not_comparable_reasons
+                if reason != "the bound action has no completed linked execution to score against"]
         model_info["binding_recorded_at"] = time.time()
         self.strategy_predictions._save(prediction)
         return prediction
@@ -3379,7 +3417,7 @@ class ORHarness:
         """Begin an action: freeze the PRE snapshot, mint an id, persist
         status=running. The pre snapshot is taken BEFORE the action runs —
         that is the point."""
-        pre = self.snapshot(task, episode_id)
+        pre = self.snapshot(task, episode_id, include_memory=False)
         record = self.actions.begin_action(
             action_type, str(task.get("task_id", "")), episode_id,
             pre_snapshot=pre, params=params,
@@ -3432,7 +3470,7 @@ class ORHarness:
         post = None
         if task is not None:
             progress = self._progress_from_outcome(action_id, outcome or {})
-            post = self.snapshot(task, episode_id, task_progress=progress,
+            post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False,
                                  hypothetical=record.source == "hypothetical")
             self.actions._bind_post_snapshot(action_id, post.snapshot_id)
         return {"action_id": record.action_id, "status": record.status,
@@ -3499,7 +3537,7 @@ class ORHarness:
         # the budget view reflects the reported spend.
         progress = self._progress_from_outcome(record.action_id,
                                                outcome or {})
-        post = self.snapshot(task, episode_id, task_progress=progress)
+        post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(record.action_id, post.snapshot_id)
         return {"action_id": record.action_id, "status": record.status,
                 "source": record.source,
@@ -4444,10 +4482,15 @@ class ORHarness:
                 stop_reason = ("planning time budget exhausted "
                                f"({limits.time_budget_s}s)")
                 break
-            prediction = self.predict_strategy_outcome(
-                task, spec, episode_id, context=plan_context,
-                timeout_s=max(0.001, remaining),
-                benefit_convention=declared_convention)
+            from or_harness.world_model.conditions import ContextExpired
+            try:
+                prediction = self.predict_strategy_outcome(
+                    task, spec, episode_id, context=plan_context,
+                    timeout_s=max(0.001, remaining),
+                    benefit_convention=declared_convention)
+            except ContextExpired as exc:
+                stop_reason = str(exc)
+                break
             calls_made += 1
             # Charge THIS call's known spend immediately (failed calls
             # included: their tokens are real) so the loop's own budget
@@ -4730,7 +4773,8 @@ class ORHarness:
                                                    outcome)
         root_snap = self.get_snapshot(decision.pre_snapshot_id) \
             if decision.pre_snapshot_id else None
-        task = dict((root_snap.problem_state.get("task_payload") or {})
+        task = dict((root_snap.problem_state.get("task_input")
+                     or root_snap.problem_state.get("task_payload") or {})
                     if root_snap is not None else {})
         task.setdefault("task_id", decision.task_id)
         if "family" not in task and root_snap is not None:
@@ -4739,9 +4783,13 @@ class ORHarness:
             if family:
                 task["family"] = family
         post = self.snapshot(task, decision.episode_id,
-                             task_progress=progress)
+                             task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(record.action_id,
                                          post.snapshot_id)
+        from or_harness.world_model.conditions import release_context
+        context_id = (decision.outcome or {}).get("prediction_context_id")
+        if context_id:
+            release_context(self.store, context_id)
         return {"action_id": record.action_id,
                 "status": record.status,
                 "selected": outcome.get("selected"),
@@ -5227,18 +5275,12 @@ class ORHarness:
                                              record.task_text_digest)
             if stored is not None:
                 return record.task_text_digest
-            # The caller named a version this memory does not hold: fall
-            # through to snapshot recovery rather than failing the record.
-        latest: Optional[BeliefSnapshot] = None
-        for snap in self.snapshots(task_id=record.task_id):
-            if snap.hypothetical:
-                continue
-            problem = snap.problem_state or {}
-            if not problem.get("task_digest"):
-                continue
-            if latest is None or (snap.created_at, snap.snapshot_id) > \
-                    (latest.created_at, latest.snapshot_id):
-                latest = snap
+            # A known historical identity cannot be replaced with another
+            # version merely because its text is unavailable.
+            return None
+        from or_harness.world_model.conditions import latest_snapshot
+        latest = latest_snapshot(self.store, record.task_id, episode_scoped=False,
+                                 at=record.created_at)
         if latest is None:
             return None
         problem = latest.problem_state or {}
@@ -5312,7 +5354,8 @@ class ORHarness:
         # problem would score an unrelated result against it. Both sides
         # come from frozen records: the prediction recorded the digest it
         # was made under, and the task in hand is digests the same way.
-        predicted_digest = info.get("problem_identity_digest")
+        from or_harness.world_model.conditions import prediction_conditions
+        predicted_digest = prediction_conditions(self.store, prediction).get("problem_identity_digest")
         if predicted_digest:
             current_digest = problem_identity_version(task)
             if current_digest != predicted_digest:
@@ -5710,7 +5753,7 @@ class ORHarness:
         # execution; the action ends when the execution ends (independent
         # of the harness's later record decision — execute/record
         # separation is unchanged).
-        pre = self.snapshot(task, episode_id)
+        pre = self.snapshot(task, episode_id, include_memory=False)
         # The execution config the FRAMEWORK knows before the run: the
         # strategy and solver it is about to use. Everything else (a time
         # limit applied inside solve.py, a seed) is NOT observable here and
@@ -5725,6 +5768,25 @@ class ORHarness:
             # before the run" (the target case) from a later bind.
             exec_params["prediction_id"] = str(prediction_id)
             exec_params["prediction_bound_at"] = time.time()
+            forecast = self.strategy_predictions.get(prediction_id)
+            exec_params["prediction_context_id"] = forecast.trace.model_info.get("prediction_context_id")
+        declared_memory = None
+        reuse_versions = {}
+        if adapted_from:
+            from or_harness.world_model.conditions import put_value
+            with self.store.transaction() as conn:
+                for execution_id in adapted_from:
+                    previous = self.bank.get(str(execution_id))
+                    reuse_versions[str(execution_id)] = (put_value(
+                        conn, self.store, "execution_evidence", previous.to_dict())
+                        if previous is not None else None)
+            exec_params["reuse_versions"] = reuse_versions
+        if used_entry_ids is not None:
+            declaration = ExecutionRecord(execution_id="declaration", task_id=str(task["task_id"]),
+                                          strategy_id=str(strategy_id), profile_snapshot=profile)
+            self._record_used_entries(declaration, used_entry_ids)
+            declared_memory = declaration.execution_features["used_entries"]
+            exec_params["used_entries"] = copy.deepcopy(declared_memory)
         action = self.actions.begin_action(
             "execute_strategy", str(task["task_id"]), episode_id,
             pre_snapshot=pre, params=exec_params)
@@ -5769,11 +5831,39 @@ class ORHarness:
             self.actions.amend_action_params(
                 action.action_id, method_planned=method_planned)
         try:
+            from or_harness.core.artifacts import capture
+            artifacts = {}
+            submitted = Path(code_path).resolve()
+            work_root = Path(workspace).resolve()
+            if work_root in submitted.parents and submitted.is_file():
+                artifacts["submitted_script"] = capture(
+                    self.home, submitted.read_bytes(), kind="script",
+                    source="framework-submitted script before attempt; execution status is separate")
+                self.actions.amend_action_params(action.action_id, artifacts=artifacts)
             record = self._run_executor(
                 Path(code_path), Path(workspace), solver=str(solver),
                 task_id=str(task["task_id"]), strategy_id=str(strategy_id),
                 profile=profile, action_id=action.action_id,
                 method_planned=method_planned)
+            try:
+                for key, value in getattr(record, "_captured_output", {}).items():
+                    if value:
+                        artifacts[key] = capture(self.home, value, kind=key,
+                            source="executor captured output clip; may be truncated")
+                result_file = work_root / "result.json"
+                if record.execution_features.get("executed") and result_file.is_file():
+                    artifacts["workspace_result"] = capture(self.home, result_file.read_bytes(), kind="result",
+                        source="file observed after attempt; acceptance is governed by execution checks")
+                if record.cir_snapshot is not None:
+                    artifacts["cir"] = capture(self.home, self.store.dumps(record.cir_snapshot), kind="cir",
+                        source="internal representation supplied for this attempt")
+                if artifacts:
+                    record.execution_features["artifacts"] = artifacts
+            except (OSError, StorageError) as exc:
+                # Artifact storage cannot turn an observed execution into a
+                # fabricated failed attempt or discard its measured cost.
+                record.execution_features["artifact_capture_missing"] = str(exc)
+
         except BaseException as exc:
             # The PRE snapshot is already bound and the action is already
             # persisted as ``running``. An exception between here and
@@ -5858,6 +5948,8 @@ class ORHarness:
         if adapted:
             reuse: Dict[str, Any] = {
                 "adapted_from": adapted,
+                "versions": reuse_versions,
+                "version_source": "past execution value observed before this attempt; missing refs remain unknown",
                 "note": ("citations of past executions this attempt was "
                          "adapted from — a record that the agent READ them, "
                          "NOT a claim that reuse helped; its effect is judged "
@@ -5874,8 +5966,11 @@ class ORHarness:
         # a later reader can tell "adopted nothing" from "did not say". An
         # UNSTATED adoption (``None``) writes nothing: absence is not an
         # empty declaration.
-        if used_entry_ids is not None:
-            self._record_used_entries(record, used_entry_ids)
+        if declared_memory is not None:
+            record.execution_features["used_entries"] = copy.deepcopy(declared_memory)
+        record.execution_features["preconditions_id"] = pre.snapshot_id
+        if prediction_id:
+            record.execution_features["prediction_id"] = prediction_id
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -5914,7 +6009,7 @@ class ORHarness:
                 "value": [f.to_dict() for f in record.failures],
                 "provenance": "observed", "epistemic": "fact",
                 "evidence_ref": record.execution_id}
-        post = self.snapshot(task, episode_id, task_progress=progress)
+        post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(action.action_id, post.snapshot_id)
         record.action_id = action.action_id
         # An ONLINE capability-gain claim, if this candidate made one, now
@@ -7381,11 +7476,16 @@ class ORHarness:
         declared = list(dict.fromkeys(declared))
         known: List[str] = []
         unknown: List[str] = []
-        for entry_id in declared:
-            if self.sbank.get(entry_id) is not None:
-                known.append(entry_id)
-            else:
-                unknown.append(entry_id)
+        versions = {}
+        from or_harness.world_model.conditions import put_value
+        with self.store.transaction() as conn:
+            for entry_id in declared:
+                entry = self.sbank.get(entry_id)
+                if entry is not None:
+                    known.append(entry_id)
+                    versions[entry_id] = put_value(conn, self.store, "knowledge", entry.to_dict())
+                else:
+                    unknown.append(entry_id)
         note = ("entry numbers the agent declared this attempt ADOPTED — a "
                 "declaration, not a guess from a shared name; whether the "
                 "adoption helped is judged by this attempt's own task check "
@@ -7398,6 +7498,8 @@ class ORHarness:
             "entry_ids": declared,
             "known_entry_ids": known,
             "unknown_entry_ids": unknown,
+            "versions": versions,
+            "version_source": "entry value observed at adoption declaration",
             "note": note,
         }
 
@@ -7808,17 +7910,17 @@ class ORHarness:
         caller of a task check supplies only an execution id: fabricating a
         two-field task stub would freeze a snapshot of a DIFFERENT problem.
         """
-        best: Optional[BeliefSnapshot] = None
-        for snap in self.snapshots(task_id=record.task_id):
-            if snap.hypothetical:
-                continue
-            if episode_id is not None and snap.episode_id != episode_id:
-                continue
-            if best is None or (snap.created_at, snap.snapshot_id) > \
-                    (best.created_at, best.snapshot_id):
-                best = snap
+        from or_harness.world_model.conditions import latest_snapshot
+        linked = next((action for action in self.actions.query(task_id=record.task_id)
+                       if action.linked_execution_id == record.execution_id
+                       and action.action_type == "execute_strategy"), None)
+        best = self.get_snapshot(linked.pre_snapshot_id) if linked else None
+        if best is None:
+            best = latest_snapshot(self.store, record.task_id, episode_id,
+                                   task_digest=record.task_text_digest, at=record.created_at)
         if best is not None:
-            payload = (best.problem_state or {}).get("task_payload")
+            payload = ((best.problem_state or {}).get("task_input")
+                       or (best.problem_state or {}).get("task_payload"))
             if isinstance(payload, dict) and payload.get("task_id"):
                 return dict(payload)
         profile = record.profile_snapshot

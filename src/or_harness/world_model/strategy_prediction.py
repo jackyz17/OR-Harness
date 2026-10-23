@@ -1283,83 +1283,97 @@ class StrategyOutcomeService:
         a recorded failure with whatever usage it consumed, never an
         exception the caller must catch to learn the model is down.
         """
-        request = build_strategy_outcome_request(
-            context, candidate, benefit_baseline_hint=benefit_baseline_hint,
-            benefit_convention=benefit_convention)
-        try:
+        from or_harness.world_model.conditions import prepare_context, lease_context
+        prepare_context(self.store, context)
+        with lease_context(self.store, context):
+            request = build_strategy_outcome_request(
+                context, candidate, benefit_baseline_hint=benefit_baseline_hint,
+                benefit_convention=benefit_convention)
+            pending = self._failed(context, candidate, "invalid",
+                "provider call started; result and usage are unknown until a response is saved",
+                failure={"kind": "in_flight", "state": "pending"})
+            pending.trace.model_info["call_state"] = "in_flight"
+            self._save_with_conditions(pending, context, request)
+
+            def save_result(prediction):
+                prediction.prediction_id = pending.prediction_id
+                prediction.trace.model_info["call_state"] = "returned"
+                self._save_with_conditions(prediction, context, request)
+
             try:
-                result = self.provider.predict(request, timeout_s=timeout_s)
-            except TypeError:
-                result = self.provider.predict(request)
-        except Exception as exc:  # provider adapter failure
-            # The contract vocabulary has ONE honest word for "a prediction
-            # was attempted and did not produce one": ``invalid``. The
-            # REASON (a network failure, a timeout, a truncated answer) is
-            # structured diagnostics, not a status — otherwise every reader
-            # would have to learn a second status vocabulary that the
-            # validator does not recognize.
-            prediction = self._failed(
-                context, candidate, "invalid",
-                f"{type(exc).__name__}: {exc}",
-                failure=diagnose_provider_failure(None, exc))
-            self._save(prediction)
+                try:
+                    result = self.provider.predict(request, timeout_s=timeout_s)
+                except TypeError:
+                    result = self.provider.predict(request)
+            except Exception as exc:  # provider adapter failure
+                # The contract vocabulary has ONE honest word for "a prediction
+                # was attempted and did not produce one": ``invalid``. The
+                # REASON (a network failure, a timeout, a truncated answer) is
+                # structured diagnostics, not a status — otherwise every reader
+                # would have to learn a second status vocabulary that the
+                # validator does not recognize.
+                prediction = self._failed(
+                    context, candidate, "invalid",
+                    f"{type(exc).__name__}: {exc}",
+                    failure=diagnose_provider_failure(None, exc))
+                save_result(prediction)
+                return prediction
+            if result.get("not_configured"):
+                prediction = self._failed(
+                    context, candidate, "contract_only",
+                    str(result.get("error") or "provider not configured"),
+                    provider_configured=False, service_available=False,
+                    failure=diagnose_provider_failure(result, None))
+                save_result(prediction)
+                return prediction
+            payload = result.get("payload")
+            if payload is None:
+                prediction = self._failed(
+                    context, candidate, "invalid",
+                    str(result.get("error") or "no payload"),
+                    provider_result=result,
+                    failure=diagnose_provider_failure(result, None))
+                save_result(prediction)
+                return prediction
+            if not isinstance(payload, dict):
+                # A JSON ARRAY (the field case: the endpoint returned ``[]``) is
+                # valid JSON but not a prediction object. It is reported as its
+                # own failure kind — "not a JSON object" alone would hide
+                # whether the answer was truncated, fenced, or simply the wrong
+                # top-level type.
+                prediction = self._failed(
+                    context, candidate, "invalid",
+                    f"model returned a JSON {type(payload).__name__}, not a "
+                    "prediction object",
+                    provider_result=result,
+                    failure=diagnose_provider_failure(result, None,
+                                                      top_level=payload))
+                save_result(prediction)
+                return prediction
+            try:
+                prediction = parse_strategy_outcome_payload(
+                    payload, candidate, context=context,
+                    provider_result=result)
+            except Exception as exc:
+                # A parse/validation crash is THIS candidate's invalid result,
+                # never an exception that escapes into the caller's planning
+                # loop and kills the remaining candidates' predictions. The
+                # call really happened, so whatever usage it consumed is kept.
+                prediction = self._failed(
+                    context, candidate, "invalid",
+                    f"payload could not be parsed: {type(exc).__name__}: {exc}",
+                    provider_result=result,
+                    failure=diagnose_provider_failure(result, None,
+                                                      top_level=payload))
+                save_result(prediction)
+                return prediction
+            if prediction.status == "invalid" \
+                    and not prediction.trace.model_info.get("parse_error"):
+                prediction.trace.model_info["parse_error"] = (
+                    "the model's payload failed validation; see notes")
+            self._stamp_identity(prediction)
+            save_result(prediction)
             return prediction
-        if result.get("not_configured"):
-            prediction = self._failed(
-                context, candidate, "contract_only",
-                str(result.get("error") or "provider not configured"),
-                provider_configured=False, service_available=False,
-                failure=diagnose_provider_failure(result, None))
-            self._save(prediction)
-            return prediction
-        payload = result.get("payload")
-        if payload is None:
-            prediction = self._failed(
-                context, candidate, "invalid",
-                str(result.get("error") or "no payload"),
-                provider_result=result,
-                failure=diagnose_provider_failure(result, None))
-            self._save(prediction)
-            return prediction
-        if not isinstance(payload, dict):
-            # A JSON ARRAY (the field case: the endpoint returned ``[]``) is
-            # valid JSON but not a prediction object. It is reported as its
-            # own failure kind — "not a JSON object" alone would hide
-            # whether the answer was truncated, fenced, or simply the wrong
-            # top-level type.
-            prediction = self._failed(
-                context, candidate, "invalid",
-                f"model returned a JSON {type(payload).__name__}, not a "
-                "prediction object",
-                provider_result=result,
-                failure=diagnose_provider_failure(result, None,
-                                                  top_level=payload))
-            self._save(prediction)
-            return prediction
-        try:
-            prediction = parse_strategy_outcome_payload(
-                payload, candidate, context=context,
-                provider_result=result)
-        except Exception as exc:
-            # A parse/validation crash is THIS candidate's invalid result,
-            # never an exception that escapes into the caller's planning
-            # loop and kills the remaining candidates' predictions. The
-            # call really happened, so whatever usage it consumed is kept.
-            prediction = self._failed(
-                context, candidate, "invalid",
-                f"payload could not be parsed: {type(exc).__name__}: {exc}",
-                provider_result=result,
-                failure=diagnose_provider_failure(result, None,
-                                                  top_level=payload))
-            self._save(prediction)
-            return prediction
-        if prediction.status == "invalid" \
-                and not prediction.trace.model_info.get("parse_error"):
-            prediction.trace.model_info["parse_error"] = (
-                "the model's payload failed validation; see notes")
-        self._stamp_identity(prediction)
-        self._save(prediction)
-        return prediction
 
     def _failed(self, context: Any, candidate: CandidateRef,
                 status: str, error: str,
@@ -1419,6 +1433,42 @@ class StrategyOutcomeService:
         )
 
     # -- persistence ---------------------------------------------------------
+
+    def _save_with_conditions(self, prediction, context, request):
+        from or_harness.world_model.conditions import digest, compact_budget, put_value
+        info = prediction.trace.model_info
+        header_raw = self.store.get_prediction_context(context.context_id)
+        header = self.store.loads(header_raw) if header_raw else {}
+        refs = {row.get("identity"): row.get("value_ref") for row in header.get("evidence_versions", [])}
+        sent = request.get("prediction_context") or {}
+        info["input_selection"] = {
+            "evidence": [{"identity": hit.get("identity"), "version_ref": refs.get(hit.get("identity")),
+                          "version": hit.get("version")}
+                         for hit in (sent.get("retrieval_evidence") or {}).get("hits", [])],
+            "pair_ids": [pair.get("evaluation_id") for pair in (sent.get("prediction_execution_pairs") or {}).get("pairs", [])],
+            "feedback_versions": header.get("feedback_versions") or {},
+            "display_cap": copy.deepcopy((sent.get("prediction_execution_pairs") or {}).get("display_capped")),
+            "source": "actually displayed provider input; adoption/effect are separate facts",
+        }
+        info.update({
+            "prediction_context_id": context.context_id,
+            "prediction_context_version": context.version,
+            "prediction_context_task_digest": context.task_digest,
+            "effective_input_digest": context.effective_input_digest,
+            "problem_identity_digest": context.snapshot.get("problem_identity_digest"),
+            "hypothetical": context.snapshot.get("hypothetical"),
+            "frozen_budget_state": compact_budget(context.solving_context.get("budget_state")),
+            "conditions_id": context.snapshot_id,
+            "request_digest": digest(request),
+            "request_size": copy.deepcopy(request.get("request_size")),
+            "request_omissions": copy.deepcopy((request.get("prediction_context") or {}).get("omissions") or []),
+        })
+        # The context is already durable before the call. The first save,
+        # including every failure path, contains all binding conditions.
+        with self.store.transaction() as conn:
+            info["prompt_ref"] = put_value(conn, self.store, "prompt", {"system": STRATEGY_OUTCOME_SYSTEM_PROMPT})
+            info["prompt_version"] = "wm-so/1:" + digest(STRATEGY_OUTCOME_SYSTEM_PROMPT)
+            self._save(prediction)
 
     def _save(self, prediction: StrategyOutcomePrediction) -> None:
         self.store.put_contract_prediction(

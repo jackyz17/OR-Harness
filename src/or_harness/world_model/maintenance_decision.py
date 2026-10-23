@@ -1164,6 +1164,7 @@ def evaluate_capability_effect(
     excluded_not_later: List[Dict[str, Any]] = []
     excluded_off_target: List[Dict[str, Any]] = []
     unverifiable: List[Dict[str, Any]] = []
+    knowledge_conditions = {}
     for item in _iter_closed_evaluations(harness):
         if item.state != "evaluated":
             continue
@@ -1174,9 +1175,18 @@ def evaluate_capability_effect(
         closed_at = _episode_closed_at(harness, item.task_id,
                                        item.episode_id)
         span = _episode_execution_span(harness, item.task_id,
-                                       item.episode_id)
+                                       item.episode_id, entry_ids=produced_entry_ids)
+        knowledge_conditions[(item.task_id, item.episode_id)] = {
+            "task_id": item.task_id, "episode_id": item.episode_id,
+            "available_target_entry_ids": span.get("knowledge_entry_ids"),
+            "availability_unknown": bool(span.get("availability_unknown")),
+            "adoption_declared": span.get("adoption_declared"),
+            "adopted_entry_ids": (span.get("adopted_entry_ids")
+                                  if span.get("adoption_declared") else None),
+            "note": "availability is the original verification criterion; adoption/effect are separate facts",
+        }
         ran_at = span.get("finished_at") or span.get("started_at")
-        if maintenance_at is None or ran_at is None:
+        if maintenance_at is None or ran_at is None or span.get("timing_unknown"):
             unverifiable.append({
                 "task_id": item.task_id,
                 "episode_id": item.episode_id,
@@ -1206,6 +1216,10 @@ def evaluate_capability_effect(
         # that was really run against the earlier knowledge and merely
         # closed (or re-closed) later.
         used_entries = set(span.get("knowledge_entry_ids") or [])
+        if produced_entry_ids and span.get("availability_unknown"):
+            unverifiable.append({"task_id": item.task_id, "episode_id": item.episode_id,
+                "reason": "historical knowledge availability is missing; adoption is a separate fact"})
+            continue
         if produced_entry_ids and span.get("n_snapshots"):
             missing = produced_entry_ids - used_entries
             if missing:
@@ -1295,6 +1309,7 @@ def evaluate_capability_effect(
         "maintenance_started_at": maintenance_at,
         "operation_ended_at": operation_ended_at,
         "entries_produced_by_operation": sorted(produced_entry_ids),
+        "knowledge_conditions": [knowledge_conditions[(i.task_id, i.episode_id)] for i in later],
         "horizon_tasks": declared_horizon,
         "horizon_met": horizon_met,
         "note": ("only CLOSED episodes of tasks whose WORK really ran AFTER "
@@ -1665,7 +1680,7 @@ def _episode_closed_at(harness, task_id: str,
 
 
 def _episode_execution_span(harness, task_id: str,
-                            episode_id: Optional[str]
+                            episode_id: Optional[str], *, entry_ids=None
                             ) -> Dict[str, Any]:
     """When the real SOLVE of one episode ran, and on what knowledge.
 
@@ -1692,25 +1707,47 @@ def _episode_execution_span(harness, task_id: str,
     if not executions:
         return {"started_at": None, "finished_at": None,
                 "knowledge_entry_ids": [], "n_executions": 0}
-    times = [float(r.created_at) for r in executions
-             if getattr(r, "created_at", None) is not None]
-    entry_ids: List[str] = []
+    actions = harness.actions.query(task_id=task_id, episode_id=episode_id)
+    actions_by_execution = {a.linked_execution_id: a for a in actions if a.linked_execution_id}
+    times = []
+    timing_unknown = False
+    for record in executions:
+        at = getattr(record, "created_at", None)
+        if record.execution_features.get("created_at_unknown") or at is None:
+            action = actions_by_execution.get(record.execution_id)
+            at = getattr(action, "ended_at", None)
+        if at is None:
+            timing_unknown = True
+        else:
+            times.append(float(at))
+    entry_ids_found: List[str] = []
     snapshots_found = 0
-    for action in harness.actions.query(task_id=task_id,
-                                        episode_id=episode_id):
+    availability_unknown = 0
+    for action in actions:
         if action.action_type != "execute_strategy" \
                 or not action.pre_snapshot_id:
             continue
         snapshot = harness.get_snapshot(action.pre_snapshot_id)
         if snapshot is None:
+            availability_unknown += 1
             continue
-        snapshots_found += 1
-        entry_ids.extend(_snapshot_knowledge_entry_ids(snapshot))
+        available = _snapshot_knowledge_entry_ids(
+            snapshot, store=harness.store, entry_ids=entry_ids)
+        if available is None:
+            availability_unknown += 1
+        else:
+            snapshots_found += 1
+            entry_ids_found.extend(available)
     return {
         "started_at": (min(times) if times else None),
         "finished_at": (max(times) if times else None),
-        "knowledge_entry_ids": sorted(set(entry_ids)),
+        "timing_unknown": timing_unknown,
+        "knowledge_entry_ids": sorted(set(entry_ids_found)),
+        "adopted_entry_ids": sorted({str(e) for r in executions
+            for e in ((r.execution_features.get("used_entries") or {}).get("entry_ids") or [])}),
+        "adoption_declared": all("used_entries" in r.execution_features for r in executions),
         "n_snapshots": snapshots_found,
+        "availability_unknown": availability_unknown or not snapshots_found,
         "n_executions": len(executions),
     }
 
@@ -1724,7 +1761,7 @@ def _execution_episode(harness, execution_id: str) -> Optional[str]:
     return None
 
 
-def _snapshot_knowledge_entry_ids(snapshot: Any) -> List[str]:
+def _snapshot_knowledge_entry_ids(snapshot: Any, *, store=None, entry_ids=None) -> Optional[List[str]]:
     """The entry ids the frozen knowledge view of a snapshot carried.
 
     The snapshot's ``coverage.knowledge_layers`` is the layered view the
@@ -1735,9 +1772,19 @@ def _snapshot_knowledge_entry_ids(snapshot: Any) -> List[str]:
     """
     state = getattr(snapshot, "harness_state", None) or {}
     coverage = getattr(snapshot, "coverage", None) or {}
+    if coverage.get("conditions_only") and store is not None:
+        from or_harness.world_model.conditions import available_entry_ids, get_value
+        if coverage.get("legacy_available_ref"):
+            available = get_value(store, coverage["legacy_available_ref"])["entry_ids"]
+            return [key for key in available if entry_ids is None or key in entry_ids]
+        return available_entry_ids(store, coverage.get("availability_revision"),
+                                   (snapshot.problem_state or {}).get("profile") or {},
+                                   entry_ids)
     knowledge = coverage.get("knowledge_layers")
     if not isinstance(knowledge, dict):
-        knowledge = state.get("knowledge") or {}
+        knowledge = state.get("knowledge")
+    if not isinstance(knowledge, dict):
+        return None  # never convert an unrecorded historical view to "none available"
     out: List[str] = []
     for layer in ("verified", "legacy_unknown", "unverified"):
         for ref in knowledge.get(layer) or []:

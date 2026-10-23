@@ -1,4 +1,4 @@
-# Prediction input context (`wm-context/3`)
+# Prediction input context (`wm-context/4`)
 
 Read this page when a prediction surprised you and you need to know what it was conditioned on: the frozen joint problem representation, the retrieval evidence it carried, the capability evidence behind `H`, and how a context is reused. For the protocol a prediction is written in, see [strategy_outcome.md](strategy_outcome.md); for the field definitions of every prediction, [world_model_contract.md](world_model_contract.md).
 
@@ -6,12 +6,14 @@ Read this page when a prediction surprised you and you need to know what it was 
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
 
-- Context version: `wm-context/3`
+- Context version: `wm-context/4`
 - Joint representation version: `joint/1`
 - Python module: `or_harness.world_model.context`
 - Entry point: `ORHarness.build_prediction_context` / `orx context`
 - Tests: `tests/harness/test_prediction_context.py`
 - Runnable example: [`references/examples/prediction_context.py`](examples/prediction_context.py)
+
+New contexts are consumable inputs: default reuse lifetime 24 hours, with bounded active storage. `choose-next` or successful episode close releases the full working input; an expired reuse raises `ContextExpired`. `context --context-id CTX --audit` reads the surviving manifest. Existing `wm-context/3` and full snapshots remain readable through explicit adapters. See [snapshot_lifecycle.md](snapshot_lifecycle.md) for responsibilities, exact limits, fixed-memory testing and explicit cleanup.
 
 This document is the authority for the INPUT side. The contract side (statuses, scopes, capability sources) stays in [`references/world_model_contract.md`](world_model_contract.md).
 
@@ -37,7 +39,7 @@ This document is the authority for the INPUT side. The contract side (statuses, 
 | `model` | math attributes from structure | optional. A task with no model is a normal input; the math attributes then come from the spec/CIR or stay `unknown` |
 | `spec.objective_sense`, `spec.constraint_kinds`, `spec.n_vars`, `spec.n_int_vars` | math attributes | optional; a source for `integrality` / `objective_kind` |
 
-Everything is optional beyond `task_id`. **You do not need a mathematical model, and you do not need a solve.py.** There is no separate "understand" step: `orx context` profiles the task itself.
+A task needs `task_id` and `family`; other inputs are optional. **You do not need a mathematical model, and you do not need a solve.py.** There is no separate "understand" step: `orx context` profiles the task itself.
 
 ---
 
@@ -57,7 +59,7 @@ Everything is optional beyond `task_id`. **You do not need a mathematical model,
 | `paired_feedback` | the COMPACT per-episode prediction-execution PAIRS of closed episodes, frozen (see §6c) |
 | `prediction_reminders` | the DETERMINISTIC "watch this next time" notes derived from the summary (see §6c) |
 | `hplus_feedback` | the follow-up state of ONLINE capability-gain claims (see §6d) |
-| `snapshot` | the frozen condition blocks (X/B + coverage + harness condition) of the snapshot this context was built from |
+| `conditions` | source/identity and candidate-related statistics/references; no duplicate complete snapshot or X/B (Python keeps `ctx.snapshot` as a compatibility property) |
 | `cell_evidence` | per strategy, the distinct-task count behind the cell's statistics, **frozen** |
 | `sources` | where each part came from (snapshot id, task version, channel list, CIR origin) |
 | `degraded` | parts that did NOT run, each with its reason |
@@ -152,7 +154,7 @@ The two are kept apart by an explicit `historical` flag, NOT by the mere presenc
 
 A gap is **reported as missing** (`ctx.missing`), never filled from today's banks: reading today's bank to "complete" an earlier state would put after-the-fact information into a historical prediction input. Every historical build carries a note saying so, and a snapshot that carries no frozen knowledge view is reported as `MISSING` rather than silently consulted.
 
-There is deliberately **no historical database**: the snapshot itself is the saved history, and what it did not save is reported as absent.
+Complete legacy snapshots remain readable. New condition receipts preserve necessary frozen facts and explicitly report that the full prediction view was temporary; what was not saved is missing, never reconstructed from today's bank.
 
 ### Structure consistency is checked AFTER the effective input is resolved
 
@@ -174,7 +176,7 @@ The same check guards reuse at the prediction entry point: a context built under
 
 | Condition | Where a reused context takes it from |
 |---|---|
-| `state` (X/B, coverage, harness condition) | `snapshot_from_context(ctx)` — the context's own frozen blocks and snapshot id |
+| `prediction_context` | `ctx.provider_view()`; X/B are frozen once in `solving_context`, with relevant retrieval and feedback |
 | `candidate_knowledge_targets` | `ctx.knowledge_targets` (proposed and frozen at build time) |
 | `prediction_reliability` | `ctx.reliability` |
 | the recorded `input_snapshot_id` | `ctx.snapshot_id` |

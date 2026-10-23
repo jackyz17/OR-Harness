@@ -27,7 +27,7 @@ AGENT_FACING_DOCS = [
     "references/induction.md", "references/modeling.md",
     "references/world_model_contract.md",
     "references/prediction_context.md", "references/strategy_outcome.md",
-    "references/episode_closeout.md",
+    "references/episode_closeout.md", "references/snapshot_lifecycle.md",
 ]
 
 #: Runnable examples the docs may point at. They are scripts, not prose, so
@@ -109,7 +109,9 @@ DOCUMENTED_FLAGS = [
     ("rebuild-index", ["--layer", "--dry-run"]),
     ("context", ["--task", "--episode", "--top", "--cir",
                  "--math", "--include-unverified", "--context-id",
-                 "--no-persist"]),
+                 "--no-persist", "--audit"]),
+    ("maintain-snapshots", ["--apply", "--backup", "--vacuum", "--expire-open-days"]),
+    ("fork-memory", ["--destination"]),
 ]
 
 #: Global flags the docs promise.
