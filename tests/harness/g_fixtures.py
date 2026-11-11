@@ -48,17 +48,21 @@ class GCase(HarnessTestCase):
             {"action_type": "execute_strategy", "strategy_id": "S04", "method": method},
             episode, **kwargs)
 
-    def run_g(self, prediction, *, split=False, crash=False, timeout=False, actual=None):
+    def run_g(self, prediction, *, split=False, crash=False, timeout=False, actual=None,
+              execution_config=None):
         work = Path(self.home) / prediction.prediction_id
         work.mkdir()
         script = work / "solve.py"
         actual = actual or prediction.candidate.method
+        execution_config = {"time_limit": 60} if execution_config is None else execution_config
         body = ("import json, os\n" + ("import time\ntime.sleep(2)\n" if timeout else "") + ("raise RuntimeError('script bug')\n" if crash else
             "be = 1\ncfc = " + ("2" if split else "be") + "\n"
             "result = {'status': 'optimal', 'objective_value': 100, 'objective_bound': 100, "
             "'runtime_seconds': 0.01, 'variables': {'BE': be, 'CFC': cfc}, "
             "'method_performed': " + repr(actual) + "}\n"
             "result['method_performed']['action_id'] = os.environ['OR_ACTION_ID']\n"
+            + ("result['config'] = dict(" + repr(execution_config)
+               + ", action_id=os.environ['OR_ACTION_ID'])\n" if execution_config is not None else "") +
             "with open('result.json', 'w') as f: json.dump(result, f)\n"))
         script.write_text(body)
         record = self.h.execute(self.task, "S04", str(script), str(work), solver="highs",
@@ -67,8 +71,9 @@ class GCase(HarnessTestCase):
         return record
 
     def check_g(self, record, *, fidelity="faithful", failure="unknown",
-                coverage="original_task", acceptance="factory-coupling/v1", evidence=True):
-        check = {"semantic_probe": [{
+                coverage="original_task", acceptance="factory-coupling/v1", evidence=True,
+                check_spec=None):
+        check = copy.deepcopy(check_spec) if check_spec is not None else {"semantic_probe": [{
             "path": "execution_features.solution_variables.CFC", "equals": 1}]}
         if evidence:
             check["g_attribution"] = {

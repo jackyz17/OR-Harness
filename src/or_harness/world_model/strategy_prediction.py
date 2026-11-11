@@ -565,10 +565,20 @@ def build_strategy_outcome_request(
                      "ranked against the other candidates, and it is NOT "
                      "silently converted"),
         }
+    from or_harness.world_model.context import PredictionContext
+    from or_harness.world_model.g_signal import select_conditional_g, requested_solving_conditions
+    view = (context.provider_view(g_candidate=candidate, g_convention=fixed_convention)
+            if isinstance(context, PredictionContext) else context.provider_view())
+    if not isinstance(context, PredictionContext):
+        view["strategy_outcome_calibration"] = select_conditional_g(
+            view.get("strategy_outcome_calibration"),
+            profile=(view.get("joint_problem") or {}).get("profile") or {},
+            conditions=requested_solving_conditions(candidate, view.get("execution_constraints")),
+            convention=fixed_convention, scope=candidate.scope, task_id=candidate.task_id)
     request: Dict[str, Any] = {
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
         "request_kind": "strategy_outcome_prediction",
-        "prediction_context": context.provider_view(),
+        "prediction_context": view,
         "candidate": candidate.to_dict(),
         # The SHARED benefit convention: the framework fixes the yardstick
         # so every candidate of one decision is predicted on the SAME
@@ -1473,6 +1483,7 @@ class StrategyOutcomeService:
 
     def _save_with_conditions(self, prediction, context, request):
         from or_harness.world_model.conditions import digest, compact_budget, put_value
+        from or_harness.world_model.g_signal import requested_solving_conditions
         info = prediction.trace.model_info
         header_raw = self.store.get_prediction_context(context.context_id)
         header = self.store.loads(header_raw) if header_raw else {}
@@ -1492,12 +1503,8 @@ class StrategyOutcomeService:
             "family": profile.get("family"),
             "cell_token": (group_key(ProblemProfile.from_dict(profile))
                            if profile.get("problem_id") and profile.get("family") else None),
-            "g_execution_conditions": {
-                "solver": prediction.candidate.solver,
-                "config": copy.deepcopy(prediction.candidate.config),
-                "constraints": {key: copy.deepcopy(context.execution_constraints.get(key))
-                    for key in ("executor", "declared_budget", "available_solver_families", "budget_condition")},
-            },
+            "g_execution_conditions": requested_solving_conditions(
+                prediction.candidate, context.execution_constraints),
             "benefit_convention": copy.deepcopy(request.get("benefit_convention")),
             "prediction_context_id": context.context_id,
             "prediction_context_version": context.version,

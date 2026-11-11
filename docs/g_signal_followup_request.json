@@ -1,0 +1,674 @@
+{
+  "capture": "excerpt of the actual next request sent to the stub after an execution whose provider omitted benefit",
+  "execution_check": {
+    "state": "passed",
+    "reference_source": {
+      "source": null,
+      "declared": null,
+      "version": null,
+      "independent": false,
+      "note": "the caller did not state where the reference came from; an UNSTATED source is treated as self-derived — a pass is not evidence the answer satisfies the task. Declare reference_source=bench_declared|independent|self_derived to say which"
+    },
+    "checks": [
+      {
+        "check": "semantic_probe",
+        "source": "framework",
+        "path": "execution_features.solution_variables.CFC",
+        "found": true,
+        "observed": 1,
+        "expected": 1,
+        "mode": "equals",
+        "ok": true
+      }
+    ]
+  },
+  "model_benefit": null,
+  "evaluation_benefit": {
+    "eligibility": "not_predicted",
+    "reason": "not predicted by the model",
+    "metric": "task_check_passed_given_faithful_execution",
+    "unit": "probability",
+    "observation_rule_version": "wm-g-faithful/1",
+    "label_eligibility": "attributable",
+    "execution_ids": [
+      "ex_f9ec1d9ab971"
+    ],
+    "task_check": {
+      "state": "passed",
+      "scope": {
+        "basis": [
+          "semantic_probe"
+        ],
+        "unchecked": [
+          "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+          "constraint satisfaction not declared as a probe or a recomputation"
+        ]
+      },
+      "action_id": "ac_1e327460281f"
+    },
+    "attribution": {
+      "acceptance_id": "factory-coupling/v1",
+      "acceptance_scope": "original_task",
+      "assessment": "Code follows the recorded factory-selection steps; compare the recorded BE=1 and CFC values against the same-factory requirement.",
+      "evidence_refs": [
+        "artifacts.submitted_script",
+        "artifacts.workspace_result"
+      ],
+      "execution_id": "ex_f9ec1d9ab971",
+      "failure_source": "unknown",
+      "issues": [],
+      "method_actual": {
+        "name": "joint factory selection",
+        "steps": [
+          "Select the same factory for BE and CFC, preserving the coupling constraint."
+        ]
+      },
+      "method_fidelity": "faithful",
+      "method_planned": {
+        "name": "joint factory selection",
+        "steps": [
+          "Select the same factory for BE and CFC, preserving the coupling constraint."
+        ]
+      },
+      "resolved_refs": {
+        "artifacts.submitted_script": {
+          "bytes": 528,
+          "kind": "script",
+          "path": "artifacts/76/76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+          "sha256": "76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+          "source": "framework-submitted script before attempt; execution status is separate"
+        },
+        "artifacts.workspace_result": {
+          "bytes": 369,
+          "kind": "result",
+          "path": "artifacts/0d/0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+          "sha256": "0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+          "source": "file observed after attempt; acceptance is governed by execution checks"
+        }
+      },
+      "source": "test auditor reviewed captured script and result"
+    },
+    "execution_conditions": {
+      "solver": "highs",
+      "config": {
+        "script_timeout_s": 120.0,
+        "time_limit": 60
+      },
+      "comparison_key": {
+        "solver": "highs",
+        "config": {
+          "script_timeout_s": 120,
+          "time_limit": 60
+        }
+      },
+      "comparable": true,
+      "unknown": [],
+      "sources": {
+        "solver": "ExecutionRecord.solver.name",
+        "script_timeout_s": "executor",
+        "time_limit": "script_reported"
+      },
+      "execution_id": "ex_f9ec1d9ab971",
+      "source": "ExecutionRecord and execution_features.execution_config"
+    },
+    "acceptance_rule": {
+      "checker": "task-check/1",
+      "fingerprint": "fb9b7676ab2c934ef50b4a4689ae3fda391c0632bfff0d0667f4fc146b0851c8",
+      "spec": {
+        "semantic_probe": [
+          {
+            "equals": 1,
+            "path": "execution_features.solution_variables.CFC"
+          }
+        ]
+      }
+    },
+    "acceptance_support": [
+      "semantic_probe"
+    ],
+    "observed": 1.0,
+    "acceptance_id": "factory-coupling/v1",
+    "evidence_refs": {
+      "artifacts.submitted_script": {
+        "bytes": 528,
+        "kind": "script",
+        "path": "artifacts/76/76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+        "sha256": "76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+        "source": "framework-submitted script before attempt; execution status is separate"
+      },
+      "artifacts.workspace_result": {
+        "bytes": 369,
+        "kind": "result",
+        "path": "artifacts/0d/0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+        "sha256": "0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+        "source": "file observed after attempt; acceptance is governed by execution checks"
+      }
+    }
+  },
+  "request_excerpt": {
+    "benefit_convention": {
+      "kind": "effective_completion",
+      "metric": "task_check_passed_given_faithful_execution",
+      "unit": "probability",
+      "scope": "attempt",
+      "observation_rule_version": "wm-g-faithful/1",
+      "observed_from": "attributable original-task acceptance after faithful execution",
+      "source": "declared",
+      "required": true,
+      "note": "THIS DECISION compares benefit under this convention. Predict this candidate's benefit with EXACTLY this kind and metric: a different kind or metric cannot be ranked against the other candidates, and it is NOT silently converted"
+    },
+    "prediction_context": {
+      "task_id": "factory",
+      "strategy_outcome_calibration": {
+        "applicability": "global_diagnostic",
+        "applicability_note": "these statistics carry NO strategy or problem-condition breakdown: they are a global diagnostic of the model's past error on this protocol, NOT a claim about the conditional bias of the candidate currently under consideration",
+        "calibration_version": "wm-calib/3",
+        "conditional_g": [
+          {
+            "attributable_label_coverage": 1.0,
+            "brier": null,
+            "conditions": {
+              "cell": "class=unknown|rc[0.75,1.00]|tc[unknown]|rx[unknown]",
+              "family": "assignment"
+            },
+            "declared_budget": null,
+            "deduplication": "one terminal execution/range; earliest attributable prediction per unit",
+            "evidence_evaluation_ids": [
+              "ev_c35935ffd31a"
+            ],
+            "execution_conditions": {
+              "config": {
+                "script_timeout_s": 120,
+                "time_limit": 60
+              },
+              "solver": "highs"
+            },
+            "failed": 0,
+            "metric": "task_check_passed_given_faithful_execution",
+            "model_identity": "(unknown)",
+            "n_distinct_episodes": 1,
+            "n_execution_units": 1,
+            "n_labelled_episodes": 1,
+            "n_scored": 0,
+            "observation_rule_version": "wm-g-faithful/1",
+            "passed": 1,
+            "probability_bins": [],
+            "scope": "attempt",
+            "support": "sparse: these executed cases only",
+            "task_ids": [
+              "factory"
+            ],
+            "unknown": 0,
+            "unknown_reasons": {},
+            "applicability": {
+              "kind": "partial_case_support",
+              "unknown_fields": [
+                "class",
+                "rx",
+                "solver",
+                "tc",
+                "time_limit"
+              ],
+              "note": "unknown dimensions are not matches or a current-candidate prior; sparse support remains limited to executed cases"
+            }
+          }
+        ],
+        "event_vocabulary_version": "wm-events/3",
+        "exclusions": {},
+        "groups": {
+          "strategy_outcome|(unknown)|task_check_passed_given_faithful_execution|probability|attempt|wm-g-faithful/1": {
+            "basis": "insufficient_evidence",
+            "benefit_evidence": null,
+            "brier_evidence_by_event": {
+              "implementation_failure": {
+                "evidence": "insufficient_evidence",
+                "min_distinct_episodes": 5,
+                "n_distinct_episodes": 1,
+                "reason": "1 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+              }
+            },
+            "correlated_predictions": 0,
+            "cost_evidence": {
+              "solver_runtime_s": {
+                "evidence": "insufficient_evidence",
+                "min_distinct_episodes": 5,
+                "n_distinct_episodes": 1,
+                "reason": "1 distinct episode(s) < 5: no figure is claimed for this statistic (correlated predictions of one truth are not independent samples)"
+              }
+            },
+            "interval_by_kind": {},
+            "interval_coverage": null,
+            "interval_evidence": null,
+            "mean_benefit_abs_error": null,
+            "mean_benefit_signed_error": null,
+            "mean_brier_by_event": {
+              "implementation_failure": 0.04
+            },
+            "mean_cost_log_error": {
+              "solver_runtime_s": 2.3026
+            },
+            "mean_cost_log_ratio": {
+              "solver_runtime_s": -2.3026
+            },
+            "mean_interval_width": null,
+            "mean_predicted_probability": {
+              "implementation_failure": 0.2
+            },
+            "n_brier_samples_by_event": {
+              "implementation_failure": 1
+            },
+            "n_distinct_episodes": 1,
+            "n_interval_samples": 0,
+            "n_samples": 1,
+            "note": "1 distinct episode(s) < 5: no reliability figure is claimed (correlated predictions of the same truth do not count as independent samples)",
+            "reliability": null,
+            "risk_coverage": {
+              "budget_exhausted": {
+                "coverage_rate": 0.0,
+                "n_asked": 1,
+                "n_labelled": 0,
+                "n_probabilized": 0,
+                "n_unknown": 1
+              },
+              "environment_failure": {
+                "coverage_rate": 0.0,
+                "n_asked": 1,
+                "n_labelled": 0,
+                "n_probabilized": 0,
+                "n_unknown": 1
+              },
+              "implementation_failure": {
+                "coverage_rate": 1.0,
+                "n_asked": 1,
+                "n_labelled": 1,
+                "n_probabilized": 1,
+                "n_unknown": 0
+              },
+              "solver_reported_infeasible": {
+                "coverage_rate": 0.0,
+                "n_asked": 1,
+                "n_labelled": 0,
+                "n_probabilized": 0,
+                "n_unknown": 1
+              },
+              "task_check_failed": {
+                "coverage_rate": 0.0,
+                "n_asked": 1,
+                "n_labelled": 0,
+                "n_probabilized": 0,
+                "n_unknown": 1
+              },
+              "timeout": {
+                "coverage_rate": 0.0,
+                "n_asked": 1,
+                "n_labelled": 0,
+                "n_probabilized": 0,
+                "n_unknown": 1
+              }
+            },
+            "scored_occurrence_rate": {
+              "implementation_failure": 0.0
+            }
+          }
+        },
+        "min_samples": 5,
+        "min_samples_basis": "distinct (task_id, episode_id) pairs, applied PER STATISTIC (benefit, each cost dimension, interval, each risk event)",
+        "n_evaluated": 1,
+        "n_evaluations_total": 1,
+        "n_window_episodes": 1,
+        "note": "experience calibration of the strategy-outcome prediction service, from CLOSED episodes IN THE WINDOW only; grouped by model identity/metric/unit/scope, risk events scored per event name, and the sample threshold counts DISTINCT EPISODES — kept separate from the legacy knowledge-prediction reliability (a knowledge hit rate never proves OR prediction accuracy), and never a model weight or a fitted calibrator. `groups` counts prediction-observation PAIRS; `occurrence` counts real OBSERVATION UNITS. A sample whose answer was LATER confirmed not to satisfy the task is counted under exclusions.validity_corrected and leaves the means — the stored evaluation itself is never rewritten",
+        "observation_rule_version": "wm-obs/4",
+        "occurrence": {
+          "budget_exhausted": {
+            "n_labelled_units": 0,
+            "n_not_occurred": 0,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 1,
+            "observation_unit": "episode",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": null
+          },
+          "environment_failure": {
+            "n_labelled_units": 1,
+            "n_not_occurred": 1,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 0,
+            "observation_unit": "execution",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": 0.0
+          },
+          "implementation_failure": {
+            "n_labelled_units": 1,
+            "n_not_occurred": 1,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 0,
+            "observation_unit": "execution",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": 0.0
+          },
+          "solver_reported_infeasible": {
+            "n_labelled_units": 1,
+            "n_not_occurred": 1,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 0,
+            "observation_unit": "execution",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": 0.0
+          },
+          "task_check_failed": {
+            "n_labelled_units": 1,
+            "n_not_occurred": 1,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 0,
+            "observation_unit": "execution",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": 0.0
+          },
+          "timeout": {
+            "n_labelled_units": 1,
+            "n_not_occurred": 1,
+            "n_observation_units": 1,
+            "n_occurred": 0,
+            "n_unknown": 0,
+            "observation_unit": "execution",
+            "rate_basis": "labelled observation units (an execution or an episode counted once, however many predictions were bound to it)",
+            "source": "derived from the current executions of the window's episodes, not from stored evaluation labels",
+            "unit_occurrence_rate": 0.0
+          }
+        },
+        "protocol": "wm-so/1",
+        "published_at": 1794400848.2367756,
+        "reminders": [],
+        "window": {
+          "archive_max_file_bytes": 67108864,
+          "archive_max_total_bytes": 1073741824,
+          "archive_retention_days": 365.0,
+          "auto_archive_threshold": 200,
+          "late_check_grace_days": 30.0,
+          "note": "three separate scopes: the WINDOW decides which closed task-episodes calibrate; the GRACE period decides how long online detail is kept for a possible late check; the ARCHIVE caps (per-file, total, age) bound what history is kept on disk",
+          "window": 50
+        },
+        "filtered": true,
+        "model_identity": "(unknown)",
+        "filter_note": "every group kept belongs to model identity '(unknown)'",
+        "validity_correction_summary": {
+          "count": 0,
+          "kinds": {},
+          "fields": {},
+          "scope": "published summary population before candidate filtering",
+          "detail_source": "stored strategy_evaluation and published summary"
+        },
+        "conditional_g_selection": {
+          "n_available": 1,
+          "n_applicable": 1,
+          "n_included": 1,
+          "n_omitted": 0,
+          "limit": 6,
+          "basis": "same family, compatible known structure and solving limits; unknown stays unknown"
+        }
+      },
+      "prediction_execution_pairs": {
+        "feedback_version": "wm-pairs/1",
+        "model_identity": "(unknown)",
+        "observation_rule_version": "wm-obs/4",
+        "identity_note": "these two fields are BLOCK-level: all pairs share one predicting model and one observation rule, so they are stated once rather than per row",
+        "risk_reason_legend": {
+          "class_not_recorded": "the execution did not record this failure class",
+          "environment_failure": "an ENVIRONMENT failure (sandbox policy / missing module / unavailable backend)",
+          "error_class_unknown": "the failure's error_class is unknown/unrecorded: the cause is not inferred from the error text",
+          "implementation_failure": "the harness's OWN code failed (an implementation failure, NOT a modelling error)",
+          "no_infeasibility": "the solver did not report infeasibility here",
+          "no_task_check": "no task check is on record for this execution: task validity is UNKNOWN, never a failure",
+          "predicted_without_probability": "the prediction named the event but gave no probability: it is observed, not scored",
+          "reported_infeasibility": "the solver reported infeasibility (a verdict, not by itself a strategy failure)",
+          "task_check_failed": "a declared task check ran on real values and did not hold",
+          "time_limit": "the executor's time limit fired",
+          "unpredicted_no_brier": "the model did not predict this event: it is observed by the framework and counted in the occurrence rate, but no Brier score can be computed without a probability"
+        },
+        "n_pairs_total": 1,
+        "n_pairs_withheld": null,
+        "filter_note": "every kept pair belongs to model identity '(unknown)'",
+        "pairs": [
+          {
+            "action_id": "ac_0881454b42cc",
+            "benefit": {
+              "acceptance_id": "factory-coupling/v1",
+              "acceptance_rule": {
+                "checker": "task-check/1",
+                "fingerprint": "fb9b7676ab2c934ef50b4a4689ae3fda391c0632bfff0d0667f4fc146b0851c8",
+                "spec": {
+                  "semantic_probe": [
+                    {
+                      "equals": 1,
+                      "path": "execution_features.solution_variables.CFC"
+                    }
+                  ]
+                }
+              },
+              "attribution": {
+                "assessment": "Code follows the recorded factory-selection steps; compare the recorded BE=1 and CFC values against the same-factory requirement.",
+                "failure_source": "unknown",
+                "method_fidelity": "faithful",
+                "source": "test auditor reviewed captured script and result"
+              },
+              "eligibility": "not_predicted",
+              "evidence_refs": {
+                "artifacts.submitted_script": {
+                  "bytes": 528,
+                  "kind": "script",
+                  "path": "artifacts/76/76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+                  "sha256": "76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "artifacts.workspace_result": {
+                  "bytes": 369,
+                  "kind": "result",
+                  "path": "artifacts/0d/0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+                  "sha256": "0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+                  "source": "file observed after attempt; acceptance is governed by execution checks"
+                }
+              },
+              "label_eligibility": "attributable",
+              "metric": "task_check_passed_given_faithful_execution",
+              "observation_rule_version": "wm-g-faithful/1",
+              "observed": 1.0,
+              "reason": "not predicted by the model",
+              "signed_error": null
+            },
+            "conditions": {
+              "cell": "class=unknown|rc[0.75,1.00]|tc[unknown]|rx[unknown]",
+              "family": "assignment",
+              "strategy_id": "S04",
+              "task_id": "factory"
+            },
+            "cost_log_ratio": {
+              "solver_runtime_s": -2.3026
+            },
+            "cost_measured": {
+              "solver_runtime_s": {
+                "abs_error": 0.09,
+                "actual": 0.01,
+                "predicted": 0.1
+              }
+            },
+            "episode_id": "ep1",
+            "evaluation_id": "ev_c35935ffd31a",
+            "execution_conditions": {
+              "comparable": true,
+              "comparison_key": {
+                "config": {
+                  "script_timeout_s": 120,
+                  "time_limit": 60
+                },
+                "solver": "highs"
+              },
+              "config": {
+                "script_timeout_s": 120.0,
+                "time_limit": 60
+              },
+              "execution_id": "ex_f9ec1d9ab971",
+              "solver": "highs",
+              "source": "ExecutionRecord and execution_features.execution_config",
+              "sources": {
+                "script_timeout_s": "executor",
+                "solver": "ExecutionRecord.solver.name",
+                "time_limit": "script_reported"
+              },
+              "unknown": []
+            },
+            "execution_ids": [
+              "ex_f9ec1d9ab971"
+            ],
+            "execution_status": "optimal",
+            "g_observed_fact": {
+              "acceptance_id": "factory-coupling/v1",
+              "acceptance_rule": {
+                "checker": "task-check/1",
+                "fingerprint": "fb9b7676ab2c934ef50b4a4689ae3fda391c0632bfff0d0667f4fc146b0851c8",
+                "spec": {
+                  "semantic_probe": [
+                    {
+                      "equals": 1,
+                      "path": "execution_features.solution_variables.CFC"
+                    }
+                  ]
+                }
+              },
+              "evidence_refs": {
+                "artifacts.submitted_script": {
+                  "bytes": 528,
+                  "kind": "script",
+                  "path": "artifacts/76/76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+                  "sha256": "76c2adf8e8dd667c0b4e218bfac3dd3bcb47a625a3f49d7bebb279b046739b00",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "artifacts.workspace_result": {
+                  "bytes": 369,
+                  "kind": "result",
+                  "path": "artifacts/0d/0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+                  "sha256": "0d5b059e623b26dca02d205992b11cd83ec5d65ae0c963f565b8c6fcc85fdbbf",
+                  "source": "file observed after attempt; acceptance is governed by execution checks"
+                }
+              },
+              "label_eligibility": "attributable",
+              "metric": "task_check_passed_given_faithful_execution",
+              "observation_rule_version": "wm-g-faithful/1",
+              "observed": 1.0
+            },
+            "method_actual": {
+              "n_steps": 1,
+              "name": "joint factory selection",
+              "steps": "same as method_planned.steps"
+            },
+            "method_planned": {
+              "n_steps": 1,
+              "name": "joint factory selection",
+              "steps": [
+                "Select the same factory for BE and CFC, preserving the coupling constraint."
+              ]
+            },
+            "prediction_id": "sp_a0e6fb309abe",
+            "problem_identity_digest": "1ab9b89be7bfe886",
+            "risk_actual": [
+              {
+                "brier": 0.04,
+                "event": "implementation_failure",
+                "label": "not_occurred",
+                "label_basis": "class_not_recorded",
+                "predicted": true,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              },
+              {
+                "event": "environment_failure",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "timeout",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "solver_reported_infeasible",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "task_check_failed",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "budget_exhausted",
+                "label": null,
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              }
+            ],
+            "risk_predicted": [
+              {
+                "event": "implementation_failure",
+                "probability": 0.2,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              }
+            ],
+            "scope": "attempt",
+            "task_check": {
+              "action_id": "ac_1e327460281f",
+              "scope": {
+                "basis": [
+                  "semantic_probe"
+                ],
+                "unchecked": [
+                  "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                  "constraint satisfaction not declared as a probe or a recomputation"
+                ]
+              },
+              "state": "passed"
+            },
+            "task_id": "factory",
+            "selected_reason": [
+              "a recalled hit names one of this pair's executions",
+              "same task as the current problem"
+            ],
+            "relevance": 4,
+            "background": false
+          }
+        ],
+        "selection": {
+          "limit": 6,
+          "limit_basis": "a DISPLAY ceiling, not a calibration sample size: the full window remains the calibration population",
+          "signature": "c8e05fbf81b77099",
+          "basis": "selected from the PUBLISHED block by relevance to the current retrieval, the candidates' declared methods and the current problem; no bank scan, no re-scoring"
+        },
+        "selection_signature": "c8e05fbf81b77099",
+        "n_pairs_available": 1,
+        "same_task_comparisons": [],
+        "n_same_task_comparisons_available": 0,
+        "n_same_task_comparisons_omitted": 0,
+        "n_pairs_included": 1,
+        "n_pairs_omitted": 0,
+        "n_background": 0,
+        "ordering": "by relevance to THIS decision (recall link, declared method, same task/cell, strategy hint); within a relevance rank, genuine failures and repairs before successes, then the most recent",
+        "basis": "derived from CLOSED episodes' stored evaluations in the current window; no model call, no re-scoring, no new storage",
+        "note": "relevance ranks failures/repairs before successes and the most recent first within a rank; a low relevance is a LOW RELEVANCE, never a claim that two methods are the same",
+        "candidate_methods_absent": "no candidate method description was supplied, so the selection degraded to recall-linked and recent representative pairs — it did NOT guess what a method means"
+      },
+      "prediction_reminders": []
+    }
+  }
+}

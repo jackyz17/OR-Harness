@@ -22,6 +22,152 @@ def method_key(method):
     return {k: v for k, v in method.items() if k != "source"}
 
 
+def g_observation_convention(prediction):
+    """A framework-fixed G request survives a missing model benefit block.
+
+    A recorded explicit legacy convention takes precedence over the payload.
+    Older new-G predictions without request metadata keep their stated rule.
+    """
+    info = getattr(getattr(prediction, "trace", None), "model_info", {}) or {}
+    declared = info.get("benefit_convention")
+    if declared is not None:
+        return declared if declared.get("metric") == FAITHFUL_G_METRIC else None
+    benefit = getattr(prediction, "benefit", None)
+    if benefit is not None and benefit.metric == FAITHFUL_G_METRIC:
+        return benefit.to_dict()
+    return None
+
+
+def canonical_evidence(value):
+    """Numeric JSON spellings such as 60 and 60.0 have one rule identity."""
+    if isinstance(value, dict):
+        return {k: canonical_evidence(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [canonical_evidence(v) for v in value]
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    return value
+
+
+def actual_solving_conditions(record, planned_config=None):
+    """Separate observed solver settings from instructions and predictions."""
+    block = (record.execution_features or {}).get("execution_config") or {}
+    values, sources = block.get("values") or {}, block.get("sources") or {}
+    observed = {key: copy.deepcopy(value) for key, value in values.items()
+                if sources.get(key) in ("executor", "script_reported") and key != "solver"}
+    solver = (record.solver or {}).get("name")
+    unknown = [key for key in (planned_config or {}) if key != "solver" and observed.get(key) is None]
+    if not solver:
+        unknown.append("solver")
+    if observed.get("script_timeout_s") is None:
+        unknown.append("script_timeout_s")
+    if not any(observed.get(key) is not None for key in ("time_limit", "solver_timeout_s")):
+        unknown.append("solver time limit")
+    if block.get("conflicts"):
+        unknown.extend("conflict:" + key for key in block["conflicts"])
+    key = {"solver": solver, "config": observed}
+    return {**key, "comparison_key": canonical_evidence(key), "comparable": not unknown,
+        "unknown": sorted(set(unknown)), "sources": {
+            "solver": "ExecutionRecord.solver.name",
+            **{name: sources[name] for name in observed}},
+        "execution_id": record.execution_id,
+        "source": "ExecutionRecord and execution_features.execution_config"}
+
+
+def requested_solving_conditions(candidate, constraints):
+    """Stable declarations for applicability, never an actual-execution receipt."""
+    return {"solver": getattr(candidate, "solver", None),
+        "config": copy.deepcopy(getattr(candidate, "config", None) or {}),
+        "constraints": {key: copy.deepcopy((constraints or {}).get(key))
+                        for key in ("executor", "declared_budget")}}
+
+
+def _acceptance_support(report):
+    """Only checks that ran and support THIS verdict can supply a G label."""
+    decisive = False if report.get("state") == "failed" else True
+    trusted = []
+    for check in report.get("checks") or []:
+        if check.get("source") != "framework" or check.get("ran") is False:
+            continue
+        if check.get("ok") is not decisive:
+            continue
+        kind = check.get("check")
+        if kind in ("reference_objective", "reference_status"):
+            if not (report.get("reference_source") or {}).get("independent"):
+                continue
+        elif kind not in ("semantic_probe", "integer_domains", "recompute_objective"):
+            continue
+        trusted.append(kind)
+    return trusted
+
+
+def _structure(cell):
+    return {part.split("[", 1)[0].split("=", 1)[0]: part
+            for part in str(cell or "").split("|") if part and "unknown" not in part.lower()}
+
+
+def select_conditional_g(calibration, *, profile, conditions, convention, scope=None,
+                         task_id="", limit=6):
+    """Bound applicable facts BEFORE general context-size trimming.
+
+    Unknown structure/settings never count as a match. Retained partial
+    matches describe cases, not a calibrated prior for the current candidate.
+    The complete groups remain on the stored/audit calibration summary.
+    """
+    from or_harness.core.schema import ProblemProfile, group_key
+    out = copy.deepcopy(calibration or {})
+    if "conditional_g" not in out:
+        return out  # preserve legacy/empty provider views without new evidence
+    rows = out.get("conditional_g") or []
+    family = profile.get("family")
+    current = _structure(group_key(ProblemProfile.from_dict(profile))) if profile.get("problem_id") and family else {}
+    wanted_config = conditions.get("config") or {}
+    wanted_solver = conditions.get("solver")
+    executor = (conditions.get("constraints") or {}).get("executor") or {}
+    if executor.get("timeout_seconds") is not None:
+        wanted_config = {**wanted_config, "script_timeout_s": executor["timeout_seconds"]}
+    ranked = []
+    for index, row in enumerate(rows):
+        if (not family or (row.get("conditions") or {}).get("family") != family
+                or row.get("metric") != convention.get("metric")
+                or row.get("observation_rule_version") != convention.get("observation_rule_version")
+                or scope is not None and row.get("scope") != scope):
+            continue
+        structure = _structure((row.get("conditions") or {}).get("cell"))
+        if any(structure[k] != current[k] for k in structure.keys() & current.keys()):
+            continue
+        actual = row.get("execution_conditions") or {}
+        actual = actual.get("comparison_key") or actual
+        known_config = actual.get("config") or {}
+        if wanted_solver and actual.get("solver") and wanted_solver != actual["solver"]:
+            continue
+        if any(k in known_config and known_config[k] != value for k, value in wanted_config.items()):
+            continue
+        budget = (conditions.get("constraints") or {}).get("declared_budget")
+        if budget != row.get("declared_budget"):
+            continue
+        unknown = sorted({"class", "rc", "tc", "rx"} - (current.keys() & structure.keys()))
+        unknown += [k for k in wanted_config if k not in known_config]
+        unknown += [k for k in known_config if k not in wanted_config]
+        if not wanted_solver or not actual.get("solver"):
+            unknown.append("solver")
+        if not current or not structure:
+            unknown.append("structure")
+        item = copy.deepcopy(row)
+        item["applicability"] = {"kind": "partial_case_support" if unknown else "matching_conditions",
+            "unknown_fields": sorted(set(unknown)),
+            "note": "unknown dimensions are not matches or a current-candidate prior; sparse support remains limited to executed cases"}
+        shared = len(current.keys() & structure.keys())
+        same_task = task_id in (row.get("task_ids") or [])
+        ranked.append((not same_task, -shared, len(unknown), index, item))
+    ranked.sort(key=lambda entry: entry[:4])
+    out["conditional_g"] = [entry[-1] for entry in ranked[:limit]]
+    out["conditional_g_selection"] = {"n_available": len(rows), "n_applicable": len(ranked),
+        "n_included": len(out["conditional_g"]), "n_omitted": len(rows)-len(out["conditional_g"]),
+        "limit": limit, "basis": "same family, compatible known structure and solving limits; unknown stays unknown"}
+    return out
+
+
 def checked_attribution(record, declaration):
     """Validate optional check-task evidence without changing its verdict."""
     if not isinstance(declaration, dict):
@@ -68,18 +214,18 @@ def checked_attribution(record, declaration):
 
 def observe_faithful_g(summary, records, prediction):
     """Observe the terminal in-scope execution, never an earlier known one."""
-    benefit = prediction.benefit
+    convention = g_observation_convention(prediction) or {}
     candidate = prediction.candidate
     fact = {
         "kind": "effective_completion", "metric": FAITHFUL_G_METRIC,
         "unit": "probability", "scope": candidate.scope,
-        "observation_rule_version": benefit.observation_rule_version,
+        "observation_rule_version": convention.get("observation_rule_version"),
         "rule": "terminal in-scope attempt with sourced fidelity and acceptance audit",
     }
     reasons = []
     if summary.eligibility.get("scope.execution"):
         reasons.append("the declared execution scope has missing records")
-    if benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION:
+    if convention.get("observation_rule_version") != FAITHFUL_G_OBSERVATION_VERSION:
         reasons.append("unsupported or missing faithful G observation rule")
     if not records:
         reasons.append("no in-scope execution")
@@ -88,7 +234,19 @@ def observe_faithful_g(summary, records, prediction):
         features = record.execution_features or {}
         report = features.get("task_check") or {}
         audit = report.get("g_attribution") or {}
+        conditions = actual_solving_conditions(record, candidate.config)
+        if len(records) > 1:
+            in_scope = [actual_solving_conditions(r, candidate.config) for r in records]
+            distinct = {json.dumps(c["comparison_key"], sort_keys=True) for c in in_scope}
+            if len(distinct) > 1 or any(not c["comparable"] for c in in_scope):
+                conditions["comparable"] = False
+                conditions["unknown"].append("in-scope conditions differ or are unconfirmed")
+                conditions["comparison_key"] = {**conditions["comparison_key"],
+                    "in_scope_conditions": [json.loads(key) for key in sorted(distinct)]}
+            conditions["in_scope_execution_ids"] = [r.execution_id for r in records]
         fact.update(execution_id=record.execution_id,
+                    execution_conditions=conditions,
+                    acceptance_rule=copy.deepcopy(report.get("acceptance_rule")),
                     task_check={"state": report.get("state"),
                                 "scope": copy.deepcopy(report.get("scope")),
                                 "action_id": report.get("action_id")},
@@ -116,6 +274,10 @@ def observe_faithful_g(summary, records, prediction):
         state = report.get("state")
         if state not in ("passed", "failed"):
             reasons.append("no decisive task-check verdict")
+        support = _acceptance_support(report)
+        fact["acceptance_support"] = support
+        if not support:
+            reasons.append("no trusted executed acceptance check supports the verdict; self-derived or unstated reference values are insufficient")
         if state == "failed" and audit.get("failure_source") != "candidate_method":
             reasons.append("failure is not attributed to the candidate method")
         if state == "passed" and audit.get("failure_source") not in ("unknown", None):
@@ -147,8 +309,8 @@ def conditional_g_statistics(samples, min_samples):
     selected = {}
     for evaluation, prediction in sorted(samples, key=lambda pair: (
             pair[1].trace.created_at, pair[1].prediction_id)):
-        benefit = prediction.benefit
-        if benefit is None or benefit.metric != FAITHFUL_G_METRIC:
+        convention = g_observation_convention(prediction)
+        if convention is None:
             continue
         fact = evaluation.benefit or {}
         info = prediction.trace.model_info or {}
@@ -157,7 +319,7 @@ def conditional_g_statistics(samples, min_samples):
         ids = tuple(sorted({str(x) for x in (fact.get("execution_ids") or [])}))
         if not ids:
             ids = (str(info["bound_action_id"]),)
-        identity = (benefit.metric, benefit.observation_rule_version, evaluation.scope,
+        identity = (convention["metric"], convention.get("observation_rule_version"), evaluation.scope,
                     evaluation.model_identity, evaluation.task_id, evaluation.episode_id, ids)
         previous = selected.get(identity)
         if previous and ((previous[0].benefit or {}).get("label_eligibility") == "attributable"
@@ -167,19 +329,24 @@ def conditional_g_statistics(samples, min_samples):
     # Choose one fact before condition grouping: a later context's remaining
     # budget may differ, but that cannot turn one execution into two units.
     for evaluation, prediction in selected.values():
-        benefit = prediction.benefit
+        convention = g_observation_convention(prediction)
         fact = evaluation.benefit or {}
         info = prediction.trace.model_info or {}
         family, cell = info.get("family") or "unknown", info.get("cell_token") or "unknown"
-        rule = benefit.observation_rule_version or "unknown"
-        execution_conditions = info.get("g_execution_conditions")
-        key = json.dumps([benefit.metric, rule, evaluation.scope, family, cell,
-                          evaluation.model_identity, execution_conditions], ensure_ascii=False, sort_keys=True)
-        group = groups.setdefault(key, {"metric": benefit.metric,
+        rule = convention.get("observation_rule_version") or "unknown"
+        actual = fact.get("execution_conditions") or {}
+        execution_conditions = actual.get("comparison_key") or {"solver": None, "config": {}}
+        budget = ((info.get("g_execution_conditions") or {}).get("constraints") or {}).get("declared_budget")
+        key = json.dumps([convention["metric"], rule, evaluation.scope, family, cell,
+                          evaluation.model_identity, execution_conditions, budget], ensure_ascii=False, sort_keys=True)
+        group = groups.setdefault(key, {"metric": convention["metric"],
             "observation_rule_version": rule, "scope": evaluation.scope,
             "conditions": {"family": family, "cell": cell},
             "execution_conditions": copy.deepcopy(execution_conditions),
+            "declared_budget": copy.deepcopy(budget), "task_ids": [],
             "model_identity": evaluation.model_identity, "units": {}})
+        if evaluation.task_id not in group["task_ids"]:
+            group["task_ids"].append(evaluation.task_id)
         ids = sorted({str(x) for x in (fact.get("execution_ids") or [])})
         if not ids:
             # Do not merge unrelated unresolved bindings into one fact.
@@ -247,9 +414,13 @@ def same_task_comparisons(rows):
     for i, (left, lm, a) in enumerate(eligible):
         for right, rm, b in eligible[i+1:]:
             problem = left.get("problem_identity_digest")
+            lc, rc = left.get("execution_conditions") or {}, right.get("execution_conditions") or {}
+            ar, br = a.get("acceptance_rule") or {}, b.get("acceptance_rule") or {}
             if (not problem or problem != right.get("problem_identity_digest")
                     or left.get("task_id") != right.get("task_id") or lm == rm
-                    or left.get("execution_conditions") != right.get("execution_conditions")
+                    or not lc.get("comparable") or not rc.get("comparable")
+                    or lc.get("comparison_key") != rc.get("comparison_key")
+                    or not ar.get("fingerprint") or ar.get("fingerprint") != br.get("fingerprint")
                     or left.get("scope") != right.get("scope")
                     or not a.get("acceptance_id") or a.get("acceptance_id") != b.get("acceptance_id")
                     or a.get("metric") != b.get("metric")
@@ -258,6 +429,8 @@ def same_task_comparisons(rows):
             out.append({"task_id": left["task_id"], "problem_identity_digest": problem,
                 "acceptance_id": a["acceptance_id"], "scope": left.get("scope"),
                 "metric": a["metric"], "observation_rule_version": a["observation_rule_version"],
+                "acceptance_rule_fingerprint": ar["fingerprint"],
+                "execution_conditions": copy.deepcopy(lc["comparison_key"]),
                 "left": {"evaluation_id": left["evaluation_id"], "method_actual": {
                             **left.get("method_actual", {}), "steps": copy.deepcopy(lm)},
                          "observed": a["observed"], "evidence_refs": a.get("evidence_refs")},

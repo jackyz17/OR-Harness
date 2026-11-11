@@ -89,7 +89,7 @@ from or_harness.world_model.contracts import (
 )
 from or_harness.world_model.g_signal import (
     observe_faithful_g, conditional_g_statistics, same_task_comparisons,
-    case_comparisons_for_rows,
+    case_comparisons_for_rows, g_observation_convention,
 )
 
 #: Version of the close-out record schema.
@@ -1545,7 +1545,9 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
     # A prediction declaring one is never scored against the other, even
     # though both land in [0,1].
     benefit = prediction.benefit
-    if benefit is not None and benefit.kind == "solution_quality":
+    if g_observation_convention(prediction) is not None:
+        observe_faithful_g(summary, records, prediction)
+    elif benefit is not None and benefit.kind == "solution_quality":
         observable = _observable_benefit_metric(benefit.metric)
         if observable is None:
             summary.eligibility["benefit"] = {
@@ -2681,16 +2683,20 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 benefit.interval_coverage
         n_compared += 1
 
-    if benefit is not None and benefit.metric == FAITHFUL_G_METRIC:
+    g_convention = g_observation_convention(prediction)
+    if g_convention is not None:
         fact = summary.benefit
         attributable = "observed" in fact and not _blocked("benefit")
         evaluation.benefit.update({
-            "metric": benefit.metric, "unit": benefit.unit,
-            "observation_rule_version": benefit.observation_rule_version,
+            "metric": g_convention["metric"], "unit": g_convention.get("unit"),
+            "observation_rule_version": g_convention.get("observation_rule_version"),
             "label_eligibility": "attributable" if attributable else "unknown",
             "execution_ids": list(summary.execution_ids),
             "task_check": copy.deepcopy(fact.get("task_check")),
             "attribution": copy.deepcopy(fact.get("attribution")),
+            "execution_conditions": copy.deepcopy(fact.get("execution_conditions")),
+            "acceptance_rule": copy.deepcopy(fact.get("acceptance_rule")),
+            "acceptance_support": copy.deepcopy(fact.get("acceptance_support")),
         })
         if attributable:
             for key in ("observed", "acceptance_id", "evidence_refs", "verified_objective"):
@@ -5011,18 +5017,21 @@ def build_paired_feedback(
             continue
         # An old forecast keeps its original error currency. Independently
         # sourced real acceptance facts may still be recalled as case facts.
-        if prediction.benefit is None or prediction.benefit.metric != FAITHFUL_G_METRIC:
+        if g_observation_convention(prediction) is None:
             from types import SimpleNamespace
             records = [harness.bank.get(eid) or harness.bank.get_pending(eid)
                        for eid in _evaluation_execution_ids(evaluation)]
             if records and all(r is not None for r in records) and not evaluation.attribution.get("benefit"):
                 case = SimpleNamespace(benefit={}, eligibility={})
-                declared = SimpleNamespace(candidate=prediction.candidate,
-                    benefit=SimpleNamespace(observation_rule_version=FAITHFUL_G_OBSERVATION_VERSION))
+                declared = SimpleNamespace(candidate=prediction.candidate, benefit=None,
+                    trace=SimpleNamespace(model_info={"benefit_convention": {
+                        "metric": FAITHFUL_G_METRIC,
+                        "observation_rule_version": FAITHFUL_G_OBSERVATION_VERSION}}))
                 observe_faithful_g(case, records, declared)
                 if "observed" in case.benefit:
                     row["g_observed_fact"] = {k: copy.deepcopy(v) for k, v in case.benefit.items()
-                        if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "evidence_refs", "verified_objective")}
+                        if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective")}
+                    row["execution_conditions"] = copy.deepcopy(case.benefit.get("execution_conditions"))
                     row["g_observed_fact"]["label_eligibility"] = "attributable"
                     row["g_observed_fact"]["note"] = "real execution fact; the historical prediction/error retains its original metric"
         n_total += 1
@@ -5875,7 +5884,7 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
         evaluation, "observation_rule_version", None)
     row["conditions"] = _compact_problem_conditions(evaluation, prediction)
     row["problem_identity_digest"] = info.get("problem_identity_digest")
-    row["execution_conditions"] = copy.deepcopy(info.get("g_execution_conditions"))
+    row["execution_conditions"] = copy.deepcopy(benefit.get("execution_conditions"))
     row["task_check"] = copy.deepcopy(benefit.get("task_check"))
     # The method that was planned, one line: its name, the number of steps
     # and the steps THEMSELVES. r12 keeps EVERY step (up to a cap that a
@@ -5965,8 +5974,12 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     benefit_row: Dict[str, Any] = {
         k: copy.deepcopy(benefit[k]) for k in (
             "metric", "observation_rule_version", "label_eligibility",
-            "acceptance_id", "evidence_refs", "verified_objective") if k in benefit
+            "acceptance_id", "acceptance_rule", "evidence_refs", "verified_objective") if k in benefit
     }
+    if prediction.benefit is None and benefit.get("label_eligibility") == "attributable":
+        row["g_observed_fact"] = {k: copy.deepcopy(benefit[k]) for k in (
+            "metric", "observation_rule_version", "observed", "label_eligibility",
+            "acceptance_id", "acceptance_rule", "evidence_refs") if k in benefit}
     if benefit.get("attribution"):
         benefit_row["attribution"] = {k: copy.deepcopy(benefit["attribution"].get(k))
             for k in ("method_fidelity", "failure_source", "source", "assessment")}

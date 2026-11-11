@@ -1693,8 +1693,10 @@ class TestConditionalGFeedback(GCase):
         self.h.declare_budget(self.task["task_id"], {"llm_tokens": 1000}, "ep1")
         first = self.predict_g()
         second = self.predict_g()
-        self.assertNotEqual(first.trace.model_info["g_execution_conditions"],
+        self.assertEqual(first.trace.model_info["g_execution_conditions"],
                             second.trace.model_info["g_execution_conditions"])
+        self.assertNotEqual(first.trace.model_info["frozen_budget_state"],
+                            second.trace.model_info["frozen_budget_state"])
         record = self.run_g(first)
         self.check_g(record)
         self.h.bind_strategy_outcome(second.prediction_id, record.action_id)

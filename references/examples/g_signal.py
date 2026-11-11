@@ -59,6 +59,7 @@ def main():
                     "'runtime_seconds':0.01,'variables':{'BE':be,'CFC':cfc},'method_performed':"
                     + repr(method) + "}\n"
                     "result['method_performed']['action_id']=os.environ['OR_ACTION_ID']\n"
+                    "result['config']={'action_id':os.environ['OR_ACTION_ID'],'time_limit':60}\n"
                     "with open('result.json','w') as f: json.dump(result,f)\n")
                 record = h.execute(task, "S04", str(script), str(work), solver="highs",
                     episode_id=ep, prediction_id=p.prediction_id)

@@ -37,6 +37,9 @@ claim, which executions, which checks, and why that conclusion followed.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
@@ -1784,7 +1787,20 @@ def verify_task_result(execution: Any,
     NOT a pass and NOT a failure. A ``passed`` verdict covers only the
     declared bases: the report always names what it did not check.
     """
+    # Identity comes from the WHOLE declaration, before any failure can
+    # return early. Observed values and the caller's attribution are not rules.
+    rule = {key: copy.deepcopy(check[key]) for key in (
+        "checker_version", "reference_objective", "reference_status", "tolerance",
+        "reference_source", "reference_version", "integer", "recompute_objective",
+        "semantic_probe", "intent") if isinstance(check, dict) and key in check}
+    if isinstance(rule.get("semantic_probe"), dict):
+        rule["semantic_probe"] = [rule["semantic_probe"]]
+    rule = {"checker": "task-check/1", "spec": rule}
+    from or_harness.world_model.g_signal import canonical_evidence
+    fingerprint = hashlib.sha256(json.dumps(canonical_evidence(rule), sort_keys=True, ensure_ascii=False,
+        separators=(",", ":")).encode()).hexdigest()
     report = _verify_task_result(execution, check)
+    report["acceptance_rule"] = {**rule, "fingerprint": fingerprint}
     if isinstance(check, dict) and "g_attribution" in check:
         from or_harness.world_model.g_signal import checked_attribution
         report["g_attribution"] = checked_attribution(execution, check["g_attribution"])

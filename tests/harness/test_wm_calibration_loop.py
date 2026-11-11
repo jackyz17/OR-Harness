@@ -724,5 +724,186 @@ class TestFaithfulGObservations(GCase):
         self.assertNotIn("observed", self.close_g("ep2")["evaluations"][0]["benefit"])
 
 
+class TestGReviewReproductions(GCase):
+    def next_feedback(self, episode="next"):
+        self.predict_g(episode=episode)
+        return self.provider.requests[-1]["prediction_context"]
+
+    def test_self_referenced_or_unstated_objective_cannot_supply_g(self):
+        for ep, source in [("self", "self_derived"), ("unstated", None)]:
+            with self.subTest(source=source):
+                p = self.predict_g(SPLIT, ep)
+                r = self.run_g(p, split=True, execution_config={"time_limit": 60})
+                spec = {"reference_objective": r.quality["objective"]}
+                if source:
+                    spec["reference_source"] = source
+                checked = self.check_g(r, check_spec=spec)
+                self.assertEqual(checked["state"], "passed")
+                self.assertFalse(checked["report"]["reference_source"]["independent"])
+                benefit = self.close_g(ep)["evaluations"][0]["benefit"]
+                self.assertEqual(benefit["label_eligibility"], "unknown")
+                self.assertIn("reference", benefit["reason"])
+        view = self.next_feedback()
+        self.assertTrue(all(g["passed"] == 0 for g in view["strategy_outcome_calibration"]["conditional_g"]))
+
+    def test_weak_failure_cannot_borrow_a_semantic_probe_that_never_ran(self):
+        p = self.predict_g(SPLIT)
+        r = self.run_g(p, split=True, execution_config={"time_limit": 60})
+        checked = self.check_g(r, failure="candidate_method", check_spec={
+            "reference_objective": 999, "reference_source": "self_derived",
+            "semantic_probe": {"path": "execution_features.solution_variables.CFC", "equals": 1}})
+        self.assertEqual(checked["state"], "failed")
+        self.assertFalse(any(c["check"] == "semantic_probe" for c in checked["report"]["checks"]))
+        self.assertEqual(self.close_g()["evaluations"][0]["benefit"]["label_eligibility"], "unknown")
+        self.assertFalse(self.next_feedback()["prediction_execution_pairs"]["same_task_comparisons"])
+
+    def test_different_actual_time_limits_remain_individual_cases(self):
+        for ep, method, limit, split in [("short", SPLIT, 15, True), ("long", COUPLED, 180, False)]:
+            p = self.predict_g(method, ep)
+            self.assertNotIn("time_limit", p.candidate.config)
+            r = self.run_g(p, split=split, execution_config={"time_limit": limit})
+            self.assertEqual(r.execution_features["execution_config"]["values"]["time_limit"], limit)
+            self.check_g(r, failure="candidate_method" if split else "unknown")
+            self.close_g(ep)
+        pairs = self.next_feedback()["prediction_execution_pairs"]
+        self.assertEqual(len(pairs["pairs"]), 2)
+        self.assertFalse(pairs["same_task_comparisons"])
+
+    def test_same_acceptance_id_cannot_hide_changed_probe_threshold(self):
+        for ep, method, expected in [("a", SPLIT, 1), ("b", COUPLED, 2)]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p, execution_config={"time_limit": 60})
+            self.check_g(r, failure="unknown" if expected == 1 else "candidate_method",
+                check_spec={"semantic_probe": {"path": "execution_features.solution_variables.CFC", "equals": expected}})
+            self.close_g(ep)
+        pairs = self.next_feedback()["prediction_execution_pairs"]
+        self.assertEqual(len(pairs["pairs"]), 2)
+        self.assertFalse(pairs["same_task_comparisons"])
+
+    def test_equivalent_rules_pair_even_when_failure_returns_early(self):
+        fingerprints = []
+        spec = {"checker_version": "factory-check/1", "semantic_probe": [
+            {"path": "execution_features.solution_variables.CFC", "equals": 1},
+            {"path": "execution_features.solution_variables.BE", "equals": 1}]}
+        for ep, method, split in [("fail", SPLIT, True), ("pass", COUPLED, False)]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p, split=split, execution_config={"time_limit": 60})
+            report = self.check_g(r, failure="candidate_method" if split else "unknown", check_spec=spec)["report"]
+            fingerprints.append(report.get("acceptance_rule", {}).get("fingerprint"))
+            self.close_g(ep)
+        self.assertTrue(fingerprints[0])
+        self.assertEqual(fingerprints[0], fingerprints[1])
+        comparison = self.next_feedback()["prediction_execution_pairs"]["same_task_comparisons"][0]
+        self.assertEqual({comparison["left"]["observed"], comparison["right"]["observed"]}, {0, 1})
+
+    def test_cross_family_statistics_stay_in_audit_not_current_request(self):
+        self.task["family"] = "scheduling"
+        p = self.predict_g()
+        r = self.run_g(p, execution_config={"time_limit": 60})
+        self.check_g(r)
+        self.close_g()
+        self.assertEqual(self.h.calibration_summary()["conditional_g"][0]["conditions"]["family"], "scheduling")
+        self.task["family"] = "assignment"
+        self.task["task_id"] = "another"
+        self.assertFalse(self.next_feedback()["strategy_outcome_calibration"]["conditional_g"])
+
+    def test_three_tokens_do_not_split_identical_executed_conditions(self):
+        self.provider.usage = {"prompt_tokens": 2, "completion_tokens": 1}
+        self.h.declare_budget(self.task["task_id"], {"llm_tokens": 1000}, "ep1")
+        first = self.predict_g()
+        second = self.predict_g()
+        for p, limit in ((first, 60), (second, 60.0)):
+            r = self.run_g(p, execution_config={"time_limit": limit})
+            self.check_g(r)
+        self.close_g()
+        groups = self.h.calibration_summary()["conditional_g"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["passed"], 2)
+        self.h.declare_budget(self.task["task_id"], {"llm_tokens": 1000}, "next")
+        self.assertEqual(self.next_feedback()["strategy_outcome_calibration"]["conditional_g"][0]["passed"], 2)
+
+    def test_omitting_entire_benefit_still_observes_execution(self):
+        self.provider.payload.pop("benefit")
+        p = self.predict_g()
+        self.assertIsNone(p.benefit)
+        r = self.run_g(p, execution_config={"time_limit": 60})
+        self.check_g(r)
+        benefit = self.close_g()["evaluations"][0]["benefit"]
+        self.assertEqual(benefit["eligibility"], "not_predicted")
+        view = self.next_feedback()
+        groups = view["strategy_outcome_calibration"]["conditional_g"]
+        self.assertEqual(len(groups), 1)
+        self.assertEqual((groups[0]["passed"], groups[0]["n_scored"]), (1, 0))
+        self.assertEqual(groups[0]["probability_bins"], [])
+        self.assertEqual(view["prediction_execution_pairs"]["pairs"][0]["g_observed_fact"]["observed"], 1)
+
+    def test_missing_actual_limit_keeps_labelled_cases_unpaired(self):
+        for ep, method, config in [("a", SPLIT, {}), ("b", COUPLED, {}),
+                ("c", SPLIT, {"time_limit": None}), ("d", COUPLED, {"time_limit": None})]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p, execution_config=config)
+            self.check_g(r)
+            self.close_g(ep)
+        pairs = self.next_feedback()["prediction_execution_pairs"]
+        self.assertEqual(pairs["n_pairs_total"], 4)
+        self.assertTrue(all(row["benefit"]["observed"] == 1 for row in pairs["pairs"]))
+        self.assertFalse(pairs["same_task_comparisons"])
+
+    def test_independent_reference_can_support_covered_objective_acceptance(self):
+        method = {"name": "constant objective", "steps": ["Return objective 100."]}
+        for ep, expected, label in [("equal", 100, 1), ("different", 999, 0)]:
+            self.task["description"] = f"Return the specified objective {expected}; exact equality is the entire acceptance rule."
+            p = self.predict_g(method, ep)
+            r = self.run_g(p)
+            self.check_g(r, failure="unknown" if label else "candidate_method", check_spec={
+                "reference_objective": expected, "tolerance": 0, "reference_source": "independent",
+                "reference_version": "objective-fixture/1"})
+            self.assertEqual(self.close_g(ep)["evaluations"][0]["benefit"]["observed"], label)
+
+    def test_condition_selection_precedes_size_trimming_and_keeps_audit(self):
+        from unittest.mock import patch
+        from or_harness.world_model import context as context_module
+        for family in ("scheduling", "assignment"):
+            self.task["family"] = family
+            self.task["task_id"] = family
+            p = self.predict_g()
+            r = self.run_g(p)
+            self.check_g(r)
+            self.close_g()
+        audit = self.h.calibration_summary()["conditional_g"]
+        self.assertEqual(len(audit), 2)
+        original = context_module._bound_request
+        seen = []
+
+        def bounded(view):
+            groups = view["strategy_outcome_calibration"]["conditional_g"]
+            self.assertEqual([g["conditions"]["family"] for g in groups], ["assignment"])
+            seen.append(True)
+            return original(view)
+
+        with patch.object(context_module, "_bound_request", side_effect=bounded):
+            view = self.next_feedback()
+        self.assertTrue(seen)
+        selected = view["strategy_outcome_calibration"]
+        self.assertEqual(selected["conditional_g_selection"]["n_available"], 2)
+        self.assertIn("tc", selected["conditional_g"][0]["applicability"]["unknown_fields"])
+        self.assertIn("sparse", selected["conditional_g"][0]["support"])
+        self.assertEqual(self.h.calibration_summary()["conditional_g"], audit)
+        self.task["task_id"] = "low_coupling"
+        self.task["annotations"]["coupling"]["resource_coupling"] = 0.1
+        self.assertFalse(self.next_feedback("other")["strategy_outcome_calibration"]["conditional_g"])
+
+    def test_checker_version_and_tolerance_are_part_of_rule_identity(self):
+        for ep, method, tolerance, version in [
+                ("a", SPLIT, 0, "v1"), ("b", COUPLED, 1, "v1"), ("c", COUPLED, 0, "v2")]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p)
+            self.check_g(r, check_spec={"reference_objective": 100, "reference_source": "independent",
+                "tolerance": tolerance, "checker_version": version,
+                "semantic_probe": {"path": "execution_features.solution_variables.CFC", "equals": 1}})
+            self.close_g(ep)
+        self.assertFalse(self.next_feedback()["prediction_execution_pairs"]["same_task_comparisons"])
+
+
 if __name__ == "__main__":
     unittest.main()

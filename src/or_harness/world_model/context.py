@@ -1715,7 +1715,7 @@ class PredictionContext:
         """How many pieces of evidence of each class the context carries."""
         return self.retrieval.evidence_classes()
 
-    def provider_view(self) -> Dict[str, Any]:
+    def provider_view(self, *, g_candidate=None, g_convention=None) -> Dict[str, Any]:
         """The fragment of this context a provider is actually given.
 
         Kept as its own method so the test that asserts "the new joint
@@ -1796,6 +1796,13 @@ class PredictionContext:
         }
         if omitted:
             view["omitted"] = omitted
+        from or_harness.world_model.g_signal import select_conditional_g, requested_solving_conditions
+        from or_harness.world_model.contracts import FAITHFUL_G_CONVENTION
+        view["strategy_outcome_calibration"] = select_conditional_g(
+            view["strategy_outcome_calibration"], profile=self.joint.profile or {},
+            conditions=requested_solving_conditions(g_candidate, self.execution_constraints),
+            convention=g_convention or FAITHFUL_G_CONVENTION,
+            scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
         return _bound_request(view)
 
 
