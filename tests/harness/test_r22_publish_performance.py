@@ -113,7 +113,7 @@ class ReproCase(HarnessTestCase):
             task = _task(tid)
             preds = [self.h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, "ep1") for _ in range(per)]
+                       "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'}) for _ in range(per)]
             for a in range(per):
                 rec = self.solve(task, episode_id="ep1")
                 self.h.bind_strategy_outcome(preds[a].prediction_id,
@@ -168,7 +168,7 @@ class TestBudgetLedgerReadsPerTask(ReproCase):
         # An execution WITH an episode linkage.
         pred = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         rec = self.solve(task, episode_id="ep1")
         self.h.bind_strategy_outcome(pred.prediction_id, rec.action_id)
         # An execution with NO action linkage (directly recorded).

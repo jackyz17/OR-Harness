@@ -7825,6 +7825,9 @@ class ORHarness:
             action = self.actions.by_execution(execution_id)
             resolved_episode = action.episode_id if action is not None else None
         report = verify_task_result(record, check or {})
+        # Optional sourced method/acceptance assessment stays on the existing
+        # check record. It never changes the checker's pass/fail verdict.
+        # Merely matching method prose is not evidence of faithful execution.
         # The annotation travels with the verdict so a LATE correction is
         # scoped: an evaluation of episode A is not invalidated by a failure
         # in episode B of the same task.

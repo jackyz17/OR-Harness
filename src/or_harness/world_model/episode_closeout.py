@@ -84,6 +84,13 @@ from or_harness.world_model.cost_eligibility import (
     MEASURED,
     cost_eligibility,
 )
+from or_harness.world_model.contracts import (
+    FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
+)
+from or_harness.world_model.g_signal import (
+    observe_faithful_g, conditional_g_statistics, same_task_comparisons,
+    case_comparisons_for_rows,
+)
 
 #: Version of the close-out record schema.
 EPISODE_CLOSEOUT_VERSION = "wm-closeout/1"
@@ -184,7 +191,7 @@ OBSERVABLE_BENEFIT_METRIC = "normalized_objective_gap"
 OBSERVABLE_COMPLETION_METRIC = "task_result_check_passed"
 
 OBSERVABLE_BENEFIT_METRICS = (
-    OBSERVABLE_BENEFIT_METRIC, OBSERVABLE_COMPLETION_METRIC)
+    OBSERVABLE_BENEFIT_METRIC, OBSERVABLE_COMPLETION_METRIC, FAITHFUL_G_METRIC)
 
 #: Declared-metric spellings that map onto an observable metric. The
 #: completion spellings are listed EXPLICITLY rather than folded into the
@@ -1667,7 +1674,9 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                 }
     elif benefit is not None and benefit.kind == "effective_completion":
         observable = _observable_benefit_metric(benefit.metric)
-        if observable == OBSERVABLE_COMPLETION_METRIC or observable is None \
+        if benefit.metric == FAITHFUL_G_METRIC:
+            observe_faithful_g(summary, records, prediction)
+        elif observable == OBSERVABLE_COMPLETION_METRIC or observable is None \
                 and str(benefit.metric or "") in (
                     "task_result_check_passed", "task_check_passed"):
             _observe_completion(summary, records, scope=candidate.scope)
@@ -2602,12 +2611,20 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
     declared_yardstick = ({
         "metric": benefit.metric, "unit": benefit.unit,
         "predicted": (round(float(benefit.value), 6)
-                      if benefit.value is not None else None),
+                      if benefit.value is not None and (benefit.metric != FAITHFUL_G_METRIC
+                          or is_g_probability(benefit.value)) else None),
     } if benefit is not None else {})
-    if benefit is None or benefit.value is None:
+    if benefit is not None and benefit.metric == FAITHFUL_G_METRIC and benefit.value is not None and (
+            not is_g_probability(benefit.value) or benefit.unit != "probability" or
+            benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION):
+        evaluation.benefit = {"eligibility": "not_predicted",
+            "reason": "invalid faithful G value/unit/observation rule", "metric": benefit.metric,
+            "unit": benefit.unit, "predicted": None}
+    elif benefit is None or benefit.value is None:
         evaluation.benefit = {
             "eligibility": "not_predicted",
-            "reason": "the prediction carried no benefit value",
+            "reason": (prediction.trace.unsupported_fields.get("benefit") or
+                       "the prediction carried no benefit value"),
             **declared_yardstick,
         }
     elif "observed" not in summary.benefit:
@@ -2638,9 +2655,8 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "abs_error": round(abs(predicted - observed), 6),
             # DIRECTED error: positive = the prediction was too LOW (the
             # real outcome was better than predicted); negative = too HIGH.
-            # A magnitude alone cannot tell an over-estimate from an
-            # under-estimate, which is exactly what a later prediction needs
-            # to correct for.
+            # Retained for diagnosis; this residual generates no G
+            # correction instruction for later candidates.
             "signed_error": round(observed - predicted, 6),
             "baseline": (benefit.baseline.to_dict()
                          if benefit.baseline is not None else None),
@@ -2664,6 +2680,26 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             evaluation.benefit["interval_coverage"] = \
                 benefit.interval_coverage
         n_compared += 1
+
+    if benefit is not None and benefit.metric == FAITHFUL_G_METRIC:
+        fact = summary.benefit
+        attributable = "observed" in fact and not _blocked("benefit")
+        evaluation.benefit.update({
+            "metric": benefit.metric, "unit": benefit.unit,
+            "observation_rule_version": benefit.observation_rule_version,
+            "label_eligibility": "attributable" if attributable else "unknown",
+            "execution_ids": list(summary.execution_ids),
+            "task_check": copy.deepcopy(fact.get("task_check")),
+            "attribution": copy.deepcopy(fact.get("attribution")),
+        })
+        if attributable:
+            for key in ("observed", "acceptance_id", "evidence_refs", "verified_objective"):
+                if key in fact:
+                    evaluation.benefit[key] = copy.deepcopy(fact[key])
+        else:
+            evaluation.benefit["reason"] = (
+                _block_reason("benefit") if _blocked("benefit") else
+                (summary.eligibility.get("benefit") or {}).get("reason", "no attributable label"))
 
     # -- cost -----------------------------------------------------------------
     predicted_cost = prediction.cost
@@ -3853,6 +3889,7 @@ def build_calibration_summary(harness, *,
     groups: Dict[str, Dict[str, Any]] = {}
     exclusions: Dict[str, int] = {}
     corrected: List[Dict[str, Any]] = []
+    g_samples = []
     for stored_evaluation in evaluations:
         # LIVE DERIVATION (shared when supplied). The stored evaluation is
         # history; what the calibration reads is re-derived from the CURRENT
@@ -3885,6 +3922,9 @@ def build_calibration_summary(harness, *,
         if evaluation.state == "pending":
             exclusions["pending"] = exclusions.get("pending", 0) + 1
             continue
+        prediction = harness.strategy_predictions.get(evaluation.prediction_id)
+        if prediction is not None:
+            g_samples.append((evaluation, prediction))
         benefit = evaluation.benefit or {}
         metric = str(benefit.get("metric") or "(none)")
         unit = str(benefit.get("unit") or "(none)")
@@ -3894,8 +3934,8 @@ def build_calibration_summary(harness, *,
         # measured under different rules are DIFFERENT measurements and must
         # never pool. A legacy evaluation that wrote none groups under
         # ``(unknown)`` rather than being assumed current.
-        obs_rule = str(getattr(evaluation, "observation_rule_version",
-                               "") or "(unknown)")
+        obs_rule = str(benefit.get("observation_rule_version") or
+                       getattr(evaluation, "observation_rule_version", "") or "(unknown)")
         group_key = (f"strategy_outcome|{model_identity}|{metric}|{unit}"
                      f"|{scope}|{obs_rule}")
         group = groups.setdefault(
@@ -4212,6 +4252,7 @@ def build_calibration_summary(harness, *,
         "exclusions": exclusions,
         "validity_corrections": corrected,
         "groups": out_groups,
+        "conditional_g": conditional_g_statistics(g_samples, min_samples),
         "occurrence": occurrence,
         # DETERMINISTIC rule reminders: the measured statistics turned into
         # short "what to watch next time" notes. No model call, no fitted
@@ -4353,6 +4394,7 @@ def _filter_pairs_by_model(block: Dict[str, Any],
             else:
                 withheld += 1
     filtered["pairs"] = kept
+    filtered["same_task_comparisons"] = same_task_comparisons(kept)
     filtered["filtered"] = True
     filtered["model_identity"] = str(model_identity)
     filtered["n_pairs_included"] = len(kept)
@@ -4530,6 +4572,9 @@ def _live_evaluation(harness, stored: StrategyPredictionEvaluation
     try:
         summary = summarize_real_outcome(harness, prediction)
         derived = evaluate_strategy_prediction(prediction, summary)
+        # A derived view cites the stored evaluation identity. Generating a
+        # fresh reference on every publish makes facts and counts unstable.
+        derived.evaluation_id = stored.evaluation_id
     except Exception:      # a live derivation that cannot run changes nothing
         return stored, None
 
@@ -4964,6 +5009,22 @@ def build_paired_feedback(
         row = _paired_feedback_row(evaluation, prediction)
         if row is None:
             continue
+        # An old forecast keeps its original error currency. Independently
+        # sourced real acceptance facts may still be recalled as case facts.
+        if prediction.benefit is None or prediction.benefit.metric != FAITHFUL_G_METRIC:
+            from types import SimpleNamespace
+            records = [harness.bank.get(eid) or harness.bank.get_pending(eid)
+                       for eid in _evaluation_execution_ids(evaluation)]
+            if records and all(r is not None for r in records) and not evaluation.attribution.get("benefit"):
+                case = SimpleNamespace(benefit={}, eligibility={})
+                declared = SimpleNamespace(candidate=prediction.candidate,
+                    benefit=SimpleNamespace(observation_rule_version=FAITHFUL_G_OBSERVATION_VERSION))
+                observe_faithful_g(case, records, declared)
+                if "observed" in case.benefit:
+                    row["g_observed_fact"] = {k: copy.deepcopy(v) for k, v in case.benefit.items()
+                        if k in ("metric", "observation_rule_version", "observed", "acceptance_id", "evidence_refs", "verified_objective")}
+                    row["g_observed_fact"]["label_eligibility"] = "attributable"
+                    row["g_observed_fact"]["note"] = "real execution fact; the historical prediction/error retains its original metric"
         n_total += 1
         rows.append((stored_evaluation, evaluation, row))
 
@@ -5050,6 +5111,7 @@ def build_paired_feedback(
         # RELEVANT to it without re-reading the bank.
         "selection_meta": _selection_meta(selection_rows),
         "pairs": included,
+        "same_task_comparisons": same_task_comparisons(included),
     }
     if omitted:
         out["omission_note"] = (
@@ -5397,6 +5459,8 @@ def select_paired_feedback(
         omitted += sum(1 for t in scored if t[0] == 0)
 
     out["pairs"] = selected
+    out.update(case_comparisons_for_rows(
+        block.get("same_task_comparisons") or same_task_comparisons(pairs), selected, cap))
     out["n_pairs_included"] = len(selected)
     out["n_pairs_omitted"] = omitted
     out["n_background"] = background
@@ -5587,41 +5651,8 @@ def _prediction_reminders(out_groups: Dict[str, Any],
         distinct = group.get("n_distinct_episodes") or 0
         if distinct < min_samples:
             continue
-        # BENEFIT bias: directed signed error.
-        signed = group.get("mean_benefit_signed_error")
-        benefit_evidence = group.get("benefit_evidence") or {}
-        if signed is not None \
-                and benefit_evidence.get("evidence") == "measured":
-            n = benefit_evidence.get("n_distinct_episodes")
-            direction = ("UNDER-predicted" if signed > 0
-                         else "OVER-predicted" if signed < 0 else "unbiased")
-            if abs(float(signed)) > 1e-9:
-                rec_id += 1
-                reminders.append({
-                    "reminder_id": f"rem_{rec_id:03d}",
-                    "kind": "derived_reminder",
-                    "basis": "measured_statistics",
-                    "field": "benefit",
-                    "applicability": copy.deepcopy(applicability),
-                    "observed_bias": {
-                        "mean_signed_error": signed,
-                        "direction": direction,
-                        "n_distinct_episodes": n,
-                        "note": ("observed (fact): the mean directed error "
-                                 "of past predictions under this "
-                                 "applicability; positive = the real "
-                                 "outcome was historically BETTER"),
-                    },
-                    "watch_next_time": (
-                        f"under {metric}/{unit} at scope {scope}, past "
-                        f"predictions were {direction} by "
-                        f"{abs(float(signed)):.4f} on average over {n} "
-                        "distinct episode(s): adjust the value in that "
-                        "direction, or state "
-                        "unsupported_fields['benefit'] if the evidence "
-                        "does not justify a number"),
-                    "support": [key],
-                })
+        # G residuals remain in diagnostic groups. They never generate
+        # a directional correction, even with many independent episodes.
         # COST bias per dimension: directed log-ratio.
         cost_ratio = group.get("mean_cost_log_ratio") or {}
         cost_evidence = group.get("cost_evidence") or {}
@@ -5694,65 +5725,12 @@ def _prediction_reminders(out_groups: Dict[str, Any],
     return reminders
 
 
-#: A single-observation benefit error this large is worth a scoped "watch
-#: this" note even without the multi-episode threshold: it is NOT a
-#: statistical lesson, only a flagged case.
-SINGLE_CASE_ERROR_THRESHOLD = 0.5
-
-
 def _single_case_reminders(out_groups: Dict[str, Any],
                            min_samples: int) -> List[Dict[str, Any]]:
-    """SCOPED reminders from a group that has too FEW episodes to generalise.
-
-    A group below the multi-episode threshold yields no statistical reminder
-    (one observation is not a lesson). But a LARGE single-observation error
-    is still worth flagging as a case: the reminder is stamped
-    ``kind="single_case_reminder"`` / ``basis="single_observation"`` with its
-    applicability and the ONE episode id, so a reader sees a flagged case and
-    never mistakes it for a measured bias. This is the range-limited
-    counterpart the multi-episode reminders deliberately do not provide.
-    """
-    out: List[Dict[str, Any]] = []
-    rec_id = 0
-    for key, group in sorted(out_groups.items()):
-        distinct = group.get("n_distinct_episodes") or 0
-        if distinct == 0 or distinct >= min_samples:
-            continue  # covered by the statistical reminders above
-        evidence = group.get("benefit_evidence") or {}
-        if evidence.get("evidence") != "measured":
-            continue
-        signed = group.get("mean_benefit_signed_error")
-        if signed is None or abs(float(signed)) < SINGLE_CASE_ERROR_THRESHOLD:
-            continue
-        parts = str(key).split("|")
-        rec_id += 1
-        out.append({
-            "reminder_id": f"rem_single_{rec_id:03d}",
-            "kind": "single_case_reminder",
-            "basis": "single_observation",
-            "field": "benefit",
-            "applicability": {
-                "metric": parts[2] if len(parts) > 2 else "(none)",
-                "unit": parts[3] if len(parts) > 3 else "(none)",
-                "scope": parts[4] if len(parts) > 4 else "(none)",
-                "model_identity": parts[1] if len(parts) > 1 else "(unknown)",
-            },
-            "observed": {
-                "mean_signed_error": signed,
-                "n_distinct_episodes": distinct,
-                "note": ("observed (fact): a single episode's directed error; "
-                         "NOT a measured bias — too few episodes to "
-                         "generalise"),
-            },
-            "watch_next_time": (
-                f"a single past prediction under this applicability missed by "
-                f"{abs(float(signed)):.3f} (positive = the real outcome was "
-                "better). Treat it as a flagged CASE, not a correction: it "
-                "shows where your estimate can be far off, not how far it "
-                "usually is"),
-            "support": [key],
-        })
-    return out
+    """Retired G correction entry point; cases remain in paired feedback."""
+    # A large single G residual is a case fact in the paired feedback,
+    # not a correction instruction. Retain this entry point for old callers.
+    return []
 
 
 def _compact_method_steps(steps: Sequence[Any], *,
@@ -5896,6 +5874,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     row["observation_rule_version"] = getattr(
         evaluation, "observation_rule_version", None)
     row["conditions"] = _compact_problem_conditions(evaluation, prediction)
+    row["problem_identity_digest"] = info.get("problem_identity_digest")
+    row["execution_conditions"] = copy.deepcopy(info.get("g_execution_conditions"))
     row["task_check"] = copy.deepcopy(benefit.get("task_check"))
     # The method that was planned, one line: its name, the number of steps
     # and the steps THEMSELVES. r12 keeps EVERY step (up to a cap that a
@@ -5982,7 +5962,17 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     # The ORIGINAL prediction (read-only) and the real observation, with the
     # per-field difference. A field the prediction did not carry is simply
     # absent — never a zero.
-    benefit_row: Dict[str, Any] = {}
+    benefit_row: Dict[str, Any] = {
+        k: copy.deepcopy(benefit[k]) for k in (
+            "metric", "observation_rule_version", "label_eligibility",
+            "acceptance_id", "evidence_refs", "verified_objective") if k in benefit
+    }
+    if benefit.get("attribution"):
+        benefit_row["attribution"] = {k: copy.deepcopy(benefit["attribution"].get(k))
+            for k in ("method_fidelity", "failure_source", "source", "assessment")}
+    predicted_benefit = getattr(prediction, "benefit", None)
+    if predicted_benefit is not None and predicted_benefit.notes:
+        benefit_row["notes"] = list(predicted_benefit.notes)
     if benefit.get("predicted") is not None:
         benefit_row["predicted"] = benefit.get("predicted")
         benefit_row["metric"] = benefit.get("metric")
@@ -6125,6 +6115,9 @@ def _filter_calibration_by_model(summary: Dict[str, Any],
             withheld.append(str(key))
     filtered["groups"] = kept
     filtered["filtered"] = True
+    if "conditional_g" in filtered:
+        filtered["conditional_g"] = [g for g in filtered["conditional_g"]
+            if g.get("model_identity", "(unknown)") == str(model_identity)]
     filtered["model_identity"] = str(model_identity)
     if withheld:
         filtered["withheld_groups"] = withheld

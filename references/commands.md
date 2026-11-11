@@ -178,8 +178,12 @@ Declare the benefit meaning before observing the result:
 | Kind / metric | Observation |
 |---|---|
 | `solution_quality` / `normalized_objective_gap` | Solver gap; optimal has gap zero |
-| `effective_completion` / `task_result_check_passed` | Declared task check: passed=1, confirmed failed=0, unchecked=unknown |
+| `effective_completion` / `task_check_passed_given_faithful_execution` (**new default**) | `probability`, `wm-g-faithful/1`: faithful+original acceptance passed=1, faithful+confirmed method-caused failure=0, otherwise unknown |
+| legacy `effective_completion` / `task_result_check_passed` | Declared task check: passed=1, confirmed failed=0, unchecked=unknown |
 | `valid_progress` | No observation channel in this build; reported without scoring |
+
+New G is P(original-task acceptance | faithful execution of the candidate steps under the agreed solving conditions); method omissions remain omitted, while script implementation risk belongs in R. The request fixes convention and scope before the call. A different metric or non-finite/out-of-range numeric G makes G unavailable with a reason, preserving C/R. `benefit.notes` keeps one grounded requirement → candidate step → expected-consequence sentence even when `value` is absent. Explicit old API/planning conventions and stored forecasts keep their original meanings.
+
 
 **Recover / next:** No usable prediction is `invalid` with `result.failure`; configuration/availability and actual forecast production are separate facts. One call, no automatic retries/default forecasts. Failures are saved with usage consumed:
 
@@ -377,7 +381,11 @@ Execute actions are logged automatically; induction logs maintenance under `__ma
 
 **Read:** Per-field benefit errors under the declared metric/baseline, same-scope measured cost errors, labelled-risk Brier scores, interval coverage, pending/excluded reasons, `task_checks`, and `cost_completeness_warnings`. Warnings identify execution IDs with unknown token/tool-call dimensions; use late usage/amendment if available. Honest incomplete costs do not block closing.
 
-Solver quality remains the solver's measurement. Task failure is a separate `benefit.task_check`; completion is observed through `effective_completion/task_result_check_passed`. Closing is not answer certification, and unchecked validity remains unknown.
+Solver quality remains the solver's measurement. Task failure is a separate `benefit.task_check`; new G is observed through `effective_completion/task_check_passed_given_faithful_execution` only with sourced fidelity and original-acceptance evidence; explicit legacy completion retains its old rules. Closing is not answer certification, and unchecked validity remains unknown.
+
+For new G, the optional `g_attribution` object belongs inside the existing `--check` JSON. Declare `method_fidelity`, `failure_source`, `acceptance_scope`, a versioned `acceptance_id`, `source`, `assessment` and `evidence_refs`. It cites code AND result evidence on the execution; it does not alter the ordinary checker verdict. See the [complete evidence schema and example](episode_closeout.md#g-attribution-evidence). Crashes/timeouts with no evaluable result, method changes, implementation omissions, inadequate acceptance or unclear causes leave G unknown. Same step text or a checker `failed` alone is insufficient.
+
+`close-episode` publishes conditional G facts and same-task method comparisons through the existing feedback blocks. Global G residuals remain diagnostic; G correction reminders are removed, including old cached reminders at the provider boundary. Conditional counts deduplicate repeated execution/ranges; Brier/bins require both numeric G and an attributable label. Two methods passing the same binary checker tie.
 
 **Late corrections:** Stored evaluations retain what was known at close-out. Live re-derivation updates later calibration use, reported in `validity_corrections[]`; within-window corrections republish calibration (`calibration_republished`). A late failed check changes task-check/completion facts while retaining measured solver quality/cost; withdrawn checks restore the ungated state; excluded executions remove their sample. Corrections are scoped to the executions actually compared, not sibling evaluations.
 

@@ -38,12 +38,16 @@ import math
 import time
 from typing import Any, Dict, List, Optional, Sequence
 
-from or_harness.core.schema import COST_DIMENSIONS, CostVector
+from or_harness.core.schema import COST_DIMENSIONS, CostVector, ProblemProfile, group_key
 from or_harness.core.schema import (
     is_finite_number as _finite,
     is_probability as _prob,
 )
 from or_harness.world_model.contracts import (
+    FAITHFUL_G_CONVENTION,
+    FAITHFUL_G_METRIC,
+    FAITHFUL_G_OBSERVATION_VERSION,
+    is_g_probability,
     BaselineStatement,
     BenefitEstimate,
     CandidateRef,
@@ -208,22 +212,29 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "  BENEFIT CONVENTION: the request carries a `benefit_convention` "
     "block naming the ONE yardstick this decision uses. Predict under it. "
     "The PRIMARY benefit is `kind=effective_completion` with "
-    "`metric=task_result_check_passed`: whether the ORIGINAL TASK is "
-    "effectively completed. `kind=solution_quality` with "
+    "`metric=task_check_passed_given_faithful_execution`: the probability "
+    "that faithfully implementing the candidate steps, under the current "
+    "original task and agreed solving conditions, passes original-task "
+    "acceptance. Faithful means the code follows the candidate steps; "
+    "constraints omitted by the METHOD remain omitted in this assumption. "
+    "Focus on the original requirements, candidate steps and expected "
+    "result. Whether a script can be implemented successfully belongs to "
+    "implementation risk, not this conditional G. `kind=solution_quality` with "
     "`metric=normalized_objective_gap` measures how well the SOLVER solved "
     "the MODEL it was given — that is a SUPPORTING fact, NOT the same as "
     "completing the task: a solved model whose answer does not satisfy the "
-    "task is NOT an effective completion. Judge the primary benefit by "
-    "synthesising FOUR layers: (1) does the method match what the question "
-    "actually asks; (2) are the constraints modelled correctly; (3) is the "
-    "implementation actually completed; (4) is the RESULT valid for the "
-    "task (not merely optimal for a wrong model). Keep feasibility, "
+    "task is NOT an effective completion. Keep feasibility, "
     "solution quality and optimality as SEPARATE supporting facts; never "
     "treat 'not proven optimal' as 'no benefit'. These measures are never "
-    "interchanged. If you declare a different kind or metric, your "
-    "prediction is kept and reported, but it is NOT ranked on the "
-    "comparison's yardstick: an upside in a currency the comparison cannot "
-    "read is never scored as zero.\n"
+    "interchanged. Use EXACTLY the framework's required kind, metric, unit "
+    "and scope. A mismatch or non-finite/out-of-range G is unavailable. "
+    "In benefit.notes write ONE evidence-grounded sentence linking the "
+    "decisive task condition, candidate steps and expected consequence. "
+    "If evidence is insufficient, name the missing condition. Preserve "
+    "this sentence even when no numeric G is justified. Example: the task "
+    "requires BE and CFC at one factory; the candidate selects their "
+    "factories separately then merges, so a cross-factory answer may result. "
+    "The main agent decides how to revise the method.\n"
     "  INTERVAL SEMANTICS: an interval must say WHAT it is about. "
     "`interval_kind=\"outcome\"` covers ONE execution's observed value; "
     "`interval_kind=\"mean\"` covers the average over repeated runs. A "
@@ -367,8 +378,8 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "\"insufficient_basis\".\n"
     "CALIBRATION EVIDENCE: the context may carry a "
     "`strategy_outcome_calibration` block describing how THIS model's past "
-    "predictions turned out. Use it to adjust your numbers, and read it "
-    "carefully:\n"
+    "predictions turned out. Read its definitions and support carefully; "
+    "global benefit residuals are diagnostics and supply no G adjustment:\n"
     "  * it is grouped by (model, metric, unit, scope). Only groups whose "
     "model/metric/unit/scope MATCH the metric and scope you are predicting "
     "under are your evidence. A group with a different metric, unit or "
@@ -376,7 +387,8 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "it as support for this number.\n"
     "  * `mean_benefit_signed_error` is directed: POSITIVE means the real "
     "outcome was historically BETTER than predicted (this model "
-    "under-predicts benefit); NEGATIVE means it over-predicts.\n"
+    "under-predicts benefit); NEGATIVE means it over-predicts. Neither sign "
+    "is an instruction to change this candidate's G.\n"
     "  * `mean_cost_log_ratio` is directed per dimension: POSITIVE means the "
     "real cost was historically HIGHER than predicted (under-predicts "
     "cost); NEGATIVE means over-predicts.\n"
@@ -394,7 +406,10 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "HIGHER), the task-check outcome and any not-comparable reasons. Read "
     "them as EVIDENCE about your own past accuracy under similar "
     "conditions — successes AND failures are included, and a cross-cell or "
-    "cross-strategy-name case is still evidence about your bias. When a "
+    "cross-strategy-name case is a case to inspect. Global G residuals are "
+    "diagnostic only: never turn their direction or a single large G error "
+    "into an instruction to raise or lower G. Use attributable conditional "
+    "facts and same-task comparisons within their stated support. When a "
     "pair's field is unknown or not comparable, that does NOT invalidate "
     "its other fields. Do NOT read a pair as a menu: it is a record of what "
     "was predicted and what happened, never a recommendation. The pairs "
@@ -415,13 +430,12 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "point at the content (`knowledge_ref` / `claim_ref` / `full_text_ref`) "
     "rather than repeating it. A similarity is a DISCOVERY signal only, "
     "never a quality or risk estimate.\n"
-    "PREDICTION REMINDERS: a `prediction_reminders` block may carry "
-    "DETERMINISTIC 'watch this next time' notes derived from the measured "
-    "statistics above (never written by a model). Each states the "
-    "applicability it came from and the observed bias; apply it only where "
-    "its applicability matches the metric/scope you are predicting under, "
-    "and treat the observed bias as a measured FACT, the instruction as a "
-    "reminder.\n"
+    "PREDICTION REMINDERS: C/R reminders retain their own applicability. "
+    "They do not supply a G correction. Conditional G statistics report "
+    "passes, failures, unknowns and independent episodes; sparse support "
+    "does not establish a general probability. Same-task method outcomes "
+    "are observed cases, never unexecuted counterfactuals; two passes on "
+    "the same binary checker are a tie on acceptance.\n"
     "CAPABILITY-GAIN FOLLOW-UP: a `hplus_feedback` block may describe how "
     "earlier H+ claims turned out. `pending` means the real follow-up has "
     "not happened yet — NOT a failure, and NOT an improvement. Only "
@@ -450,74 +464,12 @@ MAX_EVIDENCE_BASIS = 40
 #: definition, so a benefit that can be ranked here can also be evaluated
 #: there.
 BENEFIT_CONVENTION: Dict[str, Any] = {
-    "default": {
-        "kind": "effective_completion",
-        "metric": "task_result_check_passed",
-        "unit": "boolean",
-        "scope": "the prediction's own candidate scope",
-        "observed_from": ("the execution's own task-result check "
-                          "(`check-task`): 1.0 passed, 0.0 confirmed failed, "
-                          "UNKNOWN when unchecked or insufficient"),
-        "note": ("whether the ORIGINAL TASK is effectively completed — the "
-                 "PRIMARY benefit of choosing a method. A success "
-                 "PROBABILITY is a mean over runs, not a single 0/1 "
-                 "label. Everything else (feasibility, solution quality, "
-                 "optimality) is a SUPPORTING fact carried alongside, "
-                 "never a substitute for completion"),
-    },
-    "solver_quality": {
-        "kind": "solution_quality",
-        "metric": "normalized_objective_gap",
-        "unit": "1-gap",
-        "scope": "the prediction's own candidate scope",
-        "observed_from": ("the solver's own normalized gap: Q = "
-                          "max(0, 1 - gap); an `optimal` status is a gap "
-                          "of 0 and therefore Q = 1.0"),
-        "note": ("how well the solver solved the MODEL it was given, as "
-                 "QUALITY Q = max(0, 1 - gap). Declare this only when the "
-                 "decision really wants solver-side quality rather than "
-                 "task completion — a solved model is not evidence that "
-                 "the ORIGINAL TASK was answered"),
-    },
-    "comparison_yardstick": {
-        "kind": "effective_completion",
-        "metric": "task_result_check_passed",
-        "note": ("this pair is the planner's PRIMARY comparable "
-                 "yardstick: whether the ORIGINAL TASK is completed. A "
-                 "decision may DECLARE solution_quality instead, in which "
-                 "case THAT becomes the yardstick. One decision uses ONE "
-                 "yardstick; a benefit in another kind or metric is "
-                 "reported and observed, but it does NOT enter the full "
-                 "utility ranking (an unread upside is never scored as "
-                 "zero)"),
-    },
-    "requirements": {
-        "declare_before_the_run": ("choose the kind/metric from the TASK "
-                                   "before executing: the close-out "
-                                   "observes the metric you declared, and "
-                                   "it never re-labels another measurement "
-                                   "into it"),
-        "value_and_baseline": ("a benefit VALUE requires a baseline; "
-                               "completion is a probability in [0,1] with "
-                               "the task check as its observation; a "
-                               "`solution_quality` value IS the quality "
-                               "Q = max(0, 1 - gap) in [0,1] — optimal "
-                               "(gap=0) is Q=1.0, never 0; a raw objective "
-                               "value is refused, never clamped"),
-        "same_convention_per_decision": ("every candidate of one decision "
-                                         "is predicted under the SAME "
-                                         "convention, so the comparison "
-                                         "reads one currency"),
-        "interval_semantics": ("an interval states WHAT it is about: "
-                               "`interval_kind='outcome'` bounds ONE run's "
-                               "value, `interval_kind='mean'` bounds the "
-                               "average over runs. A completion PROBABILITY "
-                               "is a mean over runs, never a single 0/1 "
-                               "label's interval; `interval_coverage` "
-                               "records the nominal level claimed. Omitting "
-                               "the kind leaves the range's meaning "
-                               "unstated and the close-out says so"),
-    },
+    **FAITHFUL_G_CONVENTION,
+    "required": True,
+    "scope": "the prediction's own candidate scope",
+    "note": ("probability of original-task acceptance GIVEN faithful execution "
+             "of the candidate steps under the agreed conditions; method omissions "
+             "remain omissions, script implementation failure is a separate risk"),
 }
 
 #: The COST span every candidate predicts under by default: from the
@@ -569,8 +521,8 @@ def build_strategy_outcome_request(
     under. When the caller declared one (e.g. completion rather than
     quality) it is sent as the REQUIRED convention rather than offered as
     the default, so the candidates are predicted under the currency the
-    comparison will use. Without a declaration the general block travels,
-    and the candidates' own agreement decides.
+    comparison will use. Without a declaration the framework fixes the new faithful-execution
+    convention before calling the provider.
 
     The context's calibration block is FILTERED before it is sent: only the
     groups whose SCOPE matches this candidate's scope are kept, because a
@@ -578,7 +530,22 @@ def build_strategy_outcome_request(
     the reverse). The filtering is reported on the request, so a reader can
     see that a group was withheld rather than absent.
     """
-    declared = dict(benefit_convention or {})
+    from or_harness.world_model.planner import (
+        normalize_benefit_convention, KNOWN_BENEFIT_CONVENTIONS,
+    )
+    declared = dict(benefit_convention or BENEFIT_CONVENTION)
+    resolved = normalize_benefit_convention(declared.get("kind"), declared.get("metric"))
+    if resolved is None:
+        raise ValueError("unsupported benefit convention: declare a registered kind/metric")
+    known = KNOWN_BENEFIT_CONVENTIONS[resolved]
+    if declared.get("unit") not in (None, "", known["unit"]):
+        raise ValueError("benefit convention unit disagrees with the registered metric")
+    declared.update(kind=resolved[0], metric=resolved[1], unit=known["unit"])
+    declared.setdefault("observed_from", known["observed_from"])
+    if resolved[1] == FAITHFUL_G_METRIC:
+        if declared.get("observation_rule_version") not in (None, FAITHFUL_G_OBSERVATION_VERSION):
+            raise ValueError("unsupported faithful G observation rule")
+        declared["observation_rule_version"] = FAITHFUL_G_OBSERVATION_VERSION
     declared_kind = declared.get("kind")
     declared_metric = declared.get("metric")
     fixed_convention: Optional[Dict[str, Any]] = None
@@ -587,7 +554,8 @@ def build_strategy_outcome_request(
             "kind": str(declared_kind),
             "metric": str(declared_metric),
             "unit": declared.get("unit"),
-            "scope": "the prediction's own candidate scope",
+            "scope": candidate.scope,
+            "observation_rule_version": declared.get("observation_rule_version"),
             "observed_from": declared.get("observed_from"),
             "source": declared.get("source", "declared"),
             "required": True,
@@ -606,7 +574,7 @@ def build_strategy_outcome_request(
         # so every candidate of one decision is predicted on the SAME
         # currency, and the comparison and the close-out read the same
         # definition. A model that deviates is reported (its prediction is
-        # kept, but the benefit does not enter the full utility ranking).
+        # retained in diagnostics, but rejected G numbers are unavailable).
         "benefit_convention": (fixed_convention
                                if fixed_convention is not None
                                else copy.deepcopy(BENEFIT_CONVENTION)),
@@ -633,6 +601,21 @@ def build_strategy_outcome_request(
     # already filtered when the context was frozen, since that is decided by
     # the attached provider, not by this candidate).
     view = request["prediction_context"]
+    # Defend the final boundary too: callers may supply an old/custom view.
+    from or_harness.world_model.conditions import (
+        filter_prediction_reminders, calibration_projection,
+    )
+    view["prediction_reminders"] = filter_prediction_reminders(view.get("prediction_reminders"))
+    view["strategy_outcome_calibration"] = calibration_projection(view.get("strategy_outcome_calibration"))
+    view["strategy_outcome_calibration"]["conditional_g"] = [
+        row for row in view["strategy_outcome_calibration"].get("conditional_g", [])
+        if row.get("metric") == declared_metric and row.get("scope") == candidate.scope
+        and row.get("observation_rule_version") == declared.get("observation_rule_version")]
+    pairs = view.get("prediction_execution_pairs") or {}
+    if "same_task_comparisons" in pairs:
+        pairs["same_task_comparisons"] = [c for c in pairs["same_task_comparisons"]
+            if c.get("metric") == declared_metric and c.get("scope") == candidate.scope
+            and c.get("observation_rule_version") == declared.get("observation_rule_version")]
     calibration = view.get("strategy_outcome_calibration")
     if isinstance(calibration, dict) and calibration.get("groups"):
         filtered, withheld = _filter_calibration_by_scope(
@@ -678,6 +661,9 @@ def _cap_displayed_pairs(request: Dict[str, Any]) -> None:
     if len(pairs) <= cap:
         return
     block["pairs"] = pairs[:cap]
+    from or_harness.world_model.g_signal import case_comparisons_for_rows
+    block.update(case_comparisons_for_rows(
+        block.get("same_task_comparisons") or [], block["pairs"], cap))
     block["n_pairs_included"] = len(block["pairs"])
     block["display_capped"] = {
         "ceiling": cap,
@@ -765,13 +751,15 @@ def _filter_calibration_by_scope(calibration: Dict[str, Any],
 
 def parse_strategy_outcome_payload(
         payload: Any, candidate: CandidateRef,
-        *, context: Any = None, provider_result: Optional[Dict[str, Any]] = None
+        *, context: Any = None, provider_result: Optional[Dict[str, Any]] = None,
+        benefit_convention: Optional[Dict[str, Any]] = None
         ) -> StrategyOutcomePrediction:
     """Parse a model payload into a validated StrategyOutcomePrediction.
 
-    Every malformed value becomes an explicit problem (the prediction is
-    returned with ``status="invalid"`` and the problems listed) — never a
-    silently repaired "prediction". A payload with NO predicted content at
+    Malformed content is reported, never silently repaired. A G convention
+    mismatch or invalid value makes that field unavailable; valid C/R and
+    the benefit sentence survive. Other malformed prediction blocks keep
+    their existing invalid status behaviour. A payload with NO predicted content at
     all is ``contract_only``-shaped: the model produced nothing, and that is
     recorded rather than dressed up.
     """
@@ -784,6 +772,7 @@ def parse_strategy_outcome_payload(
         problems.append("payload is not a JSON object")
 
     # -- benefit -----------------------------------------------------------
+    benefit_problem_start = len(problems)
     benefit: Optional[BenefitEstimate] = None
     raw_benefit = payload.get("benefit")
     if raw_benefit is None:
@@ -796,9 +785,25 @@ def parse_strategy_outcome_payload(
         if not metric:
             problems.append("benefit.metric is required (what is measured)")
         value = raw_benefit.get("value")
+        if metric == FAITHFUL_G_METRIC and value is not None and not is_g_probability(value):
+            problems.append("benefit.value must be a finite JSON probability in [0,1]")
+            value = None
         if value is not None and not _finite(value):
             problems.append("benefit.value is not a finite number")
             value = None
+        if kind == "effective_completion" and value is not None and not is_g_probability(value):
+            problems.append("benefit.value must be a finite probability in [0,1]")
+        if benefit_convention:
+            for key in ("kind", "metric", "unit"):
+                if key == "unit" and not raw_benefit.get(key) and metric != FAITHFUL_G_METRIC:
+                    continue  # old payloads could omit this optional field
+                if raw_benefit.get(key) != benefit_convention.get(key):
+                    problems.append(f"benefit.{key} differs from the required convention")
+            if raw_benefit.get("scope", candidate.scope) != candidate.scope:
+                problems.append("benefit.scope differs from the required execution scope")
+            rule = raw_benefit.get("observation_rule_version")
+            if rule is not None and rule != benefit_convention.get("observation_rule_version"):
+                problems.append("benefit observation rule differs from the required convention")
         if kind == "solution_quality" and value is not None \
                 and not (0.0 <= float(value) <= 1.0):
             problems.append(
@@ -889,10 +894,36 @@ def parse_strategy_outcome_payload(
                 interval=interval, interval_kind=interval_kind,
                 interval_coverage=interval_coverage,
                 baseline=baseline, feasible=feasible,
+                observation_rule_version=(FAITHFUL_G_OBSERVATION_VERSION
+                                          if metric == FAITHFUL_G_METRIC else None),
                 notes=[str(n) for n in (raw_benefit.get("notes") or [])])
         except ValueError as exc:
             problems.append(f"benefit: {exc}")
             benefit = None
+
+    # A bad G does not erase good cost/risk or the model's causal sentence.
+    # Standalone legacy parsing retains its original validation behaviour.
+    if len(problems) > benefit_problem_start and (benefit_convention or
+            isinstance(raw_benefit, dict) and raw_benefit.get("metric") == FAITHFUL_G_METRIC):
+        unsupported["benefit"] = "; ".join(problems[benefit_problem_start:])
+        notes.append("benefit unavailable: " + unsupported["benefit"])
+        del problems[benefit_problem_start:]
+        if benefit is None and isinstance(raw_benefit, dict):
+            expected = benefit_convention or FAITHFUL_G_CONVENTION
+            benefit = BenefitEstimate(
+                kind=expected["kind"], metric=expected["metric"], unit=expected["unit"],
+                observation_rule_version=expected.get("observation_rule_version"),
+                notes=[str(n) for n in (raw_benefit.get("notes") or [])])
+        if benefit is not None:
+            benefit.value = None
+            benefit.interval = None
+            if benefit_convention:
+                # Only an UNAVAILABLE slot adopts the request's metadata;
+                # no rejected model number is converted to the new currency.
+                benefit.kind = benefit_convention["kind"]
+                benefit.metric = benefit_convention["metric"]
+                benefit.unit = benefit_convention["unit"]
+                benefit.observation_rule_version = benefit_convention.get("observation_rule_version")
 
     # -- cost ---------------------------------------------------------------
     cost: Optional[ExpectedCost] = None
@@ -1126,6 +1157,11 @@ def parse_strategy_outcome_payload(
         not_comparable_reasons=["the candidate has not been executed: no "
                                 "real window exists to score against"],
     )
+    if benefit_convention:
+        trace.model_info["benefit_convention"] = copy.deepcopy(benefit_convention)
+        if unsupported.get("benefit") and isinstance(raw_benefit, dict):
+            trace.model_info["rejected_benefit_convention"] = {
+                key: raw_benefit.get(key) for key in ("kind", "metric", "unit", "scope", "observation_rule_version")}
     if provider_result is not None:
         # ONE token-accounting rule: the FULL口径 total (prompt +
         # completion), reasoning/cached kept as sub-facts. The breakdown
@@ -1353,7 +1389,8 @@ class StrategyOutcomeService:
             try:
                 prediction = parse_strategy_outcome_payload(
                     payload, candidate, context=context,
-                    provider_result=result)
+                    provider_result=result,
+                    benefit_convention=request["benefit_convention"])
             except Exception as exc:
                 # A parse/validation crash is THIS candidate's invalid result,
                 # never an exception that escapes into the caller's planning
@@ -1450,7 +1487,18 @@ class StrategyOutcomeService:
             "display_cap": copy.deepcopy((sent.get("prediction_execution_pairs") or {}).get("display_capped")),
             "source": "actually displayed provider input; adoption/effect are separate facts",
         }
+        profile = context.joint.profile or {}
         info.update({
+            "family": profile.get("family"),
+            "cell_token": (group_key(ProblemProfile.from_dict(profile))
+                           if profile.get("problem_id") and profile.get("family") else None),
+            "g_execution_conditions": {
+                "solver": prediction.candidate.solver,
+                "config": copy.deepcopy(prediction.candidate.config),
+                "constraints": {key: copy.deepcopy(context.execution_constraints.get(key))
+                    for key in ("executor", "declared_budget", "available_solver_families", "budget_condition")},
+            },
+            "benefit_convention": copy.deepcopy(request.get("benefit_convention")),
             "prediction_context_id": context.context_id,
             "prediction_context_version": context.version,
             "prediction_context_task_digest": context.task_digest,

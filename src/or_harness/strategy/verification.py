@@ -1785,6 +1785,9 @@ def verify_task_result(execution: Any,
     declared bases: the report always names what it did not check.
     """
     report = _verify_task_result(execution, check)
+    if isinstance(check, dict) and "g_attribution" in check:
+        from or_harness.world_model.g_signal import checked_attribution
+        report["g_attribution"] = checked_attribution(execution, check["g_attribution"])
     declared_basis = (report.get("scope") or {}).get("basis") or []
     if declared_basis:
         # The reference provenance is a FACT about this verdict, attached

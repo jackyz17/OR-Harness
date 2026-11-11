@@ -64,6 +64,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import COST_DIMENSIONS, CostVector
 from or_harness.core.schema import chargeable_dimensions
+from or_harness.world_model.contracts import (
+    FAITHFUL_G_CONVENTION, FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION, is_g_probability,
+)
 from or_harness.world_model.prediction import ActionSpec, OutcomePrediction
 from or_harness.world_model.state import BeliefSnapshot
 
@@ -821,6 +824,7 @@ COMPLETION_BENEFIT_UNIT = "boolean"
 #: currency has no shared scale, and inventing one would rank numbers that
 #: do not mean the same thing.
 KNOWN_BENEFIT_CONVENTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
+    ("effective_completion", FAITHFUL_G_METRIC): dict(FAITHFUL_G_CONVENTION),
     ("solution_quality", COMPARABLE_BENEFIT_METRIC): {
         "unit": "1-gap",
         "observed_from": ("the solver's own normalized gap (an `optimal` "
@@ -896,6 +900,8 @@ def normalize_benefit_convention(kind: Any, metric: Any
             return ("solution_quality", canonical)
         return None
     if k == COMPLETION_BENEFIT_KIND:
+        if m == FAITHFUL_G_METRIC:
+            return (k, m)
         if m in (COMPLETION_BENEFIT_METRIC, "task_check_passed",
                  "completion_rate"):
             return (COMPLETION_BENEFIT_KIND, COMPLETION_BENEFIT_METRIC)
@@ -972,7 +978,7 @@ def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
         if getattr(prediction, "status", None) != "valid":
             continue
         benefit = getattr(prediction, "benefit", None)
-        if benefit is None or benefit.value is None:
+        if benefit is None or (benefit.value is None and benefit.metric != FAITHFUL_G_METRIC):
             continue
         resolved = normalize_benefit_convention(benefit.kind, benefit.metric)
         if resolved is None:
@@ -1100,6 +1106,11 @@ def score_strategy_outcome_predictions(
                 f"({convention['kind']}/{convention['metric']}, "
                 f"source={convention['source']}): different measurements are "
                 "different currencies and are never ranked together")
+        elif benefit.metric == FAITHFUL_G_METRIC and (
+                not is_g_probability(benefit.value)
+                or benefit.unit != "probability"
+                or benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION):
+            score.incomparable["benefit"] = "invalid faithful G value/unit/observation rule"
         else:
             score.benefit_value = float(benefit.value)
             benefit_comparable = True

@@ -59,6 +59,12 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
 
 **What the provider receives.** The full frozen context content — the joint problem representation (text, math attributes with origins; **CIR is internal and never sent**), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate, an explicit output contract AND a `benefit_convention` block. The framework fixes the task, the candidate, the scope, the evidence sources AND the benefit convention; the model fills prediction content only.
 
+**Default G contract.** Before the call, the framework fixes `kind=effective_completion`, `metric=task_check_passed_given_faithful_execution`, `unit=probability`, `observation_rule_version=wm-g-faithful/1` and the candidate's execution scope. G is the probability of passing the original task's acceptance under the agreed solving conditions, GIVEN faithful implementation of the candidate steps. Constraints omitted by the method remain omitted; whether the script can be implemented successfully belongs to implementation risk. Explicit registered legacy conventions remain available; saved forecasts retain their own metric.
+
+The response must use the required convention. A different metric/unit/scope or a non-finite/out-of-range G makes **G unavailable** (`trace.unsupported_fields.benefit`), preserving valid C/R and `benefit.notes`. No rejected number is converted to the required metric. JSON booleans and numeric strings are not G numbers. In this same call, `benefit.notes` carries one grounded sentence linking the decisive requirement, candidate steps and expected consequence, or naming the missing condition. Omit `value` when unsupported; keep the sentence. The main agent decides how to revise.
+
+> 原题要求 BE 和 CFC 同厂，候选分别选厂后直接合并，预计可能产生跨厂解。
+
 **Output semantics.**
 
 | Field | Contract object | Rules |
@@ -115,7 +121,7 @@ orx plan-next --task t.json --episode ep1 \
 
 1. **declared** — the caller names it for this decision: `--benefit-kind` / `--benefit-metric` (optionally `--benefit-unit`). It is then pushed into EVERY candidate's request as a REQUIRED convention, so the candidates are PREDICTED in that currency, not merely compared in it. Declare this to compare **solver quality** instead of completion: `--benefit-kind solution_quality --benefit-metric normalized_objective_gap`.
 2. **agreed** — nothing declared, and every candidate carrying a benefit declared the SAME `kind`/`metric`. This is what makes two candidates comparable without ceremony.
-3. **default** — otherwise the build's PRIMARY yardstick: `effective_completion` / `task_result_check_passed` (whether the **ORIGINAL TASK** is completed). The disagreement is named in `reason`. The solver's gap is NO LONGER the default — an optimal solve of a mis-modelled problem must not read as task success by default.
+3. **legacy fallback** — the existing comparison fallback stays available for old/mixed inputs. New provider requests already have the required faithful-execution convention, so valid new forecasts agree on it; unavailable G never enters utility. Candidate entry, method forwarding, comparison and gating changes are deferred.
 
 A declaration this build has no scale for (`valid_progress`, or an unknown pair) resolves to `source="unknown_declaration"` with `comparable=false`: **no ranking is produced at all**, because ranking by an invented scale is worse than saying there is none. A candidate whose own `kind`/`metric` differs from the decision's convention is reported in `score.incomparable["benefit"]` and produces **no utility** — so it can never silently win or lose the ranking on an upside the comparison could not read. It keeps its cost and risk picture (still reported, still charged).
 
@@ -125,14 +131,17 @@ A declaration this build has no scale for (`valid_progress`, or an unknown pair)
 
 | You are predicting | Declare | Observed from |
 |---|---|---|
-| **whether the ORIGINAL TASK is completed (PRIMARY)** | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
+| whether faithful execution passes original-task acceptance (**new request default**) | `kind=effective_completion`, `metric=task_check_passed_given_faithful_execution`, unit `probability` | sourced fidelity + full declared acceptance: passed=1, confirmed method-caused failure=0, otherwise unknown; `wm-g-faithful/1` |
+| legacy task completion | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
 | how well the solver solved the MODEL | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
 
 Candidates compared on completion are compared **with each other**, never against a quality candidate (and the reverse): the convention has to match before two numbers are ranked, because `1 - mip_gap` is not a completion rate and a `passed` check is not a quality level, even though both land in [0,1]. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
 
-**Judge the primary benefit from FOUR layers.** The main benefit is not the solver's objective alone: consider (1) whether the method matches what the question asks, (2) whether the constraints are modelled correctly, (3) whether the implementation is completed, and (4) whether the RESULT is valid for the task. Keep feasibility, solution quality and optimality as SEPARATE facts — "not proven optimal" is never "no benefit", and an optimal solve that fails the task check is NOT an effective completion (the close-out records this with an explicit `represents_effective_completion: false` cross-fact, without rewriting the quality number).
+**Judge new G from the original task, the candidate steps and the expected result.** Faithful execution is an assumption of G, not a forecast that the script will be implemented correctly. Keep implementation risk, feasibility, solver quality and optimality separate. A method that omits a decisive constraint may faithfully produce an invalid answer.
 
-**Completion observation and recovery.** The completion window rule is the LAST in-scope attempt carrying a task-check verdict. When an EARLIER attempt was CONFIRMED failed and a LATER one completed the task, the primary benefit is the final verdict (completed) and the intermediate failures are carried as `recovered_intermediate_failures` — a recovered failure is NOT a failed task, and the two cases are distinguishable. Unchecked / `insufficient` attempts contribute NOTHING (UNKNOWN, never a failure).
+**Observation scope and legacy recovery.** New G uses the terminal in-scope attempt and its sourced method/acceptance assessment. A terminal unknown never borrows an earlier pass. Switching method attributes the later result to the actual method; a later code-only repair may supply a positive example for the original method. The old `task_result_check_passed` adapter retains its last-verdict/recovery and attempt-with-no-result rules; those rules do not apply to new G.
+
+**Feedback.** Global G residuals remain diagnostic. They produce neither aggregate nor single-case G correction instructions, and both cached reminder locations are filtered before provider calls. `conditional_g` reports comparable executed outcomes grouped by metric, observation version, scope, family, structural cell, predictor and solving conditions, with explicit sparse support. Same-task comparisons require the same frozen problem and acceptance standard and actual different methods; one executed method yields one factual case, and two passes tie. See [episode_closeout.md](episode_closeout.md).
 
 **Describe the candidate's `method`.** A candidate carries `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` and the model predicts FROM it: a bare strategy id or solver name describes nothing about what would happen. The caller supplies it (a cold start has no memory to read it from), the solver/config stay separate fields, and an empty value means the caller did not describe it — not that there is nothing to describe.
 

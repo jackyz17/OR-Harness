@@ -66,6 +66,13 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 
 `benefit.value` requires a `baseline` — a gain with nothing to measure it against is not a prediction. `benefit.value = None` means **unknown**, and that is a first-class state: it is not zero, and it is not "no gain".
 
+New strategy requests default to `effective_completion/task_check_passed_given_faithful_execution`, unit `probability`, with `BenefitEstimate.observation_rule_version="wm-g-faithful/1"`. This is P(original-task acceptance | faithfully implement the candidate steps, under the agreed solving conditions). Method omissions remain omissions. The finite JSON numeric value must be in [0,1]; bool/string values are unavailable. The framework fixes convention/scope before the call; a response mismatch makes G unavailable with a reason while preserving valid C/R and the explanatory sentence in `benefit.notes`. This sentence identifies a decisive task condition, candidate operation and expected consequence, or missing evidence, and survives a missing numeric value.
+
+The new observation adapter requires sourced fidelity and original-acceptance coverage: faithful+pass=1; faithful+verified method-caused failure=0; implementation deviation, method change, insufficient acceptance, no evaluable result or unclear attribution=unknown. The optional `check-task.g_attribution` assessment cites execution code/result references; a matching receipt or `failed` checker by itself supplies no new G label. See [evidence schema](episode_closeout.md#g-attribution-evidence).
+
+Old forecasts and explicit old conventions retain their original meanings, units and observation channels. An absent `observation_rule_version` is never silently upgraded. In particular `normalized_objective_gap` still measures the solver's own `max(0,1-gap)`, and `task_result_check_passed` retains the legacy completion rules.
+
+
 ### 2.2 `CapabilityEvolutionPrediction` — harness capability evolution
 
 Answers: *from the current capability evidence, the real experience and a candidate learning operation `u`, how would future task performance change — at what learning cost, with what degradation risk, and under what verification conditions?*

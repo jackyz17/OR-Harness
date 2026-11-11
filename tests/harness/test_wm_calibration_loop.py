@@ -99,7 +99,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -109,7 +109,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         self.provider.requests.clear()
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         pairs = request["prediction_context"]["prediction_execution_pairs"]
         self.assertEqual(pairs["n_pairs_total"], 1)
@@ -126,7 +126,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -134,7 +134,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         # pair from it.
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         pairs = request["prediction_context"]["prediction_execution_pairs"]
         self.assertEqual(pairs["n_pairs_total"], 0)
@@ -148,7 +148,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task_a = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task_a, {"action_type": "execute_strategy",
-                     "strategy_id": "S99"}, "ep1")
+                     "strategy_id": "S99"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task_a, strategy="S99", tag="fail")
         # Confirm the answer FAILS the task.
         self.h.check_task_result(record.execution_id,
@@ -161,7 +161,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task_b = _task("t2")
         self.h.predict_strategy_outcome(
             task_b, {"action_type": "execute_strategy",
-                     "strategy_id": "S04"}, "ep1")
+                     "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         pairs = request["prediction_context"]["prediction_execution_pairs"]
         self.assertEqual(pairs["n_pairs_total"], 1)
@@ -178,11 +178,11 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task = _task("t1")
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.h.close_episode("t1", "ep1")
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         pairs = request["prediction_context"]["prediction_execution_pairs"]
         self.assertEqual(pairs["n_pairs_total"], 0)
@@ -210,7 +210,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.amend_action_cost(record.action_id, llm_tokens=500.0,
                                  solver_runtime_s=2.0)
@@ -220,7 +220,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         self.provider.requests.clear()
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         row = request["prediction_context"][
             "prediction_execution_pairs"]["pairs"][0]
@@ -238,7 +238,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -246,7 +246,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         self.provider.requests.clear()
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         row = request["prediction_context"][
             "prediction_execution_pairs"]["pairs"][0]
@@ -274,7 +274,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04",
                    "method": {"name": "planned method", "steps": ["a", "b"]}},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # Execute with a script that reports a DIFFERENT performed method.
         from pathlib import Path
         work = Path(self.home) / "ws_actual"
@@ -299,7 +299,7 @@ class TestPairedFeedbackReachesTheProvider(CalibrationLoopCase):
         self.provider.requests.clear()
         self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         row = request["prediction_context"][
             "prediction_execution_pairs"]["pairs"][0]
@@ -317,7 +317,7 @@ class TestErrorRunIsNotAFullScore(M4Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # A script that FAILS (exit code 1) but leaves a result.json carrying
         # gap=0 — the exact shape that would otherwise score Q=1.0.
         from pathlib import Path
@@ -358,7 +358,7 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
             task = _task(f"t{index}")
             prediction = self.h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, "ep1")
+                       "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             record = self.solve(task, strategy="S04",
                                 episode_id="ep1", tag=f"rem{index}")
             self.h.bind_strategy_outcome(prediction.prediction_id,
@@ -370,20 +370,16 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
         reminders = summary["reminders"]
         benefit_reminders = [r for r in reminders
                              if r["field"] == "benefit"]
-        self.assertTrue(benefit_reminders,
-                        "a measured benefit bias must yield a reminder")
-        r = benefit_reminders[0]
-        self.assertEqual(r["kind"], "derived_reminder")
-        self.assertEqual(r["basis"], "measured_statistics")
-        self.assertIn("observed_bias", r)
-        self.assertIn("watch_next_time", r)
-        self.assertTrue(r["support"])
+        self.assertFalse(benefit_reminders, "G residuals must remain diagnostic")
+        self.assertTrue(any(g.get("mean_benefit_signed_error") is not None
+                            for g in summary["groups"].values()))
+        self.assertTrue(any(r["field"].startswith("cost.") for r in reminders))
 
         # The NEXT request carries the reminders.
         self.provider.requests.clear()
         self.h.predict_strategy_outcome(
             _task("next"), {"action_type": "execute_strategy",
-                            "strategy_id": "S04"}, "ep1")
+                            "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         sent = request["prediction_context"]["prediction_reminders"]
         self.assertTrue(sent)
@@ -395,7 +391,7 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -426,11 +422,11 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
         self.addCleanup(h.close)
         h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         provider.requests.clear()
         h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = provider.requests[-1]
         hplus = request["prediction_context"]["hplus_feedback"]
         self.assertGreaterEqual(hplus["n_gains_total"], 1)
@@ -448,11 +444,11 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
         self.addCleanup(h.close)
         h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         provider.requests.clear()
         h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep2")
+                   "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = provider.requests[-1]
         hplus = request["prediction_context"]["hplus_feedback"]
         self.assertIn("missing", hplus)
@@ -466,7 +462,7 @@ class TestObservationRules(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.check_task_result(record.execution_id,
                                  {"reference_objective": 999.0})
@@ -494,7 +490,7 @@ class TestObservationRules(CalibrationLoopCase):
         task = _task("t1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.benefit.interval_kind, "outcome")
         self.assertEqual(prediction.benefit.interval_coverage, 0.9)
         record = self.solve(task, strategy="S04")
@@ -521,7 +517,7 @@ class TestObservationRules(CalibrationLoopCase):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S04"}, "ep1")
+                          "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertTrue(any("interval_kind" in p
                             for p in prediction.notes)
                         or prediction.status == "invalid",
@@ -535,7 +531,7 @@ class TestNoDoubleCounting(CalibrationLoopCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -553,6 +549,179 @@ class TestNoDoubleCounting(CalibrationLoopCase):
         self.assertEqual(third["n_evaluated"], 1)
         group = list(third["groups"].values())[0]
         self.assertEqual(group["n_samples"], 1)
+
+
+from tests.harness.g_fixtures import GCase, SPLIT, COUPLED
+
+
+class TestFaithfulGObservations(GCase):
+    def test_real_execute_check_close_table(self):
+        cases = [
+            ("pass", COUPLED, False, False, "faithful", "unknown", "original_task", True, 1.0),
+            ("method_omission", SPLIT, True, False, "faithful", "candidate_method", "original_task", True, 0.0),
+            ("code_omission", COUPLED, True, False, "deviated", "implementation", "original_task", True, None),
+            ("crash", COUPLED, False, True, "unknown", "implementation", "original_task", True, None),
+            ("partial_check", COUPLED, False, False, "faithful", "unknown", "partial", True, None),
+            ("no_audit", COUPLED, True, False, "faithful", "candidate_method", "original_task", False, None),
+            ("cause_unknown", SPLIT, True, False, "faithful", "unknown", "original_task", True, None),
+        ]
+        for ep, method, split, crash, fidelity, failure, coverage, evidence, expected in cases:
+            with self.subTest(ep=ep):
+                p = self.predict_g(method, ep)
+                r = self.run_g(p, split=split, crash=crash)
+                self.check_g(r, fidelity=fidelity, failure=failure, coverage=coverage, evidence=evidence)
+                b = self.close_g(ep)["evaluations"][0]["benefit"]
+                self.assertEqual(b.get("observed"), expected)
+                if expected is None:
+                    self.assertEqual(b["label_eligibility"], "unknown")
+                    self.assertTrue(b["reason"])
+                else:
+                    self.assertEqual(b["label_eligibility"], "attributable")
+                    self.assertTrue(b["evidence_refs"])
+
+    def test_other_method_pass_is_not_borrowed_by_original(self):
+        p = self.predict_g(SPLIT)
+        r = self.run_g(p, actual=COUPLED)
+        self.check_g(r, fidelity="deviated")
+        self.assertIsNone(self.close_g()["evaluations"][0]["benefit"].get("observed"))
+        actual = self.predict_g(COUPLED, "ep2")
+        r2 = self.run_g(actual)
+        self.check_g(r2)
+        self.assertEqual(self.close_g("ep2")["evaluations"][0]["benefit"]["observed"], 1.0)
+
+    def test_code_repair_can_be_a_later_positive_for_the_same_method(self):
+        first = self.predict_g()
+        bad = self.run_g(first, split=True)
+        self.check_g(bad, fidelity="deviated", failure="implementation")
+        second = self.predict_g()
+        good = self.run_g(second)
+        self.check_g(good)
+        outcomes = {e["prediction_id"]: e["benefit"] for e in self.close_g()["evaluations"]}
+        self.assertIsNone(outcomes[first.prediction_id].get("observed"))
+        self.assertEqual(outcomes[second.prediction_id]["observed"], 1.0)
+
+    def test_audit_can_establish_fidelity_with_reworded_receipt(self):
+        p = self.predict_g()
+        r = self.run_g(p, actual={"name": "coupled enumeration", "steps": ["Enumerate a common BE/CFC factory."]})
+        self.check_g(r)
+        self.assertEqual(self.close_g()["evaluations"][0]["benefit"]["observed"], 1.0)
+
+    def test_window_terminal_unknown_does_not_reuse_an_earlier_pass(self):
+        from or_harness.world_model.contracts import CandidateRef
+        candidate = CandidateRef(action_type="execute_strategy", strategy_id="S04",
+            task_id=self.task["task_id"], episode_id="ep1", method=COUPLED,
+            scope="strategy_window", window_id="win::factory::ep1::S04")
+        p = self.h.predict_strategy_outcome(self.task, candidate, "ep1")
+        first = self.run_g(p)
+        self.check_g(first)
+        # Another in-scope attempt has no audited verdict. Its result is the
+        # terminal result of the window, so the old pass cannot decide G.
+        p2 = self.predict_g()
+        self.run_g(p2, crash=True)
+        outcomes = {e["prediction_id"]:e["benefit"] for e in self.close_g()["evaluations"]}
+        self.assertIsNone(outcomes[p.prediction_id].get("observed"))
+
+    def test_single_executed_method_is_a_fact_without_counterfactual(self):
+        p = self.predict_g()
+        r = self.run_g(p)
+        self.check_g(r)
+        self.close_g()
+        self.predict_g(episode="ep2")
+        pairs = self.provider.requests[-1]["prediction_context"]["prediction_execution_pairs"]
+        self.assertEqual(pairs["pairs"][0]["benefit"]["observed"], 1.0)
+        self.assertFalse(pairs["same_task_comparisons"])
+
+    def test_same_task_different_methods_reach_provider_with_sources(self):
+        for ep, method, split in [("ep1", SPLIT, True), ("ep2", COUPLED, False)]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p, split=split)
+            self.check_g(r, failure="candidate_method" if split else "unknown")
+            self.close_g(ep)
+        # A newer unknown attempt may occupy a displayed row. The actual
+        # comparable partner remains a sourced side-by-side fact.
+        p3 = self.predict_g(episode="ep3")
+        r3 = self.run_g(p3, split=True)
+        self.check_g(r3, fidelity="deviated", failure="implementation")
+        self.close_g("ep3")
+        self.predict_g(episode="ep4")
+        comparison = self.provider.requests[-1]["prediction_context"][
+            "prediction_execution_pairs"]["same_task_comparisons"][0]
+        self.assertEqual({comparison["left"]["observed"], comparison["right"]["observed"]}, {0.0, 1.0})
+        self.assertTrue(comparison["left"]["evidence_refs"])
+        self.assertTrue(comparison["right"]["evaluation_id"])
+
+    def test_two_passes_tie_and_different_acceptance_is_not_paired(self):
+        for ep, method in [("ep1", SPLIT), ("ep2", COUPLED)]:
+            p = self.predict_g(method, ep)
+            r = self.run_g(p)
+            self.check_g(r)
+            self.close_g(ep)
+        self.predict_g(episode="ep3")
+        block = self.provider.requests[-1]["prediction_context"]["prediction_execution_pairs"]
+        self.assertEqual(block["same_task_comparisons"][0]["acceptance_comparison"], "tie")
+        from or_harness.world_model.g_signal import same_task_comparisons
+        block["pairs"][0]["benefit"]["acceptance_id"] = "different-checker/v2"
+        self.assertFalse(same_task_comparisons(block["pairs"]))
+
+    def test_historical_forecast_keeps_error_currency_but_audited_fact_is_recalled(self):
+        self.provider.payload = json.loads(json.dumps(GOOD_PAYLOAD))
+        old = self.predict_g(SPLIT, benefit_convention={"kind": "solution_quality",
+            "metric": "normalized_objective_gap", "unit": "1-gap"})
+        r = self.run_g(old, split=True)
+        self.check_g(r, failure="candidate_method")
+        benefit = self.close_g()["evaluations"][0]["benefit"]
+        self.assertEqual(benefit["metric"], "normalized_objective_gap")
+        self.assertEqual(benefit["observed"], 1.0)
+        self.assertAlmostEqual(benefit["abs_error"], 0.2)
+        from tests.harness.g_fixtures import G_PAYLOAD
+        self.provider.payload = json.loads(json.dumps(G_PAYLOAD))
+        new = self.predict_g(episode="ep2")
+        r2 = self.run_g(new)
+        self.check_g(r2)
+        self.close_g("ep2")
+        self.predict_g(episode="ep3")
+        pairs = self.provider.requests[-1]["prediction_context"]["prediction_execution_pairs"]
+        historical = next(row for row in pairs["pairs"] if row["prediction_id"] == old.prediction_id)
+        self.assertEqual(historical["benefit"]["observed"], 1.0)
+        self.assertEqual(historical["g_observed_fact"]["observed"], 0.0)
+        self.assertEqual(len(pairs["same_task_comparisons"]), 1)
+
+    def test_legacy_no_result_completion_rule_remains_legacy(self):
+        self.provider.payload["benefit"].update(metric="task_result_check_passed", unit="boolean")
+        self.provider.payload["benefit"].pop("observation_rule_version")
+        p = self.predict_g(benefit_convention={"kind": "effective_completion",
+            "metric": "task_result_check_passed", "unit": "boolean"})
+        self.run_g(p, crash=True)
+        self.assertEqual(self.close_g()["evaluations"][0]["benefit"]["observed"], 0.0)
+
+    def test_unresolved_evidence_references_leave_g_unknown(self):
+        p = self.predict_g()
+        r = self.run_g(p)
+        self.check_g(r)
+        check = {"semantic_probe": [{"path": "execution_features.solution_variables.CFC", "equals": 1}],
+            "g_attribution": {"method_fidelity": "faithful", "failure_source": "unknown",
+                "acceptance_scope": "original_task", "acceptance_id": "factory-coupling/v1",
+                "source": "auditor", "assessment": "checked the code and answer",
+                "evidence_refs": ["artifacts.not-present"]}}
+        self.assertEqual(self.h.check_task_result(r.execution_id, check)["state"], "passed")
+        b = self.close_g()["evaluations"][0]["benefit"]
+        self.assertEqual(b["label_eligibility"], "unknown")
+        self.assertNotIn("observed", b)
+
+    def test_timeout_and_insufficient_checker_are_unknown(self):
+        self.h.executor.timeout_seconds = 1
+        p = self.predict_g()
+        r = self.run_g(p, timeout=True)
+        self.assertEqual(r.quality["status"], "timeout")
+        self.assertNotIn("observed", self.close_g()["evaluations"][0]["benefit"])
+        self.h.executor.timeout_seconds = 120
+        p2 = self.predict_g(episode="ep2")
+        r2 = self.run_g(p2)
+        result = self.check_g(r2)
+        audit = result["report"]["g_attribution"]
+        self.h.check_task_result(r2.execution_id, {"integer": {"variables": ["missing"]},
+            "g_attribution": audit})
+        self.assertNotIn("observed", self.close_g("ep2")["evaluations"][0]["benefit"])
 
 
 if __name__ == "__main__":

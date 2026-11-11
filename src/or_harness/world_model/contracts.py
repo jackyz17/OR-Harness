@@ -147,6 +147,25 @@ CONTRACT_STATUSES = ("draft", "contract_only", "valid", "unsupported",
 BENEFIT_KINDS = ("effective_completion", "solution_quality",
                  "valid_progress", "correct_infeasibility_diagnosis")
 
+# A distinct currency and observation rule; old completion/gap predictions
+# keep their declared meaning, including when read from an unversioned bank.
+FAITHFUL_G_METRIC = "task_check_passed_given_faithful_execution"
+FAITHFUL_G_OBSERVATION_VERSION = "wm-g-faithful/1"
+FAITHFUL_G_CONVENTION = {
+    "kind": "effective_completion", "metric": FAITHFUL_G_METRIC,
+    "unit": "probability",
+    "observation_rule_version": FAITHFUL_G_OBSERVATION_VERSION,
+    "observed_from": "attributable original-task acceptance after faithful execution",
+}
+
+
+def is_g_probability(value: Any) -> bool:
+    """G is a JSON number, never a boolean or a numeric string."""
+    try:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and _prob(value)
+    except (OverflowError, ValueError, TypeError):
+        return False
+
 #: How a baseline was established.
 BASELINE_KINDS = ("no_knowledge", "conditional_stats", "current_entry",
                   "current_solution", "declared", "unknown")
@@ -1392,6 +1411,7 @@ class BenefitEstimate:
     feasible: Optional[bool] = None
     progress_shape: Optional[Dict[str, Any]] = None
     notes: List[str] = field(default_factory=list)
+    observation_rule_version: Optional[str] = None
 
     def __post_init__(self) -> None:
         if self.kind not in BENEFIT_KINDS:
@@ -1424,6 +1444,7 @@ class BenefitEstimate:
             "feasible": self.feasible,
             "progress_shape": copy.deepcopy(self.progress_shape),
             "notes": list(self.notes),
+            "observation_rule_version": self.observation_rule_version,
         }
 
     @classmethod
@@ -1438,7 +1459,7 @@ class BenefitEstimate:
             kind=str(data.get("kind", "solution_quality")),
             metric=str(data.get("metric", "")),
             unit=str(data.get("unit", "")),
-            value=(float(data["value"])
+            value=((data["value"] if data.get("metric") == FAITHFUL_G_METRIC else float(data["value"]))
                    if data.get("value") is not None else None),
             interval=((float(raw_interval[0]), float(raw_interval[1]))
                       if isinstance(raw_interval, (list, tuple))
@@ -1454,6 +1475,7 @@ class BenefitEstimate:
             feasible=data.get("feasible"),
             progress_shape=copy.deepcopy(data.get("progress_shape")),
             notes=[str(n) for n in (data.get("notes") or [])],
+            observation_rule_version=data.get("observation_rule_version"),
         )
 
 
@@ -2442,7 +2464,14 @@ def validate_strategy_outcome(prediction: StrategyOutcomePrediction
             "not_comparable_reasons: the two flags contradict each other")
     benefit = prediction.benefit
     if benefit is not None:
-        if benefit.value is not None and not _finite(benefit.value):
+        if benefit.metric == FAITHFUL_G_METRIC:
+            if benefit.kind != "effective_completion" or benefit.unit != "probability":
+                problems.append("faithful G requires effective_completion/probability")
+            if benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION:
+                problems.append("faithful G requires its declared observation rule version")
+            if benefit.value is not None and not is_g_probability(benefit.value):
+                problems.append("faithful G benefit.value must be finite and in [0, 1]")
+        if benefit.metric != FAITHFUL_G_METRIC and benefit.value is not None and not _finite(benefit.value):
             problems.append("benefit.value is not a finite number")
         if benefit.kind == "solution_quality" and benefit.value is not None \
                 and not (0.0 <= float(benefit.value) <= 1.0):

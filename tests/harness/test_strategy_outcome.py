@@ -156,7 +156,7 @@ class TestPreFixesHold(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[0]
         block = request["prediction_context"]
         sem = (block["retrieval_evidence"]["semantic"])
@@ -174,7 +174,7 @@ class TestPreFixesHold(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         request = self.provider.requests[0]
         block = request["prediction_context"]
         self.assertEqual(block["retrieval_evidence"]["semantic"]["status"],
@@ -191,7 +191,7 @@ class TestPreFixesHold(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1",
-            context=ctx, cir=_cir())
+            context=ctx, cir=_cir(), benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertEqual(prediction.trace.model_info["prediction_context_id"],
                          ctx.context_id)
@@ -205,7 +205,7 @@ class TestPreFixesHold(StrategyCase):
         with self.assertRaises(ValueError) as caught:
             self.h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S01"}, "ep1", context=ctx)
+                       "strategy_id": "S01"}, "ep1", context=ctx, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIn("effective problem input", str(caught.exception))
         self.assertEqual(self.provider.requests, [])
 
@@ -250,7 +250,7 @@ class TestOneContextPerComparison(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         context_ids = {r["prediction_context"]["context_id"]
                        for r in self.provider.requests}
         self.assertEqual(len(context_ids), 1)
@@ -263,7 +263,7 @@ class TestOneContextPerComparison(StrategyCase):
                  ActionSpec("execute_strategy", "t1", strategy_id="S01",
                             params={"time_limit": 120})]
         for spec in specs:
-            self.h.predict_strategy_outcome(_task("t1"), spec, "ep1")
+            self.h.predict_strategy_outcome(_task("t1"), spec, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         sent = [r["candidate"] for r in self.provider.requests]
         self.assertEqual(sent[0]["config"]["time_limit"], 60)
         self.assertEqual(sent[0]["config"]["seed"], 42)
@@ -291,7 +291,7 @@ class TestProtocolReachesProvider(StrategyCase):
         self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01",
-             "solver": "highs", "config": {"time_limit": 60}}, "ep1")
+             "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[0]
         self.assertEqual(request["prediction_protocol"], "wm-so/1")
         self.assertEqual(request["request_kind"],
@@ -309,7 +309,7 @@ class TestProtocolReachesProvider(StrategyCase):
         self.h.predict_strategy_outcome(
             task,
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         block = self.provider.requests[0]["prediction_context"]
         joint = block["joint_problem"]
         self.assertIn("distribution centre", joint["text"])
@@ -325,7 +325,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertEqual(prediction.prediction_type, "strategy_outcome")
         self.assertEqual(prediction.benefit.kind, "solution_quality")
@@ -345,7 +345,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIsNotNone(prediction.trace.call_cost)
         self.assertIn("llm_tokens", prediction.trace.call_cost.measured_dims())
 
@@ -355,7 +355,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "contract_only")
         self.assertFalse(prediction.provider_configured)
         self.assertFalse(prediction.service_available)
@@ -369,7 +369,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertNotEqual(prediction.status, "valid")
         self.assertFalse(prediction.prediction_made)
         self.assertTrue(any("no predicted content" in n
@@ -383,7 +383,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "invalid")
         # A non-object payload is classified by its TOP-LEVEL TYPE, so the
         # diagnosis says what the endpoint actually returned.
@@ -408,7 +408,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "invalid")
         failure = prediction.trace.model_info["failure"]
         self.assertEqual(failure["kind"], "wrong_top_level")
@@ -467,7 +467,7 @@ class TestProtocolReachesProvider(StrategyCase):
             prediction = h.predict_strategy_outcome(
                 _task("t1"),
                 {"action_type": "execute_strategy", "strategy_id": "S01"},
-                "ep1")
+                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             self.assertEqual(prediction.status, "invalid", content)
             kinds[content] = prediction.trace.model_info["failure"]["kind"]
         self.assertEqual(kinds["[]"], "wrong_top_level")
@@ -524,7 +524,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         failure = prediction.trace.model_info["failure"]
         self.assertEqual(failure["kind"], "truncated")
         self.assertEqual(failure["content_kind"], "empty")
@@ -552,7 +552,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         failure = prediction.trace.model_info["failure"]
         self.assertIsNone(failure["finish_reason"])
         self.assertIn("UNKNOWN", failure["note"])
@@ -576,7 +576,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "invalid")
         self.assertEqual(
             prediction.trace.model_info["failure"]["kind"], "timeout")
@@ -637,7 +637,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "invalid")
         joined = " ".join(prediction.notes)
         self.assertIn("NORMALIZED", joined)
@@ -659,7 +659,7 @@ class TestProtocolReachesProvider(StrategyCase):
         prediction = h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "invalid")
         self.assertIsNotNone(prediction.trace.call_cost,
                              "a failed call's spend is real and kept")
@@ -677,7 +677,7 @@ class TestScopeAndHonesty(StrategyCase):
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01",
              "scope": "strategy_window",
-             "window_id": "win::t1::ep1::S01"}, "ep1")
+             "window_id": "win::t1::ep1::S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertFalse(prediction.trace.comparable)
         self.assertTrue(prediction.trace.not_comparable_reasons)
@@ -698,13 +698,13 @@ class TestScopeAndHonesty(StrategyCase):
         self.addCleanup(h.close)
         p_full = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S01"}, "ep1")
+                          "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         provider.payload = payload_none
         p_none = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S02"}, "ep1")
+                          "strategy_id": "S02"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
-                            cost_weights={"llm_tokens": 1.0})
+                            cost_weights={"llm_tokens": 1.0}, benefit_kind='solution_quality', benefit_metric='normalized_objective_gap', benefit_unit='1-gap')
         scores = score_strategy_outcome_predictions([p_full, p_none], limits)
         self.assertIn("cost", scores[1].incomparable,
                       "the cost-less candidate is charged, not excused")
@@ -715,7 +715,7 @@ class TestScopeAndHonesty(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # The predicted cost dimensions are the RESOURCE dimensions only.
         if prediction.cost is not None:
             from or_harness.core.schema import COST_DIMENSIONS
@@ -748,15 +748,15 @@ class TestScopeAndHonesty(StrategyCase):
         }
         p_completion = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S01"}, "ep1")
+                          "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         # Candidate 2: a solver-quality claim (a DIFFERENT currency from the
         # default completion yardstick).
         provider.payload = json.loads(json.dumps(GOOD_PAYLOAD))
         p_quality = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S02"}, "ep1")
+                          "strategy_id": "S02"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
-                            cost_weights={"llm_tokens": 1.0})
+                            cost_weights={"llm_tokens": 1.0}, benefit_kind='effective_completion', benefit_metric='task_result_check_passed', benefit_unit='boolean')
         scores = score_strategy_outcome_predictions(
             [p_completion, p_quality], limits)
         quality_score = scores[1]
@@ -790,9 +790,9 @@ class TestScopeAndHonesty(StrategyCase):
         }
         prediction = h.predict_strategy_outcome(
             _task("t1"), {"action_type": "execute_strategy",
-                          "strategy_id": "S01"}, "ep1")
+                          "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         scores = score_strategy_outcome_predictions(
-            [prediction], PlanLimits(alpha=1.0, beta=1.0, gamma=1.0))
+            [prediction], PlanLimits(alpha=1.0, beta=1.0, gamma=1.0, benefit_kind='solution_quality', benefit_metric='normalized_objective_gap', benefit_unit='1-gap'))
         self.assertIn("benefit", scores[0].incomparable)
         self.assertIsNone(scores[0].utility)
 
@@ -800,7 +800,7 @@ class TestScopeAndHonesty(StrategyCase):
         prediction = self.h.predict_strategy_outcome(
             _task("t1"),
             {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.uncertainty.source, "model_self_report")
         self.assertTrue(any("UNCALIBRATED" in n
                             for n in prediction.uncertainty.notes))
@@ -833,7 +833,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         return h, provider, plan
 
     def test_prediction_changes_the_suggestion(self):
@@ -874,7 +874,7 @@ class TestPredictionDrivesDecision(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "no_valid_predictions")
         self.assertIn("Fall back to `recall`", plan["truncation_reason"])
         self.assertIsNone(plan["suggested"])
@@ -885,7 +885,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                 _task("t1"), "ep1",
                 candidates=[ActionSpec("execute_strategy", "t1",
                                        strategy_id="S01")],
-                limits={"horizon": 2})
+                limits={"horizon": 2, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertIn("horizon=1 only", str(caught.exception))
 
     def test_budget_limit_stops_further_calls(self):
@@ -902,7 +902,7 @@ class TestPredictionDrivesDecision(StrategyCase):
             _task("t1"), "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "fallback")
         self.assertEqual(plan["model_calls_made"], 0)
 
@@ -919,7 +919,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                                    strategy_id="S02"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S04")],
-            limits={"horizon": 1, "max_model_calls": 2},
+            limits={"horizon": 1, "max_model_calls": 2, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'},
             )
         self.assertEqual(plan["model_calls_made"], 2)
         self.assertEqual(plan["status"], "truncated")
@@ -938,7 +938,7 @@ class TestExecutionBinding(StrategyCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         bound = self.h.bind_strategy_outcome(
             prediction.prediction_id, record.action_id)
@@ -956,7 +956,7 @@ class TestExecutionBinding(StrategyCase):
         # Predict a candidate with a DIFFERENT solver than the one that ran.
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04", "solver": "cbc"}, "ep1")
+                   "strategy_id": "S04", "solver": "cbc"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # ran with highs
         bound = self.h.bind_strategy_outcome(
             prediction.prediction_id, record.action_id)
@@ -968,7 +968,7 @@ class TestExecutionBinding(StrategyCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S01"}, "ep1")
+                   "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # a DIFFERENT strategy ran
         executions_before = self.h.bank.count()
         bound = self.h.bind_strategy_outcome(
@@ -990,7 +990,7 @@ class TestExecutionBinding(StrategyCase):
                                    strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["model_calls_made"], 2)
         cost = plan["planning_cost"]
         self.assertTrue(cost, "failed calls' spend is real and recorded")
@@ -1087,7 +1087,7 @@ class TestCliStrategyCommands(StrategyCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         code, payload = self._run([
             "bind-strategy", "--prediction", prediction.prediction_id,
@@ -1132,6 +1132,80 @@ class TestCliStrategyCommands(StrategyCase):
         self.assertEqual(code, 2)
         self.assertIn("horizon=1", rejected["summary"])
         self.assertIn("REAL observation", rejected["summary"])
+
+
+from tests.harness.g_fixtures import GCase, G_NOTE, G_PAYLOAD
+from or_harness.world_model.contracts import (
+    BenefitEstimate, FAITHFUL_G_METRIC, FAITHFUL_G_OBSERVATION_VERSION,
+)
+
+
+class TestFaithfulGContract(GCase):
+    def test_default_request_validation_persistence_and_utility_agree(self):
+        from or_harness.world_model.planner import (
+            normalize_benefit_convention, score_strategy_outcome_predictions, PlanLimits,
+        )
+        p = self.predict_g()
+        required = self.provider.requests[-1]["benefit_convention"]
+        self.assertEqual(required["metric"], FAITHFUL_G_METRIC)
+        self.assertTrue(required["required"])
+        self.assertEqual(required["scope"], "attempt")
+        self.assertEqual(required["observation_rule_version"], FAITHFUL_G_OBSERVATION_VERSION)
+        saved = self.h.get_strategy_outcome_prediction(p.prediction_id)
+        self.assertEqual(saved.benefit.to_dict(), p.benefit.to_dict())
+        self.assertEqual(normalize_benefit_convention(p.benefit.kind, p.benefit.metric),
+                         ("effective_completion", FAITHFUL_G_METRIC))
+        self.assertFalse(validate_strategy_outcome(p))
+        score = score_strategy_outcome_predictions([p], PlanLimits(alpha=1, beta=0, gamma=0))[0]
+        self.assertEqual(score.benefit_value, 0.7)
+        self.assertEqual(score.utility, 0.7)
+
+    def test_mismatched_metric_and_invalid_g_drop_only_benefit(self):
+        import copy
+        from or_harness.world_model.planner import score_strategy_outcome_predictions, PlanLimits
+        variants = [
+            {"kind": "solution_quality", "metric": "normalized_objective_gap", "unit": "1-gap", "value": 0.9},
+            {"value": 1.2}, {"value": float("inf")}, {"value": float("nan")},
+            {"value": True}, {"value": "0.7"}, {"unit": "boolean"}, {"scope": "strategy_window"},
+            {"observation_rule_version": "unknown/9"},
+        ]
+        for index, patch in enumerate(variants):
+            with self.subTest(patch=patch):
+                self.provider.payload = copy.deepcopy(G_PAYLOAD)
+                self.provider.payload["benefit"].update(patch)
+                p = self.predict_g(episode=f"bad{index}")
+                self.assertIsNone(p.benefit.value)
+                self.assertEqual(p.benefit.notes, [G_NOTE])
+                self.assertIn("benefit", p.trace.unsupported_fields)
+                self.assertIsNotNone(p.cost)
+                self.assertIsNotNone(p.risk)
+                self.assertEqual(p.status, "valid")
+                score = score_strategy_outcome_predictions([p], PlanLimits())[0]
+                self.assertIsNone(score.benefit_value)
+                self.assertIsNone(score.utility)
+
+    def test_missing_numeric_g_retains_the_one_sentence(self):
+        self.provider.payload["benefit"].pop("value")
+        self.provider.payload["benefit"].pop("baseline")
+        p = self.predict_g()
+        self.assertEqual(p.status, "valid")
+        self.assertIsNone(p.benefit.value)
+        self.assertEqual(p.benefit.notes, [G_NOTE])
+
+    def test_explicit_legacy_solver_gap_keeps_its_meaning(self):
+        self.provider.payload = GOOD_PAYLOAD
+        p = self.predict_g(benefit_convention={"kind": "solution_quality",
+            "metric": "normalized_objective_gap", "unit": "1-gap"})
+        self.assertEqual(p.benefit.value, 0.8)
+        self.assertIsNone(p.benefit.observation_rule_version)
+        r = self.run_g(p)
+        self.check_g(r, evidence=False)
+        b = self.close_g()["evaluations"][0]["benefit"]
+        self.assertEqual(b["observed"], 1.0)
+        old = BenefitEstimate.from_dict({"kind": "effective_completion",
+            "metric": "task_result_check_passed", "unit": "boolean", "value": 0.6})
+        self.assertEqual(old.metric, "task_result_check_passed")
+        self.assertIsNone(old.observation_rule_version)
 
 
 if __name__ == "__main__":

@@ -58,7 +58,7 @@ What it never does: run a solver, call the prediction model, trigger induction, 
 
 For each bound prediction, the close-out derives what ACTUALLY happened from the action log and the execution records — never from the prediction:
 
-- **benefit observations** use the prediction's OWN declared metric/unit/baseline (the yardstick is frozen at prediction time; it is never re-chosen after the result is known). This build has an observation adapter for exactly ONE metric — the solver's normalized gap (`optimal` → 1.0; otherwise `1-gap`). A prediction declaring any other metric (a business cost-saving ratio, a completion rate) is reported `scope_mismatch`: the solver's 1-gap number is never re-labelled as a metric it did not measure. A feasible solution with no gap/bound is the 0.5 heuristic — reported `unverified`, never scored. Other benefit kinds have no observation adapter either: reported, not evaluated.
+- **benefit observations** use the prediction's own declared metric/unit/version/scope. New G (`task_check_passed_given_faithful_execution`, `wm-g-faithful/1`) requires sourced method fidelity and original-acceptance evidence; its rules are below. The old `task_result_check_passed` adapter and the solver's `normalized_objective_gap` keep their own meanings. Unsupported currencies are never silently relabelled. A feasible solution with no measured gap/bound remains unverified.
 - **window benefit rule** (declared before evaluation, applied uniformly): the LAST qualified in-scope attempt's solution is the window's benefit observation. All in-scope failed retries' measured costs still count.
 - **cost** is scoped to the predicTION's DECLARED COST SPAN (`ExpectedCost.scope`), NOT to the benefit scope, so a predicted span is compared against the SAME real span:
   - `remaining_to_task_end` (the DEFAULT in r13): the cost from the DECISION ANCHOR (when the prediction was made) to the END of the task — every in-episode execution from the anchor aggregates ONCE, so a failed first attempt and the repaired retry BOTH count. A predicted remaining total of 300 tokens (100 failed + 200 retried) is compared against 300, never the first attempt's 100;
@@ -78,7 +78,8 @@ Each field is judged on its own eligibility — never a blanket verdict:
 | Field | Compared when | Excluded when (and why it matters) |
 |---|---|---|
 | benefit — quality | the prediction declared `solution_quality` AND the same metric was observed under the same scope | no baseline/value predicted (`not_predicted`); no qualified observation (`unobserved`); heuristic-only quality (`unverified`); other metric kinds (`scope_mismatch`); the binding could not establish the task/strategy OR the APPROACH (`identity_mismatch`/`identity_unknown` — an unreported `time_limit` does NOT block it). The DECLARED metric/unit always travel with the block, so an unobservable sample still groups by what it said it was predicting |
-| benefit — completion | the prediction declared `effective_completion` with `metric=task_result_check_passed` | the execution's own `check-task` verdict is the observation: `passed` → 1.0, a confirmed `failed` → 0.0. An UNCHECKED or `insufficient` execution normally contributes NOTHING (`unobserved`). EXCEPTION (attempt scope only): an attempt that RAN, failed and produced no usable result is a KNOWN non-completion → 0.0 (`basis="confirmed_failed_no_result"`), even when `task_check` is absent or `insufficient` (the ANSWER's validity stays UNKNOWN and is not scored). A sandbox-refused attempt (`executed=false`) is NOT an observation; a window/remaining scope is judged by how it ENDED, never by a first failure. A completion claim declared against a QUALITY metric, and `valid_progress` (no observation channel), are `scope_mismatch` |
+| benefit — faithful execution (new default) | `effective_completion/task_check_passed_given_faithful_execution`, unit `probability`, `wm-g-faithful/1` | terminal in-scope faithful execution + original-task acceptance passed → 1; faithful execution + confirmed method-caused failure → 0; otherwise unknown with a reason. Crashes/timeouts without an evaluable result and implementation deviations never become 0 |
+| benefit — legacy completion | the prediction declared `effective_completion` with `metric=task_result_check_passed` | the execution's own `check-task` verdict is the observation: `passed` → 1.0, a confirmed `failed` → 0.0. An UNCHECKED or `insufficient` execution normally contributes NOTHING (`unobserved`). EXCEPTION (attempt scope only): an attempt that RAN, failed and produced no usable result is a KNOWN non-completion → 0.0 (`basis="confirmed_failed_no_result"`), even when `task_check` is absent or `insufficient` (the ANSWER's validity stays UNKNOWN and is not scored). A sandbox-refused attempt (`executed=false`) is NOT an observation; a window/remaining scope is judged by how it ENDED, never by a first failure. A completion claim declared against a QUALITY metric, and `valid_progress` (no observation channel), are `scope_mismatch` |
 | cost | per dimension: predicted AND completely measured on the real scope (the scope being the prediction's DECLARED cost span); error = absolute + directed `log(actual/predicted)` | partially-measured totals are excluded (an incomplete total is not a truth); zero predicted or actual produces no relative ratio (a substituted value would be a fabrication). A wall-clock dimension with a single explicit measurement IS comparable (its `comparable.value`); only MULTIPLE distinct spans are withheld (they can neither be summed nor combined). A known condition DEVIATION (a different solver or config value) blocks the outcome dimensions and PRESERVES the cost: the attempt really spent what it spent |
 | risk | per event: a predicted probability AND a known label → Brier score | no probability (`not_predicted`); unknown label (never a 0 label by default); a RETIRED event name (no label, no alias); events are never averaged across names |
 | interval | the prediction saved an `outcome` interval AND an observed value exists → covered yes/no + `width` | no interval saved, or nothing comparable to cover. A `mean` interval is NOT decided by a single observation (its claim is about the AVERAGE over repeated runs) and this build has no mean-observation channel, so it is reported `unobservable` with a reason and never enters a coverage numerator — it does not read as "not covered". Coverage is grouped BY interval KIND (`interval_by_kind`): an `outcome` interval and a `mean` interval make different claims, so their hit rates are never averaged together. A bare interval with no kind groups under `(unstated)` |
@@ -122,7 +123,7 @@ Grouped by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>|<observati
 | `mean_predicted_probability` / `scored_occurrence_rate` | Both over the SAME denominator (predictions with a probability AND a label), so their difference is a meaningful over/under-estimate signal |
 | `reminders` | DETERMINISTIC "watch this next time" notes derived from the statistics above — never model-written. See §5b |
 
-A group below the sample minimum (`--min-samples`, default 5) reports `insufficient_evidence` with `reliability: null` — no figure is invented. The summary is labelled `applicability: "global_diagnostic"`: it carries NO strategy or problem-condition breakdown, so it is NOT a claim about the conditional bias of the candidate currently under consideration.
+A group below the sample minimum (`--min-samples`, default 5) reports `insufficient_evidence` with `reliability: null` — no figure is invented. The `groups` residual statistics are labelled `applicability: "global_diagnostic"` and do not establish a candidate-specific G correction. The separate `conditional_g` fact groups carry their own problem/solving conditions and support limits.
 
 ### 5a. The observation-rule version (`wm-obs/2`)
 
@@ -132,13 +133,41 @@ The summary reports `observation_rule_version` (`wm-obs/2`), and every stored ev
 
 - the quality observation is ALWAYS the solver's own figure (`optimal` → 1.0, otherwise `1-gap`);
 - the task check travels as a SEPARATE fact under `evaluations[].benefit.task_check`;
-- the completion question is answered by the `effective_completion` / `task_result_check_passed` channel, never by rewriting the quality number.
+- legacy completion uses `effective_completion/task_result_check_passed`; new faithful-execution G uses its separate `wm-g-faithful/1` adapter. Neither rewrites the solver-quality number.
 
 A legacy evaluation that wrote no observation-rule version groups under `(unknown)` rather than being assumed current.
 
 ### 5b. Deterministic reminders
 
-The summary carries a `reminders` list: the measured statistics rendered as short "watch this next time" notes. Each is a PURE FUNCTION of the groups — no model call, no fitted calibrator — so it is recomputable and never a second source of truth. Each reminder names the applicability it was derived under (metric/unit/scope/observation-rule), the OBSERVED bias and its direction, a concrete instruction, and the group key as support, and carries `kind: "derived_reminder"` / `basis: "measured_statistics"`. A group below the episode threshold yields NO reminder — "insufficient evidence" is not a lesson. The distinction the design requires is enforced: the observed bias is a FACT, the instruction is a DERIVED reminder, neither is a strategic-knowledge claim.
+The summary's `reminders` retain C/R feedback compatibility and interval diagnostics. Global G signed errors remain in `groups` for diagnosis, but neither aggregate G residuals nor single-case G residuals produce value correction instructions. The request boundary filters retired G reminders in BOTH `prediction_reminders` and `strategy_outcome_calibration.reminders`, including cached/published old blocks; stored audit payloads are preserved.
+
+`conditional_g` replaces G correction instructions with measured facts. Each group uses the same metric, G observation version, execution scope, family, known structural cell, model identity and solving conditions. It reports `passed`, `failed`, `unknown`, execution-unit count, distinct `(task_id, episode_id)` count and labelled-episode count. Sparse groups explicitly support only their executed cases. Repeated predictions bound to the same execution/range count once (earliest attributable prediction per unit). Brier and probability bins use only units with BOTH a numeric prediction and an attributable binary label: unknown outcomes and missing numeric G never enter their denominators. Labels may be retained as facts when numeric G is missing.
+
+Paired feedback retains the original prediction/error currency. Sourced historical execution facts can additionally appear as `g_observed_fact`, independently of the old forecast. `same_task_comparisons` places actual different methods side by side only for the same task, frozen original problem, acceptance id, solving conditions and scope/version, preserving evidence and evaluation references. One executed method gives its factual case. Two passes on the same binary acceptance are a tie; a verified business objective may stay in the case as `verified_objective`.
+
+<a id="g-attribution-evidence"></a>
+### G attribution evidence
+
+Supply the smallest optional `g_attribution` object inside the existing `check-task --check` JSON (or `check_task_result` API):
+
+```json
+{
+  "semantic_probe": [{"path":"execution_features.solution_variables.CFC", "equals":1}],
+  "g_attribution": {
+    "method_fidelity":"faithful",
+    "failure_source":"candidate_method",
+    "acceptance_scope":"original_task",
+    "acceptance_id":"factory-coupling/v1",
+    "source":"agent audit of the captured implementation and result",
+    "assessment":"The task requires BE and CFC at one factory; the candidate and code select separately, and the recorded assignments violate that condition.",
+    "evidence_refs":["artifacts.submitted_script", "artifacts.workspace_result"]
+  }
+}
+```
+
+`method_fidelity` is `faithful|deviated|unknown`; `failure_source` is `candidate_method|implementation|environment|unknown` (use `unknown` on a pass); `acceptance_scope` is `original_task|partial|unknown`. `acceptance_id` names the stable, versioned original-task acceptance standard. `source` and `assessment` identify who assessed what and why. The framework resolves `evidence_refs` to this execution's captured artifacts and hashes; code evidence (`artifacts.submitted_script` or `solver.code_hash`) AND result evidence (`artifacts.workspace_result` or `execution_features.solution_variables`) are required. Invalid/missing references produce unknown G, while the ordinary checker verdict still stands.
+
+This is a sourced caller assessment, not automatic proof of the mathematical model's fidelity. Check coverage must be audited against the original requirements; objective equality alone does not establish it. `method_actual` must exist, the recorded plan must identify the predicted candidate, and structured binding conflicts still block attribution. Identical step strings never prove faithful implementation. A reworded method receipt can be accepted when the sourced audit establishes fidelity; a changed method or code omission must be assessed as a deviation. Later corrected attempts can supply their own labels without rewriting earlier forecasts or evaluations.
 
 This is a **measured record, not a promise**: writing the summary does not claim future predictions improve, and it is NOT a fitted calibrator or a model weight (training-free is unchanged). It is kept SEPARATE from the legacy knowledge-prediction reliability (`prediction_class_reliability`): a knowledge hit rate never proves OR strategy-outcome accuracy.
 

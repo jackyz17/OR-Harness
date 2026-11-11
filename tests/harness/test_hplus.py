@@ -125,7 +125,7 @@ class TestSameCallAndShape(HPlusCase):
     def test_the_gain_is_parsed_from_the_same_answer(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertTrue(prediction.claims_capability_gain)
         gain = prediction.capability_gain
@@ -137,7 +137,7 @@ class TestSameCallAndShape(HPlusCase):
     def test_the_gain_keeps_each_metric_in_its_own_unit(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         change = prediction.capability_gain.expected_changes[0]
         # Not a 0-1 score: the metric's own unit and a signed direction.
         self.assertEqual(change.metric, "solver_runtime_s")
@@ -158,7 +158,7 @@ class TestSameCallAndShape(HPlusCase):
     def test_the_gain_round_trips_through_storage(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         reloaded = self.h.get_strategy_outcome_prediction(
             prediction.prediction_id)
         self.assertTrue(reloaded.claims_capability_gain)
@@ -183,7 +183,7 @@ class TestGainIsNotUtility(HPlusCase):
             TASK, "ep1",
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01", solver="highs")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["model_calls_made"], 1)
         entry = plan["candidates"][0]
         gain = entry.get("capability_gain")
@@ -220,7 +220,7 @@ class TestGainIsNotUtility(HPlusCase):
                                    strategy_id="S01", solver="highs"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02", solver="highs")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         utilities = {c["action_spec"]["strategy_id"]: c["score"]["utility"]
                      for c in plan["candidates"]}
         self.assertEqual(utilities["S01"], utilities["S02"],
@@ -246,7 +246,7 @@ class TestGainAbsence(HPlusCase):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertIsNone(prediction.capability_gain)
         self.assertFalse(prediction.claims_capability_gain)
@@ -274,7 +274,7 @@ class TestGainAbsence(HPlusCase):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertFalse(prediction.claims_capability_gain)
         self.assertTrue(any("no gain claimed" in n
@@ -293,7 +293,7 @@ class TestGainAbsence(HPlusCase):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # The malformed gain is DROPPED with a reason, and the valid
         # benefit/cost prediction it accompanied is KEPT: a local error in
         # the explanatory extra never destroys the forecast.
@@ -315,7 +315,7 @@ class TestGainAbsence(HPlusCase):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
         self.assertIsNone(prediction.capability_gain)
         self.assertIn("malformed",
@@ -337,7 +337,7 @@ class TestGainAssessment(HPlusCase):
         self.addCleanup(h.close)
         return h, h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
     def test_all_three_assessments_parse_and_round_trip(self):
         for stance in ("expected", "none", "insufficient_basis"):
@@ -421,10 +421,10 @@ class TestGainAssessment(HPlusCase):
         self.addCleanup(h.close)
         h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         other = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02"},
-            "ep2")
+            "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIsNone(other.capability_gain)
         summary = h.online_capability_gains()
         self.assertEqual(summary["n_online_gains"], 0)
@@ -468,7 +468,7 @@ class TestGainIsNotVerifiedCapability(HPlusCase):
         before = self.h.capability_evidence_with_effects().to_dict()
         self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         after = self.h.capability_evidence_with_effects().to_dict()
         # A prediction changed no capability SOURCE state (the evidence
         # carries read timestamps, so compare the substantive parts).
@@ -485,7 +485,7 @@ class TestGainIsNotVerifiedCapability(HPlusCase):
     def test_the_gain_carries_no_effect_verified_flag(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         view = prediction.capability_gain.to_dict()
         # The online block has no "verified" state at all — verification is
         # the OFFLINE path's job.

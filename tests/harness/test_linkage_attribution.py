@@ -303,7 +303,7 @@ class TestMissingReceiptIsACaveat(Base):
     def _predict(self, **config):
         return self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs", "config": config}, "ep1")
+                   "solver": "highs", "config": config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
     def test_an_unreported_effort_key_keeps_the_cost_sample(self):
         """The exact regression the user reported: a config key the run
@@ -369,7 +369,7 @@ class TestConditionDeviation(Base):
             "deviation", config={"time_limit": 30})
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs", "config": {"time_limit": 60}}, "ep1")
+                   "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # Run WITHOUT the prediction id (the run used a different value), and
         # bind explicitly — the honest deviation path.
         record = self.h.execute(TASK, "S01", str(script), str(work),
@@ -391,7 +391,7 @@ class TestConditionDeviation(Base):
         script, work = self._plain_script("solver_dev")
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "glpk"}, "ep1")
+                   "solver": "glpk"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # The run really used highs; bind explicitly to record the deviation.
         record = self.h.execute(TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1")
@@ -417,7 +417,7 @@ class TestGenuineBoundariesStillRefuse(Base):
         script, work = self._plain_script("wrong_strategy")
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # A DIFFERENT strategy really ran; bind explicitly to record it.
         record = self.h.execute(TASK, "S02", str(script), str(work),
                                 solver="highs", episode_id="ep1")
@@ -433,7 +433,7 @@ class TestGenuineBoundariesStillRefuse(Base):
     def test_an_unexecuted_candidate_gets_no_outcome(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         script, work = self._plain_script("other_ran")
         record = self.h.execute(TASK, "S04", str(script), str(work),
                                 solver="highs", episode_id="ep1")
@@ -461,7 +461,7 @@ class TestMethodDeviationIsAnEvaluationFact(Base):
         script, work = self._stamped_script("method_dev", method=performed)
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs", "method": plan}, "ep1")
+                   "solver": "highs", "method": plan}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.h.execute(TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
@@ -492,13 +492,13 @@ class TestEntryRefusalReachesTheApi(Base):
             self.h.predict_strategy_outcome(
                 TASK, {"action_type": "execute_strategy",
                        "strategy_id": "S01", "config": {"task_id": "t2"}},
-                "ep1")
+                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIn("not an execution parameter", str(caught.exception))
 
     def test_a_method_in_config_is_normalized_and_recorded(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "config": {"method": "benders", "time_limit": 60}}, "ep1")
+                   "config": {"method": "benders", "time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.candidate.config, {"time_limit": 60})
         # The bare string is normalized to the ONE method shape, never left
         # as a string (which crashed ``dict()`` on read).
@@ -522,7 +522,7 @@ class TestMethodRoundTrip(Base):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs",
-                   "config": {"method": "assignment MILP"}}, "ep1")
+                   "config": {"method": "assignment MILP"}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.candidate.method,
                          {"name": "assignment MILP", "steps": []})
         # Reading it back must not raise, and must carry the SAME shape.
@@ -544,7 +544,7 @@ class TestMethodRoundTrip(Base):
     def test_a_bare_string_method_is_read_as_the_name(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
-                   "solver": "highs", "method": "assignment MILP"}, "ep1")
+                   "solver": "highs", "method": "assignment MILP"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.candidate.method,
                          {"name": "assignment MILP", "steps": []})
         reloaded = self.h.get_strategy_outcome_prediction(
@@ -587,7 +587,7 @@ class TestInterruptedAttemptIsPreserved(Base):
     def test_the_failed_attempt_keeps_its_cost_and_failure_class(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
             self.h.execute(TASK, "S01", str(self.script), str(self.work),
@@ -621,7 +621,7 @@ class TestInterruptedAttemptIsPreserved(Base):
     def test_the_failure_is_an_observation_and_the_retry_is_not_a_zero(self):
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
             self.h.execute(TASK, "S01", str(self.script), str(self.work),
@@ -649,7 +649,7 @@ class TestInterruptedAttemptIsPreserved(Base):
         the interrupted attempt once, alongside the retry."""
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
             self.h.execute(TASK, "S01", str(self.script), str(self.work),
@@ -681,7 +681,7 @@ class TestClaimRelease(Base):
         script, work = self._plain_script("claim_release")
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
         class Probe:
             def __init__(self, real):
@@ -733,7 +733,7 @@ class TestRuleRebuild(Base):
         script, work = self._plain_script("rule_rebuild")
         prediction = self.h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs", "config": {"time_limit": 60}}, "ep1")
+                   "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.h.execute(TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)

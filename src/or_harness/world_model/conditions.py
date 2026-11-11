@@ -264,9 +264,22 @@ def available_entry_ids(store, revision, profile, entry_ids=None):
                       profile, raw["predicates"]))(store.loads(row["payload"])))
 
 
+def filter_prediction_reminders(reminders):
+    """Drop retired G correction instructions at every provider boundary.
+
+    Published/cached payloads remain intact for audit. C/R reminders retain
+    their existing semantics. G case facts live in pairs/conditional stats.
+    """
+    return [copy.deepcopy(row) for row in (reminders or [])
+            if isinstance(row, dict) and str(row.get("field") or "").lower()
+            not in ("g", "benefit", "benefit.value", "quality", "completion")]
+
+
 def calibration_projection(summary):
     """Keep audit details at their source; send counts/reasons to the model."""
     out = copy.deepcopy(summary or {})
+    if "reminders" in out:
+        out["reminders"] = filter_prediction_reminders(out["reminders"])
     corrections = out.pop("validity_corrections", [])
     if corrections or "validity_correction_summary" not in out:
         out["validity_correction_summary"] = {

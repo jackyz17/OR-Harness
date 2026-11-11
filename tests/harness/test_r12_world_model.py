@@ -124,7 +124,7 @@ class TestOptimalButTaskFailed(TaskCheckCase):
         task = _task("t1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S01"}, "ep1")
+                   "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
                             objective=10750.0, tag="r12optfail")
         h.check_task_result(

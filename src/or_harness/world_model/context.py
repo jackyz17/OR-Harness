@@ -1745,7 +1745,9 @@ class PredictionContext:
           ``legacy`` merely because the summarising channel lacked the
           verification state.
         """
-        from or_harness.world_model.conditions import calibration_projection
+        from or_harness.world_model.conditions import (
+            calibration_projection, filter_prediction_reminders,
+        )
         joint = self.joint.to_dict()
         joint, omitted = _dedupe_joint(joint)
         # CIR is INTERNAL. The model reads the task text, the math
@@ -1784,7 +1786,7 @@ class PredictionContext:
                 self.strategy_calibration),
             "prediction_execution_pairs": copy.deepcopy(
                 self.paired_feedback),
-            "prediction_reminders": copy.deepcopy(
+            "prediction_reminders": filter_prediction_reminders(
                 self.prediction_reminders),
             "hplus_feedback": copy.deepcopy(self.hplus_feedback),
             "sources": dict(self.sources),

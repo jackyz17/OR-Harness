@@ -1,0 +1,657 @@
+{
+  "capture": "excerpt of the actual next request sent to the stub; omitted fields are unchanged request fields",
+  "constructed_outcomes": [
+    {
+      "episode": "method_omission",
+      "G_observed": 0.0,
+      "label_eligibility": "attributable",
+      "reason": null
+    },
+    {
+      "episode": "faithful_pass",
+      "G_observed": 1.0,
+      "label_eligibility": "attributable",
+      "reason": null
+    },
+    {
+      "episode": "code_omission",
+      "G_observed": null,
+      "label_eligibility": "unknown",
+      "reason": "execution deviated from the candidate or fidelity is unknown; failure is not attributed to the candidate method"
+    }
+  ],
+  "request_excerpt": {
+    "prediction_protocol": "wm-so/1",
+    "request_kind": "strategy_outcome_prediction",
+    "candidate": {
+      "action_type": "execute_strategy",
+      "strategy_id": "S04",
+      "solver": null,
+      "method": {
+        "name": "joint selection",
+        "steps": [
+          "Choose a common factory for BE and CFC."
+        ]
+      },
+      "config": {},
+      "preconditions": [],
+      "expected_scope": [],
+      "stop_conditions": [],
+      "task_id": "factory",
+      "episode_id": "next",
+      "scope": "attempt",
+      "scope_basis": "default",
+      "window_id": null
+    },
+    "benefit_convention": {
+      "kind": "effective_completion",
+      "metric": "task_check_passed_given_faithful_execution",
+      "unit": "probability",
+      "scope": "attempt",
+      "observation_rule_version": "wm-g-faithful/1",
+      "observed_from": "attributable original-task acceptance after faithful execution",
+      "source": "declared",
+      "required": true,
+      "note": "THIS DECISION compares benefit under this convention. Predict this candidate's benefit with EXACTLY this kind and metric: a different kind or metric cannot be ranked against the other candidates, and it is NOT silently converted"
+    },
+    "prediction_context": {
+      "task_id": "factory",
+      "joint_problem": {
+        "version": "joint/1",
+        "task_id": "factory",
+        "task_digest": "a5ff1facb0376e36",
+        "text": "Assign BE and CFC to factories; both must use the same factory.",
+        "text_digest": "a5ff1facb0376e36",
+        "task_payload": {
+          "family": "assignment",
+          "description": "Assign BE and CFC to factories; both must use the same factory."
+        },
+        "has_model": false,
+        "model_digest": null,
+        "math": {
+          "integrality": null,
+          "linearity": null,
+          "objective_kind": null,
+          "constraint_kinds": [],
+          "origins": {},
+          "unknowns": [
+            "integrality",
+            "linearity",
+            "objective_kind",
+            "constraint_kinds"
+          ],
+          "notes": []
+        },
+        "profile": {
+          "problem_id": "factory",
+          "family": "assignment",
+          "problem_class": "unknown",
+          "scale_features": {},
+          "semantic_coupling": null,
+          "resource_coupling": 0.8,
+          "temporal_coupling": null,
+          "route_complexity": null,
+          "risk_features": {},
+          "source": "harness_supplied",
+          "annotations": {
+            "coupling": {
+              "resource_coupling": 0.8
+            },
+            "profiling": {
+              "origin": {
+                "semantic_coupling": "null",
+                "resource_coupling": "supplied",
+                "temporal_coupling": "null",
+                "route_complexity": "null"
+              }
+            }
+          }
+        },
+        "derivation": {
+          "semantic_coupling": {
+            "value": null,
+            "origin": "null",
+            "note": "semantic coupling is never derived (business semantics are invisible to structure); supply annotations.coupling.semantic_coupling to keep it in the profile — it informs your own judgment and never conditions the statistics"
+          },
+          "resource_coupling": {
+            "value": 0.8,
+            "origin": "supplied"
+          },
+          "temporal_coupling": {
+            "value": null,
+            "origin": "null",
+            "note": "no structural signal found: provide the 'model' field (best), solver code (--code), or documented spec fields (time_periods/horizon, resources+entities, routes/network)"
+          },
+          "route_complexity": {
+            "value": null,
+            "origin": "null",
+            "note": "no structural signal found: provide the 'model' field (best), solver code (--code), or documented spec fields (time_periods/horizon, resources+entities, routes/network)"
+          }
+        },
+        "sources": {
+          "text": "task_payload",
+          "cir": "none",
+          "model": "none",
+          "profile": "profiler",
+          "derivation": "profiler",
+          "math.integrality": "unknown",
+          "math.linearity": "unknown",
+          "math.objective_kind": "unknown",
+          "math.constraint_kinds": "unknown"
+        },
+        "missing": [
+          "CIR: no relational structure supplied",
+          "mathematical model: not written yet — the math attributes come from the spec/CIR or stay unknown; this is a normal state and does not block a prediction",
+          "math.integrality: unknown (not established by any source)",
+          "math.linearity: unknown (not established by any source)",
+          "math.objective_kind: unknown (not established by any source)",
+          "math.constraint_kinds: unknown (not established by any source)"
+        ],
+        "unknowns": [
+          "integrality",
+          "linearity",
+          "objective_kind",
+          "constraint_kinds"
+        ],
+        "notes": [
+          "no CIR was supplied for this task: the relational structure is absent, and the structural dimensions come from the profile alone — an absent CIR is not evidence of weak coupling"
+        ]
+      },
+      "prediction_reminders": [],
+      "prediction_execution_pairs": {
+        "feedback_version": "wm-pairs/1",
+        "model_identity": "(unknown)",
+        "observation_rule_version": "wm-obs/4",
+        "identity_note": "these two fields are BLOCK-level: all pairs share one predicting model and one observation rule, so they are stated once rather than per row",
+        "risk_reason_legend": {
+          "class_not_recorded": "the execution did not record this failure class",
+          "environment_failure": "an ENVIRONMENT failure (sandbox policy / missing module / unavailable backend)",
+          "error_class_unknown": "the failure's error_class is unknown/unrecorded: the cause is not inferred from the error text",
+          "implementation_failure": "the harness's OWN code failed (an implementation failure, NOT a modelling error)",
+          "no_infeasibility": "the solver did not report infeasibility here",
+          "no_task_check": "no task check is on record for this execution: task validity is UNKNOWN, never a failure",
+          "predicted_without_probability": "the prediction named the event but gave no probability: it is observed, not scored",
+          "reported_infeasibility": "the solver reported infeasibility (a verdict, not by itself a strategy failure)",
+          "task_check_failed": "a declared task check ran on real values and did not hold",
+          "time_limit": "the executor's time limit fired",
+          "unpredicted_no_brier": "the model did not predict this event: it is observed by the framework and counted in the occurrence rate, but no Brier score can be computed without a probability"
+        },
+        "n_pairs_total": 3,
+        "n_pairs_withheld": null,
+        "filter_note": "every kept pair belongs to model identity '(unknown)'",
+        "pairs": [
+          {
+            "action_id": "ac_365402e631c1",
+            "benefit": {
+              "attribution": {
+                "assessment": "BE is fixed at 1; compare CFC against the original same-factory constraint and audit whether the code preserves the declared method.",
+                "failure_source": "implementation",
+                "method_fidelity": "deviated",
+                "source": "example auditor inspected the captured script and BE/CFC result"
+              },
+              "eligibility": "unobserved",
+              "interval_coverage": null,
+              "interval_kind": null,
+              "label_eligibility": "unknown",
+              "metric": "task_check_passed_given_faithful_execution",
+              "notes": [
+                "原题要求 BE 和 CFC 同厂，候选共同选厂并保留该约束，预计能满足同厂验收。"
+              ],
+              "observation_rule_version": "wm-g-faithful/1",
+              "predicted": 0.7,
+              "reason": "execution deviated from the candidate or fidelity is unknown; failure is not attributed to the candidate method"
+            },
+            "conditions": {
+              "cell": "class=unknown|rc[0.75,1.00]|tc[unknown]|rx[unknown]",
+              "family": "assignment",
+              "strategy_id": "S04",
+              "task_id": "factory"
+            },
+            "cost_log_ratio": {
+              "solver_runtime_s": -2.3026
+            },
+            "cost_measured": {
+              "solver_runtime_s": {
+                "abs_error": 0.09,
+                "actual": 0.01,
+                "predicted": 0.1
+              }
+            },
+            "episode_id": "code_omission",
+            "evaluation_id": "ev_73d42f741168",
+            "execution_conditions": {
+              "config": {},
+              "constraints": {
+                "available_solver_families": {
+                  "milp": [
+                    "copt"
+                  ]
+                },
+                "budget_condition": {
+                  "declared_limits": null,
+                  "episode_dimensions": [],
+                  "known_consumption_lower_bound": {},
+                  "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+                  "remaining_budget_confirmed": false,
+                  "unknown_dimension_reasons": {},
+                  "unknown_dimensions": []
+                },
+                "declared_budget": null,
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                }
+              },
+              "solver": null
+            },
+            "execution_ids": [
+              "ex_85c5763e1195"
+            ],
+            "execution_status": "optimal",
+            "method_actual": {
+              "n_steps": 1,
+              "name": "joint selection",
+              "steps": "same as method_planned.steps"
+            },
+            "method_planned": {
+              "n_steps": 1,
+              "name": "joint selection",
+              "steps": [
+                "Choose a common factory for BE and CFC."
+              ]
+            },
+            "prediction_id": "sp_4403ad853561",
+            "problem_identity_digest": "a5ff1facb0376e36",
+            "risk_actual": [
+              {
+                "brier": 0.04,
+                "event": "implementation_failure",
+                "label": "not_occurred",
+                "label_basis": "class_not_recorded",
+                "predicted": true,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              },
+              {
+                "event": "environment_failure",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "timeout",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "solver_reported_infeasible",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "task_check_failed",
+                "label": "occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "budget_exhausted",
+                "label": null,
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              }
+            ],
+            "risk_predicted": [
+              {
+                "event": "implementation_failure",
+                "probability": 0.2,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              }
+            ],
+            "scope": "attempt",
+            "task_check": {
+              "action_id": "ac_0cdbd05aef5c",
+              "scope": {
+                "basis": [
+                  "semantic_probe"
+                ],
+                "unchecked": [
+                  "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                  "constraint satisfaction not declared as a probe or a recomputation"
+                ]
+              },
+              "state": "failed"
+            },
+            "task_id": "factory",
+            "selected_reason": [
+              "a recalled hit names one of this pair's executions",
+              "same task as the current problem"
+            ],
+            "relevance": 4,
+            "background": false
+          },
+          {
+            "action_id": "ac_47881b94abd2",
+            "benefit": {
+              "acceptance_id": "same-factory/v1",
+              "attribution": {
+                "assessment": "BE is fixed at 1; compare CFC against the original same-factory constraint and audit whether the code preserves the declared method.",
+                "failure_source": "unknown",
+                "method_fidelity": "faithful",
+                "source": "example auditor inspected the captured script and BE/CFC result"
+              },
+              "eligibility": "evaluable",
+              "evidence_refs": {
+                "artifacts.submitted_script": {
+                  "bytes": 377,
+                  "kind": "script",
+                  "path": "artifacts/b1/b187c64eb9135958e9860c1e9e1633090ce3eb921df70ee9dd30835e60d692cb",
+                  "sha256": "b187c64eb9135958e9860c1e9e1633090ce3eb921df70ee9dd30835e60d692cb",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "artifacts.workspace_result": {
+                  "bytes": 263,
+                  "kind": "result",
+                  "path": "artifacts/0a/0a37605a80b63e52bc0fab1e5082cc4a3e5fa701804b8bd0848db20fbf9267ea",
+                  "sha256": "0a37605a80b63e52bc0fab1e5082cc4a3e5fa701804b8bd0848db20fbf9267ea",
+                  "source": "file observed after attempt; acceptance is governed by execution checks"
+                }
+              },
+              "interval_coverage": null,
+              "interval_kind": null,
+              "label_eligibility": "attributable",
+              "metric": "task_check_passed_given_faithful_execution",
+              "notes": [
+                "原题要求 BE 和 CFC 同厂，候选共同选厂并保留该约束，预计能满足同厂验收。"
+              ],
+              "observation_rule_version": "wm-g-faithful/1",
+              "observed": 1.0,
+              "predicted": 0.7,
+              "signed_error": 0.3
+            },
+            "conditions": {
+              "cell": "class=unknown|rc[0.75,1.00]|tc[unknown]|rx[unknown]",
+              "family": "assignment",
+              "strategy_id": "S04",
+              "task_id": "factory"
+            },
+            "cost_log_ratio": {
+              "solver_runtime_s": -2.3026
+            },
+            "cost_measured": {
+              "solver_runtime_s": {
+                "abs_error": 0.09,
+                "actual": 0.01,
+                "predicted": 0.1
+              }
+            },
+            "episode_id": "faithful_pass",
+            "evaluation_id": "ev_6c4d0d37ca14",
+            "execution_conditions": {
+              "config": {},
+              "constraints": {
+                "available_solver_families": {
+                  "milp": [
+                    "copt"
+                  ]
+                },
+                "budget_condition": {
+                  "declared_limits": null,
+                  "episode_dimensions": [],
+                  "known_consumption_lower_bound": {},
+                  "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+                  "remaining_budget_confirmed": false,
+                  "unknown_dimension_reasons": {},
+                  "unknown_dimensions": []
+                },
+                "declared_budget": null,
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                }
+              },
+              "solver": null
+            },
+            "execution_ids": [
+              "ex_6509294bfae5"
+            ],
+            "execution_status": "optimal",
+            "method_actual": {
+              "n_steps": 1,
+              "name": "joint selection",
+              "steps": "same as method_planned.steps"
+            },
+            "method_planned": {
+              "n_steps": 1,
+              "name": "joint selection",
+              "steps": [
+                "Choose a common factory for BE and CFC."
+              ]
+            },
+            "prediction_id": "sp_caa62b8eba38",
+            "problem_identity_digest": "a5ff1facb0376e36",
+            "risk_actual": [
+              {
+                "brier": 0.04,
+                "event": "implementation_failure",
+                "label": "not_occurred",
+                "label_basis": "class_not_recorded",
+                "predicted": true,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              },
+              {
+                "event": "environment_failure",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "timeout",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "solver_reported_infeasible",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "task_check_failed",
+                "label": "not_occurred",
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              },
+              {
+                "event": "budget_exhausted",
+                "label": null,
+                "label_basis": "unpredicted_no_brier",
+                "predicted": false
+              }
+            ],
+            "risk_predicted": [
+              {
+                "event": "implementation_failure",
+                "probability": 0.2,
+                "probability_ref": "risk_predicted[implementation_failure].probability"
+              }
+            ],
+            "scope": "attempt",
+            "task_check": {
+              "action_id": "ac_9c77b5e88ce2",
+              "scope": {
+                "basis": [
+                  "semantic_probe"
+                ],
+                "unchecked": [
+                  "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                  "constraint satisfaction not declared as a probe or a recomputation"
+                ]
+              },
+              "state": "passed"
+            },
+            "task_id": "factory",
+            "selected_reason": [
+              "a recalled hit names one of this pair's executions",
+              "same task as the current problem"
+            ],
+            "relevance": 4,
+            "background": false
+          }
+        ],
+        "selection": {
+          "limit": 6,
+          "limit_basis": "a DISPLAY ceiling, not a calibration sample size: the full window remains the calibration population",
+          "signature": "c8e05fbf81b77099",
+          "basis": "selected from the PUBLISHED block by relevance to the current retrieval, the candidates' declared methods and the current problem; no bank scan, no re-scoring"
+        },
+        "selection_signature": "c8e05fbf81b77099",
+        "n_pairs_available": 3,
+        "same_task_comparisons": [
+          {
+            "task_id": "factory",
+            "problem_identity_digest": "a5ff1facb0376e36",
+            "acceptance_id": "same-factory/v1",
+            "scope": "attempt",
+            "metric": "task_check_passed_given_faithful_execution",
+            "observation_rule_version": "wm-g-faithful/1",
+            "left": {
+              "evaluation_id": "ev_2eb225d42e44",
+              "method_actual": {
+                "n_steps": 1,
+                "name": "separate selection",
+                "steps": [
+                  "Select BE and CFC factories separately, then merge."
+                ]
+              },
+              "observed": 0.0,
+              "evidence_refs": {
+                "artifacts.submitted_script": {
+                  "bytes": 392,
+                  "kind": "script",
+                  "path": "artifacts/e8/e83aefac9097ca84aed095a02142f66a10302da20729206dea989a2e6ddef3e8",
+                  "sha256": "e83aefac9097ca84aed095a02142f66a10302da20729206dea989a2e6ddef3e8",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "artifacts.workspace_result": {
+                  "bytes": 278,
+                  "kind": "result",
+                  "path": "artifacts/f2/f21d90f97a634706d2d6edd7d4053a7c426eecba6ea3b2e77ef0a78ba557c12d",
+                  "sha256": "f21d90f97a634706d2d6edd7d4053a7c426eecba6ea3b2e77ef0a78ba557c12d",
+                  "source": "file observed after attempt; acceptance is governed by execution checks"
+                }
+              }
+            },
+            "right": {
+              "evaluation_id": "ev_6c4d0d37ca14",
+              "method_actual": {
+                "n_steps": 1,
+                "name": "joint selection",
+                "steps": [
+                  "Choose a common factory for BE and CFC."
+                ]
+              },
+              "observed": 1.0,
+              "evidence_refs": {
+                "artifacts.submitted_script": {
+                  "bytes": 377,
+                  "kind": "script",
+                  "path": "artifacts/b1/b187c64eb9135958e9860c1e9e1633090ce3eb921df70ee9dd30835e60d692cb",
+                  "sha256": "b187c64eb9135958e9860c1e9e1633090ce3eb921df70ee9dd30835e60d692cb",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "artifacts.workspace_result": {
+                  "bytes": 263,
+                  "kind": "result",
+                  "path": "artifacts/0a/0a37605a80b63e52bc0fab1e5082cc4a3e5fa701804b8bd0848db20fbf9267ea",
+                  "sha256": "0a37605a80b63e52bc0fab1e5082cc4a3e5fa701804b8bd0848db20fbf9267ea",
+                  "source": "file observed after attempt; acceptance is governed by execution checks"
+                }
+              }
+            },
+            "acceptance_comparison": "right_passed_left_failed"
+          }
+        ],
+        "n_same_task_comparisons_available": 1,
+        "n_same_task_comparisons_omitted": 0,
+        "n_pairs_included": 2,
+        "n_pairs_omitted": 1,
+        "n_background": 0,
+        "ordering": "by relevance to THIS decision (recall link, declared method, same task/cell, strategy hint); within a relevance rank, genuine failures and repairs before successes, then the most recent",
+        "basis": "derived from CLOSED episodes' stored evaluations in the current window; no model call, no re-scoring, no new storage",
+        "note": "relevance ranks failures/repairs before successes and the most recent first within a rank; a low relevance is a LOW RELEVANCE, never a claim that two methods are the same",
+        "candidate_methods_absent": "no candidate method description was supplied, so the selection degraded to recall-linked and recent representative pairs — it did NOT guess what a method means"
+      },
+      "strategy_outcome_calibration": {
+        "conditional_g": [
+          {
+            "attributable_label_coverage": 0.666667,
+            "brier": 0.29,
+            "conditions": {
+              "cell": "class=unknown|rc[0.75,1.00]|tc[unknown]|rx[unknown]",
+              "family": "assignment"
+            },
+            "deduplication": "one terminal execution/range; earliest attributable prediction per unit",
+            "evidence_evaluation_ids": [
+              "ev_2eb225d42e44",
+              "ev_6c4d0d37ca14",
+              "ev_73d42f741168"
+            ],
+            "execution_conditions": {
+              "config": {},
+              "constraints": {
+                "available_solver_families": {
+                  "milp": [
+                    "copt"
+                  ]
+                },
+                "budget_condition": {
+                  "declared_limits": null,
+                  "episode_dimensions": [],
+                  "known_consumption_lower_bound": {},
+                  "note": "the condition a budget_exhausted prediction is about: from this decision to the end of the solving episode. A known consumption with an unmeasured declared dimension is a LOWER BOUND and the remaining budget is NOT confirmed; with no valid condition the model may decline to predict (never a default probability of 0)",
+                  "remaining_budget_confirmed": false,
+                  "unknown_dimension_reasons": {},
+                  "unknown_dimensions": []
+                },
+                "declared_budget": null,
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                }
+              },
+              "solver": null
+            },
+            "failed": 1,
+            "metric": "task_check_passed_given_faithful_execution",
+            "model_identity": "(unknown)",
+            "n_distinct_episodes": 3,
+            "n_execution_units": 3,
+            "n_labelled_episodes": 2,
+            "n_scored": 2,
+            "observation_rule_version": "wm-g-faithful/1",
+            "passed": 1,
+            "probability_bins": [
+              {
+                "hi": 0.8,
+                "lo": 0.6,
+                "mean_prediction": 0.7,
+                "n": 2,
+                "pass_rate": 0.5
+              }
+            ],
+            "scope": "attempt",
+            "support": "sparse: these executed cases only",
+            "unknown": 1,
+            "unknown_reasons": {
+              "execution deviated from the candidate or fidelity is unknown; failure is not attributed to the candidate method": 1
+            }
+          }
+        ],
+        "reminders": []
+      }
+    }
+  }
+}

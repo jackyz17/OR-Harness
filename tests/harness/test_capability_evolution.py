@@ -1153,7 +1153,7 @@ class TestTwoStageFeedback(M5Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         from pathlib import Path
         work = Path(self.home) / f"ws_{task_id}"
         work.mkdir(parents=True, exist_ok=True)
@@ -1744,7 +1744,7 @@ class TestReviewRoundFixes(M5Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         from pathlib import Path
         work = Path(self.home) / f"ws_{task_id}"
         work.mkdir(parents=True, exist_ok=True)
@@ -1845,7 +1845,7 @@ class TestReviewRoundTwo(M5Case):
         predictions = [
             orx.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, episode)
+                       "strategy_id": "S04"}, episode, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             for _ in range(predictions_per_episode)]
         from pathlib import Path
         work = Path(self.home) / f"ws_{task_id}_{episode}"

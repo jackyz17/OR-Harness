@@ -534,7 +534,7 @@ class TestLateCorrection(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late1")
         self.h.bind_strategy_outcome(prediction.prediction_id,
@@ -596,7 +596,7 @@ class TestLateCorrection(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late3")
         self.h.bind_strategy_outcome(prediction.prediction_id,
@@ -628,7 +628,7 @@ class TestLateCorrection(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late4")
         self.h.bind_strategy_outcome(prediction.prediction_id,
@@ -655,7 +655,7 @@ class TestLateCorrection(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
                             objective=10750.0, tag="late2")
         self.h.bind_strategy_outcome(prediction.prediction_id,
@@ -765,7 +765,7 @@ class TestFormalPathProducesEvaluation(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
                             objective=10750.0, tag="formal")
         checked = self.h.check_task_result(
@@ -860,7 +860,7 @@ class TestCheckSurvivesRecording(TaskCheckCase):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.h.execute(task, None, str(script), str(work),
                                 solver=None, episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
@@ -922,7 +922,7 @@ class TestCompletionIsObservable(TaskCheckCase):
         self.h.snapshot(task, episode_id="ep1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         self.assertEqual(prediction.benefit.kind, "effective_completion")
         self._prediction_id = prediction.prediction_id
         return task, prediction
@@ -1006,12 +1006,12 @@ class TestCompletionIsObservable(TaskCheckCase):
         self.h.snapshot(task, episode_id="ep1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._prediction_id = prediction.prediction_id
         self._solve_bound(task)
         benefit = self._benefit_of_close()
-        self.assertEqual(benefit["eligibility"], "scope_mismatch")
-        self.assertIn("valid_progress", benefit["reason"])
+        self.assertEqual(benefit["eligibility"], "not_predicted")
+        self.assertIn("required convention", benefit["reason"])
 
 
 if __name__ == "__main__":

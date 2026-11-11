@@ -139,7 +139,7 @@ class CalibrationV2Case(HarnessTestCase):
         candidate = candidate or {"action_type": "execute_strategy",
                                   "strategy_id": "S04"}
         prediction = harness.predict_strategy_outcome(
-            task, candidate, episode_id)
+            task, candidate, episode_id, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         harness.bind_strategy_outcome(prediction.prediction_id,
                                       record.action_id)
         return prediction
@@ -169,7 +169,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         # The answer fails its declared check.
         checked = h.check_task_result(record.execution_id,
@@ -200,7 +200,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.check_task_result(record.execution_id,
                             {"reference_objective": 100.0})
@@ -228,7 +228,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", tag="crash",
                             body="raise RuntimeError('model invalid')\n")
         self.assertEqual(record.quality.get("status"), "error")
@@ -259,7 +259,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # A security-policy rejection: classified "environment" at record
         # time by the executor.
         record = self.solve(task, strategy="S04", tag="env",
@@ -289,7 +289,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", status="infeasible",
                             objective=0.0, tag="inf")
         h.bind_strategy_outcome(prediction.prediction_id,
@@ -323,7 +323,7 @@ class TestEventSemantics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", tag="legacy",
                             body="raise RuntimeError('boom')\n")
         # Simulate a legacy record: strip the class from the failure.
@@ -374,7 +374,7 @@ class TestBudgetScope(CalibrationV2Case):
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04",
                    "scope": "strategy_window",
-                   "window_id": "win::t1::ep1::S04"}, "ep1")
+                   "window_id": "win::t1::ep1::S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         # Freeze the limit before forecasting; report real attempt usage
         # afterwards so the start gate sees an allowed pre-execution state.
@@ -406,7 +406,7 @@ class TestBudgetScope(CalibrationV2Case):
         h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bank.update_cost(record.execution_id, llm_tokens=5000, source="agent_observed")
         h.bind_strategy_outcome(prediction.prediction_id,
@@ -445,7 +445,7 @@ class TestWindowAndPublication(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, episode)
+                   "strategy_id": "S04"}, episode, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", episode_id=episode,
                             tag=f"w{index}")
         h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
@@ -504,7 +504,7 @@ class TestWindowAndPublication(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -538,7 +538,7 @@ class TestWindowAndPublication(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -576,7 +576,7 @@ class TestRetention(CalibrationV2Case):
         task = _task(task_id)
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", episode_id="ep1",
                             tag=f"r{index}")
         if not unchecked:
@@ -734,7 +734,7 @@ class TestCountingUnits(CalibrationV2Case):
         self.addCleanup(h.close)
         predictions = [h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1") for _ in range(3)]
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'}) for _ in range(3)]
         record = self.solve(task, strategy="S04")
         for prediction in predictions:
             h.bind_strategy_outcome(prediction.prediction_id,
@@ -767,7 +767,7 @@ class TestCountingUnits(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # A SUCCESSFUL execution (so the benefit is observable and a group
         # exists) that nevertheless TIMED OUT is contradictory; use a
         # timeout execution and check the occurrence channel alone.
@@ -806,7 +806,7 @@ class TestCountingUnits(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")     # no timeout
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
@@ -834,7 +834,7 @@ class TestDirectedStatistics(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # observed 1.0
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -852,7 +852,7 @@ class TestDirectedStatistics(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -875,7 +875,7 @@ class TestDirectedStatistics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
@@ -896,7 +896,7 @@ class TestDirectedStatistics(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
@@ -918,7 +918,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
@@ -938,7 +938,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bind_strategy_outcome(prediction.prediction_id,
                                 record.action_id)
@@ -978,7 +978,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -996,7 +996,7 @@ class TestGroupingAndFiltering(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1071,7 +1071,7 @@ class TestPerExecutionLabels(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         first = self.solve(task, strategy="S04", tag="p1")
         second = self.solve(task, strategy="S04", tag="p2")
         self.h.check_task_result(first.execution_id,
@@ -1092,7 +1092,7 @@ class TestPerExecutionLabels(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.solve(task, strategy="S04", status="timeout", objective=0.0,
                    tag="t1")
         self.solve(task, strategy="S04", tag="t2")
@@ -1142,7 +1142,7 @@ class TestLiveCorrection(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.check_task_result(record.execution_id,
                                  {"reference_objective": 100.0})
@@ -1167,11 +1167,11 @@ class TestLiveCorrection(CalibrationV2Case):
         task = _task("t1")
         first_prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         first = self.solve(task, strategy="S04", tag="scope1")
         second_prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         second = self.solve(task, strategy="S04", tag="scope2")
         self.h.bind_strategy_outcome(first_prediction.prediction_id,
                                      first.action_id)
@@ -1203,7 +1203,7 @@ class TestLiveCorrection(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1242,7 +1242,7 @@ class TestLiveCorrection(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1277,7 +1277,7 @@ class TestLegacyMigration(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1298,7 +1298,7 @@ class TestLegacyMigration(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1336,7 +1336,7 @@ class TestArchiveRetry(CalibrationV2Case):
             task = _task(f"task{index}")
             prediction = self.h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, "ep1")
+                       "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             record = self.solve(task, strategy="S04", tag=f"ar{index}")
             self.h.check_task_result(record.execution_id,
                                      {"reference_objective": 100.0})
@@ -1407,7 +1407,7 @@ class TestPerStatisticThreshold(CalibrationV2Case):
             task = _task(f"task{index}")
             prediction = h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, "ep1")
+                       "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             record = self.solve(task, strategy="S04", tag=f"th{index}")
             h.bind_strategy_outcome(prediction.prediction_id,
                                     record.action_id)
@@ -1474,7 +1474,7 @@ class TestModelIdentityFiltering(CalibrationV2Case):
         self.addCleanup(h.close)
         prediction = h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
         h.close_episode("t1", "ep1")
@@ -1532,7 +1532,7 @@ class TestBoundedWindowReads(CalibrationV2Case):
         task = _task(task_id)
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04", tag=f"w{index}")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1597,7 +1597,7 @@ class TestPreviewNeverWrites(CalibrationV2Case):
             task = _task(f"t{index}")
             prediction = self.h.predict_strategy_outcome(
                 task, {"action_type": "execute_strategy",
-                       "strategy_id": "S04"}, "ep1")
+                       "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             record = self.solve(task, strategy="S04", tag=f"d{index}")
             self.h.bind_strategy_outcome(prediction.prediction_id,
                                          record.action_id)
@@ -1626,7 +1626,7 @@ class TestPreviewNeverWrites(CalibrationV2Case):
         task = _task("t1")
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1")
+                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1658,7 +1658,7 @@ class TestSinglePredictionLookup(CalibrationV2Case):
         for index in range(3):
             prediction = self.h.predict_strategy_outcome(
                 _task("t1"), {"action_type": "execute_strategy",
-                              "strategy_id": "S04"}, f"ep{index}")
+                              "strategy_id": "S04"}, f"ep{index}", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             ids.append(prediction.prediction_id)
         code, payload = self._run([
             "inspect", "--bank", "predictions", "--prediction", ids[0]])
@@ -1676,12 +1676,107 @@ class TestSinglePredictionLookup(CalibrationV2Case):
         for index in range(3):
             self.h.predict_strategy_outcome(
                 _task("t1"), {"action_type": "execute_strategy",
-                              "strategy_id": "S04"}, f"ep{index}")
+                              "strategy_id": "S04"}, f"ep{index}", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, payload = self._run(["inspect", "--bank", "predictions"])
         self.assertEqual(code, 0)
         result = payload["result"]
         self.assertEqual(result["count"], 3)
         self.assertEqual(len(result["strategy_predictions"]), 3)
+
+
+from tests.harness.g_fixtures import GCase, SPLIT, G_PAYLOAD
+
+
+class TestConditionalGFeedback(GCase):
+    def test_different_prediction_anchors_do_not_duplicate_one_execution(self):
+        self.provider.usage = {"prompt_tokens": 2, "completion_tokens": 1}
+        self.h.declare_budget(self.task["task_id"], {"llm_tokens": 1000}, "ep1")
+        first = self.predict_g()
+        second = self.predict_g()
+        self.assertNotEqual(first.trace.model_info["g_execution_conditions"],
+                            second.trace.model_info["g_execution_conditions"])
+        record = self.run_g(first)
+        self.check_g(record)
+        self.h.bind_strategy_outcome(second.prediction_id, record.action_id)
+        self.close_g()
+        groups = self.h.calibration_summary()["conditional_g"]
+        self.assertEqual(sum(g["n_execution_units"] for g in groups), 1)
+        self.assertEqual(sum(g["passed"] for g in groups), 1)
+
+    def test_counts_deduplicate_and_unknowns_do_not_enter_score_denominators(self):
+        import copy
+        first = self.predict_g()
+        duplicate = self.predict_g()
+        r = self.run_g(first)
+        self.check_g(r)
+        self.h.bind_strategy_outcome(duplicate.prediction_id, r.action_id)
+        self.close_g()
+        self.provider.payload["benefit"].pop("value")
+        second = self.predict_g(SPLIT, "ep2")
+        r2 = self.run_g(second, split=True)
+        self.check_g(r2, failure="candidate_method")
+        self.close_g("ep2")
+        self.provider.payload = copy.deepcopy(G_PAYLOAD)
+        third = self.predict_g(episode="ep3")
+        self.run_g(third)  # usable result, no acceptance/fidelity audit
+        self.close_g("ep3")
+        summary = self.h.calibration_summary()
+        group = summary["conditional_g"][0]
+        self.assertEqual((group["passed"], group["failed"], group["unknown"]), (1, 1, 1))
+        self.assertEqual(group["n_execution_units"], 3)
+        self.assertEqual(group["n_distinct_episodes"], 3)
+        self.assertEqual(group["n_scored"], 1)
+        self.assertEqual(sum(b["n"] for b in group["probability_bins"]), 1)
+        self.assertAlmostEqual(group["brier"], 0.09)
+        self.assertIn("sparse", group["support"])
+        self.close_g("ep3")
+        self.assertEqual(self.h.calibration_summary()["conditional_g"], summary["conditional_g"])
+        from or_harness.world_model.episode_closeout import republish_calibration
+        republish_calibration(self.h)
+        self.assertEqual(self.h.calibration_summary()["conditional_g"], summary["conditional_g"])
+
+    def test_old_cached_g_instructions_are_filtered_in_both_locations(self):
+        from or_harness.world_model.context import PredictionContext
+        from or_harness.world_model.strategy_prediction import build_strategy_outcome_request
+        from or_harness.world_model.contracts import CandidateRef
+        ctx = self.h.build_prediction_context(self.task, "ep1")
+        raw = ctx.to_dict()
+        old_g = {"field": "benefit", "kind": "derived_reminder", "watch_next_time": "raise G by 0.3"}
+        cost = {"field": "cost.llm_tokens", "watch_next_time": "check cost bias"}
+        risk = {"field": "risk.timeout", "watch_next_time": "check timeout evidence"}
+        raw["prediction_reminders"] = [old_g, cost, risk]
+        raw["strategy_calibration"]["reminders"] = [old_g, cost, risk]
+        cached = PredictionContext.from_dict(raw)
+        request = build_strategy_outcome_request(cached, CandidateRef(
+            action_type="execute_strategy", strategy_id="S04", task_id=self.task["task_id"]))
+        view = request["prediction_context"]
+        for reminders in (view["prediction_reminders"], view["strategy_outcome_calibration"]["reminders"]):
+            self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens", "risk.timeout"])
+        self.assertEqual(raw["prediction_reminders"][0], old_g)  # audit/cache unchanged
+        cached.version = "wm-context/3"
+        cached.context_id = "ctx_legacy_g_cache"
+        self.predict_g(context=cached)
+        sent = self.provider.requests[-1]["prediction_context"]
+        for reminders in (sent["prediction_reminders"], sent["strategy_outcome_calibration"]["reminders"]):
+            self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens", "risk.timeout"])
+
+    def test_new_publication_keeps_g_diagnostics_without_g_instructions(self):
+        from or_harness.world_model.episode_closeout import _prediction_reminders, _single_case_reminders
+        groups = {"strategy_outcome|stub|task_check_passed_given_faithful_execution|probability|attempt|wm-g-faithful/1": {
+            "n_distinct_episodes": 10, "mean_benefit_signed_error": 0.9,
+            "benefit_evidence": {"evidence": "measured", "n_distinct_episodes": 10},
+            "mean_cost_log_ratio": {"llm_tokens": 0.8},
+            "cost_evidence": {"llm_tokens": {"evidence": "measured", "n_distinct_episodes": 10}}}}
+        reminders = _prediction_reminders(groups, 5)
+        self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens"])
+        self.assertFalse(_single_case_reminders(groups, 50))
+        p = self.predict_g()
+        r = self.run_g(p)
+        self.check_g(r)
+        self.close_g()
+        summary = self.h.calibration_summary(min_samples=1)
+        self.assertTrue(any(g.get("mean_benefit_signed_error") is not None for g in summary["groups"].values()))
+        self.assertFalse(any(r["field"] == "benefit" for r in summary["reminders"]))
 
 
 if __name__ == "__main__":

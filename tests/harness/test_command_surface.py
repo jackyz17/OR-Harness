@@ -142,7 +142,7 @@ class TestNoDoublePrediction(Base):
             TASK, "ep1",
             candidates=[ActionSpec("execute_strategy", "t1", strategy_id="S01"),
                         ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S02")])
+                                   strategy_id="S02")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "ok")
         calls_after_plan = len(provider.requests)
         self.assertEqual(calls_after_plan, 2, "one call per candidate")
@@ -184,7 +184,7 @@ class TestNoDoublePrediction(Base):
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
         code, out = self.run_cli([
-            "plan-next", "--task", json.dumps(TASK), "--episode", "ep1",
+            "plan-next", "--benefit-kind", "solution_quality", "--benefit-metric", "normalized_objective_gap", "--task", json.dumps(TASK), "--episode", "ep1",
             "--candidates", json.dumps([
                 {"action_type": "execute_strategy", "strategy_id": "S01"}])])
         self.assertEqual(code, 0)
@@ -285,7 +285,7 @@ class TestLegacyRecordsStayReadable(Base):
         h.strategy_predictions.provider = provider
         h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli(["inspect", "--bank", "predictions"])
         payload = json.loads(out)["result"]
         self.assertEqual(len(payload["legacy_predictions"]), 1)
@@ -333,7 +333,7 @@ class TestAutomaticBindingIsSafe(Base):
         h = self.make_harness(provider)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         calls_before = len(provider.requests)
         record = h.execute(TASK, "S01", str(self.script), str(self._work),
                            solver="highs", episode_id="ep1",
@@ -445,7 +445,7 @@ class TestQuerySurfaceIsComplete(Base):
         h.record(record)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
         h.close_episode("t1", "ep1")
 
@@ -604,7 +604,7 @@ class TestPlanSummaryNamesTheRightCandidate(Base):
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
         code, out = self.run_cli([
-            "plan-next", "--task", json.dumps(TASK), "--episode", "ep1",
+            "plan-next", "--benefit-kind", "solution_quality", "--benefit-metric", "normalized_objective_gap", "--task", json.dumps(TASK), "--episode", "ep1",
             "--candidates", json.dumps([
                 {"action_type": "execute_strategy", "strategy_id": "S01",
                  "solver": "highs"},
@@ -669,7 +669,7 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
         self.addCleanup(setattr, cli_module, "_harness", original)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli([
             "execute", "--task", json.dumps(TASK), "--strategy", "S01",
             "--code", str(self.script), "--workspace", str(self._work),
@@ -698,7 +698,7 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
         self.addCleanup(setattr, cli_module, "_harness", original)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy",
-                   "strategy_id": "S01"}, "ep1")
+                   "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli([
             "execute", "--task", json.dumps(TASK), "--strategy", "S99",
             "--code", str(self.script), "--workspace", str(self._work),
@@ -789,7 +789,7 @@ class TestWorldModelConfigurationIsReachable(Base):
     def test_plan_next_exposes_the_time_budget(self):
         from or_harness.cli import build_parser
         args = build_parser().parse_args(
-            ["plan-next", "--task", "t.json", "--time-budget", "45"])
+            ["plan-next", "--benefit-kind", "solution_quality", "--benefit-metric", "normalized_objective_gap", "--task", "t.json", "--time-budget", "45"])
         self.assertEqual(args.time_budget, 45.0)
 
 
@@ -822,7 +822,7 @@ class TestTheCandidateCarriesItsMethod(Base):
                               "solve each block with the previous ending "
                               "inventory fixed"]})
         h.snapshot(TASK, episode_id="ep1")
-        h.predict_strategy_outcome(TASK, spec, "ep1")
+        h.predict_strategy_outcome(TASK, spec, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         candidate = provider.request["candidate"]
         self.assertEqual(candidate["method"]["name"],
                          "rolling-horizon decomposition")
@@ -1315,7 +1315,7 @@ class TestPreExecutionAssociation(Base):
         return h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy",
                    "strategy_id": strategy, "solver": solver,
-                   "config": config}, "ep1")
+                   "config": config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
     def test_identity_is_taken_from_the_candidate(self):
         provider = CountingProvider()
@@ -1513,7 +1513,7 @@ class TestActualConfigurationIsObserved(Base):
         h = self.make_harness()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs", "config": {"time_limit": 60}}, "ep1")
+                   "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = h.execute(TASK, None, str(script), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
@@ -1542,7 +1542,7 @@ class TestChooseNextByPredictionId(Base):
             candidates=[ActionSpec("execute_strategy", "t1",
                                    strategy_id="S01", solver="highs"),
                         ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S02", solver="highs")])
+                                   strategy_id="S02", solver="highs")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         return h, plan
 
     def test_choosing_by_id_matches_the_candidate(self):
@@ -1562,7 +1562,7 @@ class TestChooseNextByPredictionId(Base):
         # A second decision with its own predictions.
         plan2 = h.plan_next(TASK, "ep1",
                             candidates=[ActionSpec("execute_strategy", "t1",
-                                                   strategy_id="S04")])
+                                                   strategy_id="S04")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         other_id = plan2["candidates"][0]["prediction_id"]
         with self.assertRaises(ValueError) as caught:
             h.choose_next(plan["decision_action_id"],
@@ -1603,7 +1603,7 @@ class TestChooseNextByPredictionId(Base):
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
         code, out = self.run_cli([
-            "plan-next", "--task", json.dumps(TASK), "--episode", "ep1",
+            "plan-next", "--benefit-kind", "solution_quality", "--benefit-metric", "normalized_objective_gap", "--task", json.dumps(TASK), "--episode", "ep1",
             "--candidates", json.dumps([
                 {"action_type": "execute_strategy", "strategy_id": "S01"}])])
         self.assertEqual(code, 0)
@@ -1635,7 +1635,7 @@ class TestTheScriptCannotOverwriteExecutorConfig(Base):
         h = self.make_harness()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S99",
-                   "solver": "highs", "config": prediction_config}, "ep1")
+                   "solver": "highs", "config": prediction_config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = h.execute(TASK, None, str(work / "solve.py"), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
@@ -1708,7 +1708,7 @@ class TestAStaleResultIsNeverThisRun(Base):
         h = self.make_harness()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = h.execute(TASK, None, str(work / "solve.py"), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
@@ -1752,7 +1752,7 @@ class TestAssociationIsAtomic(Base):
         h.executor = Counting()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
         def failing_claim(prediction_id, action_id):
             raise RuntimeError("synthetic association failure")
@@ -1782,7 +1782,7 @@ class TestAssociationIsAtomic(Base):
         h.executor = Counting()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         first = h.execute(TASK, None, str(work / "solve.py"), str(work),
                           solver=None, episode_id=None,
                           prediction_id=prediction.prediction_id)
@@ -1821,7 +1821,7 @@ class TestAssociationIsAtomic(Base):
         h.executor = Probe()
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1")
+                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         pred_id = prediction.prediction_id
         h.execute(TASK, None, str(work / "solve.py"), str(work),
                   solver=None, episode_id=None, prediction_id=pred_id)
@@ -1875,13 +1875,13 @@ class TestSameConventionCompletionCompares(Base):
                                    strategy_id="S01", solver="highs"),
                         ActionSpec("execute_strategy", "t1",
                                    strategy_id="S02", solver="highs")],
-            limits={"horizon": 1})
+            limits={"horizon": 1, 'benefit_kind': 'effective_completion', 'benefit_metric': 'task_result_check_passed', 'benefit_unit': 'boolean'})
         self.assertEqual(plan["status"], "ok")
         self.assertEqual(plan["suggested"]["strategy_id"], "S01")
         convention = plan["benefit_convention"]
         self.assertEqual(convention["kind"], "effective_completion")
         self.assertEqual(convention["metric"], "task_result_check_passed")
-        self.assertEqual(convention["source"], "agreed")
+        self.assertEqual(convention["source"], "declared")
 
     def test_a_declared_convention_reaches_every_request(self):
         provider = self._provider({"S01": 0.9})
@@ -1910,7 +1910,7 @@ class TestSameConventionCompletionCompares(Base):
         h = self.make_harness(provider)
         prediction = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "epe")
+                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         scores = score_strategy_outcome_predictions(
             [prediction],
             PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
@@ -1922,7 +1922,7 @@ class TestSameConventionCompletionCompares(Base):
         provider.payload = self._completion(0.5)
         quality = h.predict_strategy_outcome(
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
-                   "solver": "highs"}, "epe")
+                   "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         quality.benefit.kind = "solution_quality"
         quality.benefit.metric = "normalized_objective_gap"
         scores2 = score_strategy_outcome_predictions(
