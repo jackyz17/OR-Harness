@@ -858,7 +858,8 @@ def _aggregate_costs(vectors: Sequence[Optional[CostVector]],
             if cost is None or dim not in cost.measured_dims():
                 continue
             if records is not None and index < len(records):
-                if cost_eligibility(records[index], dim) != MEASURED:
+                if (cost_eligibility(records[index], dim) != MEASURED or
+                        getattr(records[index], "measurement_scope", "attempt") != "attempt"):
                     excluded += 1
                     continue
             values.append(float(getattr(cost, dim)))
@@ -930,18 +931,14 @@ def _aggregated_dim(dim: str, values: Sequence[float],
 
 
 def _predicted_cost_dims(predicted_cost: Any) -> set:
-    """Dimensions a cost prediction declared, with COMPONENT de-duplication.
+    """Every predicted raw dimension can be diagnosed independently.
 
-    When the prediction declared BOTH a container (``remaining_latency_s``)
-    and its component (``solver_runtime_s``), the component is not compared
-    on top of the whole: the part and the whole are one spend, and scoring
-    both would double-bill it. The component stays in the stored prediction
-    (its diagnostic value is real) — it is only dropped from the COMPARISON.
+    Utility charging still deduplicates components; per-dimension errors
+    do not sum costs and must retain both time measurements.
     """
-    from or_harness.core.schema import chargeable_dimensions
     if predicted_cost is None or predicted_cost.expected is None:
         return set()
-    return chargeable_dimensions(predicted_cost.expected.measured_dims())
+    return predicted_cost.expected.measured_dims()
 
 
 def _declared_cost_scope(prediction: Any) -> str:
@@ -1027,6 +1024,9 @@ def _cost_scope_records(harness, prediction, action, bound_records,
     episode_records = _episode_executions(
         harness, candidate.task_id, candidate.episode_id)
     anchor, _basis = _decision_anchor(harness, prediction, action)
+    cutoff = _closeout_created_at(harness, candidate.task_id, candidate.episode_id)
+    end, end_basis = _task_end_boundary(harness, candidate.task_id, candidate.episode_id, anchor, cutoff)
+    upper = end if end_basis == "finish_task" else cutoff
     if anchor is not None:
         # Keep executions that started at/after the anchor (the remaining
         # span). An execution with no resolvable action is KEPT when we
@@ -1035,6 +1035,7 @@ def _cost_scope_records(harness, prediction, action, bound_records,
         # records that.
         kept: List[Any] = []
         unplaced = 0
+        outside = 0
         for record in episode_records:
             action_for = _action_for_execution(harness, record)
             if action_for is None or getattr(action_for, "started_at", None) \
@@ -1043,6 +1044,10 @@ def _cost_scope_records(harness, prediction, action, bound_records,
                 kept.append(record)
                 continue
             if float(action_for.started_at) >= float(anchor) - 1e-6:
+                if upper is not None and (float(action_for.started_at) > upper + 1e-6 or
+                        action_for.ended_at is not None and float(action_for.ended_at) > upper + 1e-6):
+                    outside += 1
+                    continue
                 kept.append(record)
         note = (
             "cost scope 'remaining_to_task_end': every in-episode execution "
@@ -1053,6 +1058,8 @@ def _cost_scope_records(harness, prediction, action, bound_records,
             note += (f"; {unplaced} execution(s) could not be placed in "
                      "time and were KEPT (dropping them would shrink the "
                      "real remaining spend)")
+        if outside:
+            note += f"; {outside} receipt(s) outside the termination/close-out boundary excluded"
         return kept, note
     return episode_records, (
         "cost scope 'remaining_to_task_end': the decision anchor has no "
@@ -1150,6 +1157,8 @@ def _task_end_boundary(harness, task_id: str, episode_id: Optional[str],
     # 1. finish_task is the only explicit termination event.
     finish_ends = [float(a.ended_at) for a in relevant
                    if getattr(a, "action_type", "") == "finish_task"
+                   and getattr(a, "status", "") in ("completed", "failed", "cancelled")
+                   and getattr(a, "source", "") != "hypothetical"
                    and getattr(a, "ended_at", None) is not None]
     if finish_ends:
         end = max(finish_ends)
@@ -1760,6 +1769,15 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
                                cost_records, cost_scope,
                                episode_id=candidate.episode_id,
                                closeout_created_at=closeout_created_at)
+    from or_harness.world_model.cost_signal import observe_cost_window
+    anchor, _ = _decision_anchor(harness, prediction, action)
+    end, end_basis = _task_end_boundary(harness, candidate.task_id,
+        candidate.episode_id, anchor, closeout_created_at)
+    cost_actions = [a for a in harness.actions.query(task_id=candidate.task_id)
+                    if str(a.episode_id or "") == str(candidate.episode_id or "")]
+    observe_cost_window(summary, prediction, cost_actions, cost_records,
+        anchor=anchor, anchor_id=(prediction.trace.model_info or {}).get("decision_action_id"),
+        end=end, end_basis=end_basis, cutoff=closeout_created_at)
     # Auxiliary overhead: the OTHER actions of the same episode (model /
     # verify / select_strategy / other executions) — real spend, reported,
     # never folded into the predicted scope's comparison.
@@ -1775,9 +1793,9 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
             auxiliary.append(other.cost)
     summary.auxiliary_cost = _aggregate_costs(auxiliary)
     summary.notes.append(
-        "cost comparison uses the in-scope totals only; auxiliary overhead "
-        "(modelling, verification, other attempts) is real spend reported "
-        "separately and never charged to this prediction's scope")
+        "full remaining-window host reports include modelling, checking, "
+        "repair and retries once; auxiliary action/attempt totals remain "
+        "separate diagnostics and are not added on top of host totals")
 
     # -- risk event observations -------------------------------------------
     # The framework observes the events on its OWN, from the in-scope
@@ -2736,7 +2754,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             if dropped:
                 excluded[dim] = (
                     f"{dropped} of {real.get('n_items')} record(s) on the "
-                    "real scope carried a DECLARED or single-side value, "
+                    "real scope carried a DECLARED, single-side or differently scoped value, "
                     "which is not a measured truth: the total they would "
                     "have contributed to is not scored against")
                 continue
@@ -2771,6 +2789,7 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "predicted": round(p, 6),
                 "actual": round(a, 6),
                 "abs_error": round(abs(p - a), 6),
+                "signed_error": round(a - p, 6),
             }
             if p > 0 and a > 0:
                 ratio = math.log(a / p)
@@ -2795,11 +2814,19 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
             "excluded": excluded,
             "note": ("only dimensions the prediction predicted AND the "
                      "real scope measured completely participate; "
-                     "auxiliary overhead is never charged to this scope; "
+                     "full host windows already include auxiliary work; "
                      "log_ratio = log(actual/predicted) (positive = "
                      "under-predicted cost)"),
         }
 
+    # Observations do not depend on a model choosing to predict C.
+    if not _blocked("cost"):
+        from or_harness.world_model.cost_signal import cost_observed_fact
+        fact = cost_observed_fact(summary, prediction)
+        evaluation.cost["observed_fact"] = fact
+        evaluation.cost["observed_not_predicted"] = {
+            d: v for d, v in fact["values"].items()
+            if d not in _predicted_cost_dims(predicted_cost)}
     # -- risk -------------------------------------------------------------------
     # The framework's OWN observation of every vocabulary event travels with
     # EVERY evaluation, whatever the prediction carried: an event nobody
@@ -3895,6 +3922,7 @@ def build_calibration_summary(harness, *,
     groups: Dict[str, Dict[str, Any]] = {}
     exclusions: Dict[str, int] = {}
     corrected: List[Dict[str, Any]] = []
+    from or_harness.world_model.cost_signal import conditional_cost_statistics
     g_samples = []
     for stored_evaluation in evaluations:
         # LIVE DERIVATION (shared when supplied). The stored evaluation is
@@ -3950,7 +3978,8 @@ def build_calibration_summary(harness, *,
                 "benefit_episodes": set(), "benefit_abs_errors": [],
                 "benefit_signed_errors": [],
                 "cost_episodes": {}, "cost_log_errors": {},
-                "cost_log_ratios": {},
+                "cost_log_ratios": {}, "cost_log_episodes": {},
+                "cost_abs_errors": {}, "cost_signed_errors": {},
                 "interval_episodes": set(), "interval_covered": [],
                 "interval_widths": [],
                 "brier_episodes_by_event": {}, "brier_by_event": {},
@@ -3997,7 +4026,12 @@ def build_calibration_summary(harness, *,
         cost = evaluation.cost or {}
         for dim, entry in (cost.get("per_dim") or {}).items():
             group["cost_episodes"].setdefault(dim, set()).add(episode_key)
+            if entry.get("abs_error") is not None:
+                group["cost_abs_errors"].setdefault(dim, []).append(float(entry["abs_error"]))
+            if entry.get("signed_error") is not None:
+                group["cost_signed_errors"].setdefault(dim, []).append(float(entry["signed_error"]))
             if entry.get("log_error") is not None:
+                group["cost_log_episodes"].setdefault(dim, set()).add(episode_key)
                 group["cost_log_errors"].setdefault(dim, []).append(
                     float(entry["log_error"]))
             if entry.get("log_ratio") is not None:
@@ -4097,7 +4131,7 @@ def build_calibration_summary(harness, *,
                                      len(group["benefit_abs_errors"]))
         cost_evidence = {
             dim: verdict for dim, episodes in
-            sorted(group["cost_episodes"].items())
+            sorted(group["cost_log_episodes"].items())
             if (verdict := _evidence(
                 f"cost.{dim}", min_samples, len(episodes),
                 len(group["cost_log_errors"].get(dim) or []))) is not None}
@@ -4129,6 +4163,11 @@ def build_calibration_summary(harness, *,
                 for dim, values in sorted(
                     group["cost_log_ratios"].items())},
             "cost_evidence": cost_evidence,
+            "mean_cost_abs_error": {dim: _mean(v) for dim, v in sorted(group["cost_abs_errors"].items())},
+            "mean_cost_signed_error": {dim: _mean(v) for dim, v in sorted(group["cost_signed_errors"].items())},
+            "cost_absolute_evidence": {dim: _evidence(f"cost.{dim}", min_samples,
+                len(group["cost_episodes"].get(dim) or []), len(v))
+                for dim, v in sorted(group["cost_abs_errors"].items())},
             "interval_coverage": _mean(group["interval_covered"]),
             "n_interval_samples": len(group["interval_covered"]),
             "mean_interval_width": _mean(group["interval_widths"]),
@@ -4259,6 +4298,7 @@ def build_calibration_summary(harness, *,
         "validity_corrections": corrected,
         "groups": out_groups,
         "conditional_g": conditional_g_statistics(g_samples, min_samples),
+        "conditional_cost": conditional_cost_statistics(g_samples, min_samples),
         "occurrence": occurrence,
         # DETERMINISTIC rule reminders: the measured statistics turned into
         # short "what to watch next time" notes. No model call, no fitted
@@ -5662,39 +5702,7 @@ def _prediction_reminders(out_groups: Dict[str, Any],
             continue
         # G residuals remain in diagnostic groups. They never generate
         # a directional correction, even with many independent episodes.
-        # COST bias per dimension: directed log-ratio.
-        cost_ratio = group.get("mean_cost_log_ratio") or {}
-        cost_evidence = group.get("cost_evidence") or {}
-        for dim, ratio in sorted(cost_ratio.items()):
-            verdict = (cost_evidence.get(dim) or {})
-            if ratio is None or verdict.get("evidence") != "measured":
-                continue
-            if abs(float(ratio)) <= 1e-9:
-                continue
-            n = verdict.get("n_distinct_episodes")
-            rec_id += 1
-            reminders.append({
-                "reminder_id": f"rem_{rec_id:03d}",
-                "kind": "derived_reminder",
-                "basis": "measured_statistics",
-                "field": f"cost.{dim}",
-                "applicability": copy.deepcopy(applicability),
-                "observed_bias": {
-                    "mean_log_ratio": ratio,
-                    "direction": ("UNDER-predicted" if ratio > 0
-                                  else "OVER-predicted"),
-                    "n_distinct_episodes": n,
-                    "note": ("observed (fact): mean log(actual/predicted) "
-                             "for this dimension; positive = real cost was "
-                             "historically HIGHER"),
-                },
-                "watch_next_time": (
-                    f"for cost dimension {dim}, past predictions were "
-                    f"{'UNDER' if ratio > 0 else 'OVER'}-predicted by "
-                    f"mean log-ratio {float(ratio):.4f} over {n} distinct "
-                    "episode(s): bias the estimate accordingly"),
-                "support": [key],
-            })
+        # C residuals are audit diagnostics, never directional instructions.
         # INTERVAL coverage: a stated coverage that the data does not support
         # is worth a reminder; a covered interval that is very wide is a
         # different one.
@@ -6036,6 +6044,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
     if cost.get("observed_not_predicted"):
         row["cost_observed_unpredicted"] = copy.deepcopy(
             cost.get("observed_not_predicted"))
+    if cost.get("observed_fact"):
+        row["cost_observed_fact"] = copy.deepcopy(cost["observed_fact"])
     # The REAL risk events: which happened, which did not, which are unknown.
     # A predicted probability is never read as an occurrence, and an
     # unknown label stays unknown (never defaulted to "did not happen").

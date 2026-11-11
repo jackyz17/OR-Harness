@@ -149,6 +149,8 @@ Rules the framework enforces:
 1. `cost` / `learning_cost` — the *predicted* cost of the candidate;
 2. `trace.call_cost` — the *measured* spend of the prediction call itself.
 
+For strategy-outcome C, the default measurement window is the shared decision anchor through real task termination. `cost.expected` and `expected_measured` keep their raw-value/mask meanings. `cost_evidence` is request evidence, not an extra cost dimension. `wm-c-window/1` observations include complete host-window counts or counter deltas and timestamped call ledgers; they do not relabel legacy attempt totals. A full host total already includes modelling/checking/repair work, so auxiliary action totals are not added again. Per-dimension error diagnostics keep both `solver_runtime_s` and `remaining_latency_s`; utility's existing component charging rule is unchanged. A script-wall proxy is not precise inner solver runtime. Missing C leaves real observations intact and supplies no prediction-error sample.
+
 ---
 
 ## 5. Statuses: prediction ≠ fact ≠ verified effect

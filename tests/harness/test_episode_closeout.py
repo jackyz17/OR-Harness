@@ -794,12 +794,15 @@ class TestWindowScopeAggregation(M4Case):
                                      repaired.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
-        # The failed retry is real spend inside the window's scope: the
-        # runtime total covers BOTH attempts.
-        self.assertAlmostEqual(
-            evaluation["cost"]["per_dim"]["solver_runtime_s"]["actual"],
-            failed.cost.solver_runtime_s
-            + repaired.cost.solver_runtime_s, places=5)
+        # Both attempts remain in the cost scope. The failed script only
+        # measured a wall proxy, so it cannot make an inner solver-time
+        # total comparable. Its original measured spend remains readable.
+        fact = evaluation["cost"]["observed_fact"]
+        self.assertEqual(set(fact["execution_ids"]), {failed.execution_id, repaired.execution_id})
+        self.assertEqual(fact["work_facts"]["execution_attempts"], 2)
+        self.assertEqual(fact["work_facts"]["failed_attempts"], 1)
+        self.assertNotIn("solver_runtime_s", evaluation["cost"]["per_dim"])
+        self.assertEqual(self.h.bank.get(failed.execution_id).solver_runtime_provenance, "wall_proxy")
         # The benefit observation is the LAST qualified attempt's.
         self.assertEqual(evaluation["benefit"]["observed"], 1.0)
 

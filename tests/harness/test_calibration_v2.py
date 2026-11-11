@@ -1232,7 +1232,7 @@ class TestLiveCorrection(CalibrationV2Case):
                          "stays")
 
     def test_late_cost_amend_is_reflected_by_re_derivation(self):
-        """A host-usage amend of llm_tokens can land AFTER close-out froze
+        """A legacy ATTEMPT-cost amend can land AFTER close-out froze
         the evaluation. The stored evaluation then says ``not measured on
         the real scope`` while the live fact measures it — the
         self-contradiction W1 fixes. The live re-derivation must pick up
@@ -1243,6 +1243,10 @@ class TestLiveCorrection(CalibrationV2Case):
         prediction = self.h.predict_strategy_outcome(
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
+        # Replay an explicitly narrow historical contract. An ambiguous
+        # attempt receipt must not become a new remaining-window truth.
+        prediction.cost.scope = "attempt"
+        self.h.strategy_predictions._save(prediction)
         record = self.solve(task, strategy="S04")
         self.h.bind_strategy_outcome(prediction.prediction_id,
                                      record.action_id)
@@ -1737,14 +1741,14 @@ class TestConditionalGFeedback(GCase):
         republish_calibration(self.h)
         self.assertEqual(self.h.calibration_summary()["conditional_g"], summary["conditional_g"])
 
-    def test_old_cached_g_instructions_are_filtered_in_both_locations(self):
+    def test_old_cached_g_and_c_instructions_are_filtered_in_both_locations(self):
         from or_harness.world_model.context import PredictionContext
         from or_harness.world_model.strategy_prediction import build_strategy_outcome_request
         from or_harness.world_model.contracts import CandidateRef
         ctx = self.h.build_prediction_context(self.task, "ep1")
         raw = ctx.to_dict()
         old_g = {"field": "benefit", "kind": "derived_reminder", "watch_next_time": "raise G by 0.3"}
-        cost = {"field": "cost.llm_tokens", "watch_next_time": "check cost bias"}
+        cost = {"field": "cost.llm_tokens", "watch_next_time": "multiply C by 1.5 next time"}
         risk = {"field": "risk.timeout", "watch_next_time": "check timeout evidence"}
         raw["prediction_reminders"] = [old_g, cost, risk]
         raw["strategy_calibration"]["reminders"] = [old_g, cost, risk]
@@ -1753,14 +1757,14 @@ class TestConditionalGFeedback(GCase):
             action_type="execute_strategy", strategy_id="S04", task_id=self.task["task_id"]))
         view = request["prediction_context"]
         for reminders in (view["prediction_reminders"], view["strategy_outcome_calibration"]["reminders"]):
-            self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens", "risk.timeout"])
+            self.assertEqual([r["field"] for r in reminders], ["risk.timeout"])
         self.assertEqual(raw["prediction_reminders"][0], old_g)  # audit/cache unchanged
         cached.version = "wm-context/3"
         cached.context_id = "ctx_legacy_g_cache"
         self.predict_g(context=cached)
         sent = self.provider.requests[-1]["prediction_context"]
         for reminders in (sent["prediction_reminders"], sent["strategy_outcome_calibration"]["reminders"]):
-            self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens", "risk.timeout"])
+            self.assertEqual([r["field"] for r in reminders], ["risk.timeout"])
 
     def test_new_publication_keeps_g_diagnostics_without_g_instructions(self):
         from or_harness.world_model.episode_closeout import _prediction_reminders, _single_case_reminders
@@ -1770,7 +1774,7 @@ class TestConditionalGFeedback(GCase):
             "mean_cost_log_ratio": {"llm_tokens": 0.8},
             "cost_evidence": {"llm_tokens": {"evidence": "measured", "n_distinct_episodes": 10}}}}
         reminders = _prediction_reminders(groups, 5)
-        self.assertEqual([r["field"] for r in reminders], ["cost.llm_tokens"])
+        self.assertFalse(reminders)
         self.assertFalse(_single_case_reminders(groups, 50))
         p = self.predict_g()
         r = self.run_g(p)

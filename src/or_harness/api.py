@@ -1092,6 +1092,13 @@ class ORHarness:
             retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
+        if not historical:
+            from or_harness.world_model.cost_signal import latest_host
+            host = latest_host(self.actions.query(task_id=context.task_id),
+                self.bank.query(task_id=context.task_id),
+                cutoff=snapshot.created_at, episode_id=episode_id)
+            if host:
+                context.solving_context["execution_host"] = host
         selected_entries = {str(target.entry_id) for target in frozen_targets
                             if getattr(target, "entry_id", None)}
         selected_entries.update(str(hit.get("content", {}).get("entry_id"))
@@ -3520,7 +3527,8 @@ class ORHarness:
                       status: str = "completed",
                       cost: Optional[Dict[str, float]] = None,
                       started_at: Optional[float] = None,
-                      ended_at: Optional[float] = None) -> Dict[str, Any]:
+                      ended_at: Optional[float] = None,
+                      host_usage: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Report an action the OUTER agent performed (model /
         select_strategy / verify / finish_task). The library did not execute
         it — the report is the caller's statement, labelled agent_reported.
@@ -3528,6 +3536,12 @@ class ORHarness:
         The report also generates a POST snapshot (merged into the
         episode's progress chain) so the next action inherits what this
         action established."""
+        outcome = copy.deepcopy(outcome or {})
+        reported_usage = host_usage if host_usage is not None else outcome.get("host_usage")
+        if reported_usage is not None:
+            from or_harness.world_model.usage import host_report_dimensions
+            _, info = host_report_dimensions(reported_usage)
+            outcome["host_usage"] = info
         cost_vector = self._cost_from_dict(cost)
         record = self.actions.report_action(
             action_type, str(task.get("task_id", "")), episode_id,
@@ -3539,6 +3553,8 @@ class ORHarness:
                                                outcome or {})
         post = self.snapshot(task, episode_id, task_progress=progress, include_memory=False)
         self.actions._bind_post_snapshot(record.action_id, post.snapshot_id)
+        if reported_usage is not None:
+            self._republish_calibration_if_in_window(str(task.get("task_id", "")), episode_id)
         return {"action_id": record.action_id, "status": record.status,
                 "source": record.source,
                 "post_snapshot_id": post.snapshot_id}
@@ -6262,7 +6278,7 @@ class ORHarness:
                 # provider, tool_calls observed by the host). A dimension
                 # outside the whitelist stays UNKNOWN — never zero.
                 dimensions, info = host_report_dimensions(host_usage)
-                for dim, value in dimensions.items():
+                for dim, value in (dimensions.items() if info["scope"] == "attempt" else []):
                     self.bank.update_cost(
                         record.execution_id,
                         source=info["provenance"].get(

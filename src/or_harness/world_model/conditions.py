@@ -265,14 +265,15 @@ def available_entry_ids(store, revision, profile, entry_ids=None):
 
 
 def filter_prediction_reminders(reminders):
-    """Drop retired G correction instructions at every provider boundary.
+    """Drop retired G/C correction instructions at every provider boundary.
 
-    Published/cached payloads remain intact for audit. C/R reminders retain
-    their existing semantics. G case facts live in pairs/conditional stats.
+    Published/cached payloads remain intact for audit. R and interval
+    reminders retain their semantics. Costs travel as conditional facts.
     """
     return [copy.deepcopy(row) for row in (reminders or [])
             if isinstance(row, dict) and str(row.get("field") or "").lower()
-            not in ("g", "benefit", "benefit.value", "quality", "completion")]
+            not in ("g", "benefit", "benefit.value", "quality", "completion", "c", "cost")
+            and not str(row.get("field") or "").lower().startswith("cost.")]
 
 
 def calibration_projection(summary):

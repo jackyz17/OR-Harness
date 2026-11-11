@@ -1803,6 +1803,12 @@ class PredictionContext:
             conditions=requested_solving_conditions(g_candidate, self.execution_constraints),
             convention=g_convention or FAITHFUL_G_CONVENTION,
             scope=getattr(g_candidate, "scope", None), task_id=self.task_id)
+        if g_candidate is not None:
+            from or_harness.world_model.cost_signal import select_cost_evidence
+            view["cost_evidence"] = select_cost_evidence(self.strategy_calibration, self, g_candidate)
+        # Full cost populations are audit data. The provider receives the
+        # small applicable selection above, made before volume trimming.
+        view["strategy_outcome_calibration"].pop("conditional_cost", None)
         return _bound_request(view)
 
 
@@ -2501,6 +2507,7 @@ _TRIMMABLE_BLOCKS = (
     "prediction_execution_pairs",
     "hplus_feedback",
     "prediction_reminders",
+    "cost_evidence",
 )
 
 

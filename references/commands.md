@@ -1,5 +1,7 @@
 # Command reference
 
+C host-window evidence is optional on the existing reporting paths. `record --usage-file` and `amend-cost --usage-file` accept `or-host-usage/1` reports with explicit window/counter/call evidence (see [episode_closeout.md](episode_closeout.md)); wider scopes are stored as evidence beside the execution, preserving its attempt cost. Through the API use `report_action(..., host_usage=report)` or include the raw report in `action --report ... --outcome '{"host_usage": ...}'`. A `finish_task` report supplies an actual terminal event; `close-episode` publishes recorded evidence and supplies no substitute timestamp. Use `cancelled` action status with an `aborted` episode for a confirmed abort. The next prediction receives applicable raw `cost_evidence`; no additional prediction or feedback command is required.
+
 Use this page to look up command syntax, important outputs, side effects, and recovery steps. Follow [../SKILL.md](../SKILL.md) for the workflow, [concepts.md](concepts.md) for the design, and [induction.md](induction.md) for forming reusable knowledge. The command index is not a checklist: optional diagnostics, repairs, and maintenance do not belong in every solve.
 
 Commands print one JSON line to stdout: `{"result": {...}, "summary": "..."}`. Exit codes: `0` success, `2` usage/precondition error, `1` crash. Read the result state as well as the exit code. All commands accept `--home DIR`, defaulting to `$OR_HARNESS_HOME`, then `./or_harness_home`.

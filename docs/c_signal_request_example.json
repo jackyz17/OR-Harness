@@ -1,0 +1,775 @@
+{
+  "source": "Actual fields from two requests sent to the hermetic fixture provider; synthetic host meter, not an accuracy experiment.",
+  "review_baseline": "10368fe9d72521730c8c64758422a29b2e5e23bc",
+  "requests": [
+    {
+      "candidate": {
+        "action_type": "execute_strategy",
+        "strategy_id": "S04",
+        "solver": null,
+        "method": {
+          "name": "reuse joint model",
+          "steps": [
+            "Reuse the available joint supply-chain model and preserve the factory coupling.",
+            "Change the coupling constraint, solve once, then run acceptance once."
+          ]
+        },
+        "config": {},
+        "preconditions": [],
+        "expected_scope": [],
+        "stop_conditions": [],
+        "task_id": "factory",
+        "episode_id": "next-A",
+        "scope": "attempt",
+        "scope_basis": "default",
+        "window_id": null
+      },
+      "cost_scope": {
+        "anchor": "decision_point",
+        "end": "end_of_task",
+        "primary_dimension": "remaining_latency_s",
+        "covers": "the later modelling, coding, tool calls, solving, checking, repair and retries until the task ends",
+        "shared_by": "every candidate of one decision (same anchor, same end)",
+        "component_dimensions": {
+          "solver_runtime_s": "the solver's own inner solve time; a COMPONENT of the total kept for diagnosis, NOT added on top of remaining_latency_s",
+          "latency_s": "ONE attempt's sandbox wall-clock; a DIFFERENT measurement, never renamed into the remaining span"
+        },
+        "note": "tokens, tool_calls and remaining_latency_s all cover the SAME remaining scope; overlapping prediction ranges are never summed, and a cumulative host figure is written once (never re-added through several executions)"
+      },
+      "prediction_context": {
+        "cost_evidence": {
+          "observation_rule_version": "wm-c-window/1",
+          "current_conditions": {
+            "scope": "remaining_to_task_end",
+            "phase": "existing_model",
+            "phase_basis": "frozen task_progress.model_artifact",
+            "reusable_artifacts": [
+              {
+                "value": {
+                  "artifact": "joint-model.lp",
+                  "status": "available"
+                },
+                "evidence_ref": "ac_e97c1e875be9"
+              }
+            ],
+            "execution_host": {
+              "host": "test-host",
+              "model": "executor-model/v1",
+              "source_ref": "ac_e97c1e875be9"
+            },
+            "solver_conditions": {
+              "solver": null,
+              "config": {},
+              "constraints": {
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                },
+                "declared_budget": null
+              }
+            },
+            "family": "assignment",
+            "structure": {
+              "problem_class": "unknown",
+              "resource_coupling": 0.8
+            }
+          },
+          "candidate_work": {
+            "steps_ref": "candidate.method.steps",
+            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"
+          },
+          "reference_ranges": [
+            {
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "unconfirmed_config": {}
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimensions": {
+                "latency_s": {
+                  "max": 0.030982,
+                  "min": 0.029233,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.030107,
+                  "p75": 0.030545
+                },
+                "llm_tokens": {
+                  "max": 300.0,
+                  "min": 300.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 300.0,
+                  "p75": 300.0
+                },
+                "remaining_latency_s": {
+                  "max": 0.10763883590698242,
+                  "min": 0.10331416130065918,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.105476,
+                  "p75": 0.106558
+                },
+                "retries": {
+                  "max": 0.0,
+                  "min": 0.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.0,
+                  "p75": 0.0
+                },
+                "solver_runtime_s": {
+                  "max": 0.01,
+                  "min": 0.01,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.01,
+                  "p75": 0.01
+                },
+                "tool_calls": {
+                  "max": 20.0,
+                  "min": 8.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 14.0,
+                  "p75": 17.0
+                }
+              },
+              "n_distinct_episodes": 2,
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_2391496f878e",
+                "ac_70c38204844b",
+                "ex_5eec901077f3",
+                "ex_d6bcb01a1cd3"
+              ],
+              "support": "measured",
+              "support_note": "range of these recorded windows only; not a universal cost prior; missing structure/undeclared solver settings remain unknown",
+              "unknown_structure_dimensions": []
+            }
+          ],
+          "cases": [
+            {
+              "boundary_exclusions": [
+                "ac_cd068870065c: no complete matching decision-to-termination window",
+                "ac_ee8f1770fd45: no complete matching decision-to-termination window"
+              ],
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "phase_basis": "frozen task_progress.model_artifact",
+                "reusable_artifacts": [
+                  {
+                    "evidence_ref": "ac_ee8f1770fd45",
+                    "value": {
+                      "artifact": "joint-model.lp",
+                      "status": "available"
+                    }
+                  }
+                ],
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "config": {},
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "solver": null
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimension_scopes": {
+                "latency_s": "attempt",
+                "llm_tokens": "remaining_to_task_end",
+                "remaining_latency_s": "remaining_to_task_end",
+                "retries": "remaining_to_task_end",
+                "solver_runtime_s": "recorded_solver_receipts",
+                "tool_calls": "remaining_to_task_end"
+              },
+              "episode_id": "reuse",
+              "evaluation_id": "ev_b7997fd681ab",
+              "execution_ids": [
+                "ex_d6bcb01a1cd3"
+              ],
+              "lower_bounds": {},
+              "method_actual": {
+                "name": "reuse joint model",
+                "steps": [
+                  "Reuse the available joint supply-chain model and preserve the factory coupling.",
+                  "Change the coupling constraint, solve once, then run acceptance once."
+                ]
+              },
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_70c38204844b",
+                "ex_d6bcb01a1cd3"
+              ],
+              "task_id": "factory",
+              "values": {
+                "latency_s": 0.029233,
+                "llm_tokens": 300.0,
+                "remaining_latency_s": 0.10763883590698242,
+                "retries": 0.0,
+                "solver_runtime_s": 0.01,
+                "tool_calls": 8.0
+              },
+              "window": {
+                "anchor": 1794406916.776267,
+                "anchor_action_id": null,
+                "end": 1794406916.883906,
+                "end_basis": "finish_task"
+              },
+              "work_facts": {
+                "execution_attempts": 1,
+                "failed_attempts": 0,
+                "host_rounds": 2.0,
+                "solver_reported_attempts": 1
+              }
+            },
+            {
+              "boundary_exclusions": [
+                "ac_bb1bc0ae233b: no complete matching decision-to-termination window",
+                "ac_b94f56028312: no complete matching decision-to-termination window"
+              ],
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "phase_basis": "frozen task_progress.model_artifact",
+                "reusable_artifacts": [
+                  {
+                    "evidence_ref": "ac_b94f56028312",
+                    "value": {
+                      "artifact": "joint-model.lp",
+                      "status": "available"
+                    }
+                  }
+                ],
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "config": {},
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "solver": null
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimension_scopes": {
+                "latency_s": "attempt",
+                "llm_tokens": "remaining_to_task_end",
+                "remaining_latency_s": "remaining_to_task_end",
+                "retries": "remaining_to_task_end",
+                "solver_runtime_s": "recorded_solver_receipts",
+                "tool_calls": "remaining_to_task_end"
+              },
+              "episode_id": "rebuild",
+              "evaluation_id": "ev_eb6ef268a046",
+              "execution_ids": [
+                "ex_5eec901077f3"
+              ],
+              "lower_bounds": {},
+              "method_actual": {
+                "name": "rebuild and decompose",
+                "steps": [
+                  "Rebuild the supply-chain model from the original requirements.",
+                  "Solve three subproblems, merge their answers with the factory coupling preserved.",
+                  "Run acceptance on the merged answer and repair any violated coupling."
+                ]
+              },
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_2391496f878e",
+                "ex_5eec901077f3"
+              ],
+              "task_id": "factory",
+              "values": {
+                "latency_s": 0.030982,
+                "llm_tokens": 300.0,
+                "remaining_latency_s": 0.10331416130065918,
+                "retries": 0.0,
+                "solver_runtime_s": 0.01,
+                "tool_calls": 20.0
+              },
+              "window": {
+                "anchor": 1794406917.0417907,
+                "anchor_action_id": null,
+                "end": 1794406917.145105,
+                "end_basis": "finish_task"
+              },
+              "work_facts": {
+                "execution_attempts": 1,
+                "failed_attempts": 0,
+                "host_rounds": 2.0,
+                "solver_reported_attempts": 1
+              }
+            }
+          ],
+          "missing": [],
+          "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
+          "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."
+        },
+        "prediction_reminders": [],
+        "strategy_outcome_calibration": {
+          "reminders": []
+        }
+      }
+    },
+    {
+      "candidate": {
+        "action_type": "execute_strategy",
+        "strategy_id": "S04",
+        "solver": null,
+        "method": {
+          "name": "rebuild and decompose",
+          "steps": [
+            "Rebuild the supply-chain model from the original requirements.",
+            "Solve three subproblems, merge their answers with the factory coupling preserved.",
+            "Run acceptance on the merged answer and repair any violated coupling."
+          ]
+        },
+        "config": {},
+        "preconditions": [],
+        "expected_scope": [],
+        "stop_conditions": [],
+        "task_id": "factory",
+        "episode_id": "next-B",
+        "scope": "attempt",
+        "scope_basis": "default",
+        "window_id": null
+      },
+      "cost_scope": {
+        "anchor": "decision_point",
+        "end": "end_of_task",
+        "primary_dimension": "remaining_latency_s",
+        "covers": "the later modelling, coding, tool calls, solving, checking, repair and retries until the task ends",
+        "shared_by": "every candidate of one decision (same anchor, same end)",
+        "component_dimensions": {
+          "solver_runtime_s": "the solver's own inner solve time; a COMPONENT of the total kept for diagnosis, NOT added on top of remaining_latency_s",
+          "latency_s": "ONE attempt's sandbox wall-clock; a DIFFERENT measurement, never renamed into the remaining span"
+        },
+        "note": "tokens, tool_calls and remaining_latency_s all cover the SAME remaining scope; overlapping prediction ranges are never summed, and a cumulative host figure is written once (never re-added through several executions)"
+      },
+      "prediction_context": {
+        "cost_evidence": {
+          "observation_rule_version": "wm-c-window/1",
+          "current_conditions": {
+            "scope": "remaining_to_task_end",
+            "phase": "existing_model",
+            "phase_basis": "frozen task_progress.model_artifact",
+            "reusable_artifacts": [
+              {
+                "value": {
+                  "artifact": "joint-model.lp",
+                  "status": "available"
+                },
+                "evidence_ref": "ac_5a6b8397c123"
+              }
+            ],
+            "execution_host": {
+              "host": "test-host",
+              "model": "executor-model/v1",
+              "source_ref": "ac_5a6b8397c123"
+            },
+            "solver_conditions": {
+              "solver": null,
+              "config": {},
+              "constraints": {
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                },
+                "declared_budget": null
+              }
+            },
+            "family": "assignment",
+            "structure": {
+              "problem_class": "unknown",
+              "resource_coupling": 0.8
+            }
+          },
+          "candidate_work": {
+            "steps_ref": "candidate.method.steps",
+            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"
+          },
+          "reference_ranges": [
+            {
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "unconfirmed_config": {}
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimensions": {
+                "latency_s": {
+                  "max": 0.030982,
+                  "min": 0.029233,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.030107,
+                  "p75": 0.030545
+                },
+                "llm_tokens": {
+                  "max": 300.0,
+                  "min": 300.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 300.0,
+                  "p75": 300.0
+                },
+                "remaining_latency_s": {
+                  "max": 0.10763883590698242,
+                  "min": 0.10331416130065918,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.105476,
+                  "p75": 0.106558
+                },
+                "retries": {
+                  "max": 0.0,
+                  "min": 0.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.0,
+                  "p75": 0.0
+                },
+                "solver_runtime_s": {
+                  "max": 0.01,
+                  "min": 0.01,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 0.01,
+                  "p75": 0.01
+                },
+                "tool_calls": {
+                  "max": 20.0,
+                  "min": 8.0,
+                  "n": 2,
+                  "n_distinct_episodes": 2,
+                  "p50": 14.0,
+                  "p75": 17.0
+                }
+              },
+              "n_distinct_episodes": 2,
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_2391496f878e",
+                "ac_70c38204844b",
+                "ex_5eec901077f3",
+                "ex_d6bcb01a1cd3"
+              ],
+              "support": "measured",
+              "support_note": "range of these recorded windows only; not a universal cost prior; missing structure/undeclared solver settings remain unknown",
+              "unknown_structure_dimensions": []
+            }
+          ],
+          "cases": [
+            {
+              "boundary_exclusions": [
+                "ac_bb1bc0ae233b: no complete matching decision-to-termination window",
+                "ac_b94f56028312: no complete matching decision-to-termination window"
+              ],
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "phase_basis": "frozen task_progress.model_artifact",
+                "reusable_artifacts": [
+                  {
+                    "evidence_ref": "ac_b94f56028312",
+                    "value": {
+                      "artifact": "joint-model.lp",
+                      "status": "available"
+                    }
+                  }
+                ],
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "config": {},
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "solver": null
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimension_scopes": {
+                "latency_s": "attempt",
+                "llm_tokens": "remaining_to_task_end",
+                "remaining_latency_s": "remaining_to_task_end",
+                "retries": "remaining_to_task_end",
+                "solver_runtime_s": "recorded_solver_receipts",
+                "tool_calls": "remaining_to_task_end"
+              },
+              "episode_id": "rebuild",
+              "evaluation_id": "ev_eb6ef268a046",
+              "execution_ids": [
+                "ex_5eec901077f3"
+              ],
+              "lower_bounds": {},
+              "method_actual": {
+                "name": "rebuild and decompose",
+                "steps": [
+                  "Rebuild the supply-chain model from the original requirements.",
+                  "Solve three subproblems, merge their answers with the factory coupling preserved.",
+                  "Run acceptance on the merged answer and repair any violated coupling."
+                ]
+              },
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_2391496f878e",
+                "ex_5eec901077f3"
+              ],
+              "task_id": "factory",
+              "values": {
+                "latency_s": 0.030982,
+                "llm_tokens": 300.0,
+                "remaining_latency_s": 0.10331416130065918,
+                "retries": 0.0,
+                "solver_runtime_s": 0.01,
+                "tool_calls": 20.0
+              },
+              "window": {
+                "anchor": 1794406917.0417907,
+                "anchor_action_id": null,
+                "end": 1794406917.145105,
+                "end_basis": "finish_task"
+              },
+              "work_facts": {
+                "execution_attempts": 1,
+                "failed_attempts": 0,
+                "host_rounds": 2.0,
+                "solver_reported_attempts": 1
+              }
+            },
+            {
+              "boundary_exclusions": [
+                "ac_cd068870065c: no complete matching decision-to-termination window",
+                "ac_ee8f1770fd45: no complete matching decision-to-termination window"
+              ],
+              "conditions": {
+                "actual_solving_conditions": [
+                  {
+                    "config": {
+                      "script_timeout_s": 120,
+                      "time_limit": 60
+                    },
+                    "solver": "highs"
+                  }
+                ],
+                "execution_host": {
+                  "host": "test-host",
+                  "model": "executor-model/v1"
+                },
+                "family": "assignment",
+                "phase": "existing_model",
+                "phase_basis": "frozen task_progress.model_artifact",
+                "reusable_artifacts": [
+                  {
+                    "evidence_ref": "ac_ee8f1770fd45",
+                    "value": {
+                      "artifact": "joint-model.lp",
+                      "status": "available"
+                    }
+                  }
+                ],
+                "scope": "remaining_to_task_end",
+                "solver_conditions": {
+                  "config": {},
+                  "constraints": {
+                    "declared_budget": null,
+                    "executor": {
+                      "timeout_seconds": 120,
+                      "workspace_policy": "solve scripts must live inside their execution workspace"
+                    }
+                  },
+                  "solver": null
+                },
+                "structure": {
+                  "problem_class": "unknown",
+                  "resource_coupling": 0.8
+                },
+                "window_coverage": "complete"
+              },
+              "dimension_scopes": {
+                "latency_s": "attempt",
+                "llm_tokens": "remaining_to_task_end",
+                "remaining_latency_s": "remaining_to_task_end",
+                "retries": "remaining_to_task_end",
+                "solver_runtime_s": "recorded_solver_receipts",
+                "tool_calls": "remaining_to_task_end"
+              },
+              "episode_id": "reuse",
+              "evaluation_id": "ev_b7997fd681ab",
+              "execution_ids": [
+                "ex_d6bcb01a1cd3"
+              ],
+              "lower_bounds": {},
+              "method_actual": {
+                "name": "reuse joint model",
+                "steps": [
+                  "Reuse the available joint supply-chain model and preserve the factory coupling.",
+                  "Change the coupling constraint, solve once, then run acceptance once."
+                ]
+              },
+              "observation_rule_version": "wm-c-window/1",
+              "source_refs": [
+                "ac_70c38204844b",
+                "ex_d6bcb01a1cd3"
+              ],
+              "task_id": "factory",
+              "values": {
+                "latency_s": 0.029233,
+                "llm_tokens": 300.0,
+                "remaining_latency_s": 0.10763883590698242,
+                "retries": 0.0,
+                "solver_runtime_s": 0.01,
+                "tool_calls": 8.0
+              },
+              "window": {
+                "anchor": 1794406916.776267,
+                "anchor_action_id": null,
+                "end": 1794406916.883906,
+                "end_basis": "finish_task"
+              },
+              "work_facts": {
+                "execution_attempts": 1,
+                "failed_attempts": 0,
+                "host_rounds": 2.0,
+                "solver_reported_attempts": 1
+              }
+            }
+          ],
+          "missing": [],
+          "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
+          "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."
+        },
+        "prediction_reminders": [],
+        "strategy_outcome_calibration": {
+          "reminders": []
+        }
+      }
+    }
+  ],
+  "empirical_evaluation": {
+    "real_paired_samples": 0,
+    "ranking_accuracy": null,
+    "cost_delta_error": null,
+    "reason": "Local or_harness_home has 0 executions, 0 contract_predictions and 0 closed episodes; fixture meters validate plumbing only."
+  }
+}

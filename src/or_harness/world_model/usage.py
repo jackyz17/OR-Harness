@@ -28,6 +28,8 @@ This module is the ONE place a provider's ``usage`` is turned into a
 from __future__ import annotations
 
 import json
+import copy
+import math
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 from or_harness.core.schema import CostVector
@@ -50,7 +52,7 @@ def _as_count(value: Any) -> Optional[float]:
         return None
     if isinstance(value, (int, float)):
         number = float(value)
-        if number >= 0:
+        if math.isfinite(number) and number >= 0:
             return number
     return None
 
@@ -412,6 +414,7 @@ HOST_USAGE_SCHEMA = "or-host-usage/1"
 _HOST_REPORT_DEFAULT_SOURCES = {
     "llm_tokens": "provider_usage",
     "tool_calls": "agent_observed",
+    "remaining_latency_s": "agent_observed",
 }
 
 
@@ -445,6 +448,33 @@ def host_report_dimensions(report: Mapping[str, Any]
     (``ValueError``) rather than stored.
     """
     report = report or {}
+    # Optional window evidence belongs beside the measurement. Legacy
+    # reports keep their attempt scope; an episode counter is not silently
+    # renamed into the remaining task. Preserve call IDs/times for dedup.
+    report = copy.deepcopy(dict(report))
+    counters = report.get("counters") or {}
+    invalid_counters = []
+    if isinstance(counters, Mapping):
+        start, end = counters.get("start") or {}, counters.get("end") or {}
+        start = start if isinstance(start, Mapping) else {}
+        end = end if isinstance(end, Mapping) else {}
+        for key in ("tool_calls", "prompt_tokens", "completion_tokens", "calls"):
+            before, after = _as_count(start.get(key)), _as_count(end.get(key))
+            if before is not None and after is not None and after >= before:
+                if key == "tool_calls":
+                    report[key] = after - before
+                else:
+                    if not isinstance(report.get("tokens"), Mapping):
+                        report["tokens"] = {}
+                    report.setdefault("tokens", {})[key] = after - before
+            elif key in start or key in end:
+                invalid_counters.append(key)
+                if key == "tool_calls":
+                    report.pop(key, None)
+                else:
+                    report.pop(key, None)
+                    if isinstance(report.get("tokens"), Mapping):
+                        report["tokens"].pop(key, None)
     tokens = report.get("tokens") if isinstance(report.get("tokens"),
                                                 Mapping) else report
     prompt = _as_count(tokens.get("prompt_tokens"))
@@ -485,22 +515,27 @@ def host_report_dimensions(report: Mapping[str, Any]
         dimensions["llm_tokens"] = float(total)
     if tool_calls is not None and "tool_calls" in measured:
         dimensions["tool_calls"] = float(tool_calls)
+    span = _as_count(report.get("remaining_latency_s"))
+    if span is not None and "remaining_latency_s" in measured:
+        dimensions["remaining_latency_s"] = span
     info: Dict[str, Any] = {
         "schema": HOST_USAGE_SCHEMA,
         "host": str(report.get("host") or "generic"),
         "model": (str(report["model"]) if report.get("model") else None),
-        "scope": "attempt",
+        # v1 originally allowed an identity object here, not a span name.
+        "scope": report["scope"] if isinstance(report.get("scope"), str) else "attempt",
         "prompt_tokens": prompt,
         "completion_tokens": completion,
         "reasoning_tokens": reasoning,
         "cached_tokens": cached,
         "model_calls": calls,
+        "measured": sorted(measured),
         "tool_calls_lower_bound": lower_bound,
         "basis": basis,
         "provenance": {
             dim: str(provenance.get(dim)
                      or _HOST_REPORT_DEFAULT_SOURCES.get(dim, "agent_estimate"))
-            for dim in dimensions
+            for dim in (set(dimensions) | (measured & {"llm_tokens", "tool_calls", "remaining_latency_s"}))
         },
         "note": ("llm_tokens is the FULL口径 total (prompt + completion); "
                  "reasoning/cached tokens are sub-facts already inside those "
@@ -508,6 +543,14 @@ def host_report_dimensions(report: Mapping[str, Any]
                  "the report's 'measured' whitelist enter cost_measured; "
                  "everything else stays unknown, never zero"),
     }
+    info["dimensions"] = dict(dimensions)
+    if isinstance(report.get("scope"), Mapping):
+        info["scope_identity"] = copy.deepcopy(dict(report["scope"]))
+    if invalid_counters:
+        info["invalid_counters"] = invalid_counters
+    for key in ("report_id", "usage_id", "window", "counters", "call_details"):
+        if key in report:
+            info[key] = copy.deepcopy(report[key])
     return dimensions, info
 
 

@@ -85,6 +85,33 @@ def _record(tokens=1000.0, source=None, basis=None, measured=None,
 
 class TestTheRule(unittest.TestCase):
 
+    def test_reset_counter_cannot_be_a_remaining_measurement(self):
+        from or_harness.world_model.usage import host_report_dimensions
+        values, info = host_report_dimensions({"schema": "or-host-usage/1",
+            "scope": "remaining_to_task_end", "tool_calls": 500,
+            "tokens": {"prompt_tokens": 1000, "completion_tokens": 100},
+            "measured": ["tool_calls", "llm_tokens"],
+            "counters": {"start": {"tool_calls": 10, "prompt_tokens": 1000},
+                         "end": {"tool_calls": 2, "prompt_tokens": 10}}})
+        self.assertNotIn("tool_calls", values)
+        self.assertEqual(info["basis"], "completion_only")
+        self.assertEqual(set(info["invalid_counters"]), {"tool_calls", "prompt_tokens"})
+
+    def test_legacy_scope_identity_keeps_its_attempt_span(self):
+        from or_harness.world_model.usage import host_report_dimensions
+        identity = {"task_id": "t1", "episode_id": "ep1"}
+        values, info = host_report_dimensions({"schema": "or-host-usage/1", "scope": identity,
+            "tokens": {"prompt_tokens": 2, "completion_tokens": 3}, "measured": ["llm_tokens"]})
+        self.assertEqual(values["llm_tokens"], 5)
+        self.assertEqual(info["scope"], "attempt")
+        self.assertEqual(info["scope_identity"], identity)
+
+    def test_non_finite_usage_is_unknown(self):
+        from or_harness.world_model.usage import host_report_dimensions
+        values, _ = host_report_dimensions({"schema": "or-host-usage/1",
+            "tool_calls": float("inf"), "measured": ["tool_calls"]})
+        self.assertNotIn("tool_calls", values)
+
     def test_a_provider_report_is_measured(self):
         self.assertEqual(
             cost_eligibility(_record(source="provider_usage"), "llm_tokens"),
@@ -170,6 +197,16 @@ class TestCalibration(HarnessTestCase):
         aggregate = _aggregate_costs([rec.cost], [rec])
         self.assertEqual(aggregate["llm_tokens"]["total"], 1500.0)
         self.assertNotIn("excluded", aggregate["llm_tokens"])
+
+    def test_task_total_does_not_become_an_attempt_or_remaining_total(self):
+        from or_harness.world_model.episode_closeout import _aggregate_costs
+        rec = _record(tokens=1000, source="provider_usage")
+        rec.measurement_scope = "task"
+        aggregate = _aggregate_costs([rec.cost], [rec])
+        self.assertIsNone(aggregate["llm_tokens"]["total"])
+        self.assertEqual(aggregate["llm_tokens"]["excluded"], 1)
+        self.assertEqual(rec.cost.llm_tokens, 1000)
+        self.assertEqual(rec.measurement_scope, "task")
 
 
 class TestTheDefaultIsADeclaration(HarnessTestCase):

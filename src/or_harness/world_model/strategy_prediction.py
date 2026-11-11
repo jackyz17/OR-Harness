@@ -268,6 +268,17 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "justification inside `cost`. The `cost` object must contain ONLY the "
     "numeric dimension keys listed above: a key such as `basis` or `notes` "
     "is NOT a dimension and invalidates the WHOLE prediction.\n"
+    "  COST EVIDENCE: use prediction_context.cost_evidence. First identify "
+    "the work this candidate ADDS or SAVES relative to its comparable "
+    "reference workflow: existing-model reuse versus rebuilding, extra "
+    "subproblem solves, merging, acceptance checks and evidenced repairs. "
+    "Then estimate their effects in raw tool_calls, host rounds, tokens "
+    "and seconds. Host rounds are explanatory, not a new cost dimension. "
+    "Historical totals already include their workflow's steps: count each "
+    "step once. Use only applicable host/window/phase evidence; sparse "
+    "cases describe their own support. Similar costs are appropriate when "
+    "supported. Cite the range/case source in evidence_basis, and name "
+    "unestimable dimensions in unsupported_fields, outside cost.\n"
     "- risk: object {\"events\": [{\"event\": a short name of the risk "
     "EVENT, \"probability\": number in [0,1] or omitted when you have no "
     "basis, \"severity\": number or omitted, \"severity_unit\": text, "
@@ -389,9 +400,9 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "outcome was historically BETTER than predicted (this model "
     "under-predicts benefit); NEGATIVE means it over-predicts. Neither sign "
     "is an instruction to change this candidate's G.\n"
-    "  * `mean_cost_log_ratio` is directed per dimension: POSITIVE means the "
-    "real cost was historically HIGHER than predicted (under-predicts "
-    "cost); NEGATIVE means over-predicts.\n"
+    "  * global cost residuals are audit diagnostics, never multipliers "
+    "or instructions to raise/lower C. Use applicable raw cost ranges and "
+    "executed workflows in cost_evidence instead.\n"
     "  * `basis: insufficient_evidence` means too few independent episodes "
     "to say anything: do NOT treat such a group as calibration.\n"
     "  * these are measured PAST errors, not a promise about this "
@@ -1499,6 +1510,8 @@ class StrategyOutcomeService:
             "source": "actually displayed provider input; adoption/effect are separate facts",
         }
         profile = context.joint.profile or {}
+        from or_harness.world_model.cost_signal import cost_conditions
+        info["cost_conditions"] = cost_conditions(context, prediction.candidate)
         info.update({
             "family": profile.get("family"),
             "cell_token": (group_key(ProblemProfile.from_dict(profile))

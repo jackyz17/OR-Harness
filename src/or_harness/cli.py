@@ -929,6 +929,20 @@ def cmd_amend_cost(args) -> int:
                 except ValueError as exc:
                     return _fail(str(exc))
                 per_dim_sources = result_breakdown.get("provenance") or {}
+                if result_breakdown["scope"] != "attempt":
+                    try:
+                        record = h.bank.annotate_features(args.execution_id,
+                            {"host_usage": result_breakdown})
+                    except StorageError as exc:
+                        return _fail(str(exc))
+                    action = next((a for a in h.actions.query(task_id=record.task_id)
+                                   if a.linked_execution_id == record.execution_id), None)
+                    if action is not None:
+                        h._republish_calibration_if_in_window(record.task_id, action.episode_id)
+                    return _emit({"execution_id": record.execution_id,
+                                  "usage": result_breakdown,
+                                  "scope": result_breakdown["scope"]},
+                                 f"Stored scoped host usage evidence for {record.execution_id}.")
                 if not dimensions:
                     return _fail(
                         "the usage report's 'measured' whitelist carried no "
@@ -998,6 +1012,8 @@ def cmd_amend_cost(args) -> int:
                     **dimensions)
         except StorageError as exc:
             return _fail(str(exc))
+        if (result_breakdown or {}).get("schema") == "or-host-usage/1":
+            record = h.bank.annotate_features(args.execution_id, {"host_usage": result_breakdown})
         measured = sorted(record.cost.measured_dims())
         missing = [d for d in COST_DIMENSIONS if d not in measured]
         result = {

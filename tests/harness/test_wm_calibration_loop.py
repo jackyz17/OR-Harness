@@ -373,7 +373,8 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
         self.assertFalse(benefit_reminders, "G residuals must remain diagnostic")
         self.assertTrue(any(g.get("mean_benefit_signed_error") is not None
                             for g in summary["groups"].values()))
-        self.assertTrue(any(r["field"].startswith("cost.") for r in reminders))
+        self.assertFalse(any(r["field"].startswith("cost.") for r in reminders))
+        self.assertTrue(any(g.get("mean_cost_log_ratio") for g in summary["groups"].values()))
 
         # The NEXT request carries the reminders.
         self.provider.requests.clear()
@@ -382,8 +383,7 @@ class TestRemindersReachTheProvider(CalibrationLoopCase):
                             "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = self.provider.requests[-1]
         sent = request["prediction_context"]["prediction_reminders"]
-        self.assertTrue(sent)
-        self.assertEqual(sent[0]["kind"], "derived_reminder")
+        self.assertFalse(any(r["field"].startswith("cost.") for r in sent))
 
     def test_below_threshold_yields_no_reminder(self):
         """A single episode is NOT a lesson: no reminder below the

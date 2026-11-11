@@ -49,7 +49,7 @@ class GCase(HarnessTestCase):
             episode, **kwargs)
 
     def run_g(self, prediction, *, split=False, crash=False, timeout=False, actual=None,
-              execution_config=None):
+              execution_config=None, record=True):
         work = Path(self.home) / prediction.prediction_id
         work.mkdir()
         script = work / "solve.py"
@@ -65,10 +65,11 @@ class GCase(HarnessTestCase):
                + ", action_id=os.environ['OR_ACTION_ID'])\n" if execution_config is not None else "") +
             "with open('result.json', 'w') as f: json.dump(result, f)\n"))
         script.write_text(body)
-        record = self.h.execute(self.task, "S04", str(script), str(work), solver="highs",
+        execution = self.h.execute(self.task, "S04", str(script), str(work), solver="highs",
             episode_id=prediction.candidate.episode_id, prediction_id=prediction.prediction_id)
-        self.h.record(record)
-        return record
+        if record:
+            self.h.record(execution)
+        return execution
 
     def check_g(self, record, *, fidelity="faithful", failure="unknown",
                 coverage="original_task", acceptance="factory-coupling/v1", evidence=True,
