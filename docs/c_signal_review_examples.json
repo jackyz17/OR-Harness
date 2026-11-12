@@ -1,0 +1,203 @@
+{
+  "baseline": "93b9cd22bf2c86bf1f8bcfccb4ef3a54f4028bd0",
+  "first_request": {
+    "task_id": "review-new-task",
+    "prior_actions": 0,
+    "conditions": {
+      "scope": "remaining_to_task_end",
+      "phase": "initial_modelling",
+      "phase_basis": "frozen execution_context.phase",
+      "reusable_artifacts": [],
+      "execution_host": {
+        "host": "test-host",
+        "model": "executor-model/v1",
+        "source": "test runner configuration"
+      },
+      "solver_conditions": {
+        "solver": null,
+        "config": {},
+        "constraints": {
+          "executor": {
+            "timeout_seconds": 120,
+            "workspace_policy": "solve scripts must live inside their execution workspace"
+          },
+          "declared_budget": null
+        }
+      },
+      "family": "assignment",
+      "structure": {
+        "problem_class": "unknown",
+        "resource_coupling": 0.8
+      }
+    },
+    "reference_ranges": [
+      {
+        "conditions": {
+          "actual_solving_conditions": [
+            {
+              "config": {
+                "script_timeout_s": 120,
+                "time_limit": 60
+              },
+              "solver": "highs"
+            }
+          ],
+          "execution_host": {
+            "host": "test-host",
+            "model": "executor-model/v1"
+          },
+          "family": "assignment",
+          "phase": "initial_modelling",
+          "scope": "remaining_to_task_end",
+          "solver_conditions": {
+            "constraints": {
+              "declared_budget": null,
+              "executor": {
+                "timeout_seconds": 120,
+                "workspace_policy": "solve scripts must live inside their execution workspace"
+              }
+            },
+            "unconfirmed_config": {}
+          },
+          "structure": {
+            "problem_class": "unknown",
+            "resource_coupling": 0.8
+          },
+          "window_coverage": "complete"
+        },
+        "dimensions": {
+          "latency_s": {
+            "max": 0.028445,
+            "min": 0.028445,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 0.028445,
+            "p75": 0.028445
+          },
+          "llm_tokens": {
+            "max": 300.0,
+            "min": 300.0,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 300.0,
+            "p75": 300.0
+          },
+          "remaining_latency_s": {
+            "max": 0.059329986572265625,
+            "min": 0.059329986572265625,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 0.05933,
+            "p75": 0.05933
+          },
+          "retries": {
+            "max": 0.0,
+            "min": 0.0,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 0.0,
+            "p75": 0.0
+          },
+          "solver_runtime_s": {
+            "max": 0.01,
+            "min": 0.01,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 0.01,
+            "p75": 0.01
+          },
+          "tool_calls": {
+            "max": 8.0,
+            "min": 8.0,
+            "n": 1,
+            "n_distinct_episodes": 1,
+            "p50": 8.0,
+            "p75": 8.0
+          }
+        },
+        "n_distinct_episodes": 1,
+        "observation_rule_version": "wm-c-window/1",
+        "source_refs": [
+          "ac_74466c554573",
+          "ex_857bad8b8f37"
+        ],
+        "support": "measured",
+        "support_note": "range of these recorded windows only; not a universal cost prior; missing structure/undeclared solver settings remain unknown",
+        "unknown_structure_dimensions": []
+      }
+    ],
+    "cases": [
+      {
+        "task_id": "factory",
+        "values": {
+          "latency_s": 0.028445,
+          "llm_tokens": 300.0,
+          "remaining_latency_s": 0.059329986572265625,
+          "retries": 0.0,
+          "solver_runtime_s": 0.01,
+          "tool_calls": 8.0
+        },
+        "source_refs": [
+          "ac_74466c554573",
+          "ex_857bad8b8f37"
+        ]
+      }
+    ]
+  },
+  "meter_cases": {
+    "aggregate_vs_details": {
+      "actual": {
+        "llm_tokens": 200.0,
+        "solver_runtime_s": 0.01,
+        "retries": 0.0,
+        "latency_s": 0.029302,
+        "remaining_latency_s": 0.06577277183532715
+      },
+      "exclusions": [
+        "ac_1cffd18fbb0e: no complete matching decision-to-termination window",
+        "ac_074813220653: tool_calls: aggregate disagrees with complete call details (8 vs 1)"
+      ],
+      "coverage": {
+        "tool_calls": {
+          "n_actual": 0,
+          "n_error": 0,
+          "n_log_ratio": 0,
+          "n_predicted": 1
+        },
+        "llm_tokens": {
+          "n_actual": 1,
+          "n_error": 1,
+          "n_log_ratio": 1,
+          "n_predicted": 1
+        }
+      }
+    },
+    "executor_floor": {
+      "actual": {
+        "llm_tokens": 200.0,
+        "solver_runtime_s": 0.01,
+        "retries": 0.0,
+        "latency_s": 0.029638,
+        "remaining_latency_s": 0.06878471374511719
+      },
+      "exclusions": [
+        "ac_061bc35ea1c3: no complete matching decision-to-termination window",
+        "ac_6af84e8dad2a: tool_calls: reported total 0 is below a proven in-window lower bound 1"
+      ],
+      "coverage": {
+        "tool_calls": {
+          "n_actual": 0,
+          "n_error": 0,
+          "n_log_ratio": 0,
+          "n_predicted": 1
+        },
+        "llm_tokens": {
+          "n_actual": 1,
+          "n_error": 1,
+          "n_log_ratio": 1,
+          "n_predicted": 1
+        }
+      }
+    }
+  }
+}

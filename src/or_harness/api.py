@@ -226,7 +226,20 @@ class ORHarness:
                  embedding: Optional[EmbeddingBackend] = None,
                  planning: bool = True,
                  plan_mode: str = "advise",
-                 prediction_mode: str = "h-x-b-value"):
+                 prediction_mode: str = "h-x-b-value",
+                 execution_context: Optional[Dict[str, Any]] = None):
+        # The outer runner knows its own execution model and current phase
+        # before its first action. Never substitute the predicting model or
+        # another episode's last host. Freeze this declaration in snapshots.
+        if execution_context is None:
+            import os
+            raw_context = os.environ.get("OR_EXECUTION_CONTEXT")
+            if raw_context:
+                raw_context = raw_context.strip()
+                execution_context = json.loads(raw_context if raw_context.startswith("{")
+                    else Path(raw_context.removeprefix("@")).read_text(encoding="utf-8"))
+        from or_harness.world_model.cost_signal import normalize_execution_context
+        self.execution_context = normalize_execution_context(execution_context)
         self.home = resolve_home(home)
         self.store = Store(self.home)
         # The utility weights belong to the WORLD MODEL's consequence
@@ -399,6 +412,8 @@ class ORHarness:
                 "available": [{"entry_id": entry.entry_id, "predicates": entry.predicates}
                               for entry in self.sbank.matching(profile, include_dormant=True)]})
             harness_state = self._harness_state_view(task, knowledge)
+            if self.execution_context:
+                harness_state["execution_context"] = copy.deepcopy(self.execution_context)
             budget = self._load_budget(str(task.get("task_id", "")), episode_id)
             budget_state = self.budget.view(
                 str(task.get("task_id", "")), episode_id, budget=budget)
@@ -1092,7 +1107,7 @@ class ORHarness:
             retrieval_bounding=bounding,
             top_k=max(1, vector_top_k or top),
             include_unverified=include_unverified)
-        if not historical:
+        if not historical and not context.solving_context.get("execution_host"):
             from or_harness.world_model.cost_signal import latest_host
             host = latest_host(self.actions.query(task_id=context.task_id),
                 self.bank.query(task_id=context.task_id),

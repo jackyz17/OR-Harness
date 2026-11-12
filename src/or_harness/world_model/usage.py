@@ -454,6 +454,7 @@ def host_report_dimensions(report: Mapping[str, Any]
     report = copy.deepcopy(dict(report))
     counters = report.get("counters") or {}
     invalid_counters = []
+    dimension_conflicts = {}
     if isinstance(counters, Mapping):
         start, end = counters.get("start") or {}, counters.get("end") or {}
         start = start if isinstance(start, Mapping) else {}
@@ -461,6 +462,13 @@ def host_report_dimensions(report: Mapping[str, Any]
         for key in ("tool_calls", "prompt_tokens", "completion_tokens", "calls"):
             before, after = _as_count(start.get(key)), _as_count(end.get(key))
             if before is not None and after is not None and after >= before:
+                original_tokens = report.get("tokens") if isinstance(report.get("tokens"), Mapping) else report
+                original = _as_count(report.get(key) if key == "tool_calls" else original_tokens.get(key))
+                if report.get("scope") == "remaining_to_task_end" and original is not None \
+                        and not math.isclose(original, after - before, rel_tol=1e-9, abs_tol=1e-6):
+                    dimension_conflicts["tool_calls" if key == "tool_calls" else
+                                        "host_rounds" if key == "calls" else "llm_tokens"] = \
+                        f"aggregate disagrees with the same-window counter increment ({original:g} vs {after - before:g})"
                 if key == "tool_calls":
                     report[key] = after - before
                 else:
@@ -495,12 +503,15 @@ def host_report_dimensions(report: Mapping[str, Any]
     lower_bound = _as_count(report.get("tool_calls_lower_bound"))
     if tool_calls is not None and lower_bound is not None \
             and tool_calls < lower_bound:
-        raise ValueError(
-            f"tool_calls={tool_calls} is below the report's own "
-            f"tool_calls_lower_bound={lower_bound}: the host proved at "
-            "least that many invocations happened. tool_calls counts ALL "
-            "tool invocations in the attempt's scope (shell commands, "
-            "file reads/writes, sandbox runs, solver calls)")
+        if report.get("scope") == "remaining_to_task_end":
+            dimension_conflicts["tool_calls"] = "total is below the report's own tool_calls_lower_bound"
+        else:
+            raise ValueError(
+                f"tool_calls={tool_calls} is below the report's own "
+                f"tool_calls_lower_bound={lower_bound}: the host proved at "
+                "least that many invocations happened. tool_calls counts ALL "
+                "tool invocations in the attempt's scope (shell commands, "
+                "file reads/writes, sandbox runs, solver calls)")
     measured = {str(m) for m in (report.get("measured") or [])}
     # The whitelist names the report's OWN fields (prompt_tokens,
     # completion_tokens, tool_calls); the cost dimensions they feed are
@@ -544,11 +555,15 @@ def host_report_dimensions(report: Mapping[str, Any]
                  "everything else stays unknown, never zero"),
     }
     info["dimensions"] = dict(dimensions)
+    if dimension_conflicts:
+        info["dimension_conflicts"] = dimension_conflicts
+        for dim in dimension_conflicts:
+            dimensions.pop(dim, None)
     if isinstance(report.get("scope"), Mapping):
         info["scope_identity"] = copy.deepcopy(dict(report["scope"]))
     if invalid_counters:
         info["invalid_counters"] = invalid_counters
-    for key in ("report_id", "usage_id", "window", "counters", "call_details"):
+    for key in ("report_id", "usage_id", "window", "counters", "call_details", "call_details_complete"):
         if key in report:
             info[key] = copy.deepcopy(report[key])
     return dimensions, info

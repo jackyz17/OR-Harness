@@ -2047,6 +2047,12 @@ def build_context(
                  "BEFORE this prediction; a hypothetical snapshot's progress "
                  "never appears here"),
     }
+    runner = (getattr(snapshot, "harness_state", None) or {}).get("execution_context") or {}
+    if runner:
+        solving_context["execution_context"] = copy.deepcopy(runner)
+        if runner.get("host") or runner.get("model"):
+            solving_context["execution_host"] = {k: copy.deepcopy(runner[k])
+                for k in ("host", "model", "source", "source_ref") if k in runner}
     if recall_result is None:
         recall_result = {"recommendations": list(
             structural_recommendations or [])}

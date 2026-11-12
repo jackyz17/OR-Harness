@@ -189,6 +189,8 @@ def _harness(args) -> ORHarness:
                      delta=getattr(args, "delta", 0.0),
                      prediction_mode=getattr(args, "prediction_mode",
                                             "h-x-b-value"),
+                     execution_context=(_load_json_arg(args.execution_context)
+                                        if getattr(args, "execution_context", None) else None),
                      world_model=provider)
 
 
@@ -2505,6 +2507,9 @@ def build_parser() -> argparse.ArgumentParser:
                              "(api key from $OR_WM_API_KEY). Omitted = "
                              "predictions return not_configured; no other "
                              "command is affected")
+    parser.add_argument("--execution-context", default=None, metavar="JSON_OR_FILE",
+                        help="runner execution host/model and known phase, frozen before prediction; "
+                             "default: $OR_EXECUTION_CONTEXT (JSON or file). This is not --world-model")
     parser.add_argument("--wm-timeout", type=float, default=None,
                         metavar="S",
                         help="world-model call timeout in seconds "

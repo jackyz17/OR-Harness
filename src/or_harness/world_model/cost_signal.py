@@ -27,6 +27,25 @@ def host_key(info):
     return {"host": info.get("host"), "model": info.get("model")}
 
 
+def normalize_execution_context(value):
+    """Known runner inputs only; no inferred model, phase or credentials."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValueError("execution_context must be an object")
+    out = {}
+    for key in ("host", "model", "phase", "source", "source_ref"):
+        if value.get(key) is not None:
+            if not isinstance(value[key], str) or not value[key].strip():
+                raise ValueError("execution_context." + key + " must be nonempty text")
+            out[key] = value[key].strip()
+    if out.get("phase") not in (None, "initial_modelling", "existing_model", "unknown"):
+        raise ValueError("execution_context.phase must be initial_modelling, existing_model or unknown")
+    if out:
+        out.setdefault("source", "runner_execution_context")
+    return out
+
+
 def cost_conditions(context, candidate=None):
     """Freeze only information visible before the decision."""
     from or_harness.world_model.g_signal import requested_solving_conditions
@@ -46,10 +65,13 @@ def cost_conditions(context, candidate=None):
     artifact_view = ({k: copy.deepcopy(v) for k, v in value.items()
                       if k in ("artifact", "path", "model_ref", "model_digest", "digest", "status")}
                      if isinstance(value, dict) else value)
+    runner = solving.get("execution_context") or {}
+    phase = "existing_model" if available else ("initial_modelling" if absent else runner.get("phase", "unknown"))
     return {
         "scope": "remaining_to_task_end",
-        "phase": "existing_model" if available else ("initial_modelling" if absent else "unknown"),
-        "phase_basis": "frozen task_progress.model_artifact",
+        "phase": phase,
+        "phase_basis": ("frozen task_progress.model_artifact" if available or absent else
+                        "frozen execution_context.phase" if runner.get("phase") else "unknown"),
         "reusable_artifacts": ([{"value": artifact_view,
             "evidence_ref": artifact.get("evidence_ref")} ] if available else []),
         "execution_host": copy.deepcopy(solving.get("execution_host") or {}),
@@ -82,40 +104,89 @@ def latest_host(actions, records, *, cutoff, episode_id):
 
 
 def _call_values(info, anchor, end):
-    """Timestamped complete call ledger, each invocation ID counted once."""
+    """Per-dimension ledger totals/bounds; absence of model calls is unknown.
+
+    Legacy complete ledgers establish only the call kinds they contain.
+    An explicit call_details_complete list can declare zero/partial kinds.
+    Internal bounds/conflicts are consumed before publishing work facts.
+    """
     calls = info.get("call_details")
     if not isinstance(calls, list):
         return {}, {}
-    unique = {}
+    unique, conflicts = {}, {}
+    def dimensions(call):
+        return ({"tool_calls"} if call.get("kind") == "tool" else
+                {"llm_tokens"} if call.get("kind") in ("model", "llm") else
+                {"tool_calls", "llm_tokens"})
+    def invalid(call, reason):
+        for dim in dimensions(call):
+            conflicts[dim] = reason
     for call in calls:
         if not isinstance(call, dict):
-            return {}, {}
+            invalid({}, "malformed call detail")
+            continue
         identity = call.get("id") or call.get("call_id")
         start, stop = number(call.get("started_at")), number(call.get("ended_at"))
-        if not identity or start is None or stop is None or stop < start:
-            return {}, {}
+        if not isinstance(identity, str) or not identity or start is None or stop is None or stop < start:
+            invalid(call, "call detail lacks a usable ID/time interval")
+            continue
         if call.get("kind") not in ("tool", "model", "llm"):
-            return {}, {}
+            invalid(call, "unknown call kind")
+            continue
         if start < anchor or stop > end:
             # A call crossing the anchor cannot be split honestly.
             if start < anchor < stop or start < end < stop:
-                return {}, {}
+                invalid(call, "call crosses a measurement boundary")
             continue
         if identity in unique and unique[identity] != call:
-            return {}, {}
+            invalid(call, "conflicting details for one call ID")
+            invalid(unique[identity], "conflicting details for one call ID")
+            continue
         unique[identity] = call
     tools = [c for c in unique.values() if c.get("kind") == "tool"]
     models = [c for c in unique.values() if c.get("kind") in ("model", "llm")]
-    values = {"tool_calls": float(len(tools))}
-    if all(number(c.get("prompt_tokens")) is not None and
-           number(c.get("completion_tokens")) is not None for c in models):
+    complete = info.get("call_details_complete")
+    if isinstance(complete, list) and not all(isinstance(d, str) and
+            d in ("tool_calls", "llm_tokens") for d in complete):
+        invalid({}, "invalid per-dimension call-detail coverage")
+        complete = []
+    complete = (set(complete) if isinstance(complete, list) else
+                ({"tool_calls"} if tools else set()) | ({"llm_tokens"} if models else set()))
+    bounds = {"tool_calls": float(len(tools)), "llm_tokens": sum(
+        (number(c.get("prompt_tokens")) or 0) + (number(c.get("completion_tokens")) or 0) for c in models)}
+    values = {}
+    if "tool_calls" in complete:
+        values["tool_calls"] = float(len(tools))
+    if "llm_tokens" in complete and all(number(c.get("prompt_tokens")) is not None and
+                                       number(c.get("completion_tokens")) is not None for c in models):
         values["llm_tokens"] = sum(float(c["prompt_tokens"]) + float(c["completion_tokens"])
                                    for c in models)
-    facts = {"host_rounds": len(models), "call_ids": sorted(unique)}
+    facts = {"call_ids": sorted(unique), "_bounds": bounds, "_conflicts": conflicts}
+    if "llm_tokens" in complete and "llm_tokens" not in conflicts:
+        facts["host_rounds"] = len(models)
     explicit_solves = [c for c in tools if c.get("phase") == "solve"]
     if explicit_solves:
         facts["observed_solve_calls"] = len(explicit_solves)
     return values, facts
+
+
+def _execution_tool_floor(actions, records, anchor, end):
+    """Sum disjoint, proven execution floors once, only inside this window."""
+    # verify/reference actions can link the same execution later. They do
+    # not establish when the executor's proven invocation happened.
+    actions_by_id = {a.linked_execution_id: a for a in actions if a.linked_execution_id
+                     and a.action_type == "execute_strategy" and a.source != "hypothetical"}
+    floors = {}
+    for record in records:
+        action = actions_by_id.get(record.execution_id)
+        if action is None or action.started_at is None or action.ended_at is None:
+            continue
+        if action.started_at < anchor - 1e-6 or action.ended_at > end + 1e-6:
+            continue
+        lower = number((record.execution_features or {}).get("tool_calls_lower_bound"))
+        if lower is not None:
+            floors[record.execution_id] = lower
+    return sum(floors.values())
 
 
 def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff,
@@ -139,7 +210,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
         if info:
             candidates.append((info, action.action_id))
     observed, sources, facts, hosts = defaultdict(list), defaultdict(list), {}, []
-    rejected = []
+    rejected, conflicted = [], set()
     if anchor is None:
         return {}, {}, {}, {}, ["decision anchor unknown"]
     for info, ref in candidates:
@@ -169,15 +240,31 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
         values, call_facts = ({}, {})
         if ledger_covers:
             values, call_facts = _call_values(info, anchor, target_end)
-        if not numeric_window and not values:
+        detail_dims = set(values)
+        if not numeric_window and not values and not call_facts.get("_conflicts"):
             rejected.append(ref + ": no complete matching decision-to-termination window")
             continue
         if numeric_window:
             # Numeric reports/counter deltas have the declared full window.
             for dim, value in (info.get("dimensions") or {}).items():
-                values.setdefault(dim, value)
+                if dim == "llm_tokens" and info.get("basis") != "provider_total":
+                    bounds = call_facts.setdefault("_bounds", {})
+                    bounds[dim] = max(bounds.get(dim, 0), value)
+                    continue
+                if dim in values and not math.isclose(values[dim], value, rel_tol=1e-9, abs_tol=1e-6):
+                    call_facts.setdefault("_conflicts", {})[dim] = (
+                        f"aggregate disagrees with complete call details ({value:g} vs {values[dim]:g})")
+                values[dim] = value
             if "remaining_latency_s" in (info.get("measured") or []):
                 values.setdefault("remaining_latency_s", target_end - anchor)
+        bounds = call_facts.pop("_bounds", {})
+        conflicts = {**(info.get("dimension_conflicts") or {}), **call_facts.pop("_conflicts", {})}
+        if numeric_window and "host_rounds" in call_facts and number(info.get("model_calls")) is not None \
+                and call_facts["host_rounds"] != info["model_calls"]:
+            conflicts["host_rounds"] = "model-call total disagrees with complete call details"
+        floor = _execution_tool_floor(actions, records, anchor, target_end) if full else 0
+        bounds["tool_calls"] = max(bounds.get("tool_calls", 0), floor,
+            (number(info.get("tool_calls_lower_bound")) or 0) if numeric_window else 0)
         usable = {}
         for dim, value in values.items():
             source = (info.get("provenance") or {}).get(dim)
@@ -186,15 +273,26 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
                 continue
             if source not in TRUSTED or number(value) is None:
                 continue
-            if dim == "llm_tokens" and not call_facts and info.get("basis") != "provider_total":
+            if dim == "llm_tokens" and dim not in detail_dims and info.get("basis") != "provider_total":
+                continue
+            if value < bounds.get(dim, 0) - 1e-6:
+                conflicts[dim] = f"reported total {value:g} is below a proven in-window lower bound {bounds[dim]:g}"
+            if dim in conflicts:
                 continue
             usable[dim] = float(value)
+        for dim, reason in conflicts.items():
+            if (info.get("provenance") or {}).get(dim) in TRUSTED:
+                conflicted.add(dim)
+                rejected.append(ref + ": " + dim + ": " + reason)
+        if "llm_tokens" in conflicts or "host_rounds" in conflicts:
+            call_facts.pop("host_rounds", None)
         if usable:
             hosts.append(host_key(info))
             for dim, value in usable.items():
                 observed[dim].append(value)
                 sources[dim].append(ref)
-            if not call_facts and info.get("model_calls") is not None:
+            if "host_rounds" not in call_facts and info.get("model_calls") is not None \
+                    and numeric_window and "host_rounds" not in conflicts and "llm_tokens" not in conflicts:
                 call_facts["host_rounds"] = info["model_calls"]
             facts.update(call_facts)
             # Timestamps are part of a trusted full-span host observation.
@@ -205,7 +303,7 @@ def scoped_host_observations(actions, records, *, anchor, anchor_id, end, cutoff
         return {}, {}, {}, {}, rejected + ["conflicting execution hosts for the same window"]
     actuals = {}
     for dim, values in observed.items():
-        if len(set(values)) == 1:
+        if len(set(values)) == 1 and dim not in conflicted:
             actuals[dim] = values[0]
         else:
             rejected.append(dim + ": conflicting reports for the same window")

@@ -231,22 +231,24 @@ class TestHostCostWindow(CCase):
         self.assertEqual(build_calibration_summary(self.h)["conditional_cost"], before)
 
     def test_zero_errors_and_log_support_use_their_own_populations(self):
+        # A real execution proves tool_calls >= 1. Tokens can legitimately
+        # be zero when the host made no model calls.
         from or_harness.world_model.episode_closeout import build_calibration_summary
         for episode, predicted, actual in (("zero", 0, 0), ("positive", 2, 4)):
-            prediction = self.predict_c(episode, cost={"tool_calls": predicted})
+            prediction = self.predict_c(episode, cost={"llm_tokens": predicted})
             record = self.run_g(prediction)
             self.check_g(record)
-            result, _ = self.finish_c(prediction, tools=actual)
-            error = result["evaluations"][0]["cost"]["per_dim"]["tool_calls"]
+            result, _ = self.finish_c(prediction, tokens=actual, rounds=0 if actual == 0 else 1)
+            error = result["evaluations"][0]["cost"]["per_dim"]["llm_tokens"]
             self.assertEqual(error["abs_error"], actual - predicted)
             self.assertEqual(error["signed_error"], actual - predicted)
         summary = build_calibration_summary(self.h, min_samples=2)
-        group = next(g for g in summary["groups"].values() if "tool_calls" in g["mean_cost_abs_error"])
-        self.assertEqual(group["mean_cost_abs_error"]["tool_calls"], 1)
-        self.assertEqual(group["cost_absolute_evidence"]["tool_calls"]["n_distinct_episodes"], 2)
-        self.assertEqual(group["cost_evidence"]["tool_calls"]["n_distinct_episodes"], 1)
-        self.assertEqual(group["cost_evidence"]["tool_calls"]["evidence"], "insufficient_evidence")
-        self.assertEqual(summary["conditional_cost"]["coverage"]["tool_calls"],
+        group = next(g for g in summary["groups"].values() if "llm_tokens" in g["mean_cost_abs_error"])
+        self.assertEqual(group["mean_cost_abs_error"]["llm_tokens"], 1)
+        self.assertEqual(group["cost_absolute_evidence"]["llm_tokens"]["n_distinct_episodes"], 2)
+        self.assertEqual(group["cost_evidence"]["llm_tokens"]["n_distinct_episodes"], 1)
+        self.assertEqual(group["cost_evidence"]["llm_tokens"]["evidence"], "insufficient_evidence")
+        self.assertEqual(summary["conditional_cost"]["coverage"]["llm_tokens"],
             {"n_actual": 2, "n_predicted": 2, "n_error": 2, "n_log_ratio": 1})
 
     def test_both_time_dimensions_keep_independent_errors(self):
