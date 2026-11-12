@@ -368,13 +368,14 @@ def _knowledge_entry(harness, item: Dict[str, Any], score: float,
     claim_text = document_entry(entry)
     if document_digest(claim_text) != item.get("doc_digest"):
         return None  # the claim text changed; the vector is stale
+    display_text = claim_text if len(claim_text)<=3000 else f"Complete rule by ID: orx inspect --bank strategic --entry {entry.entry_id} ({len(claim_text)} characters)"
     structural, reusable, reason = classify_applicability(task_profile,
                                                           entry.predicates)
     out = {
         "entry_id": entry.entry_id,
         "strategy_id": entry.strategy_id,
         "similarity": round(score, 6),
-        "claim_text": claim_text,
+        "claim_text": display_text,
         "expected_quality_hat": entry.expected_quality_hat,
         "expected_cost_hat": entry.expected_cost_hat.to_dict(),
         "cost_measured": (sorted(entry.expected_cost_hat.measured)

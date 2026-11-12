@@ -286,7 +286,10 @@ class TestMaterialShowsUsage(UtilityCase):
         out = self.h.induction_material()
         item = next(k for k in out["existing_knowledge"]
                     if k["entry_id"] == eid)
-        verdicts = [a["verdict"] for a in item["usage"]["attributed_effects"]]
+        self.assertEqual(item['usage']['n_effect_attributions'],1)
+        self.assertNotIn('attributed_effects',item['usage'])
+        detail=self.h.inspect(bank='strategic',entry_id=eid)['entries'][0]
+        verdicts = [a["verdict"] for a in detail['expected']['effect_attribution']]
         self.assertIn("helped", verdicts)
         self.assertFalse(item["usage"]["unattributed"])
 

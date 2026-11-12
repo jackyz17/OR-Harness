@@ -30,6 +30,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
 from tests.harness.helpers import HarnessTestCase  # noqa: E402
+from tests.harness.legacy_rules import as_historical_entry
 
 from or_harness.api import ORHarness  # noqa: E402
 from or_harness.strategy.embedding_index import (  # noqa: E402
@@ -369,7 +370,8 @@ class TestKnowledgeSurvives(EvidenceWindowCase):
         entry = next(e for e in self.h.sbank.list()
                      if e.strategy_id == "S04")
         self.assertEqual(entry.verification.get("state"), "verified")
-        # Evict everything the entry was learned from: no registry rows, so
+        as_historical_entry(self.h, entry.entry_id)
+        # Evict everything the historical entry was learned from: no registry rows, so
         # only the open-episode path applies (grace 0 evicts the aged ones).
         self.enforce(0, open_grace_days=0.0)
         self.assertEqual(self.h.bank.count(), 0)
@@ -385,8 +387,7 @@ class TestKnowledgeSurvives(EvidenceWindowCase):
         new = self.solve(_task("k9"), strategy="S04", episode_id="ep1",
                          tag="k9")
         revised = self.h.induce(relations=[{
-            "subject": "S04",
-            "claim": "S04 solves routing tasks with optimal status",
+            "entry_id": entry.entry_id, "operation":"add_evidence",
             "evidence": [{"execution_id": new.execution_id, "role": "e"}]}])
         self.assertTrue(revised["relations"][0]["saved"])
 

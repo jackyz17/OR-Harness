@@ -3351,6 +3351,12 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
             "INSERT OR REPLACE INTO meta (key, value) VALUES (?,?)",
             (key, store.dumps(closeout.to_dict())))
 
+    # Register existing rule trials while their code/result/text facts are
+    # still available, even when this close immediately evicts the episode.
+    # This is observation, not the creation of a new induction rule.
+    from or_harness.strategy.rule_versions import settle_episode_uses
+    rule_validation = settle_episode_uses(harness,task_id,episode_id)
+
     # Automatic retention maintenance: a LIGHT check (one indexed COUNT of
     # registry rows outside the window and past the grace period). Only when
     # that count crosses the configured threshold does an archive pass run —
@@ -3371,6 +3377,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         "already_closed": False,
         "evaluations": [e.to_dict() for e in evaluations],
         "calibration_summary": summary_block,
+        "rule_validation": rule_validation,
         "task_checks": _episode_task_check_summary(harness, task_id,
                                                    episode_id),
         "retention": archive_result,

@@ -1,16 +1,8 @@
-"""Knowledge CLAIMS: ONE claim per entry, verified and recalled as knowledge.
-
-The unit of knowledge is the ENTRY, and one entry is one claim. This suite
-covers the claim's generation (from cross-task evidence, with no host lookup
-and no relation sub-structure), its assertion semantics, the publication gate
-(a VERIFICATION gate — the task count is reported, not enforced), revision (a
-substantive change invalidates the old verdict), transfer to a future task's
-recall, and the rule that two independent claims never inherit each other's
-verification.
-"""
+"""Relation input compatibility, canonical rule identity, assertion audits and historical unversioned recall. New submissions stay candidates until independent transfer and boundary validation."""
 import unittest
 
 from helpers import HarnessTestCase
+from tests.harness.legacy_rules import as_historical_entry
 
 from or_harness.api import ORHarness
 from or_harness.core.schema import (StrategicEntry,
@@ -221,7 +213,7 @@ class TestClaimAssertions(ClaimCase):
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "refuted")
         # The refutation is a recorded verdict, not a framework deletion.
-        self.assertTrue(entry.is_published)
+        self.assertFalse(entry.is_published)
 
     def test_mean_aggregation_tolerates_one_negative_pair(self):
         """With ``aggregation=mean`` a single unfavourable pair does not
@@ -302,17 +294,15 @@ class TestClaimAssertions(ClaimCase):
 
 
 class TestClaimPublication(ClaimCase):
-    """Publication is the AGENT's decision: a submitted claim is offered
-    within its declared scope. The framework checks only administrative
-    matters and records the agent's own verification state."""
+    """Derivation assertions do not substitute for transfer or boundary checks."""
 
     def test_verified_claim_is_published(self):
         self.seed_cross_period()
         claim = self.cross_period_claim()
         out = self.engine.submit_relation(
             claim, verify=self.verify_payload(claim))
-        self.assertTrue(out["publication"]["published"])
-        self.assertEqual(out["publication"]["state"], "verified")
+        self.assertFalse(out["publication"]["published"])
+        self.assertEqual(out["publication"]["state"], "candidate")
         self.assertEqual(out["publication"]["distinct_tasks"], 3)
 
     def test_single_task_claim_publishes_with_scope_stated(self):
@@ -333,15 +323,14 @@ class TestClaimPublication(ClaimCase):
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "verified")
         # Published, but the ONE-task scope is a stated fact, not hidden.
-        self.assertTrue(out["publication"]["published"])
+        self.assertFalse(out["publication"]["published"])
         self.assertEqual(out["publication"]["distinct_tasks"], 1)
         self.assertEqual(out["publication"]["support_scope"],
-                         "single_observation")
+                         "derivation_only")
         self.assertEqual(len(claim_scope_tasks(entry)), 1)
 
     def test_unverified_claim_is_still_published(self):
-        """A claim with no declared check is offered; the framework read the
-        FACTS (``fact_checked``) and reports that rather than withholding."""
+        """The facts are recorded but no independent transfer has been checked."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         # No verdict AND no embedded check: nothing computable to verify.
@@ -349,9 +338,9 @@ class TestClaimPublication(ClaimCase):
         out = self.engine.submit_relation(claim)   # no verify, no check
         self.assertIsNotNone(out["saved"])
         entry = self.sbank.get(out["saved"])
-        self.assertTrue(out["publication"]["published"])
+        self.assertFalse(out["publication"]["published"])
         self.assertEqual(entry.verification_state, "fact_checked")
-        self.assertTrue(entry.is_published)
+        self.assertFalse(entry.is_published)
 
     def test_embedded_relation_check_is_honoured(self):
         """A ``check`` block INSIDE the relation is read, not silently
@@ -361,7 +350,7 @@ class TestClaimPublication(ClaimCase):
         out = self.engine.submit_relation(claim)   # embedded check only
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "verified")
-        self.assertTrue(out["publication"]["published"])
+        self.assertFalse(out["publication"]["published"])
         self.assertEqual(out["check_note"]["check_source"],
                          "embedded_relation_check")
 
@@ -383,8 +372,7 @@ class TestClaimPublication(ClaimCase):
                          "verified")
 
     def test_no_check_records_the_state_without_a_gate(self):
-        """A claim whose declared check is UNDECIDABLE is still published;
-        the state (``insufficient_evidence``) is recorded for the reader."""
+        """An undecidable derivation assertion is recorded without activating the rule."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         claim["check"] = {"assertions": [
@@ -393,41 +381,38 @@ class TestClaimPublication(ClaimCase):
         out = self.engine.submit_relation(claim)
         entry = self.sbank.get(out["saved"])
         self.assertEqual(entry.verification_state, "insufficient_evidence")
-        self.assertTrue(out["publication"]["published"])
+        self.assertFalse(out["publication"]["published"])
 
 
-class TestClaimAdditive(ClaimCase):
-    """Knowledge is ADDITIVE: a new submission creates a NEW entry. It never
-    rewrites or merges an existing entry's core content, and there is no
-    ``target_entry_id`` revision path any more."""
+class TestClaimVersionIdentity(ClaimCase):
+    """Exact body repeats share an ID; authors explicitly select a revision target. Different bodies and unrelated statistical entries remain independent."""
 
-    def test_resubmission_creates_a_separate_entry(self):
-        """Same identity -> a NEW entry, not an in-place revision: the
-        earlier claim keeps its own text, evidence and verdict."""
+    def test_exact_resubmission_uses_the_same_entry(self):
+        """The body is unchanged; its original assertion audit remains readable."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         first = self.engine.submit_relation(
             claim, verify=self.verify_payload(claim))
         second = self.engine.submit_relation(self.cross_period_claim())
-        self.assertNotEqual(first["saved"], second["saved"])
-        self.assertEqual(self.sbank.count(), 2)
+        self.assertEqual(first["saved"], second["saved"])
+        self.assertEqual(self.sbank.count(), 1)
         # The first keeps its verdict; the second is independent.
         self.assertEqual(self.sbank.get(first["saved"]).verification_state,
                          "verified")
 
-    def test_target_entry_id_is_not_a_revision_path(self):
-        """An explicit ``target_entry_id`` is no longer honoured: a
-        submission is always a NEW entry (the field is ignored)."""
+    def test_explicit_target_entry_id_alias_supports_revision(self):
+        """The explicit target alias revises the same ID and creates a candidate version."""
         self.seed_cross_period()
         claim = self.cross_period_claim()
         first = self.engine.submit_relation(
             claim, verify=self.verify_payload(claim))
         revised = dict(self.cross_period_claim(),
                        claim="revised text entirely",
-                       target_entry_id=first["saved"])
+                       target_entry_id=first["saved"], operation="revise")
         out = self.engine.submit_relation(revised)
-        self.assertNotEqual(out["saved"], first["saved"])
-        self.assertEqual(self.sbank.count(), 2)
+        self.assertEqual(out["saved"], first["saved"])
+        self.assertEqual(out["version"], 2)
+        self.assertEqual(self.sbank.count(), 1)
 
     def test_two_claims_under_one_subject_stay_independent(self):
         """Two independent claims do NOT share an entry, and a verification
@@ -467,9 +452,8 @@ class TestClaimAdditive(ClaimCase):
         self.assertIsNone(self.sbank.get(stats_entry.entry_id).claim)
 
 
-class TestClaimRecall(ClaimCase):
-    """Transfer: a submitted claim reaches a future task's recall through the
-    ORDINARY entry path (no special section)."""
+class TestHistoricalClaimRecall(ClaimCase):
+    """Actual pre-versioning JSON retains its historical recall and audit semantics."""
 
     def task(self, task_id="NEW1"):
         return {"task_id": task_id,
@@ -484,6 +468,7 @@ class TestClaimRecall(ClaimCase):
         claim = self.cross_period_claim()
         self.h.induce(relations=[claim],
                       verify=self.verify_payload(claim))
+        as_historical_entry(self.h, self.h.sbank.list()[-1].entry_id)
         recalled = self.h.recall(self.task())
         recs = recalled["recommendations"]
         self.assertTrue(recs)
@@ -502,6 +487,7 @@ class TestClaimRecall(ClaimCase):
         claim = self.cross_period_claim()
         claim["subject"] = "S01"
         self.engine.submit_relation(claim, verify=self.verify_payload(claim))
+        as_historical_entry(self.h, self.h.sbank.list()[-1].entry_id)
         recalled = self.h.recall(self.task())
         self.assertTrue(any(r["strategy_id"] == "S01"
                             and r["knowledge"]["claim"] is not None
@@ -529,6 +515,7 @@ class TestClaimRecall(ClaimCase):
         # It is still offered; the reader sees the refuted verdict. (The
         # first, verified submission is a SEPARATE entry under the additive
         # model, so find THIS entry's row by its number.)
+        as_historical_entry(self.h, entry.entry_id)
         recs = self.h.recall(self.task())["recommendations"]
         offered = [r for r in recs
                    if r["strategy_id"] == "principle:cross_period_state"

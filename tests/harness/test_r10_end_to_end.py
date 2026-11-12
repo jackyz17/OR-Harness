@@ -143,7 +143,7 @@ class TestFullFlow(EndToEndCase):
 
 
 class TestNoAssertionAdmission(EndToEndCase):
-    """B: a minimal strategy with no assertion publishes and is recalled."""
+    """Minimal old-style inputs save candidates with an honest derivation audit."""
 
     def _seed_two_tasks(self):
         h = self.h
@@ -153,7 +153,7 @@ class TestNoAssertionAdmission(EndToEndCase):
             h.record(record)
         return h
 
-    def test_no_assertion_fact_publishes_and_recalls(self):
+    def test_no_assertion_fact_stays_candidate(self):
         h = self._seed_two_tasks()
         executions = [r.execution_id for r in h.bank.all()]
         self.assertGreaterEqual(len(executions), 2)
@@ -167,17 +167,17 @@ class TestNoAssertionAdmission(EndToEndCase):
                          {"execution_id": executions[-1], "role": "evidence"}],
             "conditions": {"predicates": {"family": "planning"}}}])
         relation = out["relations"][0]
-        self.assertTrue(relation["publication"]["published"])
-        self.assertEqual(relation["publication"]["state"], "fact_checked")
+        self.assertFalse(relation["publication"]["published"])
+        self.assertEqual(relation["publication"]["state"], "candidate")
+        self.assertEqual(relation["verification"]["state"], "fact_checked")
         self.assertEqual(relation["publication"]["transferability"],
                          "unproven")
 
         recs = h.selector.recall(
             self.make_profile(problem_id="q", family="planning"), top=5)
-        entry = next(r for r in recs if r.strategy_id == "method:enum")
-        self.assertEqual(entry.evidence, "strategic_entry")
+        self.assertFalse(any(r.strategy_id == "method:enum" for r in recs))
 
-    def test_no_assertion_rule_is_published_with_its_state(self):
+    def test_no_assertion_rule_stays_candidate_with_its_state(self):
         h = self._seed_two_tasks()
         executions = [r.execution_id for r in h.bank.all()]
         out = h.induce(relations=[{
@@ -192,11 +192,12 @@ class TestNoAssertionAdmission(EndToEndCase):
         self.assertIsNotNone(relation.get("saved"))
         # A submitted claim is published; the framework read the FACTS and
         # records that state (``fact_checked``) rather than withholding.
-        self.assertTrue(relation["publication"]["published"])
-        self.assertEqual(relation["publication"]["state"], "fact_checked")
+        self.assertFalse(relation["publication"]["published"])
+        self.assertEqual(relation["publication"]["state"], "candidate")
+        self.assertEqual(relation["verification"]["state"], "fact_checked")
         recs = h.selector.recall(
             self.make_profile(problem_id="q", family="planning"), top=5)
-        self.assertTrue(any(r.strategy_id == "method:rule" for r in recs))
+        self.assertFalse(any(r.strategy_id == "method:rule" for r in recs))
 
 
 if __name__ == "__main__":

@@ -50,13 +50,13 @@ Two memory layers serve different purposes:
 | **Execution Evidence** | Recorded methods, attempt chains, outputs, task checks, failures, and measured costs | Inspect how a previous task was handled and adapt grounded experience |
 | **Strategic Knowledge** | Reusable methods, applicability conditions, explanations, boundaries, and supported effect claims | Guide what to do under specified conditions |
 
-Each strategic entry carries a NUMBER the framework assigns (`1`, `2`, …), which is its identity across recall, adoption and maintenance. Knowledge is ADDITIVE: a new submission creates a new numbered entry; a revision or a contradiction is its own entry, and an existing entry is never rewritten. Publication is the agent's decision, not a framework content verdict — the framework checks only administrative matters (well-formed, cited executions exist, valid number, successful write), and any declared checks are recorded as the agent's own audit trail.
+Each rule has a framework-assigned entry number. New when/do/expect bodies are immutable candidate versions; add evidence, revise or merge an explicitly selected entry. Independent unseen transfer and changed-premise boundaries activate a version, with affected old-success regressions required for revisions. One active version is offered; prior uses retain their frozen version. True unversioned legacy rows keep their historical semantics. Assertion audits do not prove transfer or causal advantage.
 
 An execution record preserves observations and their sources. Its solver result can be valid for the implemented model while the answer remains wrong for the task. Record planned and actually performed methods separately; a plan supplies intent, while execution receipts and inspected artifacts support what happened.
 
 A conditional statistic summarizes retained observations. Strategic knowledge adds an actionable commitment: a method, why it works, where it applies, and which effects the evidence supports. Expected quality or cost may accompany a strategy, but a method does not need a prediction interval to be useful.
 
-Semantic induction is agent-led. The framework organizes execution material and computes declared checks; the agent compares relationships, explains operative steps, checks premises and boundaries, and decides whether to add or produce nothing. Knowledge is additive: a refinement is a new entry, not an in-place edit or merge. A single execution can reveal a conditional method; broader empirical advantage claims require comparable independent evidence. See [induction.md](induction.md) for support scopes and submission rules.
+Semantic induction is agent-led: compare real methods and necessary premises, write an executable short rule, and explicitly select an existing ID for the same mechanism. Framework evidence resolution, budgeting and versioned checks support that judgement. Same-base retries are controls; similarity and structural buckets discover candidates. See [induction.md](induction.md).
 
 ### Retrieval and cold start
 

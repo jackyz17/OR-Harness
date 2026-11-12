@@ -198,7 +198,7 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         self.assertEqual(len(h.actions.query()), before_actions + 1)
         self.assertIn("index_sync", result)
 
-    def test_the_relation_write_is_additive_each_time(self):
+    def test_identical_relation_submission_is_idempotent(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         ids = self._seed(h)
@@ -210,15 +210,13 @@ class TestRelationWriteBookkeeping(HarnessTestCase):
         }
         first = h.induce(relations=[relation])
         second = h.induce(relations=[relation])
-        # Knowledge is ADDITIVE: each submission creates its OWN numbered
-        # entry (a re-submission is never collapsed into the first).
+        # Repeated identical content/evidence resolves to the same version.
         self.assertTrue(first["action"]["knowledge_delta"]["entries_created"])
-        self.assertTrue(second["action"]["knowledge_delta"]["entries_created"])
-        self.assertNotEqual(first["relations"][0]["saved"],
+        self.assertEqual(second["action"]["knowledge_delta"]["entries_created"], [])
+        self.assertEqual(first["relations"][0]["saved"],
                             second["relations"][0]["saved"])
-        self.assertEqual(second["action"]["business_result"],
-                         "relation_created")
-        self.assertEqual(h.sbank.count(), 2)
+        self.assertTrue(second["relations"][0]["idempotent"])
+        self.assertEqual(h.sbank.count(), 1)
 
     def test_a_dry_run_relation_write_persists_nothing(self):
         h = ORHarness(home=self.home)
@@ -325,11 +323,12 @@ class TestConditionalFactPublication(HarnessTestCase):
                          "status": "optimal"}]}})
         rel = result["relations"][0]
         pub = rel["publication"]
-        self.assertTrue(pub["published"])
-        self.assertEqual(pub["support_scope"], "single_observation")
+        self.assertFalse(pub["published"])
+        self.assertEqual(pub["support_scope"], "derivation_only")
         self.assertEqual(pub["transferability"], "unproven")
         from or_harness.strategy.selector import is_publishable
-        self.assertTrue(is_publishable(h.sbank.get(rel["saved"])))
+        self.assertFalse(is_publishable(h.sbank.get(rel["saved"])))
+        self.assertEqual(h.sbank.get(rel["saved"]).verification_state,"verified")
 
     def test_transferable_claim_publishes_with_scope_stated(self):
         """A verified transfer claim publishes; its task span is a reported
@@ -350,11 +349,12 @@ class TestConditionalFactPublication(HarnessTestCase):
                 {"kind": "status", "roles": ["evidence"],
                  "status": "optimal"}]}})
         pub = result["relations"][0]["publication"]
-        self.assertTrue(pub["published"])
+        self.assertFalse(pub["published"])
         self.assertEqual(pub["distinct_tasks"], 1)
         # Nothing in the publication claims a task-count rule.
         self.assertNotIn("required_tasks", pub)
-        self.assertNotIn("independent tasks", " ".join(pub["reasons"]))
+        self.assertFalse(pub["checks"]["transfer"])
+        self.assertFalse(pub["checks"]["boundary"])
 
 
 if __name__ == "__main__":

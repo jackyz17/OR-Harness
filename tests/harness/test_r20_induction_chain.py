@@ -143,12 +143,12 @@ class TestUnifiedKnowledgeBodies(KnowledgeCase):
         by_id = {k["entry_id"]: k for k in out["existing_knowledge"]}
         self.assertIn(eid, by_id)
         self.assertIn("semantic", by_id[eid]["related_by"])
-        # Full body present (not just a projection).
+        # The default short body retains the rule; complete audit is by ID.
         body = by_id[eid]["body"]
-        self.assertEqual(body["claim"]["text"],
+        self.assertEqual(body["expect"],
                          "derive a bound from constraints then monotone "
                          "enumerate the remaining dimension")
-        self.assertIsNotNone(body["claim"]["method"])
+        self.assertIsNotNone(body["do"])
 
     def test_same_id_from_both_channels_has_one_body(self):
         """An entry matched structurally AND semantically keeps ONE body with
@@ -386,8 +386,10 @@ class TestQueryText(KnowledgeCase):
         out = self.h.induction_material(task_id="t1", related_top_k=5)
         basis = out["related_history"]["query_basis"]
         self.assertLessEqual(len(basis["text"]), 2400)
-        # The BODY (material) keeps the whole step.
-        step = out["material"][0]["method"]["actual"]["steps"][0]
+        # An oversized method is referenced WHOLE, never prefix-clipped.
+        actual = out["material"][0]["method"]["actual"]
+        self.assertEqual(actual["state"],"whole_value_by_reference")
+        step = self.h.inspect(bank="experience",execution_id=rec.execution_id)["records"][0]["method_actual"]["steps"][0]
         self.assertEqual(len(step), 3000)
 
 

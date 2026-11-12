@@ -127,22 +127,20 @@ class TestEndToEndCLI(HarnessTestCase):
         out = json.loads(proc.stdout)
         outcome = out["result"]["relations"][0]
         self.assertTrue(outcome.get("saved"), msg=proc.stdout)
-        # A submitted claim IS published (the agent decides publication); the
-        # framework records the verification state it could compute.
-        self.assertTrue(outcome["publication"]["published"])
-        self.assertEqual(outcome["publication"]["state"], "fact_checked")
+        # Saving records a candidate and its derivation audit.
+        self.assertFalse(outcome["publication"]["published"])
+        self.assertEqual(outcome["publication"]["state"], "candidate")
         entry_id = outcome["saved"]
 
-        # 7. recall now shows the submitted claim as knowledge.
+        # 7. ordinary recall still uses execution facts while the rule is pending.
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "3")
         out = json.loads(proc.stdout)
         s01 = next(r for r in out["result"]["recommendations"]
                    if r["strategy_id"] == "S01")
-        self.assertEqual(s01["evidence"], "strategic_entry")
+        self.assertEqual(s01["evidence"], "conditional_stats")
 
-        # 7b. a second submission WITH a check is ADDITIVE: it creates a NEW
-        #     entry whose state is ``verified``.
+        # 7b. adding an assertion audit retains the same rule identity.
         verify = json.dumps({
             "claim": "S01 reaches the reference objective in this cell",
             "check": {"assertions": [
@@ -153,23 +151,23 @@ class TestEndToEndCLI(HarnessTestCase):
                        json.dumps(relation), "--verify", verify)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         vout = json.loads(proc.stdout)["result"]["relations"][0]
-        self.assertTrue(vout["publication"]["published"])
-        self.assertNotEqual(vout["saved"], entry_id,
-                            "a second submission creates a new entry")
+        self.assertFalse(vout["publication"]["published"])
+        self.assertEqual(vout["saved"], entry_id,
+                         "the body is unchanged; only the assertion audit was added")
         proc = run_orx(self.home, "recall", "--task", str(self.task_path),
                        "--top", "5")
         out = json.loads(proc.stdout)
         s01 = next(r for r in out["result"]["recommendations"]
                    if r["strategy_id"] == "S01")
-        self.assertEqual(s01["evidence"], "strategic_entry")
+        self.assertEqual(s01["evidence"], "conditional_stats")
 
         # 8. inspect both layers
         proc = run_orx(self.home, "inspect", "--bank", "experience")
         self.assertEqual(json.loads(proc.stdout)["result"]["count"], 2)
         proc = run_orx(self.home, "inspect", "--bank", "strategic")
         entries = json.loads(proc.stdout)["result"]["entries"]
-        # Additive knowledge: the two submissions are TWO numbered entries.
-        self.assertEqual(len(entries), 2)
+        # The unchanged body has one identity and two audit declarations.
+        self.assertEqual(len(entries), 1)
         verified = next(e for e in entries
                         if e["verification"]["state"] == "verified")
         self.assertEqual(verified["status"], "candidate")
@@ -310,7 +308,7 @@ class TestEndToEndCLI(HarnessTestCase):
         outcome = json.loads(proc.stdout)["result"]["relations"][0]
         report = self.harness_entry(outcome["saved"])
         self.assertEqual(report["state"], "verified", report.get("conclusion"))
-        self.assertTrue(outcome["publication"]["published"])
+        self.assertFalse(outcome["publication"]["published"])
 
     def harness_entry(self, entry_id):
         proc = run_orx(self.home, "inspect", "--bank", "strategic")
@@ -378,10 +376,7 @@ class TestEndToEndCLI(HarnessTestCase):
                         ["saved"])
 
     def test_relation_claim_end_to_end(self):
-        """`induce --relation` across processes: a structured claim that does
-        not belong to a catalog strategy is saved, verified, published and
-        recalled — then refuted by a counterexample."""
-        # Two recorded facts on two tasks, with a quality difference.
+        """Normal CLI records a candidate and its declared comparison audit; adding a counterexample updates that audit on the same body identity."""       # Two recorded facts on two tasks, with a quality difference.
         def solve(objective):
             return textwrap.dedent(f"""
                 import json
@@ -426,22 +421,20 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = json.loads(proc.stdout)
         self.assertEqual(out["result"]["saved"], 1)
-        # Two distinct tasks: the claim is published as knowledge.
-        self.assertEqual(out["result"]["published"], 1)
-        self.assertIn("published", out["summary"])
+        # Distinct task names alone do not activate a transfer rule.
+        self.assertEqual(out["result"]["published"], 0)
+        self.assertIn("candidate", out["summary"])
 
-        # Recall surfaces it as remembered knowledge with its verification
-        # state and stated claim.
+        # An assertion audit is readable by ID, while untested transfer
+        # stays outside ordinary knowledge recall.
+        candidate_id = out['result']['relations'][0]['saved']
+        proc = run_orx(self.home, "inspect", "--bank", "strategic", "--entry", candidate_id)
+        entry = json.loads(proc.stdout)['result']['entries'][0]
+        self.assertEqual(entry['verification']['state'], 'verified')
+        self.assertIn('跨期',entry['claim']['text'])
         proc = run_orx(self.home, "recall", "--task", str(self.task_path))
-        recs = json.loads(proc.stdout)["result"]["recommendations"]
-        entry_recs = [r for r in recs
-                      if r.get("knowledge", {}).get("claim")]
-        self.assertTrue(entry_recs)
-        item = next(r for r in entry_recs
-                    if r["knowledge"]["verification_state"] == "verified")
-        self.assertEqual(item["strategy_id"],
-                         "principle:repair_keeps_period_state")
-        self.assertIn("跨期", item["knowledge"]["claim"]["text"])
+        recs = json.loads(proc.stdout)['result']['recommendations']
+        self.assertFalse(any(r['evidence']=='strategic_entry' for r in recs))
 
         # A counterexample (worse 'after') refutes the group comparison.
         worse_path = self.work / "worse.py"
@@ -459,15 +452,13 @@ class TestEndToEndCLI(HarnessTestCase):
                        "--verify", json.dumps(verify))
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = json.loads(proc.stdout)
-        # The refuted claim is a SEPARATE, newly-numbered entry (knowledge is
-        # additive): it IS published, and its verdict says ``refuted``.
+        # The same body retains the new refuted assertion audit and stays candidate.
         self.assertEqual(out["result"]["saved"], 1)
-        self.assertEqual(out["result"]["published"], 1)
+        self.assertEqual(out["result"]["published"], 0)
         self.assertIn("refuted", out["summary"])
 
     def test_relation_single_task_publishes_with_scope_stated(self):
-        """A single-task claim is published; its one-task scope is reported
-        as a fact, and the framework records the agent's verification."""
+        """A single-task relation saves a candidate with its scope stated."""
         def solve(objective):
             return textwrap.dedent(f"""
                 import json
@@ -507,7 +498,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
         out = json.loads(proc.stdout)
         self.assertEqual(out["result"]["saved"], 1)
-        self.assertEqual(out["result"]["published"], 1)
+        self.assertEqual(out["result"]["published"], 0)
 
     def test_recording_writes_evidence_and_the_write_replays_checks(self):
         """Recording a matching execution writes a FROZEN check onto the fact
@@ -559,9 +550,13 @@ class TestEndToEndCLI(HarnessTestCase):
         # forward counters (the lifecycle replay ran).
         proc = run_orx(self.home, "induce", "--relation",
                        json.dumps(relation))
-        revisions = json.loads(proc.stdout)["result"]["revisions"]
-        self.assertTrue(revisions)
-        self.assertEqual(revisions[0]["forward"]["n_predictions"], 1)
+        result = json.loads(proc.stdout)["result"]
+        self.assertTrue(result['relations'][0]['idempotent'])
+        self.assertEqual(result['relations'][0]['version'],1)
+        # Versioned uses are settled by the normal episode close, without
+        # replaying legacy maturity counters or promoting on a quality hit.
+        # The prediction checks above remain frozen at the adopted version.
+        self.assertEqual(checks[0]['entry_id'],entry_id)
 
 
 if __name__ == "__main__":

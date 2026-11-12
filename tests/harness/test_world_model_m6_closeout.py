@@ -352,11 +352,11 @@ class TestFeedbackStagesIndependent(Base):
         self.assertIn(prediction.prediction_id, feedback)
         self.assertIsNotNone(verdict, "the opportunity must be resolved")
         self.assertEqual(verdict["status"], "fulfilled")
-        # The entry formed is offered knowledge; its own verification state
-        # is reported (a single task is not a transfer proof, but the agent
-        # decided to submit it).
+        # H+ stage-1 records the new candidate, separately from its later
+        # transfer/boundary publication and any future capability effect.
         created = h.sbank.get(result["relations"][0]["saved"])
-        self.assertTrue(is_publishable(created))
+        self.assertFalse(is_publishable(created))
+        self.assertEqual(created.rule["state"], "candidate")
         self.assertIn(created.verification_state,
                       ("fact_checked", "verified", "unverified",
                        "insufficient_evidence"))

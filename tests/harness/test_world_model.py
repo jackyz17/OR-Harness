@@ -464,7 +464,9 @@ class TestVerifiedKnowledgeView(HarnessTestCase):
         h.induce(relations=[base])
         entry = h.sbank.get(entry_id)
         self.assertFalse(entry.verification.get("stale_after_revision"))
-        self.assertTrue(is_publishable(entry))
+        self.assertEqual(entry.verification_state, "verified")
+        self.assertFalse(is_publishable(entry))
+        self.assertEqual(h.sbank.count(), 1)
 
 
 class TestHarnessIntegration(HarnessTestCase):

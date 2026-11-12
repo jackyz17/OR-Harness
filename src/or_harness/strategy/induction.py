@@ -1,51 +1,11 @@
-"""Induction: submit agent-formed strategies as structured knowledge.
+"""Agent-led induction backed by versioned, checked short rules.
 
-The core question of induction is "what does the evidence entitle me to
-claim?" — a strategy's applicability is read off the very executions that
-support it: the family they came from, and the structural cell those
-executions occupy. Nothing is guessed from a mean: the agent READS the
-material (``ORHarness.induction_material`` — the methods actually performed,
-the outcomes, the failures, the before/after changes, the same-task attempt
-chains, the existing strategies) and submits the strategy in its own words.
-
-ONE entry is ONE strategy: :meth:`InductionEngine.submit_relation` ALWAYS
-creates a NEW entry (knowledge is ADDITIVE — it never revises or merges an
-existing one; a revision is a separate entry), and two independent strategies
-never share an entry. There is NO statistical path that turns a cell's means
-into a technique — the framework will not derive a method from a strategy
-name and a number. This is the only place knowledge changes.
-
-A strategy is a reusable modelling, decomposition, search, checking or
-repair technique — not necessarily the whole plan of one execution and not
-necessarily one solver. It carries: the structure and conditions it applies
-to; the concrete method; a grounded explanation and expected effect; its
-cost, risks and boundary; and its supporting evidence, counterexamples and
-anything still unverified.
-
-Publication is a SEPARATE gate from saving, and it is a VERIFICATION gate,
-not a task-count gate: a strategy publishes when the claim's declared checks
-hold over the evidence it cites. The number of independent tasks is reported
-as a FACT (``distinct_tasks``) so a reader can weigh it, but two tasks are
-not a proof and one task can reveal a conditional method with a derivation
-behind it — the framework does not decide that question by counting. A
-``conditional_fact`` is stamped ``single_observation`` /
-``transferability: unproven`` when its evidence is one task; a transfer claim
-carries its own scope and ``not_covered`` wording. The distinct-task count is
-computed from the evidence the strategy ACTUALLY cites, never padded.
-
-The four observation angles — method contrast, recovery after an
-intervention, structural reproduction, advantage reversal — are THINKING AIDS
-in the guidance, not detectors the framework runs (the old detectors are
-gone). The only LLM injection point is phrasing: the harness may attach
-free-text applicability notes, which are kept for the reader and never
-scored.
-
-Verification is the CHECK block inside a submitted strategy (the embedded
-``check`` — the same shape a separate ``--verify`` payload carries). The
-framework evaluates the declared, computable checks; the agent is
-responsible for whether the method explanation and the evidence agree. When
-BOTH an embedded ``check`` and a separate ``--verify`` are supplied they are
-a CONFLICT, reported, never silently merged.
+The public submit path stores when/do/expect bodies, explicit evidence IDs
+and independent check/use records through rule_versions. Exact repeats are
+idempotent; authors select targets for evidence, revision and merge. New
+versions become available after sourced transfer, boundary and regression
+checks. Family and similarity select reading material, never equivalence.
+The private legacy writer is retained for historical-format diagnostics.
 """
 
 from __future__ import annotations
@@ -212,9 +172,16 @@ def _placeholder_claim_reason(claim: Dict[str, Any]) -> Optional[str]:
 
 
 class InductionEngine:
-    def __init__(self, stats: ConditionalStats, sbank: StrategicBank):
+    def __init__(self, stats: ConditionalStats, sbank: StrategicBank, harness=None):
         self.stats = stats
         self.sbank = sbank
+        if harness is None:
+            from types import SimpleNamespace
+            from or_harness.world_model.actions import ActionLog
+            from or_harness.world_model.conditions import read_snapshot
+            harness = SimpleNamespace(bank=stats.bank,sbank=sbank,store=sbank.store,
+                actions=ActionLog(sbank.store),get_snapshot=lambda sid:read_snapshot(sbank.store,sid))
+        self.harness = harness
 
     # -- knowledge claims (ONE claim per entry) ---------------------------------
 
@@ -223,40 +190,26 @@ class InductionEngine:
                         verify: Optional[Dict[str, Any]] = None,
                         notes: Optional[List[str]] = None
                         ) -> Dict[str, Any]:
-        """Submit ONE knowledge CLAIM as a NEW standalone entry.
+        """Submit a short rule or adapt the historical --relation grammar.
 
-        The unit of knowledge is the ENTRY, and one entry is one claim: a
-        structured assertion (condition -> how -> consequence -> boundary)
-        grounded in explicitly referenced evidence. Knowledge is ADDITIVE —
-        this path only ever CREATES a new numbered entry. It never rewrites
-        or merges an existing entry's core content: when new evidence
-        revises or contradicts an existing claim, the revision is a SEPARATE
-        entry, and the earlier one keeps its own text, conditions, evidence
-        and verification (its use counts, feedback and lifecycle continue to
-        update independently).
-
-        ``raw`` carries ``claim`` text plus ``evidence`` (execution ids and
-        the role each plays). The framework DERIVES everything the evidence
-        implies (tasks, family, structural cell, strategy ids) — the caller
-        submits only ids and roles.
-
-        What the framework checks at submission is ADMINISTRATIVE ONLY:
-
-        * the payload is well-formed and storable (``validate_claim``);
-        * every cited execution really exists and is real evidence;
-        * the assigned number is valid;
-        * the write (and later the index sync) succeeds.
-
-        There is NO publication gate on the CONTENT. A submitted claim is
-        PUBLISHED as knowledge within its declared scope — the framework does
-        not certify the conclusion. Any computable check (an embedded
-        ``check`` block or a standalone ``verify`` payload) is EVALUATED and
-        RECORDED as the agent's own audit trail, reported under
-        ``verification`` — never required to publish. ``verification`` and
-        the preserved ``not_covered`` wording state exactly what was checked;
-        a claim with no check is published with ``verification.state ==
-        "unverified"``, honestly labelled.
+        Saving creates a candidate. Body changes make a new version of an
+        explicitly selected entry; checks and evidence append separately.
+        Invalid payloads retain the existing refused-result API shape.
         """
+        from or_harness.strategy.rule_versions import submit_rule
+        if not any(key in raw for key in ('when','do','expect')):
+            reason = _placeholder_claim_reason({'text':raw.get('claim') or raw.get('text'),
+                                                'method':raw.get('method')})
+            if reason:
+                return {'saved':None,'skipped':reason,'shape_guard':'placeholder_or_empty_method'}
+        try:
+            return submit_rule(self, raw, dry_run=dry_run, force=force,
+                               verify=verify, notes=notes)
+        except ValueError as exc:
+            return {"saved": None, "skipped": str(exc)}
+
+    def _submit_legacy_relation(self, raw, *, dry_run=False, force=False, verify=None, notes=None):
+        """Historical audit adapter; new submissions use versioned rules."""
         # The stored claim is built on the schema's validate_claim so the
         # write path has ONE shape authority; ``claim`` text keeps the
         # caller's own key for backward compatibility.
@@ -595,6 +548,8 @@ class InductionEngine:
         report: List[Dict[str, Any]] = []
         for entry in self.sbank.list(strategy_id=strategy_id,
                                      include_dormant=True):
+            if entry.rule:
+                continue  # v2 checks/uses are already versioned, never replayed as legacy maturity
             checks = checks_by_entry.get(entry.entry_id) or []
             adoptions = adoptions_by_entry.get(entry.entry_id) or []
             has_attribution = bool(entry.effect_attribution)

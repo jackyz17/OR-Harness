@@ -120,7 +120,7 @@ class ExperienceBank:
                         payload.group_l1,
                         payload.source,
                         payload.created_at,
-                        self.store.dumps(payload.to_dict()),
+                        self.store.dumps(payload.to_storage_dict()),
                     ),
                 )
             except Exception as exc:
@@ -273,7 +273,7 @@ class ExperienceBank:
                 rec.execution_features["cost_feedback"] = feedback
         with self.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
-                         (self.store.dumps(rec.to_dict()), execution_id))
+                         (self.store.dumps(rec.to_storage_dict()), execution_id))
         return rec
 
     def annotate_features(self, execution_id: str,
@@ -310,7 +310,7 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute(
                 f"UPDATE {table} SET payload=? WHERE execution_id=?",
-                (self.store.dumps(rec.to_dict()), execution_id))
+                (self.store.dumps(rec.to_storage_dict()), execution_id))
         return rec
 
     def set_cost_feedback(self, execution_id: str,
@@ -332,7 +332,7 @@ class ExperienceBank:
             rec.execution_features["cost_feedback"] = dict(feedback)
         with self.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
-                         (self.store.dumps(rec.to_dict()), execution_id))
+                         (self.store.dumps(rec.to_storage_dict()), execution_id))
         return rec
 
     def set_task_check(self, execution_id: str,
@@ -377,7 +377,7 @@ class ExperienceBank:
         with self.store.transaction() as conn:
             conn.execute(
                 f"UPDATE {table} SET payload=? WHERE execution_id=?",
-                (self.store.dumps(rec.to_dict()), execution_id))
+                (self.store.dumps(rec.to_storage_dict()), execution_id))
         return rec
 
     def exclude(self, execution_id: str, reason: str, *,
@@ -418,7 +418,7 @@ class ExperienceBank:
             conn.execute(
                 "UPDATE executions SET payload=?, source=? "
                 "WHERE execution_id=?",
-                (self.store.dumps(rec.to_dict()), rec.source, execution_id))
+                (self.store.dumps(rec.to_storage_dict()), rec.source, execution_id))
         return rec
 
     def restore(self, execution_id: str, reason: str) -> ExecutionRecord:
@@ -444,7 +444,7 @@ class ExperienceBank:
             conn.execute(
                 "UPDATE executions SET payload=?, source=? "
                 "WHERE execution_id=?",
-                (self.store.dumps(rec.to_dict()), rec.source, execution_id))
+                (self.store.dumps(rec.to_storage_dict()), rec.source, execution_id))
         return rec
 
     # -- reads --------------------------------------------------------------------
@@ -556,7 +556,7 @@ class ExperienceBank:
                 "INSERT OR REPLACE INTO pending_executions "
                 "(execution_id, task_id, created_at, payload) VALUES (?,?,?,?)",
                 (record.execution_id, record.task_id, record.created_at,
-                 self.store.dumps(record.to_dict())))
+                 self.store.dumps(record.to_storage_dict())))
         return record.execution_id
 
     def pending(self, *, task_id: Optional[str] = None) -> List[ExecutionRecord]:

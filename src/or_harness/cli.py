@@ -1104,9 +1104,7 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
     if saved:
         parts.append(f"Saved {saved} relation claim(s)")
     if published:
-        parts.append(f"{published} published as knowledge "
-                     "(the agent decides publication; the framework records "
-                     "the verification state)")
+        parts.append(f"{published} active rule version(s)")
     for item in result.get("relations") or []:
         entry_id = item.get("created_entry") or item.get("saved")
         if not entry_id:
@@ -1117,7 +1115,8 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
         claim = item.get("claim") or {}
         text = str(claim.get("text") or "")[:80]
         state = publication.get("state", "unverified")
-        parts.append(f"Entry {entry_id}: {state} claim published — {text}")
+        verdict = (item.get('verification') or {}).get('state','unverified')
+        parts.append(f"Entry {entry_id}@{item.get('version', '?')}: {state}; assertion {verdict} — {text}")
     if not parts:
         parts.append("No claim was submitted.")
     return " ".join(parts)
@@ -1141,8 +1140,17 @@ def cmd_induction_material(args) -> int:
             task_id=getattr(args, "task", None),
             limit=getattr(args, "limit", None),
             cursor=getattr(args, "cursor", None),
+            view=getattr(args, "view", "compact"), purpose=getattr(args, "purpose", "modelling"),
             related_top_k=getattr(args, "related_top_k", 5)
             if getattr(args, "related_top_k", 5) is not None else 5)
+        if result.get("version") == "induction-material/2":
+            if not result.get("material_assembled", True):
+                return _emit(result, "Induction " + result["induction_gate"]["state"] + ": " + result["reason"])
+            from or_harness.world_model.induction_material import seal_budget
+            summary = (f"Read {result['count']} task attempt(s) with cross-task controls and short rules. "
+                       "Submit when/do/expect plus evidence IDs with `induce --relation`; select the existing entry for revisions.")
+            seal_budget(result, summary=summary)
+            return _emit(result, summary)
         if not result["count"]:
             return _emit(
                 result,
@@ -1191,7 +1199,11 @@ def cmd_inspect(args) -> int:
                            strategy_id=args.strategy, status=args.status,
                            episode_id=getattr(args, "episode", None),
                            evaluation_id=getattr(args, "evaluation", None),
-                           prediction_id=getattr(args, "prediction", None))
+                           prediction_id=getattr(args, "prediction", None),
+                           entry_id=getattr(args, "entry", None), execution_id=getattr(args, "execution", None),
+                           rule_version=getattr(args, "rule_version", None),value_ref=getattr(args,'value',None))
+        if args.bank=='values':
+            return _emit(result,'Read immutable value '+str(result['value_ref']))
         if args.bank == "retention":
             online = result["online"]
             archive = result["archive"]
@@ -1518,7 +1530,9 @@ def cmd_close_episode(args) -> int:
             args.task, args.episode, terminal_state=args.terminal,
             finish_action_id=args.finish_action,
             min_calibration_samples=args.min_samples
-            if args.min_samples is not None else None)
+            if args.min_samples is not None else None,
+            induction_decision=({"state": args.induction_decision, "reason": args.induction_reason or "reported close-out judgement"}
+                                if getattr(args, "induction_decision", None) else None))
         closeout = result["closeout"]
         if closeout is None:
             # The close-out was REFUSED (there is still a running action).
@@ -2868,7 +2882,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "call creates/refreshes (free text, kept for the "
                         "reader, never scored; repeatable)")
     p.add_argument("--verify", default=None, metavar="JSON",
-                   help="optional admission check for the submitted "
+                   help="optional assertion audit for the submitted "
                         "strategy: {\"claim\": TEXT, \"check\": "
                         "{\"assertions\": [...]}, \"executions\": [...]}. The "
                         "framework evaluates the declared checks on the "
@@ -2878,27 +2892,13 @@ def build_parser() -> argparse.ArgumentParser:
                         "check is reported as overridden, never silently "
                         "merged")
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
-                   help="submit a STRUCTURED strategy (repeatable). "
-                        "{\"claim\": TEXT, \"evidence\": [{\"execution_id\": "
-                        "ID, \"role\": ROLE}, ...], \"subject\": NAME?, "
-                        "\"conditions\": {\"predicates\": {...}, \"note\": "
-                        "TEXT}?, \"check\": {\"assertions\": [...]}?, "
-                        "\"kind\": NAME?}. The role names the part each "
-                        "referenced execution plays in THIS strategy "
-                        "(dropped/preserved, before/after, strategy_a, ...); "
-                        "tasks/family/cell/strategy ids are DERIVED from the "
-                        "recorded facts — different names and cells may be "
-                        "cited together. An optional free-form 'subject' "
-                        "(e.g. 'principle:cross_period_state') carries a "
-                        "strategy that belongs to no single strategy id. "
-                        "Submission ALWAYS creates a NEW numbered entry — it "
-                        "never revises or merges an existing one; to replace "
-                        "an entry, `orx retire` it and resubmit. A claim is "
-                        "published on its OWN verification (the declared "
-                        "checks holding), NOT on a task count: a "
-                        "single-observation conditional_fact may publish "
-                        "(§2), and only an ADVANTAGE claim needs comparable "
-                        "measurements.")
+                   help="submit when/do/expect plus evidence execution IDs (repeatable). "
+                        "Optional entry_id and operation=add_evidence|revise|merge select "
+                        "an existing rule; merge_entry_ids names explicit sources. "
+                        "Exact submissions are idempotent. Body changes make a candidate "
+                        "version; independent transfer, boundary and affected regression "
+                        "checks activate it. Historical claim/evidence/check input remains "
+                        "accepted; declared assertions are audit records.")
     p.add_argument("--attribute-effect", action="append", default=None,
                    metavar="JSON",
                    help="record the AGENT's own use-effect attribution on an "
@@ -2922,10 +2922,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
+    p.add_argument("--entry", default=None, help="inspect one rule and its version/check/use history")
+    p.add_argument("--execution", default=None, help="inspect one complete execution by ID")
+    p.add_argument("--rule-version", default=None, help="with --entry: a version number or candidate")
+    p.add_argument('--value',default=None,help='with --bank values: read one immutable body/check/fact reference')
     p.add_argument("--bank", default="experience",
                    choices=["experience", "strategic", "archive",
                             "actions", "snapshots", "predictions", "texts",
-                            "evaluations", "retention", "capability"])
+                            "evaluations", "retention", "capability", "values"])
     p.add_argument("--task", default=None)
     p.add_argument("--strategy", default=None)
     p.add_argument("--status", default=None)
@@ -3027,6 +3031,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--finish-action", default=None, metavar="ACTION_ID",
                    help="the finish_task action that ended the episode, "
                         "when one was recorded")
+    p.add_argument("--induction-decision", choices=["allow", "skip", "pending"], default=None,
+                   help="explicit H+ close-out start judgement; no new formula or threshold")
+    p.add_argument("--induction-reason", default=None)
     p.add_argument("--min-samples", type=int, default=None,
                    help="minimum resolved samples before a calibration "
                         "group reports a figure (below it: "
@@ -3288,6 +3295,8 @@ def build_parser() -> argparse.ArgumentParser:
              "included; a missing field is marked, never dropped. Read it, "
              "then submit the strategy you form with `orx induce --relation`. "
              "No model call, no writes")
+    p.add_argument("--view", choices=["compact", "detail"], default="compact")
+    p.add_argument("--purpose", choices=["modelling", "implementation"], default="modelling")
     p.add_argument("--strategy", default=None,
                    help="restrict the batch to one strategy id")
     p.add_argument("--task", default=None,

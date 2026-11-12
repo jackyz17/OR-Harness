@@ -157,7 +157,7 @@ class TestFactCheckedAdmission(HarnessTestCase):
         self.assertIn("fact_check", report["scope"])
         self.assertIn("does not establish", report["not_covered"])
 
-    def test_conditional_fact_without_assertion_publishes_and_recalls(self):
+    def test_conditional_fact_without_assertion_is_saved_as_candidate(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         h.bank.append(_record("ex_0", task_id="t1"))
@@ -169,18 +169,17 @@ class TestFactCheckedAdmission(HarnessTestCase):
             "evidence": [{"execution_id": "ex_0", "role": "evidence"},
                          {"execution_id": "ex_1", "role": "evidence"}]}])
         pub = out["relations"][0]["publication"]
-        self.assertTrue(pub["published"])
-        self.assertEqual(pub["state"], FACT_CHECKED)
+        self.assertFalse(pub["published"])
+        self.assertEqual(pub["state"], "candidate")
+        self.assertEqual(out["relations"][0]["verification"]["state"], FACT_CHECKED)
         self.assertEqual(pub["transferability"], "unproven")
         recs = h.selector.recall(
             ProblemProfile(problem_id="q", family="planning",
                            resource_coupling=0.9, temporal_coupling=0.1,
                            route_complexity=0.85), top=5)
-        entry = next(r for r in recs if r.strategy_id == "method:enum")
-        self.assertEqual(entry.evidence, "strategic_entry")
-        self.assertEqual(entry.knowledge["verification_state"], FACT_CHECKED)
+        self.assertFalse(any(r.strategy_id == "method:enum" for r in recs))
 
-    def test_transfer_claim_from_facts_alone_is_published_with_state(self):
+    def test_transfer_claim_from_facts_alone_remains_candidate(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         h.bank.append(_record("ex_0", task_id="t1"))
@@ -196,10 +195,11 @@ class TestFactCheckedAdmission(HarnessTestCase):
         pub = relation["publication"]
         # A submitted claim is published; the framework read the facts and
         # records that state rather than gating on it.
-        self.assertTrue(pub["published"])
-        self.assertEqual(pub["state"], FACT_CHECKED)
+        self.assertFalse(pub["published"])
+        self.assertEqual(pub["state"], "candidate")
+        self.assertEqual(out["relations"][0]["verification"]["state"], FACT_CHECKED)
 
-    def test_declared_assertion_still_publishes_a_transfer_claim(self):
+    def test_declared_assertion_does_not_replace_independent_transfer(self):
         h = ORHarness(home=self.home)
         self.addCleanup(h.close)
         h.bank.append(_record("ex_0", task_id="t1"))
@@ -214,8 +214,9 @@ class TestFactCheckedAdmission(HarnessTestCase):
                 {"kind": "status", "roles": ["evidence"],
                  "status": "optimal"}]}}])
         pub = out["relations"][0]["publication"]
-        self.assertTrue(pub["published"])
-        self.assertEqual(pub["state"], VERIFIED)
+        self.assertFalse(pub["published"])
+        self.assertEqual(pub["state"], "candidate")
+        self.assertEqual(out["relations"][0]["verification"]["state"], VERIFIED)
 
 
 class TestPaginationContiguity(HarnessTestCase):

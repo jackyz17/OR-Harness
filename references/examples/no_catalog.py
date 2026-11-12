@@ -183,9 +183,8 @@ def main() -> int:
         # ------------------------------------------------------------------
         step(8, "the content that travels is the ENTRY's own, never a menu's")
         # ------------------------------------------------------------------
-        # A transferable strategy needs the SAME mechanism on >=2 INDEPENDENT
-        # tasks: repeating one task is repetition, not reproduction. So the
-        # agent runs the method once more on a second task of the same cell.
+        # A second real execution supplies another fact. This is still the
+        # same original text under a new ID, not an independent holdout.
         second_task = dict(TASK, task_id="demo_empty_2")
         second = h.execute(second_task, METHOD, str(solve_path), str(work),
                            solver="highs", episode_id="ep2")
@@ -213,40 +212,21 @@ def main() -> int:
             assert entry.strategy_type is None and entry.actions == []
         print("-> the framework recorded that it does NOT know the method's "
               "type/actions; it did not copy them from anywhere")
-        # Publishing needs a check the framework computes from real
-        # executions — a strategy about future tasks needs independent
-        # evidence, which is what the second task provided.
-        verify = {
-            "claim": f"{METHOD} reaches the reference objective in this cell",
-            "check": {"assertions": [
-                {"kind": "status", "roles": ["evidence"],
-                 "status": "optimal"}]},
-        }
-        verified = h.induce(relations=[strategy], verify=verify)
-        vout = verified["relations"][0]
-        print(f"admission verdict: "
-              f"{(h.sbank.get(vout['saved']).verification or {}).get('state')}")
-        assert (h.sbank.get(vout["saved"]).verification
-                or {}).get("state") == "verified"
-        # A harness that DOES know can say so, and that is what travels.
-        entry = h.sbank.get(vout["saved"])
-        entry.strategy_type = "decomposition"
-        entry.actions = ["solve the LP relaxation",
-                         "round and repair deterministically"]
-        h.sbank.update(entry)
-        recs = h.recall(TASK)["recommendations"]
-        # Knowledge is ADDITIVE, so both submissions are separate entries;
-        # pick the one the harness declared content on.
-        rec = next(r for r in recs
-                   if r["knowledge"]["entry_id"] == vout["saved"])
-        knowledge = rec["knowledge"]
-        print(f"evidence kind now: {rec['evidence']}")
-        print(f"after the harness declares it: "
-              f"{knowledge['strategy_type']} / {knowledge['actions']}")
-        assert rec["evidence"] == "strategic_entry"
-        assert knowledge["strategy_type"] == "decomposition"
-        print("-> the entry's content is the entry's; a directory contributes "
-              "nothing to it")
+        # A declared assertion audits these displayed facts. Neither a
+        # second task ID with identical text nor its optimal status is a
+        # held-out application of a frozen reusable mechanism.
+        verify = {"claim": strategy['claim'], "check": {"assertions": [
+            {"kind":"status","roles":["evidence"],"status":"optimal"}]}}
+        checked = h.induce(relations=[strategy],verify=verify)['relations'][0]
+        assert checked['saved']==created
+        assert h.sbank.get(created).verification_state=='verified'
+        assert not checked['publication']['published']
+        assert h.sbank.count()==1
+        detail=h.inspect(bank='strategic',entry_id=created)
+        assert detail['entries'][0]['rule']['state']=='candidate'
+        assert not any(r['evidence']=='strategic_entry' for r in h.recall(TASK)['recommendations'])
+        print('-> the assertion audit is readable; independent mechanism/transfer/boundary evidence is still missing')
+        print('-> see versioned_induction.py for a real integer-rule transfer and boundary example')
 
         # ------------------------------------------------------------------
         step(9, "no candidates supplied -> no menu is invented")

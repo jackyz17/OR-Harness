@@ -663,7 +663,22 @@ def _merge_existing_knowledge(harness, records: Sequence[Any],
     return items
 
 
-def build_induction_material(harness, *,
+def build_induction_material(harness, *, view="compact", purpose="modelling", **kwargs):
+    from or_harness.world_model.induction_gate import start_decision
+    gate = start_decision(harness, kwargs.get("task_id"))
+    if gate["state"] in ("skip", "pending"):
+        return {"version": "induction-material/2", "count": 0,
+                "induction_gate": gate, "material_assembled": False,
+                "reason": gate["reason"], "material": [], "existing_knowledge": []}
+    if view == "detail":
+        return _build_induction_material_detail(harness, **kwargs)
+    if view != "compact":
+        raise ValueError("induction material view must be compact or detail")
+    from or_harness.world_model.induction_material import build_compact_material
+    return build_compact_material(harness, gate=gate, purpose=purpose, **kwargs)
+
+
+def _build_induction_material_detail(harness, *,
                              strategy_id: Optional[str] = None,
                              task_id: Optional[str] = None,
                              limit: Optional[int] = None,

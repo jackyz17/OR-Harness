@@ -341,3 +341,7 @@ The block is EXPLANATORY: an H+ claim never ranks a candidate and is not capabil
 - **No new semantic extractor, no retrieval rework**: the two existing channels are wired in, not replaced, and no composite retrieval score is introduced.
 - **No change** to the structural bins, the unknown-matching rule, the selector's scoring, the induction-pattern detectors or the induction publication gate.
 - **No new autonomous agent and no background loop.**
+
+## Short versioned rule views
+
+Structural recall, vector recall and normal world-model knowledge views share the v2 active-version predicate. Candidate/suspended versions remain inspectable for induction and targeted trials; pending revisions preserve the active body. Short bodies carry version/body references; long legacy prose/logs use detail references. Small historical unversioned views retain their semantics. Actual adoption freezes `entry_id@version`; later checks do not read a newer body. Reading/recall never establishes use, faithful execution or comparative advantage.

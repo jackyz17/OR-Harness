@@ -1,0 +1,502 @@
+{
+  "source": "isolated real Python integer enumerations plus deterministic hash retrieval; no live model prediction",
+  "home": "/tmp/OR-Harness-induction-demo-delivery",
+  "rule": {
+    "entry_id": "1",
+    "version": 1,
+    "when": "X,Y are nonnegative integers; feasible X at fixed Y is an interval and the objective is monotone in X.",
+    "do": "Enumerate feasible Y, derive both X endpoints, choose using coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.",
+    "expect": "Preserve the original integer optimum and all stated constraints."
+  },
+  "objectives": {
+    "training": 2699,
+    "independent_min": 90,
+    "wrong_upper_min": 92,
+    "nonmonotone": 0
+  },
+  "actual_execution_ids": [
+    "ex_b8415f838c45",
+    "ex_1aae0fa5a194",
+    "ex_d2bfc792df3e",
+    "ex_e796e97f8191"
+  ],
+  "transfer_check": {
+    "assessment_ref": "rule_assessment:375b428ac3348fb128d258540e267aafe82d5d840e4ff870a17b62306974aa7e",
+    "at": 1794488106.4859312,
+    "body_ref": "rule:385b337f6d06dfc7f0ba874be3a152674677e3c2665f5cde844a73ae7be592f8",
+    "check_id": "rc:38193873a8dafd50c60a1119b199817d40f1345bc1250e840e28a9d5702b3c3f",
+    "entry_id": "1",
+    "evidence_semantics": "671c6606616cae514087ebc465d9633b8b6bebbecca9de48db99426bb32506be",
+    "execution_id": "ex_1aae0fa5a194",
+    "fact_ref": "rule_fact:28c26b414da0a6d13d774fe4188b76e00bd15cf749c0398f8a07384216a6b107",
+    "identity": {
+      "base_id": "independent",
+      "basis": "declared_origin",
+      "content_digest": "ff3d94085958672a85d84f18d1e55ea627fa50652d2a84f3079eae63ac60b655",
+      "hypothetical": false,
+      "problem_digest": "b7efd9a1f2e9e3ce",
+      "relationship": "variant",
+      "task_id": "independent"
+    },
+    "kind": "transfer",
+    "observed_at": 1794488106.4510717,
+    "reason": "sourced premises, actual method and claimed effect checked",
+    "scope": {
+      "acceptance": {
+        "basis": [
+          "reference_objective",
+          "integer",
+          "semantic_probe"
+        ],
+        "unchecked": [
+          "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+          "constraint satisfaction not declared as a probe or a recomputation"
+        ]
+      },
+      "base_id": "independent",
+      "kind": "transfer"
+    },
+    "state": "passed",
+    "version": 1
+  },
+  "transfer_fact": {
+    "adoption": {
+      "entry_ids": [
+        "1"
+      ],
+      "known_entry_ids": [
+        "1"
+      ],
+      "rule_versions": {
+        "1": 1
+      },
+      "state": "declared",
+      "unknown_entry_ids": [],
+      "versions": {
+        "1": "knowledge:847d2ec0b3ee0a35aa04ce54ee8d6b1d6b1d8dfe7e906f6d2ad7be06b47a4230"
+      }
+    },
+    "artifacts": {
+      "submitted_script": {
+        "bytes": 676,
+        "kind": "script",
+        "path": "artifacts/66/669a4521388cdd449704371faeddf8b095fdbe2f55618f72052da301f1ea1871",
+        "sha256": "669a4521388cdd449704371faeddf8b095fdbe2f55618f72052da301f1ea1871",
+        "source": "framework-submitted script before attempt; execution status is separate"
+      },
+      "workspace_result": {
+        "bytes": 437,
+        "kind": "result",
+        "path": "artifacts/f2/f29e1cd062d3cb50dc342a2c726d2059f153b0f37eaf736633b43e716bb31866",
+        "sha256": "f29e1cd062d3cb50dc342a2c726d2059f153b0f37eaf736633b43e716bb31866",
+        "source": "file observed after attempt; acceptance is governed by execution checks"
+      }
+    },
+    "checker": {
+      "acceptance_rule": {
+        "checker": "task-check/1",
+        "fingerprint": "8c5ebeff1111422d28c944cabac3312a1a6c7df5a1791051858f53b9d7acbb69",
+        "spec": {
+          "integer": {
+            "variables": [
+              "X",
+              "Y"
+            ]
+          },
+          "reference_objective": 90,
+          "reference_source": "bench_declared",
+          "reference_version": "independent signed-endpoint arithmetic",
+          "semantic_probe": [
+            {
+              "max": 471,
+              "min": 470,
+              "path": "execution_features.solution_variables.X"
+            }
+          ]
+        }
+      },
+      "action_id": "ac_ea1f5e328616",
+      "checked_at": 1794488106.4440403,
+      "checks": [
+        {
+          "abs_diff": 0.0,
+          "check": "reference_objective",
+          "observed": 90.0,
+          "ok": true,
+          "reference": 90.0,
+          "source": "framework",
+          "tolerance": 8.999999999999999e-05
+        },
+        {
+          "check": "integer_domains",
+          "n_non_integer": 0,
+          "n_variables": 2,
+          "ok": true,
+          "ran": true,
+          "scope": "the declared variables",
+          "source": "framework",
+          "tolerance": 1e-06
+        },
+        {
+          "check": "semantic_probe",
+          "found": true,
+          "max": 471,
+          "min": 470,
+          "mode": "range",
+          "observed": 470,
+          "ok": true,
+          "path": "execution_features.solution_variables.X",
+          "source": "framework"
+        }
+      ],
+      "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
+      "diffs": [],
+      "episode_id": "independent",
+      "execution_id": "ex_1aae0fa5a194",
+      "intent": null,
+      "reference_source": {
+        "declared": "bench_declared",
+        "independent": true,
+        "note": "the reference came from a source the caller declared (bench_declared); a pass still covers only the declared bases",
+        "source": "bench_declared",
+        "version": "independent signed-endpoint arithmetic"
+      },
+      "rule_assessments": [
+        {
+          "applicability": "applies",
+          "assessment": "The objective sign selects the endpoint; nonmonotone input disables reduction. Independent optimum and both constraints are checked.",
+          "effect_coverage": "complete",
+          "entry_id": "1",
+          "evidence_refs": [
+            "artifacts.submitted_script",
+            "artifacts.workspace_result"
+          ],
+          "failure_source": null,
+          "method_fidelity": "faithful",
+          "response": null,
+          "source": "example auditor inspected the captured enumeration script and variables",
+          "version": 1
+        }
+      ],
+      "scope": {
+        "basis": [
+          "reference_objective",
+          "integer",
+          "semantic_probe"
+        ],
+        "unchecked": [
+          "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+          "constraint satisfaction not declared as a probe or a recomputation"
+        ]
+      },
+      "staged": true,
+      "state": "passed",
+      "task_id": "independent"
+    },
+    "cost": {
+      "latency_s": 0.030013244599103928,
+      "retries": 0.0,
+      "solver_runtime_s": 0.02866003941744566
+    },
+    "cost_measured": [
+      "latency_s",
+      "retries",
+      "solver_runtime_s"
+    ],
+    "created_at": 1794488106.4369793,
+    "execution_id": "ex_1aae0fa5a194",
+    "failures": [],
+    "family": "assignment",
+    "identity": {
+      "base_id": "independent",
+      "basis": "declared_origin",
+      "content_digest": "ff3d94085958672a85d84f18d1e55ea627fa50652d2a84f3079eae63ac60b655",
+      "hypothetical": false,
+      "problem_digest": "b7efd9a1f2e9e3ce",
+      "relationship": "variant",
+      "task_id": "independent"
+    },
+    "inspect_hint": "orx inspect --bank experience --execution ex_1aae0fa5a194",
+    "measurement_scope": "attempt",
+    "method": {
+      "actual": {
+        "name": "integer endpoints",
+        "steps": [
+          "Enumerate feasible Y, derive both X endpoints, choose using coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set."
+        ]
+      },
+      "basis": "performed",
+      "planned": {
+        "name": "integer endpoints",
+        "source": "harness_declared",
+        "steps": [
+          "Enumerate feasible Y, derive both X endpoints, choose using coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set."
+        ]
+      }
+    },
+    "method_source": null,
+    "outcome": {
+      "feasible": true,
+      "gap": 0.0,
+      "objective": 90,
+      "status": "optimal"
+    },
+    "problem": {
+      "cir": null,
+      "profile": {
+        "family": "assignment",
+        "problem_class": "unknown"
+      }
+    },
+    "status": "optimal",
+    "strategy_id": "endpoint",
+    "task_check": {
+      "diffs": [],
+      "report_ref": "orx inspect --bank experience --execution ex_1aae0fa5a194 #task_check",
+      "scope": {
+        "basis": [
+          "reference_objective",
+          "integer",
+          "semantic_probe"
+        ],
+        "unchecked": [
+          "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+          "constraint satisfaction not declared as a probe or a recomputation"
+        ]
+      },
+      "state": "passed"
+    },
+    "task_check_state": "passed",
+    "task_id": "independent",
+    "task_text": "Nonnegative integer X,Y. X+Y<=641; X>=2Y+130. Minimize 2X-5Y."
+  },
+  "validation": {
+    "transfer": {
+      "checks": [
+        {
+          "entry_id": "1",
+          "version": 1,
+          "check_id": "rc:38193873a8dafd50c60a1119b199817d40f1345bc1250e840e28a9d5702b3c3f",
+          "state": "passed",
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "publication": {
+            "published": false,
+            "state": "candidate",
+            "version": 1,
+            "distinct_tasks": 1,
+            "distinct_base_problems": 1,
+            "support_scope": "derivation_only",
+            "transferability": "unproven",
+            "checks": {
+              "transfer": true,
+              "boundary": false,
+              "regression": true,
+              "refuted": false
+            },
+            "reason": "independent transfer and boundary, plus affected regressions, are required"
+          }
+        }
+      ],
+      "affected_entry_ids": [
+        "1"
+      ],
+      "index_entry_ids": [],
+      "index_sync": {
+        "layer": "strategic_knowledge",
+        "state": "synced",
+        "items": 0,
+        "removed": 0
+      }
+    },
+    "boundary": {
+      "checks": [
+        {
+          "entry_id": "1",
+          "version": 1,
+          "check_id": "rc:495a5eb1c4f1be66a6c05c53f41d99d1520aad7e1deab4e7912ff350c8202cbc",
+          "state": "passed",
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "publication": {
+            "published": true,
+            "state": "active",
+            "version": 1,
+            "distinct_tasks": 1,
+            "distinct_base_problems": 1,
+            "support_scope": "independently_checked",
+            "transferability": "checked_scope",
+            "checks": {
+              "transfer": true,
+              "boundary": true,
+              "regression": true,
+              "refuted": false
+            },
+            "reason": "independent transfer and boundary, plus affected regressions, are required"
+          }
+        }
+      ],
+      "affected_entry_ids": [
+        "1"
+      ],
+      "index_entry_ids": [],
+      "index_sync": {
+        "layer": "strategic_knowledge",
+        "state": "synced",
+        "items": 0,
+        "removed": 0
+      }
+    },
+    "wrong_upper": {
+      "checks": [
+        {
+          "entry_id": "2",
+          "version": 1,
+          "check_id": "rc:92c37b3bf71ccb8cd822bb54efbf2758dedd12b0ac0a444c8099b43264fc8bd3",
+          "state": "refuted",
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "publication": {
+            "published": false,
+            "state": "candidate",
+            "version": 1,
+            "distinct_tasks": 1,
+            "distinct_base_problems": 1,
+            "support_scope": "derivation_only",
+            "transferability": "unproven",
+            "checks": {
+              "transfer": false,
+              "boundary": false,
+              "regression": true,
+              "refuted": true
+            },
+            "reason": "independent transfer and boundary, plus affected regressions, are required"
+          }
+        }
+      ],
+      "affected_entry_ids": [
+        "2"
+      ],
+      "index_entry_ids": [],
+      "index_sync": {
+        "layer": "strategic_knowledge",
+        "state": "synced",
+        "items": 0,
+        "removed": 0
+      }
+    },
+    "targeted_tests": {
+      "count": 193,
+      "failures": 0,
+      "errors": 0,
+      "log": "/tmp/induction-retention-checks-2.log"
+    },
+    "harness_tests": {
+      "state": "passed",
+      "count": 1831,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 161.57,
+      "log": "/tmp/induction-full-final-3.log"
+    }
+  },
+  "publication": {
+    "active_version": 1,
+    "candidate_version": null,
+    "schema_version": "or-rule/2",
+    "state": "active",
+    "body": {
+      "when": "X,Y are nonnegative integers; feasible X at fixed Y is an interval and the objective is monotone in X.",
+      "do": "Enumerate feasible Y, derive both X endpoints, choose using coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.",
+      "expect": "Preserve the original integer optimum and all stated constraints."
+    },
+    "view_version": 1,
+    "body_ref": "rule:385b337f6d06dfc7f0ba874be3a152674677e3c2665f5cde844a73ae7be592f8",
+    "version_state": "active",
+    "legacy_version": false
+  },
+  "material_size": {
+    "fixture": "29 constructed long historical same-family entries; not mdsc_sc003 data",
+    "after": {
+      "chars": 21769,
+      "utf8_bytes": 21769,
+      "reported_chars_used": 21769,
+      "n_current": 1,
+      "n_related": 3,
+      "n_rules": 8,
+      "omitted_rules": 23
+    },
+    "default_fragment": {
+      "induction_gate": {
+        "state": "allow",
+        "source": "explicit_induction_transition",
+        "reason": "H+ close-out judgement unavailable; caller explicitly requested induction"
+      },
+      "comparison_table": [
+        {
+          "execution_id": "ex_b8415f838c45",
+          "check": "passed",
+          "relationship": "current_task"
+        },
+        {
+          "execution_id": "ex_1aae0fa5a194",
+          "check": "passed",
+          "relationship": "cross_source_candidate"
+        },
+        {
+          "execution_id": "ex_d2bfc792df3e",
+          "check": "passed",
+          "relationship": "cross_source_candidate"
+        },
+        {
+          "execution_id": "ex_e796e97f8191",
+          "check": "failed",
+          "relationship": "cross_source_candidate"
+        }
+      ],
+      "existing_knowledge": [
+        {
+          "entry_id": "1",
+          "strategy_id": "rule:385b337f6d06",
+          "schema_version": "or-rule/2",
+          "version": 1,
+          "active_version": 1,
+          "candidate_version": null,
+          "status": "active",
+          "verification_state": "verified",
+          "published": true,
+          "support_n": 0,
+          "body": {
+            "when": "X,Y are nonnegative integers; feasible X at fixed Y is an interval and the objective is monotone in X.",
+            "do": "Enumerate feasible Y, derive both X endpoints, choose using coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.",
+            "expect": "Preserve the original integer optimum and all stated constraints."
+          },
+          "predicates": {},
+          "detail_ref": "orx inspect --bank strategic --entry 1",
+          "body_ref": "rule:385b337f6d06dfc7f0ba874be3a152674677e3c2665f5cde844a73ae7be592f8",
+          "historical_state": false,
+          "merged_into": null,
+          "current_task_premises": "requires_assessment",
+          "merge_pending_into": null,
+          "candidate_ref": null,
+          "related_by": [
+            "cites this batch's evidence",
+            "semantic"
+          ],
+          "usage": {
+            "n_adoptions": 2,
+            "n_known_tasks": 2,
+            "n_effect_attributions": 0,
+            "unattributed": true,
+            "detail_ref": "orx inspect --bank strategic --entry 1"
+          }
+        }
+      ]
+    },
+    "before": {
+      "chars": 1118044,
+      "utf8_bytes": 1118056,
+      "reported_chars_used": 3194,
+      "knowledge_chars": 1099273,
+      "source": "baseline maintenance builder and CLI summary, same isolated fixture, current compatible bank readers"
+    }
+  },
+  "review_baseline": "00e19df6b8c68ea4eae5ac3c877334421aad430c"
+}

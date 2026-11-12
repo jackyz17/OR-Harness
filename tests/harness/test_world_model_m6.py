@@ -873,6 +873,7 @@ class TestPublicationGateUntouched(Base):
         entries = harness.sbank.list()
         self.assertTrue(entries, "the write must have created an entry")
         legacy = entries[0]
+        legacy.rule = None  # actual pre-versioning JSON, not a new v2 candidate
         legacy.verification = {}
         self.assertTrue(is_publishable(legacy),
                         "an entry with no verification block is the "

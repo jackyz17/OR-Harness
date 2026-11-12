@@ -23,16 +23,12 @@ Terminology discipline (do not blur):
   Strategic Knowledge Bank = generalized commitments ("what to do next
                     time"): expected quality / expected cost / expected
                     failure risk, with prediction intervals and calibration
-                    tracking. Mutation happens at INDUCTION time only: online
-                    execution records new evidence (frozen checks on the
-                    facts) and touches no entry; the next induction CREATES a
-                    new entry from that evidence (knowledge is ADDITIVE — an
-                    existing entry's core content is never revised or merged,
-                    only its lifecycle state is refreshed in place), and a
-                    claim's applicability is read off the evidence that
-                    supports it. Admission never depends on the survival of
-                    the original evidence rows. Never stores raw execution
-                    detail.
+                    tracking. New rules have immutable when/do/expect body
+                    versions; evidence, checks and adopted uses are associated
+                    separately. Independent transfer/boundary checks and
+                    affected regressions control new-version availability.
+                    Historical unversioned rows retain their original semantics.
+                    Frozen decisive facts remain after evidence expiry.
   Conditional statistics = on-the-fly aggregation over the Evidence Bank,
                     never persisted, always rebuildable. It is arithmetic, not
                     knowledge. An entry that merely restates statistics is
@@ -1396,10 +1392,16 @@ class ExecutionRecord:
                               if self.method_actual is not None else None),
         }
 
+    def to_storage_dict(self) -> Dict[str, Any]:
+        from or_harness.core.evidence_encoding import compact_payload
+        return compact_payload(self.to_dict())
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ExecutionRecord":
         if not isinstance(data, dict):
             raise ValueError("ExecutionRecord must be a JSON object")
+        from or_harness.core.evidence_encoding import expand_payload
+        data = expand_payload(data)
         for key in ("execution_id", "task_id", "strategy_id", "profile_snapshot"):
             if key not in data:
                 raise ValueError(f"ExecutionRecord.{key} is required")
@@ -1541,51 +1543,18 @@ class PredictionTrack:
 
 @dataclass
 class StrategicEntry:
-    """A generalized, calibrated commitment: 'for problems matching this
-    pattern, this strategy will perform within these intervals.'
+    """A reusable rule or historical calibrated commitment.
 
-    The Strategic Knowledge unit: derived (not primary) knowledge — a
-    revisable belief. Mutation happens at INDUCTION time only: online
-    execution records evidence (frozen checks on the facts) and touches no
-    entry; ``orx induce`` CREATES a new entry from that evidence (knowledge is
-    ADDITIVE: an existing entry's core content is never rewritten or merged —
-    a revision is its own entry), and refreshes the LIFECYCLE state of
-    existing entries in place. The entry keeps lightweight origin metadata
-    (``provenance`` = optional representative execution ids, ``support_n``);
-    its continued validity does NOT depend on the survival of those evidence
-    rows, and exact reconstruction of past entries is never required: an
-    existing entry's lifecycle is REFRESHED in place from whatever evidence is
-    currently retained (``induce`` re-reads the predicates on refresh), and a
-    full-bank wipe is not offered because it would replace long-term
-    knowledge with a recent-window restatement. Not a restatement of statistics — a claim about the future,
-    with an interval, calibration tracking, and cross-group feature
-    predicates.
+    New v2 rows hold active/candidate version pointers. Canonical short bodies
+    and decisive evidence are immutable values; checks, uses and effects live
+    separately and identify exact versions. A pending revision preserves the
+    active body until independent transfer, boundary and affected regression
+    checks pass. Source identity, premise assessment and effect scope are
+    explicit; a structural match never proves applicability.
 
-    ``strategy_type`` / ``actions`` / ``fallback_strategy_id`` are free-form
-    fields the HARNESS (or a migration) may fill in. The framework fills in
-    none of them: there is no built-in directory of method vocabulary, and
-    inferring a method's type or actions from its id would be fabrication.
-    An empty field means the memory does not record it. ``applicability``
-    holds harness-written notes: free text, kept for the reader, never
-    scored.
-
-    Everything this entry claims lives in ONE place: ``claim`` holds the
-    stated method knowledge (what was done, under what conditions, with what
-    expected effect and where it stops) together with the evidence that
-    grounds it — a list of ``{execution_id, role}`` references (see
-    :func:`validate_claim`). The entry's ``verification`` block is the ONE
-    verdict, covering the claim's declared checks over the listed evidence;
-    it turns the entry into published knowledge when ``state == "verified"``
-    and the claimed scope is not stale. There is no second, embedded claim
-    structure and no per-relation verdict: a second independent claim is a
-    second ENTRY.
-
-    An entry whose ``claim`` is set but which carries no statistical support
-    (``support_n == 0``, e.g. ``strategy_id`` naming a free-form subject
-    such as ``principle:cross_period_state``) is a CLAIM-ONLY entry: it makes
-    no quality/cost/failure claim, and its publication is decided by the
-    entry's single ``verification`` block. A claim-only entry publishes
-    nothing on a statistical basis.
+    Unversioned legacy rows retain their original claim, statistical fields,
+    verification and lifecycle semantics. Optional method vocabulary and
+    applicability notes remain authored facts, never inferred from an ID.
     """
 
     #: The entry's identity: a POSITIVE INTEGER NUMBER assigned by the
@@ -1675,27 +1644,32 @@ class StrategicEntry:
     #: expected effect; ``verification.scope`` bounds what was checked.
     claim: Optional[Dict[str, Any]] = None
 
+    #: v2 rule pointers. Immutable bodies/checks and use events live in the
+    #: existing SQLite store; this field never embeds their growing logs.
+    rule: Optional[Dict[str, Any]] = None
+
     @property
     def is_claim_only(self) -> bool:
         """True when the entry carries a stated claim but no statistical
         support (``support_n == 0``) — a knowledge entry whose
         ``strategy_id`` is a free-form subject rather than a strategy id.
         Such an entry makes no quality/cost/failure claim, and its
-        publication is decided by the entry's single ``verification`` block
-        alone."""
+        publication follows its version state, or historical semantics."""
         return self.claim is not None and self.support_n == 0
 
     @property
     def is_published(self) -> bool:
-        """True when this entry may be presented as offered knowledge.
+        """The shared normal-recall predicate for v2 and historical rows.
 
-        Publication is the AGENT's decision: a claim the agent submitted is
-        offered, and the framework does NOT certify the conclusion. This is
-        therefore always True — the entry's own ``verification`` state is
-        reported honestly (``verified`` / ``fact_checked`` / ``unverified``),
-        and the reader weighs it. Recall never hides knowledge on a framework
-        content judgement.
+        V2 requires this exact offered version to be active (or a preserved
+        original legacy version). An unversioned old row keeps its previous
+        publication semantics; its audit state remains separately visible.
         """
+        if self.rule:
+            return (self.rule.get("state") == "active"
+                    and self.rule.get("active_version") is not None
+                    and self.rule.get("view_version") == self.rule.get("active_version")
+                    and (self.rule.get("version_state") == "active" or self.rule.get("legacy_version") is True))
         return True
 
     @property
@@ -1782,6 +1756,7 @@ class StrategicEntry:
                       if self.claim is not None else None),
             "last_consulted_at": self.last_consulted_at,
             "created_at": self.created_at,
+            **({"rule": copy.deepcopy(self.rule)} if self.rule else {}),
         }
 
     @classmethod
@@ -1844,6 +1819,7 @@ class StrategicEntry:
                    if data.get("claim") is not None else None),
             last_consulted_at=data.get("last_consulted_at"),
             created_at=float(data.get("created_at", time.time())),
+            rule=copy.deepcopy(data.get("rule")),
         )
 
 

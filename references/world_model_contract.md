@@ -237,3 +237,9 @@ Related pages: the frozen input context is [prediction_context.md](prediction_co
 
 
 Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
+
+## Versioned strategic rules (`or-rule/2`)
+
+New root rows store active/candidate pointers and state; immutable condition values hold canonical when/do/expect bodies, assessments and decisive facts. Separate `rule_versions`, `rule_checks` and `rule_events` tables associate validation, use, effects and explicit aliases with exact versions. Numeric predictions retain their contract and absence semantics. Maintenance deltas name resolved evidence and committed updates. Adoption snapshots freeze immutable knowledge references rather than live entry lookups.
+
+Default `induction-material/2` and rule recall use short views, whole-value detail references and historical-state markers. The normal material budget counts the entire serialized JSON, including the CLI envelope. Old unversioned JSON retains its original semantics; newly submitted old-style relations become v2 candidates. New `execution-evidence/2` storage codes fixed boilerplate and deduplicates the performed-method receipt; audit decoding preserves runtime values, source/conflicts, missing predictions and cost masks/zero/scope. No bulk migration or cleanup runs implicitly.

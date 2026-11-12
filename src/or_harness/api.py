@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from or_harness.adapters.solver import available_families, probe_all
 from or_harness.core.schema import (
+    StrategicEntry,
     COST_DIMENSIONS,
     NON_CUMULATIVE_DIMENSIONS,
     CostVector,
@@ -259,7 +260,7 @@ class ORHarness:
         self.selector = Selector(self.sbank, self.stats,
                                  cost_weights=cost_weights)
         self.executor = executor or SafePythonExecutor()
-        self.induction = InductionEngine(self.stats, self.sbank)
+        self.induction = InductionEngine(self.stats, self.sbank, harness=self)
         # World-model M1 substrate: action log + budget ledger (log/index
         # facilities — NOT a third knowledge bank).
         self.actions = ActionLog(self.store)
@@ -1762,7 +1763,8 @@ class ORHarness:
     def close_episode(self, task_id: str, episode_id: Optional[str] = None,
                       *, terminal_state: str = "completed",
                       finish_action_id: Optional[str] = None,
-                      min_calibration_samples: Optional[int] = None
+                      min_calibration_samples: Optional[int] = None,
+                      induction_decision=None
                       ) -> Dict[str, Any]:
         """Close ONE episode: evaluate its bound predictions against their
         real outcomes and publish the experience calibration.
@@ -1791,6 +1793,20 @@ class ORHarness:
 
         if result.get("unfinished_actions"):
             return result
+
+        from or_harness.world_model.induction_gate import record_decision
+        if induction_decision is None:
+            finishes = self.actions.query(task_id=task_id,episode_id=episode_id,action_type="finish_task")
+            finish = self.actions.get(finish_action_id) if finish_action_id else (finishes[-1] if finishes else None)
+            induction_decision = copy.deepcopy((finish.outcome or {}).get("induction_decision")) if finish else None
+            if induction_decision is not None:
+                induction_decision = {"state":induction_decision} if isinstance(induction_decision,str) else induction_decision
+                induction_decision.setdefault("source","finish_task_receipt")
+                induction_decision.setdefault("source_ref",finish.action_id)
+        if 'rule_validation' not in result:
+            from or_harness.strategy.rule_versions import settle_episode_uses
+            result['rule_validation'] = settle_episode_uses(self,task_id,episode_id)
+        result["induction_gate"] = record_decision(self, task_id, episode_id, induction_decision)
 
         from or_harness.world_model.conditions import release_context
         for row in self.store.conn.execute(
@@ -4865,7 +4881,8 @@ class ORHarness:
                            task_id: Optional[str] = None,
                            limit: Optional[int] = None,
                            cursor: Optional[str] = None,
-                           related_top_k: int = 5
+                           related_top_k: int = 5,
+                           view: str = "compact", purpose: str = "modelling"
                            ) -> Dict[str, Any]:
         """Organize a BATCH of completed tasks as induction material.
 
@@ -4895,7 +4912,8 @@ class ORHarness:
         return build_induction_material(self, strategy_id=strategy_id,
                                         task_id=task_id, limit=limit,
                                         cursor=cursor,
-                                        related_top_k=related_top_k)
+                                        related_top_k=related_top_k,
+                                        view=view, purpose=purpose)
 
     # -- world-model M3: bounded planning ------------------------------------
     def profile(self, task: Dict[str, Any],
@@ -5931,6 +5949,8 @@ class ORHarness:
         # never silently dropped on the way to the record.
         if method_planned is not None and record.method_planned is None:
             record.method_planned = method_planned
+        from or_harness.strategy.rule_versions import declared_task_identity
+        record.execution_features["task_identity"] = declared_task_identity(task)
         runner = (pre.harness_state or {}).get("execution_context") or {}
         if runner:
             record.execution_features["execution_host"] = {k: copy.deepcopy(runner[k])
@@ -6641,16 +6661,15 @@ class ORHarness:
             result.setdefault("knowledge_after",
                               result["action"]["knowledge_after"])
         if not dry_run:
-            result["index_sync"] = self.index_sync.sync_entries()
+            from or_harness.strategy.rule_versions import sync_rule_entries
+            result["index_sync"] = sync_rule_entries(self,result.get("index_entry_ids") or [],result.get("affected_entry_ids") or [])
             # The consolidation-stage feedback is scoped to the EVIDENCE this
             # write actually consolidated: the executions the submitted
             # strategies cite. That is the relation-path equivalent of the
             # statistical path's ``execution_ids``.
             cited: List[str] = []
-            for relation in relations or []:
-                for item in (relation.get("evidence") or []):
-                    if isinstance(item, dict) and item.get("execution_id"):
-                        cited.append(str(item["execution_id"]))
+            for relation in result.get("relations") or []:
+                cited.extend(relation.get("execution_ids") or [])
             try:
                 consolidation = self.evaluate_knowledge_consolidation(
                     result, cited, strategy_id=strategy_id)
@@ -6666,22 +6685,11 @@ class ORHarness:
                           verify: Optional[Dict[str, Any]],
                           notes: Optional[List[str]] = None
                           ) -> Dict[str, Any]:
-        """Save (and optionally verify) structured relation claims.
+        """Write short rule versions and append declared evidence/checks.
 
-        A relation is knowledge about a STRUCTURAL CONDITION paired with a
-        choice and its consequence. Each submission is ADDITIVE: it creates a
-        NEW numbered entry, and the framework checks only ADMINISTRATIVE
-        matters (a well-formed claim, cited executions that exist, a valid
-        number, a successful write). Publication is the agent's decision —
-        the framework records the agent's own verification (if any) rather
-        than gating on it.
-
-        Nothing here is fabricated: the evidence identity (tasks, family,
-        cell, strategy ids) is derived from the recorded facts, and any
-        computed verification is computed by the framework from those facts.
-        Evidence is cited by explicit execution id and role — the framework
-        no longer expands a ``bundle_id`` citation, because there is no
-        candidate generator to resolve one.
+        IDs and scopes come from real facts. Legacy relation assertions
+        remain audit records; sourced transfer and boundary checks determine
+        publication of new versions. Synchronize only affected documents.
         """
         results = []
         created: List[str] = []
@@ -6698,10 +6706,6 @@ class ORHarness:
             if entry_id and not dry_run:
                 created.append(entry_id)
         index_sync = None
-        if not dry_run:
-            # The index result is REPORTED, not discarded: a deferred
-            # embedding is a real state the caller must be able to see.
-            index_sync = self.index_sync.sync_entries()
         saved = len([r for r in results
                      if r.get("saved") or r.get("created_entry")])
         out: Dict[str, Any] = {
@@ -6709,6 +6713,8 @@ class ORHarness:
             "saved": saved,
             "published": len([r for r in results
                               if (r.get("publication") or {}).get("published")]),
+            "index_entry_ids": sorted({i for r in results for i in r.get("index_entry_ids") or []}),
+            "affected_entry_ids": sorted({i for r in results for i in r.get("affected_entry_ids") or []}),
         }
         # A dry run writes nothing, index included — and does not report an
         # index result it never produced.
@@ -6774,7 +6780,7 @@ class ORHarness:
         result["knowledge_delta"] = result["action"]["knowledge_delta"]
         result["knowledge_after"] = result["action"].get("knowledge_after")
         if not dry_run:
-            result["index_sync"] = self.index_sync.sync_entries()
+            result["index_sync"] = self.index_sync.sync_entries([])
         return result
 
 
@@ -6783,9 +6789,9 @@ class ORHarness:
         """Begin the maintenance-scope induce action with a real PRE        snapshot: the knowledge state (entries + verification layers) as it
         stood BEFORE induction."""
         episode_id = f"maint_{int(time.time())}"
+        from or_harness.strategy.rule_versions import maintenance_references
         knowledge_before = {
-            "entries": [KnowledgeRef.from_entry(e).to_dict()
-                        for e in self.sbank.list()],
+            "entries": maintenance_references(self),
             "entry_count": self.sbank.count(),
         }
         action = self.actions.begin_action(
@@ -6841,10 +6847,9 @@ class ORHarness:
         elif updated:
             business = "updated"
         elif relation_created_entries:
-            # A submitted relation is a NEW numbered entry (knowledge is
-            # additive; the agent decides publication).
+            # Report only the IDs and version changes this write committed.
             business = "relation_created"
-        elif relations_saved:
+        elif any(r.get('changed',True) for r in relations_saved):
             business = "relation_updated"
         elif revised:
             business = "revised"
@@ -6852,9 +6857,9 @@ class ORHarness:
             business = "refused"
         else:
             business = "unchanged"
+        from or_harness.strategy.rule_versions import maintenance_references
         knowledge_after = {
-            "entries": [KnowledgeRef.from_entry(e).to_dict()
-                        for e in self.sbank.list()],
+            "entries": maintenance_references(self),
             "entry_count": self.sbank.count(),
         }
         before_by_id = {k["entry_id"]: k for k in
@@ -6879,14 +6884,14 @@ class ORHarness:
             for field in ("predicates", "expected_quality_hat",
                           "quality_interval", "expected_cost_hat",
                           "cost_interval", "failure_prob", "support_n",
-                          "status", "verification_state"):
+                          "status", "verification_state", "rule"):
                 if before.get(field) != after.get(field):
                     changed_fields[field] = {
                         "before": before.get(field),
                         "after": after.get(field),
                     }
-            claim_change = self._claim_change(before.get("claim"),
-                                              after.get("claim"))
+            claim_change = ({'before_ref':before.get('claim_ref'),'after_ref':after.get('claim_ref')}
+                            if before.get('claim_ref')!=after.get('claim_ref') else None)
             if claim_change:
                 changed_fields["claim"] = claim_change
             if changed_fields:
@@ -6905,7 +6910,8 @@ class ORHarness:
             # what lets a later reader associate the knowledge change with
             # the online predictions made about those very executions —
             # without defaulting to "the bound action was the induction".
-            "execution_ids": sorted({
+            "execution_ids": sorted({str(eid) for r in relations_saved for eid in r.get("execution_ids") or []} |
+                {str(a['execution_id']) for a in result.get('effect_attributions') or [] if a.get('execution_id')} | {
                 str(e.get("execution_id"))
                 for r in relations_saved
                 for e in ((r.get("verification") or {}).get("scope") or {}
@@ -6914,7 +6920,11 @@ class ORHarness:
             "verification_results": [
                 {"entry": r.get("created") or r.get("updated"),
                  "verification": r.get("verification")}
-                for r in results if r.get("verification")],
+                for r in results if r.get("verification")] + [
+                {"entry":r['saved'], "version":r.get('version'), "body_ref":r.get('body_ref'),
+                 "publication":r.get('publication'),
+                 "check_refs":[v['check_id'] for v in r.get('validation') or []]}
+                for r in relations_saved],
             "knowledge_delta": {
                 "entries_created": sorted(after_ids - before_ids),
                 "entries_removed": sorted(before_ids - after_ids),
@@ -6922,6 +6932,8 @@ class ORHarness:
                     maintenance["knowledge_before"]["entry_count"],
                 "entry_count_after": knowledge_after["entry_count"],
                 "entry_changes": entry_changes,
+                "rule_updates": [{k:r.get(k) for k in ('saved','version','operation','body_ref','new_version')}
+                                 for r in relations_saved if r.get('changed',True)],
             },
             # The full AFTER state (value-copied entry refs): the frozen
             # record can reconstruct what the knowledge looked like after
@@ -6956,6 +6968,10 @@ class ORHarness:
                 episode_id: Optional[str] = None,
                 evaluation_id: Optional[str] = None,
                 prediction_id: Optional[str] = None,
+                entry_id: Optional[str] = None,
+                execution_id: Optional[str] = None,
+                rule_version=None,
+                value_ref=None,
                 ) -> Dict[str, Any]:
         """Query the memory layers (read-only).
 
@@ -6980,11 +6996,24 @@ class ORHarness:
           ``prediction_id`` for one prediction's fact binding + effect
           evaluation in full.
         """
+        if bank == 'values':
+            if not value_ref:
+                raise ValueError('inspect --bank values requires --value REF')
+            from or_harness.world_model.conditions import get_value
+            return {'bank':'values','value_ref':value_ref,'value':get_value(self.store,value_ref)}
         if bank == "experience":
+            if execution_id is not None:
+                record = self.bank.get(execution_id) or self.bank.get_pending(execution_id)
+                return {"bank": "experience", "count": int(record is not None), "records": [record.to_dict()] if record else []}
             records = self.bank.query(task_id=task_id, strategy_id=strategy_id)
             return {"bank": "experience", "count": len(records),
                     "records": [r.to_dict() for r in records]}
         if bank == "strategic":
+            if entry_id is not None:
+                entry = self.sbank.get(entry_id, version=rule_version)
+                from or_harness.strategy.rule_versions import inspect_versions
+                return {"bank": "strategic", "count": int(entry is not None), "entries": [entry.to_dict()] if entry else [],
+                        "rule_history": inspect_versions(self, entry_id)}
             entries = self.sbank.list(status=status, strategy_id=strategy_id)
             return {"bank": "strategic", "count": len(entries),
                     "entries": [e.to_dict() for e in entries]}
@@ -7171,6 +7200,10 @@ class ORHarness:
             if dry_run:
                 continue
             entry = self.sbank.get(plan["entry_id"])
+            if entry.rule:
+                from or_harness.strategy.rule_versions import record_effect
+                recorded[-1] = record_effect(self, entry.entry_id, item)
+                continue
             entry.effect_attribution.append(item)
             self.sbank.update(entry)
             if plan["lifecycle_action"] and not defer_lifecycle:
@@ -7197,6 +7230,10 @@ class ORHarness:
                 continue
             entry = self.sbank.get(plan["entry_id"])
             if entry is None:
+                continue
+            if entry.rule:
+                from or_harness.strategy.rule_versions import record_effect
+                recorded[-1] = record_effect(self, entry.entry_id, item)
                 continue
             entry.effect_attribution.append(item)
             self.sbank.update(entry)
@@ -7504,20 +7541,34 @@ class ORHarness:
         the framework's ADMINISTRATIVE check — it does not judge whether the
         adoption helped (that is the outcome's job).
         """
-        declared = [str(e).strip() for e in (used_entry_ids or [])
-                    if str(e).strip()]
+        requested_versions = {}
+        declared = []
+        for raw in used_entry_ids or []:
+            if isinstance(raw, dict):
+                entry_id, version = str(raw.get("entry_id") or "").strip(), raw.get("version")
+            else:
+                entry_id, sep, version = str(raw).strip().partition("@")
+                version = version if sep else None
+            if entry_id:
+                declared.append(entry_id)
+                if version is not None:
+                    requested_versions[entry_id] = int(version)
         # De-duplicate by number, preserving first-seen order.
         declared = list(dict.fromkeys(declared))
         known: List[str] = []
         unknown: List[str] = []
         versions = {}
+        rule_versions = {}
         from or_harness.world_model.conditions import put_value
         with self.store.transaction() as conn:
             for entry_id in declared:
-                entry = self.sbank.get(entry_id)
+                entry = self.sbank.get(entry_id, version=requested_versions.get(entry_id))
                 if entry is not None:
                     known.append(entry_id)
-                    versions[entry_id] = put_value(conn, self.store, "knowledge", entry.to_dict())
+                    from or_harness.strategy.rule_versions import frozen_entry
+                    versions[entry_id] = put_value(conn, self.store, "knowledge", frozen_entry(entry))
+                    if entry.rule:
+                        rule_versions[entry_id] = entry.rule["view_version"]
                 else:
                     unknown.append(entry_id)
         note = ("entry numbers the agent declared this attempt ADOPTED — a "
@@ -7533,8 +7584,8 @@ class ORHarness:
             "known_entry_ids": known,
             "unknown_entry_ids": unknown,
             "versions": versions,
-            "version_source": "entry value observed at adoption declaration",
-            "note": note,
+            "rule_versions": rule_versions,
+            "basis": "declared_frozen", "state": "declared" if declared else "declared_none",
         }
 
     def _check_predictions(self, record: ExecutionRecord) -> List[Dict[str, Any]]:
@@ -7588,7 +7639,12 @@ class ORHarness:
             return []
         events: List[Dict[str, Any]] = []
         for entry_id in declared:
-            entry = self.sbank.get(entry_id)
+            ref = (used.get("versions") or {}).get(entry_id)
+            if ref:
+                from or_harness.world_model.conditions import get_value
+                entry = StrategicEntry.from_dict(get_value(self.store, ref))
+            else:
+                entry = self.sbank.get(entry_id)  # legacy declaration without a frozen value
             if entry is None:
                 continue  # an unknown number is a citation, not a fact
             if not entry.quality_estimated:
@@ -7859,6 +7915,11 @@ class ORHarness:
             action = self.actions.by_execution(execution_id)
             resolved_episode = action.episode_id if action is not None else None
         report = verify_task_result(record, check or {})
+        if (check or {}).get("rule_assessments") is not None:
+            assessments = (check or {})["rule_assessments"]
+            if not isinstance(assessments, list) or not all(isinstance(x, dict) for x in assessments):
+                raise ValueError("rule_assessments must be a list of sourced assessments")
+            report["rule_assessments"] = copy.deepcopy(assessments)
         # Optional sourced method/acceptance assessment stays on the existing
         # check record. It never changes the checker's pass/fail verdict.
         # Merely matching method prose is not evidence of faithful execution.
@@ -7892,6 +7953,14 @@ class ORHarness:
         report["action_id"] = action.action_id
         # (2) The fact annotation.
         self.bank.set_task_check(execution_id, report)
+        rule_validation = None
+        if self.episode_closeout_record(task_id, resolved_episode) is not None:
+            from or_harness.strategy.rule_versions import record_uses
+            refreshed = self.bank.get(execution_id) or self.bank.get_pending(execution_id)
+            rule_validation = record_uses(self, [refreshed])
+            if rule_validation.get("affected_entry_ids"):
+                from or_harness.strategy.rule_versions import sync_rule_entries
+                rule_validation["index_sync"] = sync_rule_entries(self,rule_validation["index_entry_ids"],rule_validation["affected_entry_ids"])
         # (3) REPUBLISH if this correction can change the calibration. A
         # late verdict on an episode still in the window changes a
         # calibration sample, so the published summary must be rebuilt —
@@ -7907,6 +7976,8 @@ class ORHarness:
             "action_id": action.action_id,
             "staged": staged,
         }
+        if rule_validation is not None:
+            result["rule_validation"] = rule_validation
         if republished is not None:
             result["calibration_republished"] = {
                 "reason": ("this task-result check can change a calibration "

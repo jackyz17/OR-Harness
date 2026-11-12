@@ -29,6 +29,7 @@ made once instead of being repeated on every induction.
 from __future__ import annotations
 
 import time
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 from or_harness.core.schema import (
@@ -132,9 +133,10 @@ class StrategicBank:
                 "(entry_id, strategy_id, scope_level, status, payload) "
                 "VALUES (?,?,?,?,?)",
                 (entry.entry_id, entry.strategy_id, self._scope_token(entry),
-                 entry.status, self.store.dumps(entry.to_dict())))
+                 entry.status, self.store.dumps(self._encode(entry))))
             from or_harness.world_model.conditions import record_availability
-            record_availability(conn, self.store, entry.entry_id, entry.predicates)
+            record_availability(conn, self.store, entry.entry_id, entry.predicates,
+                                present=self._available(entry))
         return entry.entry_id
 
     def next_number(self) -> int:
@@ -159,17 +161,18 @@ class StrategicBank:
                 "UPDATE strategic_entries SET strategy_id=?, scope_level=?, "
                 "status=?, payload=? WHERE entry_id=?",
                 (entry.strategy_id, self._scope_token(entry), entry.status,
-                 self.store.dumps(entry.to_dict()), entry.entry_id))
+                 self.store.dumps(self._encode(entry)), entry.entry_id))
             if cur.rowcount == 0:
                 raise StorageError(f"unknown entry_id {entry.entry_id!r}")
             from or_harness.world_model.conditions import record_availability
-            record_availability(conn, self.store, entry.entry_id, entry.predicates)
+            record_availability(conn, self.store, entry.entry_id, entry.predicates,
+                                present=self._available(entry))
 
-    def get(self, entry_id: str) -> Optional[StrategicEntry]:
+    def get(self, entry_id: str, *, version=None) -> Optional[StrategicEntry]:
         row = self.store.conn.execute(
             "SELECT payload FROM strategic_entries WHERE entry_id=?",
             (entry_id,)).fetchone()
-        return self._decode(row) if row else None
+        return self._decode(row, version=version) if row else None
 
 
     def list(self, *, status: Optional[str] = None,
@@ -193,6 +196,30 @@ class StrategicBank:
         return int(self.store.conn.execute(
             "SELECT COUNT(*) AS n FROM strategic_entries").fetchone()["n"])
 
+    def material_candidates(self, *, strategy_ids=(), execution_ids=(), families=(), semantic_ids=(), limit=8):
+        """Select small identities before expanding bodies or audit logs."""
+        wanted, candidates = set(map(str, semantic_ids)), []
+        execution_ids = set(map(str, execution_ids))
+        cited_v2 = set()
+        if execution_ids:
+            marks = ",".join("?" for _ in execution_ids)
+            cited_v2 = {r[0] for r in self.store.conn.execute(
+                "SELECT DISTINCT entry_id FROM rule_events WHERE kind='evidence' AND execution_id IN ("+marks+")", sorted(execution_ids))}
+        rows = self.store.conn.execute("SELECT entry_id,strategy_id,json_extract(payload,'$.pattern.predicates.family') AS family,"
+            "json_extract(payload,'$.claim.evidence') AS evidence,json_extract(payload,'$.created_at') AS created_at,"
+            "json_extract(payload,'$.rule.state') AS rule_state FROM strategic_entries")
+        for row in rows:
+            evidence = json.loads(row["evidence"]) if row["evidence"] else []
+            cited = row["entry_id"] in cited_v2 or any(str(e.get("execution_id")) in execution_ids for e in evidence)
+            reasons = [name for name, matches in (("cites this batch's evidence",cited),
+                ("semantic",row["entry_id"] in wanted),("strategy_id",row["strategy_id"] in strategy_ids),
+                ("same family",row["family"] in families)) if matches]
+            if reasons:
+                candidates.append((not cited,row['rule_state']!='active',row["entry_id"] not in wanted,
+                                   -float(row["created_at"] or 0),row["entry_id"],reasons))
+        candidates.sort()
+        return [(self.get(row[4]),row[5]) for row in candidates[:limit]], len(candidates)
+
     def matching(self, profile, *,
                  include_dormant: bool = False) -> List[StrategicEntry]:
         """Entries whose predicates match the profile.
@@ -214,10 +241,10 @@ class StrategicBank:
                     (entry_id,)).fetchone()
                 if not row:
                     continue
-                entry = StrategicEntry.from_dict(Store.loads(row["payload"]))
+                entry = self._decode(row)
                 entry.last_consulted_at = at
                 conn.execute("UPDATE strategic_entries SET payload=? WHERE entry_id=?",
-                             (self.store.dumps(entry.to_dict()), entry_id))
+                             (self.store.dumps(self._encode(entry)), entry_id))
 
     # -- lifecycle -----------------------------------------------------------------
 
@@ -279,6 +306,8 @@ class StrategicBank:
         entry = self.get(entry_id)
         if entry is None:
             raise StorageError(f"unknown entry_id {entry_id!r}")
+        if entry.rule:
+            return entry, ["v2 maturity is determined by sourced version checks; management request retained as a diagnostic"]
         transitions: List[str] = []
         if entry.status == "dormant":
             # Reuse the existing wakeup; a dormant entry is not promoted from
@@ -433,9 +462,23 @@ class StrategicBank:
                     f"illegal effect_attribution lifecycle_action {action!r} "
                     f"(expected one of {list(LIFECYCLE_ACTIONS)})")
 
+    def _available(self,entry):
+        if not entry.rule:
+            return True
+        if entry.rule.get('state')!='active' or entry.rule.get('active_version') is None:
+            return False
+        row=self.store.conn.execute('SELECT state FROM rule_versions WHERE entry_id=? AND version=?',
+                                    (entry.entry_id,entry.rule['active_version'])).fetchone()
+        return row is not None and row['state'] in ('active','legacy')
+
     @staticmethod
-    def _decode(row: Any) -> StrategicEntry:
+    def _encode(entry):
+        from or_harness.strategy.rule_versions import storage_payload
+        return storage_payload(entry)
+
+    def _decode(self, row: Any, *, version=None) -> StrategicEntry:
         try:
-            return StrategicEntry.from_dict(Store.loads(row["payload"]))
+            from or_harness.strategy.rule_versions import hydrate_entry
+            return hydrate_entry(self.store, StrategicEntry.from_dict(Store.loads(row["payload"])), version)
         except (StorageError, ValueError, KeyError) as exc:
             raise StorageError(f"corrupt strategic entry: {exc}") from exc

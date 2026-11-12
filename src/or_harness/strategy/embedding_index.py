@@ -328,6 +328,9 @@ def document_entry(entry: StrategicEntry) -> str:
     index must be rebuilt for the knowledge layer (``orx rebuild-index
     --layer strategic``), never silently treated as fresh.
     """
+    if entry.rule:
+        body = entry.rule.get("body") or {}
+        return "\n".join(str(body.get(k) or "") for k in ("when", "do", "expect"))
     parts: List[str] = []
     parts.extend(str(note) for note in entry.applicability if str(note).strip())
     if entry.risk_conditions:

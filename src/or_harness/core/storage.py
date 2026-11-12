@@ -231,6 +231,24 @@ CREATE TABLE IF NOT EXISTS capability_predictions (
 );
 CREATE INDEX IF NOT EXISTS idx_capability_preds_task
     ON capability_predictions(task_id);
+
+-- Rule bodies use condition_values; evidence/checks and use events append
+-- independently so neither adoption nor evidence extends the rule prose.
+CREATE TABLE IF NOT EXISTS rule_versions (
+    entry_id TEXT NOT NULL, version INTEGER NOT NULL, body_ref TEXT NOT NULL,
+    metadata_ref TEXT NOT NULL, created_at REAL NOT NULL, state TEXT NOT NULL,
+    PRIMARY KEY(entry_id,version)
+);
+CREATE TABLE IF NOT EXISTS rule_checks (
+    check_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, version INTEGER NOT NULL,
+    kind TEXT NOT NULL, state TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_checks_version ON rule_checks(entry_id,version);
+CREATE TABLE IF NOT EXISTS rule_events (
+    event_id TEXT PRIMARY KEY, entry_id TEXT NOT NULL, version INTEGER NOT NULL,
+    execution_id TEXT, kind TEXT NOT NULL, payload TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rule_events_version ON rule_events(entry_id,version);
 """
 
 #: Schema version marker (idempotent). Written once per store; M1 = "wm1",

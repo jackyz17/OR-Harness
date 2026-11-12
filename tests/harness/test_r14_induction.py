@@ -87,7 +87,7 @@ class TestWholeRecordMaterial(HarnessTestCase):
         rec.trajectory = []
         rec.failures = []
         h.record(rec)
-        out = h.induction_material()
+        out = h.induction_material(view="detail")
         entry = out["material"][0]
         # Full task text (not a 280-char excerpt): the coefficients and
         # bounds survive.
@@ -129,7 +129,7 @@ class TestWholeRecordMaterial(HarnessTestCase):
             solver={"name": "highs", "code_hash": "h"}, source="executed",
             task_text_digest=task_text_digest(task), cir_snapshot=cir)
         h.record(rec)
-        entry = h.induction_material()["material"][0]
+        entry = h.induction_material(view="detail")["material"][0]
         cir_out = entry["problem"]["cir"]
         # The retained constraint expression travels (existing structure).
         self.assertEqual(cir_out["elements"]["constraints"][0]["expr"],

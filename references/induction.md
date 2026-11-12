@@ -1,223 +1,200 @@
-# Induction: evidence, methods, and verification
+# Induction: compare executions, freeze a rule, test transfer
 
-Use this reference to review completed episodes and create or revise reusable strategies.
+The normal interaction is one material read and one short submission. The
+agent identifies a mechanism and its necessary premises; the framework
+budgets material, resolves evidence, freezes versions and records checks.
+Execution evidence and reusable rule bodies remain separate.
 
-Contents: [Read evidence](#1-read-evidence) · [Form a strategy](#2-form-or-revise-a-strategy) · [Scope and verification](#3-match-verification-to-the-claim) · [Submit](#4-submit) · [Reuse, declare adoption, and manage](#5-reuse-declare-adoption-and-manage)
+## Close before taking material
 
-## 1. Read evidence
-
-Read a bounded batch from the evidence bank:
+Execute, check, record every attempt, and close the episode first. Existing
+rule-use results are registered even when new induction will be skipped.
+The close-out interface accepts an actual judgement:
 
 ```bash
-orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K]
+orx close-episode --task T --episode E --terminal completed \
+  --induction-decision allow --induction-reason "a reusable reduction needs checking"
+# Other decisions: skip, pending. Inspect the saved induction_gate/source.
 ```
 
-Inspect task semantics and constraint relationships, the actual method, outcomes, task checks, failures, cost, and the chronological attempt chain. Inspect associated code/model/trajectory when the summary lacks the method or structure needed for reasoning. Optionally declare that no new knowledge is needed (`orx induce` with no relations): the review still runs the utility lifecycle and is recorded. When nothing new is worth recording, this empty review is the **ONLY** correct form — never create a "no new knowledge" / "adopt" placeholder entry (the framework refuses such a placeholder, or an empty method, at submission). Review `existing_knowledge` before deciding whether to add or leave it unchanged.
+Python: `close_episode(T, E, induction_decision={"state":"allow", "source":
+"closeout_reviewer", "reason":"..."})`. An already recorded `finish_task`
+outcome may carry the same `induction_decision`; close-out records its source
+and action reference. `skip` and `pending` stop before material retrieval or
+expansion. A later explicit close-out judgement can resolve a pending state.
+This interface adds no H+ formula, threshold or calibration. Pre-solve
+`capability_gain` is a forecast, not the actual start decision. While an H+
+close-out judgement is unavailable, explicitly requesting material or
+submitting a rule uses `source=explicit_induction_transition`.
 
-**One task at a time, without losing cross-task material.** For a fast per-task review, read THIS task's chain with `--task T`. The response then fills `related_history` with a SMALL semantically related set from other tasks, so the narrowing does not hide a comparable method, a failure, or a boundary case:
+## Read a small comparison pack
 
-- `query_basis` is built from the batch's OWN recorded method (performed preferred, else the plan marked `planned_only`), the SAVED task text, and the structural coupling (family + coupling features) — **no model call**, and the outcome / task number / solver name are deliberately excluded so the search is not biased toward successes. Repeated steps are de-duplicated and the steps of DIFFERENT attempts are interleaved, so a later attempt's changed method is not buried under the first attempt's long step list; the query is length-bounded (`missing[]` names any absent task text / structure / performed method). You may rewrite the query when researching a specific tool-chain fix.
-- `executions[]` are UNFILTERED (a failed or cross-cell execution is exactly the material a boundary check needs) and task-REPRESENTATIVE: one execution per `task_id` first, then a second same-task attempt while slots remain, preferring a recorded failure or a method change — so one task's near-identical attempts cannot fill the whole window. `execution_selection` reports the counts; they are a READING-WINDOW fact, never support strength. `knowledge[]` are REFERENCES into `existing_knowledge` (the entry body is sent ONCE there).
-- Three facts stay separate: `no_hits: true` (ran, matched nothing — **not** proof that no counterexample exists), `failure` (could not run at all — reported with a hint, never as "nothing similar exists"), and `degraded_layers`.
-- `--related-top-k K` sets the budget (default 5; `0` disables the channel and restores the plain whole-batch behaviour). A `similarity` value is a DISCOVERY signal, never support strength; a hit does not raise a claim's support, and the reviewer still predicts, executes and checks what it picks.
+```bash
+orx induction-material --task T
+orx induction-material --task T --purpose implementation
+```
 
-**Read WHOLE records, not a summary.** The material returns each SELECTED record's full content: the WHOLE task text (by version), the problem's retained CIR structure (constraint expressions/kinds, decision/entity names, relations, coupling groups) beside its counts, the method's full `steps`/`why`/`fallback`, the task check's checked fields and conclusion, the failures and the trajectory. Reading fewer, complete records beats reading many summaries that dropped the decisive bound or reason.
+The default `induction-material/2` response contains the current task,
+related executions, short existing rules and their states. `purpose=modelling`
+prioritizes other source problems sharing constraint relationships;
+`implementation` prioritizes actual failures/repairs and implementation
+contrasts. Recorded methods, saved problem text and retained structure feed
+one existing embedding/index lookup. Similarity, family and structural
+buckets identify candidates; they never establish necessary premises or
+method equivalence. Unavailable retrieval differs from a successful search
+with no hits. Local hashing is a deterministic test backend, not a semantic
+retrieval claim.
 
-- **Task texts are VERSIONED.** `task_texts` holds each retained version ONCE for the response, keyed `task_id|task_text_digest`; an entry references its version by `task_text_ref`. A version not retained is reported (`unknown`) and is **never** replaced by another version's text.
-- **The full CIR is NOT recovered.** What you get is the EXISTING retained structure plus the counts — cost coefficients and bounds are read from the WHOLE task text and the method, and are not required to appear in `problem.cir`.
-- **Existing knowledge is UNIFIED and WHOLE.** `existing_knowledge[]` is the UNION, by `entry_id`, of the structural matches (`strategy_id` / cites-this-batch's-evidence / same-family) and the SEMANTIC knowledge hits from the same retrieval — so an entry reached only by text (a cross-family hit in particular) is offered too, and `related_by` lists every reason (the family is a HINT, never a veto). Each entry is expanded WHOLE through the entry's own serializer (full `claim` with its `method`/`conditions`/`evidence`, `applicability`, `risk_conditions`, `verification`, `status`, `support_n`, `provenance`, `effect_attribution`) and appears ONCE; `related_history.knowledge` points at it by `body_ref`. **`status` / `verification_state` / `support_n` are as STORED** — a hit, a full expansion or a de-duplication never verifies an entry or adds support, and reading is NOT adoption (`last_consulted_at` does not move on this path). De-duplication is by `entry_id` ONLY: the framework never declares two numbers to be the same knowledge.
-- **Reading volume is bounded by selection, not by clipping.** `--limit`, `--related-top-k` and the character budget control how many records come back; when the budget is reached, WHOLE records are omitted (reported with `omitted_execution_ids` + `next_cursor`), never silently truncated field-by-field.
-- **The batch's saved joint H+ is included** under `joint_hplus`: the H+ stances from the SAME strategy predictions that were made for these executions, with their `assessment` kept apart (`expected` / `none` / `insufficient_basis` / unstated). It is EXPLANATORY — weigh it yourself; it does not gate induction, does not require publication, and is not a post-hoc effect proof.
+Rows keep source identity, actual method and its source, a separately labelled
+plan, decisive checks/failures, measured resources/masks/scope and execution
+IDs. Absent performed-method evidence is unknown. Explicit source/base IDs
+and identical retained original content join retries, seeds and branches as
+same-source controls; the framework does not guess lineage from ID suffixes.
+Unknown lineage stays visible. Constraint coefficients may be in saved text;
+the framework does not reconstruct a full model from CIR summaries.
 
-- `execute --method` records a plan. A matching `method_performed` receipt or inspected execution artifacts support what actually ran. Keep the source explicit; a plan alone is not performed-method evidence.
-- A solver status and an independent `task_check` are separate facts. An absent task check is unobserved, not passed. An `error` does not establish model infeasibility.
-- Several attempts with one `task_id` form one task chain. Preserve failed attempts and their costs; do not count retries as independent tasks.
-- Successes, failures, different method names, and different structural cells may all inform an abstraction. Sample counts and observation hints organize facts; they do not determine which material may be reviewed.
-- Read missing fields as unknown. Follow `budget.next_cursor` for omitted material when it is needed; do not enlarge the batch merely to collect more records. A cursor is a READ POSITION, never a record that the earlier material was already induced.
+`OR_HARNESS_INDUCTION_MATERIAL_CHARS` defaults to 32000. The entire compact
+JSON result is counted, including history, old knowledge, H+, diagnostics,
+metadata and (for CLI) the `result`/`summary` envelope. `budget.chars_used`
+is the actual serialized character count, not a token/byte estimate. Selection
+precedes expansion. Oversized methods/text/rules are whole-value references,
+never misleading prefixes. The pack protects a current case, cross-source
+comparisons and relevant old rules before filling spare space. Counts and
+`budget.next_cursor` report omissions; use `--cursor` only when more evidence
+is needed. A read session records every displayed case, including previous
+pages, so it cannot later become an unseen validation case.
 
-A structural cell organizes statistics and assists retrieval. Similar coupling scores do not establish the semantic premises of a method; two unknown profiles do not establish structural similarity. Compare the actual relationships before pooling evidence or transferring a technique.
+```bash
+orx inspect --bank experience --execution ex_123
+orx inspect --bank strategic --entry 3
+orx inspect --bank strategic --entry 3 --rule-version candidate
+orx inspect --bank values --value 'rule_fact:...'
+# Optional legacy expanded diagnostic; not the bounded normal pack:
+orx induction-material --task T --view detail
+```
 
-## 2. Form or revise a strategy
+## Submit when / do / expect
 
-Work from the execution content, using these steps:
+```bash
+orx induce --relation '{"when":"For fixed Y, feasible integer X is an interval and the objective is monotone in X.","do":"Enumerate Y, derive both X endpoints, select the endpoint from the coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.","expect":"Preserve the original integer optimum and all stated constraints.","evidence":["ex_123"],"material_id":"induction_material:..."}'
+```
 
-1. **Compare relationships.** Identify how constraints, variables, and decisions interact. Shared solver names or successful outcomes do not establish a common mechanism.
-2. **Explain the operative step.** Identify the modeling, decomposition, search, checking, or repair step that matters. Explain why it works and state the premises it requires. A before/after difference alone does not establish causality.
-3. **Check the boundary.** Vary a necessary premise in your reasoning and examine what fails. Distinguish loss of correctness, feasibility, and efficiency. A hypothetical counterexample guides reasoning; it is not an observed execution.
-4. **Separate support.** Distinguish mathematical reasoning, observed task results, and measured quality/cost/risk effects. State which source supports each part and what remains unchecked.
-5. **Compare existing knowledge.** Compare the SPECIFIC premise, operation and effect — not the strategy name or family label. An existing entry is a claim to inspect, not a settled fact: a `verified` tag says a declared assertion held, not that the claim is correct or reaches far enough. Two mechanisms are different when their premise or their operation differs: an integer-domain choice does NOT cover a boundary selection, a variable elimination, a feasibility check or an optimality argument, and one constraint's translation does not cover another's. Add a distinct mechanism, or produce nothing when existing knowledge already covers the finding. Knowledge is ADDITIVE: a revision or a refinement is a NEW entry, not an in-place edit or a merge. Entry count is not the objective.
+Use real IDs from the read; `material_id` may be omitted when the latest
+read for the evidence task is intended. All three paragraphs are nonempty,
+complete and executable; supporting detail belongs behind references. The
+framework allocates the entry number and default subject, resolves facts and
+roles, derives support scope and writes a candidate version. Necessary
+premises belong in `when`; family/cell discovery does not auto-expand them.
+Optional `predicates` narrow discovery but do not replace premise assessment.
 
-**Novelty is relative to the library, not to operations research.** "New" means the library does not already cover the mechanism that a later task can use — not that the mechanism is a research contribution. A textbook method can be worth recording WHEN its condition, operation, reason and boundary are stated ("this is an ordinary LP/MILP and a solver solved it" is not enough). Do not reject a standard method merely because it is standard, and do not require more than one task for a method whose correctness rests on a stated argument and premise.
-
-**Failures and engineering trivia.** A failed, insufficient or unverified execution is a CLUE about a boundary, not evidence that the method was applied correctly; it can inform a conditional method but never stands in for one. Keep engineering facts (pure API names, status-string formats, package compatibility, debug-log fixes) out of the knowledge: they are not a reusable modelling mechanism. Do not, however, refuse a FAILURE ANALYSIS that states a real mechanism and its boundary.
-
-Write a compact strategy:
-
-**condition → operation → reason → expected effect → boundary**
-
-Cite representative executions and relevant counterexamples. Include measured cost and risk when available; leave unmeasured effects unknown. A strategy may be a reusable step rather than an entire solve plan or a solver choice.
-
-## 3. Match verification to the claim
-
-Separate the following conclusions, even when one execution suggests all three:
-
-| Conclusion | Required support | Permitted scope |
+| Operation | Input | Result |
 |---|---|---|
-| Execution observation | Recorded method, outcome, and any independent task check | What happened on the cited task |
-| Conditional method correctness | An inspectable argument covering the premises, transformation, and solution preservation | Tasks satisfying the checked premises; empirical performance remains unestablished |
-| Empirical advantage | Comparable measured executions and checks for the claimed quality, cost, or risk effect | The tested tasks and conditions; broader performance remains uncertain |
+| New rule | paragraphs + evidence IDs | New candidate, unless its canonical body already exists |
+| Add evidence | `entry_id`, `operation:"add_evidence"`, evidence | Same body/version, independent evidence events |
+| Revise | `entry_id`, `operation:"revise"`, complete paragraphs | New candidate version under the same number |
+| Merge | `entry_id`, `operation:"merge"`, `merge_entry_ids`, `merge_reason` | Explicit source links; source rules stay available until the target and required source regressions pass |
 
-One execution can reveal a conditional method. Check its argument rather than requiring a second task to substitute for reasoning. More independent tasks strengthen empirical claims about broader quality, cost, or risk effects, but the task count is reported as a fact — two tasks are not a proof, and no count substitutes for an inspectable derivation.
+Exact repeats are idempotent. Same-mechanism new cases should explicitly
+select the original ID. Different names/families do not force different IDs;
+similarity does not automatically merge meanings. `target_entry` and
+`target_entry_id` are compatibility aliases for the explicit `entry_id`.
+Changing the body requires revision or merge. Only a content change advances
+the version. Ordinary recall exposes one active version. A pending revision
+does not replace the old active version, and a suspended candidate cannot be
+promoted through a maturity flag. To record no new rule, use `orx induce
+--note "..."` without `--relation`.
 
-**Abstract the numbers into conditions — do not reject a method because a coefficient changed.** From this task and the related history, ask: which key relation made the operation work? Which premise, when changed, breaks it? State it as `condition → operation → reason → effect → boundary`. A result that varies with the coefficients usually means the applicability condition was not yet written, not that the method is non-transferable. Example — for continuous `x,y>=0`, minimising `x+y` subject to `ax+by>=D` with `a>=b>0`, we have `ax+by <= a(x+y)`, so `x+y >= D/a`; if `x=D/a, y=0` satisfies the OTHER constraints it attains that bound and is optimal. The reusable move is "derive a lower bound, then construct and check a feasible solution attaining it", not "always give the resource to the highest-yield side"; a blocking constraint leaves the bound true but removes the optimality proof, and an integer domain needs its own check. This illustrates the abstraction — it is not a built-in rule and does not apply to every task.
+## Check transfer, boundaries and regressions
 
-### Method example: bound and monotone reduction
+Freezing a new rule is followed by a targeted trial or a historical holdout.
+At execution, declare `--used-entry-ids 3@1`; an explicit candidate version is
+permitted. The adoption snapshot freezes that exact immutable body. `''`
+means declared none; an omitted option means undeclared. Matching names or
+recall alone never prove adoption or faithful use.
 
-For an integer problem with `Y >= 0`, `X + Y <= 1000`, and `X >= 2Y + 300`, these constraints imply `3Y <= 700`, hence `Y <= 233`.
-
-To justify reducing two-dimensional search to one-dimensional enumeration, check:
-
-1. **Coverage:** the enumerated finite range contains every feasible integer `Y`.
-2. **Subproblem feasibility:** for each `Y`, derive the feasible integer `X` interval using all applicable constraints and variable bounds; skip empty intervals.
-3. **Boundary optimality:** with `Y` fixed, establish monotonicity of the objective in **X** and choose its minimizing or maximizing feasible boundary as appropriate.
-4. **Global preservation:** examine every feasible `Y` and compare its best `X`; this covers an optimum of the original problem.
-
-Inspect the actual model and code to confirm these premises and steps. Record the argument and its source in the claim or applicability note. Merely checking `Y >= 0`, a feasible solution, or an `optimal` status does not verify this reduction.
-
-A loose but valid outer bound can preserve correctness while increasing cost. A bound that excludes feasible solutions, omitted feasibility constraints, or an unjustified boundary choice can destroy solution preservation. Extending the method beyond an interval-valued subproblem requires a new argument.
-
-**Counter-check example (a derived argument, not a built-in rule).** For a minimise problem with `X >= Y + 200`, `Y >= 0`, and positive costs `50X + 30Y`, rewrite the objective as `50X + 30Y >= 50(Y + 200) + 30Y = 10000 + 80Y >= 10000`; then verify `(X, Y) = (200, 0)` satisfies the REMAINING constraints to conclude the bound is attained. Note that "X is more expensive than Y" is NOT a necessary condition here — swapping the two cost coefficients still yields the same boundary solution, so a claim that rests on the cost ORDER would be a false generalisation. This is an example of how to DERIVE and counter-check a bound; it is not a framework rule. Derive a technique from the TASK like this AFTER the fact is fine as an argument, but it must be kept distinct from the method the run ACTUALLY performed: do not claim the run used this derivation, or that it measured a speed-up, unless a recorded `method_actual` receipt says so.
-
-**Recording a method (`method_actual` / `--method`).** Write the ACTUAL modelling, transformation, bound, search or verification treatment AND the reason it works — not "set up variables -> call MILP -> read result". For example:
-
-```json
-{
-  "name": "bound-then-monotone-enumeration",
-  "steps": [
-    "derive Y <= (1000 - 300) / 3 = 233 from X >= 2Y + 300 and X + Y <= 1000",
-    "enumerate integer Y in [0, 233]",
-    "for each Y, solve the X subproblem over its feasible interval",
-    "keep the best objective across Y (monotone boundary in X)"
-  ],
-  "why": "the two constraints bound Y independently of the objective, so a finite one-dimensional scan covers every feasible (X, Y)",
-  "fallback": "run the full two-variable MILP when the derived bound fails to hold"
-}
-```
-
-A plan is INTENT, not a performed method: the framework keeps `method_planned` and `method_actual` separate and never copies the plan into the actual, so record the performed method through the run's own `method_performed` receipt (or `--method-actual`) when you have it.
-
-### Empirical example: lower cost at comparable quality
-
-Compare baseline and proposed-method executions on the same tasks, with compatible settings, the same measurement scope, and measured values on both sides. Check the quality condition and the claimed cost dimension separately. Count independent tasks actually covered by those checks.
-
-Use paired comparisons for task-level advantages. An unpaired group comparison can describe those groups, but does not isolate a method effect when task difficulty or other conditions differ. Do not convert a crashed baseline or a missing metric into a fabricated numerical value.
-
-### Framework checks
-
-The framework computes declared assertions over recorded facts. Choose assertions that cover the claim, not merely ones likely to pass.
-
-| Assertion | What it checks |
-|---|---|
-| `probe` with `roles`, `path`, and `equals` / `min` / `max` / `in` | The referenced record values satisfy the declared condition |
-| `status` with `roles` and `status` | The referenced execution statuses match |
-| `comparison` with `metric`, `roles_a`, `roles_b`, `direction`, and `min_gap` | The measured difference between the specified sides |
-| `code_unchanged` with `roles` | The referenced records share a code hash — **only** for a claim that the SAME script/code was REUSED |
-| `code_changed` with `roles` | The referenced records span ≥2 DIFFERENT code hashes — for a claim that the formulation WAS changed |
-
-Choose the assertion that MATCHES the claim. A claim about a CHANGE must use `code_changed`; running `code_unchanged` against it makes the assertion fail and reports the wrong thing (a refuted ASSERTION, not a refuted claim). `code_changed`/`code_unchanged` are symmetric: each is the other's failure case, and a record without a code hash makes either ``insufficient_evidence``.
-
-For a comparison, `direction` describes side A relative to side B. `mode: "paired"` uses same-task pairs; unmatched records do not establish paired support. `aggregation: "all"` requires every pair to meet the condition; `"mean"` checks the batch average. Match the wording to that scope.
-
-Report the verdict accurately. These states describe **your DECLARED assertion only** — never the validity of the knowledge:
-
-- `verified`: the declared computable assertions passed within their recorded scope.
-- `fact_checked`: execution facts were read; the method argument and causal or transferable claims were not thereby certified.
-- `insufficient_evidence`: a required fact, metric, probe path, or comparison counterpart was unavailable.
-- `refuted`: a computable assertion FAILED on relevant evidence. This refutes the **ASSERTION**, not necessarily the natural-language claim. When you see `refuted`, first self-check that the assertion MATCHES the claim (e.g. `code_unchanged` is inapplicable to a claim about CHANGING the formulation — use `code_changed`); a mismatch is an assertion error, not a knowledge failure.
-
-Keep agent-checked derivations and premises distinct from framework-computed checks. The current runtime has no automatic mathematical-proof verdict. A natural-language argument must be inspected on its merits; do not represent it as framework-certified correctness. Identify unchecked claim parts even when other assertions pass.
-
-## 4. Submit
-
-Submit one strategy with `orx induce --relation '<json>'`. Use actual execution IDs and role names that explain their part in the claim. The framework reads task identities from the records; do not create task IDs to satisfy a publication count.
-
-**Knowledge is ADDITIVE.** Each submission creates a NEW entry with a NUMBER the framework assigns (`1`, `2`, …). The number is the entry's identity: you do not invent it, a re-submission is a SEPARATE entry (never an in-place rewrite), and a revision or a contradiction is its own entry. A retired number is never reused. To point at an existing entry, cite its number in `--used-entry-ids` when you adopt it.
-
-**The framework checks only administrative matters and payload SHAPE at submission:**
-
-- the claim payload is well-formed and storable;
-- every cited execution id exists and is real `executed` evidence;
-- the assigned number is valid;
-- the write (and the later index sync) succeeds;
-- **shape**: a placeholder claim (`no new knowledge` / `nothing to add`) or an empty `method.steps` is refused. This is SHAPE only, never a value judgement — "nothing new" is recorded by the empty review (no `--relation`), and whether a real claim is WORTH publishing is still YOUR call.
-
-**Publication is YOUR decision.** A submitted claim is offered within the scope you declared — the framework does NOT gate on the content and does NOT certify the conclusion. Any `check` block (or a standalone `--verify`) you supply is EVALUATED and RECORDED as your own audit trail on the entry's `verification` block (`verified` / `fact_checked` / `insufficient_evidence` / `refuted`); it is never required to publish. With no declared check, the framework reads the cited facts (`fact_checked`) and says so. A claim it cannot decide is stored as `insufficient_evidence`, honestly labelled.
-
-The following is a template. Replace the execution ID and example family with recorded values, and include only a method argument you have actually checked:
+Record a matching `method_performed` receipt with the execution's
+`OR_ACTION_ID`, or a sourced inspection of captured artifacts. `check-task`
+may attach a small optional `rule_assessments` list:
 
 ```json
-{
-  "subject": "method:bound_then_monotone_enumerate",
-  "kind": "conditional_fact",
-  "claim": "For a two-variable integer problem with a valid finite Y range and an interval-valued feasible X subproblem, enumerate all Y and choose the objective-best X boundary after establishing monotonicity in X. This preserves an optimum; it does not establish a cost advantage.",
-  "method": {
-    "name": "bound_then_monotone_enumerate",
-    "steps": [
-      "derive a valid finite integer Y range",
-      "derive the feasible integer X interval for each Y",
-      "choose the objective-best X boundary and compare all Y"
-    ]
-  },
-  "evidence": [
-    {"execution_id": "ex_REAL_EXECUTION_ID", "role": "observed_application"}
-  ],
-  "conditions": {
-    "predicates": {"family": "planning"},
-    "note": "Check range coverage, per-Y feasibility, monotonicity in X, and exhaustive enumeration against the model and executed code. Record the actual argument and observed result; report any unchecked premise."
-  }
-}
+{"entry_id":"3","version":1,"applicability":"applies",
+ "method_fidelity":"faithful","effect_coverage":"complete",
+ "source":"reviewer inspected the captured script and original requirements",
+ "assessment":"The objective sign selects the lower endpoint; both constraints and the independently derived optimum were checked.",
+ "evidence_refs":["artifacts.submitted_script","artifacts.workspace_result"]}
 ```
 
-Keep the reusable method and its conditional argument distinct from the task-specific observation. A single task can reveal a conditional method; its `single_observation` / `unproven` provenance is not a correctness verdict, and more independent tasks widen the scope (the distinct-task count is reported as a FACT, never a threshold).
+This is an attributable assessment with auditable sources, not automatic
+natural-language proof checking. A plan, equal step text, solver `optimal`
+or a checker `passed` alone supplies none of the missing premise/fidelity/
+coverage facts. The original checker must actually cover the claimed effect;
+a self-derived objective reference alone is insufficient.
 
-**Declared prediction (optional).** Add `"prediction": {"value": q, "interval": [lo, hi]}` ONLY when you are stating a quality prediction the runs can be calibrated against. It sets `quality_estimated=True` and is what makes the interval checkable: later, a run that DECLARED it adopted this entry is compared against this interval. Omit it and the entry carries no prediction — no hit/miss is ever computed against its defaults, and it is never promoted on them.
+- **Transfer:** a real independent source problem not displayed or cited
+  during derivation. Same-source retries/seeds/branches and identical original
+  content remain controls. A historical holdout needs an actual inspected
+  application of the same mechanism and full effect coverage.
+- **Boundary:** a real or small constructed test with changed necessary
+  premises, `applicability:"not_applicable"`, and `response:"disable"` or
+  `"fallback"`, with the response and result checked. Its scope is labelled
+  `boundary_test`, not broader industrial evidence.
+- **Regression:** a revised version rechecks affected prior successes.
+  Frozen old uses retain their old version. Explicit historical reviews can
+  be submitted as `validation:[{"kind":"regression","execution_id":"...",
+  "assessment":{...}}]` on an `add_evidence` operation for the new version.
+- **Counterexample:** only an attributable in-domain failure of the actual
+  rule (`failure_source:"rule"`) can refute it. Code deviation, unknown
+  adoption, missing coverage and unassigned failures stay insufficient.
 
-A `check` block you include is your audit trail, for example a measured cost comparison:
+Close-out and late `check-task` register checks safely; repeated close-out or
+submission does not duplicate a physical use/check. Independent transfer,
+boundary and required regressions must all pass before the candidate becomes
+active. A credible active-version counterexample pauses it. New uncertainty
+is recorded without inventing a refutation or deleting prior frozen proof.
+Close-out freezes decisive rule-check facts before automatic retention can
+evict executions, including an immediately expiring evidence window.
 
-```json
-{
-  "assertions": [
-    {
-      "kind": "comparison", "metric": "quality",
-      "roles_a": ["proposed"], "roles_b": ["baseline"],
-      "direction": "higher", "min_gap": 0.0,
-      "mode": "paired", "aggregation": "all"
-    },
-    {
-      "kind": "comparison", "metric": "cost:llm_tokens",
-      "roles_a": ["proposed"], "roles_b": ["baseline"],
-      "direction": "lower", "min_gap": 1.0,
-      "mode": "paired", "aggregation": "all"
-    }
-  ]
-}
-```
+Use `effect_scope:"technical"` only for an explicitly technical implementation
+rule: its check reads executor/protocol facts (`wm-r-technical/1`), not a
+business optimum. Use `effect_scope:"cost"` for a cost advantage. A cost
+comparison additionally needs `comparator_execution_id`, `cost_dimensions`,
+the same frozen task, actual solving conditions, equivalent acceptance rules
+and measured dimensions on the same scope. An isolated pass or unknown cost
+never proves an advantage. There is no new G/C/R scoring or H+ computation.
 
-These comparisons check non-degraded recorded quality and lower token cost; they do not establish method correctness or independently validate task answers. Match metrics, quality requirements, tolerances, and wording to the actual evidence.
+## Storage and historical data
 
-Use one check source: the embedded `check`, or the supported standalone `--verify` argument. Inspect the returned verification scope in `verification` (the `not_covered` wording states that a passing check covers only the declared checks over the listed samples).
+V2 root rows hold pointers/state. Immutable `condition_values` hold bodies,
+assessments and decisive facts. `rule_versions`, `rule_checks`, `rule_events`
+associate checks, uses, effects and source aliases with exact versions.
+Repeated claim text references the body; genuinely different historical
+assertions keep their own references. Frozen decisive facts remain readable
+after the execution evidence window evicts the original row.
 
-`induce` with NO relations still runs utility maintenance: the offline lifecycle (`revise`) replays the frozen forward checks on existing entries, and the review is recorded as a maintenance action. Knowledge creation and utility maintenance are decoupled.
+New execution rows encode fixed boilerplate as short states and reuse the
+method receipt body by reference. Audit reads render the original fixed
+messages. Runtime values, source/conflicts, failure details, absent optional
+predictions, measured zero, masks and scopes round-trip unchanged.
 
-Use `conditions.predicates` for the supported profile keys: `family`, `resource_coupling`, `temporal_coupling`, and `route_complexity`. Put semantic premises in the claim or `conditions.note`; check them before use. Unsupported predicate keys produce unknown applicability, not a satisfied condition.
+Unversioned legacy JSON keeps its original publication/verification semantics
+and is labelled historical in short views. Reading it does not migrate it.
+A deliberate revision preserves its original version before adding a v2
+candidate. The old `induce --relation` claim/evidence/check grammar remains an
+input adapter; newly submitted claims use v2 candidate publication. A declared
+assertion audit (`verified`, `fact_checked`, `insufficient_evidence`, `refuted`)
+is separate from transfer validation. Legacy lifecycle diagnostics still run;
+new-version publication cannot be bypassed through a legacy lifecycle action.
 
-## 5. Reuse, declare adoption, and manage
+Check that each declared assertion matches the claim it is meant to support.
+`probe`, `status`, `comparison`, `code_changed` and `code_unchanged` remain
+available. For a claim about changing a formulation, `code_changed` checks
+different captured code hashes; `code_unchanged` checks the opposite. A failed
+assertion is not automatically a refutation of the natural-language rule.
+Placeholder claims such as "no new knowledge" and empty method steps are
+refused without writing. Record that outcome as an empty review instead.
 
-- Read offered entries through ordinary recall recommendations, including their claim, verification state, provenance, and semantic premises. Treat unknown applicability as requiring inspection.
-- **Declare adoption**: when a run uses an entry, pass its number in `execute --used-entry-ids` / `record --used-entry-ids` (e.g. `3,5`). This is a DECLARATION, distinct from being recalled (`--adapted-from` cites cases you READ). Passing an empty list (`''`) records "adopted no prior knowledge" as a fact. **Attribution is by NUMBER, never by a shared name**: an entry called `method:monotone_reduction` adopted by a run called `milp_pulp_cbc` is checked normally. A run that does not declare its adoption produces no forward check.
-- **Three things are kept apart**: (1) the **adoption record** (which entry numbers a run relied on), (2) the run's **outcome** (answer check, cost, failures), and (3) **prediction calibration** (does the run's observed quality fall in a DECLARED interval). A missing prediction closes (3) only — the adoption record and its outcome still accumulate. An entry that declared no prediction is never scored hit/miss, and **an arbitrary execution failure is NOT automatically a counterexample to the knowledge** — that attribution is your analysis.
-- **A fourth, agent-owned judgement: the USE effect.** Verification state records how far the CLAIM was checked, NOT whether USING the entry helped. Record that with `induce --attribute-effect` (repeatable): `{"entry_id": NUMBER, "verdict": helped|neutral|unrelated|refuting, "execution_id"?: ID, "note"?: TEXT, "lifecycle_action"?: promote|demote|keep, "evidence_execution_ids"?: [ID]}`. The framework never writes one of these itself. This is the channel that lets a **qualitative technique** (one with no numeric prediction) carry a real judgement of its effect without a second scoring system: such an entry still accumulates **adoptions** (a usage fact, counted separately from `n_predictions`), so its real use is visible in the maintenance report even though it can never be calibrated. An adoption with no attribution shows as **"no judgement recorded"** — it is never implicitly `helped` or `neutral`.
-- **Utility management is the agent's explicit decision (`lifecycle_action`).** An optional `lifecycle_action` on an attribution (`promote` → `validated`, `demote` → `suspect`, `keep` → leave the status) is applied IN THE SAME `induce` call, and the entry, the knowledge delta and the business result see the same state. It is an **administrative** check only: the entry must exist, a named execution must be recorded, and the cited executions must have DECLARED adoption of the entry (`--used-entry-ids`) — a recall-only or shared-name reference is refused; a request must carry a non-empty `note`. The framework NEVER certifies that the accumulated evidence supports the move, never rewrites `verification_state`, and never promotes on an adoption count or a hit rate. `validated` means "the agent confirmed support from actual use", not mathematical truth, causal advantage, calibrated prediction or realized H+. A `refuting` verdict is a demotion cue; a LATER valid request can lift it, and the earlier event stays visible.
-- A claim that contradicts or refines an existing one is a NEW entry: do not rewrite the earlier one. Assess a new miss against the full claimed conditions; a task violating a necessary premise is outside the method's scope, while a relevant failure within scope may warrant a new, narrower claim.
-- **Prediction calibration is a DIAGNOSTIC, not a maturity gate.** Forward calibration of a DECLARED prediction (`n_predictions` / hits / consecutive misses / error) is replayed and reported, but it NO LONGER promotes (≥5 checks, ≥70% hits) or demotes (3 consecutive misses) an entry — a hit rate measures a declared forecast, not whether USING the knowledge helped. An entry that declared no prediction shows as "nothing to calibrate". Maturity moves only by `lifecycle_action`; adoptions never promote on their own.
-- Retired patterns remain in the cold archive. Use `--force` only when new evidence or a changed environment justifies reopening the claim; record the reason.
+Maintenance actions record actual evidence IDs and committed deltas. Only
+changed rule documents are embedded; evidence/use logs do not re-embed the
+body. Failed index synchronization is deferred without rolling back facts;
+retrying an affected submission/close-out retries those IDs. `rebuild-index`
+remains an explicit repair tool. Production migration/cleanup is separate.

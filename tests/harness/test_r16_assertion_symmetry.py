@@ -1,20 +1,4 @@
-"""r16: assertion/claim decoupling, additive-only help, and the shape guard.
-
-What this file asserts, one behaviour per test class:
-
-A. the assertion vocabulary is SYMMETRIC and a refutation names the ASSERTION,
-   not the natural-language claim: ``code_changed`` verifies a change and
-   ``code_unchanged`` refutes the same evidence, each conclusion saying which
-   of the two (assertion vs claim) the verdict is about;
-B. ``orx induce --help`` describes what the code DOES: a submission ALWAYS
-   creates a new numbered entry (no "REVISES"), and publication is on the
-   claim's own verification rather than a >=2-independent-tasks count;
-C. the agent's documents state the pre-publication value gate is the agent's,
-   and that the empty review is the only way to record "no new knowledge";
-E. the mechanical SHAPE guard refuses a placeholder claim or an empty method
-   (without writing), while a real claim — or a claim with no method field at
-   all — still saves.
-"""
+"""Assertion audits remain distinct from rule validation. Help and runtime documentation describe versioned candidates, independent transfer/boundary checks and idempotent revision. Mechanical shape guards remain compatible."""
 import os
 import sys
 import unittest
@@ -130,16 +114,17 @@ class TestHelpMatchesImplementation(unittest.TestCase):
         # phrase is matched across a line break.
         return " ".join(buffer.getvalue().split())
 
-    def test_no_revises_claim(self):
+    def test_help_describes_explicit_versioned_revision(self):
         help_text = self._induce_help()
         self.assertNotIn("REVISES", help_text)
-        # It says the truth instead: a submission ALWAYS creates a NEW entry.
-        self.assertIn("ALWAYS creates a NEW numbered entry", help_text)
+        self.assertIn("operation=add_evidence|revise|merge", help_text)
+        self.assertIn("candidate version",help_text)
+        self.assertIn("idempotent",help_text)
 
     def test_publication_is_not_a_task_count(self):
         help_text = self._induce_help()
         self.assertNotIn(">=2 independent tasks", help_text)
-        self.assertIn("NOT on a task count", help_text)
+        self.assertIn("independent transfer, boundary", help_text)
 
 
 # ---------------------------------------------------------------------------
@@ -151,25 +136,24 @@ class TestDocsStateTheValueGate(unittest.TestCase):
     def test_skill_names_the_agent_value_gate(self):
         with open(os.path.join(REPO, "SKILL.md"), encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("Before publishing you must self-justify", text)
-        self.assertIn("do **not** create a \"no new knowledge", text)
-        self.assertIn("it is **not** a verdict on the knowledge's validity",
-                      text)
+        self.assertIn("when / do / expect", text)
+        self.assertIn("independent unseen source problem", text)
+        self.assertIn("Effect attributions remain separate facts and cannot bypass v2 publication",text)
 
     def test_induction_reference_separates_assertion_from_claim(self):
         with open(os.path.join(REPO, "references", "induction.md"),
                   encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("describe **your DECLARED assertion only**", text)
-        self.assertIn("first self-check that the assertion MATCHES the claim",
-                      text)
+        self.assertIn("A failed\nassertion is not automatically a refutation",text)
+        self.assertIn("Check that each declared assertion matches the claim",text)
         self.assertIn("`code_changed`", text)
 
     def test_empty_review_is_named_the_only_correct_form(self):
         with open(os.path.join(REPO, "references", "induction.md"),
                   encoding="utf-8") as fh:
             text = fh.read()
-        self.assertIn("this empty review is the **ONLY** correct form", text)
+        self.assertIn("without `--relation`", text)
+        self.assertIn('Placeholder claims such as "no new knowledge"',text)
 
 
 # ---------------------------------------------------------------------------

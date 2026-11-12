@@ -226,6 +226,7 @@ class KnowledgeRef:
     #: when it states one. One claim per entry; its verdict is
     #: ``verification_state`` (the entry's ONE verification block).
     claim: Optional[Dict[str, Any]] = None
+    rule: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -245,6 +246,7 @@ class KnowledgeRef:
             "claim": (copy.deepcopy(self.claim)
                       if self.claim is not None else None),
             "snapshot_at": self.snapshot_at,
+            **({"rule": copy.deepcopy(self.rule)} if self.rule else {}),
         }
 
     @classmethod
@@ -266,6 +268,8 @@ class KnowledgeRef:
             claim=(copy.deepcopy(entry.claim)
                    if entry.claim is not None else None),
             snapshot_at=time.time(),
+            rule=({k: copy.deepcopy(entry.rule.get(k)) for k in ("schema_version", "view_version", "body_ref", "active_version", "candidate_version", "state")}
+                  if entry.rule else None),
         )
 
     @classmethod
@@ -288,6 +292,7 @@ class KnowledgeRef:
             claim=(copy.deepcopy(dict(data["claim"]))
                    if isinstance(data.get("claim"), dict) else None),
             snapshot_at=float(data.get("snapshot_at", time.time())),
+            rule=copy.deepcopy(data.get("rule")),
         )
 
 
@@ -456,25 +461,17 @@ class BeliefSnapshot:
 
 def verified_knowledge_view(profile: ProblemProfile, sbank,
                              ) -> Dict[str, List[Dict[str, Any]]]:
-    """Layer ``StrategicBank.matching`` by the agent's OWN verification state.
+    """Layer normally published knowledge by its recorded audit state.
 
-    ``matching()`` filters by predicates only. This view is a REPORT of each
-    entry's verification state — publication is the agent's decision (every
-    submitted claim is offered), so this does NOT gate on publishability:
-
-    - ``verified``: verification.state == "verified".
-    - ``legacy_unknown``: no verification block at all (entries written
-      before the block existed).
-    - ``unverified``: every other state (``unverified`` /
-      ``insufficient_evidence`` / ``refuted``) — reported as such, so an
-      unverified candidate is never COUNTED as verified knowledge.
-
-    A claim-only entry (stated claim, no statistical support) is layered by
-    the SAME single rule: its own verdict decides.
+    V2 uses the shared active-version predicate; legacy rows retain their
+    original semantics. A declared-assertion audit is distinct from transfer
+    validation and from a numerical quality prediction.
     """
     layers: Dict[str, List[Dict[str, Any]]] = {
         "verified": [], "legacy_unknown": [], "unverified": []}
     for entry in sbank.matching(profile, include_dormant=True):
+        if entry.rule and not entry.is_published:
+            continue
         block = entry.verification or {}
         if not block:
             # No verification block at all: a legacy entry written before

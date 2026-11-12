@@ -325,3 +325,9 @@ orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 
 
 Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
+
+## Versioned rule uses and induction start
+
+Close-out registers declared rule uses and freezes decisive check facts before automatic evidence retention, then judges whether to start new induction. `used_entries.versions` freezes the exact body; sourced `check-task.rule_assessments` supplies premise/fidelity/effect coverage and captured-artifact references. Checks/uses append independently, including late checks; repeats deduplicate. Unknown use or coverage stays insufficient. An attributable domain counterexample can pause a rule. Independent transfer/boundary checks and affected regressions control new-version publication.
+
+`close_episode(..., induction_decision={"state":"allow|skip|pending","source":"...","reason":"..."})`, CLI `--induction-decision`/`--induction-reason`, or a recorded `finish_task` outcome supplies the actual H+ start judgement. Its source/reference is saved. Skip/pending stops later material assembly early. Unconnected H+ retains the named explicit induction transition. No H+ computation or online G/C/R scoring changes. See [induction.md](induction.md).

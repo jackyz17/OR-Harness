@@ -47,6 +47,7 @@ from or_harness.core.schema import (
     StrategicEntry,
 )
 from or_harness.strategy.stats import ConditionalStats, GroupStats
+from or_harness.strategy.evidence_views import atomic
 from or_harness.strategy.strategic_bank import StrategicBank
 
 MEMORY_MODES = ("none", "cases", "strategic", "cost-aware")
@@ -394,8 +395,7 @@ class Selector:
                   f"n={entry.prediction_track.n_predictions})",
             cost_known_dims=sorted(cost.measured_dims()),
             cost_basis_dims=list(cost_basis or []),
-            claim=(copy.deepcopy(entry.claim)
-                   if entry.claim is not None else None),
+            claim=(atomic(entry.claim,f'orx inspect --bank strategic --entry {entry.entry_id}') if entry.claim is not None else None),
             knowledge=self._entry_knowledge(entry))
 
     @staticmethod
@@ -466,6 +466,15 @@ class Selector:
                      "recommendation; empty lists mean the memory does not "
                      "record it"),
         }
+        from or_harness.strategy.evidence_views import short_rule, atomic, chars
+        if entry.rule or chars(out)>6000:
+            compact = short_rule(entry)
+            out["rule"] = compact
+            out["verification"] = {"state": entry.verification_state, "detail_ref": compact["detail_ref"]}
+            out["claim"] = atomic(out["claim"],compact["detail_ref"]+" #claim")
+            for key in ("applicability","actions"):
+                if chars(out.get(key))>2400:
+                    out[key] = [compact["detail_ref"]+" #"+key]
         return out
 
     @staticmethod
@@ -528,4 +537,4 @@ def is_publishable(entry: StrategicEntry) -> bool:
     reader weighs the agent's own verification state; recall never hides
     knowledge on a framework content judgement.
     """
-    return True
+    return entry.is_published

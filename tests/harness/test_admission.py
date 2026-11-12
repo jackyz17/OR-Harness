@@ -364,13 +364,7 @@ class TestVerificationChecks(HarnessTestCase):
 
 
 class TestPublishingGate(HarnessTestCase):
-    """Publication is the AGENT's decision, not a framework content gate.
-
-    A submitted claim is offered as knowledge within its declared scope. Any
-    declared check is EVALUATED and RECORDED as the agent's own audit trail
-    (``verified`` / ``fact_checked`` / ``insufficient_evidence`` /
-    ``refuted``) — but the framework never blocks publication on it, and
-    never certifies the conclusion."""
+    """New submissions are candidates. Derivation assertion states remain visible and do not replace independent transfer/boundary validation."""
 
     def setUp(self):
         super().setUp()
@@ -398,26 +392,24 @@ class TestPublishingGate(HarnessTestCase):
                 "claim": f"{strategy} holds in this cell",
                 "evidence": evidence}
 
-    def test_unverified_claim_is_published_with_the_state_reported(self):
-        """A claim with no declared check is published; the framework read
-        the cited FACTS (``fact_checked``) and says so — it does not withhold
-        the knowledge on a content judgement."""
+    def test_unverified_claim_stays_candidate_with_the_state_reported(self):
+        """Fact checks are retained while ordinary recall still uses execution statistics."""
         self._seed_two_tasks()
         result = self.h.induce(relations=[self._claim()])
         outcome = result["relations"][0]
         self.assertIsNotNone(outcome.get("saved"))
-        self.assertTrue(outcome["publication"]["published"])
+        self.assertFalse(outcome["publication"]["published"])
         entry = self.h.sbank.get(outcome["saved"])
         # No assertion was declared, so the framework READ the cited FACTS
         # (``fact_checked``) rather than calling it merely ``unverified``.
         self.assertEqual(entry.verification_state, "fact_checked")
-        self.assertTrue(entry.is_published)
+        self.assertFalse(entry.is_published)
         # And recall DOES offer it as knowledge.
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
-        self.assertEqual(s01.evidence, "strategic_entry")
+        self.assertEqual(s01.evidence, "conditional_stats")
 
-    def test_verified_claim_is_published(self):
+    def test_derivation_verified_claim_stays_candidate(self):
         self._seed_two_tasks()
         claim = self._claim()
         verify = {"claim": "S01 holds in this cell",
@@ -428,15 +420,13 @@ class TestPublishingGate(HarnessTestCase):
         outcome = result["relations"][0]
         entry = self.h.sbank.get(outcome["saved"])
         self.assertEqual(entry.verification_state, "verified")
-        self.assertTrue(outcome["publication"]["published"])
+        self.assertFalse(outcome["publication"]["published"])
         recs = self.h.selector.recall(self.make_profile(problem_id="q"), top=5)
         s01 = next(r for r in recs if r.strategy_id == "S01")
-        self.assertEqual(s01.evidence, "strategic_entry")
+        self.assertEqual(s01.evidence, "conditional_stats")
 
-    def test_refuted_claim_is_still_offered_with_the_verdict_recorded(self):
-        """A refutation is the agent's OWN audit result, recorded on the
-        entry — it does not silently delete knowledge the agent chose to
-        submit. A reader sees ``refuted`` and weighs it."""
+    def test_refuted_derivation_is_recorded_on_candidate(self):
+        """A refuted assertion remains readable; the unvalidated rule is not offered."""
         self._seed_two_tasks()
         claim = self._claim()
         verify = {"claim": "S01 holds in this cell",
@@ -454,7 +444,7 @@ class TestPublishingGate(HarnessTestCase):
         entry = self.h.sbank.get(result["relations"][0]["saved"])
         self.assertEqual(entry.verification_state, "refuted")
         # The verdict is RECORDED; publication is still the agent's call.
-        self.assertTrue(result["relations"][0]["publication"]["published"])
+        self.assertFalse(result["relations"][0]["publication"]["published"])
 
     def test_failed_assertion_on_real_evidence_is_refuted(self):
         self._seed_two_tasks()

@@ -21,6 +21,7 @@ import unittest
 from pathlib import Path
 
 from helpers import HarnessTestCase  # noqa: E402
+from tests.harness.legacy_rules import as_historical_entry
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -167,11 +168,10 @@ class TestVerifiedIsNotProof(HonestyCase):
         outcome = result["relations"][0]
         report = self.h.sbank.get(outcome["saved"]).verification or {}
         # The framework reports insufficient evidence rather than a proof,
-        # and the claim is still OFFERED with that honest state recorded.
+        # and the candidate keeps that honest audit state.
         self.assertEqual(report.get("state"), "insufficient_evidence")
-        self.assertTrue(outcome["publication"]["published"])
-        self.assertEqual(outcome["publication"]["state"],
-                         "insufficient_evidence")
+        self.assertFalse(outcome["publication"]["published"])
+        self.assertEqual(outcome["publication"]["state"], "candidate")
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +180,7 @@ class TestVerifiedIsNotProof(HonestyCase):
 
 
 class TestKnowledgeThroughTheContext(HonestyCase):
+    """Historical unversioned claims retain their recorded recall semantics."""
 
     def _solve(self, task, strategy="S04", episode="ep1", tag=None):
         label = tag or f"{task['task_id']}_{strategy}_{episode}"
@@ -198,7 +199,7 @@ class TestKnowledgeThroughTheContext(HonestyCase):
         return record
 
     def test_entry_cost_prediction_and_two_recall_channels(self):
-        # Two independent tasks -> a verified claim entry over them.
+        # Historical claim fixture with a recorded assertion audit.
         recs = [self._solve(_task(f"k{i}"), tag=f"k{i}") for i in range(2)]
         claim = {
             "subject": "S04", "claim": "S04 reaches optimal",
@@ -212,6 +213,7 @@ class TestKnowledgeThroughTheContext(HonestyCase):
         self.assertTrue(result["relations"][0]["saved"])
         entry = next(e for e in self.h.sbank.list() if e.strategy_id == "S04")
         self.assertEqual(entry.verification_state, "verified")
+        as_historical_entry(self.h, entry.entry_id)
 
         # (a) the cost prediction reads the STATISTICAL rung (a claim entry
         # makes no cost claim, so the evidence statistics supply it).
@@ -244,6 +246,7 @@ class TestKnowledgeThroughTheContext(HonestyCase):
                       verify={"purpose": "relation",
                               "check": {"assertions":
                                         claim["check"]["assertions"]}})
+        as_historical_entry(self.h, self.h.sbank.list()[0].entry_id)
         # The world-model context freezes the knowledge view; the claim's
         # conditions, expected effect and verification scope must be there.
         context = self.h.build_prediction_context(_task("c9"), episode_id="epX")
@@ -271,6 +274,7 @@ class TestKnowledgeThroughTheContext(HonestyCase):
                         {"kind": "status", "roles": ["e"],
                          "status": "optimal"}]}},
             notes=["watch the temporal boundary"])
+        as_historical_entry(self.h, self.h.sbank.list()[0].entry_id)
         recalled = self.h.recall(_task("b9"))
         item = next(r for r in recalled["recommendations"]
                     if r["strategy_id"] == "S04"
