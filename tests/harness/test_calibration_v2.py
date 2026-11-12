@@ -272,8 +272,8 @@ class TestEventSemantics(CalibrationV2Case):
         observed = evaluation["risk"]["observed_units"]
         self.assertEqual(observed["environment_failure"]["label"],
                          "occurred")
-        self.assertEqual(observed["implementation_failure"]["label"],
-                         "not_occurred")
+        self.assertIsNone(observed["implementation_failure"]["label"],
+                          "external blockage does not establish technical success")
 
     def test_infeasible_is_a_reported_verdict_not_a_failure(self):
         """A reported infeasibility is recorded as a FACT and never mapped
@@ -334,6 +334,9 @@ class TestEventSemantics(CalibrationV2Case):
         stored = h.bank.get(record.execution_id)
         for failure in stored.failures:
             failure.error_class = None
+        # The old prediction retains its original classifier-based rule.
+        prediction.trace.model_info.pop("risk_convention", None)
+        h.strategy_predictions._save(prediction)
         with h.store.transaction() as conn:
             conn.execute("UPDATE executions SET payload=? WHERE execution_id=?",
                          (h.store.dumps(stored.to_dict()),

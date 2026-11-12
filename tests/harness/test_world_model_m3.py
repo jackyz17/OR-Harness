@@ -44,8 +44,8 @@ def _payload(quality=0.5, cost=None, risk=None, extra=None):
     ``quality`` becomes the benefit VALUE with a fixed baseline, so the
     comparison's one comparable currency (normalized solution quality) is
     what the fixture varies. ``cost`` is a per-dimension dict, ``risk`` a
-    probability (None = "no risk predicted", which the yardstick charges
-    in full).
+    diagnostic probability (None = "no risk predicted"). Only an explicit
+    implementation_failure probability can supply the scored R.
     """
     payload = {
         "benefit": {"kind": "solution_quality",
@@ -632,9 +632,8 @@ class TestReviewFixes(HarnessTestCase):
         self.assertEqual(plan2["limits"]["cost_weights"], {})
         self.assertEqual(plan2["suggested"]["strategy_id"], "S01")
 
-    def test_unknown_risk_and_cost_never_auto_win(self):
-        """Unknown failure risk is a deficit (charged full gamma), and an
-        unpredicted cost dimension is not a predicted zero."""
+    def test_unknown_risk_and_cost_are_common_omissions(self):
+        """Unknown fields remove shared terms; original values remain diagnostic."""
         provider = ScriptableProvider(per_strategy={
             "S01": {"quality": 0.8, "risk": 0.1},
             "S02": {"quality": 0.8},          # no risk predicted
@@ -648,7 +647,8 @@ class TestReviewFixes(HarnessTestCase):
         scores = {c["action_spec"]["strategy_id"]: c["score"]
                   for c in plan["candidates"]}
         self.assertIn("risk", scores["S02"]["incomparable"])
-        self.assertEqual(scores["S02"]["risk_effective"], 1.0)
+        self.assertTrue(all(s["risk_effective"] is None for s in scores.values()))
+        self.assertEqual(scores["S01"]["utility"], scores["S02"]["utility"])
         # Unknown cost: S01 predicts only tokens, S03 predicts nothing.
         provider2 = ScriptableProvider(per_strategy={
             "S03": {"quality": 0.8, "cost": {"llm_tokens": 10.0}, "risk": 0.1},
@@ -665,14 +665,10 @@ class TestReviewFixes(HarnessTestCase):
                    for c in plan2["candidates"]}
         self.assertIn("cost", scores2["S04"]["incomparable"])
 
-    def test_unknown_cost_never_erases_measured_differences(self):
-        """The A/B/C case: A and B have comparable measured costs (A
-        expensive, B cheap), C predicts NO cost at all. The union basis
-        keeps A/B's measured difference, and C is charged the peak
-        normalized share (never free).
-
-        Quality and risk tie across all three; the ONLY differentiator is
-        cost, so B must win regardless of C's presence or ordering."""
+    def test_common_cost_uses_only_candidates_in_this_comparison(self):
+        """A/B alone can compare costs. Adding a cost-unknown comparable
+        candidate removes C for the whole comparison, with the original
+        measured differences still inspectable."""
         provider = ScriptableProvider(per_strategy={
             "S01": {"quality": 0.8, "risk": 0.1,
                     "cost": {"solver_runtime_s": 100.0}},   # A: expensive
@@ -691,39 +687,13 @@ class TestReviewFixes(HarnessTestCase):
             plan = h.plan_next(TASK, "ep1",
                                candidates=[_spec(s) for s in ordering],
                                limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
-            self.assertEqual(plan["suggested"]["strategy_id"], "S02",
-                             f"ordering {ordering}: C must not win by "
-                             "staying silent on cost")
-            scores = {c["action_spec"]["strategy_id"]: c["score"]
-                      for c in plan["candidates"]}
-            self.assertGreater(scores["S01"]["cost_normalized"],
-                               scores["S02"]["cost_normalized"])
-            self.assertGreater(scores["S03"]["cost_normalized"],
-                               scores["S02"]["cost_normalized"])
-            self.assertAlmostEqual(scores["S03"]["cost_normalized"],
-                                   scores["S01"]["cost_normalized"],
-                                   places=3)
-            self.assertIn("cost", scores["S03"]["incomparable"])
-        # An EXPLICIT predicted zero stays a measured zero (distinct from
-        # unknown): a candidate predicting solver_runtime_s=0 is cheaper
-        # than B and wins.
-        provider_zero = ScriptableProvider(per_strategy={
-            "S01": {"quality": 0.8, "risk": 0.1,
-                    "cost": {"solver_runtime_s": 100.0}},
-            "S02": {"quality": 0.8, "risk": 0.1,
-                    "cost": {"solver_runtime_s": 0.0}},
-        })
-        h_zero = ORHarness(home=self.home, world_model=provider_zero,
-                           beta=1.0, cost_weights={"solver_runtime_s": 1.0})
-        self.addCleanup(h_zero.close)
-        plan_zero = h_zero.plan_next(TASK, "ep1",
-                                     candidates=[_spec("S01"), _spec("S02")],
-                                     limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
-        self.assertEqual(plan_zero["suggested"]["strategy_id"], "S02")
-        zero = next(c for c in plan_zero["candidates"]
-                    if c["action_spec"]["strategy_id"] == "S02")
-        self.assertEqual(zero["score"]["cost_normalized"], 0.0)
-        self.assertNotIn("cost", zero["score"]["incomparable"])
+            self.assertEqual(plan["suggested"]["strategy_id"], ordering[0])
+            scores = {c["action_spec"]["strategy_id"]: c["score"] for c in plan["candidates"]}
+            self.assertTrue(all(s["cost_normalized"] is None for s in scores.values()))
+            self.assertEqual(len({s["utility"] for s in scores.values()}), 1)
+            self.assertEqual(scores["S01"]["cost_reported"]["values"]["solver_runtime_s"], 100)
+            self.assertEqual(scores["S02"]["cost_reported"]["values"]["solver_runtime_s"], 1)
+
 
     def test_budget_rechecked_and_exceeded_withholds_suggestion(self):
         """Planning re-checks the REAL budget per call and after the spend
@@ -768,16 +738,21 @@ class TestReviewFixes(HarnessTestCase):
         """ONE candidate whose single call exceeds the time budget must NOT
         report ok — the post-call deadline check catches the over-budget
         return and reports truncation with the cost preserved."""
+        from unittest.mock import patch
+        clock = [100.0]
+
         class SlowProvider(ScriptableProvider):
             def predict(self, request, timeout_s=None):
-                import time as _time
-                _time.sleep(0.06)
+                clock[0] += 0.06
                 return super().predict(request, timeout_s)
         provider = SlowProvider(per_strategy={"S01": {"quality": 0.8}})
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
-        plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")],
-                           limits={"horizon": 1, "time_budget_s": 0.01, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+        # Preparation must not accidentally spend this test's 10ms budget
+        # before the provider is reached on a busy host.
+        with patch("or_harness.api.time.monotonic", side_effect=lambda: clock[0]):
+            plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")],
+                               limits={"horizon": 1, "time_budget_s": 0.01, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "truncated")
         self.assertIn("time budget", plan["truncation_reason"])
         self.assertEqual(plan["model_calls_made"], 1)
@@ -787,18 +762,21 @@ class TestReviewFixes(HarnessTestCase):
     def test_last_candidate_timeout_reports_truncated(self):
         """The LAST candidate's call exceeding the budget is caught by the
         post-call check (no further loop iteration would catch it)."""
+        from unittest.mock import patch
+        clock = [100.0]
+
         class SlowProvider(ScriptableProvider):
             def predict(self, request, timeout_s=None):
-                import time as _time
-                _time.sleep(0.06)
+                clock[0] += 0.06
                 return super().predict(request, timeout_s)
         provider = SlowProvider(per_strategy={"S01": {"quality": 0.8},
                                               "S02": {"quality": 0.7}})
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
-        plan = h.plan_next(TASK, "ep1",
-                           candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, "time_budget_s": 0.08, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+        with patch("or_harness.api.time.monotonic", side_effect=lambda: clock[0]):
+            plan = h.plan_next(TASK, "ep1",
+                               candidates=[_spec("S01"), _spec("S02")],
+                               limits={"horizon": 1, "time_budget_s": 0.08, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "truncated")
         self.assertEqual(plan["model_calls_made"], 2)
 

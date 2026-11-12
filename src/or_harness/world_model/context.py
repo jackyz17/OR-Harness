@@ -1806,9 +1806,12 @@ class PredictionContext:
         if g_candidate is not None:
             from or_harness.world_model.cost_signal import select_cost_evidence
             view["cost_evidence"] = select_cost_evidence(self.strategy_calibration, self, g_candidate)
+            from or_harness.world_model.r_signal import select_r_evidence
+            view["implementation_r_evidence"] = select_r_evidence(self.strategy_calibration, self, g_candidate)
         # Full cost populations are audit data. The provider receives the
         # small applicable selection above, made before volume trimming.
         view["strategy_outcome_calibration"].pop("conditional_cost", None)
+        view["strategy_outcome_calibration"].pop("technical_r", None)
         return _bound_request(view)
 
 
@@ -2052,7 +2055,7 @@ def build_context(
         solving_context["execution_context"] = copy.deepcopy(runner)
         if runner.get("host") or runner.get("model"):
             solving_context["execution_host"] = {k: copy.deepcopy(runner[k])
-                for k in ("host", "model", "source", "source_ref") if k in runner}
+                for k in ("host", "model", "agent_id", "source", "source_ref") if k in runner}
     if recall_result is None:
         recall_result = {"recommendations": list(
             structural_recommendations or [])}
@@ -2514,6 +2517,7 @@ _TRIMMABLE_BLOCKS = (
     "hplus_feedback",
     "prediction_reminders",
     "cost_evidence",
+    "implementation_r_evidence",
 )
 
 

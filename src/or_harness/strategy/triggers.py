@@ -50,6 +50,13 @@ def classify_failure(record: Any) -> str:
     be told apart reliably.
     """
     error = _first_error(record) or ""
+    from or_harness.world_model.r_signal import _exception_type, _EXTERNAL
+    receipt = (getattr(record, "execution_features", None) or {}).get("technical_outcome") or {}
+    if receipt.get("source") == "SafePythonExecutor" and receipt.get("label") == 1:
+        return "model"
+    exception = _exception_type(error)
+    if exception and exception not in _EXTERNAL:
+        return "model"
     lowered = error.lower()
     if any(marker in lowered for marker in _ENVIRONMENT_MARKERS):
         return "environment"

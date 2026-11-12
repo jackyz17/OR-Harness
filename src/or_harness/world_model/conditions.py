@@ -279,6 +279,14 @@ def filter_prediction_reminders(reminders):
 def calibration_projection(summary):
     """Keep audit details at their source; send counts/reasons to the model."""
     out = copy.deepcopy(summary or {})
+    if "technical_r" in out:
+        # The legacy classifier's occurrence rate is not the new R prior.
+        (out.get("occurrence") or {}).pop("implementation_failure", None)
+        for group in (out.get("groups") or {}).values():
+            for key in ("mean_brier_by_event", "n_brier_samples_by_event", "brier_evidence_by_event",
+                        "mean_predicted_probability", "scored_occurrence_rate"):
+                if isinstance(group.get(key), dict):
+                    group[key].pop("implementation_failure", None)
     if "reminders" in out:
         out["reminders"] = filter_prediction_reminders(out["reminders"])
     corrections = out.pop("validity_corrections", [])

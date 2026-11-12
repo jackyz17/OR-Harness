@@ -50,7 +50,7 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 | `candidate` | `CandidateRef`: strategy id, solver, config, preconditions, expected scope, stop conditions, and `scope` |
 | `benefit` | `BenefitEstimate` — the gain, **with its metric, unit and baseline** |
 | `cost` | `ExpectedCost` — the `CostVector` consequence of the candidate, with its measured mask |
-| `risk` | `RiskStatement` — named loss events, **separate from cost** |
+| `risk` | `RiskStatement` — named events; scored R is only `implementation_failure.probability`, separate from cost |
 | `uncertainty` | `UncertaintyStatement` — execution randomness vs knowledge gap |
 | `capability_gain` | `CapabilityGain` — the candidate's POTENTIAL capability gain (H+), predicted in the same call: the explicit stance (`assessment`: `expected`/`none`/`insufficient_basis` — REQUIRED for every candidate; empty means not stated, never "no gain"), the claim, applicability, per-metric expected changes, the evidence that would confirm them, and the degradation risk. Explanatory only — never the utility, never a 0-1 composite, never written into the capability evidence; `None`/absent means "no stance stated" (recorded in `unsupported_fields`). See §5 |
 | `trace` | `PredictionTrace` — version, input, evidence, unsupported fields, call cost |
@@ -71,6 +71,12 @@ New strategy requests default to `effective_completion/task_check_passed_given_f
 The new observation adapter requires sourced fidelity and original-acceptance coverage: faithful+pass=1; faithful+verified method-caused failure=0; implementation deviation, method change, insufficient acceptance, no evaluable result or unclear attribution=unknown. The optional `check-task.g_attribution` assessment cites execution code/result references; a matching receipt or `failed` checker by itself supplies no new G label. See [evidence schema](episode_closeout.md#g-attribution-evidence).
 
 Old forecasts and explicit old conventions retain their original meanings, units and observation channels. An absent `observation_rule_version` is never silently upgraded. In particular `normalized_objective_gap` still measures the solver's own `max(0,1-gap)`, and `task_result_check_passed` retains the legacy completion rules.
+
+**R: one-attempt technical failure.** New requests fix `risk_convention` to `implementation_failure`, `unit=execution`, `scope=attempt`, `observation_rule_version=wm-r-technical/1`, saved in `trace.model_info`. Only that event's finite JSON numeric probability in [0,1] participates in scoring. Missing, boolean, string, duplicate or invalid probabilities become unavailable with an unsupported reason; explicit 0 remains valid and valid G/C survive. Timeout, environment failure, budget exhaustion, solver infeasibility and task-check events remain diagnostics and never replace R.
+
+Technical labels use the bound attempt's executor receipt, captured exception and result-protocol checks: clear code/API/process/protocol failure=1; normal protocol-valid completion (including `infeasible`)=0; external blockage, normal timeout or insufficient attribution=unknown. A later repaired attempt has its own label. Legacy predictions keep legacy labels, and their errors are not pooled with the new R version. Business constraint omissions remain separate semantic evidence for G.
+
+**Shared scoring basis.** Among comparable candidates actually ranked, R is included only if all have valid implementation probabilities. C uses the intersection of valid `expected_measured` dimensions at the same measurement scope, followed by component deduplication. All candidates use the same dimensions, existing weights and scales; explicit zero is valid. Empty cost intersection marks C incomparable. Omitted C/R terms are omitted for everyone, with original values and reasons preserved in `score.scoring_basis`, `cost_reported` and `risk_probability`.
 
 
 ### 2.2 `CapabilityEvolutionPrediction` — harness capability evolution

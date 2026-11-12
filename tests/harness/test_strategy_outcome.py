@@ -14,7 +14,7 @@ What this file asserts, one behaviour per test class:
    failure state (not configured, empty payload, invalid JSON, NaN,
    out-of-range probability, wrong type) is honest;
 4. an unexecuted strategy window can be validly predicted but not scored;
-   unknown cost is never free; a business objective is not execution cost;
+   incomplete cost is omitted on a shared basis; a business objective is not execution cost;
    a model self-report is never relabeled as measured;
 5. predictions change the suggestion, only an explicit choice changes the
    selection; same strategy_id with different configs does not cross-bind;
@@ -682,7 +682,7 @@ class TestScopeAndHonesty(StrategyCase):
         self.assertFalse(prediction.trace.comparable)
         self.assertTrue(prediction.trace.not_comparable_reasons)
 
-    def test_unknown_cost_is_never_free_in_the_comparison(self):
+    def test_missing_cost_omits_the_term_for_the_whole_comparison(self):
         from or_harness.world_model.planner import (
             PlanLimits,
             score_strategy_outcome_predictions,
@@ -706,10 +706,9 @@ class TestScopeAndHonesty(StrategyCase):
         limits = PlanLimits(alpha=1.0, beta=1.0, gamma=1.0,
                             cost_weights={"llm_tokens": 1.0}, benefit_kind='solution_quality', benefit_metric='normalized_objective_gap', benefit_unit='1-gap')
         scores = score_strategy_outcome_predictions([p_full, p_none], limits)
-        self.assertIn("cost", scores[1].incomparable,
-                      "the cost-less candidate is charged, not excused")
-        # The silent candidate must not win on cost by saying nothing.
-        self.assertLessEqual(scores[1].utility, scores[0].utility + 1e-9)
+        self.assertTrue(all("cost" in s.incomparable for s in scores))
+        self.assertTrue(all(s.cost_normalized is None for s in scores))
+        self.assertEqual(scores[1].utility, scores[0].utility)
 
     def test_business_objective_is_not_execution_cost(self):
         prediction = self.h.predict_strategy_outcome(
@@ -846,7 +845,8 @@ class TestPredictionDrivesDecision(StrategyCase):
         _h, _provider, plan = self._plan({"S01": worse, "S02": better})
         self.assertEqual(plan["status"], "ok")
         self.assertEqual(plan["suggested"]["strategy_id"], "S02")
-        self.assertIn("G(0.95)", plan["suggestion_basis"])
+        self.assertIn("G=0.95", plan["suggestion_basis"])
+        self.assertIn("R=omitted", plan["suggestion_basis"])
 
     def test_suggestion_is_not_a_selection(self):
         _h, _provider, plan = self._plan(

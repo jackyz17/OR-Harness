@@ -34,7 +34,7 @@ def normalize_execution_context(value):
     if not isinstance(value, dict):
         raise ValueError("execution_context must be an object")
     out = {}
-    for key in ("host", "model", "phase", "source", "source_ref"):
+    for key in ("host", "model", "agent_id", "solver_interface", "phase", "source", "source_ref"):
         if value.get(key) is not None:
             if not isinstance(value[key], str) or not value[key].strip():
                 raise ValueError("execution_context." + key + " must be nonempty text")

@@ -3,12 +3,12 @@
 For a cold first proposal, the normal runner can pass known execution conditions before any action is recorded:
 
 ```bash
-export OR_EXECUTION_CONTEXT='{"host":"my-runner","model":"actual-executor-model","phase":"initial_modelling","source":"runner_configuration"}'
+export OR_EXECUTION_CONTEXT='{"host":"my-runner","model":"actual-executor-model","agent_id":"runner/v1","solver_interface":"highs","phase":"initial_modelling","source":"runner_configuration"}'
 orx predict-strategy --task task.json --candidate candidate.json --episode ep1
 # Or: orx --execution-context runner.json predict-strategy ...
 ```
 
-`OR_EXECUTION_CONTEXT` accepts inline JSON or a file (`@file` also works). The global CLI flag overrides the environment; Python uses `ORHarness(execution_context={...})`. Supply the actual execution model, independently of `--world-model`, and update the declaration when runner conditions change. Host/model/phase/source are frozen with the snapshot and remain fixed for reused contexts. Missing information remains unknown; no model/usage action needs to be fabricated to enable history retrieval.
+`OR_EXECUTION_CONTEXT` accepts inline JSON or a file (`@file` also works). The global CLI flag overrides the environment; Python uses `ORHarness(execution_context={...})`. Supply the actual execution model, independently of `--world-model`, and update the declaration when runner conditions change. Host/model/optional agent ID, known solver interface, phase and source are frozen with the snapshot and remain fixed for reused contexts. Missing information remains unknown. Applicable technical R history uses the execution agent and the interface actually recorded by past executions.
 
 C host-window evidence is optional on the existing reporting paths. `record --usage-file` and `amend-cost --usage-file` accept `or-host-usage/1` reports with explicit window/counter/call evidence (see [episode_closeout.md](episode_closeout.md)); wider scopes are stored as evidence beside the execution, preserving its attempt cost. Through the API use `report_action(..., host_usage=report)` or include the raw report in `action --report ... --outcome '{"host_usage": ...}'`. A `finish_task` report supplies an actual terminal event; `close-episode` publishes recorded evidence and supplies no substitute timestamp. Use `cancelled` action status with an `aborted` episode for a confirmed abort. The next prediction receives applicable raw `cost_evidence`; no additional prediction or feedback command is required.
 
@@ -213,7 +213,7 @@ Unknown `finish_reason` remains unknown. Pass the chosen prediction ID to `execu
 
 **Purpose / effects:** Optional bounded comparison replacing individual prediction calls. Requires caller-proposed `execute_strategy` candidates and a configured provider. Freezes one root snapshot/context, predicts candidates against it, logs planning spend, and suggests a first step. It neither selects nor executes.
 
-**Limits / scoring:** Horizon is exactly 1; other values exit 2. Default bounds are at most 3 candidates, 6 model calls, and 120 seconds for the whole decision. Remaining wall time limits each next call; exhaustion is explicit. Utility is `alpha*G - beta*C - gamma*R`: unknown cost uses that dimension's peak normalized share, unknown risk probability uses full weight, incomparable benefit contributes nothing. The knowledge bonus is off. Actual planning spend is charged once to the decision action, outside candidate scores.
+**Limits / scoring:** Horizon is exactly 1; other values exit 2. Default bounds are at most 3 candidates, 6 model calls, and 120 seconds for the whole decision. Remaining wall time limits each next call; exhaustion is explicit. Among candidates with comparable G, utility uses common terms of `alpha*G - beta*C - gamma*R`. C uses their valid same-scope `expected_measured` dimension intersection followed by common component deduplication; empty intersection omits C for everyone. R reads only `implementation_failure.probability` and is omitted for everyone if any ranked candidate lacks it. Explicit zeros are valid. Raw inputs, omissions and shared scales/weights remain in the score audit. Incompatible G produces no utility. The knowledge bonus is off; planning spend is charged once outside candidate scores. Existing scales, weights and gates are unchanged.
 
 **Read / next:** `result.decision_action_id`, `plan.candidates[].prediction_id`, suggestion, `planning_cost`, `effective_parameters`, per-candidate failures/rejections, `score.incomparable`, and `budget_confirmation`. Choose with `choose-next`, then execute using the same prediction ID. Missing budget evidence is `unknown/unconfirmed`, not an assurance of affordability.
 

@@ -785,6 +785,7 @@ class RealOutcomeSummary:
     #: execution observed once is one unit, however many predictions were
     #: bound to it.
     observed_events: Dict[str, Any] = field(default_factory=dict)
+    implementation_observation: Dict[str, Any] = field(default_factory=dict)
     #: Verification evidence for the solution the window produced.
     verification: Dict[str, Any] = field(default_factory=dict)
     #: Per-field eligibility: field -> (eligibility, reason).
@@ -823,6 +824,7 @@ class RealOutcomeSummary:
             "auxiliary_cost": copy.deepcopy(self.auxiliary_cost),
             "risk_events": copy.deepcopy(self.risk_events),
             "observed_events": copy.deepcopy(self.observed_events),
+            "implementation_observation": copy.deepcopy(self.implementation_observation),
             "verification": copy.deepcopy(self.verification),
             "eligibility": copy.deepcopy(self.eligibility),
             "attribution": copy.deepcopy(self.attribution),
@@ -1810,6 +1812,20 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
         episode_id=candidate.episode_id, scope_complete=(
             bool(records) and action.status != "running"))
     summary.observed_events = observed["events"]
+    from or_harness.world_model.r_signal import uses_technical_r, bound_r_observation
+    from or_harness.world_model.contracts import R_OBSERVATION_VERSION
+    if uses_technical_r(prediction):
+        fact = bound_r_observation(harness, prediction, action)
+        summary.implementation_observation = fact
+        execution_id = fact.get("execution_id")
+        label = "occurred" if fact["label"] == 1 else "not_occurred" if fact["label"] == 0 else None
+        unit = {"label": label, "label_basis": fact["reason"], "detail": copy.deepcopy(fact)}
+        observed["events"]["implementation_failure"] = {
+            "event": "implementation_failure", "unit": "execution", "range": "attempt",
+            "observation_rule_version": R_OBSERVATION_VERSION,
+            "label": label, "label_basis": fact["reason"],
+            "unit_ids": [execution_id] if execution_id else [],
+            "units": {execution_id: unit} if execution_id else {}}
     summary.risk_events = _pair_predicted_events(
         prediction, observed, candidate)
     # BUDGET-CONDITION COMPARABILITY. The event is a claim about the budget
@@ -1851,7 +1867,7 @@ def summarize_real_outcome(harness, prediction) -> RealOutcomeSummary:
 # ---------------------------------------------------------------------------
 
 
-def _execution_event_observations(records: Sequence[Any]
+def _execution_event_observations(records: Sequence[Any], *, implementation_rule=None
                                   ) -> Dict[str, Dict[str, Any]]:
     """Observe the execution-unit events, ONE LABEL PER EXECUTION.
 
@@ -1956,6 +1972,12 @@ def _execution_event_observations(records: Sequence[Any]
                     _unit(name, execution_id, "not_occurred",
                           "the execution did not record this failure class")
 
+        if implementation_rule == "wm-r-technical/1":
+            from or_harness.world_model.r_signal import technical_attempt_fact
+            fact = technical_attempt_fact(record)
+            _unit("implementation_failure", execution_id,
+                  "occurred" if fact["label"] == 1 else "not_occurred" if fact["label"] == 0 else None,
+                  fact["reason"], detail=fact)
         # The task-check channel: the CHECK RESULT, and nothing more.
         verdict = task_check_state(record)
         block = task_check_block(record) or {}
@@ -2316,6 +2338,8 @@ def _pair_predicted_events(prediction, observed: Dict[str, Any],
             "predicted_probability": event.probability,
             "label": label,
             "label_basis": basis,
+            "observation_rule_version": (observation or {}).get("observation_rule_version"),
+            "unit_ids": list((observation or {}).get("unit_ids") or []),
         })
     # Framework-observed events the model did NOT predict: recorded so the
     # occurrence rate has an honest denominator, never scored for accuracy.
@@ -2331,6 +2355,7 @@ def _pair_predicted_events(prediction, observed: Dict[str, Any],
             "label": observation.get("label"),
             "label_basis": observation.get("label_basis"),
             "unit_ids": list(observation.get("unit_ids") or []),
+            "observation_rule_version": observation.get("observation_rule_version"),
         })
     return rows
 
@@ -2912,7 +2937,9 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                 "event": observed_event["event"],
                 "canonical_event": observed_event.get("canonical_event"),
                 "observation_range": observed_event.get("observation_range"),
-                "predicted_probability": round(float(probability), 6),
+                "predicted_probability": float(probability),
+                "observation_rule_version": observed_event.get("observation_rule_version"),
+                "role": "technical_r" if observed_event.get("observation_rule_version") == "wm-r-technical/1" else "diagnostic",
                 "label": label,
                 "label_basis": observed_event["label_basis"],
                 "brier": round((float(probability) - y) ** 2, 6),
@@ -2932,6 +2959,15 @@ def evaluate_strategy_prediction(prediction, summary: RealOutcomeSummary
                      "however many predictions were bound to it"),
         }
 
+    if summary.implementation_observation:
+        from or_harness.world_model.r_signal import implementation_probability
+        evaluation.risk["implementation_observation"] = {
+            **copy.deepcopy(summary.implementation_observation),
+            "predicted_probability": implementation_probability(prediction),
+            "comparable": not bool(_blocked("risk")),
+        }
+        evaluation.risk["r_event"] = "implementation_failure"
+        evaluation.risk["r_observation_rule_version"] = "wm-r-technical/1"
     # -- interval ------------------------------------------------------------
     # An interval is the SAME observed value read as a range, so it shares
     # the benefit's eligibility: if the benefit may not be scored (an
@@ -3777,6 +3813,10 @@ def _observation_summary(harness, window: Sequence[Dict[str, Any]],
         "occurrence": occurrence,
         "n_observation_units": n_executions,
         "n_observing_episodes": n_episodes,
+        "_records": {key: [r for r in records if r.created_at <= next(
+            (float(row.get("closed_at") or float("inf")) for row in window
+             if (str(row["task_id"]), str(row.get("episode_id") or "")) == key), float("inf"))]
+            for key, records in facts.items()},
     }
 
 
@@ -4076,6 +4116,8 @@ def build_calibration_summary(harness, *,
             # averaged into one number. `scored` holds PREDICTION-
             # OBSERVATION PAIRS, so this counts pairs, not real events.
             event_name = str(entry.get("event") or "(unnamed)")
+            if entry.get("observation_rule_version"):
+                event_name += "@" + entry["observation_rule_version"]
             group["brier_by_event"].setdefault(event_name, []).append(
                 float(entry["brier"]))
             group["brier_episodes_by_event"].setdefault(
@@ -4279,6 +4321,7 @@ def build_calibration_summary(harness, *,
     # observation unit (never by prediction count) from the CURRENT facts.
     live = _observation_summary(harness, window, budget_cache=budget_cache)
     occurrence = live["occurrence"]
+    from or_harness.world_model.r_signal import technical_r_statistics
 
     return {
         "calibration_version": CALIBRATION_SUMMARY_VERSION,
@@ -4299,6 +4342,7 @@ def build_calibration_summary(harness, *,
         "groups": out_groups,
         "conditional_g": conditional_g_statistics(g_samples, min_samples),
         "conditional_cost": conditional_cost_statistics(g_samples, min_samples),
+        "technical_r": technical_r_statistics(live["_records"], g_samples, min_samples=min_samples),
         "occurrence": occurrence,
         # DETERMINISTIC rule reminders: the measured statistics turned into
         # short "what to watch next time" notes. No model call, no fitted
@@ -6046,6 +6090,8 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             cost.get("observed_not_predicted"))
     if cost.get("observed_fact"):
         row["cost_observed_fact"] = copy.deepcopy(cost["observed_fact"])
+    if (evaluation.risk or {}).get("implementation_observation"):
+        row["implementation_observation"] = copy.deepcopy(evaluation.risk["implementation_observation"])
     # The REAL risk events: which happened, which did not, which are unknown.
     # A predicted probability is never read as an occurrence, and an
     # unknown label stays unknown (never defaulted to "did not happen").
@@ -6082,6 +6128,7 @@ def _paired_feedback_row(evaluation, prediction) -> Optional[Dict[str, Any]]:
             out["predicted"] = False
         if entry.get("brier") is not None:
             out["brier"] = entry.get("brier")
+        out["observation_rule_version"] = entry.get("observation_rule_version") or "legacy/event-classification"
         return out
 
     for entry in (evaluation.risk or {}).get("scored") or []:

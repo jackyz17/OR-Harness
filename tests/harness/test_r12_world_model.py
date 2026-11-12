@@ -93,14 +93,13 @@ class TestPrimaryBenefitIsCompletion(unittest.TestCase):
                                  "task_result_check_passed", 0.8,
                                  "task_check_failed")
         scores = score_strategy_outcome_predictions([completion], limits)
-        self.assertEqual(scores[0].risk_effective, 0.0,
-                         "a task_check_failed already inside the completion "
-                         "benefit is not charged again")
+        self.assertIsNone(scores[0].risk_effective,
+                          "business-check probability is diagnostic, not technical R")
         # Its probability is still REPORTED for diagnosis.
         self.assertEqual(
             [e["event"] for e in scores[0].risk_reported],
             ["task_check_failed"])
-        # Under solver quality the same event IS an independent risk.
+        # Business diagnostics do not substitute for R under solver quality either.
         quality = _prediction("p2", "solution_quality",
                               "normalized_objective_gap", 0.8,
                               "task_check_failed")
@@ -108,7 +107,8 @@ class TestPrimaryBenefitIsCompletion(unittest.TestCase):
                              benefit_kind="solution_quality",
                              benefit_metric="normalized_objective_gap")
         qscores = score_strategy_outcome_predictions([quality], qlimits)
-        self.assertEqual(qscores[0].risk_effective, 0.3)
+        self.assertIsNone(qscores[0].risk_effective)
+        self.assertEqual(qscores[0].utility, .8)
 
 
 from tests.harness.test_task_check import TaskCheckCase, _task  # noqa: E402

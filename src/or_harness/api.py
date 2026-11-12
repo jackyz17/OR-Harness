@@ -4566,16 +4566,15 @@ class ORHarness:
                     suggested_spec = spec
                     break
             suggestion_basis = (
-                f"U={best.utility} = {limits.alpha}*G({best.benefit_value})"
-                f" - {limits.beta}*C({best.cost_normalized}) - "
-                f"{limits.gamma}*R({best.risk_effective}); "
-                f"{len(scores)} candidate(s) compared under protocol "
-                f"{STRATEGY_OUTCOME_PROTOCOL_VERSION} from context "
-                f"{plan_context.context_id}; benefit convention "
-                f"{convention['kind']}/{convention['metric']} "
-                f"(source={convention['source']}); conservative yardstick "
-                "(unknown cost => peak share, unknown risk => full weight, "
-                "benefit off the convention => not ranked)")
+                f"U={best.utility} over common terms {best.scoring_basis.get('terms')}; "
+                f"G={best.benefit_value}; C={best.cost_normalized if best.cost_normalized is not None else 'omitted'}; "
+                f"R={best.risk_effective if best.risk_effective is not None else 'omitted'}; "
+                f"cost dimensions={best.scoring_basis.get('cost_dimensions')}; "
+                f"weights alpha/beta/gamma={limits.alpha}/{limits.beta}/{limits.gamma}; "
+                f"{len(comparable)} candidate(s) ranked under {STRATEGY_OUTCOME_PROTOCOL_VERSION} "
+                f"from context {plan_context.context_id}; benefit convention "
+                f"{convention['kind']}/{convention['metric']} (source={convention['source']}); "
+                "omitted terms incur no candidate-specific penalty")
         elif comparable:
             suggestion_basis = ("shadow mode: candidates evaluated and "
                                 "recorded; suggestion withheld")
@@ -5932,6 +5931,10 @@ class ORHarness:
         # never silently dropped on the way to the record.
         if method_planned is not None and record.method_planned is None:
             record.method_planned = method_planned
+        runner = (pre.harness_state or {}).get("execution_context") or {}
+        if runner:
+            record.execution_features["execution_host"] = {k: copy.deepcopy(runner[k])
+                for k in ("host", "model", "agent_id", "source", "source_ref") if k in runner}
         # Evidence completeness: preserve the coupling-aware representation
         # snapshot (CIR) that was actually solved. Snapshot only — CIR
         # extraction and coupling understanding are untouched. The PARSED

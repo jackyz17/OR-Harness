@@ -82,6 +82,17 @@ from or_harness.core.schema import (
     normalize_method,
 )
 
+R_OBSERVATION_VERSION = "wm-r-technical/1"
+R_CONVENTION = {"event": "implementation_failure", "unit": "execution",
+                "scope": "attempt", "observation_rule_version": R_OBSERVATION_VERSION}
+
+
+def is_implementation_probability(value: Any) -> bool:
+    """A finite JSON number, including explicit zero; no strings/bools."""
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and 0 <= value <= 1 and _prob(value))
+
+
 #: The current contract version. Bumped when the shape changes; a stored
 #: payload is always interpretable through the version it names.
 CONTRACT_VERSION = "wm-contract/1"
@@ -1567,8 +1578,7 @@ class RiskEvent:
             raise ValueError("RiskEvent.event is required")
         return cls(
             event=str(data["event"]),
-            probability=(float(data["probability"])
-                         if data.get("probability") is not None else None),
+            probability=data.get("probability"),
             severity=(float(data["severity"])
                       if data.get("severity") is not None else None),
             severity_unit=str(data.get("severity_unit", "")),

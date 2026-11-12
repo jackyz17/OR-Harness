@@ -313,20 +313,24 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "never default it to 0, and treat a known consumption with an unmeasured "
     "declared dimension as a LOWER BOUND, not a confirmed remaining "
     "budget.\n"
-    "  MANDATORY RISK COVERAGE: for EVERY candidate you MUST explicitly "
-    "consider at least these two events and either (a) give a probability "
-    "with a basis, or (b) state in \"notes\"/\"basis\" why you have NO "
-    "basis for it. An OMITTED event is treated as UNKNOWN, NOT as "
-    "probability zero — a missing event is not evidence it cannot happen:\n"
-    "    (1) implementation_failure — will YOUR OWN script/stack hold up? "
-    "Distinguish three things: the MATHEMATICAL METHOD is sound, the TOOL "
-    "ENVIRONMENT is usable here, and THIS implementation is stable. Your "
-    "own new code is unproven even when the method and the solver are "
-    "mature — a familiar method does not make a fresh script safe, and a "
-    "successful past run does not remove today's risk;\n"
-    "    (2) task_check_failed — will the ANSWER satisfy the DECLARED task "
-    "check? Use the relevant history; do not treat a mature solver as "
-    "evidence that the answer is right.\n"
+    "  SCORING R CONVENTION: ONLY implementation_failure.probability is R: "
+    "the probability that ONE implementation/execution attempt using this "
+    "candidate fails technically under the current execution agent, solver "
+    "interface and runtime conditions. Assess writing solver code, calling "
+    "the API, actual execution and delivering a protocol-valid readable "
+    "result. Code/API exceptions, abnormal solver exits and malformed "
+    "result delivery are technical failures. A legal infeasible result can "
+    "be technical success. Ordinary time limits and external blockage are "
+    "unknown for technical R unless a code cause is verified. Other events "
+    "(timeout, environment, budget, infeasibility and task-check outcomes) "
+    "remain diagnostics and NEVER substitute for R. G concerns original-task "
+    "acceptance given faithful execution; C counts solving/rework resources. "
+    "Give a finite JSON number in [0,1], including 0, or omit the probability "
+    "when unsupported. Consider implementation_failure explicitly. Use the "
+    "small implementation_r_evidence block: matching executed agent/interface "
+    "facts, not a global adjustment. Supported common base rates or similar "
+    "candidate scores are allowed. A reusable tested script is evidence of "
+    "technical execution only, not current business correctness.\n"
     "  If you give a probability, base it on the SPECIFIC candidate's "
     "evidence (the steps, the environment, comparable history), not on the "
     "solver's reputation. NEVER hardcode a penalty for a particular solver "
@@ -586,7 +590,9 @@ def build_strategy_outcome_request(
             profile=(view.get("joint_problem") or {}).get("profile") or {},
             conditions=requested_solving_conditions(candidate, view.get("execution_constraints")),
             convention=fixed_convention, scope=candidate.scope, task_id=candidate.task_id)
+    from or_harness.world_model.contracts import R_CONVENTION
     request: Dict[str, Any] = {
+        "risk_convention": copy.deepcopy(R_CONVENTION),
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
         "request_kind": "strategy_outcome_prediction",
         "prediction_context": view,
@@ -1008,9 +1014,14 @@ def parse_strategy_outcome_payload(
                                     "required")
                     continue
                 probability = raw.get("probability")
-                if probability is not None and not _prob(probability):
-                    problems.append(f"risk.events[{index}].probability must "
-                                    "be in [0, 1]")
+                from or_harness.world_model.contracts import is_implementation_probability
+                is_r = str(raw["event"]) == "implementation_failure"
+                valid_probability = is_implementation_probability(probability) if is_r else _prob(probability)
+                if probability is not None and not valid_probability:
+                    if is_r:
+                        unsupported["risk.implementation_failure"] = "probability must be a finite JSON number in [0,1]"
+                    else:
+                        problems.append(f"risk.events[{index}].probability must be in [0, 1]")
                     probability = None
                 severity = raw.get("severity")
                 if severity is not None and not _finite(severity):
@@ -1026,6 +1037,11 @@ def parse_strategy_outcome_payload(
                     severity_unit=str(raw.get("severity_unit") or ""),
                     basis=(str(raw["basis"]) if raw.get("basis") else None),
                     notes=[str(n) for n in (raw.get("notes") or [])]))
+            impl = [e for e in events if e.event == "implementation_failure"]
+            if len(impl) > 1:
+                unsupported["risk.implementation_failure"] = "duplicate implementation_failure events are ambiguous"
+                for event in impl:
+                    event.probability = None
             if events:
                 try:
                     risk = RiskStatement(
@@ -1178,6 +1194,8 @@ def parse_strategy_outcome_payload(
         not_comparable_reasons=["the candidate has not been executed: no "
                                 "real window exists to score against"],
     )
+    from or_harness.world_model.contracts import R_CONVENTION
+    trace.model_info["risk_convention"] = copy.deepcopy(R_CONVENTION)
     if benefit_convention:
         trace.model_info["benefit_convention"] = copy.deepcopy(benefit_convention)
         if unsupported.get("benefit") and isinstance(raw_benefit, dict):
@@ -1512,6 +1530,7 @@ class StrategyOutcomeService:
         profile = context.joint.profile or {}
         from or_harness.world_model.cost_signal import cost_conditions
         info["cost_conditions"] = cost_conditions(context, prediction.candidate)
+        info["risk_convention"] = copy.deepcopy(request["risk_convention"])
         info.update({
             "family": profile.get("family"),
             "cell_token": (group_key(ProblemProfile.from_dict(profile))

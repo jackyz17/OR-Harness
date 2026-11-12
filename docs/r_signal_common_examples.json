@@ -1,0 +1,973 @@
+{
+  "baseline": "1c74c3782dcceab35e5e59e5ed56407184f5d84f",
+  "evidence_kind": "synthetic provider, real isolated sandbox/API/closeout requests",
+  "real_model_discrimination_evaluated": false,
+  "technical_attempt_labels": [
+    {
+      "case": "code_error",
+      "execution_id": "ex_15f55653004a",
+      "observation": {
+        "event": "implementation_failure",
+        "evidence_refs": [
+          "execution_features.technical_outcome"
+        ],
+        "exception_type": "ValueError",
+        "executed": true,
+        "exit_code": 1,
+        "label": 1,
+        "observation_rule_version": "wm-r-technical/1",
+        "protocol_problems": [],
+        "reason": "captured code/API exception: ValueError",
+        "result_received": false,
+        "scope": "attempt",
+        "source": "SafePythonExecutor",
+        "unit": "execution",
+        "execution_id": "ex_15f55653004a",
+        "task_id": "factory",
+        "execution_agent": {
+          "host": "test-runner",
+          "model": "execution-model/v1",
+          "agent_id": "agent/v1"
+        },
+        "solver_interface": "highs",
+        "interface_source": "ExecutionRecord.solver.name",
+        "structure": {
+          "family": "assignment",
+          "problem_class": "unknown"
+        },
+        "predicted_probability": 0.2,
+        "comparable": true
+      }
+    },
+    {
+      "case": "protocol_error",
+      "execution_id": "ex_6c9edef43180",
+      "observation": {
+        "event": "implementation_failure",
+        "evidence_refs": [
+          "execution_features.technical_outcome"
+        ],
+        "executed": true,
+        "exit_code": 0,
+        "label": 1,
+        "observation_rule_version": "wm-r-technical/1",
+        "protocol_problems": [
+          "feasible status without objective_value"
+        ],
+        "reason": "result delivery protocol error: feasible status without objective_value",
+        "result_received": true,
+        "scope": "attempt",
+        "source": "SafePythonExecutor",
+        "unit": "execution",
+        "execution_id": "ex_6c9edef43180",
+        "task_id": "factory",
+        "execution_agent": {
+          "host": "test-runner",
+          "model": "execution-model/v1",
+          "agent_id": "agent/v1"
+        },
+        "solver_interface": "highs",
+        "interface_source": "ExecutionRecord.solver.name",
+        "structure": {
+          "family": "assignment",
+          "problem_class": "unknown"
+        },
+        "predicted_probability": 0.2,
+        "comparable": true
+      }
+    },
+    {
+      "case": "legal_infeasible",
+      "execution_id": "ex_c4f3da9f7f52",
+      "observation": {
+        "event": "implementation_failure",
+        "evidence_refs": [
+          "execution_features.technical_outcome"
+        ],
+        "executed": true,
+        "exit_code": 0,
+        "label": 0,
+        "observation_rule_version": "wm-r-technical/1",
+        "protocol_problems": [],
+        "reason": "process completed and delivered a readable protocol-valid result",
+        "result_received": true,
+        "scope": "attempt",
+        "source": "SafePythonExecutor",
+        "unit": "execution",
+        "execution_id": "ex_c4f3da9f7f52",
+        "task_id": "factory",
+        "execution_agent": {
+          "host": "test-runner",
+          "model": "execution-model/v1",
+          "agent_id": "agent/v1"
+        },
+        "solver_interface": "highs",
+        "interface_source": "ExecutionRecord.solver.name",
+        "structure": {
+          "family": "assignment",
+          "problem_class": "unknown"
+        },
+        "reusable_script": {
+          "bytes": 71,
+          "kind": "script",
+          "path": "artifacts/95/95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+          "sha256": "95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+          "source": "framework-submitted script before attempt; execution status is separate"
+        },
+        "predicted_probability": 0.2,
+        "comparable": true
+      }
+    },
+    {
+      "case": "normal_timeout",
+      "execution_id": "ex_cf6736504d72",
+      "observation": {
+        "event": "implementation_failure",
+        "evidence_refs": [
+          "execution_features.technical_outcome"
+        ],
+        "executed": true,
+        "exit_code": null,
+        "label": null,
+        "observation_rule_version": "wm-r-technical/1",
+        "protocol_problems": [],
+        "reason": "ordinary time limit; no verified code-caused timeout",
+        "result_received": false,
+        "scope": "attempt",
+        "source": "SafePythonExecutor",
+        "unit": "execution",
+        "execution_id": "ex_cf6736504d72",
+        "task_id": "factory",
+        "execution_agent": {
+          "host": "test-runner",
+          "model": "execution-model/v1",
+          "agent_id": "agent/v1"
+        },
+        "solver_interface": "highs",
+        "interface_source": "ExecutionRecord.solver.name",
+        "structure": {
+          "family": "assignment",
+          "problem_class": "unknown"
+        },
+        "predicted_probability": 0.2,
+        "comparable": true
+      }
+    }
+  ],
+  "published_technical_r": {
+    "coverage": {
+      "n_actual_attempts": 5,
+      "n_known_labels": 4,
+      "n_reported_probabilities": 4,
+      "n_scorable": 3
+    },
+    "groups": [
+      {
+        "brier_support": "insufficient_evidence",
+        "conditions": {
+          "execution_agent": {
+            "agent_id": "agent/v1",
+            "host": "test-runner",
+            "model": "execution-model/v1"
+          },
+          "solver_interface": "highs",
+          "structure": {
+            "family": "assignment",
+            "problem_class": "unknown"
+          }
+        },
+        "failure_rate": 0.5,
+        "mean_brier": 0.4400000000000001,
+        "n_attempts": 5,
+        "n_distinct_episodes": 5,
+        "n_known_labels": 4,
+        "n_labelled_distinct_episodes": 4,
+        "n_reported_probabilities": 4,
+        "n_scorable": 3,
+        "n_scored_distinct_episodes": 3,
+        "observation_rule_version": "wm-r-technical/1",
+        "reusable_scripts": [
+          {
+            "artifact": {
+              "bytes": 71,
+              "kind": "script",
+              "path": "artifacts/95/95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+              "sha256": "95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "execution_id": "ex_c4f3da9f7f52"
+          },
+          {
+            "artifact": {
+              "bytes": 88,
+              "kind": "script",
+              "path": "artifacts/e5/e5a54d2bf6489796e0b56b0ac9a25baee8fb46e8536a31b3457747e2afbfbde3",
+              "sha256": "e5a54d2bf6489796e0b56b0ac9a25baee8fb46e8536a31b3457747e2afbfbde3",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "execution_id": "ex_6dfd77cf1e46"
+          }
+        ],
+        "source_refs": [
+          "ex_cf6736504d72",
+          "ex_c4f3da9f7f52",
+          "ex_6c9edef43180",
+          "ex_15f55653004a",
+          "ex_6dfd77cf1e46"
+        ],
+        "support": "insufficient_evidence",
+        "technical_failures": 2,
+        "technical_successes": 2,
+        "unknown": 1
+      }
+    ],
+    "note": "attempts/labels deduplicate execution IDs; Brier uses original probabilities and same-rule known labels",
+    "observation_rule_version": "wm-r-technical/1"
+  },
+  "actually_sent_provider_request_excerpt": {
+    "request_kind": "strategy_outcome_prediction",
+    "candidate": {
+      "action_type": "execute_strategy",
+      "strategy_id": "S04",
+      "solver": "highs",
+      "method": {
+        "name": "joint factory selection",
+        "steps": [
+          "Select the same factory for BE and CFC, preserving the coupling constraint."
+        ]
+      },
+      "config": {},
+      "preconditions": [],
+      "expected_scope": [],
+      "stop_conditions": [],
+      "task_id": "new-factory-task",
+      "episode_id": "first-decision",
+      "scope": "attempt",
+      "scope_basis": "default",
+      "window_id": null
+    },
+    "risk_convention": {
+      "event": "implementation_failure",
+      "unit": "execution",
+      "scope": "attempt",
+      "observation_rule_version": "wm-r-technical/1"
+    },
+    "benefit_convention": {
+      "kind": "effective_completion",
+      "metric": "task_check_passed_given_faithful_execution",
+      "unit": "probability",
+      "scope": "attempt",
+      "observation_rule_version": "wm-g-faithful/1",
+      "observed_from": "attributable original-task acceptance after faithful execution",
+      "source": "declared",
+      "required": true,
+      "note": "THIS DECISION compares benefit under this convention. Predict this candidate's benefit with EXACTLY this kind and metric: a different kind or metric cannot be ranked against the other candidates, and it is NOT silently converted"
+    },
+    "prediction_context": {
+      "context_id": "ctx_bdb24a278c50",
+      "implementation_r_evidence": {
+        "event": "implementation_failure",
+        "unit": "execution",
+        "scope": "attempt",
+        "observation_rule_version": "wm-r-technical/1",
+        "execution_agent": {
+          "host": "test-runner",
+          "model": "execution-model/v1",
+          "agent_id": "agent/v1",
+          "source": "runner_execution_context"
+        },
+        "solver_interface": "highs",
+        "groups": [
+          {
+            "conditions": {
+              "execution_agent": {
+                "agent_id": "agent/v1",
+                "host": "test-runner",
+                "model": "execution-model/v1"
+              },
+              "solver_interface": "highs",
+              "structure": {
+                "family": "assignment",
+                "problem_class": "unknown"
+              }
+            },
+            "failure_rate": 0.5,
+            "n_attempts": 5,
+            "n_distinct_episodes": 5,
+            "n_known_labels": 4,
+            "n_labelled_distinct_episodes": 4,
+            "observation_rule_version": "wm-r-technical/1",
+            "reusable_scripts": [
+              {
+                "artifact": {
+                  "bytes": 71,
+                  "kind": "script",
+                  "path": "artifacts/95/95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+                  "sha256": "95241456c8e5f9b612a0b1996033085fb0816a2f17a7ed5598530baa3740391e",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "execution_id": "ex_c4f3da9f7f52"
+              },
+              {
+                "artifact": {
+                  "bytes": 88,
+                  "kind": "script",
+                  "path": "artifacts/e5/e5a54d2bf6489796e0b56b0ac9a25baee8fb46e8536a31b3457747e2afbfbde3",
+                  "sha256": "e5a54d2bf6489796e0b56b0ac9a25baee8fb46e8536a31b3457747e2afbfbde3",
+                  "source": "framework-submitted script before attempt; execution status is separate"
+                },
+                "execution_id": "ex_6dfd77cf1e46"
+              }
+            ],
+            "source_refs": [
+              "ex_cf6736504d72",
+              "ex_c4f3da9f7f52",
+              "ex_6c9edef43180",
+              "ex_15f55653004a",
+              "ex_6dfd77cf1e46"
+            ],
+            "support": "insufficient_evidence",
+            "technical_failures": 2,
+            "technical_successes": 2,
+            "unknown": 1,
+            "support_note": "closed attempts for this agent/interface; sparse or missing structure supports these cases only"
+          }
+        ],
+        "missing": [],
+        "support": "applicable_facts",
+        "note": "use applicable empirical facts; shared base rates or similar candidate probabilities are allowed when supported"
+      }
+    }
+  },
+  "actual_plan_next_scores": {
+    "implementation_point_two_timeout_point_eight": [
+      {
+        "prediction_id": "sp_3b2ba0b0c1ec",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": 0.2,
+        "risk_reported": [
+          {
+            "event": "implementation_failure",
+            "probability": 0.2
+          },
+          {
+            "event": "timeout",
+            "probability": 0.8
+          }
+        ],
+        "risk_probability": 0.2,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_3b2ba0b0c1ec",
+            "sp_03d3d3050c71"
+          ],
+          "terms": [
+            "G",
+            "C",
+            "R"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": "implementation_failure",
+          "omitted_risk_reason": null,
+          "missing_risk_prediction_ids": [],
+          "partial": false
+        },
+        "utility": 0.3,
+        "incomparable": {},
+        "notes": []
+      },
+      {
+        "prediction_id": "sp_03d3d3050c71",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": 0.2,
+        "risk_reported": [
+          {
+            "event": "implementation_failure",
+            "probability": 0.2
+          }
+        ],
+        "risk_probability": 0.2,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_3b2ba0b0c1ec",
+            "sp_03d3d3050c71"
+          ],
+          "terms": [
+            "G",
+            "C",
+            "R"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": "implementation_failure",
+          "omitted_risk_reason": null,
+          "missing_risk_prediction_ids": [],
+          "partial": false
+        },
+        "utility": 0.3,
+        "incomparable": {},
+        "notes": []
+      }
+    ],
+    "missing_r": [
+      {
+        "prediction_id": "sp_e67776dbcd16",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": null,
+        "risk_reported": [
+          {
+            "event": "implementation_failure",
+            "probability": 0.2
+          }
+        ],
+        "risk_probability": 0.2,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_e67776dbcd16",
+            "sp_4d9196a30a3b"
+          ],
+          "terms": [
+            "G",
+            "C"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_4d9196a30a3b"
+          ],
+          "partial": true
+        },
+        "utility": 0.5,
+        "incomparable": {
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      },
+      {
+        "prediction_id": "sp_4d9196a30a3b",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": null,
+        "risk_reported": [],
+        "risk_probability": null,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_e67776dbcd16",
+            "sp_4d9196a30a3b"
+          ],
+          "terms": [
+            "G",
+            "C"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_4d9196a30a3b"
+          ],
+          "partial": true
+        },
+        "utility": 0.5,
+        "incomparable": {
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      }
+    ],
+    "tokens_common_time_unknown": [
+      {
+        "prediction_id": "sp_2bfc334a7bf4",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.714286,
+        "risk_effective": null,
+        "risk_reported": [],
+        "risk_probability": null,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens",
+            "remaining_latency_s"
+          ],
+          "values": {
+            "llm_tokens": 500000.0,
+            "remaining_latency_s": 120.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_2bfc334a7bf4",
+            "sp_1ff1170fce3f"
+          ],
+          "terms": [
+            "G",
+            "C"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 700000.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {
+            "remaining_latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_1ff1170fce3f"
+              ]
+            }
+          },
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_2bfc334a7bf4",
+            "sp_1ff1170fce3f"
+          ],
+          "partial": true
+        },
+        "utility": -0.214286,
+        "incomparable": {
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      },
+      {
+        "prediction_id": "sp_1ff1170fce3f",
+        "benefit_value": 0.5,
+        "cost_normalized": 1.0,
+        "risk_effective": null,
+        "risk_reported": [],
+        "risk_probability": null,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 700000.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_2bfc334a7bf4",
+            "sp_1ff1170fce3f"
+          ],
+          "terms": [
+            "G",
+            "C"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 700000.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {
+            "remaining_latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_1ff1170fce3f"
+              ]
+            }
+          },
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_2bfc334a7bf4",
+            "sp_1ff1170fce3f"
+          ],
+          "partial": true
+        },
+        "utility": -0.5,
+        "incomparable": {
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      }
+    ],
+    "explicit_zero": [
+      {
+        "prediction_id": "sp_182cbdbe0b34",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": 0.0,
+        "risk_reported": [
+          {
+            "event": "implementation_failure",
+            "probability": 0.0
+          }
+        ],
+        "risk_probability": 0.0,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_182cbdbe0b34",
+            "sp_e7ffc4941fd5"
+          ],
+          "terms": [
+            "G",
+            "C",
+            "R"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": "implementation_failure",
+          "omitted_risk_reason": null,
+          "missing_risk_prediction_ids": [],
+          "partial": false
+        },
+        "utility": 0.5,
+        "incomparable": {},
+        "notes": []
+      },
+      {
+        "prediction_id": "sp_e7ffc4941fd5",
+        "benefit_value": 0.5,
+        "cost_normalized": 0.0,
+        "risk_effective": 0.0,
+        "risk_reported": [
+          {
+            "event": "implementation_failure",
+            "probability": 0.0
+          }
+        ],
+        "risk_probability": 0.0,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "llm_tokens"
+          ],
+          "values": {
+            "llm_tokens": 0.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_182cbdbe0b34",
+            "sp_e7ffc4941fd5"
+          ],
+          "terms": [
+            "G",
+            "C",
+            "R"
+          ],
+          "cost_dimensions": [
+            "llm_tokens"
+          ],
+          "cost_scales": {
+            "llm_tokens": 1.0
+          },
+          "cost_weights": {
+            "llm_tokens": 1
+          },
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {
+            "llm_tokens": "remaining_to_task_end"
+          },
+          "omitted_cost_dimensions": {},
+          "risk_event": "implementation_failure",
+          "omitted_risk_reason": null,
+          "missing_risk_prediction_ids": [],
+          "partial": false
+        },
+        "utility": 0.5,
+        "incomparable": {},
+        "notes": []
+      }
+    ],
+    "no_common_cost": [
+      {
+        "prediction_id": "sp_8f794200ea69",
+        "benefit_value": 0.5,
+        "cost_normalized": null,
+        "risk_effective": null,
+        "risk_reported": [],
+        "risk_probability": null,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "latency_s"
+          ],
+          "values": {
+            "latency_s": 2.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_8f794200ea69",
+            "sp_e46468e67a47"
+          ],
+          "terms": [
+            "G"
+          ],
+          "cost_dimensions": [],
+          "cost_scales": {},
+          "cost_weights": {},
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {},
+          "omitted_cost_dimensions": {
+            "latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_e46468e67a47"
+              ]
+            },
+            "remaining_latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_8f794200ea69"
+              ]
+            }
+          },
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_8f794200ea69",
+            "sp_e46468e67a47"
+          ],
+          "partial": true
+        },
+        "utility": 0.5,
+        "incomparable": {
+          "cost": "no common same-scope valid cost dimensions; C omitted for all ranked candidates",
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      },
+      {
+        "prediction_id": "sp_e46468e67a47",
+        "benefit_value": 0.5,
+        "cost_normalized": null,
+        "risk_effective": null,
+        "risk_reported": [],
+        "risk_probability": null,
+        "cost_reported": {
+          "scope": "remaining_to_task_end",
+          "expected_measured": [
+            "remaining_latency_s"
+          ],
+          "values": {
+            "remaining_latency_s": 120.0
+          }
+        },
+        "scoring_basis": {
+          "participant_prediction_ids": [
+            "sp_8f794200ea69",
+            "sp_e46468e67a47"
+          ],
+          "terms": [
+            "G"
+          ],
+          "cost_dimensions": [],
+          "cost_scales": {},
+          "cost_weights": {},
+          "utility_weights": {
+            "alpha": 1.0,
+            "beta": 1.0,
+            "gamma": 1.0
+          },
+          "cost_measurement_scopes": {},
+          "omitted_cost_dimensions": {
+            "latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_e46468e67a47"
+              ]
+            },
+            "remaining_latency_s": {
+              "reason": "missing/invalid expected_measured prediction",
+              "prediction_ids": [
+                "sp_8f794200ea69"
+              ]
+            }
+          },
+          "risk_event": null,
+          "omitted_risk_reason": "a ranked candidate has missing/invalid implementation_failure probability",
+          "missing_risk_prediction_ids": [
+            "sp_8f794200ea69",
+            "sp_e46468e67a47"
+          ],
+          "partial": true
+        },
+        "utility": 0.5,
+        "incomparable": {
+          "cost": "no common same-scope valid cost dimensions; C omitted for all ranked candidates",
+          "risk": "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        },
+        "notes": [
+          "partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty"
+        ]
+      }
+    ]
+  }
+}

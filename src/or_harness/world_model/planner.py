@@ -57,6 +57,7 @@ into every plan record — not calibrated research conclusions.
 from __future__ import annotations
 
 import copy
+import math
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -751,13 +752,11 @@ class StrategyOutcomeScore:
       is comparable (this build compares NORMALIZED solution-quality
       benefits; a candidate whose benefit is absent or a different currency
       reports ``None`` and never auto-wins);
-    - ``cost_normalized``: the predicted cost over the comparison's common
-      basis, with a missing dimension charged at the peak normalized share
-      of the candidates that DID predict it (unknown cost is never free);
-    - ``risk_effective``: the MAXIMUM event probability (one explicit risk
-      evaluation rule — events are never assumed independent, so
-      probabilities are neither summed nor multiplied); an event with no
-      probability basis charges the full weight as a deficit;
+    - ``cost_normalized``: cost on shared, same-scope declared dimensions;
+      no common dimensions means unknown C, omitted for the comparison;
+    - ``risk_effective``: implementation_failure probability when all
+      ranked candidates supplied it; otherwise R is omitted for everyone;
+      ``risk_probability`` preserves each original valid probability;
     - ``utility``: ``alpha*G - beta*C - gamma*R`` with the SAME weights the
       harness scores everything else with. The knowledge term is OFF for
       this protocol (delta=0): an old knowledge-gain score is not an H
@@ -774,6 +773,9 @@ class StrategyOutcomeScore:
     #: DIAGNOSTIC view: ``risk_effective`` is what the utility charged, this
     #: is what was predicted. The two differ when a loss is not double-counted.
     risk_reported: List[Dict[str, Any]] = field(default_factory=list)
+    risk_probability: Optional[float] = None
+    cost_reported: Dict[str, Any] = field(default_factory=dict)
+    scoring_basis: Dict[str, Any] = field(default_factory=dict)
     incomparable: Dict[str, str] = field(default_factory=dict)
     notes: List[str] = field(default_factory=list)
 
@@ -784,6 +786,9 @@ class StrategyOutcomeScore:
             "cost_normalized": self.cost_normalized,
             "risk_effective": self.risk_effective,
             "risk_reported": [dict(e) for e in self.risk_reported],
+            "risk_probability": self.risk_probability,
+            "cost_reported": copy.deepcopy(self.cost_reported),
+            "scoring_basis": copy.deepcopy(self.scoring_basis),
             "utility": self.utility,
             "incomparable": dict(self.incomparable),
             "notes": list(self.notes),
@@ -1017,199 +1022,121 @@ def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
 def score_strategy_outcome_predictions(
         predictions: List[Any], limits: PlanLimits
         ) -> List[StrategyOutcomeScore]:
-    """Score strategy-outcome predictions on ONE conservative yardstick.
+    """Compare rankable candidates using shared C dimensions and shared R.
 
-    ``predictions`` are :class:`~or_harness.world_model.contracts
-    .StrategyOutcomePrediction` objects (one per candidate). The rules:
-
-    - only ``status="valid"`` predictions participate; a failed prediction
-      is incomparable (a candidate whose prediction failed must not win by
-      default, nor drag the others down);
-    - the cost basis is the UNION of the dimensions any candidate's cost
-      predicted; a candidate missing a basis dimension is charged that
-      dimension's peak normalized share;
-    - risk is the MAXIMUM event probability (no independence assumption);
-      an event with no probability is a full-weight deficit;
-    - a benefit whose declared (kind, metric) is not the ONE convention this
-      decision compares under — or is a pair this build has no comparable
-      scale for at all — is INCOMPARABLE and does not enter the full utility
-      ranking: ``benefit_value`` stays None and no ``utility`` is produced.
-      Cost and risk are still reported (and still charged), so the
-      candidate's cost/risk picture is visible — but a candidate whose
-      upside is in a currency this comparison cannot read is NOT ranked as
-      if that upside were zero;
-    - the knowledge term is OFF (delta=0) for this protocol.
+    The existing weights and peak scales are unchanged. Missing fields
+    remove a term/dimension for the entire comparison, never add a penalty
+    to one candidate. Original declarations remain available for inspection.
     """
-    valid = [p for p in predictions if p.status == "valid"]
-    # Common cost basis: every dimension any valid prediction predicted,
-    # with COMPONENT dimensions dropped where their container is also
-    # predicted (the part and the whole are never billed together).
-    basis: List[str] = sorted({
-        dim for p in valid
-        if p.cost is not None and p.cost.expected is not None
-        for dim in chargeable_dimensions(p.cost.expected.measured_dims())})
-    norms: Dict[str, float] = {}
-    for dim in basis:
-        values = [float(getattr(p.cost.expected, dim))
-                  for p in valid
-                  if p.cost is not None and p.cost.expected is not None
-                  and dim in chargeable_dimensions(
-                      p.cost.expected.measured_dims())]
-        peak = max(values) if values else 0.0
-        norms[dim] = float(peak) if peak > 0 else 1.0
+    from or_harness.world_model.r_signal import implementation_probability
+    convention = resolve_benefit_convention(predictions,
+        kind=getattr(limits, "benefit_kind", None), metric=getattr(limits, "benefit_metric", None))
+
+    def benefit_reason(prediction):
+        benefit = prediction.benefit
+        if prediction.status != "valid":
+            return "prediction is not valid"
+        if not convention["comparable"]:
+            return convention["reason"]
+        if benefit is None or benefit.value is None:
+            return "no benefit value was predicted"
+        declared = normalize_benefit_convention(benefit.kind, benefit.metric)
+        if declared != (convention["kind"], convention["metric"]):
+            return "benefit kind/metric differs from this decision's convention; different currencies never rank together"
+        if benefit.metric == FAITHFUL_G_METRIC and (
+                not is_g_probability(benefit.value) or benefit.unit != "probability" or
+                benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION):
+            return "invalid faithful G value/unit/observation rule"
+        if not isinstance(benefit.value, (int, float)) or isinstance(benefit.value, bool) or not math.isfinite(benefit.value):
+            return "benefit value is not finite numeric data"
+        return None
+
+    def cost_dims(prediction):
+        cost = prediction.cost
+        if cost is None or cost.expected is None:
+            return set()
+        return {dim for dim in set(cost.measured) & set(cost.expected.measured_dims()) & set(COST_DIMENSIONS)
+                if isinstance((v := getattr(cost.expected, dim)), (int, float)) and not isinstance(v, bool)
+                and math.isfinite(v) and v >= 0}
+
+    def measurement_key(prediction, dim):
+        scope = prediction.cost.scope
+        if scope not in ("attempt", "strategy_window", "remaining_to_task_end"):
+            return None
+        if dim == "latency_s":
+            return "attempt_sandbox"
+        if dim == "remaining_latency_s" and scope != "remaining_to_task_end":
+            return None
+        return scope
+
+    participants = [p for p in predictions if benefit_reason(p) is None]
+    declared_dims = {p.prediction_id: cost_dims(p) for p in predictions}
+    common = set.intersection(*(declared_dims[p.prediction_id] for p in participants)) if participants else set()
+    all_dims = set.union(*(declared_dims[p.prediction_id] for p in participants)) if participants else set()
+    omitted_dims = {}
+    for dim in sorted(all_dims):
+        missing = [p.prediction_id for p in participants if dim not in declared_dims[p.prediction_id]]
+        keys = {measurement_key(p, dim) for p in participants if dim in declared_dims[p.prediction_id]}
+        if missing:
+            omitted_dims[dim] = {"reason": "missing/invalid expected_measured prediction", "prediction_ids": missing}
+        elif None in keys or len(keys) != 1:
+            common.discard(dim)
+            omitted_dims[dim] = {"reason": "different or unknown measurement scopes"}
+    # Intersect FIRST, then apply component deduplication ONCE for everyone.
+    basis = sorted(chargeable_dimensions(common))
+    for dim in sorted(common - set(basis)):
+        omitted_dims[dim] = {"reason": "component deduplicated on common dimensions"}
+    norms = {dim: max([float(getattr(p.cost.expected, dim)) for p in participants] + [0]) or 1.0 for dim in basis}
+    probabilities = {p.prediction_id: implementation_probability(p) for p in predictions}
+    use_r = bool(participants) and all(probabilities[p.prediction_id] is not None for p in participants)
+    missing_r = [p.prediction_id for p in participants if probabilities[p.prediction_id] is None]
     weights = limits.cost_weights or {}
     alpha = limits.alpha if limits.alpha is not None else 1.0
     beta = limits.beta if limits.beta is not None else 1.0
     gamma = limits.gamma if limits.gamma is not None else 1.0
-
-    scores: List[StrategyOutcomeScore] = []
-    convention = resolve_benefit_convention(
-        predictions,
-        kind=getattr(limits, "benefit_kind", None),
-        metric=getattr(limits, "benefit_metric", None))
+    scores = []
     for prediction in predictions:
-        score = StrategyOutcomeScore(
-            prediction_id=prediction.prediction_id)
-        if prediction.status != "valid":
-            score.incomparable["prediction"] = (
-                f"the prediction failed with status "
-                f"{prediction.status!r}: no consequence comparison is "
-                "possible for this candidate")
+        score = StrategyOutcomeScore(prediction_id=prediction.prediction_id)
+        score.risk_probability = probabilities[prediction.prediction_id]
+        score.risk_reported = [{"event": e.event, "probability": e.probability}
+                              for e in getattr(prediction.risk, "events", [])]
+        cost = prediction.cost
+        score.cost_reported = {"scope": getattr(cost, "scope", None),
+            "expected_measured": list(getattr(cost, "measured", [])),
+            "values": {d: (getattr(cost.expected, d) if d in declared_dims[prediction.prediction_id] else None)
+                       for d in getattr(cost, "measured", []) if d in COST_DIMENSIONS} if cost and cost.expected else {}}
+        reason = benefit_reason(prediction)
+        score.scoring_basis = {
+            "participant_prediction_ids": [p.prediction_id for p in participants],
+            "terms": (["G"] + (["C"] if basis else []) + (["R"] if use_r else [])) if reason is None else [],
+            "cost_dimensions": basis, "cost_scales": dict(norms),
+            "cost_weights": {dim: weights.get(dim, 0.0) for dim in basis},
+            "utility_weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
+            "cost_measurement_scopes": {d: measurement_key(participants[0], d) for d in basis},
+            "omitted_cost_dimensions": copy.deepcopy(omitted_dims),
+            "risk_event": "implementation_failure" if use_r else None,
+            "omitted_risk_reason": None if use_r else (
+                "a ranked candidate has missing/invalid implementation_failure probability" if participants else "no rankable candidates"),
+            "missing_risk_prediction_ids": missing_r,
+            "partial": not basis or not use_r or any(v["reason"] != "component deduplicated on common dimensions"
+                                                    for v in omitted_dims.values()),
+        }
+        if reason is not None:
+            score.incomparable["prediction" if prediction.status != "valid" else "benefit"] = reason
             scores.append(score)
             continue
-        # Benefit: comparable currency only. The candidate's declared
-        # (kind, metric) must match the ONE convention this decision
-        # compares under (declared by the caller, agreed by the candidates,
-        # or the build's default). An unrecognised DECLARATION means there
-        # is no shared scale at all: reported, never ranked.
-        benefit = prediction.benefit
-        benefit_comparable = False
-        declared_convention = (
-            normalize_benefit_convention(benefit.kind, benefit.metric)
-            if benefit is not None else None)
-        if not convention["comparable"]:
-            score.incomparable["benefit"] = convention["reason"]
-        elif benefit is None or benefit.value is None:
-            score.incomparable["benefit"] = (
-                "no benefit value was predicted; an unpredicted upside "
-                "contributes NOTHING (the mirror of charging unknown risk "
-                "in full)")
-        elif declared_convention is None:
-            score.incomparable["benefit"] = (
-                f"benefit kind/metric {benefit.kind!r}/{benefit.metric!r} is "
-                "not a convention this build can compare: it is reported, "
-                "never silently converted, and it is NOT scored as zero")
-        elif declared_convention != (convention["kind"], convention["metric"]):
-            score.incomparable["benefit"] = (
-                f"benefit convention {declared_convention[0]}/"
-                f"{declared_convention[1]} differs from this decision's "
-                f"({convention['kind']}/{convention['metric']}, "
-                f"source={convention['source']}): different measurements are "
-                "different currencies and are never ranked together")
-        elif benefit.metric == FAITHFUL_G_METRIC and (
-                not is_g_probability(benefit.value)
-                or benefit.unit != "probability"
-                or benefit.observation_rule_version != FAITHFUL_G_OBSERVATION_VERSION):
-            score.incomparable["benefit"] = "invalid faithful G value/unit/observation rule"
-        else:
-            score.benefit_value = float(benefit.value)
-            benefit_comparable = True
-        # Cost: over the common basis, missing dimensions charged at the
-        # peak normalized share.
-        cost_value = 0.0
-        missing_dims: List[str] = []
-        if prediction.cost is not None \
-                and prediction.cost.expected is not None:
-            measured = chargeable_dimensions(
-                prediction.cost.expected.measured_dims())
-            for dim in basis:
-                if dim in measured:
-                    cost_value += (
-                        weights.get(dim, 0.0)
-                        * float(getattr(prediction.cost.expected, dim))
-                        / max(norms.get(dim, 1.0), 1e-9))
-                else:
-                    cost_value += weights.get(dim, 0.0)
-                    if dim not in missing_dims:
-                        missing_dims.append(dim)
-        elif basis:
-            cost_value = sum(weights.get(dim, 0.0) for dim in basis)
-            missing_dims = list(basis)
-        if missing_dims:
-            score.incomparable["cost"] = (
-                f"cost dimensions {sorted(missing_dims)} not predicted by "
-                "this candidate; charged each at the peak normalized share "
-                "of the candidates that measured them (unknown cost is "
-                "never free)")
-        score.cost_normalized = round(cost_value, 6)
-        # Risk: the MAXIMUM event probability; a probability-less event is
-        # a full-weight deficit. Events whose loss the BENEFIT already
-        # carries under this convention (e.g. task_check_failed beside a
-        # completion probability) are EXCLUDED from the risk term so one
-        # loss is not charged twice; their probabilities are still reported
-        # (``risk_reported``) for diagnosis and calibration.
-        implied = benefit_implied_risk_events(convention["kind"])
-        risk = prediction.risk
-        risk_effective = 0.0
-        risk_reported: List[Dict[str, Any]] = []
-        if risk is not None and risk.events:
-            for e in risk.events:
-                risk_reported.append({"event": e.event,
-                                      "probability": e.probability})
-            charged = [e for e in risk.events
-                       if str(e.event) not in implied]
-            excluded = [e for e in risk.events
-                        if str(e.event) in implied]
-            probabilities = [e.probability for e in charged
-                             if e.probability is not None]
-            if probabilities:
-                risk_effective = max(float(p) for p in probabilities)
-            elif charged:
-                risk_effective = 1.0
-                score.incomparable["risk"] = (
-                    "risk events were predicted with no probability basis; "
-                    "charged the full gamma weight (unknown risk is a "
-                    "deficit, never free)")
-            # Otherwise every event's loss is already inside the benefit: the
-            # charged set is empty and the risk term adds nothing.
-            if excluded:
-                score.notes.append(
-                    "risk event(s) "
-                    + ", ".join(str(e.event) for e in excluded)
-                    + " are already represented by the benefit under "
-                    + f"{convention['kind']}/{convention['metric']}: "
-                    "their probabilities are reported but NOT charged "
-                    "again in the utility (one loss, one charge)")
-        else:
-            risk_effective = 1.0
-            score.incomparable["risk"] = (
-                "no risk was predicted; charged the full gamma weight "
-                "(unknown risk is a deficit, never free)")
-        score.risk_effective = round(risk_effective, 6)
-        score.risk_reported = risk_reported
-        if not benefit_comparable:
-            # NO full-ranking utility. A candidate whose upside is in a
-            # currency this comparison cannot read must not be ranked as if
-            # that upside were a real zero: the cost and risk picture below
-            # stays VISIBLE (and charged) for the reader, but `utility` is
-            # left None so it can never silently win or lose the full
-            # ranking on an unread benefit.
-            score.notes.append(
-                "cost/risk are reported for inspection but NO utility is "
-                "produced: the benefit is not on this comparison's "
-                "yardstick, so the candidate does not enter the full "
-                "ranking (an unread upside is never scored as zero)")
-            scores.append(score)
-            continue
-        score.utility = round(
-            alpha * score.benefit_value
-            - beta * cost_value
-            - gamma * risk_effective, 6)
-        if score.incomparable:
-            score.notes.append(
-                "incomparable fields are charged conservatively (unknown "
-                "risk => full gamma weight; unknown cost dimension => the "
-                "peak normalized share) and reported explicitly — unknown "
-                "never auto-wins")
+        score.benefit_value = float(prediction.benefit.value)
+        cost_value = sum(weights.get(d, 0.0) * float(getattr(prediction.cost.expected, d)) /
+                         max(norms[d], 1e-9) for d in basis)
+        score.cost_normalized = round(cost_value, 6) if basis else None
+        if not basis:
+            score.incomparable["cost"] = "no common same-scope valid cost dimensions; C omitted for all ranked candidates"
+        score.risk_effective = score.risk_probability if use_r else None
+        if not use_r:
+            score.incomparable["risk"] = "implementation risk missing/invalid on a ranked candidate; R omitted for all"
+        score.utility = round(alpha * score.benefit_value - beta * cost_value -
+                              gamma * (score.risk_probability if use_r else 0), 6)
+        if score.scoring_basis["partial"]:
+            score.notes.append("partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty")
         scores.append(score)
     return scores

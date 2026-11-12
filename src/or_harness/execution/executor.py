@@ -267,6 +267,8 @@ class ExecutionOutcome:
     #: matching stamp) — an unobserved method stays UNKNOWN, never a copy of
     #: the plan. Same attribution discipline as ``config_report``.
     method_report: Optional[Dict[str, Any]] = None
+    result_received: bool = False
+    protocol_error: Optional[str] = None
 
 
 class SafePythonExecutor:
@@ -293,6 +295,7 @@ class SafePythonExecutor:
             return ExecutionOutcome(
                 status="error", solver=solver,
                 normalized_error="security policy: " + security_error,
+                protocol_error=("code construction: " + security_error if security_error.startswith("SyntaxError:") else None),
                 executed=False,
                 message="Solve script was rejected before execution")
         env = {
@@ -379,6 +382,8 @@ class SafePythonExecutor:
                 stdout_b, stderr_b = b"", b""
             return ExecutionOutcome(
                 status="timeout", solver=solver,
+                stdout=_clip(stdout_b.decode("utf-8", "replace"), self.max_stdout_chars),
+                stderr=_clip(stderr_b.decode("utf-8", "replace"), self.max_stderr_chars),
                 wall_seconds=time.monotonic() - start,
                 normalized_error="execution timeout",
                 message="Solve script exceeded the wall-clock timeout",
@@ -403,6 +408,7 @@ class SafePythonExecutor:
                 normalized_error=_normalize_error(
                     stderr or stdout or _exit_note(proc.returncode)),
                 message="Process failed or did not write result.json",
+                protocol_error=("missing result.json" if proc.returncode == 0 else None),
                 config_report=_config_receipt(workspace, action_id),
                 method_report=_method_receipt(workspace, action_id),
                 stale_result_cleared=stale_cleared)
@@ -417,6 +423,7 @@ class SafePythonExecutor:
                     normalized_error=(
                         "result.json is older than this run: a stale result "
                         "cannot be attributed to this attempt"),
+                    protocol_error="stale result.json",
                     message=("result.json predates this attempt: refusing to "
                              "read another run's result as this one's"),
                     config_report=_config_receipt(workspace, action_id),
@@ -431,6 +438,7 @@ class SafePythonExecutor:
                 status="error", solver=solver, exit_code=proc.returncode,
                 wall_seconds=wall, stdout=stdout, stderr=stderr,
                 normalized_error="invalid result.json: " + type(exc).__name__,
+                protocol_error="invalid result.json: " + type(exc).__name__,
                 message="result.json is invalid",
                 config_report=_config_receipt(workspace, action_id),
                 method_report=_method_receipt(workspace, action_id),
@@ -442,6 +450,14 @@ class SafePythonExecutor:
         # REJECTED and downgraded to the proxy with a note — the executor
         # must not crash on a malformed script and must not record a
         # nonsense measurement.
+        if not isinstance(payload, dict):
+            return ExecutionOutcome(status="error", solver=solver, exit_code=proc.returncode,
+                wall_seconds=wall, stdout=stdout, stderr=stderr, result_received=True,
+                protocol_error="result.json must be an object", normalized_error="result.json must be an object")
+        if not isinstance(payload.get("diagnostics"), (dict, type(None))):
+            return ExecutionOutcome(status="error", solver=solver, exit_code=proc.returncode,
+                wall_seconds=wall, stdout=stdout, stderr=stderr, result_received=True,
+                protocol_error="diagnostics must be an object", normalized_error="diagnostics must be an object")
         reported = payload.get("runtime_seconds")
         runtime_note: Optional[str] = None
         runtime_seconds: Optional[float] = None
@@ -462,6 +478,8 @@ class SafePythonExecutor:
             runtime_provenance = "wall_proxy"
         return ExecutionOutcome(
             status=str(payload.get("status", "unknown")).lower(),
+            result_received=True,
+            protocol_error=("result.json missing required status" if "status" not in payload else None),
             solver=str(payload.get("solver", solver)),
             exit_code=proc.returncode,
             objective_sense=str(payload.get("objective_sense", "unknown")),
@@ -513,7 +531,7 @@ class SafePythonExecutor:
         if feasible:
             if objective is None:
                 problems.append("feasible status without objective_value")
-            elif isinstance(objective, (int, float)) and not _is_finite(objective):
+            elif not isinstance(objective, (int, float)) or isinstance(objective, bool) or not _is_finite(objective):
                 problems.append("objective_value is not finite")
         gap: Optional[float] = outcome.mip_gap
         if gap is None and feasible and _is_finite(outcome.objective_bound) and _is_finite(objective):
@@ -645,6 +663,8 @@ class SafePythonExecutor:
                 action="verify:basic", outcome="; ".join(check["problems"])))
         digest = code_hash or _sha256_file(code_path)
         execution_features: Dict[str, Any] = {}
+        from or_harness.world_model.r_signal import execution_receipt
+        execution_features["technical_outcome"] = execution_receipt(outcome, check)
         if outcome.diagnostics:
             execution_features["solver_diagnostics"] = dict(outcome.diagnostics)
         if outcome.variables is not None:
