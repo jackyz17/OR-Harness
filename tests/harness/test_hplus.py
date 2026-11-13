@@ -188,12 +188,12 @@ class TestGainIsNotUtility(HPlusCase):
         entry = plan["candidates"][0]
         gain = entry.get("capability_gain")
         self.assertIsNotNone(gain)
-        self.assertEqual(gain["kind"], "predicted_capability_gain")
-        self.assertEqual(gain["claim"], GAIN_PAYLOAD["claim"])
-        self.assertIn("not the prediction's utility", gain["note"])
+        self.assertEqual(gain["kind"], "frozen_induction_signal")
+        self.assertEqual(gain['explanation'],GAIN_PAYLOAD['claim'])
+        self.assertEqual(gain['decision_status'],'missing')
         # The score itself is benefit/cost/risk only — no capability term.
-        self.assertEqual(entry["score"]["utility"],
-                         entry["score"]["utility"])
+        self.assertNotIn('H+',entry['score']['scoring_basis']['terms'])
+        self.assertTrue(set(entry['score']['scoring_basis']['terms']) <= {'G','C','R'})
 
     def test_a_large_gain_does_not_change_the_ranking(self):
         # Two candidates with the SAME benefit/cost/risk but a gain on only
@@ -205,7 +205,7 @@ class TestGainIsNotUtility(HPlusCase):
                 sid = (request.get("candidate") or {}).get("strategy_id")
                 payload = dict(BASE_PAYLOAD)
                 if sid == "S01":
-                    payload["capability_gain"] = GAIN_PAYLOAD
+                    payload["capability_gain"] = dict(GAIN_PAYLOAD,decision=1)
                 return {"payload": payload,
                         "usage": {"prompt_tokens": 10, "completion_tokens": 5},
                         "error": None, "latency_s": 0.01}
@@ -229,7 +229,9 @@ class TestGainIsNotUtility(HPlusCase):
         gains = {c["action_spec"]["strategy_id"]:
                  c.get("capability_gain") for c in plan["candidates"]}
         self.assertIsNotNone(gains["S01"])
-        self.assertIsNone(gains["S02"])
+        self.assertEqual(gains['S01']['decision'],1)
+        self.assertEqual(gains['S02']['decision'],0)
+        self.assertEqual(gains['S02']['decision_status'],'missing')
 
 
 # ---------------------------------------------------------------------------

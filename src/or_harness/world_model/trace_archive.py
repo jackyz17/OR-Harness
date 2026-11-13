@@ -82,6 +82,7 @@ class CapabilityTrace:
     #: The model's stated H+ stance ("expected"/"none"/
     #: "insufficient_basis"; empty = not stated, e.g. an old payload).
     assessment: str = ""
+    hplus: Dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=time.time)
     notes: List[str] = field(default_factory=list)
     #: The strategy prediction's own status at archive time.
@@ -116,6 +117,7 @@ class CapabilityTrace:
             "claim": self.claim,
             "applies_to": list(self.applies_to),
             "assessment": self.assessment,
+            "hplus": copy.deepcopy(self.hplus),
             "created_at": self.created_at,
             "notes": list(self.notes),
             "prediction_status": self.prediction_status,
@@ -131,6 +133,7 @@ class CapabilityTrace:
     def from_dict(cls, data: Dict[str, Any]) -> "CapabilityTrace":
         data = data or {}
         return cls(
+            hplus=copy.deepcopy(data.get('hplus') or {}),
             trace_id=str(data.get("trace_id", "")),
             prediction_id=str(data.get("prediction_id", "")),
             task_id=str(data.get("task_id", "")),
@@ -243,10 +246,16 @@ def archive_capability_gain(harness, prediction) -> Optional[CapabilityTrace]:
     The trace COPIES the claim verbatim. It never re-predicts, never
     scores, and never touches the capability evidence.
     """
+    existing = get_capability_trace(harness,prediction.prediction_id)
+    if existing is not None:
+        return existing                       # never rewrite the original claim
+    signal = copy.deepcopy((prediction.trace.model_info or {}).get('hplus') or {})
     gain = getattr(prediction, "capability_gain", None)
-    if gain is None or not (getattr(gain, "assessed", False)
-                            or gain.claimed):
+    if not signal and (gain is None or not (getattr(gain, "assessed", False) or gain.claimed)):
         return None
+    if gain is None:
+        from or_harness.world_model.contracts import CapabilityGain
+        gain = CapabilityGain()
     candidate = prediction.candidate
     trace = CapabilityTrace(
         trace_id=f"ct_{hash(prediction.prediction_id) & 0xffffffff:08x}",
@@ -267,9 +276,16 @@ def archive_capability_gain(harness, prediction) -> Optional[CapabilityTrace]:
         claim=gain.claim,
         applies_to=list(gain.applies_to),
         assessment=str(getattr(gain, "assessment", "") or ""),
+        hplus=signal,
         prediction_status=str(getattr(prediction, "status", "valid")),
         state="pending",
     )
+    if signal:
+        trace.family = signal.get('family')
+        trace.task_targeting = {'family':trace.family,'task_ids':[],
+            'description':'; '.join(gain.applies_to) or 'future independent cases matching the predicted premises'}
+        trace.claim = signal.get('claim') or ''
+        trace.verification_conditions = copy.deepcopy(signal.get('verification_conditions') or [])
     trace.notes.append(
         "an ONLINE capability-gain stance, recorded so the real execution "
         "and its later effect can be followed up. It is explanatory only: "
@@ -418,6 +434,10 @@ def operation_action_for(harness, prediction_id: str) -> Optional[Any]:
     no induction) — never a guess.
     """
     trace = get_capability_trace(harness, prediction_id)
+    if trace is not None and trace.hplus:
+        from or_harness.world_model.hplus import jobs
+        matching = [j for j in jobs(harness) if j['prediction_id']==prediction_id and j.get('receipt_ref')]
+        return harness.actions.get(matching[0]['action_id']) if matching else None
     bound = bound_action_of(harness, prediction_id)
     if bound is None:
         return None
@@ -445,7 +465,7 @@ def operation_action_for(harness, prediction_id: str) -> Optional[Any]:
                     best = action
         if best is not None:
             return best
-    return bound
+    return None
 
 
 def bound_action_of(harness, prediction_id: str):
@@ -537,8 +557,7 @@ def effect_prediction_of(harness, prediction_id: str, *,
     # Correlated by the real execution ids the induction cited.
     correlated = operation_action_for(harness, prediction_id)
     adoption = (adoption_action_id
-                or (correlated.action_id if correlated is not None else None)
-                or trace.bound_action_id)
+                or (correlated.action_id if correlated is not None else None))
     produced = _operation_entries(harness, adoption)
     action = bound_action_of(harness, prediction_id)
     execution_ids = list(trace.bound_execution_ids)
@@ -577,7 +596,7 @@ def effect_prediction_of(harness, prediction_id: str, *,
         prediction_id=trace.prediction_id,
         status="valid",
         experience_scope=ExperienceScope(
-            execution_ids=execution_ids,
+            execution_ids=sorted(set(execution_ids + produced['actual_execution_ids'])),
             task_ids=[trace.task_id] if trace.task_id else [],
             note="the real execution the online claim was bound to"),
         task_targeting=TaskTargeting(
@@ -606,4 +625,6 @@ def effect_prediction_of(harness, prediction_id: str, *,
     info = prediction.trace.model_info
     info["materialized_from_online_trace"] = trace.trace_id
     info["online_prediction_id"] = trace.prediction_id
+    if trace.hplus:
+        info['online_hplus_version']=trace.hplus.get('version')
     return prediction

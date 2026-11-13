@@ -191,6 +191,7 @@ def _harness(args) -> ORHarness:
                                             "h-x-b-value"),
                      execution_context=(_load_json_arg(args.execution_context)
                                         if getattr(args, "execution_context", None) else None),
+                     induction_mode=getattr(args, 'induction_mode', None),
                      world_model=provider)
 
 
@@ -1078,8 +1079,12 @@ def cmd_induce(args) -> int:
                           notes=notes, verify=verify,
                           strategy_id=getattr(args, "strategy", None),
                           relations=relations,
-                          effect_attributions=attributions)
-        return _emit(result, _summarize_induce(result, args))
+                          effect_attributions=attributions,
+                          induction_id=getattr(args,'induction_id',None),
+                          review=(_load_json_arg(args.review) if getattr(args,'review',None) else None))
+        receipt=result.get('induction_receipt')
+        summary=(f"Induction {receipt['induction_id']} completed: {receipt['outcome']}." if receipt else _summarize_induce(result,args))
+        return _emit(result,summary)
     finally:
         h.close()
 
@@ -1122,6 +1127,16 @@ def _summarize_relations(result: Dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def cmd_induction_status(args) -> int:
+    h = _harness(args)
+    try:
+        result = h.induction_status(task_id=args.task, episode_id=args.episode)
+        return _emit(result, 'Induction complete.' if result['completed'] else
+                     f"{len(result['pending_ids'])} required induction review(s) pending.")
+    finally:
+        h.close()
+
+
 def cmd_induction_material(args) -> int:
     """Read a BATCH of completed tasks as induction material (no model call).
 
@@ -1136,6 +1151,7 @@ def cmd_induction_material(args) -> int:
     h = _harness(args)
     try:
         result = h.induction_material(
+            induction_id=getattr(args, 'induction_id', None),
             strategy_id=getattr(args, "strategy", None),
             task_id=getattr(args, "task", None),
             limit=getattr(args, "limit", None),
@@ -1406,6 +1422,8 @@ def cmd_predict_strategy(args) -> int:
                 "close-episode --terminal budget_exhausted`).")
         result = {"prediction": prediction.to_dict(),
                   "prediction_id": prediction.prediction_id}
+        from or_harness.api import _capability_gain_view
+        result['hplus'] = _capability_gain_view(prediction)
         info = prediction.trace.model_info
         failure = info.get("failure")
         if failure:
@@ -1423,6 +1441,9 @@ def cmd_predict_strategy(args) -> int:
         parts = [f"Strategy-outcome prediction {prediction.prediction_id} "
                  f"({prediction.status}) for "
                  f"{prediction.candidate.strategy_id or '(unnamed)'}: "]
+        if result['hplus'] and 'decision' in result['hplus']:
+            parts.append(f"H+={result['hplus']['decision']} ({result['hplus']['decision_status']}): "
+                         f"{result['hplus']['explanation']}; ")
         if failure:
             parts.append(f"FAILED [{failure.get('kind')}] "
                          f"{failure.get('detail') or ''} "
@@ -2497,6 +2518,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="memory directory (default: $OR_HARNESS_HOME or "
                              "./or_harness_home)")
     parser.add_argument("--alpha", type=float, default=1.0, help="quality weight")
+    parser.add_argument('--induction-mode', choices=['auto','hplus','nohplus','random','frozen','manual'],
+                        default=None, help='persistent per-home building mode; auto enables binary scheduling on new predictions')
     parser.add_argument("--beta", type=float, default=1.0, help="cost weight")
     parser.add_argument("--gamma", type=float, default=1.0, help="risk weight")
     parser.add_argument("--cost-weights", default=None,
@@ -2891,6 +2914,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "BOTH is a CONFLICT — --verify wins and the embedded "
                         "check is reported as overridden, never silently "
                         "merged")
+    p.add_argument('--induction-id', default=None, help='authorize and complete one frozen H+ induction job')
+    p.add_argument('--review', default=None, metavar='JSON_OR_FILE',
+                   help='empty review or hypothesis conclusion: outcome, conclusion, hypothesis_outcome, comparison and evidence references')
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
                    help="submit when/do/expect plus evidence execution IDs (repeatable). "
                         "Optional entry_id and operation=add_evidence|revise|merge select "
@@ -3295,6 +3321,7 @@ def build_parser() -> argparse.ArgumentParser:
              "included; a missing field is marked, never dropped. Read it, "
              "then submit the strategy you form with `orx induce --relation`. "
              "No model call, no writes")
+    p.add_argument('--induction-id', default=None, help='positive executed job returned by close-episode')
     p.add_argument("--view", choices=["compact", "detail"], default="compact")
     p.add_argument("--purpose", choices=["modelling", "implementation"], default="modelling")
     p.add_argument("--strategy", default=None,
@@ -3316,6 +3343,10 @@ def build_parser() -> argparse.ArgumentParser:
                         "(failures and cross-cell cases included) and a "
                         "similarity hit is a discovery signal, not support")
     p.set_defaults(func=cmd_induction_material)
+    p = sub.add_parser('induction-status', help='inspect/recover durable required induction jobs and receipts')
+    p.add_argument('--task', default=None)
+    p.add_argument('--episode', default=None)
+    p.set_defaults(func=cmd_induction_status)
 
     p = sub.add_parser("retire", help="move an entry to the cold archive (explicit)")
     p.add_argument("--entry", required=True)

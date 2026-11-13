@@ -193,7 +193,7 @@ class TestJointHPlusInMaterial(HarnessTestCase):
                         "error": None, "latency_s": 0.01}
 
         h = ORHarness(home=self.home, world_model=_Provider(),
-                      embedding=LocalHashEmbeddingBackend())
+                      embedding=LocalHashEmbeddingBackend(),induction_mode='manual')
         self.addCleanup(h.close)
         return h
 

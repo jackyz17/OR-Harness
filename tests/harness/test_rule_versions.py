@@ -32,7 +32,7 @@ class RuleCase(HarnessTestCase):
 
     def solve(self, name="training", *, use=None, version=1, lower=True, boundary=False, base=None,
               assessment=True, coverage="complete", failure_source=None, do_check=True, parameters=None, maximize=None,
-              performed_method=None):
+              performed_method=None, prediction_id=None):
         independent = name != "training"
         n, c, coefficient = (641, 130, -5) if independent else (1000, 300, 5)
         if parameters:
@@ -58,6 +58,7 @@ class RuleCase(HarnessTestCase):
         (work / 'solve.py').write_text(code)
         r = self.h.execute(task, "endpoint", str(work / 'solve.py'), str(work), solver="python",
                            episode_id=name, method=METHOD,
+                           prediction_id=prediction_id,
                            used_entry_ids=[f"{use}@{version}"] if use else None)
         self.h.record(r)
         if do_check:

@@ -351,46 +351,22 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "on (e.g. \"retrieval_evidence.hits[0]\", \"capability.sources.m\").\n"
     "- unsupported_fields: object {field: reason} for fields you cannot or "
     "will not predict.\n"
-    "- capability_gain: object — the POTENTIAL capability gain (H+) of this "
-    "candidate, predicted in THIS SAME answer. It is EXPLANATORY: it never "
-    "ranks the candidates by itself and it is NEVER a claim that the "
-    "harness got stronger. You MUST include this block for EVERY "
-    "candidate and state an explicit stance in \"assessment\", exactly "
-    "one of: \"expected\" (a gain is expected — then carry a \"claim\" "
-    "and/or \"expected_changes\"), \"none\" (no new gain expected — the "
-    "evidence fields may be empty), or \"insufficient_basis\" (you cannot "
-    "judge from the evidence given — the evidence fields may be empty). "
-    "An absent block is NOT \"no gain\": it is an unstated stance, and the "
-    "framework records it as such. "
-    "GAIN IS RELATIVE TO THE CURRENT HARNESS: even a MATURE, well-known "
-    "method can produce something the harness does not yet have — a "
-    "structural adaptation to this problem shape, a boundary it had not "
-    "mapped, a cost experience it lacked, or a premise it had not stated. "
-    "Ask \"if this run is verified and induced, what NEW understanding "
-    "could form, and which later decision would it improve?\" and name the "
-    "conditions and the evidence that would confirm it. A gain is NOT the "
-    "same as a new method or one more experience entry by itself — say WHAT "
-    "the improvement IS, on which metric, and how it would be confirmed — "
-    "but do NOT reflexively answer \"none\" just because the method is "
-    "familiar. \"none\" is a REASONED judgement that this run teaches the "
-    "harness nothing new; \"insufficient_basis\" is the honest answer when "
-    "the evidence given cannot decide. Shape: {\"assessment\": "
-    "expected|none|insufficient_basis, \"claim\": short text of WHAT "
-    "capability could improve, "
-    "\"applies_to\": [text: which problems/structures the gain would apply "
-    "to], \"expected_changes\": [{\"metric\": text, \"direction\": "
-    "increase|decrease|unchanged|unknown, \"value\": number?, \"unit\": "
-    "text?, \"value_kind\": absolute|relative?, \"beneficial_direction\": "
-    "increase|decrease|either, \"baseline\": {...}?}] each in the metric's "
-    "OWN unit — do NOT compress them into a 0-1 score, "
-    "\"evidence_required\": [text: the REAL evidence / reuse / verification "
-    "that would confirm the gain], \"verification_conditions\": "
-    "[{\"condition\": text}], \"degradation_risk\": {\"events\": [{...}]} "
-    "(what could make it WORSE), \"uncertainty\": [text: what you are "
-    "unsure about and what might yield NO gain], \"basis\": [text]}. When "
-    "you state \"none\", give the REASON in \"basis\" (why this run adds "
-    "nothing new) — an unexplained \"none\" is weaker than a "
-    "\"insufficient_basis\".\n"
+    "- capability_gain: object. In THIS SAME prediction set decision to the JSON number 0 or 1. "
+    "This is the frozen binary H+ induction switch, separate from G/C/R solving utility. "
+    "Ask: relative to the CURRENT frozen rule short views, if this candidate runs and is reviewed, "
+    "what reusable rule or applicability boundary could be added, which fact can THIS run check, "
+    "and what step on which future problem shapes would change? "
+    "Use 1 for a concrete reusable increment with a verifiable lead. Include one sentence in claim "
+    "and ONE concrete check in verification_conditions:[{condition: text, check_basis: text}]. "
+    "Use basis for the evidence references, applies_to for future premises/structures, and reuse "
+    "expected_changes when a metric is meaningful, in its original unit. A mature known method "
+    "adapted to a new structure or a checkable failure boundary can justify 1. "
+    "Use 0 for already-covered, expected duplicate, or insufficiently grounded opportunities; "
+    "give one reason in basis. Never substitute the legacy expected/none/insufficient_basis stance "
+    "for decision. Missing/illegal decision schedules 0 with a separate diagnostic. "
+    "1 ALWAYS causes one review after a bound real attempt, even after failure or an unfinished check. "
+    "The check's completion and whether the hypothesis survives belong in the factual receipt, "
+    "not a retrospective change to the frozen switch. A refuted hypothesis may still yield a useful boundary rule.\n"
     "CALIBRATION EVIDENCE: the context may carry a "
     "`strategy_outcome_calibration` block describing how THIS model's past "
     "predictions turned out. Read its definitions and support carefully; "
@@ -451,12 +427,13 @@ STRATEGY_OUTCOME_SYSTEM_PROMPT = (
     "does not establish a general probability. Same-task method outcomes "
     "are observed cases, never unexecuted counterfactuals; two passes on "
     "the same binary checker are a tie on acceptance.\n"
-    "CAPABILITY-GAIN FOLLOW-UP: a `hplus_feedback` block may describe how "
-    "earlier H+ claims turned out. `pending` means the real follow-up has "
-    "not happened yet — NOT a failure, and NOT an improvement. Only "
-    "`effect_verified` confirms a claim was borne out. If your own past "
-    "'expected' stances repeatedly failed to verify, be more conservative "
-    "about claiming a gain now.\n"
+    "CAPABILITY-GAIN FOLLOW-UP: binary hplus_feedback contains relevant settled training receipts. "
+    "Compare the original hypothesis, actual facts, conclusion, independent verification and bias reason. "
+    "A validated substantive rule increment is a positive; a sourced sufficient comparison showing "
+    "coverage/no increment is a negative; unexecuted, insufficient or unvalidated work stays unknown. "
+    "Legacy feedback retains its original delayed-effect meaning: pending is unobserved, "
+    "and effect_verified refers to the legacy later-performance check. Do not mix these "
+    "labels with the new induction-increment labels.\n"
     "Do NOT fabricate evidence. If the context contains no relevant "
     "experience or knowledge for the candidate, say so in "
     "unsupported_fields and leave the numeric fields omitted. Output the "
@@ -592,6 +569,9 @@ def build_strategy_outcome_request(
             convention=fixed_convention, scope=candidate.scope, task_id=candidate.task_id)
     from or_harness.world_model.contracts import R_CONVENTION
     request: Dict[str, Any] = {
+        "hplus_convention": {"version": "wm-hplus-binary/1", "field": "capability_gain.decision",
+                             "values": [0, 1], "missing_or_invalid_schedule": 0,
+                             "role": "frozen induction switch; never part of solving utility"},
         "risk_convention": copy.deepcopy(R_CONVENTION),
         PROTOCOL_REQUEST_KEY: STRATEGY_OUTCOME_PROTOCOL_VERSION,
         "request_kind": "strategy_outcome_prediction",
@@ -1196,6 +1176,8 @@ def parse_strategy_outcome_payload(
     )
     from or_harness.world_model.contracts import R_CONVENTION
     trace.model_info["risk_convention"] = copy.deepcopy(R_CONVENTION)
+    from or_harness.world_model.hplus import signal_from_payload
+    trace.model_info["hplus"] = signal_from_payload(raw_gain)
     if benefit_convention:
         trace.model_info["benefit_convention"] = copy.deepcopy(benefit_convention)
         if unsupported.get("benefit") and isinstance(raw_benefit, dict):
@@ -1553,6 +1535,9 @@ class StrategyOutcomeService:
         # The context is already durable before the call. The first save,
         # including every failure path, contains all binding conditions.
         with self.store.transaction() as conn:
+            from or_harness.world_model.hplus import freeze_signal
+            if self._harness() is not None:
+                freeze_signal(self._harness(), prediction, context, request)
             info["prompt_ref"] = put_value(conn, self.store, "prompt", {"system": STRATEGY_OUTCOME_SYSTEM_PROMPT})
             info["prompt_version"] = "wm-so/1:" + digest(STRATEGY_OUTCOME_SYSTEM_PROMPT)
             self._save(prediction)
@@ -1575,7 +1560,8 @@ class StrategyOutcomeService:
         # follow up). Best-effort — a trace failure must never fail the
         # prediction that was already saved.
         gain = getattr(prediction, "capability_gain", None)
-        if gain is not None and (gain.assessed or gain.claimed):
+        if prediction.trace.model_info.get('call_state') != 'in_flight' and (
+                (gain is not None and (gain.assessed or gain.claimed)) or prediction.trace.model_info.get("hplus")):
             try:
                 from or_harness.world_model.trace_archive import (
                     archive_capability_gain,

@@ -191,7 +191,7 @@ class M5Case(HarnessTestCase):
         self.backend = LocalHashEmbeddingBackend()
         self.provider = StubProvider()
         self.h = ORHarness(home=self.home, world_model=self.provider,
-                           embedding=self.backend)
+                           embedding=self.backend,induction_mode='manual')
         self.addCleanup(self.h.close)
 
     def predict(self, *, payload=None, bundle=None, horizon="next 10 tasks",

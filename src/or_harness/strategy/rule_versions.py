@@ -342,7 +342,13 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
     harness = engine.harness
     resolved = _resolve(engine, raw.get("evidence"))
     records = resolved["records"]
-    for record in records:
+    from or_harness.world_model.hplus import formal, require_job
+    binary_build = formal(harness)
+    if binary_build:
+        if not dry_run and not getattr(harness,'_active_induction_job',None):
+            raise ValueError('H+ writes must use induce so the authorized job and receipt commit together')
+        require_job(harness, raw.get('induction_id'), material_id=raw.get('material_id'))
+    for record in ([] if binary_build else records):
         gate = start_decision(harness, record.task_id)
         if gate["state"] in ("skip", "pending"):
             return {"saved": None, "skipped": gate["reason"], "induction_gate": gate}
@@ -784,7 +790,10 @@ def record_uses(harness, records):
                 kind = "boundary" if assessment.get("applicability") == "not_applicable" else (
                     "regression" if record.execution_id in metadata.get("required_regressions", []) else "transfer")
                 check = validate_case(harness, entry_id, version, {"kind": kind, "execution_id": record.execution_id})
-                publication = update_publication(harness, entry_id, version)
+                from or_harness.world_model.hplus import mode
+                publication = ({'published':current.is_published,'state':current.rule.get('state'),
+                                'version':version,'frozen':True} if mode(harness)=='frozen' else
+                               update_publication(harness, entry_id, version))
                 after = harness.sbank.get(entry_id)
                 if (current.rule or {}).get("body_ref") != (after.rule or {}).get("body_ref"):
                     index_changed.add(entry_id)

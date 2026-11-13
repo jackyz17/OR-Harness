@@ -22,7 +22,8 @@ def seal_budget(result, *, summary=None):
 
 
 def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=None,
-                           cursor=None, related_top_k=5, purpose="modelling", gate=None):
+                           cursor=None, related_top_k=5, purpose="modelling", gate=None,
+                           frozen_knowledge=None):
     from or_harness.world_model.maintenance import (
         _induction_material_budget, _material_cursor, _parse_material_cursor, _query_text_for, _joint_hplus_for,
     )
@@ -88,8 +89,12 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     semantic_ids = {str(x.get("entry_id")) for x in retrieval["knowledge"]}
     evidence_ids = {r.execution_id for r in seeds}
     families = {r.profile_snapshot.family for r in seeds}
-    entries, n_candidate_entries = harness.sbank.material_candidates(
-        strategy_ids={r.strategy_id for r in seeds},execution_ids=evidence_ids,families=families,semantic_ids=semantic_ids,limit=8)
+    if frozen_knowledge is None:
+        entries, n_candidate_entries = harness.sbank.material_candidates(
+            strategy_ids={r.strategy_id for r in seeds},execution_ids=evidence_ids,families=families,semantic_ids=semantic_ids,limit=8)
+    else:
+        entries=[(entry,['prediction_snapshot']) for entry in frozen_knowledge[:8]]
+        n_candidate_entries=len(frozen_knowledge)
     attempts = Counter(r.task_id for r in scoped)
     out = {
         "version": "induction-material/2", "purpose": purpose, "induction_gate": gate,
@@ -113,7 +118,8 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
                      "boundary_check":"Test changed premises and an independent unseen case; same-base retries/seeds are controls."},
     }
     # Leave room for the normal CLI summary and its serialized envelope.
-    out['joint_hplus']['role'] = 'pre-solve estimate; actual start judgement is induction_gate'
+    out['joint_hplus']['role'] = ('frozen binary switch; review and verification are recorded in the induction receipt'
+        if (gate or {}).get('source')=='frozen_hplus' else 'historical prediction; legacy explicit transition')
     out['joint_hplus']['items'] = [atomic(item,'orx inspect --bank capability --prediction '+str(item.get('prediction_id')),1200) for item in out['joint_hplus'].get('items',[])[:3]]
     out['related_history']['no_hits'] = None if retrieval['failure'] or related_top_k<=0 else not bool(selected or entries)
     if budget_limit<6000:
@@ -173,7 +179,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         row['usage'] = {'n_adoptions':len(uses), 'n_known_tasks':len({r.task_id for r in uses}),
                         'n_effect_attributions':effects, 'unattributed':bool(uses) and not effects,
                         'detail_ref':row['detail_ref']}
-        if entry.rule and entry.rule.get('candidate_version') and entry.rule.get('candidate_version')!=entry.rule.get('view_version'):
+        if frozen_knowledge is None and entry.rule and entry.rule.get('candidate_version') and entry.rule.get('candidate_version')!=entry.rule.get('view_version'):
             row['candidate'] = short_rule(harness.sbank.get(entry.entry_id,version='candidate'),field_limit=field_limit)
         out["existing_knowledge"].append(row)
         seal_budget(out)

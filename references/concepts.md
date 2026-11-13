@@ -22,7 +22,7 @@ The problem stream is externally driven. Changes in demand, capacity, or constra
 
 Represent capability conceptually as `H = F(M, W, Pi, R, T)`: memory, world-model prediction, strategy/planning, retrieval/transfer, and tools/solvers. These sources interact. Counts of executions or entries provide indirect evidence about capability; they do not define a composite capability score. Here `R` denotes retrieval; the `R` in the outcome tuple denotes risk.
 
-`H+` denotes an anticipated capability gain after completing a task and processing its experience. A predicted gain becomes supported only when the resulting knowledge or calibration improves later use. The gain is judged RELATIVE TO THE CURRENT HARNESS: a mature, well-known method can still yield a structural adaptation, a boundary it had not mapped, or a cost experience it lacked — but a new method or one more entry is not by itself a capability gain, and `none` is a reasoned no-gain judgement (`insufficient_basis` when the evidence cannot decide).
+`H+` is the pre-execution binary induction switch, predicted in the same G/C/R call relative to the current rule library. 1 commits one real post-task review; 0 skips it. A hypothesis names a reusable increment/boundary and a concrete fact this run can check. A known method's structural adaptation can qualify. Original hypothesis truth, actual induction product, independent rule validation and later performance improvement remain separate facts. Historical three-state stances retain their original protocol.
 
 ## 2. Understand structure before selecting a strategy
 
@@ -84,7 +84,7 @@ A candidate specifies the proposed method and execution conditions. The predicto
 
 Use Q/C/R predictions alongside relevant evidence to compare candidates before execution. Historical experience describes observed cases; the forecast addresses the proposed action in the current context. The agent remains responsible for the choice, including uncertain predictions, quality requirements, and available budget.
 
-The default comparison uses quality, cost, and risk. H+ explains what the action might teach and what would establish a later gain. It is not a measured reward or an automatic utility bonus. Adding an entry or predicting a benefit does not establish capability improvement.
+The default comparison uses quality, cost, and risk. H+ controls post-task induction investment and states what the action might teach and how to check it. It is not a measured reward or an automatic utility bonus. Adding an entry or predicting a benefit does not establish capability improvement.
 
 A shadow configuration records forecasts without consuming them for selection. This is a diagnostic or ablation configuration; decision support is the world model's role in the main loop.
 
@@ -141,4 +141,4 @@ Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counter
 
 Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
 
-Evaluate H+ through later consequences: a derived method that is correctly reused, a calibrated forecast that improves selection, or a verified reduction in cost at comparable quality. Evidence accumulation, knowledge formation, and useful capability gain are separate events, potentially resolved at different times. A created or revised entry is a knowledge change, NOT an automatic capability improvement: it is recorded as unverified until a later use demonstrates the effect. An explicit `none` stance is still followed up — the operation's ACTUAL knowledge product is reported beside it as a fact, without treating that product as proof the "no gain" judgement was wrong. Pending future evidence is not a failed prediction.
+For binary H+ training feedback, a substantive rule increment is confirmed only after independent transfer, boundaries and required regressions. A sourced sufficient comparison establishing coverage/no usable increment is a negative; insufficient, unvalidated and unexecuted work remains unknown. A refuted hypothesis may yield a valuable boundary rule. Separate later-performance claims require actual adopted versions, execution/checker coverage and comparable observations; cost savings require measured paired conditions. Legacy delayed-effect evidence retains its original meaning.

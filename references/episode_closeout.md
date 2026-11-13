@@ -326,8 +326,33 @@ orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 
 Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
 
-## Versioned rule uses and induction start
+## Versioned rule uses and frozen H+ scheduling
 
-Close-out registers declared rule uses and freezes decisive check facts before automatic evidence retention, then judges whether to start new induction. `used_entries.versions` freezes the exact body; sourced `check-task.rule_assessments` supplies premise/fidelity/effect coverage and captured-artifact references. Checks/uses append independently, including late checks; repeats deduplicate. Unknown use or coverage stays insufficient. An attributable domain counterexample can pause a rule. Independent transfer/boundary checks and affected regressions control new-version publication.
+Close-out registers existing exact-version uses and freezes decisive checks
+before automatic evidence retention. It then consumes the pre-execution
+`capability_gain.decision` (`wm-hplus-binary/1`). Each bound executed 1 yields a
+unique durable job keyed by episode and original prediction ID; 0 skips formal
+induction and unexecuted candidates stay unobserved. Failed attempts and
+uncompleted learning checks still require the positive job to be reviewed.
 
-`close_episode(..., induction_decision={"state":"allow|skip|pending","source":"...","reason":"..."})`, CLI `--induction-decision`/`--induction-reason`, or a recorded `finish_task` outcome supplies the actual H+ start judgement. Its source/reference is saved. Skip/pending stops later material assembly early. Unconnected H+ retains the named explicit induction transition. No H+ computation or online G/C/R scoring changes. See [induction.md](induction.md).
+`result.induction_schedule.pending_ids` / `next_actions` is the verifiable
+handoff to the outer building agent. Read material once and submit a short
+rule or empty review with the SAME `--induction-id`. `induction-status` recovers
+pending IDs after interruption and reports completion; do not freeze with
+pending receipts. `process_induction_jobs(reviewer)` supports ordinary Python
+building runners without a hidden model call. Completion links the REAL
+induction action and rule versions to the original forecast; a solve is not
+an induction action. Task solving and library-building completion are separate.
+
+Optional sourced `check-task.hplus_verification` records completion of the
+frozen check by prediction ID/condition index and artifact/check references.
+A missing check is reported, not used to cancel 1. The immutable receipt keeps
+hypothesis outcome separate from knowledge increment. Existing rule-use
+assessments and later checks retain the previous candidate/transfer/boundary/
+regression publication rules, including independent source identity and cost
+comparison requirements.
+
+The old `induction_decision=allow|skip|pending` and CLI flags are compatibility
+judgements only; they cannot override a new binary switch. Standalone legacy
+manual work retains its prior transition. Full fields, example, modes and
+controls: [hplus.md](hplus.md), [induction.md](induction.md).

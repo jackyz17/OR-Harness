@@ -1868,41 +1868,15 @@ CAPABILITY_GAIN_ASSESSMENTS = ("expected", "none", "insufficient_basis")
 
 @dataclass
 class CapabilityGain:
-    """A candidate's POTENTIAL capability gain (H+), predicted ONLINE.
+    """Same-call learning hypothesis and binary induction decision.
 
-    This is the capability side of a strategy-outcome prediction, stated in
-    the SAME model call as the benefit/cost/risk of the current task — it is
-    EXPLANATORY information, not a scored quantity and not a claim that the
-    harness got stronger. It answers, for one candidate:
-
-    - WHAT capability it could strengthen, and on which tasks/structures it
-      would apply (``claim`` / ``applies_to``);
-    - what IMPROVEMENT is expected and on what basis (``expected_changes``,
-      reused from the capability-evolution contract so the two paths read
-      the same shape, plus ``basis``);
-    - what REAL evidence / verification / later reuse would be needed to
-      confirm it (``evidence_required``, ``verification_conditions``);
-    - what is uncertain, might yield nothing, or might degrade
-      (``uncertainty``, ``degradation_risk``).
-
-    Three separations this type keeps, matching the codebase's own rules:
-
-    - **a prediction is not a fact.** Nothing here is written into the
-      harness capability evidence: a predicted gain never becomes a
-      "verified" capability. The offline path
-      (:func:`evaluate_capability_effect`) is the ONLY place an observed
-      improvement is established.
-    - **a new method is not a gain.** ``expected_changes`` must name a
-      metric and a direction; an empty gain block is an honest "no gain
-      claimed", never a default positive.
-    - **no forced 0-1 score.** ``expected_changes`` carries each metric in
-      its OWN unit (like the capability-evolution contract); there is no
-      composite "H+ number" that would have to be invented.
-    - **the stance is explicit.** ``assessment`` is one of
-      ``expected`` / ``none`` / ``insufficient_basis`` — the model MUST
-      state which, for every candidate. The empty string means the model
-      did NOT state one (an old payload, or a silent omission): it is
-      never read as "no gain".
+    New requests carry decision=0/1. The framework freezes its scheduling
+    value and missing/invalid diagnostics in trace.model_info.hplus. It
+    never enters G/C/R strategy utility. A positive with incomplete prose
+    still requires a review after a real execution; it is not observed gain.
+    Claim, applies_to, basis and verification_conditions explain the lead.
+    Expected changes keep their own metrics/units. Historical assessment
+    and missing values retain their original, non-binary semantics.
     """
 
     #: The model's EXPLICIT stance on this candidate's H+: "expected"
@@ -1911,6 +1885,9 @@ class CapabilityGain:
     #: Empty means NO stance was stated — kept distinct from "none" so an
     #: old payload is never retroactively read as "the model saw no gain".
     assessment: str = ""
+    #: New requests use this binary induction switch. None on legacy rows
+    #: remains unstated, rather than being read as an explicit zero.
+    decision: Optional[int] = None
     claim: str = ""
     #: Which problems/structures the gain would apply to (free text; a
     #: structural target is a description, never a fabricated cell id).
@@ -1951,7 +1928,7 @@ class CapabilityGain:
         return self.assessment in CAPABILITY_GAIN_ASSESSMENTS
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "assessment": self.assessment,
             "claim": self.claim,
             "applies_to": list(self.applies_to),
@@ -1967,6 +1944,9 @@ class CapabilityGain:
             "notes": list(self.notes),
             "claimed": self.claimed,
         }
+        if self.decision is not None:
+            result["decision"] = self.decision
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CapabilityGain":
@@ -1994,6 +1974,8 @@ class CapabilityGain:
         raw_risk = data.get("degradation_risk")
         return cls(
             assessment=assessment,
+            decision=(int(data["decision"]) if type(data.get("decision")) in (int, float)
+                      and data["decision"] in (0, 1) else None),
             claim=str(data.get("claim") or ""),
             applies_to=[str(a) for a in (data.get("applies_to") or [])],
             expected_changes=changes,

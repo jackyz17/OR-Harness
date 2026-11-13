@@ -131,12 +131,22 @@ class TestTraceIsArchived(TraceCase):
         self.assertEqual(trace.claim, GAIN["claim"])
         self.assertEqual(trace.state, "pending")
 
-    def test_a_gain_less_prediction_writes_no_trace(self):
+    def test_a_new_gain_less_prediction_keeps_missing_signal_diagnostic(self):
         self.provider.payload = dict(BASE)
         prediction = self._predict()
         self.assertFalse(prediction.claims_capability_gain)
-        self.assertIsNone(
-            get_capability_trace(self.h, prediction.prediction_id))
+        trace=get_capability_trace(self.h,prediction.prediction_id)
+        self.assertEqual(trace.hplus['decision'],0)
+        self.assertEqual(trace.hplus['decision_status'],'missing')
+        self.assertEqual(trace.state,'pending')
+
+    def test_legacy_gain_less_prediction_still_has_no_trace(self):
+        self.provider.payload=dict(BASE)
+        prediction=self._predict()
+        prediction.prediction_id='sp_legacy_without_gain'
+        prediction.trace.model_info.pop('hplus',None)
+        self.h.strategy_predictions._save(prediction)
+        self.assertIsNone(get_capability_trace(self.h,prediction.prediction_id))
 
     def test_the_frozen_claim_survives_the_real_result(self):
         prediction = self._predict()
@@ -248,15 +258,15 @@ class TestFollowUpAlongTheRealPath(TraceCase):
         self.h.record(record)
         return record
 
-    def test_binding_the_sp_id_binds_the_real_execution(self):
+    def test_solving_alone_is_not_an_induction_maintenance_binding(self):
         prediction = self._predict()
         record = self._run(prediction.prediction_id)
         result = self.h.bind_capability_maintenance(prediction.prediction_id)
-        self.assertEqual(result["state"], "bound")
-        self.assertEqual(result["prediction_source"], "online_trace")
+        self.assertEqual(result["state"], "not_adopted")
         binding = result["binding"]
-        self.assertIsNotNone(binding["adoption_action_id"])
-        self.assertIn(record.execution_id, binding["actual_execution_ids"])
+        self.assertIsNone(binding['adoption_action_id'])
+        self.assertEqual(binding['actual_execution_ids'],[])
+        self.assertIn(record.execution_id,get_capability_trace(self.h,prediction.prediction_id).bound_execution_ids)
 
     def test_evaluating_the_sp_id_reports_a_real_state(self):
         prediction = self._predict()
@@ -372,6 +382,13 @@ class TestNoneStanceIsFollowable(TraceCase):
         # so it is archived for follow-up (never dropped as silence).
         self.assertFalse(prediction.claims_capability_gain)
         trace = get_capability_trace(self.h, prediction.prediction_id)
+        # Explicit historical fixture: this test reads the pre-binary stance
+        # protocol. New zero-signal writes require a control branch/job.
+        prediction.trace.model_info.pop('hplus',None)
+        trace.hplus={}
+        from or_harness.world_model.trace_archive import _put_trace
+        _put_trace(self.h,trace)
+        self.h.strategy_predictions._save(prediction)
         self.assertIsNotNone(trace)
         self.assertEqual(trace.assessment, "none")
         # Bind a REAL maintenance fact with a knowledge product, through the

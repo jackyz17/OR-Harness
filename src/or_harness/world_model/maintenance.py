@@ -663,7 +663,18 @@ def _merge_existing_knowledge(harness, records: Sequence[Any],
     return items
 
 
-def build_induction_material(harness, *, view="compact", purpose="modelling", **kwargs):
+def build_induction_material(harness, *, view="compact", purpose="modelling", induction_id=None, **kwargs):
+    from or_harness.world_model.hplus import formal, require_job, material_for_job
+    if formal(harness):
+        try:
+            job = require_job(harness, induction_id, task_id=kwargs.get('task_id'))
+        except ValueError as exc:
+            return {'version':'induction-material/2','count':0,'material_assembled':False,
+                    'induction_gate':{'state':'skip','source':'frozen_hplus'},
+                    'reason':str(exc),'material':[],'existing_knowledge':[]}
+        from or_harness.world_model.induction_material import build_compact_material
+        args = {k:v for k,v in kwargs.items() if k!='task_id'}
+        return material_for_job(harness,job,build_compact_material,purpose=purpose,**args)
     from or_harness.world_model.induction_gate import start_decision
     gate = start_decision(harness, kwargs.get("task_id"))
     if gate["state"] in ("skip", "pending"):
@@ -1039,6 +1050,8 @@ def _joint_hplus_for(harness, records: Sequence[Any]) -> Dict[str, Any]:
             "task_id": trace.task_id,
             "episode_id": trace.episode_id,
             "assessment": (assessment or "unstated"),
+            'decision':trace.hplus.get('decision') if trace.hplus else None,
+            'decision_status':trace.hplus.get('decision_status') if trace.hplus else 'legacy',
             "claim": trace.claim,
             "applies_to": list(trace.applies_to),
             "expected_changes": copy.deepcopy(trace.expected_changes),
@@ -1054,6 +1067,9 @@ def _joint_hplus_for(harness, records: Sequence[Any]) -> Dict[str, Any]:
     return {
         "items": items,
         "n": len(items),
+        'n_positive':sum(i['decision']==1 for i in items),
+        'n_zero':sum(i['decision']==0 and i['decision_status']=='explicit' for i in items),
+        'n_missing_or_invalid':sum(i['decision_status'] in ('missing','invalid') for i in items),
         "n_expected": sum(1 for i in items
                           if i["assessment"] == "expected"),
         "n_none": sum(1 for i in items if i["assessment"] == "none"),

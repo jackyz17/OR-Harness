@@ -811,8 +811,8 @@ def bind_maintenance_fact(harness, prediction_id: str, *,
                 break
     if adoption is None:
         try:
-            from or_harness.world_model.trace_archive import bound_action_of
-            adoption = bound_action_of(harness, prediction_id)
+            from or_harness.world_model.trace_archive import operation_action_for
+            adoption = operation_action_for(harness, prediction_id)
         except Exception:  # noqa: BLE001
             adoption = None
     if adoption is None:
@@ -1264,6 +1264,14 @@ def evaluate_capability_effect(
                                target_check.get("problems") or [])),
             })
             continue
+        if prediction.trace.model_info.get('online_hplus_version'):
+            updates=binding.knowledge_delta.get('rule_updates') or []
+            expected={(str(u.get('saved')),u.get('version')) for u in updates if u.get('saved') and u.get('version')}
+            actual={tuple(v) for v in span.get('verified_rule_versions') or []}
+            if expected and not (expected & actual):
+                unverifiable.append({'task_id':item.task_id,'episode_id':item.episode_id,
+                    'reason':'no sourced actual use of the produced rule version with checker coverage'})
+                continue
         later.append(item)
 
     # The horizon bounds the sample: a claim made over "the next N matching
@@ -1738,6 +1746,20 @@ def _episode_execution_span(harness, task_id: str,
         else:
             snapshots_found += 1
             entry_ids_found.extend(available)
+    verified_versions=set()
+    from or_harness.strategy.rule_versions import _assessment, _sourced
+    from or_harness.world_model.conditions import get_value
+    from or_harness.world_model.g_signal import _acceptance_support
+    for execution in executions:
+        for entry_id,reference in (((execution.execution_features or {}).get('used_entries') or {}).get('versions') or {}).items():
+            frozen=get_value(harness.store,reference)
+            version=(frozen.get('rule') or {}).get('view_version')
+            assessment=_assessment(execution,entry_id,version)
+            report=(execution.execution_features or {}).get('task_check') or {}
+            if (version and execution.method_actual and _sourced(execution,assessment) and
+                    assessment.get('method_fidelity')=='faithful' and assessment.get('effect_coverage')=='complete' and
+                    assessment.get('applicability')=='applies' and _acceptance_support(report)):
+                verified_versions.add((str(entry_id),version))
     return {
         "started_at": (min(times) if times else None),
         "finished_at": (max(times) if times else None),
@@ -1749,6 +1771,7 @@ def _episode_execution_span(harness, task_id: str,
         "n_snapshots": snapshots_found,
         "availability_unknown": availability_unknown or not snapshots_found,
         "n_executions": len(executions),
+        'verified_rule_versions':sorted(verified_versions),
     }
 
 
@@ -2205,7 +2228,8 @@ def online_gain_summary(harness) -> Dict[str, Any]:
         refresh_trace,
     )
     out: List[Dict[str, Any]] = []
-    for trace in _all_traces(harness):
+    traces=_all_traces(harness)
+    for trace in traces:
         # Refresh from the real facts so the view reflects a bind or an
         # evaluation that happened since (idempotent; no model call).
         refreshed = None
@@ -2214,6 +2238,8 @@ def online_gain_summary(harness) -> Dict[str, Any]:
         except Exception:  # noqa: BLE001
             refreshed = get_capability_trace(harness, trace.prediction_id)
         trace = refreshed or trace
+        if trace.hplus and not (trace.assessment or trace.claim or trace.expected_changes):
+            continue  # binary missing/zero diagnostics are counted separately below
         binding = get_maintenance_binding(harness, trace.prediction_id)
         evaluation = get_effect_evaluation(harness, trace.prediction_id)
         out.append({
@@ -2238,6 +2264,9 @@ def online_gain_summary(harness) -> Dict[str, Any]:
         })
     return {
         "n_online_gains": len(out),
+        'n_binary_signals':sum(bool(t.hplus) for t in traces),
+        'binary_signal_counts':{state:sum(bool(t.hplus) and t.hplus.get('decision_status')==state for t in traces)
+                                for state in ('explicit','missing','invalid')},
         "n_pending": sum(1 for e in out if e["state"] == "pending"),
         "n_bound": sum(1 for e in out if e["fact_bound"]),
         "n_effect_verified": sum(1 for e in out if e["effect_verified"]),
@@ -2282,7 +2311,7 @@ HPLUS_FEEDBACK_VERSION = "wm-hplusfb/1"
 HPLUS_FEEDBACK_CHARS = 3000
 
 
-def hplus_feedback_for_context(harness, *, budget_chars: int =
+def hplus_feedback_for_context(harness, *, task=None, budget_chars: int =
                                HPLUS_FEEDBACK_CHARS) -> Dict[str, Any]:
     """The compact H+ (capability-gain) follow-up state of ONLINE gains.
 
@@ -2306,6 +2335,9 @@ def hplus_feedback_for_context(harness, *, budget_chars: int =
 
     Read-only and bounded: no model call, no re-prediction, no re-billing.
     """
+    from or_harness.world_model.hplus import formal, feedback
+    if formal(harness):
+        return feedback(harness,task=task,budget_chars=budget_chars)
     out: List[Dict[str, Any]] = []
     used = 0
     n_total = 0

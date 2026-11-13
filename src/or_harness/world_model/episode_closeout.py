@@ -3356,6 +3356,8 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
     # This is observation, not the creation of a new induction rule.
     from or_harness.strategy.rule_versions import settle_episode_uses
     rule_validation = settle_episode_uses(harness,task_id,episode_id)
+    from or_harness.world_model.hplus import schedule_episode
+    induction_schedule = schedule_episode(harness,task_id,episode_id)
 
     # Automatic retention maintenance: a LIGHT check (one indexed COUNT of
     # registry rows outside the window and past the grace period). Only when
@@ -3378,6 +3380,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
         "evaluations": [e.to_dict() for e in evaluations],
         "calibration_summary": summary_block,
         "rule_validation": rule_validation,
+        "induction_schedule": induction_schedule,
         "task_checks": _episode_task_check_summary(harness, task_id,
                                                    episode_id),
         "retention": archive_result,

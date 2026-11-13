@@ -306,18 +306,32 @@ For a first proposal, the runner's `execution_context` (Python constructor, `OR_
 
 **Comparable case facts.** `prediction_execution_pairs.same_task_comparisons` uses recalled/published real trajectories with the same task, frozen original problem, acceptance id plus the full declaration-derived rule fingerprint, scope/version and comparable actual execution settings and actually different methods. Unknown or conflicting critical settings keep independent cases; predicted settings never stand in for actual receipts. Results are parallel with evidence/evaluation references; a single executed method remains one case, and two binary passes tie. Old predictions keep their own metric/error; independently supported historical execution acceptance may appear as `g_observed_fact`. No unexecuted method receives a label. See [G attribution](episode_closeout.md#g-attribution-evidence).
 
-## 6d. The H+ follow-up block
+## 6d. The H+ training-receipt block
 
-`hplus_feedback` closes the delayed-supervision loop: an online strategy-outcome prediction that stated an H+ stance is archived (see [`episode_closeout.md`](episode_closeout.md) and `trace_archive`), and this block makes its follow-up state visible to LATER predictions. Four states are kept APART:
+New `hplus_feedback` (`wm-hplus-binary/1`) selects a few settled related training
+receipts BEFORE the existing `HPLUS_FEEDBACK_CHARS` budget is applied. Known
+family/problem structure and mechanism terms rank applicability; unknown
+structure stays unknown. The block carries the original hypothesis, actual
+fact and source references, induction conclusion, exact rule versions,
+verification state, hypothesis outcome and one bias/deviation reason.
 
-| State | Means |
+| Label | Evidence |
 |---|---|
-| `pending` | the claim is archived but not yet bound to a real execution — NOT a failure, NOT an improvement |
-| `bound` | bound to a real execution, the later effect not yet observable |
-| a stage-2 effect state | a learning product exists and the later effect evaluation has a verdict |
-| `effect_verified: true` | the only state that CONFIRMS a claim was borne out |
+| `1` | A substantive submitted/revised rule version passes independent transfer, boundary and required regressions |
+| `0` | A sourced sufficient comparison of the frozen baseline with actual checked work confirms coverage/no increment |
+| `null` | Insufficient material, unvalidated increment or unavailable/unexecuted evidence |
 
-The block is EXPLANATORY: an H+ claim never ranks a candidate and is not capability evidence. It is read-only and bounded (`HPLUS_FEEDBACK_CHARS`), and it does NOT change whether H+ participates in online ordering (it does not). When no claim was ever archived the block says so (`missing`) rather than reading as "every claim was `none`".
+Feedback uses only facts recorded before the prediction. The context freezes
+its selected feedback; later checks do not rewrite old inputs. A 0 execution
+is not an observed negative opportunity unless an explicit NoH+ control reviews
+it. NoH+ zero-signal reviews use the prediction-time library snapshot, even
+when the current library has subsequently changed. Historical three-state
+and delayed performance-effect records retain their own meanings.
+
+The original `capability_gain.decision` controls induction, not G/C/R utility.
+Source tasks/displayed material are distinct from future independent targets.
+Receipt completion is not proof of a useful method, and a refuted hypothesis
+can still yield a validated boundary increment. See [hplus.md](hplus.md).
 
 ---
 

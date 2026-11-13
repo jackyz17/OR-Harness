@@ -1,4 +1,8 @@
-"""The H+ close-out interface, deliberately without a new H+ formula."""
+"""Historical close-out judgements and compatibility metadata primitives.
+
+New building consumes the frozen binary signal in hplus.py. These old
+three-state judgements remain readable and never override that switch.
+"""
 from __future__ import annotations
 
 import copy
@@ -17,6 +21,9 @@ def meta_write(store, key, value):
 
 
 def record_decision(harness, task_id, episode_id, decision=None):
+    from or_harness.world_model.hplus import formal
+    if formal(harness):
+        return start_decision(harness,task_id)
     key = "induction_gate:" + str(task_id) + ":" + str(episode_id or "")
     previous = meta_read(harness.store, key)
     if decision is None:
@@ -37,6 +44,14 @@ def record_decision(harness, task_id, episode_id, decision=None):
 
 
 def start_decision(harness, task_id):
+    from or_harness.world_model.hplus import formal, require_job
+    if formal(harness):
+        try:
+            job=require_job(harness,task_id=task_id)
+            return {'state':'allow','source':'frozen_hplus','induction_id':job['induction_id'],
+                    'reason':'positive bound job requires one induction receipt'}
+        except ValueError as exc:
+            return {'state':'skip','source':'frozen_hplus','reason':str(exc)}
     value = meta_read(harness.store, "induction_gate:last:" + str(task_id)) if task_id is not None else None
     if value and value.get("state") in ("allow", "skip", "pending"):
         from or_harness.strategy.evidence_views import chars

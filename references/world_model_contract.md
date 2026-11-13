@@ -52,7 +52,7 @@ Answers: *under the current problem (P), solving context (X) and harness capabil
 | `cost` | `ExpectedCost` — the `CostVector` consequence of the candidate, with its measured mask |
 | `risk` | `RiskStatement` — named events; scored R is only `implementation_failure.probability`, separate from cost |
 | `uncertainty` | `UncertaintyStatement` — execution randomness vs knowledge gap |
-| `capability_gain` | `CapabilityGain` — the candidate's POTENTIAL capability gain (H+), predicted in the same call: the explicit stance (`assessment`: `expected`/`none`/`insufficient_basis` — REQUIRED for every candidate; empty means not stated, never "no gain"), the claim, applicability, per-metric expected changes, the evidence that would confirm them, and the degradation risk. Explanatory only — never the utility, never a 0-1 composite, never written into the capability evidence; `None`/absent means "no stance stated" (recorded in `unsupported_fields`). See §5 |
+| `capability_gain` | Same-call binary `decision` (JSON 0 or 1), one `claim` hypothesis and one `verification_conditions` check for 1, or one reason in `basis` for 0. `applies_to` and per-metric expected changes preserve their units. Framework-frozen `trace.model_info.hplus` is authoritative for scheduling; missing/illegal values schedule 0 with diagnostic status, distinct from explicit 0. It never enters strategy utility. Old `assessment`/missing records keep their old semantics; see [hplus.md](hplus.md) |
 | `trace` | `PredictionTrace` — version, input, evidence, unsupported fields, call cost |
 
 **Benefit is not one arbitrary 0–1 score.** `benefit.kind` says which currency you are in:
@@ -179,7 +179,14 @@ Three things that are routinely confused, and are kept apart:
 
 Only (3) supports a claim that the harness got stronger. Adding knowledge entries, accumulating evidence, or a model asserting an improvement is none of the three. `VerificationCondition` records all three flags separately.
 
-For the online H+ block there is a fourth, smaller distinction in the same spirit: **stance stated**. `CapabilityGain.assessment` is one of `expected` / `none` / `insufficient_basis`, and the model must state it for every candidate. An empty `assessment` (an old payload, or a silent omission) is NOT "no gain" — it is "no stance stated", recorded as such and counted separately (`n_unassessed` in the online-gain summary), so a model that never takes a stance is visible rather than indistinguishable from one that honestly expects no gain.
+For new online H+, the frozen binary decision is a scheduling fact about the
+prediction, not an observed learning reward. A positive executed job completes
+only with a real induction receipt. Independent rule validation establishes a
+knowledge increment; a separate comparable later-performance observation is
+needed for a performance claim. Original hypothesis truth is another field.
+Historical `CapabilityGain.assessment` (`expected` / `none` /
+`insufficient_basis`) and missing values remain readable and separately
+counted under that old protocol; no binary decision is inferred from them.
 
 When you read a status, check the adjacent fields rather than the word alone: `contract_only` with a configured provider still means no forecast; `service_available` for `capability_evolution` means the service exists — `prediction_made` is what says a call really happened; and a `scope="strategy_window"` prediction must carry `trace.comparable=True` (with a window that really belongs to this task/episode/strategy) before it may be scored.
 

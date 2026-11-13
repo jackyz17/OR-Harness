@@ -412,9 +412,8 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
         }
         return payload
 
-    def test_pending_hplus_reaches_the_next_request(self):
-        """An H+ claim archived as pending appears in the next request, and
-        pending is NOT reported as verified."""
+    def test_pending_hplus_is_not_a_settled_training_prior(self):
+        """Unexecuted forecasts remain diagnostic, outside settled feedback."""
         task = _task("t1")
         provider = StubProvider(payload=self._hplus_payload())
         h = ORHarness(home=self.home, world_model=provider,
@@ -429,10 +428,8 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
                    "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = provider.requests[-1]
         hplus = request["prediction_context"]["hplus_feedback"]
-        self.assertGreaterEqual(hplus["n_gains_total"], 1)
-        self.assertGreaterEqual(hplus["n_pending"], 1)
-        self.assertEqual(hplus["n_effect_verified"], 0)
-        self.assertEqual(hplus["gains"][0]["assessment"], "expected")
+        self.assertEqual(hplus['settled_examples'],[])
+        self.assertGreaterEqual(h.online_capability_gains()['n_pending'],1)
 
     def test_absent_hplus_is_reported_as_absence(self):
         task = _task("t1")
@@ -451,7 +448,9 @@ class TestHplusFeedbackReachesTheContext(CalibrationLoopCase):
                    "strategy_id": "S04"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         request = provider.requests[-1]
         hplus = request["prediction_context"]["hplus_feedback"]
-        self.assertIn("missing", hplus)
+        self.assertEqual(hplus['settled_examples'],[])
+        self.assertEqual(hplus['n_applicable'],0)
+        self.assertEqual(h.online_capability_gains()['binary_signal_counts']['missing'],2)
 
 
 class TestObservationRules(CalibrationLoopCase):

@@ -1,0 +1,2805 @@
+{
+  "client_date": "2026-11-13",
+  "review_baseline": "cdf29f6834806a7adb6c0a38513ba7ae472ee513",
+  "source": "isolated real Python enumeration, captured execution/checker records, scripted provider/reviewer; no industrial predictor-quality claim",
+  "negative_control": {
+    "protocol": "hplus-build-freeze/1",
+    "seed": 7,
+    "training_task_ids": [
+      "review-max",
+      "missed-min",
+      "transfer-min",
+      "nonmonotone",
+      "covered-min"
+    ],
+    "test_task_ids": [
+      "frozen-independent"
+    ],
+    "arms": {
+      "hplus": {
+        "initial_library_digest": "7675f112f9a0a198e8a8081a920d26dbc2eff413db5cb02eb15f07d481b05d08",
+        "triggers": 1,
+        "receipts": 1,
+        "empty_reviews": 1,
+        "induction_wall_s": 0.02114934381097555,
+        "round_usage": [
+          {
+            "induction_id": "ij_a04c51b15fbd6240d3f58b7c",
+            "action_id": "ac_96ff33cc848e",
+            "wall_s": 0.02114934381097555,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 0,
+        "zero_signal_reviews": 0,
+        "confirmed_zero_missed_opportunities": 0,
+        "random_allocation": null,
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_57a93ce230b0",
+            "execution_id": "ex_1492c46c19b4",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "missed-min",
+            "prediction_id": "sp_aed6e4a6c0e4",
+            "execution_id": "ex_672ce21f96b7",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_d50a0f8a2f5c",
+            "execution_id": "ex_b672718891d7",
+            "objective": 196,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_3ba50f363158",
+            "execution_id": "ex_7c5e019fae76",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_b2990f09e255",
+            "execution_id": "ex_82597d76d625",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:d5f38dbca61abeefe11f9f24e0482df715d91392f02bd76c8c805e1bdfccfb5f",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:6aac4315485c22c16d87484054b3491f7568ca9ad023f3b6569994434559c87f",
+                "hplus_snapshot:d5f38dbca61abeefe11f9f24e0482df715d91392f02bd76c8c805e1bdfccfb5f"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536257.8315554,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "refuted",
+            "induction_action_id": "ac_96ff33cc848e",
+            "induction_id": "ij_a04c51b15fbd6240d3f58b7c",
+            "input_ref": "hplus_input:c5f38aef8d93e280fe4af91f036fdf620eaf9987f302a78e67cd00ba18af380e",
+            "material_id": "induction_material:1be11b819563448b5b78761af0830bebfa74024cb6a61f6396aac4deaaff7990",
+            "mode": "hplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_57a93ce230b0",
+            "rule_updates": [],
+            "solve_action_id": "ac_6937d55e64e7",
+            "source_execution_ids": [
+              "ex_1492c46c19b4",
+              "ex_873a8acb02e3"
+            ],
+            "source_fact_ref": "rule_fact:6aac4315485c22c16d87484054b3491f7568ca9ad023f3b6569994434559c87f",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_57a93ce230b0",
+            "induction_id": "ij_a04c51b15fbd6240d3f58b7c",
+            "decision": 1,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:c5f38aef8d93e280fe4af91f036fdf620eaf9987f302a78e67cd00ba18af380e",
+            "receipt_ref": "hplus_receipt:d822b134fb7cab5e18fc54d66346ceabb5e3c2a86017f59e275f86e22093880f"
+          },
+          {
+            "prediction_id": "sp_aed6e4a6c0e4",
+            "induction_id": "ij_b2e10f070c0223c9980f20ae",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:3c9891092c21cef3e02f9b03b68651b0bb2cff8f797694bbea1e9bb7e7f5214a",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_d50a0f8a2f5c",
+            "induction_id": "ij_e03ae80b39c7a3ae0e4be732",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:fc620b6ec58d4a6d20542ed60a2652874bac85ff9abd295a28b2717394fa4758",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_3ba50f363158",
+            "induction_id": "ij_1b4d0539e72d7a8299201531",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:35fe75c87c634c7503e4296a13d6bb74fae80e95df292e47f05630de281fc661",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_b2990f09e255",
+            "induction_id": "ij_443a4855d7edd0ee6e97c523",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:e354fd26429b0cf0a9396bf9c8f89b90925e09f97062fd2dadc34bd70a823333",
+            "receipt_ref": null
+          }
+        ],
+        "frozen_library_digest": "7675f112f9a0a198e8a8081a920d26dbc2eff413db5cb02eb15f07d481b05d08",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_64978d4d69c5",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      },
+      "nohplus": {
+        "initial_library_digest": "7675f112f9a0a198e8a8081a920d26dbc2eff413db5cb02eb15f07d481b05d08",
+        "triggers": 5,
+        "receipts": 5,
+        "empty_reviews": 4,
+        "induction_wall_s": 0.16536227520555258,
+        "round_usage": [
+          {
+            "induction_id": "ij_a661443831c2f889561c2fee",
+            "action_id": "ac_6e6a71e1fe92",
+            "wall_s": 0.02119213342666626,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_489565a667899a6837a8a1f6",
+            "action_id": "ac_008898d1f7b0",
+            "wall_s": 0.033453877083957195,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_673a1e0c2e0ed8746a8a9b55",
+            "action_id": "ac_96dffd265f30",
+            "wall_s": 0.042365058325231075,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_b5baf3c41d88de2e377742c5",
+            "action_id": "ac_18a5d4e2736b",
+            "wall_s": 0.0323909530416131,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_3163408699d616ce572dcb25",
+            "action_id": "ac_839dbae71c17",
+            "wall_s": 0.035960253328084946,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 1,
+        "zero_signal_reviews": 4,
+        "confirmed_zero_missed_opportunities": 1,
+        "random_allocation": null,
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_13c4a44a069e",
+            "execution_id": "ex_4cbe2a1b7e71",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "missed-min",
+            "prediction_id": "sp_f41b48ba759d",
+            "execution_id": "ex_d28e8c584243",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_3265dc5c21b5",
+            "execution_id": "ex_3026349abe0f",
+            "objective": 196,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_9ed1d353a081",
+            "execution_id": "ex_c4e0e2dd12dd",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_f09b70f24183",
+            "execution_id": "ex_97fea94d43ac",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:dab3627ee4992421d8bc0513dab6345b171e349d73c1ed3eb7151934942b2f18",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:e12428974ddac32d49556a8c3fadf8141dbff3c0ea643bbd9c5e971582013d89",
+                "hplus_snapshot:dab3627ee4992421d8bc0513dab6345b171e349d73c1ed3eb7151934942b2f18"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536259.0310564,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "refuted",
+            "induction_action_id": "ac_6e6a71e1fe92",
+            "induction_id": "ij_a661443831c2f889561c2fee",
+            "input_ref": "hplus_input:b40d895c02b03b163fae0f0a1703d6f4d2c22804dfef1b0b3e4ddaafbbf8ad52",
+            "material_id": "induction_material:33b22ed226f5c27156bc44a69e5425bbd196cb60dc357d287ce1823785ffcf95",
+            "mode": "nohplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_13c4a44a069e",
+            "rule_updates": [],
+            "solve_action_id": "ac_81b168d42c9c",
+            "source_execution_ids": [
+              "ex_4cbe2a1b7e71",
+              "ex_873a8acb02e3"
+            ],
+            "source_fact_ref": "rule_fact:e12428974ddac32d49556a8c3fadf8141dbff3c0ea643bbd9c5e971582013d89",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:cc715bf1f815ad69e2a9e4fcfffe039f98d980152fedac103bf126bf9d6b9239",
+            "comparison": null,
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "created_at": 1794536259.235326,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_008898d1f7b0",
+            "induction_id": "ij_489565a667899a6837a8a1f6",
+            "input_ref": "hplus_input:03d13f07bfc50def90e74a180d764e1de172e1f1f8ad1f37ffe4b81ca3ca947a",
+            "material_id": "induction_material:d80606e168d2328a35a5bd9641a8fa9da36ce4d93587c4f15a2a6b83172ff035",
+            "mode": "nohplus",
+            "outcome": "revised",
+            "prediction_id": "sp_f41b48ba759d",
+            "rule_updates": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "solve_action_id": "ac_ca11a37fdd69",
+            "source_execution_ids": [
+              "ex_4cbe2a1b7e71",
+              "ex_873a8acb02e3",
+              "ex_d28e8c584243"
+            ],
+            "source_fact_ref": "rule_fact:0c983b9b9803ab15ba19554c8772da60b9209a54113bc742494010a2eb051e3b",
+            "verification": []
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:4a28d8f5e180daddb94d45ae36ed93196cb817dc41fbd30a2ace13f8185c6ab6",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:0d4c74419524146574fe33676f7dc3692a6c68a11b6b02d801c8f4121249d48c",
+                "hplus_snapshot:4a28d8f5e180daddb94d45ae36ed93196cb817dc41fbd30a2ace13f8185c6ab6"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536259.4844708,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_96dffd265f30",
+            "induction_id": "ij_673a1e0c2e0ed8746a8a9b55",
+            "input_ref": "hplus_input:c0f9716757888537e671b0069b3a3e81429f932c104ad88214c326a4880d6941",
+            "material_id": "induction_material:91f57432bcf46248e4dd6aba27025c92e4aafd16ec79f36b53b2a3a2d6c67f77",
+            "mode": "nohplus",
+            "outcome": "no_increment",
+            "prediction_id": "sp_3265dc5c21b5",
+            "rule_updates": [],
+            "solve_action_id": "ac_ad9060c9ba09",
+            "source_execution_ids": [
+              "ex_3026349abe0f",
+              "ex_4cbe2a1b7e71",
+              "ex_873a8acb02e3",
+              "ex_d28e8c584243"
+            ],
+            "source_fact_ref": "rule_fact:0d4c74419524146574fe33676f7dc3692a6c68a11b6b02d801c8f4121249d48c",
+            "verification": []
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:02336073e768cde83526b1108e5e2268b1c1f295b2bda78964e09ed0e6496a4f",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:ed5c08afe58ee0b11a8d4047c2c27c27decb1bc3ea9343eaa12442a9ffbf133b",
+                "hplus_snapshot:02336073e768cde83526b1108e5e2268b1c1f295b2bda78964e09ed0e6496a4f"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536259.7959735,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_18a5d4e2736b",
+            "induction_id": "ij_b5baf3c41d88de2e377742c5",
+            "input_ref": "hplus_input:ff484c95c55912b5cf42b67a674f3a351fc1fbe8c432bc2111c1de515ab60c39",
+            "material_id": "induction_material:47279d9e699089aa1df9247931f7ce3241957fcfe255fe2c4f707417cad284e8",
+            "mode": "nohplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_9ed1d353a081",
+            "rule_updates": [],
+            "solve_action_id": "ac_fd3ffe9de25f",
+            "source_execution_ids": [
+              "ex_3026349abe0f",
+              "ex_4cbe2a1b7e71",
+              "ex_873a8acb02e3",
+              "ex_c4e0e2dd12dd",
+              "ex_d28e8c584243"
+            ],
+            "source_fact_ref": "rule_fact:ed5c08afe58ee0b11a8d4047c2c27c27decb1bc3ea9343eaa12442a9ffbf133b",
+            "verification": []
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:d5c1c2072139190f5aa83bf80cd1db8d91906da03218eb2bca6ceb95addb8fdf",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:500bef21b865c7092a2572c10f2166938f0c259f91ad1fd87d1304f2bc540e5a",
+                "hplus_snapshot:d5c1c2072139190f5aa83bf80cd1db8d91906da03218eb2bca6ceb95addb8fdf"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536260.0597904,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_839dbae71c17",
+            "induction_id": "ij_3163408699d616ce572dcb25",
+            "input_ref": "hplus_input:fdcbb3b3786587e735cff2b1332bc249fc85ccc1f6f719441891e3eff80ee063",
+            "material_id": "induction_material:226addb7223fb7dd254fbe75890e43051190eb11e399a6cbee174f218f2c15f4",
+            "mode": "nohplus",
+            "outcome": "no_increment",
+            "prediction_id": "sp_f09b70f24183",
+            "rule_updates": [],
+            "solve_action_id": "ac_429d868617e1",
+            "source_execution_ids": [
+              "ex_3026349abe0f",
+              "ex_4cbe2a1b7e71",
+              "ex_873a8acb02e3",
+              "ex_97fea94d43ac",
+              "ex_c4e0e2dd12dd",
+              "ex_d28e8c584243"
+            ],
+            "source_fact_ref": "rule_fact:500bef21b865c7092a2572c10f2166938f0c259f91ad1fd87d1304f2bc540e5a",
+            "verification": []
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_13c4a44a069e",
+            "induction_id": "ij_a661443831c2f889561c2fee",
+            "decision": 1,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:b40d895c02b03b163fae0f0a1703d6f4d2c22804dfef1b0b3e4ddaafbbf8ad52",
+            "receipt_ref": "hplus_receipt:1fc1f247917c48d88d38a8432e9ef54c37f06f08d5d71bfecd40d49724e3d354"
+          },
+          {
+            "prediction_id": "sp_f41b48ba759d",
+            "induction_id": "ij_489565a667899a6837a8a1f6",
+            "decision": 0,
+            "label": 1,
+            "state": "independently_validated_increment",
+            "input_ref": "hplus_input:03d13f07bfc50def90e74a180d764e1de172e1f1f8ad1f37ffe4b81ca3ca947a",
+            "receipt_ref": "hplus_receipt:de30c13505b283ac479a8de18bf5893d11a429b4520e5d08b03003dedfa69376"
+          },
+          {
+            "prediction_id": "sp_3265dc5c21b5",
+            "induction_id": "ij_673a1e0c2e0ed8746a8a9b55",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:c0f9716757888537e671b0069b3a3e81429f932c104ad88214c326a4880d6941",
+            "receipt_ref": "hplus_receipt:16885072b77549e6686fb5cdce92bdb9e1a1c4a8517da2d6e153f0563347e21c"
+          },
+          {
+            "prediction_id": "sp_9ed1d353a081",
+            "induction_id": "ij_b5baf3c41d88de2e377742c5",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:ff484c95c55912b5cf42b67a674f3a351fc1fbe8c432bc2111c1de515ab60c39",
+            "receipt_ref": "hplus_receipt:e4aad699c6ccc9ae0f9ddbdea747d0b0a3d286c185bcccf58750486b3fe32702"
+          },
+          {
+            "prediction_id": "sp_f09b70f24183",
+            "induction_id": "ij_3163408699d616ce572dcb25",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:fdcbb3b3786587e735cff2b1332bc249fc85ccc1f6f719441891e3eff80ee063",
+            "receipt_ref": "hplus_receipt:ed46106335278ab2d4c03bd1468b79b9e01bcdbb519ff757fd9d706c1d31f7b0"
+          }
+        ],
+        "frozen_library_digest": "1954912652bc53894d0edbbd3c14a9215ff35ea31c2654f0dc688506731d837d",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_2b8f37b4bbb1",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      },
+      "random": {
+        "initial_library_digest": "7675f112f9a0a198e8a8081a920d26dbc2eff413db5cb02eb15f07d481b05d08",
+        "triggers": 1,
+        "receipts": 1,
+        "empty_reviews": 0,
+        "induction_wall_s": 0.037851822562515736,
+        "round_usage": [
+          {
+            "induction_id": "ij_858c94442ceaade7c567d8ed",
+            "action_id": "ac_99b1b64a9f4a",
+            "wall_s": 0.037851822562515736,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 1,
+        "zero_signal_reviews": 1,
+        "confirmed_zero_missed_opportunities": 1,
+        "random_allocation": [
+          "transfer-min"
+        ],
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_f5e1dcfb5395",
+            "execution_id": "ex_e42663ea89a4",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "missed-min",
+            "prediction_id": "sp_a4f94fc8deac",
+            "execution_id": "ex_2258fb630aa1",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_b6b83fc22994",
+            "execution_id": "ex_47be2e542610",
+            "objective": 196,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_0a3dea379463",
+            "execution_id": "ex_79bdd2df0ca9",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_48f568dc4de5",
+            "execution_id": "ex_67dedcf52f03",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:e2ff7c29733d5604ea2938a9b12ceaf01ba56ae87cd5c2e3bf3bf8793412f7b5",
+            "comparison": null,
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "created_at": 1794536260.89075,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_99b1b64a9f4a",
+            "induction_id": "ij_858c94442ceaade7c567d8ed",
+            "input_ref": "hplus_input:48c6eab23a747370682a5c2758ec8c99cccdd810ee998b1acdd8b2a619cf0249",
+            "material_id": "induction_material:7dc35c468f054c2a3b3dfb9fb597ce52d19543d645e4888cb72fce04fb2cd07e",
+            "mode": "random",
+            "outcome": "revised",
+            "prediction_id": "sp_b6b83fc22994",
+            "rule_updates": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "solve_action_id": "ac_73f551d14699",
+            "source_execution_ids": [
+              "ex_2258fb630aa1",
+              "ex_47be2e542610",
+              "ex_873a8acb02e3",
+              "ex_e42663ea89a4"
+            ],
+            "source_fact_ref": "rule_fact:c67735540107599b4932515b43f6d412fad86e7cb71549308294c2da80e54c6b",
+            "verification": []
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_f5e1dcfb5395",
+            "induction_id": "ij_5ed82d33946147705253fce7",
+            "decision": 1,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:59d84a78a05accf5ee3704eaa588a6e165dd979039a287a77c9c51d7687af5a5",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_a4f94fc8deac",
+            "induction_id": "ij_01c0d770341673758e4dadf2",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:094996273781e23b8f225ddca0597650bc693dd77474cb8b989300da08cb53d0",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_b6b83fc22994",
+            "induction_id": "ij_858c94442ceaade7c567d8ed",
+            "decision": 0,
+            "label": 1,
+            "state": "independently_validated_increment",
+            "input_ref": "hplus_input:48c6eab23a747370682a5c2758ec8c99cccdd810ee998b1acdd8b2a619cf0249",
+            "receipt_ref": "hplus_receipt:4a7441ec7bc04056def66a79a3b39bb33ad0475f3d37686420a5605b012c4476"
+          },
+          {
+            "prediction_id": "sp_0a3dea379463",
+            "induction_id": "ij_5cc31ec7fd5f8f910b4a02ed",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:2b7409b9503e258a06d9fe59489637a06dd4f5b7fc722394f831ae51bbe931be",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_48f568dc4de5",
+            "induction_id": "ij_4489399563fcc541635cd230",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:533d1436585533faa7c7a9048f9aeddd64f699c932d71b219d2ea0e49d4a6dde",
+            "receipt_ref": null
+          }
+        ],
+        "frozen_library_digest": "1954912652bc53894d0edbbd3c14a9215ff35ea31c2654f0dc688506731d837d",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_43e7a4560310",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      }
+    },
+    "random_budget_basis": "realized H+ executed triggers; random selection uses seed, not outcomes",
+    "scope": "callback protocol; fixture runs do not establish predictor quality",
+    "fixture_source": "real captured Python enumeration/checks; scripted predictor/reviewer; legacy maximum-only initial rule"
+  },
+  "positive_revision": {
+    "protocol": "hplus-build-freeze/1",
+    "seed": 7,
+    "training_task_ids": [
+      "review-max",
+      "learn-min",
+      "transfer-min",
+      "nonmonotone",
+      "covered-min"
+    ],
+    "test_task_ids": [
+      "frozen-independent"
+    ],
+    "arms": {
+      "hplus": {
+        "initial_library_digest": "8571d308522f9defde92e6cde34813f3e8e3556d4933d12635e38479e14a2fd0",
+        "triggers": 2,
+        "receipts": 2,
+        "empty_reviews": 1,
+        "induction_wall_s": 0.053788055665791035,
+        "round_usage": [
+          {
+            "induction_id": "ij_f62e828f84d9f689bb72a71f",
+            "action_id": "ac_d841db4e078c",
+            "wall_s": 0.020145850256085396,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_3a9cbde66fae8a2f2f8ab03c",
+            "action_id": "ac_7b881ac0a5c7",
+            "wall_s": 0.03364220540970564,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 1,
+        "zero_signal_reviews": 0,
+        "confirmed_zero_missed_opportunities": 0,
+        "random_allocation": null,
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_2433819d4de7",
+            "execution_id": "ex_d39fe2d2a6cc",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "learn-min",
+            "prediction_id": "sp_897e0d97f447",
+            "execution_id": "ex_b47eb5d1a9a0",
+            "objective": 367,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_f3a9cc56a38b",
+            "execution_id": "ex_e9291f175b80",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_e3862fde79d7",
+            "execution_id": "ex_d8baf7ad5f47",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_ffaabaf30a1b",
+            "execution_id": "ex_fe43470d4a4c",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:9ca71e818c3c4677d4621361e600d8b6f15260504e7f251b1a237e7fcb09c526",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:2b8667c90ddc5dcd23a6e93e19c6a57756ca354121e86b47b589de885003b34f",
+                "hplus_snapshot:9ca71e818c3c4677d4621361e600d8b6f15260504e7f251b1a237e7fcb09c526"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536261.95782,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "refuted",
+            "induction_action_id": "ac_d841db4e078c",
+            "induction_id": "ij_f62e828f84d9f689bb72a71f",
+            "input_ref": "hplus_input:46a45d96da2c0f0c5d87487eafec5b8e7cb4371eb6a05d8c5f5e8686cb5e8459",
+            "material_id": "induction_material:9ca454709cddf5f65e3a7f0c07b47737d375bd8828567d36ec0b86125a265c9c",
+            "mode": "hplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_2433819d4de7",
+            "rule_updates": [],
+            "solve_action_id": "ac_2b9aab3b45fb",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_d39fe2d2a6cc"
+            ],
+            "source_fact_ref": "rule_fact:2b8667c90ddc5dcd23a6e93e19c6a57756ca354121e86b47b589de885003b34f",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:3e5afbb61929e6b5b1106bbd5f7511442931c3778ffe81ec1ff71334ffb0b119",
+            "comparison": null,
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "created_at": 1794536262.1527946,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "supported",
+            "induction_action_id": "ac_7b881ac0a5c7",
+            "induction_id": "ij_3a9cbde66fae8a2f2f8ab03c",
+            "input_ref": "hplus_input:109b9b7d5096cd41bfd197e849d047a8554cd5edc46f671edd581426a28cede7",
+            "material_id": "induction_material:74592f2aee918d252a9e13c83194609114344934c64c5f74ab2c1f9c07391932",
+            "mode": "hplus",
+            "outcome": "revised",
+            "prediction_id": "sp_897e0d97f447",
+            "rule_updates": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "solve_action_id": "ac_85a1631da2e0",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_b47eb5d1a9a0",
+              "ex_d39fe2d2a6cc"
+            ],
+            "source_fact_ref": "rule_fact:53479d2b3048d49bf04dde63079c639fce7d6697cd3a5e06f35695c1ed3e53d4",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_2433819d4de7",
+            "induction_id": "ij_f62e828f84d9f689bb72a71f",
+            "decision": 1,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:46a45d96da2c0f0c5d87487eafec5b8e7cb4371eb6a05d8c5f5e8686cb5e8459",
+            "receipt_ref": "hplus_receipt:9997a97b2a9ccf7b22d3fdca198730848154aa3d2a9f86fb8f46504ed686084d"
+          },
+          {
+            "prediction_id": "sp_897e0d97f447",
+            "induction_id": "ij_3a9cbde66fae8a2f2f8ab03c",
+            "decision": 1,
+            "label": 1,
+            "state": "independently_validated_increment",
+            "input_ref": "hplus_input:109b9b7d5096cd41bfd197e849d047a8554cd5edc46f671edd581426a28cede7",
+            "receipt_ref": "hplus_receipt:186649edfeac92c4b2528f33111216c977dd5adb3aa7009e2feea85525d1f9f6"
+          },
+          {
+            "prediction_id": "sp_f3a9cc56a38b",
+            "induction_id": "ij_b3a804b15b80de008e2b4908",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:29549a014072ed0c4aa1d66e9ac2e3b54c335dbe1ac1b46cb559fc6476ca8542",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_e3862fde79d7",
+            "induction_id": "ij_11e366453d60a598669ba783",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:7f4962695b1fcfdcc514fdc0c241b7fa3616ddacacb0587d7fdc96d4c9a36064",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_ffaabaf30a1b",
+            "induction_id": "ij_ccc5c0daf0ce51214c52dc5a",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:132125306f6f7644ef4c833e80115ebed1b5ddfe172911b16de62cae21d31d00",
+            "receipt_ref": null
+          }
+        ],
+        "frozen_library_digest": "1954912652bc53894d0edbbd3c14a9215ff35ea31c2654f0dc688506731d837d",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_9293f7125f63",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      },
+      "nohplus": {
+        "initial_library_digest": "8571d308522f9defde92e6cde34813f3e8e3556d4933d12635e38479e14a2fd0",
+        "triggers": 5,
+        "receipts": 5,
+        "empty_reviews": 4,
+        "induction_wall_s": 0.15125525929033756,
+        "round_usage": [
+          {
+            "induction_id": "ij_eaa2ad70c481c31d9c7fecde",
+            "action_id": "ac_e0059b73a2d0",
+            "wall_s": 0.019920339807868004,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_fbd1de20a9be7bd7dd091deb",
+            "action_id": "ac_c41c86f43ff2",
+            "wall_s": 0.03133126720786095,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_9a5bd1cc1371b6f41ea64f1a",
+            "action_id": "ac_3de27050872b",
+            "wall_s": 0.02959582768380642,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_5013985761fadc085df68e5c",
+            "action_id": "ac_d6e409fe6260",
+            "wall_s": 0.03368235565721989,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_049e106b5cae9eddb1e7ca22",
+            "action_id": "ac_05596cf27efb",
+            "wall_s": 0.036725468933582306,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 1,
+        "zero_signal_reviews": 3,
+        "confirmed_zero_missed_opportunities": 0,
+        "random_allocation": null,
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_301f5a3c5de0",
+            "execution_id": "ex_6f39cf89ee9c",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "learn-min",
+            "prediction_id": "sp_73d9575cc5cd",
+            "execution_id": "ex_b4bcdeb3eca6",
+            "objective": 367,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_4a903c774737",
+            "execution_id": "ex_e7e91c9d7914",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_02c262b0530c",
+            "execution_id": "ex_f2709e76e84c",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_b798e4b1befe",
+            "execution_id": "ex_e058667c8038",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:c59941e4b3c2c6055a480b91c341ffd1e1cb556a6af0f2c3a2bec439a9ab710c",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:18fb35dfcaa195ebd884c962a47ff0ce9324e6b39cda50866d52731e66cfbfba",
+                "hplus_snapshot:c59941e4b3c2c6055a480b91c341ffd1e1cb556a6af0f2c3a2bec439a9ab710c"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536263.1613677,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "refuted",
+            "induction_action_id": "ac_e0059b73a2d0",
+            "induction_id": "ij_eaa2ad70c481c31d9c7fecde",
+            "input_ref": "hplus_input:2847146de2fe9afa390a96bc2620e75e3dad710b38319d688f1e3365819f8847",
+            "material_id": "induction_material:4abd992fb4153904e077688340c5b03aa869701462d8b2eab7c967151e4bd7de",
+            "mode": "nohplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_301f5a3c5de0",
+            "rule_updates": [],
+            "solve_action_id": "ac_e1a0bdfc4c4f",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_6f39cf89ee9c"
+            ],
+            "source_fact_ref": "rule_fact:18fb35dfcaa195ebd884c962a47ff0ce9324e6b39cda50866d52731e66cfbfba",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:8476f073627d24ea78e02c9b8bf91d32a1e9b225edd1ad12f7d2cdc9e1900ed0",
+            "comparison": null,
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "created_at": 1794536263.3259017,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "supported",
+            "induction_action_id": "ac_c41c86f43ff2",
+            "induction_id": "ij_fbd1de20a9be7bd7dd091deb",
+            "input_ref": "hplus_input:cda32d98ae859ee18070b64ec74e7115da6c38e7e8c007b21e3138c281a660f7",
+            "material_id": "induction_material:48f0878de51cc7e87097ed596e89eba7fb5f5a1a58ecf9e3f7965ed57a341ac2",
+            "mode": "nohplus",
+            "outcome": "revised",
+            "prediction_id": "sp_73d9575cc5cd",
+            "rule_updates": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "solve_action_id": "ac_b291ae46512d",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_6f39cf89ee9c",
+              "ex_b4bcdeb3eca6"
+            ],
+            "source_fact_ref": "rule_fact:e4052538f36e0691e63933ac6091a33ea62ae30e2c8d9c710fd4fc6a0bc05031",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:fce3037345f1feb09b6153696f2978a1e5a085e5877c597b0ca445b2c1aa0755",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:8f1ddbd393a2904e3d4fab2ddaaf0813a4483f908c5b0c147b1fae768881f563",
+                "hplus_snapshot:fce3037345f1feb09b6153696f2978a1e5a085e5877c597b0ca445b2c1aa0755"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536263.528352,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_3de27050872b",
+            "induction_id": "ij_9a5bd1cc1371b6f41ea64f1a",
+            "input_ref": "hplus_input:f3d084d88b06ccdef3012a486f7409d75f1f6fd58f483b4064f7a9c3ab30ec3e",
+            "material_id": "induction_material:692eb6af8fb2a47de725716c67280f11794169129f1647460f2ebf8b61fa2bce",
+            "mode": "nohplus",
+            "outcome": "no_increment",
+            "prediction_id": "sp_4a903c774737",
+            "rule_updates": [],
+            "solve_action_id": "ac_2261fd2d68f2",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_6f39cf89ee9c",
+              "ex_b4bcdeb3eca6",
+              "ex_e7e91c9d7914"
+            ],
+            "source_fact_ref": "rule_fact:8f1ddbd393a2904e3d4fab2ddaaf0813a4483f908c5b0c147b1fae768881f563",
+            "verification": []
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:2001a9d36810c700a2c57cc70a73fb8391927759dee6d8c0a9f4ab38b711f699",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:f020268774d4acbc4bc0c23f33f592fb6b4bb3fd3abf373e24c23c8a0087cced",
+                "hplus_snapshot:2001a9d36810c700a2c57cc70a73fb8391927759dee6d8c0a9f4ab38b711f699"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536263.798695,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_d6e409fe6260",
+            "induction_id": "ij_5013985761fadc085df68e5c",
+            "input_ref": "hplus_input:49e2ff59b23a9c4d1b8b9d500fe57b84a41ebb8b7c9f072417d624952316c3a9",
+            "material_id": "induction_material:59d6e99e7d21ea6ac8fca94ba4b38088e730eede32ea76ce123f1c179c326191",
+            "mode": "nohplus",
+            "outcome": "already_covered",
+            "prediction_id": "sp_02c262b0530c",
+            "rule_updates": [],
+            "solve_action_id": "ac_306b6f2ec1d4",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_6f39cf89ee9c",
+              "ex_b4bcdeb3eca6",
+              "ex_e7e91c9d7914",
+              "ex_f2709e76e84c"
+            ],
+            "source_fact_ref": "rule_fact:f020268774d4acbc4bc0c23f33f592fb6b4bb3fd3abf373e24c23c8a0087cced",
+            "verification": []
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:09fdeebf3b8752684a4eaba5b37110608fb9ecd6d049b0a8c2c81a338aaeb0f4",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:ef4190b378b5e70c933139a3535ec6fcc86e86ca0ab01f72177f1667b4cbc203",
+                "hplus_snapshot:09fdeebf3b8752684a4eaba5b37110608fb9ecd6d049b0a8c2c81a338aaeb0f4"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536264.0318284,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_05596cf27efb",
+            "induction_id": "ij_049e106b5cae9eddb1e7ca22",
+            "input_ref": "hplus_input:2d58b71e29b7b4a53ef8f7ba23abe114c87181fe4d98abe20616022afff2dbad",
+            "material_id": "induction_material:f8ac246d75aec482cb279fa86059b2cee517f4801ad61de8e6c0ee28c4f0e609",
+            "mode": "nohplus",
+            "outcome": "no_increment",
+            "prediction_id": "sp_b798e4b1befe",
+            "rule_updates": [],
+            "solve_action_id": "ac_cc277f1b5ea7",
+            "source_execution_ids": [
+              "ex_5c801986d7c0",
+              "ex_6f39cf89ee9c",
+              "ex_b4bcdeb3eca6",
+              "ex_e058667c8038",
+              "ex_e7e91c9d7914",
+              "ex_f2709e76e84c"
+            ],
+            "source_fact_ref": "rule_fact:ef4190b378b5e70c933139a3535ec6fcc86e86ca0ab01f72177f1667b4cbc203",
+            "verification": []
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_301f5a3c5de0",
+            "induction_id": "ij_eaa2ad70c481c31d9c7fecde",
+            "decision": 1,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:2847146de2fe9afa390a96bc2620e75e3dad710b38319d688f1e3365819f8847",
+            "receipt_ref": "hplus_receipt:8d696cbf06074f4eae3969f7f1d57fe36072a4370f19296c74817fa94e06ea6f"
+          },
+          {
+            "prediction_id": "sp_73d9575cc5cd",
+            "induction_id": "ij_fbd1de20a9be7bd7dd091deb",
+            "decision": 1,
+            "label": 1,
+            "state": "independently_validated_increment",
+            "input_ref": "hplus_input:cda32d98ae859ee18070b64ec74e7115da6c38e7e8c007b21e3138c281a660f7",
+            "receipt_ref": "hplus_receipt:dfe56e4549097e1b4e713d4d554e35720f555e4b764d446477e591d17c493681"
+          },
+          {
+            "prediction_id": "sp_4a903c774737",
+            "induction_id": "ij_9a5bd1cc1371b6f41ea64f1a",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:f3d084d88b06ccdef3012a486f7409d75f1f6fd58f483b4064f7a9c3ab30ec3e",
+            "receipt_ref": "hplus_receipt:2cdbb7993a892064860a071ac28e04bc9c5446d3b26bd51022151d4759c3195d"
+          },
+          {
+            "prediction_id": "sp_02c262b0530c",
+            "induction_id": "ij_5013985761fadc085df68e5c",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:49e2ff59b23a9c4d1b8b9d500fe57b84a41ebb8b7c9f072417d624952316c3a9",
+            "receipt_ref": "hplus_receipt:6d3b4631e6db3c37f9d5c40485484785d9697dc19afb5234429518e43a0dec3f"
+          },
+          {
+            "prediction_id": "sp_b798e4b1befe",
+            "induction_id": "ij_049e106b5cae9eddb1e7ca22",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:2d58b71e29b7b4a53ef8f7ba23abe114c87181fe4d98abe20616022afff2dbad",
+            "receipt_ref": "hplus_receipt:547e596fc99b22a3271c477b40a9f3c2ee91c1d925740e176519fed384f244a2"
+          }
+        ],
+        "frozen_library_digest": "1954912652bc53894d0edbbd3c14a9215ff35ea31c2654f0dc688506731d837d",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_0395bb2a90ac",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      },
+      "random": {
+        "initial_library_digest": "8571d308522f9defde92e6cde34813f3e8e3556d4933d12635e38479e14a2fd0",
+        "triggers": 2,
+        "receipts": 2,
+        "empty_reviews": 1,
+        "induction_wall_s": 0.07195806689560413,
+        "round_usage": [
+          {
+            "induction_id": "ij_c373459a7fbab55e52d3029b",
+            "action_id": "ac_6335b4c986a5",
+            "wall_s": 0.04148200340569019,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          },
+          {
+            "induction_id": "ij_8297efe1fcb459fa2708d555",
+            "action_id": "ac_2d3fb067db4f",
+            "wall_s": 0.03047606348991394,
+            "source": "perf_counter",
+            "scope": "material_to_receipt",
+            "tokens": null,
+            "tool_calls": null
+          }
+        ],
+        "induction_tokens": null,
+        "induction_tool_calls": null,
+        "independently_validated_increments": 1,
+        "zero_signal_reviews": 1,
+        "confirmed_zero_missed_opportunities": 0,
+        "random_allocation": [
+          "transfer-min",
+          "learn-min"
+        ],
+        "training_results": [
+          {
+            "task_id": "review-max",
+            "prediction_id": "sp_27152fb5f52a",
+            "execution_id": "ex_0f17c44503bd",
+            "objective": 2959,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "learn-min",
+            "prediction_id": "sp_88619293dab5",
+            "execution_id": "ex_14103b4e4113",
+            "objective": 367,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "transfer-min",
+            "prediction_id": "sp_8d61f955a63c",
+            "execution_id": "ex_e55d150e5c58",
+            "objective": 90,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "nonmonotone",
+            "prediction_id": "sp_b718373fdedd",
+            "execution_id": "ex_a5ab2b75b87c",
+            "objective": 0,
+            "task_check": "passed"
+          },
+          {
+            "task_id": "covered-min",
+            "prediction_id": "sp_3d9208a39a78",
+            "execution_id": "ex_e1aab633a75c",
+            "objective": 371,
+            "task_check": "passed"
+          }
+        ],
+        "receipt_details": [
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:32e0b35f827b6b9a989baeecf222763ec8723915f2783c81084b284dba85125e",
+            "comparison": null,
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "created_at": 1794536264.632263,
+            "decision": 1,
+            "deviation_reason": null,
+            "hypothesis_outcome": "supported",
+            "induction_action_id": "ac_6335b4c986a5",
+            "induction_id": "ij_c373459a7fbab55e52d3029b",
+            "input_ref": "hplus_input:b3ead682e7abe59b424ac5ac3677df0877c602f15a0b22746e5e67fb0a8a0837",
+            "material_id": "induction_material:47dc3528d2bd5ccafb045d841df3c75296fb4a19cd1d3dd31a8e19ce378706b5",
+            "mode": "random",
+            "outcome": "revised",
+            "prediction_id": "sp_88619293dab5",
+            "rule_updates": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "solve_action_id": "ac_fbbf61ab8268",
+            "source_execution_ids": [
+              "ex_0f17c44503bd",
+              "ex_14103b4e4113",
+              "ex_5c801986d7c0"
+            ],
+            "source_fact_ref": "rule_fact:1ea9f250521d40bdaab5f709abedf257ece4d960496024947982799206a8ca5d",
+            "verification": [
+              {
+                "condition": "Check endpoint direction and the independent integer optimum.",
+                "condition_index": 0,
+                "evidence_refs": [],
+                "finding": null,
+                "reason": "no sourced completion of the frozen verification",
+                "source": null,
+                "state": "unknown"
+              }
+            ]
+          },
+          {
+            "baseline_snapshot_ref": "hplus_snapshot:10296b583adecfd1b5154370f2fd6a0466788c9c28aa36a8dbc0abef4c576470",
+            "comparison": {
+              "assessment": "The performed mechanism is covered by the recorded rule or its already frozen candidate.",
+              "evidence_refs": [
+                "rule_fact:824ad370b1522c85423d82d10484ae23897a9f702336ca0a908eebb9519c0574",
+                "hplus_snapshot:10296b583adecfd1b5154370f2fd6a0466788c9c28aa36a8dbc0abef4c576470"
+              ],
+              "source": "fixture reviewer inspected frozen library and actual script/result",
+              "sufficient": true
+            },
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "created_at": 1794536264.8567684,
+            "decision": 0,
+            "deviation_reason": null,
+            "hypothesis_outcome": "unknown",
+            "induction_action_id": "ac_2d3fb067db4f",
+            "induction_id": "ij_8297efe1fcb459fa2708d555",
+            "input_ref": "hplus_input:50b8e407896780c6fbbd0dc815f90ccff5fa12f4e24ca5d587aa1ef78849c12e",
+            "material_id": "induction_material:f3a56e9fc428e122ced8000cc33599b6edda1ef3556dedba610a6c75eb22bd38",
+            "mode": "random",
+            "outcome": "no_increment",
+            "prediction_id": "sp_8d61f955a63c",
+            "rule_updates": [],
+            "solve_action_id": "ac_0a388e23d5d7",
+            "source_execution_ids": [
+              "ex_0f17c44503bd",
+              "ex_14103b4e4113",
+              "ex_5c801986d7c0",
+              "ex_e55d150e5c58"
+            ],
+            "source_fact_ref": "rule_fact:824ad370b1522c85423d82d10484ae23897a9f702336ca0a908eebb9519c0574",
+            "verification": []
+          }
+        ],
+        "observations": [
+          {
+            "prediction_id": "sp_27152fb5f52a",
+            "induction_id": "ij_80f8b873c36bcb250071e423",
+            "decision": 1,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:3db006f67a4b13c4491bed39ea5ad0c07b635305d90676ace4f9c4f4b0ed4f02",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_88619293dab5",
+            "induction_id": "ij_c373459a7fbab55e52d3029b",
+            "decision": 1,
+            "label": 1,
+            "state": "independently_validated_increment",
+            "input_ref": "hplus_input:b3ead682e7abe59b424ac5ac3677df0877c602f15a0b22746e5e67fb0a8a0837",
+            "receipt_ref": "hplus_receipt:b2390739021d4f78f0c5a8199a501b8a550d87caeeee94748d381d2104aa93ce"
+          },
+          {
+            "prediction_id": "sp_8d61f955a63c",
+            "induction_id": "ij_8297efe1fcb459fa2708d555",
+            "decision": 0,
+            "label": 0,
+            "state": "sourced_comparison_no_increment",
+            "input_ref": "hplus_input:50b8e407896780c6fbbd0dc815f90ccff5fa12f4e24ca5d587aa1ef78849c12e",
+            "receipt_ref": "hplus_receipt:a4c774fd5833d2d7db1ac0b85bb41a8829b1ac3b1e4d0a17dae7affe7b7a8506"
+          },
+          {
+            "prediction_id": "sp_b718373fdedd",
+            "induction_id": "ij_830f03cf385d891f464979dd",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:a1ba9ea7b9e85f2b3fd4bb38d52e293fcdf0ca4115d6eb822ce03ef2488da1e4",
+            "receipt_ref": null
+          },
+          {
+            "prediction_id": "sp_3d9208a39a78",
+            "induction_id": "ij_b6d27d7cd2b3e004d8fc56e9",
+            "decision": 0,
+            "label": null,
+            "state": "unobserved",
+            "input_ref": "hplus_input:bb368a6bff80706986d89c3f2bba9baee73977b68f15d7e8a8fc57749605e8d4",
+            "receipt_ref": null
+          }
+        ],
+        "frozen_library_digest": "1954912652bc53894d0edbbd3c14a9215ff35ea31c2654f0dc688506731d837d",
+        "frozen_tests": [
+          {
+            "task_id": "frozen-independent",
+            "execution_id": "ex_5206977bf43b",
+            "task_check": "passed",
+            "objective": 283,
+            "library_unchanged": true
+          }
+        ],
+        "frozen_passes": 1
+      }
+    },
+    "random_budget_basis": "realized H+ executed triggers; random selection uses seed, not outcomes",
+    "scope": "callback protocol; fixture runs do not establish predictor quality",
+    "fixture_source": "real captured Python enumeration/checks; scripted predictor/reviewer; legacy maximum-only initial rule"
+  },
+  "endpoint_acceptance": {
+    "observation": {
+      "label": 1,
+      "verification_state": "independently_validated_increment",
+      "validated_rules": [
+        {
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "entry_id": "1",
+          "operation": "revise",
+          "substantive": true,
+          "version": 2
+        }
+      ],
+      "hypothesis_outcome": "unknown",
+      "receipt": {
+        "baseline_snapshot_ref": "hplus_snapshot:4c305d62a68d941f33cc2a2a43f2b8a3a432c6c33b3ecce26ad12a17f20a2ece",
+        "comparison": null,
+        "conclusion": "short rules submitted for existing validation",
+        "created_at": 1794536266.0058863,
+        "decision": 1,
+        "deviation_reason": null,
+        "hypothesis_outcome": "unknown",
+        "induction_action_id": "ac_27d7b41a667c",
+        "induction_id": "ij_9fae56b689bf40fd47ef067e",
+        "input_ref": "hplus_input:0f085f46359a7d82d5d48cc6705f95c95b805dc7dd5de2037cfe8d9f7cbd00d3",
+        "material_id": "induction_material:77326862f420eb00c0e0d56a6070f44285cd66fe73f8df0973fb8fbf4ba8cb8f",
+        "mode": "hplus",
+        "outcome": "knowledge_submitted",
+        "prediction_id": "sp_c8c3f86c6afc",
+        "rule_updates": [
+          {
+            "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+            "entry_id": "1",
+            "operation": "revise",
+            "substantive": true,
+            "version": 2
+          }
+        ],
+        "solve_action_id": "ac_b3fc5bdbedd1",
+        "source_execution_ids": [
+          "ex_1bbbf6164302",
+          "ex_6c9b1ceb8e85",
+          "ex_9bd5a48cecf3",
+          "ex_c40671acf206"
+        ],
+        "source_fact_ref": "rule_fact:37e3f66510a5d247df62ce04d6fd12f33a991005afaded666499306adf70f33a",
+        "verification": [
+          {
+            "condition": "Check the selected lower endpoint and the independently computed optimum.",
+            "condition_index": 0,
+            "evidence_refs": [],
+            "finding": null,
+            "reason": "no sourced completion of the frozen verification",
+            "source": null,
+            "state": "unknown"
+          }
+        ]
+      }
+    },
+    "versions": {
+      "entry_id": "1",
+      "versions": [
+        {
+          "entry_id": "1",
+          "version": 1,
+          "body_ref": "rule:970ff3cd48cdaca2efb1d06df2253ca398cf52f8ec443ae0004de6e4cb981bda",
+          "metadata_ref": "rule_metadata:67567e9f36c3c519e5553a7b356f35e585935c43da06b22a0cbe01ada1774ec6",
+          "created_at": 1794536265.6468954,
+          "state": "superseded",
+          "body": {
+            "do": "Enumerate Y, take the upper X endpoint for maximization, and compare objectives. Disable on a nonmonotone objective.",
+            "effect_scope": "task_check",
+            "expect": "Preserve the original integer optimum and all stated constraints.",
+            "predicates": {},
+            "when": "Maximize an objective increasing in X over a computable integer X interval."
+          },
+          "metadata": {
+            "derivation_base_ids": [
+              "training"
+            ],
+            "derivation_content_digests": [
+              "faef18d0c7b0d2a9b9d21bdb4c91f96c4fe4ef8479409a414335ce3904b3c59e"
+            ],
+            "derivation_execution_ids": [
+              "ex_6c9b1ceb8e85"
+            ],
+            "identities": {
+              "ex_6c9b1ceb8e85": {
+                "base_id": "training",
+                "basis": "declared_origin",
+                "content_digest": "faef18d0c7b0d2a9b9d21bdb4c91f96c4fe4ef8479409a414335ce3904b3c59e",
+                "hypothetical": false,
+                "problem_digest": "971881070fbc124e",
+                "relationship": "variant",
+                "task_id": "training"
+              }
+            },
+            "material_read_refs": [],
+            "material_ref": null,
+            "required_regressions": [],
+            "seed_evidence": [
+              {
+                "execution_id": "ex_6c9b1ceb8e85",
+                "family": "assignment",
+                "measurement_scope": "attempt",
+                "role": "derivation",
+                "strategy_id": "endpoint",
+                "task_id": "training"
+              }
+            ],
+            "seed_fact_refs": {
+              "ex_6c9b1ceb8e85": "rule_fact:12f4fa893d8f4d47d4887a84b7aa2b4ff6b319c46ded373bcd65957c04846f13"
+            },
+            "seed_families": [
+              "assignment"
+            ]
+          }
+        },
+        {
+          "entry_id": "1",
+          "version": 2,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "metadata_ref": "rule_metadata:1bc528d7d41395e59d68e8b82202d20076d8b245e6c8213d392fe4092712558e",
+          "created_at": 1794536265.9762092,
+          "state": "active",
+          "body": {
+            "do": "Enumerate feasible Y, derive both X endpoints, choose the endpoint from the objective direction and coefficient sign, then compare the resulting objectives. If monotonicity fails, disable this reduction and enumerate the full feasible set.",
+            "effect_scope": "task_check",
+            "expect": "Preserve the original integer optimum and all stated constraints.",
+            "predicates": {},
+            "when": "X,Y are nonnegative integers; for fixed Y, feasible X is an interval and the objective is monotone in X."
+          },
+          "metadata": {
+            "derivation_base_ids": [
+              "adapt-min",
+              "old-boundary",
+              "old-max-transfer",
+              "training"
+            ],
+            "derivation_content_digests": [
+              "494acebd6c1dedb1c6c7be3462ed473f3f592e95d3920d5b8d91f7d7eabe0ba9",
+              "89209503e8e089a9e1e54299771e8651dafc971f67961a8c0dc0ef5d50af6c16",
+              "a0a76bbeda5779c97d23b82503553d68978af927a4bb36d69e782093ff44b919",
+              "faef18d0c7b0d2a9b9d21bdb4c91f96c4fe4ef8479409a414335ce3904b3c59e"
+            ],
+            "derivation_execution_ids": [
+              "ex_9bd5a48cecf3",
+              "ex_6c9b1ceb8e85",
+              "ex_c40671acf206",
+              "ex_1bbbf6164302"
+            ],
+            "identities": {
+              "ex_1bbbf6164302": {
+                "base_id": "old-max-transfer",
+                "basis": "declared_origin",
+                "content_digest": "a0a76bbeda5779c97d23b82503553d68978af927a4bb36d69e782093ff44b919",
+                "hypothetical": false,
+                "problem_digest": "db354095fd08d5ae",
+                "relationship": "variant",
+                "task_id": "old-max-transfer"
+              },
+              "ex_6c9b1ceb8e85": {
+                "base_id": "training",
+                "basis": "declared_origin",
+                "content_digest": "faef18d0c7b0d2a9b9d21bdb4c91f96c4fe4ef8479409a414335ce3904b3c59e",
+                "hypothetical": false,
+                "problem_digest": "971881070fbc124e",
+                "relationship": "variant",
+                "task_id": "training"
+              },
+              "ex_9bd5a48cecf3": {
+                "base_id": "adapt-min",
+                "basis": "declared_origin",
+                "content_digest": "494acebd6c1dedb1c6c7be3462ed473f3f592e95d3920d5b8d91f7d7eabe0ba9",
+                "hypothetical": false,
+                "problem_digest": "4bdbfc1b5664e4f3",
+                "relationship": "variant",
+                "task_id": "adapt-min"
+              },
+              "ex_c40671acf206": {
+                "base_id": "old-boundary",
+                "basis": "declared_origin",
+                "content_digest": "89209503e8e089a9e1e54299771e8651dafc971f67961a8c0dc0ef5d50af6c16",
+                "hypothetical": false,
+                "problem_digest": "2aec50c1b3c43fa0",
+                "relationship": "variant",
+                "task_id": "old-boundary"
+              }
+            },
+            "material_read_refs": [
+              "induction_material:77326862f420eb00c0e0d56a6070f44285cd66fe73f8df0973fb8fbf4ba8cb8f"
+            ],
+            "material_ref": "induction_material:77326862f420eb00c0e0d56a6070f44285cd66fe73f8df0973fb8fbf4ba8cb8f",
+            "required_regressions": [
+              "ex_1bbbf6164302",
+              "ex_6c9b1ceb8e85",
+              "ex_c40671acf206"
+            ],
+            "seed_evidence": [
+              {
+                "execution_id": "ex_9bd5a48cecf3",
+                "family": "assignment",
+                "measurement_scope": "attempt",
+                "role": "derivation",
+                "strategy_id": "endpoint",
+                "task_id": "adapt-min"
+              }
+            ],
+            "seed_fact_refs": {
+              "ex_9bd5a48cecf3": "rule_fact:37e3f66510a5d247df62ce04d6fd12f33a991005afaded666499306adf70f33a"
+            },
+            "seed_families": [
+              "assignment"
+            ]
+          }
+        }
+      ],
+      "checks": [
+        {
+          "assessment_ref": "rule_assessment:fdb8eab9da899eb966b3fe200fa5f56c76380f9ff4bb48ea593b72a4c8e94a77",
+          "at": 1794536265.721233,
+          "body_ref": "rule:970ff3cd48cdaca2efb1d06df2253ca398cf52f8ec443ae0004de6e4cb981bda",
+          "check_id": "rc:f4b67b6d398be81000bc0e4587a1b2b63982447b939b5559032f01bbccac6867",
+          "entry_id": "1",
+          "evidence_semantics": "388a6bf593d99a81470b58072e8da7eb5f37064fec756d51de8cf545e036d223",
+          "execution_id": "ex_1bbbf6164302",
+          "fact_ref": "rule_fact:5ecff0b9e5cca3ccc015891f0598cc2f444decbd6becdc96cc60eb096bde2aca",
+          "identity": {
+            "base_id": "old-max-transfer",
+            "basis": "declared_origin",
+            "content_digest": "a0a76bbeda5779c97d23b82503553d68978af927a4bb36d69e782093ff44b919",
+            "hypothetical": false,
+            "problem_digest": "db354095fd08d5ae",
+            "relationship": "variant",
+            "task_id": "old-max-transfer"
+          },
+          "kind": "transfer",
+          "observed_at": 1794536265.712649,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "old-max-transfer",
+            "kind": "transfer"
+          },
+          "state": "passed",
+          "version": 1
+        },
+        {
+          "assessment_ref": "rule_assessment:e3c25a2b2f1921315eef185a4f7c635e0e5f14068a45d9bf4304204e87df7f89",
+          "at": 1794536265.7942362,
+          "body_ref": "rule:970ff3cd48cdaca2efb1d06df2253ca398cf52f8ec443ae0004de6e4cb981bda",
+          "check_id": "rc:19ab47e2ee857d7a31bd967f931bc72ec0639a59b56943a6299816bcfac624d9",
+          "entry_id": "1",
+          "evidence_semantics": "3230f5515391c7c5b077ec55f77bbb3bb9d79d2ac9633eb48de9544cd0dea4fb",
+          "execution_id": "ex_c40671acf206",
+          "fact_ref": "rule_fact:3d8d61175e7baf03a541c26b6bc788cb2d8055154d53c1b354d5075af54d386d",
+          "identity": {
+            "base_id": "old-boundary",
+            "basis": "declared_origin",
+            "content_digest": "89209503e8e089a9e1e54299771e8651dafc971f67961a8c0dc0ef5d50af6c16",
+            "hypothetical": false,
+            "problem_digest": "2aec50c1b3c43fa0",
+            "relationship": "variant",
+            "task_id": "old-boundary"
+          },
+          "kind": "boundary",
+          "observed_at": 1794536265.7853487,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "old-boundary",
+            "kind": "boundary_test"
+          },
+          "state": "passed",
+          "version": 1
+        },
+        {
+          "at": 1794536265.9762511,
+          "check_id": "rc:09546374e6aceb716927e78729f78ae13de1feaa4b596a61801147bca41f5d0c",
+          "entry_id": "1",
+          "execution_id": "ex_1bbbf6164302",
+          "kind": "regression",
+          "reason": "recheck affected prior success against this version",
+          "state": "pending",
+          "version": 2
+        },
+        {
+          "at": 1794536265.9762907,
+          "check_id": "rc:2775f560257f848f20ef02e0ade2d390649790497a1f7ea14a1484bc77c85405",
+          "entry_id": "1",
+          "execution_id": "ex_6c9b1ceb8e85",
+          "kind": "regression",
+          "reason": "recheck affected prior success against this version",
+          "state": "pending",
+          "version": 2
+        },
+        {
+          "at": 1794536265.9763181,
+          "check_id": "rc:c91c54f26e4115b3af399590ab6977823ac6f47bf60cb31e1ee15ef229edfbb0",
+          "entry_id": "1",
+          "execution_id": "ex_c40671acf206",
+          "kind": "regression",
+          "reason": "recheck affected prior success against this version",
+          "state": "pending",
+          "version": 2
+        },
+        {
+          "assessment_ref": "rule_assessment:576b680eff0be20706ba1ad710adb81e092d184639dea437b858441571fe13a8",
+          "at": 1794536265.9779499,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "check_id": "rc:a1057b8051aa42053530e388c69a9355f5880ae15bcc077c876aed42a77dda61",
+          "entry_id": "1",
+          "evidence_semantics": "a42087b0f1a9ff432c367442b2db30f88a5a8fbe01dcd18171170baf68bbb155",
+          "execution_id": "ex_6c9b1ceb8e85",
+          "fact_ref": "rule_fact:12f4fa893d8f4d47d4887a84b7aa2b4ff6b319c46ded373bcd65957c04846f13",
+          "identity": {
+            "base_id": "training",
+            "basis": "declared_origin",
+            "content_digest": "faef18d0c7b0d2a9b9d21bdb4c91f96c4fe4ef8479409a414335ce3904b3c59e",
+            "hypothetical": false,
+            "problem_digest": "971881070fbc124e",
+            "relationship": "variant",
+            "task_id": "training"
+          },
+          "kind": "regression",
+          "observed_at": 1794536265.6341748,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "training",
+            "kind": "regression"
+          },
+          "state": "passed",
+          "version": 2
+        },
+        {
+          "assessment_ref": "rule_assessment:576b680eff0be20706ba1ad710adb81e092d184639dea437b858441571fe13a8",
+          "at": 1794536265.979136,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "check_id": "rc:2d8228cdbadb863d26777c5a558e48769589b6379ca2e41ef6da8c788867c7ba",
+          "entry_id": "1",
+          "evidence_semantics": "388a6bf593d99a81470b58072e8da7eb5f37064fec756d51de8cf545e036d223",
+          "execution_id": "ex_1bbbf6164302",
+          "fact_ref": "rule_fact:5ecff0b9e5cca3ccc015891f0598cc2f444decbd6becdc96cc60eb096bde2aca",
+          "identity": {
+            "base_id": "old-max-transfer",
+            "basis": "declared_origin",
+            "content_digest": "a0a76bbeda5779c97d23b82503553d68978af927a4bb36d69e782093ff44b919",
+            "hypothetical": false,
+            "problem_digest": "db354095fd08d5ae",
+            "relationship": "variant",
+            "task_id": "old-max-transfer"
+          },
+          "kind": "regression",
+          "observed_at": 1794536265.712649,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "old-max-transfer",
+            "kind": "regression"
+          },
+          "state": "passed",
+          "version": 2
+        },
+        {
+          "assessment_ref": "rule_assessment:65df84ccb26c451f1ecdcbbf31d4355d4ce9d4fd93d4b945c089494122d7e980",
+          "at": 1794536265.9802735,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "check_id": "rc:26c5cb8a8af6cc1959b5acc1e57431a96a14566db8b1dc3095bc0fc942fa5d44",
+          "entry_id": "1",
+          "evidence_semantics": "3230f5515391c7c5b077ec55f77bbb3bb9d79d2ac9633eb48de9544cd0dea4fb",
+          "execution_id": "ex_c40671acf206",
+          "fact_ref": "rule_fact:3d8d61175e7baf03a541c26b6bc788cb2d8055154d53c1b354d5075af54d386d",
+          "identity": {
+            "base_id": "old-boundary",
+            "basis": "declared_origin",
+            "content_digest": "89209503e8e089a9e1e54299771e8651dafc971f67961a8c0dc0ef5d50af6c16",
+            "hypothetical": false,
+            "problem_digest": "2aec50c1b3c43fa0",
+            "relationship": "variant",
+            "task_id": "old-boundary"
+          },
+          "kind": "regression",
+          "observed_at": 1794536265.7853487,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "old-boundary",
+            "kind": "boundary_test"
+          },
+          "state": "passed",
+          "version": 2
+        },
+        {
+          "assessment_ref": "rule_assessment:6500b274e6faa3c53b9fc91cd6879b1ff17c6989d230054c20c8e0b930eaf532",
+          "at": 1794536266.2774794,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "check_id": "rc:710cc9bef56985c79f63f9cce667ace12d5d37ca6d08410412d9994abe75ae48",
+          "entry_id": "1",
+          "evidence_semantics": "c9c2dd06c8265298a22a2a72c84e512d2e23fe27129f2b6bb171a77210a506e1",
+          "execution_id": "ex_480458aff215",
+          "fact_ref": "rule_fact:076af9f6fb1b4bc3276a37c1fd334443f9c3b447a3b2f1b34f3267c2dca1afec",
+          "identity": {
+            "base_id": "independent",
+            "basis": "declared_origin",
+            "content_digest": "77b6a6b19661b78d3a006ba802e4c2896b093429c1edf558ca20f02f50175c26",
+            "hypothetical": false,
+            "problem_digest": "0a34f2b350faa6cc",
+            "relationship": "variant",
+            "task_id": "independent"
+          },
+          "kind": "transfer",
+          "observed_at": 1794536266.2503433,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "independent",
+            "kind": "transfer"
+          },
+          "state": "passed",
+          "version": 2
+        },
+        {
+          "assessment_ref": "rule_assessment:bda4440a3829e4a6e6a144a41fb27f22be15a583a8b9bc25f52dbf05939e83dc",
+          "at": 1794536266.4504366,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "check_id": "rc:c12561e72e64f8803deefd384277d27e7917c7265c16acb1419b71da2b939573",
+          "entry_id": "1",
+          "evidence_semantics": "2e0faf56ac890b2bc13319a98b61da65b5e1042db13f6670fcce7d68b854c901",
+          "execution_id": "ex_68b40fc10ed1",
+          "fact_ref": "rule_fact:514f545d5c23741e1db8490340ab2d8f6b176f49220e085b53d78da06df3c537",
+          "identity": {
+            "base_id": "new-boundary",
+            "basis": "declared_origin",
+            "content_digest": "89209503e8e089a9e1e54299771e8651dafc971f67961a8c0dc0ef5d50af6c16",
+            "hypothetical": false,
+            "problem_digest": "118d3618fd01b24d",
+            "relationship": "variant",
+            "task_id": "new-boundary"
+          },
+          "kind": "boundary",
+          "observed_at": 1794536266.416945,
+          "reason": "sourced premises, actual method and claimed effect checked",
+          "scope": {
+            "acceptance": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "base_id": "new-boundary",
+            "kind": "boundary_test"
+          },
+          "state": "passed",
+          "version": 2
+        }
+      ],
+      "events": [
+        {
+          "at": 1794536265.6472516,
+          "entry_id": "1",
+          "event_id": "re:cef3362cac3428e8088e972f81dad1679ffbdf266a67d936eb404b8f0fe63ffb",
+          "execution_id": "ex_6c9b1ceb8e85",
+          "fact_ref": "rule_fact:12f4fa893d8f4d47d4887a84b7aa2b4ff6b319c46ded373bcd65957c04846f13",
+          "kind": "evidence",
+          "role": "derivation",
+          "version": 1
+        },
+        {
+          "adopted_value_ref": "knowledge:ff9ef333a185bed2a5932d146b434730ec3d75be2f2874669eab61bac736a666",
+          "at": 1794536265.7199578,
+          "body_ref": "rule:970ff3cd48cdaca2efb1d06df2253ca398cf52f8ec443ae0004de6e4cb981bda",
+          "entry_id": "1",
+          "event_id": "re:da4d2b3ab20a4d223b7d80a2bfa14d3fb39740601b54cd8db9f9610df3ea56f9",
+          "execution_id": "ex_1bbbf6164302",
+          "kind": "use",
+          "version": 1
+        },
+        {
+          "adopted_value_ref": "knowledge:ff9ef333a185bed2a5932d146b434730ec3d75be2f2874669eab61bac736a666",
+          "at": 1794536265.793068,
+          "body_ref": "rule:970ff3cd48cdaca2efb1d06df2253ca398cf52f8ec443ae0004de6e4cb981bda",
+          "entry_id": "1",
+          "event_id": "re:e79e5f5ee33b97a75d823cb76ac98ce0ab9406ce75e00df220f8138aaf27f7c9",
+          "execution_id": "ex_c40671acf206",
+          "kind": "use",
+          "version": 1
+        },
+        {
+          "at": 1794536265.7948408,
+          "entry_id": "1",
+          "event_id": "re:cb7759ba7aae6b769b215373aacfb0faec275af13b823d5aa106715ee40ed5f6",
+          "execution_id": null,
+          "from": "candidate",
+          "kind": "publication",
+          "to": "active",
+          "version": 1
+        },
+        {
+          "at": 1794536265.9766178,
+          "entry_id": "1",
+          "event_id": "re:6ef5e09e57177227e2373d27e8459787e64928ea459c704b21ef68371e2e7c99",
+          "execution_id": "ex_9bd5a48cecf3",
+          "fact_ref": "rule_fact:37e3f66510a5d247df62ce04d6fd12f33a991005afaded666499306adf70f33a",
+          "kind": "evidence",
+          "role": "derivation",
+          "version": 2
+        },
+        {
+          "adopted_value_ref": "knowledge:01dd745d25b9b722ef2a679cd93daf62b85dc61bc666d442c57b34de4a8b017f",
+          "at": 1794536266.2762818,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "entry_id": "1",
+          "event_id": "re:14d6ca456327092d89f412116829bed66e97090a91b3c3df10e8eb452cf50054",
+          "execution_id": "ex_480458aff215",
+          "kind": "use",
+          "version": 2
+        },
+        {
+          "adopted_value_ref": "knowledge:01dd745d25b9b722ef2a679cd93daf62b85dc61bc666d442c57b34de4a8b017f",
+          "at": 1794536266.4492376,
+          "body_ref": "rule:e18dadf45eed7be7a2ee158885e9144b2adc3f6cc7e05a91479bda78be108ded",
+          "entry_id": "1",
+          "event_id": "re:2aa9f941a83c831f0c5e8168cc30071a788135f7ceaa629ef0c1f113465f5beb",
+          "execution_id": "ex_68b40fc10ed1",
+          "kind": "use",
+          "version": 2
+        },
+        {
+          "at": 1794536266.451072,
+          "entry_id": "1",
+          "event_id": "re:d8424f383515ce48b45fede7a245e5a920544d7ecad43bf1be1b2483c840174a",
+          "execution_id": null,
+          "from": "active",
+          "kind": "publication",
+          "to": "active",
+          "version": 2
+        }
+      ]
+    },
+    "actual_cases": {
+      "adapt-min": [
+        {
+          "execution_id": "ex_9bd5a48cecf3",
+          "quality": {
+            "feasible": true,
+            "gap": 0.0,
+            "objective": 367,
+            "problems": [],
+            "status": "optimal"
+          },
+          "method_actual": {
+            "name": "signed endpoint enumeration",
+            "steps": [
+              "Enumerate feasible Y, derive both X endpoints, choose the endpoint from the objective direction and coefficient sign, then compare the resulting objectives. If monotonicity fails, disable this reduction and enumerate the full feasible set."
+            ]
+          },
+          "task_check": {
+            "acceptance_rule": {
+              "checker": "task-check/1",
+              "fingerprint": "1e38e89ccdc29a1d7825fa255b221008d0b2cc06721bc6036c42f878bbe59294",
+              "spec": {
+                "integer": {
+                  "variables": [
+                    "X",
+                    "Y"
+                  ]
+                },
+                "reference_objective": 367,
+                "reference_source": "bench_declared",
+                "reference_version": "independent integer optimum",
+                "semantic_probe": [
+                  {
+                    "max": 767,
+                    "min": 766,
+                    "path": "execution_features.solution_variables.X"
+                  }
+                ]
+              }
+            },
+            "action_id": "ac_0b48cd3aa51e",
+            "checked_at": 1794536265.9249778,
+            "checks": [
+              {
+                "abs_diff": 0.0,
+                "check": "reference_objective",
+                "observed": 367.0,
+                "ok": true,
+                "reference": 367.0,
+                "source": "framework",
+                "tolerance": 0.000367
+              },
+              {
+                "check": "integer_domains",
+                "n_non_integer": 0,
+                "n_variables": 2,
+                "ok": true,
+                "ran": true,
+                "scope": "the declared variables",
+                "source": "framework",
+                "tolerance": 1e-06
+              },
+              {
+                "check": "semantic_probe",
+                "found": true,
+                "max": 767,
+                "min": 766,
+                "mode": "range",
+                "observed": 766,
+                "ok": true,
+                "path": "execution_features.solution_variables.X",
+                "source": "framework"
+              }
+            ],
+            "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
+            "diffs": [],
+            "episode_id": "adapt-min",
+            "execution_id": "ex_9bd5a48cecf3",
+            "intent": null,
+            "reference_source": {
+              "declared": "bench_declared",
+              "independent": true,
+              "note": "the reference came from a source the caller declared (bench_declared); a pass still covers only the declared bases",
+              "source": "bench_declared",
+              "version": "independent integer optimum"
+            },
+            "scope": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "staged": false,
+            "state": "passed",
+            "task_id": "adapt-min"
+          },
+          "adoption": null,
+          "artifacts": {
+            "submitted_script": {
+              "bytes": 715,
+              "kind": "script",
+              "path": "artifacts/54/5420b1baf4caf7accd56ba67df04e764645265d47f75b20ec405cdabf5e642b7",
+              "sha256": "5420b1baf4caf7accd56ba67df04e764645265d47f75b20ec405cdabf5e642b7",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "workspace_result": {
+              "bytes": 475,
+              "kind": "result",
+              "path": "artifacts/82/8232a3267c19e48512ca672da7cecf292938088ee32ad1a6e87f617a66a76c7c",
+              "sha256": "8232a3267c19e48512ca672da7cecf292938088ee32ad1a6e87f617a66a76c7c",
+              "source": "file observed after attempt; acceptance is governed by execution checks"
+            }
+          }
+        }
+      ],
+      "independent": [
+        {
+          "execution_id": "ex_480458aff215",
+          "quality": {
+            "feasible": true,
+            "gap": 0.0,
+            "objective": 90,
+            "problems": [],
+            "status": "optimal"
+          },
+          "method_actual": {
+            "name": "signed endpoint enumeration",
+            "steps": [
+              "Enumerate feasible Y, derive both X endpoints, choose the endpoint from the objective direction and coefficient sign, then compare the resulting objectives. If monotonicity fails, disable this reduction and enumerate the full feasible set."
+            ]
+          },
+          "task_check": {
+            "acceptance_rule": {
+              "checker": "task-check/1",
+              "fingerprint": "922baedd2ac534623912cc5a51d1ea5501189b12ffffdab43ea34eeba70acbbb",
+              "spec": {
+                "integer": {
+                  "variables": [
+                    "X",
+                    "Y"
+                  ]
+                },
+                "reference_objective": 90,
+                "reference_source": "bench_declared",
+                "reference_version": "independent integer optimum",
+                "semantic_probe": [
+                  {
+                    "max": 471,
+                    "min": 470,
+                    "path": "execution_features.solution_variables.X"
+                  }
+                ]
+              }
+            },
+            "action_id": "ac_017447bf703c",
+            "checked_at": 1794536266.200293,
+            "checks": [
+              {
+                "abs_diff": 0.0,
+                "check": "reference_objective",
+                "observed": 90.0,
+                "ok": true,
+                "reference": 90.0,
+                "source": "framework",
+                "tolerance": 8.999999999999999e-05
+              },
+              {
+                "check": "integer_domains",
+                "n_non_integer": 0,
+                "n_variables": 2,
+                "ok": true,
+                "ran": true,
+                "scope": "the declared variables",
+                "source": "framework",
+                "tolerance": 1e-06
+              },
+              {
+                "check": "semantic_probe",
+                "found": true,
+                "max": 471,
+                "min": 470,
+                "mode": "range",
+                "observed": 470,
+                "ok": true,
+                "path": "execution_features.solution_variables.X",
+                "source": "framework"
+              }
+            ],
+            "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
+            "diffs": [],
+            "episode_id": "independent",
+            "execution_id": "ex_480458aff215",
+            "intent": null,
+            "reference_source": {
+              "declared": "bench_declared",
+              "independent": true,
+              "note": "the reference came from a source the caller declared (bench_declared); a pass still covers only the declared bases",
+              "source": "bench_declared",
+              "version": "independent integer optimum"
+            },
+            "rule_assessments": [
+              {
+                "applicability": "applies",
+                "assessment": "Endpoint choice follows coefficient/direction; nonmonotone case disables reduction. Check covers the stated integer optimum and both constraints.",
+                "effect_coverage": "complete",
+                "entry_id": "1",
+                "evidence_refs": [
+                  "artifacts.submitted_script",
+                  "artifacts.workspace_result"
+                ],
+                "failure_source": null,
+                "method_fidelity": "faithful",
+                "response": null,
+                "source": "fixture auditor inspected captured script and variables against rule premises",
+                "version": 2
+              }
+            ],
+            "scope": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "staged": false,
+            "state": "passed",
+            "task_id": "independent"
+          },
+          "adoption": {
+            "basis": "declared_frozen",
+            "entry_ids": [
+              "1"
+            ],
+            "known_entry_ids": [
+              "1"
+            ],
+            "rule_versions": {
+              "1": 2
+            },
+            "state": "declared",
+            "unknown_entry_ids": [],
+            "versions": {
+              "1": "knowledge:01dd745d25b9b722ef2a679cd93daf62b85dc61bc666d442c57b34de4a8b017f"
+            }
+          },
+          "artifacts": {
+            "submitted_script": {
+              "bytes": 713,
+              "kind": "script",
+              "path": "artifacts/10/10868c7ee5b1fcfa4342e2fbc614d888283addbcbff9bd019923be5737442dad",
+              "sha256": "10868c7ee5b1fcfa4342e2fbc614d888283addbcbff9bd019923be5737442dad",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "workspace_result": {
+              "bytes": 473,
+              "kind": "result",
+              "path": "artifacts/88/889bccefc45365a9c2c48b79e92a9aea43524e345e3ebff44b4d5592d8f8bf44",
+              "sha256": "889bccefc45365a9c2c48b79e92a9aea43524e345e3ebff44b4d5592d8f8bf44",
+              "source": "file observed after attempt; acceptance is governed by execution checks"
+            }
+          }
+        }
+      ],
+      "independent-upper": [
+        {
+          "execution_id": "ex_89b10172a163",
+          "quality": {
+            "feasible": true,
+            "gap": 0.0,
+            "objective": 92,
+            "problems": [],
+            "status": "optimal"
+          },
+          "method_actual": {
+            "name": "upper endpoint for maximization",
+            "steps": [
+              "Enumerate Y, take the upper X endpoint for maximization, and compare objectives. Disable on a nonmonotone objective."
+            ]
+          },
+          "task_check": {
+            "acceptance_rule": {
+              "checker": "task-check/1",
+              "fingerprint": "922baedd2ac534623912cc5a51d1ea5501189b12ffffdab43ea34eeba70acbbb",
+              "spec": {
+                "integer": {
+                  "variables": [
+                    "X",
+                    "Y"
+                  ]
+                },
+                "reference_objective": 90,
+                "reference_source": "bench_declared",
+                "reference_version": "independent integer optimum",
+                "semantic_probe": [
+                  {
+                    "max": 471,
+                    "min": 470,
+                    "path": "execution_features.solution_variables.X"
+                  }
+                ]
+              }
+            },
+            "action_id": "ac_cc935ba3682a",
+            "checked_at": 1794536266.5070765,
+            "checks": [
+              {
+                "abs_diff": 2.0,
+                "check": "reference_objective",
+                "observed": 92.0,
+                "ok": false,
+                "reference": 90.0,
+                "source": "framework",
+                "tolerance": 8.999999999999999e-05
+              }
+            ],
+            "conclusion": "the objective does not match the reference within 9e-05",
+            "diffs": [
+              {
+                "abs_diff": 2.0,
+                "basis": "reference_objective",
+                "expected": 90.0,
+                "observed": 92.0,
+                "reason": "the objective differs from the reference by 2, outside the tolerance 9e-05",
+                "tolerance": 8.999999999999999e-05
+              }
+            ],
+            "episode_id": "independent-upper",
+            "execution_id": "ex_89b10172a163",
+            "intent": null,
+            "reference_source": {
+              "declared": "bench_declared",
+              "independent": true,
+              "note": "the reference came from a source the caller declared (bench_declared); a pass still covers only the declared bases",
+              "source": "bench_declared",
+              "version": "independent integer optimum"
+            },
+            "scope": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "staged": false,
+            "state": "failed",
+            "task_id": "independent-upper"
+          },
+          "adoption": null,
+          "artifacts": {
+            "submitted_script": {
+              "bytes": 594,
+              "kind": "script",
+              "path": "artifacts/08/0887c342d8211a5f1648d81be7ef701456053185d812cb6d057f34a0091f7d4d",
+              "sha256": "0887c342d8211a5f1648d81be7ef701456053185d812cb6d057f34a0091f7d4d",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "workspace_result": {
+              "bytes": 354,
+              "kind": "result",
+              "path": "artifacts/94/94e0c8fad2944c459542d43ce9265ef7457558605869956950d031a3b98d285a",
+              "sha256": "94e0c8fad2944c459542d43ce9265ef7457558605869956950d031a3b98d285a",
+              "source": "file observed after attempt; acceptance is governed by execution checks"
+            }
+          }
+        }
+      ],
+      "new-boundary": [
+        {
+          "execution_id": "ex_68b40fc10ed1",
+          "quality": {
+            "feasible": true,
+            "gap": 0.0,
+            "objective": 0,
+            "problems": [],
+            "status": "optimal"
+          },
+          "method_actual": {
+            "name": "signed endpoint enumeration",
+            "steps": [
+              "Enumerate feasible Y, derive both X endpoints, choose the endpoint from the objective direction and coefficient sign, then compare the resulting objectives. If monotonicity fails, disable this reduction and enumerate the full feasible set."
+            ]
+          },
+          "task_check": {
+            "acceptance_rule": {
+              "checker": "task-check/1",
+              "fingerprint": "614d5331f69b77f3cf0ad292caa76568f9d843dbf8da77a1585655fac5ba0baa",
+              "spec": {
+                "integer": {
+                  "variables": [
+                    "X",
+                    "Y"
+                  ]
+                },
+                "reference_objective": 0,
+                "reference_source": "bench_declared",
+                "reference_version": "independent integer optimum",
+                "semantic_probe": [
+                  {
+                    "max": 12,
+                    "min": 0,
+                    "path": "execution_features.solution_variables.X"
+                  },
+                  {
+                    "equals": false,
+                    "path": "execution_features.solution_variables.reduction_used"
+                  }
+                ]
+              }
+            },
+            "action_id": "ac_5938c9baeb98",
+            "checked_at": 1794536266.406743,
+            "checks": [
+              {
+                "abs_diff": 0.0,
+                "check": "reference_objective",
+                "observed": 0.0,
+                "ok": true,
+                "reference": 0.0,
+                "source": "framework",
+                "tolerance": 1e-06
+              },
+              {
+                "check": "integer_domains",
+                "n_non_integer": 0,
+                "n_variables": 2,
+                "ok": true,
+                "ran": true,
+                "scope": "the declared variables",
+                "source": "framework",
+                "tolerance": 1e-06
+              },
+              {
+                "check": "semantic_probe",
+                "found": true,
+                "max": 12,
+                "min": 0,
+                "mode": "range",
+                "observed": 3,
+                "ok": true,
+                "path": "execution_features.solution_variables.X",
+                "source": "framework"
+              },
+              {
+                "check": "semantic_probe",
+                "expected": false,
+                "found": true,
+                "mode": "equals",
+                "observed": false,
+                "ok": true,
+                "path": "execution_features.solution_variables.reduction_used",
+                "source": "framework"
+              }
+            ],
+            "conclusion": "every declared check passed on the recorded values. This covers the declared bases only: it is not a proof that the model represents the task, and the unchecked items above are still unknown",
+            "diffs": [],
+            "episode_id": "new-boundary",
+            "execution_id": "ex_68b40fc10ed1",
+            "intent": null,
+            "reference_source": {
+              "declared": "bench_declared",
+              "independent": true,
+              "note": "the reference came from a source the caller declared (bench_declared); a pass still covers only the declared bases",
+              "source": "bench_declared",
+              "version": "independent integer optimum"
+            },
+            "rule_assessments": [
+              {
+                "applicability": "not_applicable",
+                "assessment": "Endpoint choice follows coefficient/direction; nonmonotone case disables reduction. Check covers the stated integer optimum and both constraints.",
+                "effect_coverage": "complete",
+                "entry_id": "1",
+                "evidence_refs": [
+                  "artifacts.submitted_script",
+                  "artifacts.workspace_result"
+                ],
+                "failure_source": null,
+                "method_fidelity": "faithful",
+                "response": "disable",
+                "source": "fixture auditor inspected captured script and variables against rule premises",
+                "version": 2
+              }
+            ],
+            "scope": {
+              "basis": [
+                "reference_objective",
+                "integer",
+                "semantic_probe"
+              ],
+              "unchecked": [
+                "whether the MODEL represents the task (a correct answer to a wrong model is still wrong)",
+                "constraint satisfaction not declared as a probe or a recomputation"
+              ]
+            },
+            "staged": false,
+            "state": "passed",
+            "task_id": "new-boundary"
+          },
+          "adoption": {
+            "basis": "declared_frozen",
+            "entry_ids": [
+              "1"
+            ],
+            "known_entry_ids": [
+              "1"
+            ],
+            "rule_versions": {
+              "1": 2
+            },
+            "state": "declared",
+            "unknown_entry_ids": [],
+            "versions": {
+              "1": "knowledge:01dd745d25b9b722ef2a679cd93daf62b85dc61bc666d442c57b34de4a8b017f"
+            }
+          },
+          "artifacts": {
+            "submitted_script": {
+              "bytes": 697,
+              "kind": "script",
+              "path": "artifacts/19/19ce381c7c5c422f4a71a46c293f926934b25aff4a498ba0efdaf6a20277cfa3",
+              "sha256": "19ce381c7c5c422f4a71a46c293f926934b25aff4a498ba0efdaf6a20277cfa3",
+              "source": "framework-submitted script before attempt; execution status is separate"
+            },
+            "workspace_result": {
+              "bytes": 468,
+              "kind": "result",
+              "path": "artifacts/5b/5b9de0979676eb083dac9ed63a5696c5f0a8e9d7b944d3111b1df10a71944906",
+              "sha256": "5b9de0979676eb083dac9ed63a5696c5f0a8e9d7b944d3111b1df10a71944906",
+              "source": "file observed after attempt; acceptance is governed by execution checks"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "actual_provider_request_fragment": {
+    "source": "actual H+ training branch covered-min request, recovered from its saved input_ref",
+    "prediction_id": "sp_ffaabaf30a1b",
+    "recorded_request_digest": "a971bbe2ca0a2f81dd902dad2803f128766e28d4d67a3e3357c830c03e89b645",
+    "hplus_convention": {
+      "version": "wm-hplus-binary/1",
+      "field": "capability_gain.decision",
+      "values": [
+        0,
+        1
+      ],
+      "missing_or_invalid_schedule": 0,
+      "role": "frozen induction switch; never part of solving utility"
+    },
+    "candidate": {
+      "action_type": "execute_strategy",
+      "strategy_id": "endpoint",
+      "solver": "python",
+      "method": {
+        "name": "integer interval enumeration",
+        "steps": [
+          "Enumerate Y, derive both X endpoints, choose from coefficient sign and objective direction, and compare objectives. For a nonmonotone objective disable the reduction and enumerate the full feasible set."
+        ]
+      },
+      "config": {},
+      "preconditions": [],
+      "expected_scope": [],
+      "stop_conditions": [],
+      "task_id": "covered-min",
+      "episode_id": "covered-min",
+      "scope": "attempt",
+      "scope_basis": "default",
+      "window_id": null
+    },
+    "prediction_context": {
+      "context_id": "ctx_85ee70d577d2",
+      "created_at": 1794536262.5612397,
+      "task_id": "covered-min",
+      "snapshot_id": "bs_89afb5e53a49",
+      "hplus_feedback": {
+        "as_of": 1794536262.5557194,
+        "feedback_version": "wm-hplus-binary/1",
+        "n_applicable": 2,
+        "n_included": 2,
+        "settled_examples": [
+          {
+            "conclusion": "Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.",
+            "decision": 1,
+            "decision_status": "explicit",
+            "deviation_reason": null,
+            "facts": {
+              "execution_ids": [
+                "ex_5c801986d7c0",
+                "ex_b47eb5d1a9a0",
+                "ex_d39fe2d2a6cc"
+              ],
+              "source_fact_ref": "rule_fact:53479d2b3048d49bf04dde63079c639fce7d6697cd3a5e06f35695c1ed3e53d4",
+              "verification": [
+                {
+                  "condition": "Check endpoint direction and the independent integer optimum.",
+                  "condition_index": 0,
+                  "evidence_refs": [],
+                  "finding": null,
+                  "reason": "no sourced completion of the frozen verification",
+                  "source": null,
+                  "state": "unknown"
+                }
+              ]
+            },
+            "hypothesis": "This run may add a new signed-endpoint boundary.",
+            "hypothesis_outcome": "supported",
+            "label": 1,
+            "prediction_id": "sp_897e0d97f447",
+            "receipt_ref": "hplus_receipt:186649edfeac92c4b2528f33111216c977dd5adb3aa7009e2feea85525d1f9f6",
+            "rule_versions": [
+              {
+                "body_ref": "rule:cb301da4cdf19abd7b78aef0dce011f3b75869c2aceccc3f4fe62807bb97df0e",
+                "entry_id": "1",
+                "operation": "revise",
+                "substantive": true,
+                "version": 2
+              }
+            ],
+            "verification_state": "independently_validated_increment"
+          },
+          {
+            "conclusion": "This review adds no substantive rule; keep trial evidence and independent validation separate.",
+            "decision": 1,
+            "decision_status": "explicit",
+            "deviation_reason": null,
+            "facts": {
+              "execution_ids": [
+                "ex_5c801986d7c0",
+                "ex_d39fe2d2a6cc"
+              ],
+              "source_fact_ref": "rule_fact:2b8667c90ddc5dcd23a6e93e19c6a57756ca354121e86b47b589de885003b34f",
+              "verification": [
+                {
+                  "condition": "Check endpoint direction and the independent integer optimum.",
+                  "condition_index": 0,
+                  "evidence_refs": [],
+                  "finding": null,
+                  "reason": "no sourced completion of the frozen verification",
+                  "source": null,
+                  "state": "unknown"
+                }
+              ]
+            },
+            "hypothesis": "This run may add a new signed-endpoint boundary.",
+            "hypothesis_outcome": "refuted",
+            "label": 0,
+            "prediction_id": "sp_2433819d4de7",
+            "receipt_ref": "hplus_receipt:9997a97b2a9ccf7b22d3fdca198730848154aa3d2a9f86fb8f46504ed686084d",
+            "rule_versions": [],
+            "verification_state": "sourced_comparison_no_increment"
+          }
+        ],
+        "support": "recorded training receipts; labels require independent validation or sourced sufficient comparison"
+      }
+    }
+  },
+  "n_actual_fixture_provider_requests": 36,
+  "tests": {
+    "targeted": {
+      "count": 295,
+      "failures": 0,
+      "errors": 0,
+      "log": "/tmp/hplus-targeted-9.log"
+    },
+    "harness": {
+      "state": "passed",
+      "count": 1847,
+      "failures": 0,
+      "errors": 0,
+      "seconds": 169.396,
+      "log": "/tmp/hplus-full-2.log"
+    }
+  },
+  "checkout_audit": {
+    "local_git": "read-only placeholder; git status/rev-parse both returned not-a-git-repository",
+    "remote_main": "cdf29f6834806a7adb6c0a38513ba7ae472ee513",
+    "initial_tracked_files_verified": 182,
+    "initial_tracked_mismatch": [],
+    "preexisting_local_only_preserved": 12
+  },
+  "changed_files": [
+    "README.md",
+    "SKILL.md",
+    "references/commands.md",
+    "references/concepts.md",
+    "references/episode_closeout.md",
+    "references/hplus.md",
+    "references/induction.md",
+    "references/prediction_context.md",
+    "references/strategy_outcome.md",
+    "references/world_model_contract.md",
+    "src/or_harness/api.py",
+    "src/or_harness/cli.py",
+    "src/or_harness/experiments/hplus.py",
+    "src/or_harness/strategy/rule_versions.py",
+    "src/or_harness/world_model/contracts.py",
+    "src/or_harness/world_model/episode_closeout.py",
+    "src/or_harness/world_model/hplus.py",
+    "src/or_harness/world_model/induction_gate.py",
+    "src/or_harness/world_model/induction_material.py",
+    "src/or_harness/world_model/maintenance.py",
+    "src/or_harness/world_model/maintenance_decision.py",
+    "src/or_harness/world_model/strategy_prediction.py",
+    "src/or_harness/world_model/trace_archive.py",
+    "tests/harness/test_capability_evolution.py",
+    "tests/harness/test_capability_trace.py",
+    "tests/harness/test_hplus.py",
+    "tests/harness/test_hplus_binary.py",
+    "tests/harness/test_hplus_experiments.py",
+    "tests/harness/test_r14_induction.py",
+    "tests/harness/test_r17_hplus_followup.py",
+    "tests/harness/test_rule_versions.py",
+    "tests/harness/test_wm_calibration_loop.py",
+    "docs/validation/hplus_binary.md",
+    "docs/validation/hplus_binary.json"
+  ]
+}

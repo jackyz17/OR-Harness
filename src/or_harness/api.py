@@ -181,6 +181,13 @@ def _capability_gain_view(prediction: Any) -> Optional[Dict[str, Any]]:
     that it is a prediction, verified only later by the offline capability
     path.
     """
+    signal = (getattr(prediction.trace, 'model_info', {}) or {}).get('hplus')
+    if signal:
+        return {'kind':'frozen_induction_signal','decision':signal['decision'],
+                'decision_status':signal['decision_status'],
+                'explanation':signal.get('claim') or '; '.join(signal.get('basis') or []),
+                'verification_conditions':copy.deepcopy(signal.get('verification_conditions') or []),
+                'gaps':list(signal.get('gaps') or [])}
     gain = getattr(prediction, "capability_gain", None)
     if gain is None or not getattr(gain, "claimed", False):
         return None
@@ -228,7 +235,8 @@ class ORHarness:
                  planning: bool = True,
                  plan_mode: str = "advise",
                  prediction_mode: str = "h-x-b-value",
-                 execution_context: Optional[Dict[str, Any]] = None):
+                 execution_context: Optional[Dict[str, Any]] = None,
+                 induction_mode: Optional[str] = None):
         # The outer runner knows its own execution model and current phase
         # before its first action. Never substitute the predicting model or
         # another episode's last host. Freeze this declaration in snapshots.
@@ -243,6 +251,11 @@ class ORHarness:
         self.execution_context = normalize_execution_context(execution_context)
         self.home = resolve_home(home)
         self.store = Store(self.home)
+        import os
+        induction_mode = induction_mode or os.environ.get("OR_INDUCTION_MODE")
+        if induction_mode is not None:
+            from or_harness.world_model.hplus import configure
+            configure(self, induction_mode)
         # The utility weights belong to the WORLD MODEL's consequence
         # comparison (planner.evaluate_path), NOT to recall: recall only
         # discovers material. They are kept on the harness so the planner
@@ -1020,7 +1033,7 @@ class ORHarness:
             from or_harness.world_model.maintenance_decision import (
                 hplus_feedback_for_context,
             )
-            hplus_feedback = hplus_feedback_for_context(self)
+            hplus_feedback = hplus_feedback_for_context(self, task=task)
         retrieval_view = build_retrieval_view(
             recall_result, task_digest=task_text_digest(task),
             top_k=max(1, vector_top_k or top),
@@ -1806,7 +1819,18 @@ class ORHarness:
         if 'rule_validation' not in result:
             from or_harness.strategy.rule_versions import settle_episode_uses
             result['rule_validation'] = settle_episode_uses(self,task_id,episode_id)
-        result["induction_gate"] = record_decision(self, task_id, episode_id, induction_decision)
+        from or_harness.world_model.hplus import schedule_episode, formal
+        if 'induction_schedule' not in result:
+            result['induction_schedule'] = schedule_episode(self,task_id,episode_id)
+        if formal(self):
+            pending = result['induction_schedule']['pending_ids']
+            result['induction_gate'] = {'state':'allow' if pending else 'skip',
+                'source':'frozen_hplus','pending_ids':pending,
+                'reason':'settle positive executed jobs' if pending else 'no positive executed job remains'}
+            if induction_decision is not None:
+                result['induction_gate']['ignored_closeout_judgement'] = induction_decision
+        else:
+            result["induction_gate"] = record_decision(self, task_id, episode_id, induction_decision)
 
         from or_harness.world_model.conditions import release_context
         for row in self.store.conn.execute(
@@ -2866,6 +2890,22 @@ class ORHarness:
                     "and the operation is refused rather than reinterpreted")
         else:
             entry_id = None
+        binary_job=None
+        from or_harness.world_model.hplus import formal, require_job, jobs
+        if formal(self) and operation_type in ('induce','revise'):
+            declared=self._declared_operation_relations(prediction)
+            config=prediction.candidate_operation.config or {}
+            induction_id=config.get('induction_id')
+            if induction_id is None:
+                cited={str(e if isinstance(e,str) else e.get('execution_id'))
+                       for r in declared or [] for e in r.get('evidence') or []}
+                matching=[j for j in jobs(self) if j['state']=='pending' and j['selected'] and cited & set(j['execution_ids'])]
+                if len(matching)!=1:
+                    raise ValueError('H+ building requires its positive executed induction job before accepting a write')
+                induction_id=matching[0]['induction_id']
+            binary_job=require_job(self,induction_id)
+            if not binary_job.get('material_ref'):
+                raise ValueError('read induction-material for the authorized H+ job before accepting its write')
         adoption = self.actions.report_action(
             "induce", MAINTENANCE_TASK_ID,
             f"maint_capability_{int(time.time())}",
@@ -2912,7 +2952,8 @@ class ORHarness:
                         "technique. Refine the candidate and re-predict.")
                 result = self.induce(relations=declared, verify=verify,
                                      notes=notes, force=force,
-                                     strategy_id=strategy_id)
+                                     strategy_id=strategy_id,
+                                     induction_id=binary_job['induction_id'] if binary_job else None)
         except Exception:
             self.actions.end_action(
                 adoption.action_id, status="failed",
@@ -3093,13 +3134,17 @@ class ORHarness:
         if source == "online_trace":
             # An ONLINE gain claim: the real action it was bound to IS the
             # operation the fact is about, so the trace supplies it.
-            from or_harness.world_model.trace_archive import (
-                get_capability_trace,
-            )
-            trace = get_capability_trace(self, prediction_id)
-            adoption_action_id = (adoption_action_id
-                                  or (trace.bound_action_id
-                                      if trace is not None else None))
+            from or_harness.world_model.trace_archive import operation_action_for
+            operation = operation_action_for(self,prediction_id)
+            adoption_action_id = adoption_action_id or (operation.action_id if operation else None)
+            if adoption_action_id:
+                actual = self.actions.get(adoption_action_id)
+                if actual is None or actual.action_type != 'induce':
+                    raise ValueError('online H+ maintenance binding requires a real induction action, not a solve')
+                from or_harness.world_model.trace_archive import get_capability_trace
+                online=get_capability_trace(self,prediction_id)
+                if online.hplus and (operation is None or operation.action_id!=actual.action_id):
+                    raise ValueError('binary H+ binding must name its authorized completed induction job')
         binding = bind_maintenance_fact(
             self, prediction_id, prediction=prediction,
             adoption_action_id=adoption_action_id)
@@ -4767,6 +4812,7 @@ class ORHarness:
         }
         if prediction_id is not None:
             outcome["prediction_id"] = str(prediction_id)
+            outcome['hplus'] = _capability_gain_view(self.strategy_predictions.get(prediction_id))
         if rejected:
             outcome["rejected"] = True
             if deviation_note:
@@ -4841,6 +4887,7 @@ class ORHarness:
                 "selected": outcome.get("selected"),
                 "rejected": bool(outcome.get("rejected")),
                 "deviation": outcome.get("deviation"),
+                'hplus':outcome.get('hplus'),
                 "post_snapshot_id": post.snapshot_id}
 
     def plan_decision(self, decision_action_id: str) -> Optional[Dict[str, Any]]:
@@ -4882,7 +4929,8 @@ class ORHarness:
                            limit: Optional[int] = None,
                            cursor: Optional[str] = None,
                            related_top_k: int = 5,
-                           view: str = "compact", purpose: str = "modelling"
+                           view: str = "compact", purpose: str = "modelling",
+                           induction_id: Optional[str] = None
                            ) -> Dict[str, Any]:
         """Organize a BATCH of completed tasks as induction material.
 
@@ -4913,7 +4961,46 @@ class ORHarness:
                                         task_id=task_id, limit=limit,
                                         cursor=cursor,
                                         related_top_k=related_top_k,
-                                        view=view, purpose=purpose)
+                                        view=view, purpose=purpose, induction_id=induction_id)
+
+    def induction_status(self, *, task_id=None, episode_id=None):
+        from or_harness.world_model.hplus import jobs, schedule_view, receipt_observation
+        items=jobs(self, task_id=task_id, episode_id=episode_id)
+        predictions=self.strategy_predictions.query(task_id=task_id,episode_id=episode_id)
+        signals=[p.trace.model_info.get('hplus') for p in predictions]
+        unobserved=[p.prediction_id for p in predictions if p.trace.model_info.get('hplus') and
+                    not any(j['prediction_id']==p.prediction_id for j in items)]
+        result=schedule_view(items,unobserved)
+        result['signal_counts']={'explicit_1':sum(s is not None and s['decision_status']=='explicit' and s['decision']==1 for s in signals),
+            'explicit_0':sum(s is not None and s['decision_status']=='explicit' and s['decision']==0 for s in signals),
+            'missing':sum(s is not None and s['decision_status']=='missing' for s in signals),
+            'invalid':sum(s is not None and s['decision_status']=='invalid' for s in signals),
+            'legacy':sum(s is None for s in signals)}
+        observations=[receipt_observation(self,j) for j in items]
+        result['observation_counts']={'bound_attempts':len(items),
+            'positive':sum(o['label']==1 for o in observations),'negative':sum(o['label']==0 for o in observations),
+            'unknown':sum(o['label'] is None for o in observations)}
+        return result
+
+    def process_induction_jobs(self, reviewer, *, task_id=None, episode_id=None):
+        """Outer runner callback: one material and one submission per pending job.
+
+        Reviewer receives (material, frozen job) and returns induce keyword
+        arguments. A crash leaves the same durable job available for retry.
+        """
+        from or_harness.world_model.hplus import jobs
+        results = []
+        for job in jobs(self, task_id=task_id, episode_id=episode_id):
+            if job['state']=='completed' and job.get('receipt_ref'):
+                self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
+            if job['state'] != 'pending':
+                continue
+            material = self.induction_material(induction_id=job['induction_id'])
+            submission = reviewer(copy.deepcopy(material), copy.deepcopy(job))
+            if not isinstance(submission, dict):
+                raise ValueError('reviewer must return a short submission or an empty review')
+            results.append(self.induce(induction_id=job['induction_id'], **submission))
+        return {'results': results, **self.induction_status(task_id=task_id, episode_id=episode_id)}
 
     # -- world-model M3: bounded planning ------------------------------------
     def profile(self, task: Dict[str, Any],
@@ -5818,6 +5905,9 @@ class ORHarness:
             exec_params["prediction_bound_at"] = time.time()
             forecast = self.strategy_predictions.get(prediction_id)
             exec_params["prediction_context_id"] = forecast.trace.model_info.get("prediction_context_id")
+            if forecast.trace.model_info.get('hplus'):
+                exec_params['hplus_verification']={'prediction_id':prediction_id,
+                    'conditions':copy.deepcopy(forecast.trace.model_info['hplus'].get('verification_conditions') or [])}
         declared_memory = None
         reuse_versions = {}
         if adapted_from:
@@ -6025,6 +6115,8 @@ class ORHarness:
         record.execution_features["preconditions_id"] = pre.snapshot_id
         if prediction_id:
             record.execution_features["prediction_id"] = prediction_id
+            if exec_params.get('hplus_verification'):
+                record.execution_features['hplus_verification_plan']=copy.deepcopy(exec_params['hplus_verification'])
         # Safety net: stage every execution — successes AND failures — so a
         # failed attempt is never silently lost when the harness immediately
         # retries. Staging is not recording; recording stays the harness's
@@ -6551,7 +6643,61 @@ class ORHarness:
                          "shape": "staged_attempt_annotated"})
         return attempted_execution_id
 
-    def induce(self, *, dry_run: bool = False, force: bool = False,
+    def induce(self, *, induction_id=None, review=None, **kwargs):
+        """Authorize and settle binary H+ work around the existing writer."""
+        from or_harness.world_model.hplus import (
+            require_job, reserve_action, complete, get_job, get_value,
+        )
+        material_ids = {r.get('material_id') for r in kwargs.get('relations') or [] if r.get('material_id')}
+        if len(material_ids) > 1:
+            raise ValueError('one induction submission must use one material session')
+        material_id = next(iter(material_ids), None)
+        if induction_id is None and material_id is None and kwargs.get('relations'):
+            from or_harness.world_model.hplus import formal, jobs
+            if formal(self):
+                evidence={str(e if isinstance(e,str) else e.get('execution_id'))
+                          for relation in kwargs['relations'] for e in relation.get('evidence') or []}
+                matching=[j for j in jobs(self) if j['state']=='pending' and j['selected'] and evidence & set(j['execution_ids'])]
+                if len(matching)!=1:
+                    raise ValueError('submission evidence does not identify one positive triggering job; pass its induction-id and material-id')
+                induction_id=matching[0]['induction_id']
+        job = require_job(self, induction_id, material_id=material_id, allow_completed=True)
+        if job is None:
+            return self._induce_impl(**kwargs)
+        if job['state'] == 'completed':
+            from or_harness.world_model.conditions import digest
+            if job.get('submission_digest') != digest({'arguments':kwargs,'review':review}):
+                raise ValueError('completed induction job cannot be reused for a different submission')
+            result = copy.deepcopy(get_value(self.store, job['result_ref']))
+            result['already_completed'] = True
+            self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
+            return result
+        if kwargs.get('dry_run'):
+            self._active_induction_job=job
+            try:
+                return self._induce_impl(**kwargs)
+            finally:
+                self._active_induction_job=None
+        if not kwargs.get('relations') and not (review or kwargs.get('notes')):
+            raise ValueError('empty review requires a reason or structured review receipt')
+        if not job.get('material_ref'):
+            raise ValueError('read induction-material for this job before submitting its review')
+        reserve_action(self, job)
+        self._active_induction_job = job
+        try:
+            with self.store.transaction():
+                result = self._induce_impl(**kwargs)
+                if kwargs.get('relations') and not result.get('saved'):
+                    raise ValueError('induction submission refused; job stays pending: '+str(result.get('relations')))
+                from or_harness.world_model.conditions import digest
+                job['submission_digest'] = digest({'arguments':kwargs,'review':review})
+                complete(self, job, result, review)
+            self.bind_capability_maintenance(job['prediction_id'], adoption_action_id=job['action_id'])
+            return result
+        finally:
+            self._active_induction_job = None
+
+    def _induce_impl(self, *, dry_run: bool = False, force: bool = False,
                notes: Optional[List[str]] = None,
                verify: Optional[Dict[str, Any]] = None,
                strategy_id: Optional[str] = None,
@@ -6788,6 +6934,10 @@ class ORHarness:
                              all_: bool = False) -> Dict[str, Any]:
         """Begin the maintenance-scope induce action with a real PRE        snapshot: the knowledge state (entries + verification layers) as it
         stood BEFORE induction."""
+        job = getattr(self, '_active_induction_job', None)
+        if job and job.get('action_id'):
+            return {'action_id':job['action_id'], 'episode_id':job['maintenance_episode_id'],
+                    'knowledge_before':copy.deepcopy(job['knowledge_before'])}
         episode_id = f"maint_{int(time.time())}"
         from or_harness.strategy.rule_versions import maintenance_references
         knowledge_before = {
@@ -6942,6 +7092,11 @@ class ORHarness:
         }
         if extra_outcome:
             outcome.update(extra_outcome)
+        job = getattr(self, '_active_induction_job', None)
+        if job:
+            outcome['induction_id'] = job['induction_id']
+            outcome['capability_prediction_id'] = job['prediction_id']
+            outcome['execution_ids'] = sorted(set(outcome['execution_ids']) | set(job['execution_ids']))
         # Induction cost is UNKNOWN unless the harness amends it explicitly
         # (amend_action_cost) — never fabricated for report completeness.
         self.actions.end_action(
@@ -7920,6 +8075,11 @@ class ORHarness:
             if not isinstance(assessments, list) or not all(isinstance(x, dict) for x in assessments):
                 raise ValueError("rule_assessments must be a list of sourced assessments")
             report["rule_assessments"] = copy.deepcopy(assessments)
+        if (check or {}).get('hplus_verification') is not None:
+            evidence = check['hplus_verification']
+            if not isinstance(evidence,list) or not all(isinstance(e,dict) for e in evidence):
+                raise ValueError('hplus_verification must be a list of sourced verification records')
+            report['hplus_verification'] = copy.deepcopy(evidence)
         # Optional sourced method/acceptance assessment stays on the existing
         # check record. It never changes the checker's pass/fail verdict.
         # Merely matching method prose is not evidence of faithful execution.

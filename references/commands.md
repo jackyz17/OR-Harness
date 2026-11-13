@@ -1,3 +1,5 @@
+New `--induction-mode hplus` (or `OR_INDUCTION_MODE`) fixes a memory home's binary building mode; new ordinary prediction homes enable it automatically. Explicit NoH+ and random controls use separate homes, and frozen testing refuses new induction. The outer agent drains close-out's required jobs; a task close alone is not building completion. See [hplus.md](hplus.md).
+
 # Command reference
 
 For a cold first proposal, the normal runner can pass known execution conditions before any action is recorded:
@@ -45,7 +47,7 @@ Avoid duplicate work:
 | Optional input/baseline | `context`, `predict-cost`, `snapshot`, `budget` | Context/snapshot persist; budget declaration writes; cost baseline reads |
 | Offline knowledge | `induction-material`, `induce`, `retire` | Material reads; induction/retirement change knowledge |
 | Optional maintenance forecasts | `predict-capability`, `compare-capability`, `accept-capability`, `reject-capability` | Forecast, compare, decide |
-| H+ follow-up (delayed supervision) | `bind-capability`, `evaluate-capability` | **stage-1 `bind-capability` runs right after close-out** to bind the FACT; **stage-2 `evaluate-capability` runs later** against qualified task-episodes to judge the EFFECT. Not optional when a claim exists |
+| H+ building handoff | `induction-status`, `induction-material`, `induce` | Consume every frozen positive job after task close-out; its real induction receipt binds automatically. Legacy `evaluate-capability` remains a separate later-performance check |
 | Inspect and diagnose | `doctor`, `contract`, `inspect`, `calibration` | Read/build views; `calibration --rebuild` writes |
 | Repair/report | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` | Writes links, costs, actions, or correction history |
 | Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window` | Explicit maintenance; `--dry-run` writes nothing |
@@ -401,7 +403,7 @@ For new G, the optional `g_attribution` object belongs inside the existing `--ch
 
 **Late corrections:** Stored evaluations retain what was known at close-out. Live re-derivation updates later calibration use, reported in `validity_corrections[]`; within-window corrections republish calibration (`calibration_republished`). A late failed check changes task-check/completion facts while retaining measured solver quality/cost; withdrawn checks restore the ungated state; excluded executions remove their sample. Corrections are scoped to the executions actually compared, not sibling evaluations.
 
-Optional `--induction-decision allow|skip|pending --induction-reason "..."` records the close-out judgement before later material assembly. Python accepts `induction_decision`; an existing `finish_task` outcome can carry it with source/reference. Pre-solve capability_gain remains an estimate.
+Close-out reads the pre-execution binary `capability_gain.decision` and returns durable `induction_schedule.pending_ids` / `next_actions`. The outer building agent must settle all positive jobs. Failed executions and missing learning checks still trigger 1. `--induction-decision allow|skip|pending` is historical compatibility and cannot override a new switch.
 
 **Recover / next:** Running actions produce a pending refusal; finish them honestly, including confirmed host stops, and close again. Read check coverage, then undertake offline induction when there is something worth examining. See [episode_closeout.md](episode_closeout.md).
 
@@ -413,17 +415,17 @@ Optional `--induction-decision allow|skip|pending --induction-reason "..."` reco
 
 ## 8. Offline knowledge and capability feedback
 
-### `orx induction-material [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K] [--purpose modelling|implementation] [--view compact|detail]`
+### `orx induction-material [--induction-id J] [--strategy S] [--task T] [--limit N] [--cursor C] [--related-top-k K] [--purpose modelling|implementation] [--view compact|detail]`
 
-**Purpose / effects:** After execute/check/record/close, consume the actual close-out H+ start judgement before retrieval. `skip`/`pending` return a brief reason with `material_assembled:false`. Unconnected H+ uses `source=explicit_induction_transition`; no formula or threshold is inferred. One existing index lookup supplies cross-source mechanism candidates and changed-premise neighbors.
+**Purpose / effects:** After execute/check/record/close, authorize the positive executed job identified by `--induction-id J` (from close-out pending IDs), before retrieval. H+=0/missing/invalid cannot authorize material. One existing index lookup supplies cross-source mechanism candidates and changed-premise neighbors. Repeated reads reuse the job's frozen material session. Pure old/manual libraries retain their historical transition; new prediction homes use binary H+ automatically.
 
 **Read:** The default `induction-material/2` pack contains small execution comparisons, actual/planned methods and sources, source-problem identities, checks/failures, measured resources/masks/scope, and short old rules/state. `modelling` prioritizes constraint relationships across base problems; `implementation` emphasizes implementation/repair contrasts. Similarity/family is discovery. Same-base retries/seeds/branches are controls; unknown lineage stays explicit.
 
 **Budget / detail:** The entire default compact JSON, including history, knowledge, H+, diagnostics and CLI envelope, is bounded at 32000 characters (`OR_HARNESS_INDUCTION_MATERIAL_CHARS`). `budget.chars_used` counts the actual serialization. Values are complete or replaced by detail references; method prefixes are never evidence. Use `budget.next_cursor` for more. All displayed cases are derivation material. `--view detail` is an expanded legacy diagnostic; inspect by ID for targeted full evidence.
 
-### `orx induce [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
+### `orx induce [--induction-id J] [--review JSON_OR_FILE] [--strategy S] [--relation JSON] [--dry-run] [--force] [--note TEXT] [--verify JSON] [--attribute-effect JSON]`
 
-**Purpose / effects:** Submit an agent-written when/do/expect rule plus real evidence IDs. The framework assigns identity, resolves scope/evidence, freezes versions, appends checks/events and synchronizes affected documents. It does not infer a technique from means. Normal interaction is one material read and one submission.
+**Purpose / effects:** Complete the same positive job with an agent-written when/do/expect rule plus real evidence IDs, or an empty review receipt. Both material and writing enforce job authorization. H+=0 cannot authorize a write. A new/substantive rule still needs independent validation; completion is not publication. The framework assigns identity, resolves scope/evidence, freezes versions, appends checks/events and synchronizes affected documents. It does not infer a technique from means. Normal interaction is one material read and one submission.
 
 ```bash
 orx induce --relation '{"when":"For fixed Y, feasible integer X is an interval and the objective is monotone.","do":"Enumerate Y, derive both X endpoints and select using coefficient sign and objective direction. Disable reduction when monotonicity fails.","expect":"Preserve the original optimum and constraints.","evidence":["ex_REAL"]}'
@@ -437,6 +439,10 @@ orx induce --relation '{"entry_id":"3","operation":"add_evidence","evidence":["e
 **Compatibility:** Historical claim/evidence/check input remains accepted. Embedded assertions and `--verify` remain audit records (`--verify` wins a reported conflict); their `verified`/`fact_checked`/`insufficient_evidence`/`refuted` states do not replace transfer checks. True unversioned old rows retain their original historical semantics; new writes use v2 candidate publication.
 
 **Effect / recovery:** `--attribute-effect` appends a separate use-effect judgement and freezes the adopted version when known. It cannot bypass v2 publication; `lifecycle_action` remains legacy management only. An empty `induce --note "..."` creates no rule. Read `changed`/`idempotent`, `version`, `publication.checks`, `validation`, actual `execution_ids`, `knowledge_delta` and `index_sync`. `--dry-run` writes nothing; `--force` only lifts the cold-archive veto. Deferred indexing preserves saved facts; retrying an affected write/close retries only pending affected IDs, and `rebuild-index` remains explicit repair. `--task` belongs to material, not induce.
+
+### `orx induction-status [--task T] [--episode E]`
+
+Read/recover required jobs, immutable receipt references, separate explicit-0/missing/invalid/legacy counts and known/unknown learning observations. `completed:true` means there are no pending required reviews; it does not assert that all hypotheses or rules were verified. The building runner consumes each `pending_id` with the SAME material/submission ID. See [hplus.md](hplus.md) for CLI/API callbacks, empty reviews and separate H+/NoH+/equal-budget random frozen-library experiments.
 
 ### `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
 
@@ -466,9 +472,9 @@ orx induce --relation '{"entry_id":"3","operation":"add_evidence","evidence":["e
 
 **Purpose / effects:** Bind a real maintenance fact when the operation ran outside `accept-capability`. Captures actual operation/end time, created/revised/retired entries, admission verdict, cost, and scope agreement. Idempotent; no model call. It cannot set `effect_verified`.
 
-**When (stage-1):** triggered **right after close-out**, called explicitly (NOT inside `close-episode`). Bind only the candidate that actually executed; an unexecuted claim stays `pending` and is not bound.
+**When (stage-1):** after the REAL induction completes. New binary jobs bind automatically; explicit binding is a recovery path. An executed solve alone is not an induction fact; unexecuted claims stay pending.
 
-**Online H+:** `--prediction sp_...` binds the real attempt from its original gain trace (`prediction_source:"online_trace"`); no separate capability prediction is required. Stored maintenance forecasts report source `stored`. Evaluate later useful performance, not merely entry creation.
+**Online H+:** `--prediction sp_...` binds the REAL induction action from its original frozen gain trace and completed job (`prediction_source:"online_trace"`); no separate capability prediction is required. Stored maintenance forecasts report source `stored`. Evaluate later useful performance, not merely entry creation.
 
 ### `orx evaluate-capability --prediction ID [--tasks ID,...] [--paired JSON] [--allow-descriptive]`
 

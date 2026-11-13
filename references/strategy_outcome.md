@@ -73,16 +73,34 @@ The response must use the required convention. A different metric/unit/scope or 
 | cost c | `ExpectedCost` / `CostVector` | the five resource dimensions; the measured mask marks PREDICTED dimensions (a prediction, not a measurement); an omitted dimension is unknown, never zero |
 | risk R | `RiskStatement` / `RiskEvent` | only `implementation_failure.probability` is scored: one attempt's technical failure probability under the actual execution agent, solver interface and running conditions; other events remain diagnostics |
 | uncertainty | `UncertaintyStatement` | execution randomness vs knowledge gap; a model self-report is recorded as `model_self_report` with the numbers in its notes, explicitly UNCALIBRATED — never relabeled as measured |
-| capability gain H+ | `CapabilityGain` | the candidate's POTENTIAL gain, predicted in the SAME call. Explanatory only: it is never the utility, never a 0-1 composite, and never written into the capability evidence. Every candidate's block MUST state an explicit `assessment` — `expected` (carry a `claim`/`expected_changes`), `none` (no new gain expected) or `insufficient_basis` (cannot judge); an absent block is recorded as UNSTATED, never as "no gain". Each `expected_change` names its own metric/unit/direction; `evidence_required` and `verification_conditions` say what would confirm it; `degradation_risk` and `uncertainty` say what could go wrong |
+| capability gain H+ | `CapabilityGain` | `capability_gain.decision` is the JSON number 0 or 1, the frozen induction switch (`wm-hplus-binary/1`). With 1, provide one learning hypothesis in `claim` and one concrete `verification_conditions` check; with 0, one reason in `basis`. Reuse `applies_to`, per-metric `expected_changes` and evidence fields. Missing/illegal values schedule 0 with separate diagnostics; valid 1 still requires review if explanatory detail is missing. Legacy `assessment` retains its old meaning and does not supply the new switch. H+ never enters strategy utility |
 | trace | `PredictionTrace` | context/candidate/task/episode binding, protocol and prompt version, evidence refs, unsupported fields, call cost, error reasons |
 
-**H+ is a prediction about what a candidate might TEACH, and the model MUST state a stance.** It rides the same wm-so/1 answer as G/c/L, so no extra model round is spent per candidate. It is deliberately NOT the utility: the planner's score is benefit/cost/risk only, and a large gain does not change the ranking. It is surfaced read-only next to each candidate in `plan-next`'s `result.candidates[].capability_gain` with an explicit note. A gain is realized only when the OFFLINE capability path (`evaluate-capability`) observes it on a later task — the online block carries no `effect_verified` state at all, and predicting a gain writes nothing into the harness capability evidence. A missing H+ never invalidates the benefit/cost/risk of the same prediction; a MALFORMED block (including an illegal `assessment`) is dropped with its reason and likewise leaves the forecast intact.
+**H+ decides induction investment.** The model sees the candidate, related executions,
+current rule short views and applicable settled feedback in this SAME call.
+It asks what reusable increment/boundary the current library lacks, which fact
+this execution can check, and which later step would change. A known method's
+structural adaptation or verifiable failure boundary can justify 1; already
+covered, duplicate or insufficiently grounded work gets 0 with a reason.
+G/C/R comparison is unchanged.
 
-**The stance is explicit, observable and never defaulted.** `assessment` is one of exactly three values — `expected`, `none`, `insufficient_basis` — and the prompt requires it for EVERY candidate. "No gain" and "cannot judge" are legitimate answers; staying silent is not. A block with no `assessment` (an old payload) reads as UNASSESSED, never as "no gain". `inspect --bank capability` counts each stance (`n_expected` / `n_none` / `n_insufficient_basis` / `n_unassessed` in `online_gains`), so a model that never states one is immediately visible instead of silently reading as "no gain everywhere".
+The framework freezes the authoritative switch in `trace.model_info.hplus`,
+with the original prediction and input references. Model-supplied verification
+flags cannot establish a fact. On selection, the solving agent receives the
+check. `close-episode` creates a unique durable job for each bound executed 1;
+material and writes require that job. A failure or missing check cannot
+retrospectively cancel it. A short submission or an empty review receipt
+completes the job, linking the actual induction action and exact rule versions.
+Solving alone is never a maintenance binding. See [hplus.md](hplus.md).
 
-**Following an online gain up needs no second prediction.** A stated or claimed H+ is archived as a TRACE — including an explicit `assessment="none"`, because "no gain expected" is a real, falsifiable stance that must not vanish like a silent null — and the same offline stage-1/-2 API that judges an `hp_` prediction accepts the `sp_` id: `bind-capability --prediction sp_x` binds the real attempt the claim was made for, and `evaluate-capability --prediction sp_x` reports the effect verdict against later tasks. `inspect --bank capability` reports the online gains beside the offline predictions, so a claim is visible instead of counting as 0. The trace keeps the ORIGINAL claim (task, changes, conditions, stance) frozen — the framework never re-predicts after seeing the result — and an unexecuted or unlearned gain stays `pending`, never verified. When a block is absent the framework records `unsupported_fields.capability_gain = "not predicted by the model"` (the model did not state the stance the contract requires), so a `null` is never a silent omission.
-
-**The follow-up state reaches LATER predictions.** The compact H+ follow-up state is frozen into the next prediction context as `hplus_feedback` (sent as `hplus_feedback`), so a model can see how its own past H+ stances turned out. Four states are kept apart — `pending` (archived, not yet bound to a real execution: NOT a failure, NOT an improvement), `bound`, an effect state, and `effect_verified` (the only state that confirms a claim). The block is explanatory only and does NOT change whether H+ participates in online ordering (it does not); an empty block is reported as ABSENCE, not as "every claim was `none`". See [`prediction_context.md`](prediction_context.md) §6d.
+`hplus_feedback` contains a few relevant pre-decision settled training receipts.
+Independent validation of a substantive increment confirms a positive; a
+sourced sufficient no-increment comparison confirms a negative; unavailable,
+unexecuted or unvalidated evidence remains unknown. Hypothesis truth and rule
+increment are separate. Legacy stance/effect records remain readable under
+their original protocol, without mapping `expected` to 1 or silence to an
+explicit 0. The legacy performance-effect evaluator remains distinct from
+these knowledge-increment labels.
 
 **Honest failure states** — each distinguishable, each persisted with whatever usage the call consumed:
 

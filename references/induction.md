@@ -5,33 +5,44 @@ agent identifies a mechanism and its necessary premises; the framework
 budgets material, resolves evidence, freezes versions and records checks.
 Execution evidence and reusable rule bodies remain separate.
 
-## Close before taking material
+## Close and consume the frozen H+
 
-Execute, check, record every attempt, and close the episode first. Existing
-rule-use results are registered even when new induction will be skipped.
-The close-out interface accepts an actual judgement:
+The SAME `predict-strategy` call fixes `capability_gain.decision` to 0 or 1.
+A bound, actually executed 1 MUST be reviewed once after task close-out,
+even after failure, insufficient checking or a disproved hypothesis. A 0
+skips induction; omitted/illegal signals schedule 0 with separate diagnostics.
+Historical three-state/missing predictions retain their original meanings.
+G/C/R strategy scoring is unchanged.
 
 ```bash
-orx close-episode --task T --episode E --terminal completed \
-  --induction-decision allow --induction-reason "a reusable reduction needs checking"
-# Other decisions: skip, pending. Inspect the saved induction_gate/source.
+orx close-episode --task T --episode E --terminal completed
+orx induction-status --task T --episode E
+orx induction-material --task T --induction-id J
+orx induce --induction-id J --relation '{"when":"...","do":"...","expect":"...","evidence":["ex_REAL"]}'
+# Or complete the same positive job without writing a rule:
+orx induce --induction-id J --review '{"outcome":"insufficient_material","conclusion":"Actual evidence reviewed; no independent check yet."}' --note "..."
 ```
 
-Python: `close_episode(T, E, induction_decision={"state":"allow", "source":
-"closeout_reviewer", "reason":"..."})`. An already recorded `finish_task`
-outcome may carry the same `induction_decision`; close-out records its source
-and action reference. `skip` and `pending` stop before material retrieval or
-expansion. A later explicit close-out judgement can resolve a pending state.
-This interface adds no H+ formula, threshold or calibration. Pre-solve
-`capability_gain` is a forecast, not the actual start decision. While an H+
-close-out judgement is unavailable, explicitly requesting material or
-submitting a rule uses `source=explicit_induction_transition`.
+`J` comes from `close-episode.result.induction_schedule.pending_ids`.
+The outer building agent MUST consume the handoff and require
+`induction-status.completed:true` before freezing. Python runners can use
+`process_induction_jobs(reviewer, task_id=T, episode_id=E)`; its callback
+returns normal `induce` arguments. No hidden model or automatic rule author
+is introduced. Both material and writing authorize the same positive job.
+An explicit ID or a matching material/evidence reference resolves it; ambiguous
+jobs require an ID. A negative execution can be a positive job's contrast.
+
+New prediction homes automatically enter H+ mode; `--induction-mode hplus`
+can fix it explicitly. NoH+ and seeded equal-budget random controls use
+separate homes. A post-close allow/skip/pending judgement cannot flip the
+new signal. The old explicit transition survives only for old/manual work.
+Detailed signal, receipt, recovery and experiment examples: [hplus.md](hplus.md).
 
 ## Read a small comparison pack
 
 ```bash
-orx induction-material --task T
-orx induction-material --task T --purpose implementation
+orx induction-material --task T --induction-id J
+orx induction-material --task T --induction-id J --purpose implementation
 ```
 
 The default `induction-material/2` response contains the current task,
@@ -76,7 +87,7 @@ orx induction-material --task T --view detail
 ## Submit when / do / expect
 
 ```bash
-orx induce --relation '{"when":"For fixed Y, feasible integer X is an interval and the objective is monotone in X.","do":"Enumerate Y, derive both X endpoints, select the endpoint from the coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.","expect":"Preserve the original integer optimum and all stated constraints.","evidence":["ex_123"],"material_id":"induction_material:..."}'
+orx induce --induction-id J --relation '{"when":"For fixed Y, feasible integer X is an interval and the objective is monotone in X.","do":"Enumerate Y, derive both X endpoints, select the endpoint from the coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.","expect":"Preserve the original integer optimum and all stated constraints.","evidence":["ex_123"],"material_id":"induction_material:..."}'
 ```
 
 Use real IDs from the read; `material_id` may be omitted when the latest
