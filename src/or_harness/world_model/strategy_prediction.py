@@ -1590,11 +1590,11 @@ class StrategyOutcomeService:
         return SOP.from_dict(self.store.loads(raw))
 
     def query(self, *, task_id: Optional[str] = None,
-              episode_id: Optional[str] = None
+              episode_id: Optional[str] = None,exact_episode: bool = False
               ) -> List[StrategyOutcomePrediction]:
         from or_harness.world_model.contracts import (
             StrategyOutcomePrediction as SOP,
         )
         return [SOP.from_dict(self.store.loads(raw))
                 for raw in self.store.contract_predictions_for(
-                    task_id=task_id, episode_id=episode_id)]
+                    task_id=task_id, episode_id=episode_id,exact_episode=exact_episode)]

@@ -222,6 +222,10 @@ def integer_fixture(output,seed=7,positive_min=False):
             return {'relations':[{**GENERAL_RULE,'entry_id':'1','operation':'revise','effect_scope':'task_check',
                 'evidence':job['execution_ids'],'material_id':material['material_id'],'validation':regression}],
                 'review':{'outcome':'revised','hypothesis_outcome':'supported' if job['signal']['decision'] else 'unknown',
+                          'comparison':{'sufficient':True,'substantive':True,'changed_fields':['when','do'],
+                              'source':'fixture reviewer compared frozen legacy maximum-only method with the captured minimizing execution',
+                              'assessment':'The revised premises admit minimization; the actual steps choose the lower endpoint and retain a nonmonotone fallback.',
+                              'evidence_refs':[job['source_fact_ref'],job['signal']['source_snapshot_ref']]},
                           'conclusion':'Extend the maximum-only upper endpoint rule to sign-aware minimization and fallback.'}}
         return {'notes':['Compared actual code/checker with the frozen library.'],
             'review':{'outcome':'already_covered' if not minimum else 'no_increment','hypothesis_outcome':'refuted' if job['signal']['decision'] else 'unknown',

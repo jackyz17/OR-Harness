@@ -39,11 +39,13 @@ def record_decision(harness, task_id, episode_id, decision=None):
     with harness.store.transaction() as conn:
         ref = put_value(conn, harness.store, "induction_gate", value)
         meta_write(harness.store, key, value)
-        meta_write(harness.store, "induction_gate:last:" + str(task_id), value)
+        latest=meta_read(harness.store,'induction_gate:last:'+str(task_id))
+        if not previous or not latest or latest.get('episode_id')==episode_id:
+            meta_write(harness.store, "induction_gate:last:" + str(task_id), value)
     return {**value, "decision_ref": ref}
 
 
-def start_decision(harness, task_id):
+def start_decision(harness, task_id,episode_id=None):
     from or_harness.world_model.hplus import formal, require_job
     if formal(harness):
         try:
@@ -52,7 +54,8 @@ def start_decision(harness, task_id):
                     'reason':'positive bound job requires one induction receipt'}
         except ValueError as exc:
             return {'state':'skip','source':'frozen_hplus','reason':str(exc)}
-    value = meta_read(harness.store, "induction_gate:last:" + str(task_id)) if task_id is not None else None
+    value = (meta_read(harness.store,'induction_gate:'+str(task_id)+':'+str(episode_id)) if episode_id is not None else
+             meta_read(harness.store, "induction_gate:last:" + str(task_id))) if task_id is not None else None
     if value and value.get("state") in ("allow", "skip", "pending"):
         from or_harness.strategy.evidence_views import chars
         from or_harness.world_model.conditions import digest

@@ -1028,6 +1028,8 @@ def cmd_amend_cost(args) -> int:
         }
         if result_breakdown is not None:
             result["usage"] = result_breakdown
+        dependencies=h._refresh_rule_evidence(record.execution_id)
+        if dependencies['affected_versions']:result['rule_validation']=dependencies
         summary = (f"Amended {record.execution_id} ({args.mode}): "
                    + ", ".join(f"{d}={dimensions[d]:g}" for d in dimensions)
                    + ".")
@@ -1151,6 +1153,8 @@ def cmd_induction_material(args) -> int:
     h = _harness(args)
     try:
         result = h.induction_material(
+            episode_id=getattr(args,'episode',None),query=getattr(args,'query',None),
+            execution_ids=([s.strip() for s in args.executions.split(',') if s.strip()] if getattr(args,'executions',None) else None),
             induction_id=getattr(args, 'induction_id', None),
             strategy_id=getattr(args, "strategy", None),
             task_id=getattr(args, "task", None),
@@ -1549,6 +1553,7 @@ def cmd_close_episode(args) -> int:
     try:
         result = h.close_episode(
             args.task, args.episode, terminal_state=args.terminal,
+            execution_id=getattr(args,'execution',None),
             finish_action_id=args.finish_action,
             min_calibration_samples=args.min_samples
             if args.min_samples is not None else None,
@@ -3057,6 +3062,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--finish-action", default=None, metavar="ACTION_ID",
                    help="the finish_task action that ended the episode, "
                         "when one was recorded")
+    p.add_argument('--execution',default=None,metavar='EXECUTION_ID',
+                   help='choose an existing actual run when several episodes are ambiguous, including an unnamed episode')
     p.add_argument("--induction-decision", choices=["allow", "skip", "pending"], default=None,
                    help="explicit H+ close-out start judgement; no new formula or threshold")
     p.add_argument("--induction-reason", default=None)
@@ -3322,6 +3329,9 @@ def build_parser() -> argparse.ArgumentParser:
              "then submit the strategy you form with `orx induce --relation`. "
              "No model call, no writes")
     p.add_argument('--induction-id', default=None, help='positive executed job returned by close-episode')
+    p.add_argument('--episode',default=None,help='legacy initiating episode, or check the selected job episode')
+    p.add_argument('--query',default=None,help='mechanism keywords chosen by the induction agent')
+    p.add_argument('--executions',default=None,help='comma-separated historical case IDs to include as contrasts')
     p.add_argument("--view", choices=["compact", "detail"], default="compact")
     p.add_argument("--purpose", choices=["modelling", "implementation"], default="modelling")
     p.add_argument("--strategy", default=None,

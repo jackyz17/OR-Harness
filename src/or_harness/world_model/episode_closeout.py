@@ -3309,7 +3309,7 @@ def close_episode(harness, task_id: str, episode_id: Optional[str], *,
     # Evaluate every BOUND strategy-outcome prediction of this episode.
     evaluations: List[StrategyPredictionEvaluation] = []
     for prediction in harness.strategy_predictions.query(
-            task_id=task_id, episode_id=episode_id):
+            task_id=task_id, episode_id=episode_id,exact_episode=True):
         if not prediction.trace.model_info.get("bound_action_id"):
             continue
         summary = summarize_real_outcome(harness, prediction)

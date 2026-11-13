@@ -1,6 +1,6 @@
 # Induction: compare executions, freeze a rule, test transfer
 
-The normal interaction is one material read and one short submission. The
+The normal interaction is one bounded review round and one short submission. The
 agent identifies a mechanism and its necessary premises; the framework
 budgets material, resolves evidence, freezes versions and records checks.
 Execution evidence and reusable rule bodies remain separate.
@@ -43,6 +43,8 @@ Detailed signal, receipt, recovery and experiment examples: [hplus.md](hplus.md)
 ```bash
 orx induction-material --task T --induction-id J
 orx induction-material --task T --induction-id J --purpose implementation
+orx induction-material --induction-id J --query "endpoint direction and fallback" --related-top-k 3
+orx induction-material --induction-id J --executions ex_A,ex_B
 ```
 
 The default `induction-material/2` response contains the current task,
@@ -58,11 +60,14 @@ retrieval claim.
 
 Rows keep source identity, actual method and its source, a separately labelled
 plan, decisive checks/failures, measured resources/masks/scope and execution
-IDs. Absent performed-method evidence is unknown. Explicit source/base IDs
-and identical retained original content join retries, seeds and branches as
-same-source controls; the framework does not guess lineage from ID suffixes.
-Unknown lineage stays visible. Constraint coefficients may be in saved text;
-the framework does not reconstruct a full model from CIR summaries.
+IDs. The primary case is the positive job's bound execution, even if the task
+later ran another candidate. Absent performed-method evidence is unknown.
+Original instance identity, frozen raw inputs and structured mathematical
+content identify same-instance controls across renaming/rewording. One-sided
+parent/source links are retained. Text-only concrete duplicate hints remain
+pending confirmation; structure, method and family alone never imply a
+duplicate. Independent isomorphic inputs can validate transfer. Ordinary
+tasks need no invented mother-task field.
 
 `OR_HARNESS_INDUCTION_MATERIAL_CHARS` defaults to 32000. The entire compact
 JSON result is counted, including history, old knowledge, H+, diagnostics,
@@ -72,8 +77,11 @@ precedes expansion. Oversized methods/text/rules are whole-value references,
 never misleading prefixes. The pack protects a current case, cross-source
 comparisons and relevant old rules before filling spare space. Counts and
 `budget.next_cursor` report omissions; use `--cursor` only when more evidence
-is needed. A read session records every displayed case, including previous
-pages, so it cannot later become an unseen validation case.
+is needed. Changing purpose/query/count/selected executions creates another
+session; an identical request reuses its pack. All sessions actually delivered
+for this job, the triggering execution and submitted citations form its
+derivation scope. Another round's reads do not enter it. Manual legacy work
+may pass `--episode E` to select the initiating allow/skip/pending decision.
 
 ```bash
 orx inspect --bank experience --execution ex_123
@@ -90,8 +98,10 @@ orx induction-material --task T --view detail
 orx induce --induction-id J --relation '{"when":"For fixed Y, feasible integer X is an interval and the objective is monotone in X.","do":"Enumerate Y, derive both X endpoints, select the endpoint from the coefficient sign and objective direction, and compare objectives. Disable this reduction for a nonmonotone objective and enumerate the full feasible set.","expect":"Preserve the original integer optimum and all stated constraints.","evidence":["ex_123"],"material_id":"induction_material:..."}'
 ```
 
-Use real IDs from the read; `material_id` may be omitted when the latest
-read for the evidence task is intended. All three paragraphs are nonempty,
+Use real IDs from the read. In H+ mode, `material_id` and even `induction_id`
+may be omitted when displayed/cited evidence uniquely identifies a positive
+job, including when the first or only citation is a historical contrast.
+Conflicting job/session references fail before writing. All three paragraphs are nonempty,
 complete and executable; supporting detail belongs behind references. The
 framework allocates the entry number and default subject, resolves facts and
 roles, derives support scope and writes a candidate version. Necessary
@@ -109,7 +119,8 @@ Exact repeats are idempotent. Same-mechanism new cases should explicitly
 select the original ID. Different names/families do not force different IDs;
 similarity does not automatically merge meanings. `target_entry` and
 `target_entry_id` are compatibility aliases for the explicit `entry_id`.
-Changing the body requires revision or merge. Only a content change advances
+Changing the body requires revision or merge. Safe formatting equivalence
+reuses the existing body/version. A substantive content change advances
 the version. Ordinary recall exposes one active version. A pending revision
 does not replace the old active version, and a suspended candidate cannot be
 promoted through a maturity flag. To record no new rule, use `orx induce
@@ -149,8 +160,14 @@ a self-derived objective reference alone is insufficient.
   premises, `applicability:"not_applicable"`, and `response:"disable"` or
   `"fallback"`, with the response and result checked. Its scope is labelled
   `boundary_test`, not broader industrial evidence.
-- **Regression:** a revised version rechecks affected prior successes.
-  Frozen old uses retain their old version. Explicit historical reviews can
+- **Regression:** representative cases group identical frozen inputs and
+  acceptance rules, rather than requiring every old execution ID. A normal
+  rerun adopting the new version with equivalent acceptance settles the old
+  case, retaining old/new execution references and `actual_version_use` basis.
+  Changed data, weaker acceptance or a v1 adoption leaves the v2 gap open.
+  Revision and merge share these requirements. Frozen old uses retain their
+  old version. Explicit historical reviews are separately marked
+  `historical_review` and can
   be submitted as `validation:[{"kind":"regression","execution_id":"...",
   "assessment":{...}}]` on an `add_evidence` operation for the new version.
 - **Counterexample:** only an attributable in-domain failure of the actual
@@ -164,14 +181,29 @@ active. A credible active-version counterexample pauses it. New uncertainty
 is recorded without inventing a refutation or deleting prior frozen proof.
 Close-out freezes decisive rule-check facts before automatic retention can
 evict executions, including an immediately expiring evidence window.
+`check-task` also refreshes existing dependent checks. Omitting optional
+assessments with unchanged facts and acceptance preserves the existing review;
+an explicit `rule_assessments:[]` or matching `withdrawn:true` withdraws it.
+Changed facts require renewed assessment. `exclude_execution` and
+`restore_execution` update dependent publication and future H+ support, with
+distinct events for each real pause/recovery. Prior checks and issued inputs
+remain auditable. Window expiry does not mean withdrawal.
+Normal `record` cost updates and `amend-cost` also recompute dependent cost
+comparisons; changed measured values or provenance cannot leave stale savings
+support published. Publication changes synchronize the strategic index.
 
 Use `effect_scope:"technical"` only for an explicitly technical implementation
 rule: its check reads executor/protocol facts (`wm-r-technical/1`), not a
 business optimum. Use `effect_scope:"cost"` for a cost advantage. A cost
-comparison additionally needs `comparator_execution_id`, `cost_dimensions`,
-the same frozen task, actual solving conditions, equivalent acceptance rules
-and measured dimensions on the same scope. An isolated pass or unknown cost
-never proves an advantage. There is no new G/C/R scoring or H+ computation.
+comparison needs the same frozen task, different observed actual methods,
+comparable actual solving conditions, equivalent acceptance rules and trusted
+measured dimensions on the same scope. The claimed dimensions come from the
+assessment or rule. A unique recorded comparator is associated automatically;
+multiple distinct baselines return choices, resolved by optional
+`comparator_execution_id` in the assessment. `agent_estimate` never becomes
+measured evidence through its mask. Existing-version use/check registration
+works with H+=0 and after the original job completed. An isolated pass or
+unknown cost never proves an advantage. G/C/R scoring is unchanged.
 
 ## Storage and historical data
 
@@ -181,6 +213,13 @@ associate checks, uses, effects and source aliases with exact versions.
 Repeated claim text references the body; genuinely different historical
 assertions keep their own references. Frozen decisive facts remain readable
 after the execution evidence window evicts the original row.
+Pending triggers and delivered contrasts retain a full immutable execution
+reference, including original task, actual method, artifact/checker sources.
+Material, citation resolution and `inspect --bank experience --execution EX`
+read that reference after eviction/restart without reinserting the raw bank
+row. Explicit validity changes still apply to retained evidence. The raw
+window continues cleaning other episodes; this does not bound all referenced
+knowledge storage.
 
 New execution rows encode fixed boilerplate as short states and reuse the
 method receipt body by reference. Audit reads render the original fixed

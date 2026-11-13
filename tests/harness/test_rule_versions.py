@@ -370,7 +370,7 @@ class TestRuleLifecycle(RuleCase):
         first=self.h.close_episode(task['task_id'],task['task_id'])
         self.assertIn('cost advantage needs',first['rule_validation']['checks'][0]['reason'])
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
-        comparator_task,comparator=self.solve('different-cost-task')
+        comparator_task,comparator=self.solve('different-cost-task',parameters=(743,159))
         result=self.h.induce(relations=[{'entry_id':entry_id,'operation':'add_evidence','validation':[
             {'kind':'transfer','execution_id':case.execution_id,'comparator_execution_id':comparator.execution_id,
              'cost_dimensions':['tool_calls']}]}])

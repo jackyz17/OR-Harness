@@ -343,7 +343,8 @@ class InductionEngine:
         records: List[ExecutionRecord] = []
         resolved: List[Dict[str, Any]] = []
         for item in evidence:
-            record = bank.get(item["execution_id"])
+            from or_harness.strategy.evidence_access import resolve_execution
+            record = resolve_execution(self.harness,item['execution_id'])
             if record is None:
                 return {"problem": (f"unknown execution {item['execution_id']!r}: "
                                     "a claim may only reference recorded "

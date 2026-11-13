@@ -313,7 +313,12 @@ class TestBinaryHplus(BinaryCase):
                 'evidence_refs':['artifacts.submitted_script','artifacts.workspace_result']}
             regressions.append({'kind':'regression','execution_id':old.execution_id,'assessment':assessment})
         result=self.h.induce(induction_id=job_id,relations=[{**SHORT_RULE,'entry_id':entry_id,'operation':'revise',
-            'evidence':[r.execution_id],'material_id':material['material_id'],'validation':regressions}])
+            'evidence':[r.execution_id],'material_id':material['material_id'],'validation':regressions}],
+            review={'comparison':{'sufficient':True,'substantive':True,'changed_fields':['when','do'],
+                'source':'fixture reviewer compared frozen upper-only rule with sign-aware revision',
+                'assessment':'Fixed-Y minimization now selects the lower endpoint; the prior rule only covers maximization.',
+                'evidence_refs':[next(j for j in jobs(self.h) if j['induction_id']==job_id)['source_fact_ref'],
+                                 next(j for j in jobs(self.h) if j['induction_id']==job_id)['signal']['source_snapshot_ref']]}})
         self.assertEqual(result['induction_receipt']['rule_updates'][0]['version'],2)
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],1)
         # Freeze a prediction before the later independent checks exist.
@@ -343,7 +348,7 @@ class TestBinaryHplus(BinaryCase):
     def test_no_implicit_negative_write_when_an_unrelated_positive_is_pending(self):
         _,zero,_=self.closed('zero-with-pending',0)
         _,positive,closed=self.closed('real-positive')
-        self.h.induction_material(induction_id=closed['induction_schedule']['pending_ids'][0])
+        self.h.induction_material(induction_id=closed['induction_schedule']['pending_ids'][0],related_top_k=0)
         with self.assertRaises(ValueError):
             self.h.induce(relations=[{**SHORT_RULE,'evidence':[zero.execution_id]}])
         from or_harness.world_model.hplus import configure

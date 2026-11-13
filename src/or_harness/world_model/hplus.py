@@ -106,7 +106,41 @@ def get_job(harness, induction_id):
     return meta_read(harness.store, JOB_PREFIX + str(induction_id))
 
 
+def resolve_episode(harness,task_id,episode_id,*,execution_id=None,finish_action_id=None):
+    chosen=None
+    if execution_id:
+        chosen=next((a for a in harness.actions.query(task_id=task_id,action_type='execute_strategy') if a.linked_execution_id==execution_id),None)
+        if chosen is None:raise ValueError('execution does not identify a real solving round of this task')
+    if finish_action_id:
+        finish=harness.actions.get(finish_action_id)
+        if not finish or finish.action_type!='finish_task' or str(finish.task_id)!=str(task_id):
+            raise ValueError('finish action does not belong to this task')
+        if chosen and chosen.episode_id!=finish.episode_id:raise ValueError('execution and finish action select different episodes')
+        chosen=finish
+    if chosen:
+        if episode_id is not None and episode_id!=chosen.episode_id:raise ValueError('episode conflicts with the selected real execution')
+        return chosen.episode_id
+    if episode_id is not None:return episode_id
+    actions=[a for a in harness.actions.query(task_id=task_id,action_type='execute_strategy') if a.linked_execution_id]
+    episodes={a.episode_id for a in actions}
+    if not episodes:
+        episodes={p.candidate.episode_id for p in harness.strategy_predictions.query(task_id=task_id)}
+    if len(episodes)==1:return next(iter(episodes))
+    if len(episodes)>1:
+        choices=[{'episode':a.episode_id,'action_id':a.action_id,'execution_id':a.linked_execution_id,
+                  'method':(a.params or {}).get('method') or (a.params or {}).get('strategy_id'),
+                  'solver':(a.params or {}).get('solver')} for a in actions]
+        raise ValueError('ambiguous episode: choose an existing solving round '+str(choices or sorted(str(e) for e in episodes)))
+    return None
+
+
 def _save_job(harness, job):
+    previous=get_job(harness,job['induction_id'])
+    if previous and previous['state']=='completed':
+        if job.get('receipt_ref') not in (None,previous['receipt_ref']):
+            raise ValueError('completed induction has a different immutable receipt')
+        job.clear();job.update(previous)
+        return
     meta_write(harness.store, JOB_PREFIX + job["induction_id"], job)
 
 
@@ -143,7 +177,7 @@ def _verification(record, signal):
 def schedule_episode(harness, task_id, episode_id):
     """Called before retention; idempotent by episode and bound prediction."""
     scheduled, unobserved = [], []
-    predictions = harness.strategy_predictions.query(task_id=task_id, episode_id=episode_id)
+    predictions = harness.strategy_predictions.query(task_id=task_id, episode_id=episode_id,exact_episode=True)
     for prediction in predictions:
         signal = (prediction.trace.model_info or {}).get("hplus")
         if not signal or signal.get("version") != HPLUS_VERSION:
@@ -154,7 +188,8 @@ def schedule_episode(harness, task_id, episode_id):
             unobserved.append(prediction.prediction_id)
             continue
         execution_id = str(action.linked_execution_id)
-        identity = "ij_" + digest([str(task_id), episode_id, prediction.prediction_id])[:24]
+        actual_episode=action.episode_id
+        identity = "ij_" + digest([str(task_id), actual_episode, prediction.prediction_id])[:24]
         existing = get_job(harness, identity)
         if existing:
             scheduled.append(existing)
@@ -177,7 +212,7 @@ def schedule_episode(harness, task_id, episode_id):
             continue
         with harness.store.transaction() as conn:
             job = {"induction_id": identity, "version": HPLUS_VERSION,
-                "task_id": str(task_id), "episode_id": episode_id,
+                "task_id": str(task_id), "episode_id": actual_episode,
                 "prediction_id": prediction.prediction_id, "signal": copy.deepcopy(signal),
                 "solve_action_id": action.action_id, "execution_ids": [execution_id],
                 "source_fact_ref": _facts_ref(harness, conn, record),
@@ -185,7 +220,9 @@ def schedule_episode(harness, task_id, episode_id):
                 "selected": selected, "state": "pending" if selected else "skipped",
                 "created_at": time.time(), "action_id": None, "receipt_ref": None,
                 "control_snapshot_ref": signal.get("input_ref") if branch == "nohplus" and signal["decision"] == 0 else None}
-            _save_job(harness, job)
+            previous=get_job(harness,identity)
+            if previous:job=previous
+            else:_save_job(harness, job)
         scheduled.append(job)
     return schedule_view(scheduled, unobserved)
 
@@ -228,9 +265,72 @@ def require_job(harness, induction_id=None, *, task_id=None, material_id=None, a
     return job
 
 
+def submission_job(harness,induction_id,relations):
+    if not formal(harness):return None
+    declared={str(r['induction_id']) for r in relations or [] if r.get('induction_id')}
+    if induction_id:declared.add(str(induction_id))
+    material_ids={r['material_id'] for r in relations or [] if r.get('material_id')}
+    for mid in material_ids:
+        session=get_value(harness.store,mid)
+        if not session.get('induction_id'):raise ValueError('material is not attached to a positive induction job')
+        declared.add(session['induction_id'])
+    if len(declared)>1:raise ValueError('conflicting induction IDs in submission/material: '+str(sorted(declared)))
+    resolved=next(iter(declared),None)
+    if resolved is None and relations:
+        evidence={str(e if isinstance(e,str) else e.get('execution_id')) for r in relations for e in r.get('evidence') or []}
+        candidates=[]
+        for job in jobs(harness):
+            if job['state']!='pending' or not job['selected']:continue
+            shown=set(job['execution_ids'])
+            for ref in material_sessions(harness,job):shown.update(get_value(harness.store,ref).get('shown_execution_ids') or [])
+            if shown&evidence:candidates.append(job)
+        if len(candidates)!=1:
+            raise ValueError('submission evidence does not identify one positive triggering job; choose its induction-id')
+        resolved=candidates[0]['induction_id']
+    job=require_job(harness,resolved,allow_completed=True)
+    for mid in material_ids:
+        if mid not in material_sessions(harness,job):raise ValueError('material session was not delivered for this job: '+mid)
+    return job
+
+
+def material_sessions(harness,job):
+    refs=list(job.get('material_sessions') or [])
+    if not refs and job.get('material_ref'):
+        saved=get_value(harness.store,job['material_ref'])
+        if saved.get('material_id'):refs.append(saved['material_id'])
+    return refs
+
+
+def aggregate_material(harness,job):
+    refs=material_sessions(harness,job)
+    identities={};shown=list(job['execution_ids'])
+    for ref in refs:
+        session=get_value(harness.store,ref)
+        if session.get('induction_id') not in (None,job['induction_id']):
+            raise ValueError('material session belongs to another induction job')
+        shown.extend(session.get('shown_execution_ids') or [])
+        identities.update(session.get('identities') or {})
+    from or_harness.strategy.evidence_access import resolve_execution
+    from or_harness.strategy.evidence_views import task_identity
+    for eid in shown:
+        record=resolve_execution(harness,eid)
+        if record:identities[eid]=task_identity(harness,record)
+    value={'induction_id':job['induction_id'],'task_id':job['task_id'],'episode_id':job['episode_id'],
+        'shown_execution_ids':list(dict.fromkeys(shown)),'identities':identities,'read_refs':refs}
+    with harness.store.transaction() as conn:
+        reference=put_value(conn,harness.store,'induction_material',value)
+    return reference,value
+
+
 def material_for_job(harness, job, builder, **kwargs):
-    if job.get("material_ref"):
-        return copy.deepcopy(get_value(harness.store, job["material_ref"]))
+    job=get_job(harness,job['induction_id'])
+    key=digest(kwargs)
+    requests=job.get('material_requests') or {}
+    if key in requests:return copy.deepcopy(get_value(harness.store,requests[key]))
+    # Compatibility for unchanged first queries from an older cached job.
+    if job.get('material_ref') and not requests and job['state']=='completed':
+        return copy.deepcopy(get_value(harness.store,job['material_ref']))
+    if job['state']=='completed':raise ValueError('completed job cannot start a new material query')
     # This metadata is included in the builder's total budget from the start.
     from or_harness.strategy.evidence_views import atomic
     gate = {"state": "allow", "source": "frozen_hplus", "induction_id": job["induction_id"],
@@ -243,27 +343,35 @@ def material_for_job(harness, job, builder, **kwargs):
     if job['control_snapshot_ref']:
         kwargs['frozen_knowledge'] = frozen_rules(harness,job)
         gate['knowledge_basis'] = 'prediction-time snapshot, including zero-signal missed-opportunity review'
-    result = builder(harness, gate=gate, task_id=job["task_id"], **kwargs)
+    _,prior=aggregate_material(harness,job)
+    result = builder(harness, gate=gate, task_id=job["task_id"],
+        seed_execution_ids=job['execution_ids'],retained_execution_ids=prior['shown_execution_ids'],
+        induction_id=job['induction_id'],episode_id=job['episode_id'],**kwargs)
     material_id = result.get("material_id")
     with harness.store.transaction() as conn:
+        current=get_job(harness,job['induction_id'])
+        if current['state']=='completed':
+            # A second connection completed while this read was building.
+            return result
         if material_id:
             session = get_value(harness.store, material_id)
             session["induction_id"] = job["induction_id"]
             # A new immutable session binds exactly what this job displayed.
             result["material_id"] = put_value(conn, harness.store, "induction_material", session)
             meta_write(harness.store, 'induction_material:last:' + job['task_id'], result['material_id'])
-        job["material_ref"] = put_value(conn, harness.store, "hplus_material", result)
-        _save_job(harness, job)
+        current.setdefault('material_requests',{})[key]=put_value(conn,harness.store,'hplus_material',result)
+        current['material_ref']=current['material_requests'][key]
+        current['material_sessions']=list(dict.fromkeys(material_sessions(harness,current)+[result['material_id']]))
+        _save_job(harness,current)
     return result
 
 
 def reserve_action(harness, job):
-    if job.get("action_id"):
-        return
     with harness.store.transaction():
         current=get_job(harness,job['induction_id'])
+        if current['state']=='completed':job.clear();job.update(current);return
+        job.clear();job.update(current)
         if current.get('action_id'):
-            job.update(current)
             return
         maintenance = harness._begin_induce_action(None, False)
         job["action_id"] = maintenance["action_id"]
@@ -272,6 +380,10 @@ def reserve_action(harness, job):
         harness.actions.amend_action_params(job["action_id"], induction_id=job["induction_id"],
             capability_prediction_id=job["prediction_id"], source_execution_ids=job["execution_ids"])
         _save_job(harness, job)
+
+
+def put_submission(harness,arguments,review):
+    return put_value(harness.store.conn,harness.store,'induction_submission',{'arguments':arguments,'review':review})
 
 
 def complete(harness, job, result, review=None):
@@ -288,24 +400,30 @@ def complete(harness, job, result, review=None):
     action = harness.actions.get(job["action_id"])
     if not action or action.action_type != "induce" or not action.ended_at:
         raise ValueError("completion requires the actual finished induction action")
-    source = set(job["execution_ids"]) | set((action.outcome or {}).get("execution_ids") or [])
-    material = get_value(harness.store, job["material_ref"]) if job.get("material_ref") else {}
-    source.update(row["execution_id"] for row in material.get("material", []) +
-                  (material.get("related_history") or {}).get("executions", []))
-    before=get_value(harness.store,job['signal']['source_snapshot_ref'])
-    baseline_layers=(before.get('coverage') or {}).get('knowledge_layers') or {}
-    known_bodies={(e.get('rule') or {}).get('body_ref') for layer in baseline_layers.values() for e in layer}
-    updates = [{"entry_id": r["saved"], "version": r.get("version"), "body_ref": r.get("body_ref"),
-                "operation": r.get("operation"), "substantive": bool(r.get("new_version") and r.get('body_ref') not in known_bodies)}
-               for r in result.get("relations") or [] if r.get("saved") and r.get("changed", True)]
-    trigger = harness.bank.get(job['execution_ids'][0]) or harness.bank.get_pending(job['execution_ids'][0])
+    source=set(job['execution_ids'])|set((action.outcome or {}).get('execution_ids') or [])
+    material_id,material=aggregate_material(harness,job)
+    source.update(material['shown_execution_ids'])
+    from or_harness.world_model.hplus_support import increment
+    updates=[]
+    submission=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
+    submitted=(submission.get('arguments') or {}).get('relations') or []
+    for index,row in enumerate(result.get('relations') or []):
+        if not row.get('saved'):continue
+        update={k:row.get(k) for k in ('version','body_ref','operation','new_version')}
+        update['entry_id']=row['saved']
+        comparison=(submitted[index].get('mechanism_comparison') if index<len(submitted) else None) or review.get('comparison')
+        update['increment']=increment(harness,job,update,comparison)
+        update['substantive']=update['increment']['substantive']
+        updates.append(update)
+    from or_harness.strategy.evidence_access import resolve_execution
+    trigger=resolve_execution(harness,job['execution_ids'][0])
     if trigger:
         job['verification'] = _verification(trigger,job['signal'])
     conclusion = review.get("conclusion") or ("short rules submitted for existing validation" if updates else "review completed without a new rule")
     fact = {"induction_id": job["induction_id"], "prediction_id": job["prediction_id"],
         "solve_action_id": job["solve_action_id"], "induction_action_id": job["action_id"],
         "mode": job["mode"], "decision": job["signal"]["decision"],
-        "input_ref": job["signal"].get("input_ref"), "material_id": material.get("material_id"),
+        "input_ref": job["signal"].get("input_ref"), "material_id": material_id, "material_read_refs":material.get("read_refs") or [],
         'baseline_snapshot_ref':job['signal'].get('source_snapshot_ref'),
         "source_execution_ids": sorted(source), "source_fact_ref": job["source_fact_ref"],
         "verification": job["verification"], "rule_updates": updates,
@@ -325,37 +443,8 @@ def complete(harness, job, result, review=None):
 
 
 def receipt_observation(harness, job, *, as_of=None):
-    cutoff = time.time() if as_of is None else as_of
-    if job.get("state") != "completed":
-        return {"label": None, "verification_state": "unobserved" if job["state"] == "skipped" else "pending"}
-    receipt = get_value(harness.store, job["receipt_ref"])
-    if receipt["created_at"] > cutoff:
-        return {"label": None, "verification_state": "not_yet_recorded"}
-    from or_harness.strategy.rule_versions import event_records
-    validated = []
-    for update in receipt["rule_updates"]:
-        if not update["substantive"]:
-            continue
-        events = [e for e in event_records(harness.store, update["entry_id"], update["version"])
-                  if e["kind"] == "publication" and e["at"] <= cutoff]
-        if events and events[-1].get("to") == "active":
-            validated.append(update)
-    label, state = (1, "independently_validated_increment") if validated else (None, "unvalidated")
-    comparison = receipt.get("comparison") or {}
-    if not validated and not receipt["rule_updates"] and receipt["outcome"] in ("already_covered", "no_increment"):
-        references = set(comparison.get('evidence_refs') or [])
-        frozen_sources = {receipt['source_fact_ref'],receipt.get('baseline_snapshot_ref')}
-        fact=get_value(harness.store,receipt['source_fact_ref'])
-        from or_harness.world_model.g_signal import _acceptance_support
-        checked=bool((fact.get('method') or {}).get('actual') and _acceptance_support(fact.get('checker') or {}))
-        layers=(get_value(harness.store,receipt['baseline_snapshot_ref']).get('coverage') or {}).get('knowledge_layers') or {}
-        existing=[e for layer in layers.values() for e in layer if isinstance(e,dict)]
-        covered=receipt['outcome']!='already_covered' or bool(existing)
-        if (comparison.get("sufficient") is True and comparison.get("source") and comparison.get("assessment")
-                and checked and covered and None not in frozen_sources and frozen_sources <= references):
-            label, state = 0, "sourced_comparison_no_increment"
-    return {"label": label, "verification_state": state, "validated_rules": validated,
-            "hypothesis_outcome": receipt["hypothesis_outcome"], "receipt": receipt}
+    from or_harness.world_model.hplus_support import observation
+    return observation(harness,job,time.time() if as_of is None else as_of)
 
 
 def frozen_rules(harness, job):
@@ -405,7 +494,7 @@ def feedback(harness, *, task=None, budget_chars=3500, as_of=None):
         class_match=bool(current.get('problem_class') not in (None,'unknown') and
                          current.get('problem_class')==structure.get('problem_class'))
         candidates.append((overlap+3*class_match, receipt["created_at"], job, observation))
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    candidates.sort(key=lambda x: (x[0]>0,x[3]['label'] is not None,x[0],x[1]),reverse=True)
     out = {"feedback_version": HPLUS_VERSION, "as_of": cutoff, "n_applicable": len(candidates),
            "settled_examples": [], "support": "recorded training receipts; labels require independent validation or sourced sufficient comparison"}
     for _, _, job, observation in candidates[:4]:
@@ -414,10 +503,11 @@ def feedback(harness, *, task=None, budget_chars=3500, as_of=None):
                "decision_status": job["signal"]["decision_status"],
                "hypothesis": atomic(job["signal"]["claim"], job["signal"].get("input_ref"), 320),
                "facts": {"execution_ids": receipt["source_execution_ids"][:4], "source_fact_ref": receipt["source_fact_ref"],
-                         "verification": atomic(receipt["verification"][:1],job['receipt_ref'],400)},
+                         "verification": atomic(observation.get("verification",receipt["verification"])[:1],job['receipt_ref'],400)},
                "conclusion": atomic(receipt["conclusion"], job["receipt_ref"], 320),
                "label": observation["label"], "verification_state": observation["verification_state"],
                "hypothesis_outcome": observation["hypothesis_outcome"],
+               "observation_basis":observation.get("observation_basis"),
                "deviation_reason": atomic(receipt.get("deviation_reason"), job["receipt_ref"], 160),
                "rule_versions": receipt["rule_updates"][:2], "receipt_ref": job["receipt_ref"]}
         out["settled_examples"].append(row)

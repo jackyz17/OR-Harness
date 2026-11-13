@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 
 from or_harness.core.schema import task_check_state
 
@@ -21,14 +22,61 @@ def atomic(value, reference, limit=2400):
     return {"detail_ref": reference, "chars": chars(value), "state": "whole_value_by_reference"}
 
 
+def declared_task_identity(task):
+    """Instance evidence from original inputs; structure alone is not identity."""
+    from or_harness.world_model.conditions import digest
+    origin_keys=('base_task_id','source_task_id','parent_task_id','original_task_id','same_instance_as')
+    origins={str(task[k]) for k in origin_keys if task.get(k)}
+    for container in ('lineage','origin','annotations','data_ref'):
+        value=task.get(container)
+        if isinstance(value,dict):origins.update(str(value[k]) for k in origin_keys if value.get(k))
+    original={k:copy.deepcopy(task[k]) for k in ('raw_data','original_data','instance_data','data','input_data','data_ref') if task.get(k) is not None}
+    model=task.get('model')
+    if isinstance(model,dict) and any(model.get(k) for k in ('objective','constraints','matrix','variables','domains')):
+        original['model']=copy.deepcopy(model)
+    spec=task.get('spec')
+    if isinstance(spec,dict) and any(spec.get(k) for k in ('objective','constraints','coefficients','matrix','parameters','data')):
+        original['spec']=copy.deepcopy(spec)
+    for key in ('objective','constraints','requirements','business_rules'):
+        if isinstance(task.get(key),(dict,list)):original[key]=copy.deepcopy(task[key])
+    instance=next((str(task[k]) for k in ('instance_id','source_instance_id','instance_uri') if task.get(k)),None)
+    namespace=str(task.get('dataset_id') or task.get('dataset') or '')
+    immutable_instance=digest([namespace,instance,task.get('instance_version')]) if instance else None
+    input_digest=digest(original) if original else None
+    semantics={k:copy.deepcopy(task[k]) for k in ('description','text','objective','constraints','spec','requirements','business_rules','data_ref','coupling') if task.get(k) is not None}
+    content=digest(semantics) if semantics else None
+    text=str(task.get('text') or task.get('description') or '')
+    numbers=sorted(re.findall(r'(?<![\w.])-?\d+(?:\.\d+)?',text))
+    suspicion=digest(numbers) if len(numbers)>=3 and any(s in text.lower() for s in ('min','max','最','<=','≥','≤')) else None
+    aliases={'task:'+str(task['task_id'])}|{'task:'+s for s in origins}
+    if input_digest:aliases.add('input:'+input_digest)
+    if immutable_instance:aliases.add('instance:'+immutable_instance)
+    if content and not input_digest:aliases.add('content:'+content)
+    return {'identity_version':'task-instance/2','task_id':str(task['task_id']),
+        'base_id':sorted(origins)[0] if origins else input_digest or content or str(task['task_id']),
+        'basis':'declared_origin' if origins else 'original_inputs' if original else 'retained_text' if content else 'task_id_only',
+        'content_digest':content,'input_digest':input_digest,'instance_digest':immutable_instance,
+        'aliases':sorted(aliases),'origin_task_ids':sorted(origins),'text_duplicate_hint':suspicion,
+        'relationship':'variant' if origins else 'lineage_not_declared','hypothetical':False}
+
+
 def task_identity(harness, record):
     saved = (record.execution_features or {}).get("task_identity")
-    if isinstance(saved, dict):
+    if isinstance(saved, dict) and saved.get('identity_version')=='task-instance/2':
         return copy.deepcopy(saved)
     action = harness.actions.by_execution(record.execution_id)
     snapshot = harness.get_snapshot(action.pre_snapshot_id) if action and action.pre_snapshot_id else None
     problem = snapshot.problem_state if snapshot else {}
-    payload = problem.get("task_payload") or {}
+    payload = ((record.execution_features or {}).get('retained_task_payload') or
+               problem.get('task_input') or problem.get("task_payload") or {})
+    if payload.get('task_id'):
+        result=declared_task_identity(payload)
+        result['hypothetical']=bool(snapshot.hypothetical) if snapshot else record.source!='executed'
+        return result
+    if isinstance(saved,dict):
+        result=copy.deepcopy(saved)
+        result['aliases']=sorted(set(identity_aliases(result)))
+        return result
     origin = payload.get("base_task_id") or payload.get("source_task_id") or payload.get("parent_task_id")
     identity = problem.get("problem_identity_digest")
     # Equal retained problem/text identities prove duplicate source content;
@@ -38,6 +86,35 @@ def task_identity(harness, record):
                      "retained_text" if record.task_text_digest else "task_id_only",
             "task_id": record.task_id, "relationship": "variant" if origin else "unresolved",
             "hypothetical": bool(snapshot.hypothetical) if snapshot else record.source != "executed"}
+
+
+def identity_aliases(identity):
+    aliases=set(identity.get('aliases') or [])
+    if identity.get('task_id'):aliases.add('task:'+str(identity['task_id']))
+    if identity.get('basis')=='declared_origin':aliases.add('task:'+str(identity['base_id']))
+    for key in ('input_digest','instance_digest','content_digest'):
+        if key=='content_digest' and identity.get('input_digest'):continue
+        if identity.get(key):aliases.add(key.split('_')[0]+':'+identity[key])
+    if not aliases and identity.get('base_id'):aliases.add('base:'+str(identity['base_id']))
+    return aliases
+
+
+def instance_relation(left,right):
+    if identity_aliases(left)&identity_aliases(right):
+        return 'same_source'
+    if (not left.get('input_digest') and not right.get('input_digest') and
+            left.get('text_duplicate_hint') and left.get('text_duplicate_hint')==right.get('text_duplicate_hint')):
+        return 'possible_duplicate'
+    if left.get('basis')=='task_id_only' or right.get('basis')=='task_id_only':return 'unknown'
+    return 'independent'
+
+
+def same_frozen_input(left,right):
+    if left.get('input_digest') or right.get('input_digest'):
+        return bool(left.get('input_digest') and left['input_digest']==right.get('input_digest'))
+    for key in ('content_digest','instance_digest'):
+        if left.get(key) and right.get(key) and left[key]==right[key]:return True
+    return False
 
 
 def base_partitions(identities):
@@ -50,9 +127,7 @@ def base_partitions(identities):
         return parents[key]
     keys = []
     for identity in identities:
-        row = ["base:" + str(identity["base_id"])]
-        if identity.get("content_digest"):
-            row.append("content:" + identity["content_digest"])
+        row=sorted(identity_aliases(identity)) or ['base:'+str(identity['base_id'])]
         keys.append(row)
         for key in row[1:]:
             parents[root(key)] = root(row[0])
@@ -70,6 +145,7 @@ def compact_execution(harness, record, *, field_limit=2400):
         "state": "declared_none" if not used.get("entry_ids") else "declared",
         **{k: copy.deepcopy(used[k]) for k in ("entry_ids", "known_entry_ids", "unknown_entry_ids", "versions", "rule_versions") if k in used}}
     task_text = harness.store.get_task_text(record.task_id, record.task_text_digest) if record.task_text_digest else None
+    task_text=task_text or f.get('retained_task_text')
     return {
         "execution_id": record.execution_id, "task_id": record.task_id,
         "strategy_id": record.strategy_id, "created_at": record.created_at,

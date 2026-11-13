@@ -1,0 +1,93 @@
+{
+  "provider": "substitute; validates the chain, not predictive discrimination",
+  "objectives": {
+    "A": 2699,
+    "B": 90,
+    "C": 196,
+    "boundary": 0
+  },
+  "induction_id": "ij_7fb2c212f56b1cb7191a4846",
+  "prediction_id": "sp_38f2c56dea03",
+  "entry_id": "1",
+  "active_version": 1,
+  "source_execution_ids": [
+    "ex_a0c4445cf0a4",
+    "ex_4db7185ecb9b"
+  ],
+  "independent_execution_ids": [
+    "ex_bc117e58cc31",
+    "ex_5e71b86b8034"
+  ],
+  "material_id": "induction_material:0f2afa644b0943a98a9e2e59c2a34aa49f1003a2f51b0aa473893ccd563d27cf",
+  "induction_action_id": "ac_b1bf6888809f",
+  "receipt_ref": "hplus_receipt:05f10c9c82dd8a4209cf2e07c73fcb849c66a1d583dd5013f17d9138474529c9",
+  "hplus_label": 1,
+  "next_provider_request_fragment": {
+    "prediction_context": {
+      "hplus_feedback": {
+        "feedback_version": "wm-hplus-binary/1",
+        "as_of": 1794545244.2749758,
+        "n_applicable": 1,
+        "settled_examples": [
+          {
+            "prediction_id": "sp_38f2c56dea03",
+            "decision": 1,
+            "decision_status": "explicit",
+            "hypothesis": "Endpoint choice depends on objective direction; nonmonotonicity disables reduction.",
+            "facts": {
+              "execution_ids": [
+                "ex_4db7185ecb9b",
+                "ex_a0c4445cf0a4"
+              ],
+              "source_fact_ref": "rule_fact:d9490f4e1f87a8113abb859963951752d76814b3cd7f84c425ed2a241f67ed8f",
+              "verification": [
+                {
+                  "condition_index": 0,
+                  "condition": "Inspect the endpoint choice and independently check the integer optimum.",
+                  "state": "unknown",
+                  "finding": null,
+                  "source": null,
+                  "evidence_refs": [],
+                  "reason": "no sourced completion of the frozen verification"
+                }
+              ]
+            },
+            "conclusion": "short rules submitted for existing validation",
+            "label": 1,
+            "verification_state": "independently_validated_increment",
+            "hypothesis_outcome": "unknown",
+            "observation_basis": {
+              "source_execution_id": "ex_a0c4445cf0a4",
+              "checker_action_id": "ac_b87e381e2840",
+              "checked_at": 1794545243.678163,
+              "validity": {
+                "valid": true,
+                "revision": 0
+              }
+            },
+            "deviation_reason": null,
+            "rule_versions": [
+              {
+                "body_ref": "rule:80f48cb05dd32a023469ea7210a89a4812e237240dca736c41d5a6076587851b",
+                "entry_id": "1",
+                "increment": {
+                  "baseline_body_refs": [],
+                  "reason": "first executable rule in an empty frozen library",
+                  "status": "new_method",
+                  "substantive": true
+                },
+                "new_version": true,
+                "operation": "create",
+                "substantive": true,
+                "version": 1
+              }
+            ],
+            "receipt_ref": "hplus_receipt:05f10c9c82dd8a4209cf2e07c73fcb849c66a1d583dd5013f17d9138474529c9"
+          }
+        ],
+        "support": "recorded training receipts; labels require independent validation or sourced sufficient comparison",
+        "n_included": 1
+      }
+    }
+  }
+}

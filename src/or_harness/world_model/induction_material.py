@@ -23,7 +23,8 @@ def seal_budget(result, *, summary=None):
 
 def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=None,
                            cursor=None, related_top_k=5, purpose="modelling", gate=None,
-                           frozen_knowledge=None):
+                           frozen_knowledge=None,query=None,execution_ids=None,seed_execution_ids=None,
+                           retained_execution_ids=None,induction_id=None,episode_id=None):
     from or_harness.world_model.maintenance import (
         _induction_material_budget, _material_cursor, _parse_material_cursor, _query_text_for, _joint_hplus_for,
     )
@@ -31,12 +32,21 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         raise ValueError("induction purpose must be modelling or implementation")
     budget_limit = max(1024, _induction_material_budget())
     all_records = [r for r in harness.bank.all() if r.source == "executed" and r.measurement_scope == "attempt"]
+    from or_harness.strategy.evidence_access import resolve_execution
+    available={r.execution_id:r for r in all_records}
+    requested=list(dict.fromkeys((seed_execution_ids or [])+(execution_ids or [])+(retained_execution_ids or [])))
+    for eid in requested:
+        record=resolve_execution(harness,eid)
+        if record and record.source=='executed':available[str(eid)]=record
+    all_records=list(available.values())
     identities = {r.execution_id:task_identity(harness,r) for r in all_records}
     partition = dict(zip(identities,base_partitions(list(identities.values()))))
     base_attempts = Counter(partition.values())
     scoped = [r for r in all_records if (task_id is None or r.task_id == str(task_id))
               and (strategy_id is None or r.strategy_id == str(strategy_id))]
     scoped.sort(key=lambda r: (r.created_at, r.execution_id), reverse=True)
+    if seed_execution_ids:
+        scoped.sort(key=lambda r:r.execution_id not in seed_execution_ids)
     previous, last = {}, {}
     for record in reversed(scoped):
         previous[record.execution_id] = last.get(record.task_id)
@@ -47,7 +57,10 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     eligible = scoped[:max(0, limit)] if limit is not None else scoped
     # Query only a few representatives before expanding records or knowledge.
     seeds = eligible[:3]
-    query = _query_text_for(seeds, harness)
+    query = ({'text':str(query),'basis':'agent mechanism query'} if query is not None else _query_text_for(seeds,harness))
+    with harness.store.transaction() as conn:
+        query_ref=put_value(conn,harness.store,'induction_query',query)
+    query_view={k:atomic(v,query_ref+' #'+k,2600 if k=='text' else 1200) for k,v in query.items()}
     retrieval = {"executions": [], "knowledge": [], "failure": None}
     if seeds and related_top_k > 0 and query.get("text"):
         try:
@@ -67,11 +80,16 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         record = harness.bank.get(str(hit.get("execution_id")))
         if record is not None:
             related.append((record, hit.get("similarity")))
+    for eid in execution_ids or []:
+        record=available.get(str(eid))
+        if record and all(r.execution_id!=record.execution_id for r,_ in related) and record not in seeds:
+            related.insert(0,(record,None))
     # Distinct source problems first; same-source retries remain controls.
     def constraint_kinds(record):
         return {str(c.get("kind") or c.get("type")) for c in (record.cir_snapshot or {}).get("constraints") or [] if isinstance(c,dict)}
     seed_constraints = set().union(*(constraint_kinds(r) for r in seeds)) if seeds else set()
     related.sort(key=lambda pair: (
+        pair[0].execution_id not in (execution_ids or []),
         (partition.get(pair[0].execution_id) not in seed_bases if purpose=="implementation" else
          partition.get(pair[0].execution_id) in seed_bases),
         not bool(pair[0].failures) if purpose=="implementation" else -len(seed_constraints & constraint_kinds(pair[0])),
@@ -84,7 +102,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
             continue
         base_counts[group] += 1
         selected.append((record, score))
-        if len(selected) >= related_top_k:
+        if len(selected) >= max(related_top_k,len(execution_ids or [])):
             break
     semantic_ids = {str(x.get("entry_id")) for x in retrieval["knowledge"]}
     evidence_ids = {r.execution_id for r in seeds}
@@ -102,7 +120,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         "count": 0, "total_completed": total, "n_distinct_tasks": 0,
         "cross_task_hint": {"n_distinct_tasks_in_batch": 0, "distinct_tasks_across_history": len({r.task_id for r in all_records})},
         "material": [], "related_history": {"enabled": related_top_k > 0, "executions": [], "knowledge": [],
-            "failure": retrieval["failure"], "query_basis": copy.deepcopy(query),
+            "failure": retrieval["failure"], "query_basis": query_view,
             "execution_selection": {"n_distinct_tasks": len({r.task_id for r, _ in selected}),
                                     "n_distinct_base_problems": len({task_identity(harness,r)["base_id"] for r,_ in selected})}},
         "existing_knowledge": [], "comparison_table": [], "joint_hplus": _joint_hplus_for(harness,seeds),
@@ -117,6 +135,9 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
                      "key_step_explanation":"Write when/do/expect; choose the existing ID for a revision. Shown cases are derivation material.",
                      "boundary_check":"Test changed premises and an independent unseen case; same-base retries/seeds are controls."},
     }
+    out['selection']={'requested_execution_ids':execution_ids or [],
+        'unavailable_execution_ids':[eid for eid in requested if eid not in available],
+        'trigger_execution_ids':seed_execution_ids or [],'purpose':purpose,'related_top_k':related_top_k}
     # Leave room for the normal CLI summary and its serialized envelope.
     out['joint_hplus']['role'] = ('frozen binary switch; review and verification are recorded in the induction receipt'
         if (gate or {}).get('source')=='frozen_hplus' else 'historical prediction; legacy explicit transition')
@@ -241,12 +262,17 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         refresh()
     displayed = out['material']+out['related_history']['executions']
     session = {'task_id':task_id,'purpose':purpose,'shown_execution_ids':[r['execution_id'] for r in displayed],
-        'prior_material_ref':meta_read(harness.store,'induction_material:last:'+str(task_id)) if task_id is not None else None,
+        'induction_id':induction_id,'episode_id':episode_id,
+        'gate':copy.deepcopy(gate),'query_ref':query_ref,
+        'prior_material_ref':meta_read(harness.store,'induction_material:last:'+str(task_id)) if task_id is not None and induction_id is None else None,
         'identities':{r['execution_id']:identities[r['execution_id']] for r in displayed},'created_at':time.time()}
     with harness.store.transaction() as conn:
+        from or_harness.strategy.rule_versions import _facts_ref
+        session['fact_refs']={r['execution_id']:_facts_ref(harness,conn,available[r['execution_id']]) for r in displayed}
         material_id=put_value(conn,harness.store,'induction_material',session)
         if task_id is not None:
             meta_write(harness.store,'induction_material:last:'+str(task_id),material_id)
+        if induction_id is None:meta_write(harness.store,'induction_material:last_read',material_id)
     out['material_id']=material_id
     seal_budget(out)
     if chars(out)>budget_limit:

@@ -101,9 +101,22 @@ completion of LIBRARY BUILDING. The handoff contract is testable:
   resolve it automatically. Multiple jobs need an explicit ID.
 - A 0 cannot authorize either formal material or a write. Its actual
   execution may nevertheless be included as a positive job's contrast.
-- Retries reuse the durable material session, induction action and receipt.
+- Retries of the same material request reuse its session; changed purpose,
+  query, count or selected cases get another session owned by the same job.
+  The primary case remains the actually bound trigger. `--query TEXT` and
+  `--executions EX1,EX2` let the reviewer choose a mechanism or known contrasts.
+  Every delivered session and citation is included, even when only a historical
+  contrast is cited. Unrelated rounds' reads remain separate.
+- Retries reuse the durable job, induction action and receipt.
   A different submission cannot reuse a completed job. A crash before commit
   leaves no partial rule/receipt; restart uses the same pending action.
+
+Omitting `--episode` resolves one unique actual solving round, rather than
+listing every prediction for the task. Multiple real rounds return readable
+method/solver/execution choices. `close-episode --task T --execution EX`
+selects an existing run, including an unnamed episode. An explicit episode or
+finish action must agree. Material saving and submission reread job state
+inside the store transaction; a late read cannot reopen a completed job.
 
 Python building runners can consume this contract directly:
 
@@ -145,7 +158,10 @@ Receipt outcomes cover `knowledge_submitted`, `new_rule`, `revised`,
 framework results, not caller-typed IDs. The receipt links prediction, solving
 action, REAL induction action, material, original input/baseline, source facts,
 check completion, conclusion and exact versions. Source scope contains the
-original and displayed/cited derivation cases. Future targets use predicted
+original, every delivered session and displayed/cited derivation cases.
+Frozen task inputs and one-sided source links keep renamed/reworded original
+instances out of independent validation. Similar structure alone does not.
+Future targets use predicted
 premises/family, not a source-task whitelist.
 
 Hypothesis truth is separate from knowledge increment: a false hypothesis can
@@ -166,6 +182,37 @@ unsupported comparison stays unknown. Cost-saving claims additionally require
 the existing same-task, equivalent-acceptance, actual-condition and measured-
 scope comparison rules. Adding a correct rule does not prove the original
 cost-saving hypothesis or a causal performance improvement.
+
+An evidence-only addition can accompany `already_covered`/`no_increment`.
+It preserves the rule version and can still yield a sourced negative label.
+Late checker facts enter later observations using their actual checker action
+and timestamp; original receipt/input references are unchanged. Explicit
+withdrawal removes support; restoration can recover it. Window eviction alone
+does not revoke the retained fact. Rechecking unchanged acceptance while
+omitting optional assessments preserves the prior assessment; explicit
+correction or withdrawal has its own audit event.
+
+Body hashes identify immutable versions, not novelty. Safe prose formatting
+equivalence reuses a version. Other wording changes, including synonyms, stay
+unknown as learning increments without a sourced mechanism comparison.
+For a change relative to a nonempty frozen library, reuse the induction
+review's comparison, either in `review.comparison` or the submitted relation's
+`mechanism_comparison`:
+
+```json
+{"sufficient":true,"substantive":true,"changed_fields":["when","do"],
+ "source":"inducer compared frozen upper-only rule with actual minimizing execution",
+ "assessment":"For fixed Y the lower endpoint now handles minimization; retain the upper endpoint for maximization and disable reduction when monotonicity fails.",
+ "evidence_refs":["SOURCE_FACT_REF_FROM_JOB","BASELINE_SNAPSHOT_REF_FROM_JOB"]}
+```
+
+The framework derives before/after bodies and exact versions from its results;
+the reviewer supplies the mechanism judgment and locatable facts. Only fields
+that actually changed can support this declaration. First methods in an empty
+frozen library are identified separately. A substantive increment still needs
+independent transfer, boundary and affected regression checks before label 1.
+Relevant settled positive/negative receipts take priority over newer unknown
+receipts within the existing feedback budget; unknown remains unknown.
 
 The real induction completion automatically supplies stage-1 maintenance
 binding. Solving alone returns `not_adopted`; a fabricated action association

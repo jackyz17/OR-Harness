@@ -1777,7 +1777,7 @@ class ORHarness:
                       *, terminal_state: str = "completed",
                       finish_action_id: Optional[str] = None,
                       min_calibration_samples: Optional[int] = None,
-                      induction_decision=None
+                      induction_decision=None,execution_id=None
                       ) -> Dict[str, Any]:
         """Close ONE episode: evaluate its bound predictions against their
         real outcomes and publish the experience calibration.
@@ -1797,6 +1797,8 @@ class ORHarness:
             DEFAULT_MIN_CALIBRATION_SAMPLES,
             close_episode,
         )
+        from or_harness.world_model.hplus import resolve_episode
+        episode_id=resolve_episode(self,task_id,episode_id,execution_id=execution_id,finish_action_id=finish_action_id)
         result = close_episode(
             self, task_id, episode_id, terminal_state=terminal_state,
             finish_action_id=finish_action_id,
@@ -4930,7 +4932,7 @@ class ORHarness:
                            cursor: Optional[str] = None,
                            related_top_k: int = 5,
                            view: str = "compact", purpose: str = "modelling",
-                           induction_id: Optional[str] = None
+                           induction_id: Optional[str] = None,episode_id=None,query=None,execution_ids=None
                            ) -> Dict[str, Any]:
         """Organize a BATCH of completed tasks as induction material.
 
@@ -4961,7 +4963,8 @@ class ORHarness:
                                         task_id=task_id, limit=limit,
                                         cursor=cursor,
                                         related_top_k=related_top_k,
-                                        view=view, purpose=purpose, induction_id=induction_id)
+                                        view=view, purpose=purpose, induction_id=induction_id,
+                                        episode_id=episode_id,query=query,execution_ids=execution_ids)
 
     def induction_status(self, *, task_id=None, episode_id=None):
         from or_harness.world_model.hplus import jobs, schedule_view, receipt_observation
@@ -6484,6 +6487,8 @@ class ORHarness:
         result["index_sync"] = self.index_sync.sync_execution(record)
         if unrecorded:
             result["unrecorded_staged_executions"] = unrecorded
+        dependencies=self._refresh_rule_evidence(record.execution_id)
+        if dependencies['affected_versions']:result['rule_validation']=dependencies
         return result
 
     def record_session(self, task_id: str,
@@ -6646,22 +6651,10 @@ class ORHarness:
     def induce(self, *, induction_id=None, review=None, **kwargs):
         """Authorize and settle binary H+ work around the existing writer."""
         from or_harness.world_model.hplus import (
-            require_job, reserve_action, complete, get_job, get_value,
+            require_job, reserve_action, complete, get_job, get_value, put_submission,
         )
-        material_ids = {r.get('material_id') for r in kwargs.get('relations') or [] if r.get('material_id')}
-        if len(material_ids) > 1:
-            raise ValueError('one induction submission must use one material session')
-        material_id = next(iter(material_ids), None)
-        if induction_id is None and material_id is None and kwargs.get('relations'):
-            from or_harness.world_model.hplus import formal, jobs
-            if formal(self):
-                evidence={str(e if isinstance(e,str) else e.get('execution_id'))
-                          for relation in kwargs['relations'] for e in relation.get('evidence') or []}
-                matching=[j for j in jobs(self) if j['state']=='pending' and j['selected'] and evidence & set(j['execution_ids'])]
-                if len(matching)!=1:
-                    raise ValueError('submission evidence does not identify one positive triggering job; pass its induction-id and material-id')
-                induction_id=matching[0]['induction_id']
-        job = require_job(self, induction_id, material_id=material_id, allow_completed=True)
+        from or_harness.world_model.hplus import submission_job
+        job=submission_job(self,induction_id,kwargs.get('relations'))
         if job is None:
             return self._induce_impl(**kwargs)
         if job['state'] == 'completed':
@@ -6683,15 +6676,25 @@ class ORHarness:
         if not job.get('material_ref'):
             raise ValueError('read induction-material for this job before submitting its review')
         reserve_action(self, job)
-        self._active_induction_job = job
         try:
             with self.store.transaction():
-                result = self._induce_impl(**kwargs)
-                if kwargs.get('relations') and not result.get('saved'):
-                    raise ValueError('induction submission refused; job stays pending: '+str(result.get('relations')))
+                current=get_job(self,job['induction_id'])
                 from or_harness.world_model.conditions import digest
-                job['submission_digest'] = digest({'arguments':kwargs,'review':review})
-                complete(self, job, result, review)
+                fingerprint=digest({'arguments':kwargs,'review':review})
+                if current['state']=='completed':
+                    if current.get('submission_digest')!=fingerprint:
+                        raise ValueError('completed induction job conflicts with this submission')
+                    result=copy.deepcopy(get_value(self.store,current['result_ref']))
+                    result['already_completed']=True
+                else:
+                    job=current
+                    self._active_induction_job=job
+                    result = self._induce_impl(**kwargs)
+                    if kwargs.get('relations') and not result.get('saved'):
+                        raise ValueError('induction submission refused; job stays pending: '+str(result.get('relations')))
+                    job['submission_digest']=fingerprint
+                    job['submission_ref']=put_submission(self,kwargs,review)
+                    complete(self,job,result,review)
             self.bind_capability_maintenance(job['prediction_id'], adoption_action_id=job['action_id'])
             return result
         finally:
@@ -7158,8 +7161,11 @@ class ORHarness:
             return {'bank':'values','value_ref':value_ref,'value':get_value(self.store,value_ref)}
         if bank == "experience":
             if execution_id is not None:
-                record = self.bank.get(execution_id) or self.bank.get_pending(execution_id)
-                return {"bank": "experience", "count": int(record is not None), "records": [record.to_dict()] if record else []}
+                from or_harness.strategy.evidence_access import resolve_execution,validity
+                record=resolve_execution(self,execution_id,include_excluded=True)
+                return {"bank":"experience","count":int(record is not None),"records":[record.to_dict()] if record else [],
+                        "evidence_validity":validity(self,execution_id),
+                        "storage":"live" if self.bank.get(execution_id) or self.bank.get_pending(execution_id) else "retained_reference"}
             records = self.bank.query(task_id=task_id, strategy_id=strategy_id)
             return {"bank": "experience", "count": len(records),
                     "records": [r.to_dict() for r in records]}
@@ -7523,8 +7529,23 @@ class ORHarness:
         ``rebuild-index``: exclusion rewrites no entry. Its vector is removed
         from the execution index immediately (a stale vector would keep
         surfacing the withdrawn fact in recall)."""
-        record = self.bank.exclude(execution_id, reason,
-                                   superseded_by=superseded_by)
+        from or_harness.strategy.evidence_access import resolve_execution,set_validity
+        record=resolve_execution(self,execution_id,include_excluded=True)
+        if self.bank.get(execution_id) is not None:
+            record=self.bank.exclude(execution_id,reason,superseded_by=superseded_by)
+        elif record is not None and record.source!='excluded':
+            if superseded_by and resolve_execution(self,superseded_by) is None:
+                raise ValueError('superseded_by execution does not exist')
+            record.source='excluded'
+            record.execution_features['correction']={'excluded':True,'reason':str(reason),
+                'superseded_by':superseded_by,'excluded_at':time.time()}
+        else:
+            raise ValueError('unknown or already excluded execution '+str(execution_id))
+        evidence_validity=set_validity(self,record,False,reason)
+        from or_harness.strategy.rule_versions import refresh_execution_support,sync_rule_entries
+        dependencies=refresh_execution_support(self,execution_id)
+        affected=[v['entry_id'] for v in dependencies['affected_versions']]
+        if affected:sync_rule_entries(self,affected,affected)
         unindexed = None
         if self.embedding_index is not None:
             from or_harness.strategy.embedding_index import LAYER_EXECUTION
@@ -7549,6 +7570,8 @@ class ORHarness:
             result["calibration_republished"] = {
                 "reason": "the exclusion can change a calibration sample",
                 "n_evaluated": republished.get("n_evaluated")}
+        result['rule_validation']=dependencies
+        result['evidence_validity']=evidence_validity
         return result
 
     def restore_execution(self, execution_id: str, reason: str
@@ -7559,7 +7582,21 @@ class ORHarness:
         correction history is kept on the fact. Re-indexing is left to the
         caller via ``rebuild_index`` — a restore is rare and explicit, so it
         does not silently rewrite derived index state."""
-        record = self.bank.restore(execution_id, reason)
+        from or_harness.strategy.evidence_access import resolve_execution,set_validity
+        record=resolve_execution(self,execution_id,include_excluded=True)
+        if self.bank.get(execution_id) is not None:
+            record=self.bank.restore(execution_id,reason)
+        elif record is not None and record.source=='excluded':
+            record.source='executed'
+            record.execution_features.setdefault('correction',{}).update(restored=True,
+                restore_reason=str(reason),restored_at=time.time())
+        else:
+            raise ValueError('unknown or not excluded execution '+str(execution_id))
+        evidence_validity=set_validity(self,record,True,reason)
+        from or_harness.strategy.rule_versions import refresh_execution_support,sync_rule_entries
+        dependencies=refresh_execution_support(self,execution_id)
+        affected=[v['entry_id'] for v in dependencies['affected_versions']]
+        if affected:sync_rule_entries(self,affected,affected)
         republished = self._republish_calibration_if_in_window(
             str(record.task_id), self._episode_of(execution_id))
         result: Dict[str, Any] = {"restored": execution_id,
@@ -7570,12 +7607,29 @@ class ORHarness:
             result["calibration_republished"] = {
                 "reason": "the restore can change a calibration sample",
                 "n_evaluated": republished.get("n_evaluated")}
+        result['rule_validation']=dependencies
+        result['evidence_validity']=evidence_validity
         return result
 
     def _episode_of(self, execution_id: str) -> Optional[str]:
         """The episode an execution's action belongs to, or None."""
         action = self.actions.by_execution(execution_id)
         return action.episode_id if action is not None else None
+
+    def _refresh_rule_evidence(self,execution_id):
+        """Refresh dependencies of an amended fact, including retained refs/index."""
+        from or_harness.strategy.rule_versions import refresh_execution_support,sync_rule_entries
+        from or_harness.strategy.evidence_access import resolve_execution,retain_record
+        from or_harness.world_model.induction_gate import meta_read
+        if meta_read(self.store,'rule_evidence_latest:'+str(execution_id)):
+            record=resolve_execution(self,execution_id,include_excluded=True)
+            if record:
+                with self.store.transaction() as conn:retain_record(self,conn,record)
+        result=refresh_execution_support(self,execution_id)
+        affected=[v['entry_id'] for v in result['affected_versions']]
+        if affected:
+            result['index_sync']=sync_rule_entries(self,result['index_entry_ids'],affected)
+        return result
 
     def _republish_calibration_if_in_window(self, task_id: str,
                                             episode_id: Optional[str]
@@ -8055,31 +8109,24 @@ class ORHarness:
         task to match a reference value.
         """
         from or_harness.strategy.verification import verify_task_result
-        record = self.bank.get(execution_id)
-        staged = False
+        from or_harness.strategy.evidence_access import resolve_execution
+        record=resolve_execution(self,execution_id)
+        staged=self.bank.get_pending(execution_id) is not None
+        retained=record is not None and self.bank.get(execution_id) is None and not staged
         if record is None:
-            record = self.bank.get_pending(execution_id)
-            staged = record is not None
-        if record is None:
-            raise ValueError(
-                f"unknown execution_id {execution_id!r}: neither a recorded "
-                "fact nor a staged execution")
+            raise ValueError(f'unknown execution_id {execution_id!r}: unavailable or withdrawn evidence')
         task_id = str(record.task_id)
         resolved_episode = episode_id
         if resolved_episode is None:
             action = self.actions.by_execution(execution_id)
             resolved_episode = action.episode_id if action is not None else None
         report = verify_task_result(record, check or {})
-        if (check or {}).get("rule_assessments") is not None:
-            assessments = (check or {})["rule_assessments"]
-            if not isinstance(assessments, list) or not all(isinstance(x, dict) for x in assessments):
-                raise ValueError("rule_assessments must be a list of sourced assessments")
-            report["rule_assessments"] = copy.deepcopy(assessments)
-        if (check or {}).get('hplus_verification') is not None:
-            evidence = check['hplus_verification']
-            if not isinstance(evidence,list) or not all(isinstance(e,dict) for e in evidence):
-                raise ValueError('hplus_verification must be a list of sourced verification records')
-            report['hplus_verification'] = copy.deepcopy(evidence)
+        from or_harness.strategy.rule_support import inherit_assessments
+        inherit_assessments(record,report,check or {})
+        if record.execution_features.get('task_check'):
+            from or_harness.world_model.conditions import put_value
+            with self.store.transaction() as conn:
+                report['previous_check_ref']=put_value(conn,self.store,'task_check',record.execution_features['task_check'])
         # Optional sourced method/acceptance assessment stays on the existing
         # check record. It never changes the checker's pass/fail verdict.
         # Merely matching method prose is not evidence of faithful execution.
@@ -8112,12 +8159,17 @@ class ORHarness:
             linked_execution_id=execution_id, rollup="own")
         report["action_id"] = action.action_id
         # (2) The fact annotation.
-        self.bank.set_task_check(execution_id, report)
+        if not retained:
+            self.bank.set_task_check(execution_id,report)
+        record.execution_features['task_check']=copy.deepcopy(report)
+        from or_harness.strategy.evidence_access import retain_record
+        with self.store.transaction() as conn:retain_record(self,conn,record)
+        dependencies=self._refresh_rule_evidence(execution_id)
         rule_validation = None
         if self.episode_closeout_record(task_id, resolved_episode) is not None:
             from or_harness.strategy.rule_versions import record_uses
-            refreshed = self.bank.get(execution_id) or self.bank.get_pending(execution_id)
-            rule_validation = record_uses(self, [refreshed])
+            refreshed = resolve_execution(self,execution_id)
+            rule_validation = record_uses(self,[refreshed])
             if rule_validation.get("affected_entry_ids"):
                 from or_harness.strategy.rule_versions import sync_rule_entries
                 rule_validation["index_sync"] = sync_rule_entries(self,rule_validation["index_entry_ids"],rule_validation["affected_entry_ids"])
@@ -8136,6 +8188,7 @@ class ORHarness:
             "action_id": action.action_id,
             "staged": staged,
         }
+        result['dependent_rule_validation']=dependencies
         if rule_validation is not None:
             result["rule_validation"] = rule_validation
         if republished is not None:
@@ -8191,6 +8244,9 @@ class ORHarness:
                        or (best.problem_state or {}).get("task_payload"))
             if isinstance(payload, dict) and payload.get("task_id"):
                 return dict(payload)
+        retained=record.execution_features.get('retained_task_payload')
+        if isinstance(retained,dict) and retained.get('task_id'):
+            return copy.deepcopy(retained)
         profile = record.profile_snapshot
         task: Dict[str, Any] = {
             "task_id": record.task_id,

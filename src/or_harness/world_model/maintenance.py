@@ -663,20 +663,23 @@ def _merge_existing_knowledge(harness, records: Sequence[Any],
     return items
 
 
-def build_induction_material(harness, *, view="compact", purpose="modelling", induction_id=None, **kwargs):
+def build_induction_material(harness, *, view="compact", purpose="modelling", induction_id=None,
+                             episode_id=None,query=None,execution_ids=None,**kwargs):
     from or_harness.world_model.hplus import formal, require_job, material_for_job
     if formal(harness):
         try:
-            job = require_job(harness, induction_id, task_id=kwargs.get('task_id'))
+            job = require_job(harness, induction_id, task_id=kwargs.get('task_id'),allow_completed=bool(induction_id))
+            if episode_id is not None and episode_id!=job['episode_id']:
+                raise ValueError('material episode does not match its induction job')
         except ValueError as exc:
             return {'version':'induction-material/2','count':0,'material_assembled':False,
                     'induction_gate':{'state':'skip','source':'frozen_hplus'},
                     'reason':str(exc),'material':[],'existing_knowledge':[]}
         from or_harness.world_model.induction_material import build_compact_material
         args = {k:v for k,v in kwargs.items() if k!='task_id'}
-        return material_for_job(harness,job,build_compact_material,purpose=purpose,**args)
+        return material_for_job(harness,job,build_compact_material,purpose=purpose,query=query,execution_ids=execution_ids,**args)
     from or_harness.world_model.induction_gate import start_decision
-    gate = start_decision(harness, kwargs.get("task_id"))
+    gate = start_decision(harness, kwargs.get("task_id"),episode_id)
     if gate["state"] in ("skip", "pending"):
         return {"version": "induction-material/2", "count": 0,
                 "induction_gate": gate, "material_assembled": False,
@@ -686,7 +689,7 @@ def build_induction_material(harness, *, view="compact", purpose="modelling", in
     if view != "compact":
         raise ValueError("induction material view must be compact or detail")
     from or_harness.world_model.induction_material import build_compact_material
-    return build_compact_material(harness, gate=gate, purpose=purpose, **kwargs)
+    return build_compact_material(harness,gate=gate,purpose=purpose,episode_id=gate.get('episode_id'),query=query,execution_ids=execution_ids,**kwargs)
 
 
 def _build_induction_material_detail(harness, *,

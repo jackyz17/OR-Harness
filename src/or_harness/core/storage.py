@@ -615,7 +615,7 @@ class Store:
         return str(row["payload"]) if row else None
 
     def contract_predictions_for(self, task_id: Optional[str] = None,
-                                 episode_id: Optional[str] = None
+                                 episode_id: Optional[str] = None,*,exact_episode: bool = False
                                  ) -> List[str]:
         """Stored contract-prediction payloads (oldest first), filtered."""
         sql = "SELECT payload FROM contract_predictions"
@@ -624,8 +624,8 @@ class Store:
         if task_id is not None:
             clauses.append("task_id=?")
             params.append(str(task_id))
-        if episode_id is not None:
-            clauses.append("episode_id=?")
+        if episode_id is not None or exact_episode:
+            clauses.append("episode_id IS ?")
             params.append(episode_id)
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
