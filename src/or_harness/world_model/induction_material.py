@@ -45,16 +45,21 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     scoped = [r for r in all_records if (task_id is None or r.task_id == str(task_id))
               and (strategy_id is None or r.strategy_id == str(strategy_id))]
     scoped.sort(key=lambda r: (r.created_at, r.execution_id), reverse=True)
-    if seed_execution_ids:
-        scoped.sort(key=lambda r:r.execution_id not in seed_execution_ids)
-    previous, last = {}, {}
+    previous,last={},{}
     for record in reversed(scoped):
-        previous[record.execution_id] = last.get(record.task_id)
-        last[record.task_id] = record
-    total = len(scoped)
-    if cursor and (boundary := _parse_material_cursor(cursor)) is not None:
-        scoped = [r for r in scoped if (r.created_at, r.execution_id) < boundary]
-    eligible = scoped[:max(0, limit)] if limit is not None else scoped
+        previous[record.execution_id]=last.get(record.task_id);last[record.task_id]=record
+    total=len(scoped)
+    anchors=[available[eid] for eid in seed_execution_ids or [] if eid in available]
+    controls=[r for r in scoped if r.execution_id not in (seed_execution_ids or [])]
+    boundary=_parse_material_cursor(cursor) if cursor else None
+    if boundary is not None:controls=[r for r in controls if (r.created_at,r.execution_id)<boundary]
+    if anchors:
+        # The anchor is outside control pagination; a newer attempt can never
+        # disappear behind the older triggering execution's cursor.
+        eligible=anchors+(controls[:max(0,limit)] if limit is not None else controls)
+    else:
+        scoped=controls
+        eligible=scoped[:max(0,limit)] if limit is not None else scoped
     # Query only a few representatives before expanding records or knowledge.
     seeds = eligible[:3]
     query = ({'text':str(query),'basis':'agent mechanism query'} if query is not None else _query_text_for(seeds,harness))
@@ -133,7 +138,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
             "omitted_execution_ids": [], "omitted_knowledge_count": 0, "next_cursor": None},
         "guidance": {"structural_contrast":"Compare necessary constraint relations, actual methods and checked outcomes; similarity/family only find candidates.",
                      "key_step_explanation":"Write when/do/expect; choose the existing ID for a revision. Shown cases are derivation material.",
-                     "boundary_check":"Test changed premises and an independent unseen case; same-base retries/seeds are controls."},
+                     "boundary_check":"Choose derivation, executable checks, boundary tests or later transfer to support the claimed scope; the agent decides publication."},
     }
     out['selection']={'requested_execution_ids':execution_ids or [],
         'unavailable_execution_ids':[eid for eid in requested if eid not in available],
@@ -155,7 +160,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         row['outcome']['code_hash'] = (record.solver or {}).get('code_hash')
         row['changes'] = {'previous_execution_id':prior.execution_id if prior else None,
                           'code_hash_changed': ((record.solver or {}).get('code_hash') != (prior.solver or {}).get('code_hash')) if prior else None}
-        row.update(attempts_of_task=attempts.get(record.task_id, 1), independent_task=(None if row['identity']['basis']=='task_id_only' else base_attempts[partition[record.execution_id]]==1),
+        row.update(attempts_of_task=attempts.get(record.task_id, 1), independent_task=None,known_same_source_records=base_attempts[partition[record.execution_id]],identity_authority='advisory',
                    cursor=_material_cursor(record))
         if score is not None:
             row["discovery"] = {"similarity": score, "meaning": "candidate_for_comparison"}
@@ -213,7 +218,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         add_case(record, out["related_history"]["executions"], score)
     def refresh():
         retained = {r['execution_id'] for r in out['material']}
-        omitted = [r for r in scoped if r.execution_id not in retained]
+        omitted=[r for r in controls if r.execution_id not in retained]
         displayed = out['material']+out['related_history']['executions']
         out['count'] = len(retained)
         out['n_distinct_tasks'] = len({r['task_id'] for r in out['material']})
@@ -222,10 +227,11 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
                               for task in out['tasks']}
         out['cross_task_hint'].update(n_distinct_tasks_in_batch=out['n_distinct_tasks'],
             n_distinct_base_problems_shown=len({partition[r['execution_id']] for r in displayed}),
-            note='1 task only: conditional_fact remains derivation evidence.' if out['n_distinct_tasks']==1 else 'Look for a mechanism that recurs. Task counts are facts; source problems, not retries, supply independent support.')
+            note='Task/source counts are advisory facts. The agent chooses comparison purposes, evidence scope and publication.')
         out['budget'].update(omitted_execution_ids=[r.execution_id for r in omitted[:3]],
             omitted_execution_count=len(omitted), omitted_knowledge_count=n_candidate_entries-len(out['existing_knowledge']),
-            next_cursor=out['material'][-1]['cursor'] if omitted and out['material'] else None)
+            next_cursor=next((r['cursor'] for r in reversed(out['material']) if r['execution_id'] not in (seed_execution_ids or [])),
+                             f'{repr(float(controls[0].created_at)+1)}|~' if controls else None) if omitted else None)
         states=Counter(r['task_check_state'] for r in out['material'])
         out['check_states']={'passed':states['passed'],'failed':states['failed'],
                              'never_checked_or_insufficient':len(retained)-states['passed']-states['failed']}
@@ -269,6 +275,12 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     with harness.store.transaction() as conn:
         from or_harness.strategy.rule_versions import _facts_ref
         session['fact_refs']={r['execution_id']:_facts_ref(harness,conn,available[r['execution_id']]) for r in displayed}
+        if induction_id:
+            from or_harness.world_model.hplus import get_job
+            from or_harness.strategy.evidence_access import hold_execution
+            current=get_job(harness,induction_id)
+            if current and current['state']=='pending':
+                for row in displayed:hold_execution(harness,induction_id,row['execution_id'],record=available[row['execution_id']])
         material_id=put_value(conn,harness.store,'induction_material',session)
         if task_id is not None:
             meta_write(harness.store,'induction_material:last:'+str(task_id),material_id)

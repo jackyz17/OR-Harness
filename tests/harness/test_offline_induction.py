@@ -324,8 +324,8 @@ class TestConditionalFactPublication(HarnessTestCase):
         rel = result["relations"][0]
         pub = rel["publication"]
         self.assertFalse(pub["published"])
-        self.assertEqual(pub["support_scope"], "derivation_only")
-        self.assertEqual(pub["transferability"], "unproven")
+        self.assertEqual(pub["support_scope"], "recorded_facts")
+        self.assertEqual(pub["transferability"], "agent_decision")
         from or_harness.strategy.selector import is_publishable
         self.assertFalse(is_publishable(h.sbank.get(rel["saved"])))
         self.assertEqual(h.sbank.get(rel["saved"]).verification_state,"verified")
@@ -353,8 +353,8 @@ class TestConditionalFactPublication(HarnessTestCase):
         self.assertEqual(pub["distinct_tasks"], 1)
         # Nothing in the publication claims a task-count rule.
         self.assertNotIn("required_tasks", pub)
-        self.assertFalse(pub["checks"]["transfer"])
-        self.assertFalse(pub["checks"]["boundary"])
+        self.assertEqual(pub["authority"],"agent")
+        self.assertEqual(pub["required_checks"],[])
 
 
 if __name__ == "__main__":

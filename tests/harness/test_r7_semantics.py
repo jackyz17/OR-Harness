@@ -256,8 +256,8 @@ class TestReviewMaterialCursor(HarnessTestCase):
         solo = h.induction_material()
         hint = solo["cross_task_hint"]
         self.assertEqual(hint["n_distinct_tasks_in_batch"], 1)
-        self.assertIn("1 task only", hint["note"])
-        self.assertIn("conditional_fact", hint["note"])
+        self.assertIn("advisory",hint["note"])
+        self.assertIn("agent",hint["note"].lower())
         # Two tasks: the hint points at the cross-task material without
         # turning the count into a publication rule.
         for i in range(2):
@@ -267,7 +267,7 @@ class TestReviewMaterialCursor(HarnessTestCase):
         pair = h.induction_material()
         hint = pair["cross_task_hint"]
         self.assertGreaterEqual(hint["n_distinct_tasks_in_batch"], 2)
-        self.assertIn("look for a mechanism that recurs", hint["note"].lower())
+        self.assertIn("agent chooses",hint["note"].lower())
 
 
 class TestEpisodeBackfill(HarnessTestCase):

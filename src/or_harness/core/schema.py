@@ -1661,8 +1661,8 @@ class StrategicEntry:
     def is_published(self) -> bool:
         """The shared normal-recall predicate for v2 and historical rows.
 
-        V2 requires this exact offered version to be active (or a preserved
-        original legacy version). An unversioned old row keeps its previous
+        V2 offers the exact version explicitly selected by the agent (or a
+        preserved original legacy version). An unversioned old row keeps its previous
         publication semantics; its audit state remains separately visible.
         """
         if self.rule:

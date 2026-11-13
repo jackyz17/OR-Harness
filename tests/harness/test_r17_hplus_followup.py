@@ -43,7 +43,7 @@ class TestSkillDocumentsTheHPlusFollowup(unittest.TestCase):
     def test_skill_separates_hypothesis_increment_and_legacy_effect(self):
         skill = _read("SKILL.md")
         self.assertIn("Keep hypothesis truth separate", skill)
-        self.assertIn("independently validated substantive increment", skill)
+        self.assertIn("agent-supported substantive increment", skill)
         self.assertIn("legacy `evaluate-capability`", skill)
         self.assertIn("It never changes G/C/R strategy ranking", skill)
 

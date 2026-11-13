@@ -1,0 +1,118 @@
+{
+  "provider": "substitute; validates the chain, not predictive discrimination",
+  "objectives": {
+    "A": 2699,
+    "B": 90,
+    "C": 196,
+    "boundary": 0
+  },
+  "induction_id": "ij_e8500396d7eb10cb68a5c8ee",
+  "prediction_id": "sp_dc46aeac4624",
+  "entry_id": "1",
+  "active_version": 1,
+  "source_execution_ids": [
+    "ex_fa39737f5667",
+    "ex_f2778f5555ce",
+    "ex_278310ffdd5b"
+  ],
+  "published_before_real_C": true,
+  "published_scope": [
+    "monotone integer-interval endpoint derivation",
+    "A/B enumerations",
+    "constructed nonmonotone fallback"
+  ],
+  "management": {
+    "maintenance_only": true,
+    "version": 1,
+    "action": "keep",
+    "new_induction_actions": 0
+  },
+  "later_real_C_execution_id": "ex_17839abda44e",
+  "material_id": "induction_material:b3b9790eba63d02e6e1ed6a4ef6ebc4bb0cb7b14ad81266878dd9357d8fdc3ea",
+  "induction_action_id": "ac_691b37ec4a69",
+  "receipt_ref": "hplus_receipt:d88d5fdff1c65d52f39d15762a2d847873a2fcc19b4bb77a578b6c468013a0e5",
+  "hplus_label": 1,
+  "next_provider_request_fragment": {
+    "prediction_context": {
+      "hplus_feedback": {
+        "feedback_version": "wm-hplus-binary/1",
+        "as_of": 1794564553.8318496,
+        "n_applicable": 1,
+        "settled_examples": [
+          {
+            "prediction_id": "sp_dc46aeac4624",
+            "decision": 1,
+            "decision_status": "explicit",
+            "hypothesis": "Endpoint choice depends on objective direction; nonmonotonicity disables reduction.",
+            "facts": {
+              "execution_ids": [
+                "ex_278310ffdd5b",
+                "ex_f2778f5555ce",
+                "ex_fa39737f5667"
+              ],
+              "source_fact_ref": "rule_fact:b1e6ccc368d8da532f6308cdde2a3ecd8ea539d464da780a5c7c2bfdc8b36b52",
+              "verification": [
+                {
+                  "condition_index": 0,
+                  "condition": "Inspect the endpoint choice and independently check the integer optimum.",
+                  "state": "unknown",
+                  "finding": null,
+                  "source": null,
+                  "evidence_refs": [],
+                  "reason": "no sourced completion of the frozen verification"
+                }
+              ]
+            },
+            "conclusion": "The direction-aware endpoint mechanism and its disable boundary are supported in the stated scope.",
+            "label": 1,
+            "verification_state": "agent_supported_increment",
+            "hypothesis_outcome": "unknown",
+            "observation_basis": {
+              "support_refs": [
+                "ex_fa39737f5667",
+                "ex_f2778f5555ce",
+                "ex_278310ffdd5b"
+              ],
+              "checks": [
+                {
+                  "execution_id": "ex_fa39737f5667",
+                  "checker_action_id": "ac_14f9c4c9f3d3",
+                  "checked_at": 1794564553.1420352,
+                  "state": "passed",
+                  "valid": true
+                },
+                {
+                  "execution_id": "ex_f2778f5555ce",
+                  "checker_action_id": "ac_80daf527da64",
+                  "checked_at": 1794564553.3118606,
+                  "state": "passed",
+                  "valid": true
+                },
+                {
+                  "execution_id": "ex_278310ffdd5b",
+                  "checker_action_id": "ac_44e472cc1694",
+                  "checked_at": 1794564553.4382865,
+                  "state": "passed",
+                  "valid": true
+                }
+              ],
+              "reason": null
+            },
+            "deviation_reason": null,
+            "rule_versions": [
+              {
+                "entry_id": "1",
+                "version": 1,
+                "operation": "create",
+                "substantive": true
+              }
+            ],
+            "receipt_ref": "hplus_receipt:d88d5fdff1c65d52f39d15762a2d847873a2fcc19b4bb77a578b6c468013a0e5"
+          }
+        ],
+        "support": "agent learning conclusions supported by valid cited facts; publication is a separate decision",
+        "n_included": 1
+      }
+    }
+  }
+}

@@ -124,7 +124,7 @@ class TestHelpMatchesImplementation(unittest.TestCase):
     def test_publication_is_not_a_task_count(self):
         help_text = self._induce_help()
         self.assertNotIn(">=2 independent tasks", help_text)
-        self.assertIn("independent transfer, boundary", help_text)
+        self.assertIn("no uniform check gate", help_text)
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +137,8 @@ class TestDocsStateTheValueGate(unittest.TestCase):
         with open(os.path.join(REPO, "SKILL.md"), encoding="utf-8") as fh:
             text = fh.read()
         self.assertIn("when / do / expect", text)
-        self.assertIn("independent unseen source problem", text)
-        self.assertIn("Effect attributions remain separate facts and cannot bypass v2 publication",text)
+        self.assertIn("explicit publication choice", text)
+        self.assertIn("act on versioned entries through the shared lifecycle",text)
 
     def test_induction_reference_separates_assertion_from_claim(self):
         with open(os.path.join(REPO, "references", "induction.md"),

@@ -172,7 +172,7 @@ class TestFactCheckedAdmission(HarnessTestCase):
         self.assertFalse(pub["published"])
         self.assertEqual(pub["state"], "candidate")
         self.assertEqual(out["relations"][0]["verification"]["state"], FACT_CHECKED)
-        self.assertEqual(pub["transferability"], "unproven")
+        self.assertEqual(pub["transferability"], "agent_decision")
         recs = h.selector.recall(
             ProblemProfile(problem_id="q", family="planning",
                            resource_coupling=0.9, temporal_coupling=0.1,

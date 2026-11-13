@@ -294,7 +294,7 @@ class TestClaimAssertions(ClaimCase):
 
 
 class TestClaimPublication(ClaimCase):
-    """Derivation assertions do not substitute for transfer or boundary checks."""
+    """Assertions report their scope; publication needs the agent's explicit choice."""
 
     def test_verified_claim_is_published(self):
         self.seed_cross_period()
@@ -326,7 +326,7 @@ class TestClaimPublication(ClaimCase):
         self.assertFalse(out["publication"]["published"])
         self.assertEqual(out["publication"]["distinct_tasks"], 1)
         self.assertEqual(out["publication"]["support_scope"],
-                         "derivation_only")
+                         "recorded_facts")
         self.assertEqual(len(claim_scope_tasks(entry)), 1)
 
     def test_unverified_claim_is_still_published(self):

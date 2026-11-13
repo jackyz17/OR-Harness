@@ -2906,7 +2906,7 @@ class ORHarness:
                     raise ValueError('H+ building requires its positive executed induction job before accepting a write')
                 induction_id=matching[0]['induction_id']
             binary_job=require_job(self,induction_id)
-            if not binary_job.get('material_ref'):
+            if not (binary_job.get('material_sessions') or binary_job.get('material_ref')):
                 raise ValueError('read induction-material for the authorized H+ job before accepting its write')
         adoption = self.actions.report_action(
             "induce", MAINTENANCE_TASK_ID,
@@ -6650,17 +6650,27 @@ class ORHarness:
 
     def induce(self, *, induction_id=None, review=None, **kwargs):
         """Authorize and settle binary H+ work around the existing writer."""
+        relations=kwargs.get('relations') or []
+        body_keys={'when','do','expect','claim','text','method','conditions','predicates','effect_scope','merge_entry_ids'}
+        existing_only=bool(relations) and all(
+            (r.get('entry_id') or r.get('target_entry') or r.get('target_entry_id')) and
+            r.get('operation','add_evidence')=='add_evidence' and not(body_keys & set(r)) and
+            self.sbank.get(str(r.get('entry_id') or r.get('target_entry') or r.get('target_entry_id'))) is not None
+            for r in relations)
+        if (existing_only or not relations and kwargs.get('effect_attributions')) and induction_id is None and review is None:
+            return self._maintain_entries(**kwargs)
         from or_harness.world_model.hplus import (
-            require_job, reserve_action, complete, get_job, get_value, put_submission,
+            require_job, reserve_action, complete, get_job, get_value, put_submission,submission_conflict,
         )
         from or_harness.world_model.hplus import submission_job
-        job=submission_job(self,induction_id,kwargs.get('relations'))
+        from or_harness.world_model.conditions import digest
+        job=submission_job(self,induction_id,kwargs.get('relations'),digest({'arguments':kwargs,'review':review}))
         if job is None:
             return self._induce_impl(**kwargs)
         if job['state'] == 'completed':
             from or_harness.world_model.conditions import digest
             if job.get('submission_digest') != digest({'arguments':kwargs,'review':review}):
-                raise ValueError('completed induction job cannot be reused for a different submission')
+                raise submission_conflict(self,job,kwargs,review)
             result = copy.deepcopy(get_value(self.store, job['result_ref']))
             result['already_completed'] = True
             self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
@@ -6673,7 +6683,7 @@ class ORHarness:
                 self._active_induction_job=None
         if not kwargs.get('relations') and not (review or kwargs.get('notes')):
             raise ValueError('empty review requires a reason or structured review receipt')
-        if not job.get('material_ref'):
+        if not (job.get('material_sessions') or job.get('material_ref')):
             raise ValueError('read induction-material for this job before submitting its review')
         reserve_action(self, job)
         try:
@@ -6683,7 +6693,7 @@ class ORHarness:
                 fingerprint=digest({'arguments':kwargs,'review':review})
                 if current['state']=='completed':
                     if current.get('submission_digest')!=fingerprint:
-                        raise ValueError('completed induction job conflicts with this submission')
+                        raise submission_conflict(self,current,kwargs,review)
                     result=copy.deepcopy(get_value(self.store,current['result_ref']))
                     result['already_completed']=True
                 else:
@@ -6699,6 +6709,41 @@ class ORHarness:
             return result
         finally:
             self._active_induction_job = None
+
+    def _maintain_entries(self,*,effect_attributions=None,relations=None,dry_run=False,strategy_id=None,**kwargs):
+        """Manage selected existing entries without an induction action or receipt."""
+        from or_harness.world_model.state import KnowledgeRef
+        plans=[self._validate_effect_attribution(v) for v in effect_attributions or []]
+        ids=sorted({p['entry_id'] for p in plans}|{str(r.get('entry_id') or r.get('target_entry') or r.get('target_entry_id')) for r in relations or []})
+        def state():
+            return {eid:KnowledgeRef.from_entry(entry).to_dict() for eid in ids if (entry:=self.sbank.get(eid)) is not None}
+        with self.store.transaction():
+            before=state();count_before=self.sbank.count()
+            self._existing_entry_maintenance=True
+            try:
+                submitted=self._submit_relations(relations,dry_run=dry_run,force=False,verify=kwargs.get('verify'),notes=kwargs.get('notes')) if relations else {}
+            finally:self._existing_entry_maintenance=False
+            attributed=self._record_validated_attributions(plans,dry_run=dry_run)
+            revisions=self.induction.revise(dry_run=dry_run,entry_ids=set(ids))
+            after=state()
+        fields=('predicates','expected_quality_hat','quality_interval','expected_cost_hat','cost_interval',
+                'failure_prob','support_n','status','verification_state','rule','claim')
+        changes=[]
+        for eid in sorted(set(before)&set(after)):
+            changed={f:{'before':before[eid].get(f),'after':after[eid].get(f)} for f in fields if before[eid].get(f)!=after[eid].get(f)}
+            if changed:changes.append({'entry_id':eid,'changed':changed})
+        delta={'entries_created':[],'entries_removed':[],'entry_count_before':count_before,
+               'entry_count_after':self.sbank.count(),'entry_changes':changes}
+        result={**submitted,'maintenance_only':True,'saved':submitted.get('saved',0),'effect_attributions':attributed,
+                'revisions':revisions,'affected_entry_ids':ids,'knowledge_delta':delta,
+                'knowledge_after':{'entries':list(after.values()),'entry_count':self.sbank.count(),'scope':'affected_entries'},
+                'business_result':'revised' if changes else 'relation_updated' if any(r.get('changed') for r in submitted.get('relations') or []) else 'unchanged',
+                'execution_ids':sorted({p['item']['execution_id'] for p in plans if p['item'].get('execution_id')})}
+        if not dry_run:
+            from or_harness.strategy.rule_versions import sync_rule_entries
+            changed=set(submitted.get('index_entry_ids') or [])|{p['entry_id'] for p in plans if p['lifecycle_action'] or p['item']['verdict']=='refuting'}
+            result['index_sync']=sync_rule_entries(self,changed,ids)
+        return result
 
     def _induce_impl(self, *, dry_run: bool = False, force: bool = False,
                notes: Optional[List[str]] = None,
@@ -6788,6 +6833,9 @@ class ORHarness:
             validated_attributions, dry_run=dry_run)
         if attributed:
             result["effect_attributions"] = attributed
+            ids={a["entry_id"] for a in attributed}
+            result["index_entry_ids"]=sorted(set(result.get("index_entry_ids") or [])|ids)
+            result["affected_entry_ids"]=sorted(set(result.get("affected_entry_ids") or [])|ids)
         if maintenance is not None:
             # Offline LIFECYCLE maintenance: calibration is replayed and any
             # pending management event is applied (promotion/demotion,
@@ -7473,14 +7521,25 @@ class ORHarness:
         if action is not None:
             item["lifecycle_action"] = action
             item["evidence_execution_ids"] = evidence_ids
+        if entry.rule:
+            from or_harness.strategy.rule_versions import adopted_version
+            cited=list(dict.fromkeys(evidence_ids+([execution_id] if execution_id else [])))
+            versions={adopted_version(self,r,entry_id) for eid in cited
+                      if (r:=self._recorded_execution(eid)) is not None and self._declared_adoption(entry_id,eid)}-{None}
+            requested=raw.get('version')
+            if requested is not None and requested not in versions:
+                raise ValueError('version must match one of the cited actual adoptions: '+str(sorted(versions)))
+            if len(versions)>1 and requested is None:
+                raise ValueError('multiple adopted versions; select one existing version: '+str(sorted(versions)))
+            item['version']=requested if requested is not None else next(iter(versions),None)
+            item['evidence_execution_ids']=cited
         return {"entry_id": entry_id, "item": item,
                 "lifecycle_action": action}
 
     def _recorded_execution(self, execution_id: str):
         """The stored execution record for ``execution_id``, or None."""
-        record = self.bank.get(execution_id)
-        if record is None:
-            record = self.bank.get_pending(execution_id)
+        from or_harness.strategy.evidence_access import resolve_execution
+        record=resolve_execution(self,execution_id)
         if record is None:
             return None
         if str(record.source) not in ("executed", "staged"):
@@ -7617,19 +7676,11 @@ class ORHarness:
         return action.episode_id if action is not None else None
 
     def _refresh_rule_evidence(self,execution_id):
-        """Refresh dependencies of an amended fact, including retained refs/index."""
-        from or_harness.strategy.rule_versions import refresh_execution_support,sync_rule_entries
-        from or_harness.strategy.evidence_access import resolve_execution,retain_record
-        from or_harness.world_model.induction_gate import meta_read
-        if meta_read(self.store,'rule_evidence_latest:'+str(execution_id)):
-            record=resolve_execution(self,execution_id,include_excluded=True)
-            if record:
-                with self.store.transaction() as conn:retain_record(self,conn,record)
-        result=refresh_execution_support(self,execution_id)
-        affected=[v['entry_id'] for v in result['affected_versions']]
-        if affected:
-            result['index_sync']=sync_rule_entries(self,result['index_entry_ids'],affected)
-        return result
+        """Refresh referenced facts only; the agent owns utility/publication decisions."""
+        from or_harness.strategy.evidence_access import resolve_execution,refresh_retained
+        record=resolve_execution(self,execution_id,include_excluded=True)
+        retained=refresh_retained(self,record) if record else {}
+        return {'affected_versions':[],'index_entry_ids':[],'authority':'agent',**retained}
 
     def _republish_calibration_if_in_window(self, task_id: str,
                                             episode_id: Optional[str]
@@ -8162,13 +8213,13 @@ class ORHarness:
         if not retained:
             self.bank.set_task_check(execution_id,report)
         record.execution_features['task_check']=copy.deepcopy(report)
-        from or_harness.strategy.evidence_access import retain_record
-        with self.store.transaction() as conn:retain_record(self,conn,record)
-        dependencies=self._refresh_rule_evidence(execution_id)
+        from or_harness.strategy.evidence_access import refresh_retained
+        refresh_retained(self,record)
+        dependencies={'affected_versions':[],'authority':'agent'}
         rule_validation = None
         if self.episode_closeout_record(task_id, resolved_episode) is not None:
             from or_harness.strategy.rule_versions import record_uses
-            refreshed = resolve_execution(self,execution_id)
+            refreshed = record
             rule_validation = record_uses(self,[refreshed])
             if rule_validation.get("affected_entry_ids"):
                 from or_harness.strategy.rule_versions import sync_rule_entries

@@ -500,7 +500,7 @@ class InductionEngine:
     # -- offline revalidation --------------------------------------------------
 
     def revise(self, strategy_id: Optional[str] = None, *,
-               dry_run: bool = False) -> List[Dict[str, Any]]:
+               dry_run: bool = False,entry_ids=None) -> List[Dict[str, Any]]:
         """Re-derive lifecycle state from the frozen evidence (offline).
 
         Online recording never changes knowledge: it writes one frozen check
@@ -549,8 +549,16 @@ class InductionEngine:
         report: List[Dict[str, Any]] = []
         for entry in self.sbank.list(strategy_id=strategy_id,
                                      include_dormant=True):
+            if entry_ids is not None and entry.entry_id not in entry_ids:continue
             if entry.rule:
-                continue  # v2 checks/uses are already versioned, never replayed as legacy maturity
+                from or_harness.strategy.rule_versions import event_records
+                events=event_records(self.sbank.store,entry.entry_id)
+                report.append({'entry_id':entry.entry_id,'strategy_id':entry.strategy_id,
+                    'adoptions':{'n_adoptions':len({e['execution_id'] for e in events if e['kind']=='use'}),
+                                 'events':[e for e in events if e['kind']=='use']},
+                    'attributed_effects':[e for e in events if e['kind']=='effect'],
+                    'transitions':[], 'authority':'agent','state':entry.rule['state']})
+                continue
             checks = checks_by_entry.get(entry.entry_id) or []
             adoptions = adoptions_by_entry.get(entry.entry_id) or []
             has_attribution = bool(entry.effect_attribution)

@@ -46,8 +46,6 @@ def declared_task_identity(task):
     semantics={k:copy.deepcopy(task[k]) for k in ('description','text','objective','constraints','spec','requirements','business_rules','data_ref','coupling') if task.get(k) is not None}
     content=digest(semantics) if semantics else None
     text=str(task.get('text') or task.get('description') or '')
-    numbers=sorted(re.findall(r'(?<![\w.])-?\d+(?:\.\d+)?',text))
-    suspicion=digest(numbers) if len(numbers)>=3 and any(s in text.lower() for s in ('min','max','最','<=','≥','≤')) else None
     aliases={'task:'+str(task['task_id'])}|{'task:'+s for s in origins}
     if input_digest:aliases.add('input:'+input_digest)
     if immutable_instance:aliases.add('instance:'+immutable_instance)
@@ -56,7 +54,7 @@ def declared_task_identity(task):
         'base_id':sorted(origins)[0] if origins else input_digest or content or str(task['task_id']),
         'basis':'declared_origin' if origins else 'original_inputs' if original else 'retained_text' if content else 'task_id_only',
         'content_digest':content,'input_digest':input_digest,'instance_digest':immutable_instance,
-        'aliases':sorted(aliases),'origin_task_ids':sorted(origins),'text_duplicate_hint':suspicion,
+        'aliases':sorted(aliases),'origin_task_ids':sorted(origins),'advisory_only':True,
         'relationship':'variant' if origins else 'lineage_not_declared','hypothetical':False}
 
 
@@ -102,9 +100,6 @@ def identity_aliases(identity):
 def instance_relation(left,right):
     if identity_aliases(left)&identity_aliases(right):
         return 'same_source'
-    if (not left.get('input_digest') and not right.get('input_digest') and
-            left.get('text_duplicate_hint') and left.get('text_duplicate_hint')==right.get('text_duplicate_hint')):
-        return 'possible_duplicate'
     if left.get('basis')=='task_id_only' or right.get('basis')=='task_id_only':return 'unknown'
     return 'independent'
 
@@ -185,6 +180,7 @@ def short_rule(entry, *, field_limit=2400):
             "version": rule.get("view_version"), "active_version": rule.get("active_version"),
             "candidate_version": rule.get("candidate_version"),
             "status": rule.get("state", entry.status), "verification_state": entry.verification_state,
+            "verification_scope":atomic((entry.verification or {}).get('scope'),ref+' #verification.scope',field_limit),
             "published": entry.is_published, "support_n": entry.support_n,
             "body": {k: atomic(v, ref + " #" + k, field_limit) for k, v in body.items()},
             "predicates": copy.deepcopy(entry.predicates), "detail_ref": ref,

@@ -1,4 +1,4 @@
-"""Run A/B -> candidate -> held-out C/boundary -> next provider input.
+"""Run A/B -> derivation/boundary -> agent publication -> C use/management.
 
 PYTHONPATH=src python docs/validation/run_review_eight_demo.py [--home EMPTY_HOME]
 Uses a substitute predictor, actual Python integer enumeration and normal APIs.
@@ -72,6 +72,7 @@ def execute_checked(h,provider,home,name,n,c,expected,*,decision=0,entry=None,ma
     if entry:
         check['rule_assessments']=[{'entry_id':entry,'version':1,
             'applicability':'not_applicable' if boundary else 'applies','response':'disable' if boundary else None,
+            'verdict':'supported','purpose':'boundary' if boundary else 'transfer',
             'method_fidelity':'faithful','effect_coverage':'complete',
             'source':'demo fixture reviewer inspected this generated script and the original integer checker',
             'assessment':'Signed endpoint choice is implemented; the nonmonotone case enumerates the full feasible set. Original constraints and optimum are checked.',
@@ -91,20 +92,36 @@ def run(home):
         pa,a,closed=execute_checked(h,provider,home,'A',1000,300,2699,decision=1,maximum=True)
         pb,b,_=execute_checked(h,provider,home,'B',641,130,90)
         job=closed['induction_schedule']['pending_ids'][0]
-        material=h.induction_material(induction_id=job,execution_ids=[b.execution_id],related_top_k=1)
-        submitted=h.induce(induction_id=job,relations=[{**RULE,'evidence':[a.execution_id,b.execution_id]}])
+        pd,boundary,bc=execute_checked(h,provider,home,'constructed-boundary',12,0,0,boundary=True)
+        material=h.induction_material(induction_id=job,execution_ids=[b.execution_id,boundary.execution_id],related_top_k=2)
+        scope=['monotone integer-interval endpoint derivation','A/B enumerations','constructed nonmonotone fallback']
+        submitted=h.induce(induction_id=job,relations=[{**RULE,
+            'evidence':[a.execution_id,b.execution_id,boundary.execution_id],
+            'publication':{'state':'published','reason':'At fixed Y a monotone objective attains the interval optimum at the selected endpoint; enumerations and the nonmonotone fallback were checked.','scope':scope}}],
+            review={'outcome':'new_rule','conclusion':'The direction-aware endpoint mechanism and its disable boundary are supported in the stated scope.',
+                'comparison':{'sufficient':True,'substantive':True,'basis':'derivation',
+                    'source':'demo inducer compared captured integer inputs, endpoint algebra and actual enumerations',
+                    'assessment':'Derive the feasible X interval; monotonicity and objective direction choose its endpoint. The constructed nonmonotone case uses full enumeration.',
+                    'evidence_refs':[a.execution_id,b.execution_id,boundary.execution_id]}})
         entry=submitted['relations'][0]['saved']
-        pc,c,cc=execute_checked(h,provider,home,'C',812,200,196,entry=entry)
-        pd,boundary,bc=execute_checked(h,provider,home,'boundary',12,0,0,entry=entry,boundary=True)
+        published_before_real_C=h.sbank.get(entry).is_published
         observed=receipt_observation(h,get_job(h,job))
-        assert h.sbank.get(entry).is_published and observed['label']==1
+        assert published_before_real_C and observed['label']==1
+        pc,c,cc=execute_checked(h,provider,home,'C',812,200,196,entry=entry)
+        n_inductions=len(h.actions.query(action_type='induce'))
+        managed=h.induce(effect_attributions=[{'entry_id':entry,'execution_id':c.execution_id,
+            'verdict':'helped','lifecycle_action':'keep','note':'Agent inspected actual version-one use on C; the endpoint result 196 meets the declared integer checks. No comparative cost advantage asserted.'}])
+        assert managed['maintenance_only'] and len(h.actions.query(action_type='induce'))==n_inductions
         provider.decision=0
         h.predict_strategy_outcome(problem('next',920,220),{'strategy_id':'endpoints','solver':'python','method':METHOD},'next')
         return {'provider':'substitute; validates the chain, not predictive discrimination',
             'objectives':{'A':a.quality['objective'],'B':b.quality['objective'],'C':c.quality['objective'],'boundary':boundary.quality['objective']},
             'induction_id':job,'prediction_id':pa.prediction_id,'entry_id':entry,'active_version':h.sbank.get(entry).rule['active_version'],
-            'source_execution_ids':[a.execution_id,b.execution_id],
-            'independent_execution_ids':[c.execution_id,boundary.execution_id],
+            'source_execution_ids':[a.execution_id,b.execution_id,boundary.execution_id],
+            'published_before_real_C':published_before_real_C,'published_scope':scope,
+            'management':{'maintenance_only':managed['maintenance_only'],'version':managed['effect_attributions'][0]['version'],
+                          'action':'keep','new_induction_actions':len(h.actions.query(action_type='induce'))-n_inductions},
+            'later_real_C_execution_id':c.execution_id,
             'material_id':material['material_id'],'induction_action_id':submitted['induction_receipt']['induction_action_id'],
             'receipt_ref':get_job(h,job)['receipt_ref'],'hplus_label':observed['label'],
             'next_provider_request_fragment':{'prediction_context':{'hplus_feedback':provider.requests[-1]['prediction_context']['hplus_feedback']}}}

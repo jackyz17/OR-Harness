@@ -222,7 +222,11 @@ def schedule_episode(harness, task_id, episode_id):
                 "control_snapshot_ref": signal.get("input_ref") if branch == "nohplus" and signal["decision"] == 0 else None}
             previous=get_job(harness,identity)
             if previous:job=previous
-            else:_save_job(harness, job)
+            else:
+                if selected:
+                    from or_harness.strategy.evidence_access import hold_execution
+                    hold_execution(harness,identity,execution_id,record=record)
+                _save_job(harness,job)
         scheduled.append(job)
     return schedule_view(scheduled, unobserved)
 
@@ -265,7 +269,7 @@ def require_job(harness, induction_id=None, *, task_id=None, material_id=None, a
     return job
 
 
-def submission_job(harness,induction_id,relations):
+def submission_job(harness,induction_id,relations,submission_digest=None):
     if not formal(harness):return None
     declared={str(r['induction_id']) for r in relations or [] if r.get('induction_id')}
     if induction_id:declared.add(str(induction_id))
@@ -276,6 +280,10 @@ def submission_job(harness,induction_id,relations):
         declared.add(session['induction_id'])
     if len(declared)>1:raise ValueError('conflicting induction IDs in submission/material: '+str(sorted(declared)))
     resolved=next(iter(declared),None)
+    if resolved is None and submission_digest:
+        previous=[j for j in jobs(harness) if j['state']=='completed' and j.get('submission_digest')==submission_digest]
+        if len(previous)>1:raise ValueError('submission matches several completed reviews; choose its induction-id')
+        if previous:resolved=previous[0]['induction_id']
     if resolved is None and relations:
         evidence={str(e if isinstance(e,str) else e.get('execution_id')) for r in relations for e in r.get('evidence') or []}
         candidates=[]
@@ -322,46 +330,35 @@ def aggregate_material(harness,job):
     return reference,value
 
 
-def material_for_job(harness, job, builder, **kwargs):
+def material_for_job(harness,job,builder,**kwargs):
+    """Query current evidence every time; retain only delivered references."""
     job=get_job(harness,job['induction_id'])
-    key=digest(kwargs)
-    requests=job.get('material_requests') or {}
-    if key in requests:return copy.deepcopy(get_value(harness.store,requests[key]))
-    # Compatibility for unchanged first queries from an older cached job.
-    if job.get('material_ref') and not requests and job['state']=='completed':
-        return copy.deepcopy(get_value(harness.store,job['material_ref']))
-    if job['state']=='completed':raise ValueError('completed job cannot start a new material query')
-    # This metadata is included in the builder's total budget from the start.
+    if job['state']=='completed':
+        if job.get('material_ref') and not job.get('material_policy'):
+            return {**copy.deepcopy(get_value(harness.store,job['material_ref'])),'historical':True}
+        return {'material_assembled':False,'induction_id':job['induction_id'],'state':'completed',
+                'receipt_ref':job['receipt_ref'],'evidence_ids':job.get('selected_execution_ids') or []}
     from or_harness.strategy.evidence_views import atomic
-    gate = {"state": "allow", "source": "frozen_hplus", "induction_id": job["induction_id"],
-            "prediction_id": job["prediction_id"], "decision": job["signal"]["decision"],
-            "reason": "positive executed job requires one review; missing verification does not cancel it",
-            'hypothesis':atomic(job['signal'].get('claim'),job['signal'].get('input_ref'),450),
-            'verification':atomic(job['signal'].get('verification_conditions'),job['signal'].get('input_ref'),450),
-            'source_fact_ref':job['source_fact_ref'],
-            'baseline_snapshot_ref':job['signal'].get('source_snapshot_ref')}
-    if job['control_snapshot_ref']:
-        kwargs['frozen_knowledge'] = frozen_rules(harness,job)
-        gate['knowledge_basis'] = 'prediction-time snapshot, including zero-signal missed-opportunity review'
-    _,prior=aggregate_material(harness,job)
-    result = builder(harness, gate=gate, task_id=job["task_id"],
-        seed_execution_ids=job['execution_ids'],retained_execution_ids=prior['shown_execution_ids'],
-        induction_id=job['induction_id'],episode_id=job['episode_id'],**kwargs)
-    material_id = result.get("material_id")
-    with harness.store.transaction() as conn:
+    gate={'state':'allow','source':'frozen_hplus','induction_id':job['induction_id'],
+        'prediction_id':job['prediction_id'],'decision':job['signal']['decision'],
+        'reason':'positive executed job requires one agent review',
+        'hypothesis':atomic(job['signal'].get('claim'),job['signal'].get('input_ref'),450),
+        'verification':atomic(job['signal'].get('verification_conditions'),job['signal'].get('input_ref'),450),
+        'source_fact_ref':job['source_fact_ref'],'baseline_snapshot_ref':job['signal'].get('source_snapshot_ref')}
+    if job.get('control_snapshot_ref'):
+        kwargs['frozen_knowledge']=frozen_rules(harness,job)
+        gate['knowledge_basis']='prediction-time snapshot'
+    from or_harness.strategy.evidence_access import held_records
+    result=builder(harness,gate=gate,task_id=job['task_id'],seed_execution_ids=job['execution_ids'],
+        retained_execution_ids=list(held_records(harness,job['induction_id'])),induction_id=job['induction_id'],
+        episode_id=job['episode_id'],**kwargs)
+    with harness.store.transaction():
         current=get_job(harness,job['induction_id'])
-        if current['state']=='completed':
-            # A second connection completed while this read was building.
-            return result
-        if material_id:
-            session = get_value(harness.store, material_id)
-            session["induction_id"] = job["induction_id"]
-            # A new immutable session binds exactly what this job displayed.
-            result["material_id"] = put_value(conn, harness.store, "induction_material", session)
-            meta_write(harness.store, 'induction_material:last:' + job['task_id'], result['material_id'])
-        current.setdefault('material_requests',{})[key]=put_value(conn,harness.store,'hplus_material',result)
-        current['material_ref']=current['material_requests'][key]
+        if current['state']=='completed':return result
+        session=get_value(harness.store,result['material_id'])
+        current['material_policy']='live-query/1'
         current['material_sessions']=list(dict.fromkeys(material_sessions(harness,current)+[result['material_id']]))
+        current['selected_execution_ids']=list(dict.fromkeys((current.get('selected_execution_ids') or [])+session['shown_execution_ids']))
         _save_job(harness,current)
     return result
 
@@ -386,6 +383,15 @@ def put_submission(harness,arguments,review):
     return put_value(harness.store.conn,harness.store,'induction_submission',{'arguments':arguments,'review':review})
 
 
+def submission_conflict(harness,job,arguments,review):
+    original=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
+    old=original.get('arguments') or {}
+    fields=['arguments.'+key for key in sorted(set(old)|set(arguments)) if old.get(key)!=arguments.get(key)]
+    if original.get('review')!=review:fields.append('review')
+    return ValueError('completed induction submission conflicts in '+', '.join(fields or ['payload'])+
+        '; reuse the original payload or inspect receipt '+str(job.get('receipt_ref')))
+
+
 def complete(harness, job, result, review=None):
     if review is not None and not isinstance(review,dict):
         raise ValueError('review must be a JSON object')
@@ -402,7 +408,7 @@ def complete(harness, job, result, review=None):
         raise ValueError("completion requires the actual finished induction action")
     source=set(job['execution_ids'])|set((action.outcome or {}).get('execution_ids') or [])
     material_id,material=aggregate_material(harness,job)
-    source.update(material['shown_execution_ids'])
+    source.update((job.get('submitted_execution_ids') or []))
     from or_harness.world_model.hplus_support import increment
     updates=[]
     submission=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
@@ -430,15 +436,22 @@ def complete(harness, job, result, review=None):
         "outcome": review.get("outcome") or ("knowledge_submitted" if updates else "insufficient_material"),
         "conclusion": str(conclusion), "hypothesis_outcome": review.get("hypothesis_outcome", "unknown"),
         "comparison": review.get("comparison"), "deviation_reason": review.get("deviation_reason"),
-        "created_at": time.time()}
+        "created_at": time.time(), "observation_rule_version":"wm-hplus-review/2"}
     if fact["outcome"] not in ("knowledge_submitted", "new_rule", "revised", "evidence_added", "already_covered",
                                "no_increment", "hypothesis_refuted", "insufficient_material"):
         raise ValueError("unknown induction review outcome")
+    from or_harness.world_model.hplus_support import supported_comparison
+    if fact.get('comparison'):supported_comparison(harness,job,fact['comparison'],time.time())
+    for update in updates:
+        comp=get_value(harness.store,update['increment']['comparison_ref'])
+        if comp:supported_comparison(harness,job,comp,time.time())
     job["receipt_ref"] = put_value(harness.store.conn, harness.store, "hplus_receipt", fact)
     job["state"] = "completed"
     result["induction_receipt"] = {**fact, "receipt_ref": job["receipt_ref"]}
     job["result_ref"] = put_value(harness.store.conn, harness.store, "hplus_result", result)
     _save_job(harness, job)
+    from or_harness.strategy.evidence_access import release_hold
+    release_hold(harness,job['induction_id'])
     return fact
 
 
@@ -496,8 +509,8 @@ def feedback(harness, *, task=None, budget_chars=3500, as_of=None):
         candidates.append((overlap+3*class_match, receipt["created_at"], job, observation))
     candidates.sort(key=lambda x: (x[0]>0,x[3]['label'] is not None,x[0],x[1]),reverse=True)
     out = {"feedback_version": HPLUS_VERSION, "as_of": cutoff, "n_applicable": len(candidates),
-           "settled_examples": [], "support": "recorded training receipts; labels require independent validation or sourced sufficient comparison"}
-    for _, _, job, observation in candidates[:4]:
+           "settled_examples": [], "support": "agent learning conclusions supported by valid cited facts; publication is a separate decision"}
+    for _, _, job, observation in candidates:
         receipt = observation["receipt"]
         row = {"prediction_id": job["prediction_id"], "decision": job["signal"]["decision"],
                "decision_status": job["signal"]["decision_status"],
@@ -509,10 +522,11 @@ def feedback(harness, *, task=None, budget_chars=3500, as_of=None):
                "hypothesis_outcome": observation["hypothesis_outcome"],
                "observation_basis":observation.get("observation_basis"),
                "deviation_reason": atomic(receipt.get("deviation_reason"), job["receipt_ref"], 160),
-               "rule_versions": receipt["rule_updates"][:2], "receipt_ref": job["receipt_ref"]}
+               "rule_versions": [{k:u.get(k) for k in ("entry_id","version","operation","substantive")} for u in receipt["rule_updates"][:2]], "receipt_ref": job["receipt_ref"]}
         out["settled_examples"].append(row)
         if chars(out) + 32 > budget_chars:
             out["settled_examples"].pop()
-            break
+            continue
+        if len(out["settled_examples"])>=4:break
     out["n_included"] = len(out["settled_examples"])
     return out

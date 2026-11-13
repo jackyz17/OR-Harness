@@ -20,25 +20,74 @@ def validity(harness,execution_id):
 
 
 def retain_record(harness,conn,record,*,make_latest=True):
+    """Compatibility name: persist a small audit fact, never another full row."""
+    from or_harness.strategy.rule_versions import _facts_ref
+    return _facts_ref(harness,conn,record)
+
+
+def hold_execution(harness,owner,execution_id,*,record=None):
+    """Retain full working evidence only while its owning review is pending."""
+    record=record or resolve_execution(harness,execution_id)
+    if record is None:return None
     action=harness.actions.by_execution(record.execution_id)
     snapshot=harness.get_snapshot(action.pre_snapshot_id) if action and action.pre_snapshot_id else None
     problem=snapshot.problem_state if snapshot else {}
     payload=problem.get('task_input') or problem.get('task_payload') or record.execution_features.get('retained_task_payload')
     text=harness.store.get_task_text(record.task_id,record.task_text_digest) if record.task_text_digest else None
-    value={'record':record.to_dict(),'task_payload':copy.deepcopy(payload),'task_text':text or record.execution_features.get('retained_task_text')}
-    ref=put_value(conn,harness.store,'rule_execution',value)
-    if make_latest:
-        live=harness.bank.get(record.execution_id) or harness.bank.get_pending(record.execution_id)
-        if live is not None and live.to_dict()!=record.to_dict():
-            latest=retain_record(harness,conn,live,make_latest=False)
-            meta_write(harness.store,'rule_evidence_latest:'+record.execution_id,latest)
-            return ref
-        previous=meta_read(harness.store,'rule_evidence_latest:'+record.execution_id)
-        old=_decode(harness,previous) if previous else None
-        checked=lambda r:((r.execution_features.get('task_check') or {}).get('checked_at') or 0)
-        if old is None or checked(record)>=checked(old):
-            meta_write(harness.store,'rule_evidence_latest:'+record.execution_id,ref)
+    with harness.store.transaction() as conn:
+        ref=put_value(conn,harness.store,'induction_execution',{'record':record.to_dict(),
+            'task_payload':copy.deepcopy(payload),'task_text':text or record.execution_features.get('retained_task_text')})
+        held=meta_read(harness.store,'induction_hold:'+str(owner)) or {}
+        held[record.execution_id]=ref
+        meta_write(harness.store,'induction_hold:'+str(owner),held)
     return ref
+
+
+def held_records(harness,owner):
+    return meta_read(harness.store,'induction_hold:'+str(owner)) or {}
+
+
+def refresh_retained(harness,record):
+    """Update only facts already referenced by a review/rule; ordinary checks stay in the bank."""
+    owners=[r['key'].split(':',1)[1] for r in harness.store.conn.execute(
+        "SELECT key FROM meta WHERE key LIKE 'induction_hold:%'")
+        if record.execution_id in (meta_read(harness.store,r['key']) or {})]
+    for owner in owners:hold_execution(harness,owner,record.execution_id,record=record)
+    if meta_read(harness.store,'rule_fact_latest:'+record.execution_id):
+        from or_harness.strategy.rule_versions import _facts_ref
+        with harness.store.transaction() as conn:_facts_ref(harness,conn,record)
+    # Old full references remain readable but are not recreated by new checks.
+    return {'retained_by':owners}
+
+
+def release_hold(harness,owner):
+    with harness.store.transaction() as conn:
+        conn.execute('DELETE FROM meta WHERE key=?',('induction_hold:'+str(owner),))
+        live=set()
+        for row in conn.execute("SELECT value FROM meta WHERE key LIKE 'induction_hold:%'"):
+            live.update(harness.store.loads(row['value']).values())
+        for row in conn.execute("SELECT value_id FROM condition_values WHERE kind='induction_execution'"):
+            if row['value_id'] not in live:conn.execute('DELETE FROM condition_values WHERE value_id=?',(row['value_id'],))
+
+
+def _from_fact(harness,fact):
+    record=ExecutionRecord.from_dict({'execution_id':fact['execution_id'],'task_id':fact['task_id'],
+        'strategy_id':fact['strategy_id'],'source':fact.get('source','executed'),'created_at':fact.get('created_at'),
+        'profile_snapshot':{'problem_id':fact['task_id'],'family':fact.get('family','unknown')},
+        'quality':fact.get('outcome') or {},'cost':fact.get('cost') or {},
+        'cost_measured':fact.get('cost_measured') or [],'measurement_scope':fact.get('measurement_scope','attempt'),
+        'solver':fact.get('solver') or {},'execution_features':{
+            'task_check':fact.get('checker') or {},'artifacts':fact.get('artifacts') or {},
+            'task_identity':fact.get('identity'),'retained_task_text':fact.get('task_text'),
+            'used_entries':fact.get('used_entries') or {},'execution_config':fact.get('execution_config') or {},
+            'cost_provenance':fact.get('cost_provenance') or {d:{'source':'unknown_retained_provenance'} for d in fact.get('cost_measured') or []},
+            'audit_fact_only':True}})
+    record.method_actual=(fact.get('method') or {}).get('actual')
+    if fact.get('task_input_ref'):
+        problem=get_value(harness.store,fact['task_input_ref'])
+        record.execution_features['retained_task_payload']=copy.deepcopy(problem.get('task_input') or problem.get('task_payload'))
+        record.execution_features['retained_task_input_ref']=fact['task_input_ref']
+    return record
 
 
 def _decode(harness,reference):
@@ -54,8 +103,16 @@ def resolve_execution(harness,execution_id,*,include_excluded=False):
     if not include_excluded and not validity(harness,execution_id)['valid']:return None
     record=harness.bank.get(execution_id) or harness.bank.get_pending(execution_id)
     if record is None:
+        for row in harness.store.conn.execute("SELECT value FROM meta WHERE key LIKE 'induction_hold:%'"):
+            reference=harness.store.loads(row['value']).get(execution_id)
+            if reference:
+                record=_decode(harness,reference);break
+    if record is None:
         ref=meta_read(harness.store,'rule_evidence_latest:'+execution_id)
-        if ref:record=_decode(harness,ref)
+        if ref:record=_decode(harness,ref)  # previous-release full snapshots
+    if record is None:
+        ref=meta_read(harness.store,'rule_fact_latest:'+execution_id)
+        if ref:record=_from_fact(harness,get_value(harness.store,ref))
     if record is None:
         # Compatibility with a pending job frozen by the previous release.
         from or_harness.world_model.hplus import jobs
@@ -86,7 +143,7 @@ def set_validity(harness,record,valid,reason):
         event={'valid':valid,'revision':previous.get('revision',0)+1,'reason':str(reason),
                'at':time.time(),'previous_ref':put_value(conn,harness.store,'rule_validity',previous)}
         meta_write(harness.store,'rule_evidence_validity:'+record.execution_id,event)
-        retain_record(harness,conn,record)
+        refresh_retained(harness,record)
     return event
 
 

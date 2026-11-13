@@ -1096,6 +1096,8 @@ def _summarize_induce(result: Dict[str, Any], args) -> str:
         return _summarize_relations(result)
     # No relations submitted: the framework did NOT run a statistical
     # induction. Report that honestly rather than implying work happened.
+    if result.get("maintenance_only"):
+        return f"Managed {len(result.get('affected_entry_ids') or [])} existing entries from recorded use; no induction job created."
     if result.get("skipped"):
         return ("No strategy was submitted: knowledge is only written from a "
                 "strategy you form (`induce --relation`). Read the material "
@@ -2887,7 +2889,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_amend_cost)
 
     p = sub.add_parser(
-        "induce", help="submit new strategies / strategy revisions",
+        "induce", help="submit short rules or manage existing entries from real use",
         epilog=("Knowledge is ONLY written from a strategy YOU form: read "
                 "the material with `orx induction-material`, then submit the "
                 "strategy with --relation. The framework derives the evidence "
@@ -2926,9 +2928,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="submit when/do/expect plus evidence execution IDs (repeatable). "
                         "Optional entry_id and operation=add_evidence|revise|merge select "
                         "an existing rule; merge_entry_ids names explicit sources. "
-                        "Exact submissions are idempotent. Body changes make a candidate "
-                        "version; independent transfer, boundary and affected regression "
-                        "checks activate it. Historical claim/evidence/check input remains "
+                        "Exact submissions are idempotent. New text makes a candidate version; publication={state:published|candidate, "
+                        "reason:TEXT,scope:...} is the agent's choice, with no uniform check gate. "
+                        "Existing-body evidence/validation is maintenance; new bodies require H+. Historical input remains "
                         "accepted; declared assertions are audit records.")
     p.add_argument("--attribute-effect", action="append", default=None,
                    metavar="JSON",
@@ -2949,7 +2951,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "supports the move. `promote` -> validated, `demote` "
                         "-> suspect, `keep` leaves the status; it never "
                         "rewrites verification_state. The framework never "
-                        "writes one of these itself.")
+                        "writes one of these itself. Pure utility management needs no positive "
+                        "induction job or empty review; the adopted version is resolved automatically.")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")

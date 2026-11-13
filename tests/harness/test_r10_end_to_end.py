@@ -171,7 +171,7 @@ class TestNoAssertionAdmission(EndToEndCase):
         self.assertEqual(relation["publication"]["state"], "candidate")
         self.assertEqual(relation["verification"]["state"], "fact_checked")
         self.assertEqual(relation["publication"]["transferability"],
-                         "unproven")
+                         "agent_decision")
 
         recs = h.selector.recall(
             self.make_profile(problem_id="q", family="planning"), top=5)

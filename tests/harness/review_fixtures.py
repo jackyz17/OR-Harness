@@ -40,7 +40,7 @@ def task(name,n=641,c=130,*,maximum=False,boundary=False,wording=None):
 
 
 def assessment(entry_id,version,*,boundary=False,**extra):
-    return {'entry_id':str(entry_id),'version':version,'applicability':'not_applicable' if boundary else 'applies',
+    return {'entry_id':str(entry_id),'version':version,'verdict':'supported','applicability':'not_applicable' if boundary else 'applies',
         'response':'disable' if boundary else None,'method_fidelity':'faithful','effect_coverage':'complete',
         'source':'fixture reviewer inspected the captured enumeration against the rule and original inputs',
         'assessment':'Endpoint sign and direction match; nonmonotone input disables reduction. Integer optimum and constraints checked.',
@@ -90,12 +90,16 @@ class ReviewCase(HarnessTestCase):
         result=self.h.close_episode(t['task_id'],episode) if close else None
         return p,self.h.bank.get(r.execution_id),result
 
-    def derive(self,*,rule=None):
+    def derive(self,*,rule=None,publish=False,review=None):
         _,a,closed=self.run_task(task('A',1000,300,maximum=True),decision=1)
         _,b,_=self.run_task(task('B'))
         job=closed['induction_schedule']['pending_ids'][0]
         material=self.h.induction_material(induction_id=job)
-        result=self.h.induce(induction_id=job,relations=[{**(rule or RULE),'evidence':[a.execution_id,b.execution_id]}])
+        relation={**(rule or RULE),'evidence':[a.execution_id,b.execution_id]}
+        if publish:relation['publication']={'state':'published','reason':'Agent derived endpoint choice and checked the stated integer cases.',
+                                           'scope':['checked integer instances and the stated monotonicity premise']}
+        if review is True:review={'outcome':'new_rule','comparison':self.comparison(job,substantive=True,basis='derivation')}
+        result=self.h.induce(induction_id=job,relations=[relation],review=review)
         return result['relations'][0]['saved'],a,b,job
 
     def activate(self,entry,version=1):
@@ -104,6 +108,7 @@ class ReviewCase(HarnessTestCase):
         self.assertEqual(closed['rule_validation']['checks'][0]['state'],'passed',closed['rule_validation'])
         _,boundary,closed=self.run_task(task('boundary',12,0,boundary=True),entry_id=entry,version=version)
         self.assertEqual(boundary.quality['objective'],0)
+        self.h.induce(relations=[{'entry_id':entry,'version':version,'publication':{'state':'published','reason':'Agent reviewed the captured trial and boundary facts.'}}])
         self.assertTrue(self.h.sbank.get(entry).is_published,closed['rule_validation'])
         return transfer,boundary
 

@@ -133,7 +133,7 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(result['induction_receipt']['outcome'],'insufficient_material')
         self.assertIsNone(receipt_observation(self.h,jobs(self.h)[0])['label'])
 
-    def test_retry_uses_same_material_action_and_receipt_after_reopen(self):
+    def test_retry_queries_fresh_material_but_reuses_action_and_receipt_after_reopen(self):
         p,r,close=self.closed('retry')
         job_id=close['induction_schedule']['pending_ids'][0]
         material=self.h.induction_material(induction_id=job_id)
@@ -144,7 +144,9 @@ class TestBinaryHplus(BinaryCase):
         action_id=jobs(self.h)[0]['action_id']
         other=ORHarness(home=self.home,embedding=LocalHashEmbeddingBackend())
         try:
-            self.assertEqual(other.induction_material(induction_id=job_id),material)
+            refreshed=other.induction_material(induction_id=job_id)
+            self.assertNotEqual(refreshed['material_id'],material['material_id'])
+            self.assertEqual(refreshed['material'][0]['execution_id'],r.execution_id)
             args={'induction_id':job_id,'relations':[{**SHORT_RULE,'evidence':[r.execution_id]}]}
             result=other.induce(**args)
             repeated=other.induce(**args)
@@ -164,15 +166,19 @@ class TestBinaryHplus(BinaryCase):
         result=self.h.induce(induction_id=job_id,relations=[{**SHORT_RULE,'evidence':[positive.execution_id,zero.execution_id]}])
         self.assertEqual(result['saved'],1)
 
-    def test_independent_checks_confirm_increment_and_next_provider_sees_only_prior_relevant_receipt(self):
+    def test_agent_supported_increment_and_next_provider_sees_only_prior_relevant_receipt(self):
         p,record,close=self.closed('derivation')
         job_id=close['induction_schedule']['pending_ids'][0]
         self.h.induction_material(induction_id=job_id)
         result=self.h.induce(induction_id=job_id,relations=[{**SHORT_RULE,'evidence':[record.execution_id]}],
-                             review={'hypothesis_outcome':'refuted','deviation_reason':'The initial upper-only idea needs a sign-aware boundary.'})
+                             review={'hypothesis_outcome':'refuted','deviation_reason':'The initial upper-only idea needs a sign-aware boundary.',
+                'comparison':{'sufficient':True,'substantive':True,'basis':'derivation',
+                    'source':'fixture inducer checked endpoint derivation against captured actual input and result',
+                    'assessment':'At fixed Y a monotone objective selects the endpoint by sign and direction.',
+                    'evidence_refs':[jobs(self.h)[0]['source_fact_ref'],jobs(self.h)[0]['signal']['source_snapshot_ref']]}})
         entry_id=result['relations'][0]['saved']
         job=jobs(self.h)[0]
-        self.assertIsNone(receipt_observation(self.h,job)['label'])
+        self.assertEqual(receipt_observation(self.h,job)['label'],1)
         self.solve('independent',use=entry_id,parameters=(812,200))
         self.h.close_episode('independent','independent')
         self.solve('boundary',use=entry_id,boundary=True)
@@ -285,12 +291,13 @@ class TestBinaryHplus(BinaryCase):
         with self.assertRaises(ValueError):
             self.h.induce(notes=['cannot learn during fixed-memory testing'])
 
-    def test_positive_revision_maximum_only_to_lower_endpoint_then_independent_90(self):
+    def test_positive_revision_maximum_only_then_agent_activation_and_later_independent_90(self):
         _,training=self.solve()
         self.h.close_episode('training','training')
         upper={**SHORT_RULE,'when':'Maximize an objective increasing in X over a computable integer X interval.',
                'do':'Enumerate Y, take the upper X endpoint for maximization, and compare objectives. Disable on a nonmonotone objective.'}
-        entry_id=self.h.induce(relations=[{**upper,'evidence':[training.execution_id]}])['relations'][0]['saved']
+        entry_id=self.h.induce(relations=[{**upper,'evidence':[training.execution_id],
+            'publication':{'state':'published','reason':'Agent checks maximization and limits the initial scope to upper-endpoint use.'}}])['relations'][0]['saved']
         upper_method={'name':'upper endpoint for maximization','steps':[upper['do']]}
         _,old_transfer=self.solve('old-max-transfer',parameters=(941,190),maximize=True,use=entry_id,performed_method=upper_method)
         self.h.close_episode('old-max-transfer','old-max-transfer')
@@ -332,6 +339,9 @@ class TestBinaryHplus(BinaryCase):
         p,_=self.predict('new-boundary',0,boundary=True)
         self.solve('new-boundary',boundary=True,use=entry_id,version=2,prediction_id=p.prediction_id)
         self.h.close_episode('new-boundary','new-boundary')
+        self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],1)
+        self.h.induce(relations=[{'entry_id':entry_id,'version':2,'publication':{'state':'published',
+            'reason':'Agent confirms the sign-aware revision from derivation and actual checked use.'}}])
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],2)
         _,wrong=self.solve('independent-upper',lower=False,performed_method=upper_method)
         self.assertEqual(wrong.quality['objective'],92)

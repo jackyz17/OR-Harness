@@ -277,7 +277,7 @@ class StrategicBank:
         return entry, transitions
 
     def apply_lifecycle_action(self, entry_id: str, action: str, *,
-                               reason: Optional[str] = None
+                               reason: Optional[str] = None,version=None
                                ) -> Tuple[StrategicEntry, List[str]]:
         """Apply ONE explicit AGENT management request to an entry's status.
 
@@ -307,7 +307,27 @@ class StrategicBank:
         if entry is None:
             raise StorageError(f"unknown entry_id {entry_id!r}")
         if entry.rule:
-            return entry, ["v2 maturity is determined by sourced version checks; management request retained as a diagnostic"]
+            from or_harness.strategy.rule_versions import version_row
+            chosen=version if version is not None else entry.rule.get('active_version') or entry.rule.get('candidate_version')
+            if version_row(self.store,entry_id,chosen) is None:
+                raise StorageError('unknown adopted rule version')
+            before=(entry.rule.get('state'),entry.rule.get('active_version'))
+            with self.store.transaction() as conn:
+                if action=='promote':
+                    former=entry.rule.get('active_version')
+                    if former and former!=chosen:
+                        conn.execute("UPDATE rule_versions SET state='superseded' WHERE entry_id=? AND version=?",(entry_id,former))
+                    conn.execute("UPDATE rule_versions SET state='active' WHERE entry_id=? AND version=?",(entry_id,chosen))
+                    entry.rule.update(state='active',active_version=chosen)
+                    if entry.rule.get('candidate_version')==chosen:entry.rule['candidate_version']=None
+                    entry.status='validated'
+                elif action=='demote':
+                    conn.execute("UPDATE rule_versions SET state='suspended' WHERE entry_id=? AND version=?",(entry_id,chosen))
+                    if entry.rule.get('active_version')==chosen:
+                        entry.rule['state']='paused';entry.status='suspect'
+                self.update(entry)
+            after=(entry.rule.get('state'),entry.rule.get('active_version'))
+            return self.get(entry_id),[f'{before} -> {after} (agent: {reason})'] if before!=after else []
         transitions: List[str] = []
         if entry.status == "dormant":
             # Reuse the existing wakeup; a dormant entry is not promoted from

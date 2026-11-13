@@ -70,7 +70,7 @@ class RuleCase(HarnessTestCase):
             if boundary:
                 check['semantic_probe'].append({'path':'execution_features.solution_variables.reduction_used','equals':False})
             if use and assessment:
-                check["rule_assessments"] = [{"entry_id": str(use), "version": version,
+                check["rule_assessments"] = [{"entry_id": str(use), "version": version,"verdict":"supported","purpose":"boundary" if boundary else "transfer",
                     "applicability": "not_applicable" if boundary else "applies",
                     "method_fidelity": "faithful", "effect_coverage": coverage,
                     "response": "disable" if boundary else None, "failure_source": failure_source,
@@ -97,6 +97,7 @@ class RuleCase(HarnessTestCase):
         task, boundary = self.solve("nonmonotone", use=entry_id, boundary=True)
         result = self.h.close_episode(task['task_id'], task['task_id'])
         self.assertEqual(result['rule_validation']['checks'][0]['state'], 'passed', result)
+        self.h.induce(relations=[{'entry_id':entry_id,'publication':{'state':'published','reason':'Agent inspected the performed endpoint cases and nonmonotone fallback.'}}])
         self.assertTrue(is_publishable(self.h.sbank.get(entry_id)))
         return transfer, boundary
 
@@ -116,14 +117,15 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(sum(c['kind']=='boundary' and c['state']=='passed' for c in checks), 1)
         self.assertEqual(sum(r['evidence']=='strategic_entry' for r in self.h.recall({'task_id':'next','family':'assignment'})['recommendations']), 1)
 
-    def test_same_base_seed_and_shown_case_are_controls(self):
-        entry_id, training, _ = self.seed()
-        task, retry = self.solve('seed-42', use=entry_id, base='training')
-        result = self.h.close_episode(task['task_id'], task['task_id'])
-        check = result['rule_validation']['checks'][0]
-        self.assertEqual(check['state'], 'insufficient_evidence')
-        self.assertIn('same base problem', check['reason'])
+    def test_known_source_is_reported_without_deciding_transfer_for_the_agent(self):
+        entry_id,training,_=self.seed()
+        t,r=self.solve('seed-42',use=entry_id,base='training')
+        result=self.h.close_episode(t['task_id'],t['task_id'])
+        check=check_records(self.h.store,entry_id)[-1]
+        self.assertEqual(check['state'],'passed')
+        self.assertTrue(any(v['relationship']=='same_source' for v in check['known_source_relations']))
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
+
 
     def test_repeat_submission_is_idempotent_and_evidence_does_not_rewrite_body(self):
         entry_id, training, raw = self.seed()
@@ -150,15 +152,16 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(third['body_ref'],version_row(self.h.store,entry_id,1)['body_ref'])
         self.assertTrue(self.h.induce(relations=[revert])['relations'][0]['idempotent'])
 
-    def test_missing_adoption_or_coverage_is_not_transfer_evidence(self):
-        entry_id, _, _ = self.seed()
-        task, case = self.solve('no-adoption')
-        result = self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertEqual(result['rule_validation']['checks'], [])
-        task, case = self.solve('partial',use=entry_id,coverage='partial')
-        result = self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertIn('does not cover', result['rule_validation']['checks'][0]['reason'])
+    def test_missing_adoption_and_partial_scope_remain_visible_to_the_agent(self):
+        entry_id,_,_=self.seed()
+        t,r=self.solve('no-adoption')
+        self.assertEqual(self.h.close_episode(t['task_id'],t['task_id'])['rule_validation']['checks'],[])
+        t,r=self.solve('partial',use=entry_id,coverage='partial')
+        self.h.close_episode(t['task_id'],t['task_id'])
+        c=check_records(self.h.store,entry_id)[-1]
+        self.assertEqual(get_value(self.h.store,c['assessment_ref'])['effect_coverage'],'partial')
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
+
 
     def test_upper_endpoint_is_wrong_for_independent_minimization(self):
         entry_id, _, _ = self.seed()
@@ -172,7 +175,7 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(result['rule_validation']['checks'][0]['state'],'refuted')
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
 
-    def test_active_rule_revision_keeps_old_use_and_requires_regression(self):
+    def test_active_rule_revision_keeps_old_use_without_compulsory_regressions(self):
         entry_id, _, _=self.seed()
         transfer,boundary=self.activate(entry_id)
         original=get_value(self.h.store,transfer.execution_features['used_entries']['versions'][entry_id])
@@ -184,7 +187,7 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(entry.rule['active_version'],1)
         self.assertEqual(entry.rule['candidate_version'],2)
         self.assertEqual(original['rule']['view_version'],1)
-        self.assertTrue(any(c['kind']=='regression' and c['state']=='pending' for c in check_records(self.h.store,entry_id,2)))
+        self.assertFalse(any(c['state']=='pending' for c in check_records(self.h.store,entry_id,2)))
         self.h.close_episode(transfer.task_id,transfer.task_id)
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],1)
 
@@ -217,43 +220,30 @@ class TestRuleLifecycle(RuleCase):
         detail=self.h.inspect(bank='strategic',entry_id='1')
         self.assertGreater(len(detail['entries'][0]['claim']['text']),20000)
 
-    def test_prior_read_and_identical_alias_cannot_become_holdouts(self):
-        self.solve('shown-before')
-        task,training=self.solve()
-        self.h.close_episode(task['task_id'],task['task_id'])
-        first=self.h.induction_material(task_id=task['task_id'])
-        self.assertTrue(first['related_history']['executions'])
-        second=self.h.induction_material(task_id=task['task_id'],related_top_k=0)
-        result=self.h.induce(relations=[{**SHORT_RULE,'evidence':[training.execution_id],'material_id':second['material_id']}])
-        entry_id=result['relations'][0]['saved']
-        task,case=self.solve('same-content-alias',use=entry_id)
-        result=self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertIn('identical original problem',result['rule_validation']['checks'][0]['reason'])
-
-    def test_active_domain_counterexample_pauses_but_unattributed_failure_does_not(self):
-        task,training=self.solve()
-        self.h.close_episode(task['task_id'],task['task_id'])
-        upper={**SHORT_RULE,'do':'Enumerate Y and choose the upper X endpoint; disable reduction on a nonmonotone objective.'}
-        result=self.h.induce(relations=[{**upper,'evidence':[training.execution_id]}])
-        entry_id=result['relations'][0]['saved']
-        method={'name':'upper endpoint','steps':[upper['do']]}
-        task,_=self.solve('max-transfer',use=entry_id,maximize=True,performed_method=method)
-        self.h.close_episode(task['task_id'],task['task_id'])
-        task,_=self.solve('boundary-test',use=entry_id,boundary=True,performed_method=method)
-        self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertTrue(is_publishable(self.h.sbank.get(entry_id)))
-        task,unattributed=self.solve('min-no-cause',use=entry_id,lower=False,performed_method=method)
-        self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertTrue(is_publishable(self.h.sbank.get(entry_id)))
-        check=copy.deepcopy(unattributed.execution_features['task_check']['declared_check']) if 'declared_check' in unattributed.execution_features['task_check'] else {
-            'reference_objective':90,'reference_source':'bench_declared',
-            'rule_assessments':copy.deepcopy(unattributed.execution_features['task_check']['rule_assessments'])}
-        check['rule_assessments'][0]['failure_source']='rule'
-        self.h.check_task_result(unattributed.execution_id,check)
-        self.assertEqual(self.h.sbank.get(entry_id).rule['state'],'paused')
+    def test_prior_read_and_identical_alias_are_advisory_facts(self):
+        entry_id,training,_=self.seed()
+        t,r=self.solve('renamed-training',use=entry_id,parameters=(1000,300),maximize=True)
+        self.h.close_episode(t['task_id'],t['task_id'])
+        c=check_records(self.h.store,entry_id)[-1]
+        self.assertTrue(any(v['relationship']=='same_source' for v in c['known_source_relations']))
+        self.assertEqual(c['state'],'passed')
         self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
 
-    def test_revised_candidate_switches_only_after_independent_boundary_and_regressions(self):
+
+    def test_counterexample_is_evidence_and_agent_explicitly_manages_the_entry(self):
+        entry_id,training,_=self.seed();self.activate(entry_id)
+        t,bad=self.solve('bad-use',use=entry_id,lower=False,failure_source='rule',
+                         performed_method={'name':'upper endpoint','steps':['Choose the upper endpoint.']})
+        self.h.close_episode(t['task_id'],t['task_id'])
+        self.assertEqual(check_records(self.h.store,entry_id)[-1]['state'],'refuted')
+        self.assertTrue(is_publishable(self.h.sbank.get(entry_id)))
+        result=self.h.induce(effect_attributions=[{'entry_id':entry_id,'execution_id':bad.execution_id,
+            'verdict':'refuting','lifecycle_action':'demote','note':'Agent attributes the observed in-domain failure to this rule.'}])
+        self.assertTrue(result['maintenance_only'])
+        self.assertEqual(self.h.sbank.get(entry_id).rule['state'],'paused')
+
+
+    def test_revised_candidate_switches_on_agent_choice_after_optional_reviews(self):
         entry_id,training,_=self.seed()
         transfer,boundary=self.activate(entry_id)
         changed={**SHORT_RULE,'when':SHORT_RULE['when']+' The finite endpoint bounds must be recorded.',
@@ -276,6 +266,9 @@ class TestRuleLifecycle(RuleCase):
             validations.append({'kind':'regression','execution_id':case.execution_id,'assessment':assessment})
         result=self.h.induce(relations=[{'entry_id':entry_id,'operation':'add_evidence','version':2,'validation':validations}])
         self.assertTrue(all(v['state']=='passed' for v in result['relations'][0]['validation']),result)
+        self.assertTrue(all(v['basis']=='historical_review' for v in result['relations'][0]['validation']))
+        self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],1)
+        self.h.induce(relations=[{'entry_id':entry_id,'version':2,'publication':{'state':'published','reason':'Agent concludes the reviewed evidence covers this revision.'}}])
         self.assertEqual(self.h.sbank.get(entry_id).rule['active_version'],2)
         self.assertEqual(self.h.sbank.get(entry_id).rule['candidate_version'],None)
         self.h.close_episode(transfer.task_id,transfer.task_id)
@@ -361,22 +354,21 @@ class TestRuleLifecycle(RuleCase):
         self.assertEqual(check['scope']['acceptance']['observation_rule_version'],'wm-r-technical/1')
         self.assertEqual(check['technical_fact']['label'],0)
 
-    def test_cost_claim_needs_measured_same_task_comparator(self):
-        task,training=self.solve()
-        entry_id=self.h.induce(relations=[{**SHORT_RULE,'effect_scope':'cost',
-            'expect':'Use fewer tool_calls on this original problem while preserving acceptance.',
+    def test_cost_comparison_is_selected_by_agent_and_never_certifies_an_advantage(self):
+        t,training=self.solve()
+        entry=self.h.induce(relations=[{**SHORT_RULE,'effect_scope':'cost','expect':'Use fewer tool_calls.',
             'evidence':[training.execution_id]}])['relations'][0]['saved']
-        task,case=self.solve('cost-holdout',use=entry_id)
-        first=self.h.close_episode(task['task_id'],task['task_id'])
-        self.assertIn('cost advantage needs',first['rule_validation']['checks'][0]['reason'])
-        self.assertFalse(is_publishable(self.h.sbank.get(entry_id)))
-        comparator_task,comparator=self.solve('different-cost-task',parameters=(743,159))
-        result=self.h.induce(relations=[{'entry_id':entry_id,'operation':'add_evidence','validation':[
-            {'kind':'transfer','execution_id':case.execution_id,'comparator_execution_id':comparator.execution_id,
-             'cost_dimensions':['tool_calls']}]}])
-        check=result['relations'][0]['validation'][0]
-        self.assertEqual(check['state'],'insufficient_evidence')
-        self.assertIn('same frozen original task',check['reason'])
+        t,r=self.solve('cost-holdout',use=entry)
+        self.h.close_episode(t['task_id'],t['task_id'])
+        self.assertNotIn('cost_comparison',check_records(self.h.store,entry)[-1])
+        t,base=self.solve('other-input',parameters=(743,159))
+        result=self.h.induce(relations=[{'entry_id':entry,'validation':[{'kind':'transfer','execution_id':r.execution_id,
+            'comparator_execution_id':base.execution_id,'cost_dimensions':['tool_calls']}]}])
+        c=result['relations'][0]['validation'][0]['cost_comparison']
+        self.assertFalse(c['same_frozen_input'])
+        self.assertIsNone(c['verdict'])
+        self.assertIn('execution_conditions',c['baseline'])
+
 
     def test_new_storage_codes_roundtrip_and_expired_facts_remain_readable(self):
         entry_id,training,_=self.seed()
