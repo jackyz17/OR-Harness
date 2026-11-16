@@ -21,16 +21,24 @@ RULE_VERSION = "or-rule/2"
 
 
 def sync_rule_entries(harness, changed_ids=(), affected_ids=()):
-    pending=set(meta_read(harness.store,'rule_index_pending') or [])
-    wanted=sorted(set(changed_ids) | (pending & set(affected_ids)))
-    result=harness.index_sync.sync_entries(wanted)
-    if result.get('state') in ('deferred','skipped'):
-        pending.update(wanted)
-    elif result.get('state')=='synced':
-        pending.difference_update(wanted)
-    with harness.store.transaction():
-        meta_write(harness.store,'rule_index_pending',sorted(pending))
-    return result
+    # Sidecar vectors cannot roll back with SQLite. Commit the repair intent
+    # alongside the rule/receipt; only publish vectors outside that transaction.
+    with harness.store.locked():
+        pending=set(meta_read(harness.store,'rule_index_pending') or [])
+        wanted=sorted(set(changed_ids) | (pending & set(affected_ids)))
+        nested=harness.store.conn.in_transaction
+        with harness.store.transaction():
+            pending.update(wanted)
+            meta_write(harness.store,'rule_index_pending',sorted(pending))
+        if nested:
+            return {'state':'deferred','reason':'rule transaction must commit before vector synchronization',
+                    'entry_ids':wanted}
+        try:result=harness.index_sync.sync_entries(wanted)
+        except Exception as exc:
+            result={'state':'deferred','reason':f'{type(exc).__name__}: {exc}'}
+        if result.get('state')=='synced':pending.difference_update(wanted)
+        with harness.store.transaction():meta_write(harness.store,'rule_index_pending',sorted(pending))
+        return result
 
 
 def _verification_ref(store,conn,report,body_ref):
@@ -555,8 +563,6 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
         for check in raw.get("validation") or []:
             validations.append(validate_case(harness, entry.entry_id, version, check))
         publication = update_publication(harness,entry.entry_id,version,raw.get("publication"))
-        if merged and harness.sbank.get(entry.entry_id).is_published:
-            _apply_confirmed_merges(harness,entry.entry_id,version)
         entry = harness.sbank.get(entry.entry_id)
         changed |= bool({c['check_id'] for c in check_records(harness.store,entry.entry_id)}-previous_check_ids)
     return {"saved": entry.entry_id, **({"created_entry": entry.entry_id} if created else {"updated_entry": entry.entry_id} if changed else {}),
@@ -568,8 +574,8 @@ def submit_rule(engine, raw, *, dry_run=False, verify=None, notes=None, force=Fa
         "publication": publication, "validation": validations,
         "execution_ids": sorted({r.execution_id for r in records} | {v["execution_id"] for v in validations if v.get("fact_ref")}),
         "index_entry_ids": ([entry.entry_id] if before_body_ref!=(entry.rule or {}).get('body_ref') or before_published!=entry.is_published else [])+
-                           [x.entry_id for x in merged if harness.sbank.get(x.entry_id).rule.get('state')=='merged'],
-        "affected_entry_ids": [entry.entry_id] + [x.entry_id for x in merged]}
+                           publication.get('merged_entry_ids',[]),
+        "affected_entry_ids": sorted({entry.entry_id}|{x.entry_id for x in merged}|set(publication.get('merged_entry_ids',[])))}
 
 
 def _assessment(record, entry_id, version, supplied=None):
@@ -601,7 +607,7 @@ def adopted_version(harness,record,entry_id):
     return (get_value(harness.store,reference).get('rule') or {}).get('view_version') if reference else None
 
 
-def validate_case(harness,entry_id,version,check):
+def validate_case(harness,entry_id,version,check,*,optional_cost_comparison=False):
     """Record facts and the agent's assessment; never decide publication."""
     from or_harness.strategy.evidence_access import resolve_execution,validity
     from or_harness.strategy.rule_support import fact_basis
@@ -657,26 +663,35 @@ def validate_case(harness,entry_id,version,check):
         if comparator:
             comparison,issue=_cost_comparison(harness,record,{'comparator_execution_id':comparator,
                 'cost_dimensions':check.get('cost_dimensions') or assessment.get('cost_dimensions')})
-            if issue:raise ValueError(issue)
+            if issue and not (optional_cost_comparison and comparison and comparison.get('state')=='unavailable'):
+                raise ValueError(issue)
             value['cost_comparison']=comparison
         result,_=append_check(harness.store,entry_id,version,kind,state,value)
     return result
 
 
 def _apply_confirmed_merges(harness,entry_id,version):
+    target=harness.sbank.get(str(entry_id))
+    if not target or not target.is_published or target.rule.get('active_version')!=version:return []
+    applied=[]
     for event in event_records(harness.store,entry_id,version):
         if event['kind']!='merge':continue
         source=harness.sbank.get(event['source_entry'])
         if source and source.rule.get('merge_pending_into')==str(entry_id) and source.rule.get('merge_pending_version')==version:
-            source.rule.update(state='merged',merged_into=str(entry_id))
+            if (source.rule.get('active_version') or source.rule.get('candidate_version'))!=event['source_version']:
+                continue  # a later source revision needs the author's new choice
+            source.rule.update(state='merged',merged_into=str(entry_id),merged_target_version=version)
             source.rule.pop('merge_pending_into',None);source.rule.pop('merge_pending_version',None)
             harness.sbank.update(source)
             append_event(harness.store,entry_id,version,'merge_applied',data={'source_entry':source.entry_id,'authority':'agent'})
+            applied.append(source.entry_id)
+    return applied
 
 
 def update_publication(harness,entry_id,version,decision=None):
     """Apply an explicit author choice, otherwise report the existing state."""
     entry=harness.sbank.get(str(entry_id));row=version_row(harness.store,entry_id,version)
+    merged=[]
     if row is None:raise ValueError('unknown rule version')
     if decision is not None:
         choice={'state':decision} if isinstance(decision,str) else copy.deepcopy(decision)
@@ -688,7 +703,7 @@ def update_publication(harness,entry_id,version,decision=None):
         with harness.store.transaction() as conn:
             if choice['state'] in ('published','publish'):
                 entry,_=harness.sbank.apply_lifecycle_action(str(entry_id),'promote',reason=choice['reason'],version=version)
-                _apply_confirmed_merges(harness,str(entry_id),version)
+                merged=_apply_confirmed_merges(harness,str(entry_id),version)
             else:
                 entry.rule['candidate_version']=version
                 if entry.rule.get('active_version')==version:entry.rule['active_version']=None
@@ -705,6 +720,7 @@ def update_publication(harness,entry_id,version,decision=None):
     metadata=get_value(harness.store,row['metadata_ref'])
     choices=[e for e in event_records(harness.store,entry_id,version) if e['kind']=='publication' and e.get('decision')]
     return {'published':entry.is_published and entry.rule.get('active_version')==version,'state':entry.rule['state'],
+        'merged_entry_ids':merged,
         'version':version,'authority':'agent','required_checks':[],
         'distinct_tasks':len({e.get('task_id') for e in metadata.get('seed_evidence') or [] if e.get('task_id')}),
         'support_scope':'agent_declared' if choices else 'recorded_facts','transferability':'agent_decision',
@@ -726,9 +742,10 @@ def record_uses(harness,records):
                     data={'adopted_value_ref':reference,'actual_version_use':True})
                 assessment=_assessment(record,entry_id,version)
                 kind=assessment.get('purpose') or ('boundary' if assessment.get('applicability')=='not_applicable' else 'use')
-                check=validate_case(harness,entry_id,version,{'kind':kind,'execution_id':record.execution_id})
+                check=validate_case(harness,entry_id,version,{'kind':kind,'execution_id':record.execution_id},optional_cost_comparison=True)
             results.append({'entry_id':entry_id,'version':version,'check_id':check['check_id'],'state':check['state'],
                 'reason':check['reason'],'publication':update_publication(harness,entry_id,version)})
+            if check.get('cost_comparison') is not None:results[-1]['cost_comparison']=check['cost_comparison']
             affected.add(entry_id)
     return {'checks':results,'affected_entry_ids':sorted(affected),'index_entry_ids':[]}
 
@@ -770,7 +787,14 @@ def record_effect(harness,entry_id,item):
     """Store the agent's utility judgment against the actually adopted version."""
     from or_harness.strategy.evidence_access import resolve_execution
     record=resolve_execution(harness,str(item.get('execution_id') or ''))
-    version=item.get('version') or (adopted_version(harness,record,entry_id) if record else None)
+    actual=adopted_version(harness,record,entry_id) if record else None
+    if record and item.get('version') is not None and item['version']!=actual:
+        raise ValueError('primary execution adoption version does not match effect version')
+    entry=harness.sbank.get(entry_id)
+    action=item.get('lifecycle_action') or ('demote' if item.get('verdict')=='refuting' else None)
+    if action and entry and entry.rule.get('merged_into'):
+        raise ValueError('entry was merged into '+str(entry.rule['merged_into'])+'; manage that merge target explicitly')
+    version=item.get('version') or actual
     version=version or 0
     data={k:copy.deepcopy(v) for k,v in item.items() if k not in ('at','execution_id')}
     data['version_basis']='frozen_adoption' if version else 'unknown'
@@ -781,12 +805,12 @@ def record_effect(harness,entry_id,item):
             return old[-1]
         data.update(assessment_signature=signature,previous_effect_id=old[-1]['event_id'] if old else None)
         event,_=append_event(harness.store,entry_id,version,'effect',execution_id=item.get('execution_id'),data=data)
-        action=item.get('lifecycle_action') or ('demote' if item.get('verdict')=='refuting' else None)
+        merged=[]
         if action and version:
             entry,transitions=harness.sbank.apply_lifecycle_action(entry_id,action,
                 reason=item.get('note') or 'agent attributed a refuting use',version=version)
             append_event(harness.store,entry_id,version,'management',execution_id=item.get('execution_id'),
                 data={'effect_event_id':event['event_id'],'action':action,'reason':item.get('note'),
                       'state':entry.rule['state'],'transitions':transitions})
-            if action=='promote':_apply_confirmed_merges(harness,entry_id,version)
-    return event
+            if action=='promote':merged=_apply_confirmed_merges(harness,entry_id,version)
+    return {**event,'merged_entry_ids':merged} if merged else event

@@ -6,6 +6,7 @@ import re
 from or_harness.strategy.evidence_views import task_identity,same_frozen_input,instance_relation
 from or_harness.strategy.evidence_access import resolve_execution,validity
 from or_harness.world_model.conditions import digest,get_value
+from or_harness.core.storage import StorageError
 
 
 def fact_basis(record,report=None):
@@ -40,10 +41,19 @@ def cost_comparison(harness,record,check):
     from or_harness.world_model.g_signal import actual_solving_conditions
     eid=check.get('comparator_execution_id')
     if not eid:return None,'select an existing comparator_execution_id to compare costs'
-    other=resolve_execution(harness,str(eid))
-    if other is None or other.execution_id==record.execution_id:
-        return None,'select a distinct valid recorded execution as comparator'
     dims=check.get('cost_dimensions')
+    if dims is not None and (not isinstance(dims,list) or any(d not in COST_DIMENSIONS for d in dims)):
+        return None,'cost_dimensions must name existing resource dimensions'
+    if str(eid)==record.execution_id:return None,'select a distinct valid recorded execution as comparator'
+    unreadable=None
+    try:other=resolve_execution(harness,str(eid))
+    except (StorageError,ValueError,KeyError) as exc:
+        other=None;unreadable='selected cost baseline is unreadable: '+str(exc)
+    if other is None:
+        reason=unreadable or ('selected cost baseline was explicitly excluded' if not validity(harness,str(eid)).get('valid') else
+                'selected cost baseline is unavailable (not recorded or outside the evidence window)')
+        return {'execution_id':str(eid),'state':'unavailable','reason':reason,'dimensions':{},
+                'verdict':None,'authority':'agent'},reason
     if dims is None:dims=[d for d in COST_DIMENSIONS if d in record.cost.measured_dims() or d in other.cost.measured_dims()]
     if not isinstance(dims,list) or any(d not in COST_DIMENSIONS for d in dims):
         return None,'cost_dimensions must name existing resource dimensions'
@@ -59,7 +69,7 @@ def cost_comparison(harness,record,check):
         return {'execution_id':r.execution_id,'method_actual':copy.deepcopy(r.method_actual),
             'measurement_scope':r.measurement_scope,'execution_conditions':actual_solving_conditions(r),
             'acceptance':copy.deepcopy(report),'cost_provenance':copy.deepcopy(r.execution_features.get('cost_provenance') or {})}
-    return {'execution_id':other.execution_id,'dimensions':values,'actual':facts(record),'baseline':facts(other),
+    return {'execution_id':other.execution_id,'state':'available','dimensions':values,'actual':facts(record),'baseline':facts(other),
         'same_frozen_input':same_frozen_input(task_identity(harness,record),task_identity(harness,other)),
         'acceptance_rule_equal':((record.execution_features.get('task_check') or {}).get('acceptance_rule') or {}).get('fingerprint')==
                                 ((other.execution_features.get('task_check') or {}).get('acceptance_rule') or {}).get('fingerprint'),

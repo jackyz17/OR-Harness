@@ -144,6 +144,8 @@ Normally read with `orx induction-material --task T --induction-id J`. Every cal
 
 The default JSON pack remains bounded by 32000 characters, including history, old rules and the CLI envelope. Oversized content is referenced whole. Pending reviews temporarily retain their triggering and selected necessary evidence through eviction/restart. Completing the receipt releases full temporary copies and keeps minimal audit facts. Ordinary `check-task` does not create a separate full execution snapshot. Historical packs/receipts remain readable.
 
+The next control or its detail reference has budget priority over old rules. Cite concrete captured artifacts and real check items. Every directly cited comparison execution keeps minimum audit facts after receipt completion. A later checker correction can remove support from future H+ feedback; old prediction inputs stay traceable. Missing new references reject completion, while an unrecoverable historical receipt is individually unknown.
+
 Submit **when / do / expect**, chosen real evidence IDs, and an explicit publication choice when ready. `publication:{"state":"published","reason":"...","scope":[...]}` offers this version immediately within the reported scope. Choose `candidate` to defer; omission leaves a new body candidate. The agent can use derivation, benchmark/objective checks, exhaustive constructed instances and boundary tests before any third real task exists. Independent future tasks can expand the observed scope. The framework checks references and records scope; it does not require transfer, boundary or regression as publication prerequisites.
 
 ```bash
@@ -160,6 +162,8 @@ orx induce --attribute-effect '{"entry_id":"3","execution_id":"ex_USED","verdict
 ```
 
 `promote`, `demote` and `keep` act on versioned entries through the shared lifecycle; `retire` uses the existing cold archive. Cost comparability and benefit attribution are agent decisions. To compare costs explicitly select `comparator_execution_id` and resource dimensions in the assessment/validation. The framework returns both methods, actual conditions, acceptance and per-dimension values, masks/scopes and provenance. It neither finds a baseline nor substitutes another dimension or declares an advantage. Estimates remain estimates.
+
+Frozen libraries reject maintenance writes as well as new induction. The main execution's frozen adoption fixes an effect's version. A candidate merge preserves its sources until that exact target version is published; confirmed merged sources are managed through their target. An attached induction/material ID makes evidence addition complete that formal review. Rules and receipts commit before external vector writes; a deferred index sync can retry the same submission with the same receipt. An unavailable optional cost baseline is reported separately and does not block task checks or H+ scheduling.
 
 Omitting optional assessments on unchanged facts preserves them. `exclude-execution`/`restore-execution` correct evidence validity and future H+ support without automatically revalidating, pausing, restoring or publishing entries. The agent manages an entry from real use/counterexamples. Issued prediction inputs and original checker versions remain traceable.
 

@@ -59,6 +59,10 @@ The 32000-character default counts the entire result and CLI envelope, controlle
 by `OR_HARNESS_INDUCTION_MATERIAL_CHARS`. Oversized content is a whole-value
 reference. `budget.next_cursor` reports omitted controls. Use:
 
+When controls remain, their next row or valid short detail reference gets space
+before old rules and optional neighbors. The cursor advances only over delivered
+controls, including references; the actual triggering execution stays first.
+
 ```bash
 orx inspect --bank experience --execution ex_A
 orx inspect --bank strategic --entry 3 --rule-version candidate
@@ -145,10 +149,18 @@ orx retire --entry 3 --reason 'Agent concludes this method should leave normal r
 entries. Management names real adopted evidence and a short reason. The version
 comes from frozen adoption; multiple versions require choosing an existing one.
 Management of an old version does not silently demote a different current version.
+When `execution_id` is supplied, its frozen adoption determines the version;
+auxiliary `evidence_execution_ids` cannot override it. Auxiliary-only evidence
+retains the existing unique-version/explicit-selection behavior. A candidate
+merged target leaves its sources usable until that exact target version is
+published. Confirmed merged sources retain history but cannot be promoted back
+into ordinary recall; management names their selected merge target explicitly.
 Pure maintenance returns `maintenance_only:true`, state differences and index
 results without a new induction action, positive job or empty review receipt.
 New/changed bodies still need authorized induction. Final retirement uses the
 existing cold archive.
+Frozen libraries reject maintenance writes, publication and effect events too;
+solving, recorded use and task checking continue through their existing paths.
 
 ## Cost and corrections are factual inputs
 
@@ -159,6 +171,13 @@ rules, values and provenance. No baseline search, dimension substitution or
 framework advantage verdict occurs. `cost_eligibility` distinguishes measured,
 estimated, partial and unknown values. For 9→10 calls and 100→25 tokens, the
 report gives +1 call and −75 tokens separately; it does not say calls decreased.
+
+If an optional selected baseline expires, is excluded or does not exist,
+ordinary task checking/close-out returns `cost_comparison.state:unavailable`
+with the baseline ID and reason. Task checks, actual adoption and frozen H+
+scheduling still finish. Explicit independent validation with an invalid
+comparator reports a correctable input error. A readable comparison reports
+`state:available` and both actual sources without choosing a winner.
 
 Omitted optional assessments on unchanged facts preserve the prior assessment.
 Explicit correction/withdrawal remains visible. `exclude-execution` and

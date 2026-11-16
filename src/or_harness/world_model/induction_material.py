@@ -151,7 +151,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
     if budget_limit<6000:
         out['related_history']['query_basis'] = {'basis':query.get('basis'),'missing':query.get('missing') or []}
         out['joint_hplus'] = {k:out['joint_hplus'][k] for k in ('n','n_expected','n_none') if k in out['joint_hplus']}
-    payload_limit = max(800, budget_limit - min(500, budget_limit // 8))
+    payload_limit = max(600, budget_limit - min(500, max(256,budget_limit // 8)))
     field_limit = max(150, min(2400, budget_limit // 10))
 
     def add_case(record, target, score=None):
@@ -182,14 +182,22 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
             return False
         return True
 
-    # Protect one seed, one cross-source case and a relevant old rule before
-    # filling spare space with retries and other neighbours.
+    def reference_row(record):
+        return {'execution_id':record.execution_id,'task_id':record.task_id,'cursor':_material_cursor(record),
+            'task_check_state':compact_execution(harness,record)['task_check_state'],
+            'inspect_hint':f'orx inspect --bank experience --execution {record.execution_id}',
+            'view':'whole_record_by_reference'}
+
+    # A control's page slot outranks old rules and optional related cases.
+    # Even when only its detail reference fits, delivery advances the cursor.
     if seeds:
         if not add_case(seeds[0], out["material"]):
-            r=seeds[0]
-            out['material'].append({'execution_id':r.execution_id,'task_id':r.task_id,'cursor':_material_cursor(r),
-                'identity':identities[r.execution_id], 'task_check_state':compact_execution(harness,r)['task_check_state'],
-                'inspect_hint':f'orx inspect --bank experience --execution {r.execution_id}', 'view':'whole_record_by_reference'})
+            out['material'].append(reference_row(seeds[0]))
+    next_records=eligible[1:]
+    protected_count=len(out['material'])
+    if next_records:
+        if not add_case(next_records[0],out['material']):out['material'].append(reference_row(next_records[0]))
+        protected_count=len(out['material'])
     if selected:
         add_case(selected[0][0], out["related_history"]["executions"], selected[0][1])
     if len(selected)>1:
@@ -211,7 +219,7 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         seal_budget(out)
         if chars(out) > payload_limit:
             out["existing_knowledge"].pop();out["budget"]["truncated_by_budget"] = True
-    for record in eligible[1:]:
+    for record in next_records[1:]:
         if not add_case(record, out["material"]):
             break  # contiguous pagination, no silently skipped execution
     for record, score in selected[2:]:
@@ -251,17 +259,14 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
             out["existing_knowledge"].pop()
         elif out["related_history"]["executions"]:
             out["related_history"]["executions"].pop()
-        elif len(out['material'])>1:
+        elif len(out['material'])>protected_count:
             out['material'].pop()
         else:
             out['budget']['truncated_by_budget']=True
             for key in ('guidance','comparison_table','task_chains','joint_hplus'):
                 out.pop(key,None)
             out['related_history']['query_basis']={'detail_ref':'orx inspect --bank experience --task '+str(task_id),'basis':query.get('basis')}
-            if out['material']:
-                row=out['material'][0]
-                out['material'][0]={k:row[k] for k in ('execution_id','task_id','cursor','task_check_state','inspect_hint')}
-                out['material'][0]['view']='whole_record_by_reference'
+            out['material']=[reference_row(available[row['execution_id']]) for row in out['material']]
             refresh()
             break
         out["budget"]["truncated_by_budget"] = True
@@ -287,10 +292,20 @@ def build_compact_material(harness, *, strategy_id=None, task_id=None, limit=Non
         if induction_id is None:meta_write(harness.store,'induction_material:last_read',material_id)
     out['material_id']=material_id
     seal_budget(out)
-    if chars(out)>budget_limit:
-        # The minimum configuration still returns one reachable row, with
-        # accurate whole-envelope accounting, instead of a stalled cursor.
+    if chars(out)>payload_limit:
+        # Preserve the anchor and delivered control at small existing budgets;
+        # trim explanatory metadata rather than returning the same cursor.
         for key in ('cross_task_hint','memory_state','related_history','check_states','purpose','n_distinct_tasks','total_completed'):
             out.pop(key,None)
+        out.pop('task_chains',None)
+        out['selection']={k:v for k,v in out['selection'].items() if k=='trigger_execution_ids'}
+        if out.get('induction_gate'):
+            out['induction_gate']={k:v for k,v in out['induction_gate'].items() if k in ('state','source','induction_id')}
+        seal_budget(out)
+    if chars(out)>payload_limit:
+        # At the minimum budget keep both reachable IDs rather than repeat
+        # a page. Their check/task/cursor details remain in the saved session.
+        for key in ('selection','tasks','existing_knowledge'):out.pop(key,None)
+        out['material']=[{k:row[k] for k in ('execution_id','inspect_hint')} for row in out['material']]
         seal_budget(out)
     return out

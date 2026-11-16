@@ -49,6 +49,19 @@ A shared historical evidence ID cannot dispatch an old identical submission to
 a new job: an exact retry returns its original receipt. Explicit conflicts name
 the differing payload fields and the receipt to inspect.
 
+Receipt comparison references also retain minimal facts, even for historical
+executions absent from material pages, rule evidence and other jobs. Both
+`review.comparison.evidence_refs` and rule `mechanism_comparison.evidence_refs`
+are checked before completion. New missing references are correctable errors;
+an unrecoverable old receipt becomes unknown individually, without blocking
+other feedback or status queries. Ordinary execution rows remain window bounded.
+
+A relation's existing `induction_id` or attached `material_id` identifies formal
+review before the evidence-only maintenance branch. Even an `add_evidence`
+submission then settles that job. Conflicting job/session ownership is refused
+before writes. Without an induction association, existing-entry maintenance
+keeps its lightweight path. Frozen test libraries reject either kind of write.
+
 Repeated close reuses the actually bound prediction/action/episode identity.
 Omitted episode auto-resolves only one real round; `--execution EX` selects an
 existing run when needed. Two connections reread state inside transactions;
@@ -93,6 +106,22 @@ names the agent's retained derivation over cited actual inputs;
 exist. A context/library reference alone is not an executed result. Numerical
 checks report their exact declared coverage; the framework does not certify
 the agent's mathematical or causal judgment.
+
+`artifacts.*` references must name a captured, readable artifact belonging to
+the execution. `task_check.*` must resolve an actual report field or check item
+(for example `task_check.checks.0`). The receipt freezes the observed check,
+version and coverage supporting its conclusion. Repeating the same check keeps
+support; withdrawing its result or scope makes later support unknown. A first
+late check can supply support, with its correction history preserved. A real
+failed check can support an agent's counterexample/boundary assessment. Existing
+prediction inputs and observations at their original cutoff remain unchanged.
+
+Rule versions, actions, reference validation, receipts and index repair intents
+commit together. External vector writes follow commit. A refused receipt leaves
+the previous rule and vector view intact. `committed:true` with
+`index_sync.state:deferred` means the rule/receipt succeeded and indexing needs
+retry; repeat the same submission or use `rebuild-index`. Retry returns the same
+receipt/action and attempts the pending index repair.
 
 Hash changes, no recalled old rule, current publication and later retirement do
 not infer increments. Safe exact/formatting dedup is retained. Synonym rewriting

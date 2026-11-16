@@ -100,7 +100,7 @@ class IndexSynchronizer:
         stale_ids: List[str] = []
         for entry_id in wanted:
             entry = self.sbank.get(entry_id)
-            if entry is None:
+            if entry is None or (entry.rule or {}).get('merged_into'):
                 stale_ids.append(str(entry_id))
                 continue
             documents.append((entry.entry_id, self.entry_document(entry)))
@@ -152,7 +152,7 @@ class IndexSynchronizer:
                               "unindexable": skipped}
             else:
                 pairs = [(entry.entry_id, self.entry_document(entry))
-                         for entry in self.sbank.list(include_dormant=True)]
+                         for entry in self.sbank.list(include_dormant=True) if not (entry.rule or {}).get('merged_into')]
                 plan[name] = {"documents": pairs, "unindexable": []}
         if dry_run:
             return {
@@ -206,7 +206,7 @@ class IndexSynchronizer:
                         documents.append((record.execution_id, document))
             else:
                 documents = [(entry.entry_id, self.entry_document(entry))
-                             for entry in self.sbank.list(include_dormant=True)]
+                             for entry in self.sbank.list(include_dormant=True) if not (entry.rule or {}).get('merged_into')]
             stale = sum(1 for doc_id, text in documents
                         if doc_id in indexed
                         and indexed[doc_id].get("doc_digest")
@@ -241,5 +241,5 @@ class IndexSynchronizer:
             indexed = {str(i.get("id")) for i in self.index.items(LAYER_STRATEGIC)}
             counts[LAYER_STRATEGIC] = sum(
                 1 for e in self.sbank.list(include_dormant=True)
-                if e.entry_id not in indexed)
+                if not (e.rule or {}).get('merged_into') and e.entry_id not in indexed)
         return counts

@@ -6650,6 +6650,8 @@ class ORHarness:
 
     def induce(self, *, induction_id=None, review=None, **kwargs):
         """Authorize and settle binary H+ work around the existing writer."""
+        from or_harness.world_model.hplus import mode
+        if mode(self)=='frozen':raise ValueError('the strategy library is frozen for testing')
         relations=kwargs.get('relations') or []
         body_keys={'when','do','expect','claim','text','method','conditions','predicates','effect_scope','merge_entry_ids'}
         existing_only=bool(relations) and all(
@@ -6657,22 +6659,25 @@ class ORHarness:
             r.get('operation','add_evidence')=='add_evidence' and not(body_keys & set(r)) and
             self.sbank.get(str(r.get('entry_id') or r.get('target_entry') or r.get('target_entry_id'))) is not None
             for r in relations)
-        if (existing_only or not relations and kwargs.get('effect_attributions')) and induction_id is None and review is None:
+        associated=induction_id is not None or any(r.get('induction_id') or r.get('material_id') for r in relations)
+        if (existing_only or not relations and kwargs.get('effect_attributions')) and not associated and review is None:
             return self._maintain_entries(**kwargs)
         from or_harness.world_model.hplus import (
             require_job, reserve_action, complete, get_job, get_value, put_submission,submission_conflict,
+            submission_fingerprint,submission_matches,
         )
         from or_harness.world_model.hplus import submission_job
         from or_harness.world_model.conditions import digest
-        job=submission_job(self,induction_id,kwargs.get('relations'),digest({'arguments':kwargs,'review':review}))
+        job=submission_job(self,induction_id,kwargs.get('relations'),submission_fingerprint(kwargs,review))
         if job is None:
             return self._induce_impl(**kwargs)
         if job['state'] == 'completed':
             from or_harness.world_model.conditions import digest
-            if job.get('submission_digest') != digest({'arguments':kwargs,'review':review}):
+            if not submission_matches(self,job,kwargs,review):
                 raise submission_conflict(self,job,kwargs,review)
             result = copy.deepcopy(get_value(self.store, job['result_ref']))
             result['already_completed'] = True
+            self._sync_induction_result(result)
             self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
             return result
         if kwargs.get('dry_run'):
@@ -6690,9 +6695,9 @@ class ORHarness:
             with self.store.transaction():
                 current=get_job(self,job['induction_id'])
                 from or_harness.world_model.conditions import digest
-                fingerprint=digest({'arguments':kwargs,'review':review})
+                fingerprint=submission_fingerprint(kwargs,review)
                 if current['state']=='completed':
-                    if current.get('submission_digest')!=fingerprint:
+                    if not submission_matches(self,current,kwargs,review):
                         raise submission_conflict(self,current,kwargs,review)
                     result=copy.deepcopy(get_value(self.store,current['result_ref']))
                     result['already_completed']=True
@@ -6705,19 +6710,30 @@ class ORHarness:
                     job['submission_digest']=fingerprint
                     job['submission_ref']=put_submission(self,kwargs,review)
                     complete(self,job,result,review)
+            self._sync_induction_result(result)
             self.bind_capability_maintenance(job['prediction_id'], adoption_action_id=job['action_id'])
             return result
         finally:
             self._active_induction_job = None
+
+    def _sync_induction_result(self,result):
+        """Repair only committed vector intents; receipt/action identity stays fixed."""
+        from or_harness.strategy.rule_versions import sync_rule_entries
+        affected=set(result.get('affected_entry_ids') or [])|set(result.get('index_entry_ids') or [])
+        result['index_sync']=sync_rule_entries(self,[],affected)
+        result['committed']=not self.store.conn.in_transaction
 
     def _maintain_entries(self,*,effect_attributions=None,relations=None,dry_run=False,strategy_id=None,**kwargs):
         """Manage selected existing entries without an induction action or receipt."""
         from or_harness.world_model.state import KnowledgeRef
         plans=[self._validate_effect_attribution(v) for v in effect_attributions or []]
         ids=sorted({p['entry_id'] for p in plans}|{str(r.get('entry_id') or r.get('target_entry') or r.get('target_entry_id')) for r in relations or []})
+        ids=sorted(set(ids)|{e.entry_id for e in self.sbank.list() if (e.rule or {}).get('merge_pending_into') in ids})
         def state():
             return {eid:KnowledgeRef.from_entry(entry).to_dict() for eid in ids if (entry:=self.sbank.get(eid)) is not None}
         with self.store.transaction():
+            from or_harness.world_model.hplus import mode
+            if mode(self)=='frozen':raise ValueError('the strategy library is frozen for testing')
             before=state();count_before=self.sbank.count()
             self._existing_entry_maintenance=True
             try:
@@ -6726,6 +6742,11 @@ class ORHarness:
             attributed=self._record_validated_attributions(plans,dry_run=dry_run)
             revisions=self.induction.revise(dry_run=dry_run,entry_ids=set(ids))
             after=state()
+            index_changed=set(submitted.get('index_entry_ids') or [])|{p['entry_id'] for p in plans if p['lifecycle_action'] or p['item']['verdict']=='refuting'}
+            index_changed.update(eid for a in attributed for eid in a.get('merged_entry_ids') or [])
+            if not dry_run:
+                from or_harness.strategy.rule_versions import sync_rule_entries
+                sync_rule_entries(self,index_changed,ids)
         fields=('predicates','expected_quality_hat','quality_interval','expected_cost_hat','cost_interval',
                 'failure_prob','support_n','status','verification_state','rule','claim')
         changes=[]
@@ -6741,8 +6762,7 @@ class ORHarness:
                 'execution_ids':sorted({p['item']['execution_id'] for p in plans if p['item'].get('execution_id')})}
         if not dry_run:
             from or_harness.strategy.rule_versions import sync_rule_entries
-            changed=set(submitted.get('index_entry_ids') or [])|{p['entry_id'] for p in plans if p['lifecycle_action'] or p['item']['verdict']=='refuting'}
-            result['index_sync']=sync_rule_entries(self,changed,ids)
+            result['index_sync']=sync_rule_entries(self,[],set(ids)|index_changed)
         return result
 
     def _induce_impl(self, *, dry_run: bool = False, force: bool = False,
@@ -6833,7 +6853,7 @@ class ORHarness:
             validated_attributions, dry_run=dry_run)
         if attributed:
             result["effect_attributions"] = attributed
-            ids={a["entry_id"] for a in attributed}
+            ids={a["entry_id"] for a in attributed}|{eid for a in attributed for eid in a.get('merged_entry_ids') or []}
             result["index_entry_ids"]=sorted(set(result.get("index_entry_ids") or [])|ids)
             result["affected_entry_ids"]=sorted(set(result.get("affected_entry_ids") or [])|ids)
         if maintenance is not None:
@@ -6977,7 +6997,10 @@ class ORHarness:
         result["knowledge_delta"] = result["action"]["knowledge_delta"]
         result["knowledge_after"] = result["action"].get("knowledge_after")
         if not dry_run:
-            result["index_sync"] = self.index_sync.sync_entries([])
+            from or_harness.strategy.rule_versions import sync_rule_entries
+            ids=sorted({p['entry_id'] for p in validated_attributions}|{eid for a in attributed for eid in a.get('merged_entry_ids') or []})
+            result['affected_entry_ids']=result['index_entry_ids']=ids
+            result["index_sync"] = sync_rule_entries(self,ids,ids)
         return result
 
 
@@ -7496,6 +7519,8 @@ class ORHarness:
                 raise ValueError(
                     f"lifecycle_action {action!r} requires a non-empty note: "
                     "state the agent's reason from the accumulated use")
+            if entry.rule and entry.rule.get('merged_into'):
+                raise ValueError('entry was merged into '+str(entry.rule['merged_into'])+'; manage that merge target explicitly')
             cited = list(dict.fromkeys(evidence_ids
                                        + ([execution_id] if execution_id
                                           else [])))
@@ -7527,11 +7552,19 @@ class ORHarness:
             versions={adopted_version(self,r,entry_id) for eid in cited
                       if (r:=self._recorded_execution(eid)) is not None and self._declared_adoption(entry_id,eid)}-{None}
             requested=raw.get('version')
+            if execution_id:
+                primary=self._recorded_execution(execution_id)
+                primary_version=adopted_version(self,primary,entry_id) if primary else None
+                if requested is not None and requested!=primary_version:
+                    raise ValueError('primary execution adoption version is '+str(primary_version)+'; auxiliary evidence cannot replace it')
+                if action and primary_version is None:
+                    raise ValueError('primary execution has no frozen adoption version for this entry')
+                requested=primary_version
             if requested is not None and requested not in versions:
                 raise ValueError('version must match one of the cited actual adoptions: '+str(sorted(versions)))
             if len(versions)>1 and requested is None:
                 raise ValueError('multiple adopted versions; select one existing version: '+str(sorted(versions)))
-            item['version']=requested if requested is not None else next(iter(versions),None)
+            item['version']=primary_version if execution_id else requested if requested is not None else next(iter(versions),None)
             item['evidence_execution_ids']=cited
         return {"entry_id": entry_id, "item": item,
                 "lifecycle_action": action}

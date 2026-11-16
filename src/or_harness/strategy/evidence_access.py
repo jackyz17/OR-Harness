@@ -7,6 +7,7 @@ import copy
 import time
 
 from or_harness.core.schema import ExecutionRecord
+from or_harness.core.storage import StorageError
 from or_harness.world_model.conditions import get_value,put_value
 from or_harness.world_model.induction_gate import meta_read,meta_write
 
@@ -53,7 +54,8 @@ def refresh_retained(harness,record):
         "SELECT key FROM meta WHERE key LIKE 'induction_hold:%'")
         if record.execution_id in (meta_read(harness.store,r['key']) or {})]
     for owner in owners:hold_execution(harness,owner,record.execution_id,record=record)
-    if meta_read(harness.store,'rule_fact_latest:'+record.execution_id):
+    if owners or meta_read(harness.store,'rule_fact_latest:'+record.execution_id) or meta_read(
+            harness.store,'rule_evidence_latest:'+record.execution_id):
         from or_harness.strategy.rule_versions import _facts_ref
         with harness.store.transaction() as conn:_facts_ref(harness,conn,record)
     # Old full references remain readable but are not recreated by new checks.
@@ -83,6 +85,17 @@ def _from_fact(harness,fact):
             'cost_provenance':fact.get('cost_provenance') or {d:{'source':'unknown_retained_provenance'} for d in fact.get('cost_measured') or []},
             'audit_fact_only':True}})
     record.method_actual=(fact.get('method') or {}).get('actual')
+    record.task_text_digest=fact.get('task_text_digest')
+    # The immutable result is the existing source of solution fields. Do not
+    # retain another full result in every audit fact just to permit rechecks.
+    result=(fact.get('artifacts') or {}).get('workspace_result')
+    if result:
+        from or_harness.core.artifacts import read
+        try:
+            payload=harness.store.loads(read(harness.home,result).decode('utf-8'))
+            if isinstance(payload.get('variables'),dict):record.execution_features['solution_variables']=payload['variables']
+        except (OSError,ValueError,KeyError,StorageError):
+            pass  # The checker reports missing values; never invent them.
     if fact.get('task_input_ref'):
         problem=get_value(harness.store,fact['task_input_ref'])
         record.execution_features['retained_task_payload']=copy.deepcopy(problem.get('task_input') or problem.get('task_payload'))
@@ -103,16 +116,19 @@ def resolve_execution(harness,execution_id,*,include_excluded=False):
     if not include_excluded and not validity(harness,execution_id)['valid']:return None
     record=harness.bank.get(execution_id) or harness.bank.get_pending(execution_id)
     if record is None:
+        candidates=[]
         for row in harness.store.conn.execute("SELECT value FROM meta WHERE key LIKE 'induction_hold:%'"):
             reference=harness.store.loads(row['value']).get(execution_id)
             if reference:
-                record=_decode(harness,reference);break
-    if record is None:
+                candidates.append((_decode(harness,reference),1))
         ref=meta_read(harness.store,'rule_evidence_latest:'+execution_id)
-        if ref:record=_decode(harness,ref)  # previous-release full snapshots
-    if record is None:
+        if ref:candidates.append((_decode(harness,ref),0))  # historical full snapshots
         ref=meta_read(harness.store,'rule_fact_latest:'+execution_id)
-        if ref:record=_from_fact(harness,get_value(harness.store,ref))
+        if ref:candidates.append((_from_fact(harness,get_value(harness.store,ref)),2))
+        # Latest checker wins across storage formats. New minimal facts win
+        # ties, so a pre-upgrade full copy cannot hide a saved correction.
+        if candidates:
+            record=max(candidates,key=lambda item:((item[0].execution_features.get('task_check') or {}).get('checked_at',0),item[1]))[0]
     if record is None:
         # Compatibility with a pending job frozen by the previous release.
         from or_harness.world_model.hplus import jobs

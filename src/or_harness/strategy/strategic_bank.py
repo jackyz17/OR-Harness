@@ -307,6 +307,8 @@ class StrategicBank:
         if entry is None:
             raise StorageError(f"unknown entry_id {entry_id!r}")
         if entry.rule:
+            if entry.rule.get('merged_into'):
+                raise StorageError('entry was merged into '+str(entry.rule['merged_into'])+'; manage that merge target explicitly')
             from or_harness.strategy.rule_versions import version_row
             chosen=version if version is not None else entry.rule.get('active_version') or entry.rule.get('candidate_version')
             if version_row(self.store,entry_id,chosen) is None:

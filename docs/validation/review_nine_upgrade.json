@@ -1,0 +1,14 @@
+{
+  "legacy_version": "40581f7",
+  "execution_id": "ex_72ae0de70d0d",
+  "induction_id": "ij_40811408dd9fdde7bec6e739",
+  "legacy_full_ref": "rule_execution:fd9c8b7ec581d30257a35035d38e15d032949490720440a0fe8aada04091824b",
+  "current_fact_ref": "rule_fact:59dbe25c71a0810b7d29daf630dcb72cd159304715c30b8819b4944d876748e5",
+  "checker_action_id": "ac_05e5d00cc8ad",
+  "live_execution_evicted": true,
+  "checker_after_restart": "passed",
+  "label_after_restart": 0,
+  "historical_checker_before_correction": {},
+  "receipt_ref": "hplus_receipt:8d44b153047d94101e4d313d65fb2140e1a21d56366a5376e9677881449b933c",
+  "provider": "substitute; this verifies upgrade and evidence plumbing only"
+}

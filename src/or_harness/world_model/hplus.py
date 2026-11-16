@@ -281,7 +281,8 @@ def submission_job(harness,induction_id,relations,submission_digest=None):
     if len(declared)>1:raise ValueError('conflicting induction IDs in submission/material: '+str(sorted(declared)))
     resolved=next(iter(declared),None)
     if resolved is None and submission_digest:
-        previous=[j for j in jobs(harness) if j['state']=='completed' and j.get('submission_digest')==submission_digest]
+        previous=[j for j in jobs(harness) if j['state']=='completed' and (j.get('submission_digest')==submission_digest or
+            j.get('submission_ref') and submission_fingerprint(**get_value(harness.store,j['submission_ref']))==submission_digest)]
         if len(previous)>1:raise ValueError('submission matches several completed reviews; choose its induction-id')
         if previous:resolved=previous[0]['induction_id']
     if resolved is None and relations:
@@ -383,6 +384,20 @@ def put_submission(harness,arguments,review):
     return put_value(harness.store.conn,harness.store,'induction_submission',{'arguments':arguments,'review':review})
 
 
+def submission_fingerprint(arguments,review):
+    # CLI supplies default flags; API callers may omit them. Both identify
+    # the same review. Other payload differences remain explicit conflicts.
+    canonical={k:v for k,v in arguments.items() if v is not None and not (k in ('force','dry_run') and v is False)}
+    return digest({'arguments':canonical,'review':review})
+
+
+def submission_matches(harness,job,arguments,review):
+    fingerprint=submission_fingerprint(arguments,review)
+    if job.get('submission_digest')==fingerprint:return True
+    if not job.get('submission_ref'):return False
+    return submission_fingerprint(**get_value(harness.store,job['submission_ref']))==fingerprint
+
+
 def submission_conflict(harness,job,arguments,review):
     original=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
     old=original.get('arguments') or {}
@@ -409,7 +424,9 @@ def complete(harness, job, result, review=None):
     source=set(job['execution_ids'])|set((action.outcome or {}).get('execution_ids') or [])
     material_id,material=aggregate_material(harness,job)
     source.update((job.get('submitted_execution_ids') or []))
-    from or_harness.world_model.hplus_support import increment
+    from or_harness.world_model.hplus_support import increment,freeze_comparison
+    cutoff=time.time()
+    review['comparison']=freeze_comparison(harness,job,review.get('comparison'),cutoff)
     updates=[]
     submission=get_value(harness.store,job['submission_ref']) if job.get('submission_ref') else {}
     submitted=(submission.get('arguments') or {}).get('relations') or []
@@ -417,7 +434,8 @@ def complete(harness, job, result, review=None):
         if not row.get('saved'):continue
         update={k:row.get(k) for k in ('version','body_ref','operation','new_version')}
         update['entry_id']=row['saved']
-        comparison=(submitted[index].get('mechanism_comparison') if index<len(submitted) else None) or review.get('comparison')
+        declared=(submitted[index].get('mechanism_comparison') if index<len(submitted) else None)
+        comparison=freeze_comparison(harness,job,declared,cutoff) if declared else review.get('comparison')
         update['increment']=increment(harness,job,update,comparison)
         update['substantive']=update['increment']['substantive']
         updates.append(update)
@@ -440,12 +458,19 @@ def complete(harness, job, result, review=None):
     if fact["outcome"] not in ("knowledge_submitted", "new_rule", "revised", "evidence_added", "already_covered",
                                "no_increment", "hypothesis_refuted", "insufficient_material"):
         raise ValueError("unknown induction review outcome")
-    from or_harness.world_model.hplus_support import supported_comparison
-    if fact.get('comparison'):supported_comparison(harness,job,fact['comparison'],time.time())
-    for update in updates:
-        comp=get_value(harness.store,update['increment']['comparison_ref'])
-        if comp:supported_comparison(harness,job,comp,time.time())
+    # Minimal direct-support facts belong to the receipt even when they were
+    # never shown on a material page or used as a rule's seed evidence.
+    comparisons=[review.get('comparison')]+[
+        get_value(harness.store,u['increment']['comparison_ref']) for u in updates]
+    fact['support_fact_refs']={r['execution_id']:r['fact_ref'] for comp in comparisons if comp
+        for r in (comp.get('support_snapshot') or {}).values() if r.get('fact_ref')}
+    fact['source_execution_ids']=sorted(source | set(fact['support_fact_refs']))
     job["receipt_ref"] = put_value(harness.store.conn, harness.store, "hplus_receipt", fact)
+    from or_harness.strategy.rule_versions import append_event
+    for update in updates:
+        append_event(harness.store,update['entry_id'],update['version'],'learning_review',data={
+            'induction_id':job['induction_id'],'receipt_ref':job['receipt_ref'],
+            'comparison_ref':update['increment']['comparison_ref'],'support_fact_refs':fact['support_fact_refs']})
     job["state"] = "completed"
     result["induction_receipt"] = {**fact, "receipt_ref": job["receipt_ref"]}
     job["result_ref"] = put_value(harness.store.conn, harness.store, "hplus_result", result)
