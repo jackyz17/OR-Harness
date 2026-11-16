@@ -19,6 +19,8 @@ This file pins the round's core behaviours end to end:
 7. Cold start: the material reports the banks' `memory_state` and an empty
    bank never gates induction.
 """
+
+from decision_fixtures import execute_scored
 import json
 import os
 import sys
@@ -155,7 +157,7 @@ class TestAdoptionFeedback(NumberedCase):
     def test_declared_adoption_is_recorded(self):
         eid = self.h.sbank.add(self.entry("S01"))
         code, ws = self._work("adopt")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", code, ws, solver="highs", episode_id="ep1",
@@ -167,7 +169,7 @@ class TestAdoptionFeedback(NumberedCase):
 
     def test_empty_adoption_is_a_recorded_fact(self):
         code, ws = self._work("empty")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", code, ws, solver="highs", episode_id="ep1",
@@ -178,7 +180,7 @@ class TestAdoptionFeedback(NumberedCase):
 
     def test_unstated_adoption_is_not_recorded(self):
         code, ws = self._work("none")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", code, ws, solver="highs", episode_id="ep1")
@@ -193,7 +195,7 @@ class TestAdoptionFeedback(NumberedCase):
         self.h.recall({"task_id": "q", "family": "routing",
                        "annotations": {"coupling": {"resource_coupling": 0.9}}})
         code, ws = self._work("recall_only")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", code, ws, solver="highs", episode_id="ep1",
@@ -203,7 +205,7 @@ class TestAdoptionFeedback(NumberedCase):
 
     def test_unknown_number_is_kept_as_a_citation(self):
         code, ws = self._work("unknown")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", code, ws, solver="highs", episode_id="ep1",
@@ -271,7 +273,7 @@ class TestUnknownNumberIsKeptAsCitation(NumberedCase):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(
+        record = execute_scored(self.h,
             {"task_id": "t1", "family": "routing",
              "annotations": {"coupling": {"resource_coupling": 0.9}}},
             "S01", str(script), str(work), solver="highs", episode_id="ep1",

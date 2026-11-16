@@ -1,4 +1,6 @@
 """Updated agent-led policy: normal integer solves, review, management and feedback."""
+
+from decision_fixtures import planned_prediction
 import copy
 import io
 import json
@@ -42,7 +44,8 @@ class AgentCase(ReviewCase):
         ws=Path(self.home)/name;ws.mkdir()
         script=ws/'solve.py'
         script.write_text("import json\njson.dump({'status':'optimal','objective_value':90,'variables':{'X':470,'Y':170}},open('result.json','w'))\n")
-        r=self.h.execute(task(name),'plain-python',str(script),str(ws),episode_id=name,solver='python')
+        from decision_fixtures import import_legacy_execution
+        r=import_legacy_execution(self.h,task(name),'plain-python',str(script),str(ws),episode_id=name,solver='python')
         self.h.record(r)
         self.h.check_task_result(r.execution_id,{'reference_objective':90,'reference_source':'independent'})
         self.h.close_episode(name,name)
@@ -408,7 +411,7 @@ class TestAgentLearningFeedback(AgentCase):
 
     def test_exclusion_invalidates_only_future_learning_support_not_publication_or_old_input(self):
         entry,a,b,j=self.derive(publish=True,review=True)
-        before=self.h.predict_strategy_outcome(task('before'),{'strategy_id':'endpoint','solver':'python'})
+        before=planned_prediction(self.h,task('before'),{'strategy_id':'endpoint','solver':'python'})
         context=self.h.get_prediction_context(before.trace.model_info['prediction_context_id'])
         frozen=copy.deepcopy(context.hplus_feedback);cutoff=time.time()
         self.h.exclude_execution(a.execution_id,'import assigned to wrong original task')
@@ -541,7 +544,7 @@ class TestReviewNineRetentionAndSupport(AgentCase):
         self.h.induction_material(induction_id=j)
         self.h.induce(induction_id=j,relations=[{**RULE,'evidence':[a.execution_id]}],
             review={'outcome':'new_rule','comparison':self.comparison(j,substantive=True,evidence_refs=['task_check.checks'])})
-        prediction=self.h.predict_strategy_outcome(task('before-correction'),{'strategy_id':'test','solver':'python'})
+        prediction=planned_prediction(self.h,task('before-correction'),{'strategy_id':'test','solver':'python'})
         context=self.h.get_prediction_context(prediction.trace.model_info['prediction_context_id'])
         frozen=copy.deepcopy(context.hplus_feedback);cutoff=time.time()
         self.recheck(a,reference_objective=-999)

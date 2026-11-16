@@ -79,6 +79,11 @@ class ActionSpec:
     #: has never seen. The solver/params stay their own fields: a method
     #: description is about the approach, not the tooling.
     method: Dict[str, Any] = field(default_factory=dict)
+    window_id: Optional[str] = None
+    preconditions: List[str] = field(default_factory=list)
+    expected_scope: List[str] = field(default_factory=list)
+    stop_conditions: List[str] = field(default_factory=list)
+    normalization_notes: List[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self.action_type not in ACTION_TYPES:
@@ -97,6 +102,9 @@ class ActionSpec:
             "budget_hint": (dict(self.budget_hint)
                             if self.budget_hint is not None else None),
             "method": copy.deepcopy(self.method),
+            **({'window_id':self.window_id} if self.window_id else {}),
+            **{k:list(getattr(self,k)) for k in ('preconditions','expected_scope','stop_conditions') if getattr(self,k)},
+            **({'normalization_notes':list(self.normalization_notes)} if self.normalization_notes else {}),
         }
 
     @classmethod
@@ -105,17 +113,24 @@ class ActionSpec:
             raise ValueError("ActionSpec must be a JSON object")
         if not data.get("action_type"):
             raise ValueError("ActionSpec.action_type is required")
+        if data.get('params') is not None and data.get('config') is not None and data['params']!=data['config']:
+            raise ValueError('candidate params and config contradict each other')
         return cls(
             action_type=str(data["action_type"]),
             task_id=str(data.get("task_id", "")),
             episode_id=data.get("episode_id"),
             strategy_id=data.get("strategy_id"),
             solver=data.get("solver"),
-            params=copy.deepcopy(dict(data.get("params") or {})),
-            measurement_scope=str(data.get("measurement_scope", "attempt")),
+            params=copy.deepcopy(dict(data.get("params") if data.get('params') is not None else data.get('config') or {})),
+            measurement_scope=str(data.get("measurement_scope", data.get('scope',"attempt"))),
             budget_hint=(dict(data["budget_hint"])
                          if data.get("budget_hint") else None),
             method=copy.deepcopy(dict(data.get("method") or {})),
+            window_id=data.get('window_id'),
+            preconditions=list(data.get('preconditions') or []),
+            expected_scope=list(data.get('expected_scope') or []),
+            stop_conditions=list(data.get('stop_conditions') or []),
+            normalization_notes=list(data.get('normalization_notes') or []),
         )
 
 

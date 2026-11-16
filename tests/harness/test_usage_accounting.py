@@ -20,6 +20,8 @@ What this file asserts, one behaviour per class:
 7. **Legacy and full-口径 figures are different units** and are reported as
    such, so pooling them is detectable.
 """
+
+from decision_fixtures import execute_scored
 import json
 import io
 import os
@@ -489,7 +491,7 @@ class TestHostUsageEndToEnd(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve()
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         # The host reports the attempt's real spend (prompt + completion).
         h.record(record, host_usage={"source": "openclaw",
@@ -518,7 +520,7 @@ class TestHostUsageEndToEnd(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("cli_usage")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         usage_path = Path(self.home) / "usage.json"
         usage_path.write_text(json.dumps(
@@ -601,7 +603,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve()
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record, host_usage=dict(self.HOST_REPORT))
         stored = h.bank.get(record.execution_id)
@@ -631,7 +633,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("whitelist")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         report = dict(self.HOST_REPORT,
                       measured=["prompt_tokens", "completion_tokens"])
@@ -651,7 +653,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("cli_host")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         usage_path = Path(self.home) / "host_report.json"
         usage_path.write_text(json.dumps(self.HOST_REPORT),
@@ -683,7 +685,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("adapter")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         # The host wrote its report under <home>/host_usage/.
         base = Path(self.home) / "host_usage"
@@ -718,7 +720,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("no_report")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         original = cli_module._harness
         cli_module._harness = lambda args: h
@@ -756,7 +758,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("env_home")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         base = Path(self.home) / "host_usage"
         base.mkdir(parents=True, exist_ok=True)
@@ -812,7 +814,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("amend")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)
         usage_path = Path(self.home) / "late_report.json"
@@ -854,7 +856,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("amend_parser")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)
         usage_path = Path(self.home) / "late_report.json"
@@ -898,7 +900,7 @@ class TestHostReportIngestion(HarnessTestCase):
         self.addCleanup(h.close)
         work = self._solve("bound")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)
         report = dict(self.HOST_REPORT, tool_calls=0,
@@ -956,7 +958,7 @@ class TestCloseEpisodeCostWarning(HarnessTestCase):
             "               'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
         task = {"task_id": "t1", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         # No host report, no override: llm_tokens and tool_calls stay
         # UNKNOWN (never zero).
@@ -986,7 +988,7 @@ class TestCloseEpisodeCostWarning(HarnessTestCase):
             "               'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
         task = {"task_id": "t2", "family": "routing", "spec": {}}
-        record = h.execute(task, "S01", str(work / "solve.py"), str(work),
+        record = execute_scored(h,task, "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record, host_usage={
             "schema": "or-host-usage/1", "host": "openclaw",

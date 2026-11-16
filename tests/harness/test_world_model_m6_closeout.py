@@ -16,6 +16,8 @@ spans several layers (prediction -> execution -> induction -> feedback).
   5  the enabling extra cost never entering scoring
   6  bind_induction_outcome unusable end to end
 """
+
+from decision_fixtures import execute_scored
 import os
 import sys
 import tempfile
@@ -139,7 +141,7 @@ class Base(HarnessTestCase):
         return h
 
     def seed(self, h, task_id="t1", strategy="S01"):
-        rec = h.execute(dict(TASK, task_id=task_id), strategy,
+        rec = execute_scored(h,dict(TASK, task_id=task_id), strategy,
                         str(self.script), str(self.work), solver="highs",
                         episode_id=f"e_{task_id}")
         h.record(rec, override={"llm_tokens": 1500.0})
@@ -152,7 +154,7 @@ class Base(HarnessTestCase):
                           episode_id=episode)
         prediction = h.predict_outcome(dict(TASK, task_id=task_id), spec,
                                        episode)
-        rec = h.execute(dict(TASK, task_id=task_id), strategy,
+        rec = execute_scored(h,dict(TASK, task_id=task_id), strategy,
                         str(self.script), str(self.work), solver="highs",
                         episode_id=episode)
         if bind:
@@ -205,7 +207,7 @@ class TestNoCreditWithoutExecution(Base):
         self.seed(h, "t1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        rec = h.execute(TASK, "S02", str(self.script), str(self.work),
+        rec = execute_scored(h,TASK, "S02", str(self.script), str(self.work),
                         solver="highs", episode_id="ep1")
         h.record(rec, override={"llm_tokens": 1500.0})
         bound = h.bind_outcome(prediction.prediction_id, rec.action_id)
@@ -296,7 +298,7 @@ class TestFeedbackStagesIndependent(Base):
         self.seed(h, "t1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        rec = h.execute(TASK, "S01", str(self.script), str(self.work),
+        rec = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                         solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, rec.action_id)
         h.record(rec, override={"llm_tokens": 1500.0})
@@ -377,7 +379,7 @@ class TestFeedbackStagesIndependent(Base):
                          for r in h.bank.all()]}])
         prediction = h.predict_outcome(TASK, ActionSpec(
             "execute_strategy", "t1", strategy_id="S01"), "ep1")
-        rec = h.execute(TASK, "S01", str(self.script), str(self.work),
+        rec = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                         solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, rec.action_id)
         # A scoped write over the SAME covered cell: no new entry.

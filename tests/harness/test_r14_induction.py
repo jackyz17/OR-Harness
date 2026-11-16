@@ -20,6 +20,8 @@ batch (scriptable/fixture providers only).
    ``refuting`` attribution drives the existing demotion.
 6. A ``mean`` interval is not covered/uncovered by one observation.
 """
+
+from decision_fixtures import planned_prediction
 import json
 import os
 import sys
@@ -211,7 +213,7 @@ class TestJointHPlusInMaterial(HarnessTestCase):
         })
         task = {"task_id": "t1", "family": "f", "description": "solve",
                 "spec": {"n_vars": 2, "n_constraints": 2, "n_int_vars": 2}}
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy", "strategy_id": "S1"},
             "ep1")
         self.assertIsNotNone(prediction.capability_gain)
@@ -237,7 +239,7 @@ class TestJointHPlusInMaterial(HarnessTestCase):
         })
         task = {"task_id": "t1", "family": "f", "description": "solve",
                 "spec": {"n_vars": 2, "n_constraints": 2, "n_int_vars": 2}}
-        h.predict_strategy_outcome(
+        planned_prediction(h,
             task, {"action_type": "execute_strategy", "strategy_id": "S1"},
             "ep1")
         h.record(self.make_record(execution_id="ex_n", task_id="t1",

@@ -59,7 +59,7 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
     "plan-next": {
         # The plan object rides under ``plan``: candidates, status, ids and
         # costs are inside it, not at the top level.
-        "required": {"plan", "decision_action_id", "effective_parameters"},
+        "required": {"plan", "decision_action_id", "effective_parameters","selected_prediction_id","selected_score"},
         "conditional": {"protocol", "candidate_rejections"},
     },
     "choose-next": {

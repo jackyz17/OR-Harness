@@ -23,6 +23,8 @@ prints the facts it asserts.
 """
 from __future__ import annotations
 
+from _workflow import execute_scored
+
 import json
 import os
 import sys
@@ -94,7 +96,7 @@ def _solve(h, task, strategy="S04", objective=100.0):
         "    json.dump({'status': 'optimal', 'objective_value': "
         f"{objective}, 'objective_bound': {objective}, "
         "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-    record = h.execute(task, strategy, str(script), str(work), solver="highs")
+    record = execute_scored(h,task, strategy, str(script), str(work), solver="highs")
     h.record(record)
     return record
 

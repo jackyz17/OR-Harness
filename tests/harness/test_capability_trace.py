@@ -22,6 +22,8 @@ machinery:
 6. **The model cannot declare its own verification flags.** Whatever the
    payload says about fact_bound/effect_verified is reset.
 """
+
+from decision_fixtures import execute_scored, planned_prediction
 import json
 import os
 import sys
@@ -107,8 +109,8 @@ class TraceCase(HarnessTestCase):
                 "solver": "highs", "episode_id": episode_id, "task_id": "t1"}
 
     def _predict(self, **kwargs):
-        return self.h.predict_strategy_outcome(self._task(), self._spec(),
-                                               "ep1", **kwargs)
+        return planned_prediction(self.h,self._task(), self._spec(),
+                                               "ep1", **kwargs, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
     def _task(self):
         return dict(TASK)
@@ -161,7 +163,7 @@ class TestTraceIsArchived(TraceCase):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(self._task(), None, str(script), str(work),
+        record = execute_scored(self.h,self._task(), None, str(script), str(work),
                                 solver=None, episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)
@@ -252,7 +254,7 @@ class TestFollowUpAlongTheRealPath(TraceCase):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(self._task(), None, str(script), str(work),
+        record = execute_scored(self.h,self._task(), None, str(script), str(work),
                                 solver=None, episode_id="ep1",
                                 prediction_id=prediction_id)
         self.h.record(record)

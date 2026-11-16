@@ -1,4 +1,6 @@
 """Ordinary tasks with raw inputs, real integer scripts and normal API entry points."""
+
+from decision_fixtures import execute_scored
 import copy
 from pathlib import Path
 
@@ -7,6 +9,7 @@ from or_harness.api import ORHarness
 from or_harness.core.schema import CostVector
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
 from or_harness.world_model.provider import WorldModelProvider
+from decision_fixtures import planned_prediction
 
 RULE={
  'when':'X,Y are nonnegative integers; feasible X at fixed Y is an interval and the objective is monotone in X.',
@@ -24,7 +27,7 @@ class Provider(WorldModelProvider):
         gain={'decision':self.decision,'claim':'Compare endpoint directions and their applicability boundary.' if self.decision else '',
               'basis':['recorded candidate steps and frozen library'],
               'verification_conditions':[{'condition':'Inspect endpoint direction and check the original integer optimum.'}] if self.decision else []}
-        return {'payload':{'benefit':{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')}|{'value':0.8},
+        return {'payload':{'benefit':{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')}|{'value':0.8,'baseline':{'kind':'unknown'}},
                            'cost':{'tool_calls':3},'capability_gain':gain},'usage':None,'latency_s':0.001}
 
 
@@ -59,7 +62,7 @@ class ReviewCase(HarnessTestCase):
         t=copy.deepcopy(t);episode=None if unnamed else episode if episode is not None else t['task_id']
         performed=({'name':'full integer enumeration','steps':['Enumerate every feasible integer X,Y and compare all objectives.']} if exhaustive else METHOD)
         self.provider.decision=decision
-        p=self.h.predict_strategy_outcome(t,{'strategy_id':'endpoints','solver':'python','method':performed},episode)
+        p=planned_prediction(self.h,t,{'strategy_id':'endpoints','solver':'python','method':performed},episode)
         n,c=t['data']['capacity'],t['data']['offset'];boundary=t['data']['nonmonotone'];maximum=t['model']['objective']['sense']=='max'
         ws=Path(self.home)/('case_'+str(len(self.h.actions.query())));ws.mkdir()
         code='import json,os\nvalues=[]\n'
@@ -70,7 +73,7 @@ class ReviewCase(HarnessTestCase):
             code+=f'for y in range({n}+1):\n lo=2*y+{c}\n hi={n}-y\n if lo<=hi:\n  x='+('hi' if maximum else 'lo')+f'\n  values.append((2*x+({5 if maximum else -5})*y,x,y))\nanswer='+('max' if maximum else 'min')+'(values)\n'
         code+="r={'status':'optimal','objective_value':answer[0],'objective_bound':answer[0],'variables':{'X':answer[1],'Y':answer[2],'reduction_used':"+str(not (boundary or exhaustive))+"},'method_performed':"+repr(performed)+"}\nr['method_performed']['action_id']=os.environ['OR_ACTION_ID']\nr['config']={'time_limit':60,'action_id':os.environ['OR_ACTION_ID']}\njson.dump(r,open('result.json','w'))\n"
         (ws/'solve.py').write_text(code)
-        r=self.h.execute(t,None,str(ws/'solve.py'),str(ws),episode_id=episode,prediction_id=p.prediction_id,
+        r=execute_scored(self.h,t,None,str(ws/'solve.py'),str(ws),episode_id=episode,prediction_id=p.prediction_id,
                          used_entry_ids=[f'{entry_id}@{version}'] if entry_id else None)
         if measured:
             r.cost=CostVector.from_dict(measured)

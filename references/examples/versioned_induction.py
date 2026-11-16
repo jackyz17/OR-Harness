@@ -8,6 +8,8 @@ Hash embeddings test the plumbing, not semantic retrieval quality.
 """
 from __future__ import annotations
 
+from _workflow import execute_scored
+
 import argparse
 import importlib.util
 import io
@@ -55,7 +57,7 @@ def solve(h, name, *, use=None, minimum=False, boundary=False, wrong=False, rule
     code += "result['method_performed']['action_id']=os.environ['OR_ACTION_ID']\njson.dump(result,open('result.json','w'))\n"
     script = workspace / 'solve.py'
     script.write_text(code)
-    record = h.execute(task,'endpoint',str(script),str(workspace),solver='python',episode_id=name,
+    record = execute_scored(h,task,'endpoint',str(script),str(workspace),solver='python',episode_id=name,
                        method=method,used_entry_ids=[str(use)+'@1'] if use else None)
     x,y = record.execution_features['solution_variables']['X'],record.execution_features['solution_variables']['Y']
     check = {'reference_objective':0 if boundary else 90 if minimum else 2699,

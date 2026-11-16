@@ -38,6 +38,8 @@ declared scope).
 """
 from __future__ import annotations
 
+from _workflow import bind_legacy, import_legacy_execution, planned_prediction
+
 import json
 import sys
 import tempfile
@@ -110,7 +112,7 @@ def _solve(h, *, variables, objective, tag):
         "with open('result.json', 'w') as fh:\n"
         "    json.dump(" + json.dumps(payload) + ", fh)\n",
         encoding="utf-8")
-    record = h.execute(TASK, "S01", str(work / "solve.py"), str(work),
+    record = import_legacy_execution(h,TASK, "S01", str(work / "solve.py"), str(work),
                        solver="highs", episode_id="ep1")
     h.record(record)
     return record
@@ -127,7 +129,7 @@ def main() -> int:
     print("1. The relaxed answer: optimal, matches the reference, still WRONG")
     print("=" * 72)
     # The frozen prediction is made BEFORE anything runs.
-    prediction = h.predict_strategy_outcome(
+    prediction = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
         "ep1")
     print(f"prediction             : {prediction.prediction_id} "
@@ -246,7 +248,7 @@ def main() -> int:
     print("=" * 72)
     print("5. Close-out: the prediction is judged against the TASK")
     print("=" * 72)
-    h.bind_strategy_outcome(prediction.prediction_id, repaired.action_id)
+    bind_legacy(h,prediction.prediction_id, repaired.action_id)
     result = h.close_episode("check_demo", "ep1")
     evaluation = result["evaluations"][0]
     print(f"evaluation state       : {evaluation['state']}")

@@ -25,6 +25,8 @@ What this file asserts, one behaviour per class:
    block counts as unassessed, and the online-gain summary counts each
    stance so a silent model is visible.
 """
+
+from decision_fixtures import planned_prediction
 import json
 import os
 import sys
@@ -123,7 +125,7 @@ class HPlusCase(HarnessTestCase):
 class TestSameCallAndShape(HPlusCase):
 
     def test_the_gain_is_parsed_from_the_same_answer(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
@@ -135,7 +137,7 @@ class TestSameCallAndShape(HPlusCase):
         self.assertEqual(len(self.provider.requests), 1)
 
     def test_the_gain_keeps_each_metric_in_its_own_unit(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         change = prediction.capability_gain.expected_changes[0]
@@ -156,7 +158,7 @@ class TestSameCallAndShape(HPlusCase):
                       request["output_contract"]["allowed_fields"])
 
     def test_the_gain_round_trips_through_storage(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         reloaded = self.h.get_strategy_outcome_prediction(
@@ -246,7 +248,7 @@ class TestGainAbsence(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
@@ -274,7 +276,7 @@ class TestGainAbsence(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
@@ -293,7 +295,7 @@ class TestGainAbsence(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # The malformed gain is DROPPED with a reason, and the valid
@@ -315,7 +317,7 @@ class TestGainAbsence(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.status, "valid")
@@ -337,7 +339,7 @@ class TestGainAssessment(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        return h, h.predict_strategy_outcome(
+        return h, planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
@@ -421,10 +423,10 @@ class TestGainAssessment(HPlusCase):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        h.predict_strategy_outcome(
+        planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        other = h.predict_strategy_outcome(
+        other = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02"},
             "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIsNone(other.capability_gain)
@@ -468,7 +470,7 @@ class TestGainIsNotVerifiedCapability(HPlusCase):
 
     def test_nothing_is_written_into_the_capability_evidence(self):
         before = self.h.capability_evidence_with_effects().to_dict()
-        self.h.predict_strategy_outcome(
+        planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         after = self.h.capability_evidence_with_effects().to_dict()
@@ -485,7 +487,7 @@ class TestGainIsNotVerifiedCapability(HPlusCase):
             if "evidence_version" in before else None
 
     def test_the_gain_carries_no_effect_verified_flag(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         view = prediction.capability_gain.to_dict()

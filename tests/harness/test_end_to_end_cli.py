@@ -24,6 +24,11 @@ def run_orx(home, *argv):
     return proc
 
 
+
+def run_scored_orx(home,*argv):
+    from decision_fixtures import scored_cli_argv
+    return run_orx(home,*scored_cli_argv(home,argv))
+
 class TestEndToEndCLI(HarnessTestCase):
     def setUp(self):
         super().setUp()
@@ -50,6 +55,26 @@ class TestEndToEndCLI(HarnessTestCase):
                            "objective_bound": 100.0, "runtime_seconds": 0.01},
                           fh)
         """), encoding="utf-8")
+
+    def test_normal_scored_cli_single_and_multiple_candidates(self):
+        import importlib.util
+        spec=importlib.util.spec_from_file_location('unified_solving',REPO/'references/examples/unified_solving.py')
+        example=importlib.util.module_from_spec(spec);spec.loader.exec_module(example)
+        for mode,calls in [('single',2),('multi',4)]:
+            with self.subTest(mode=mode):
+                result=example.run(mode,Path(self.home)/mode)
+                self.assertEqual(result['provider_calls'],calls)
+                for decision in result['decisions']:
+                    self.assertIsNotNone(decision['selected_score']['utility'])
+                    self.assertEqual(decision['selected_prediction_id'],decision['selected_score']['prediction_id'])
+                receipt=result['induction_receipt']
+                self.assertEqual(receipt['prediction_id'],result['decisions'][0]['selected_prediction_id'])
+                self.assertNotEqual(receipt['solve_action_id'],receipt['induction_action_id'])
+                self.assertEqual(receipt['verification'][0]['state'],'checked')
+                self.assertTrue(result['induction_status']['completed'])
+                self.assertFalse(any('choose-next' in c for c in result['commands']))
+                self.assertTrue(any('record --from-staged' in c for c in result['commands']))
+                self.assertTrue(any('pending' in s.lower() for s in result['summaries']))
 
     def test_full_loop_across_processes(self):
         # 1. profile
@@ -80,7 +105,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIsNone(prediction["expected_cost"])
 
         # 3. execute
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -102,7 +127,7 @@ class TestEndToEndCLI(HarnessTestCase):
 
         # 5. record a second execution on a DIFFERENT task in the same group:
         #    repetition of one task is not independent evidence.
-        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task2_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution2 = json.loads(proc.stdout)["result"]["execution"]
@@ -210,7 +235,7 @@ class TestEndToEndCLI(HarnessTestCase):
         publish as a partial mean (the complete-or-silent rule). Since
         knowledge is written only from a submitted strategy, the surviving
         observable contract is the record-time gap and the statistics."""
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution = json.loads(proc.stdout)["result"]["execution"]
@@ -223,7 +248,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIn("tool_calls", block["missing"])
 
         # A second, independent task in the same group.
-        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task2_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution2 = json.loads(proc.stdout)["result"]["execution"]
@@ -254,7 +279,7 @@ class TestEndToEndCLI(HarnessTestCase):
         self.assertIn("tool_calls", snapshot["cost_measured"])
 
     def test_tool_calls_below_the_sandbox_floor_is_refused(self):
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution = json.loads(proc.stdout)["result"]["execution"]
@@ -279,7 +304,7 @@ class TestEndToEndCLI(HarnessTestCase):
         # Two recorded tasks with an explicit token cost difference.
         ids = []
         for task_path, tokens in ((self.task_path, 100), (self.task2_path, 1000)):
-            proc = run_orx(self.home, "execute", "--task", str(task_path),
+            proc = run_scored_orx(self.home, "execute", "--task", str(task_path),
                            "--strategy", "S01", "--code", str(self.solve_path),
                            "--workspace", str(self.work), "--solver", "highs")
             execution = json.loads(proc.stdout)["result"]["execution"]
@@ -359,7 +384,7 @@ class TestEndToEndCLI(HarnessTestCase):
         """Two recorded tasks -> one saved strategy entry (S01, routing)."""
         ids = []
         for task_path in (self.task_path, self.task2_path):
-            proc = run_orx(self.home, "execute", "--task", str(task_path),
+            proc = run_scored_orx(self.home, "execute", "--task", str(task_path),
                            "--strategy", "S01", "--code", str(self.solve_path),
                            "--workspace", str(self.work), "--solver", "highs")
             execution = json.loads(proc.stdout)["result"]["execution"]
@@ -394,7 +419,7 @@ class TestEndToEndCLI(HarnessTestCase):
         exec_ids = {}
         for label, code, task in (("before", before_path, self.task_path),
                                   ("after", after_path, self.task2_path)):
-            proc = run_orx(self.home, "execute", "--task", str(task),
+            proc = run_scored_orx(self.home, "execute", "--task", str(task),
                            "--strategy", "S01", "--code", str(code),
                            "--workspace", str(self.work), "--solver", "highs")
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
@@ -439,7 +464,7 @@ class TestEndToEndCLI(HarnessTestCase):
         # A counterexample (worse 'after') refutes the group comparison.
         worse_path = self.work / "worse.py"
         worse_path.write_text(solve(300.0), encoding="utf-8")
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(worse_path),
                        "--workspace", str(self.work), "--solver", "highs")
         execution = json.loads(proc.stdout)["result"]["execution"]
@@ -473,7 +498,7 @@ class TestEndToEndCLI(HarnessTestCase):
         for objective in (140.0, 100.0):
             code = self.work / f"s_{objective}.py"
             code.write_text(solve(objective), encoding="utf-8")
-            proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+            proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                            "--strategy", "S01", "--code", str(code),
                            "--workspace", str(self.work), "--solver", "highs")
             execution = json.loads(proc.stdout)["result"]["execution"]
@@ -505,13 +530,13 @@ class TestEndToEndCLI(HarnessTestCase):
         (evidence only, never a knowledge change); the next knowledge write
         replays those checks and reports under `revisions`."""
         # Seed a strategy entry over two tasks.
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         e1 = json.loads(proc.stdout)["result"]["execution"]
         p = self.work / "e1.json"; p.write_text(json.dumps(e1))
         run_orx(self.home, "record", "--execution", str(p))
-        proc = run_orx(self.home, "execute", "--task", str(self.task2_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task2_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs")
         e2 = json.loads(proc.stdout)["result"]["execution"]
@@ -533,7 +558,7 @@ class TestEndToEndCLI(HarnessTestCase):
         # Recording an execution that DECLARES it adopted the entry writes a
         # FROZEN check (evidence only) — the entry's status/track are
         # untouched by `record`.
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S01", "--code", str(self.solve_path),
                        "--workspace", str(self.work), "--solver", "highs",
                        "--used-entry-ids", entry_id)

@@ -13,6 +13,9 @@ answer really stops counting as success while remaining recorded evidence. The
 acceptance scenario is the LP relaxation: 10750 (fractional) → identified as
 not a valid integer answer → the variable domain is repaired → 10755 passes.
 """
+from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
+
+
 import json
 import os
 import sys
@@ -134,7 +137,7 @@ class TaskCheckCase(HarnessTestCase):
             "with open('result.json', 'w') as fh:\n"
             "    json.dump(" + json.dumps(payload) + ", fh)\n",
             encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode_id,
                                 prediction_id=prediction_id)
         self.h.record(record)
@@ -317,7 +320,7 @@ class TestInsufficientIsNeverAPass(TaskCheckCase):
             "    json.dump({'status': 'optimal', 'objective_value': 10755.0,"
             " 'objective_bound': 10755.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(task, "S01", str(script), str(work),
+        record = execute_scored(self.h,task, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1")
         self.h.record(record)
         report = verify_task_result(record, {"integer": {}})
@@ -532,12 +535,12 @@ class TestLateCorrection(TaskCheckCase):
         measured COST is likewise preserved, and the sample keeps
         COUNTING."""
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late1")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         closed = self.h.close_episode("t1", "ep1")
         evaluation = closed["evaluations"][0]
@@ -594,12 +597,12 @@ class TestLateCorrection(TaskCheckCase):
         """A late check must reach the PUBLISHED summary, not only a fresh
         rebuild — otherwise later predictions keep reading a stale label."""
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late3")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         # A context built now reads the published summary (no correction).
@@ -626,12 +629,12 @@ class TestLateCorrection(TaskCheckCase):
         summary. Documented behaviour, so a caller knows which channel
         updates the published summary."""
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2, "x2": 3},
                             objective=10755.0, tag="late4")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         self.h.bank.set_task_check(record.execution_id, {
@@ -653,12 +656,12 @@ class TestLateCorrection(TaskCheckCase):
     def test_check_recorded_before_closeout_is_not_a_correction(self):
         """A known-at-the-time failure must not be double-counted."""
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
                             objective=10750.0, tag="late2")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.check_task_result(record.execution_id,
                                  {"integer": {"variables": ["x1", "x2"]}})
@@ -683,14 +686,14 @@ class TestExposedDefectsAreFixed(TaskCheckCase):
                            "json.dump({}, open('result.json', 'w'))\n",
                            encoding="utf-8")
         with self.assertRaises(ValueError):
-            self.h.execute(task, "S01", str(outside),
+            execute_scored(self.h,task, "S01", str(outside),
                            str(Path(self.home) / "ws_out"), solver="highs",
                            episode_id="ep1")
         # The exception still propagates, but the action is not stranded.
         self.assertEqual(self.h.actions.running(task_id="t1"), [])
         actions = self.h.actions.query(task_id="t1",
                                        action_type="execute_strategy")
-        self.assertEqual([a.status for a in actions], ["failed"])
+        self.assertEqual(actions, [])  # path refusal precedes any actual attempt
         # ...and the episode is therefore still closable.
         result = self.h.close_episode("t1", "ep1")
         self.assertIsNotNone(result["closeout"])
@@ -763,7 +766,7 @@ class TestFormalPathProducesEvaluation(TaskCheckCase):
     def test_predict_strategy_execute_check_bind_close(self):
         """The documented path must end in a real evaluation, not empty."""
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
@@ -772,7 +775,7 @@ class TestFormalPathProducesEvaluation(TaskCheckCase):
             record.execution_id,
             {"integer": {"variables": ["x1", "x2"]}})
         self.assertEqual(checked["state"], "failed")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         closed = self.h.close_episode("t1", "ep1")
         evaluation = closed["evaluations"][0]
@@ -858,10 +861,10 @@ class TestCheckSurvivesRecording(TaskCheckCase):
             " 'variables': {'x1': 2.5, 'x2': 1.5}}, fh)\n",
             encoding="utf-8")
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.h.execute(task, None, str(script), str(work),
+        record = execute_scored(self.h,task, None, str(script), str(work),
                                 solver=None, episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         return task, record
@@ -920,7 +923,7 @@ class TestCompletionIsObservable(TaskCheckCase):
         self.addCleanup(self.h.close)
         task = _task("t1")
         self.h.snapshot(task, episode_id="ep1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         self.assertEqual(prediction.benefit.kind, "effective_completion")
@@ -1004,7 +1007,7 @@ class TestCompletionIsObservable(TaskCheckCase):
         self.addCleanup(self.h.close)
         task = _task("t1")
         self.h.snapshot(task, episode_id="ep1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._prediction_id = prediction.prediction_id

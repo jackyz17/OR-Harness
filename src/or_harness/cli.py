@@ -525,6 +525,7 @@ def cmd_execute(args) -> int:
                                episode_id=getattr(args, "episode", None),
                                prediction_id=prediction_id,
                                method=method,
+                               config=(_load_json_arg(args.config) if getattr(args,'config',None) else None),
                                adapted_from=adapted_from,
                                adaptation=getattr(args, "adaptation", None),
                                used_entry_ids=used_entry_ids)
@@ -545,9 +546,7 @@ def cmd_execute(args) -> int:
             # workspace): refused BEFORE anything ran, so the prediction is
             # not spent and no cost was incurred. Reported as a usage error
             # with the reason, never a crash.
-            if prediction_id:
-                return _fail(f"{exc}")
-            raise
+            return _fail(str(exc))
         except Exception as exc:
             # The executor raised AFTER the attempt started (a filesystem
             # error, an interruption). The attempt really ran and really
@@ -565,8 +564,7 @@ def cmd_execute(args) -> int:
                     + (f"; staged executions: {staged_ids}" if staged_ids
                        else "")
                     + ". Retry with a NEW attempt"
-                    + (" (the prediction was freed for it)" if prediction_id
-                       else "") + "; record the failure with `orx record "
+                    + " through plan-next; record the failure with `orx record "
                     "--from-staged <execution_id>` to keep it as a fact.")
             return _fail(note)
         out = {"execution": record.to_dict(),
@@ -576,8 +574,8 @@ def cmd_execute(args) -> int:
         summary = (f"Execution {record.execution_id} finished with status "
                    f"{q['status']} (feasible={q['feasible']}, "
                    f"gap={q['gap']}). Cost so far: {record.cost.to_dict()}. "
-                   "Nothing is recorded yet — call `orx record` to persist, "
-                   "or discard.")
+                   f"Check the original task using its existing evidence: `orx check-task {record.execution_id} --check ...`, "
+                   f"then save this attempt (including failures): `orx record --from-staged {record.execution_id}`.")
         binding = record.execution_features.get("prediction_binding")
         if prediction_id is not None:
             if binding and binding.get("bound"):
@@ -1446,7 +1444,8 @@ def cmd_predict_strategy(args) -> int:
                          f"{(prediction.notes or ['no provider'])[0]}", 2)
         parts = [f"Strategy-outcome prediction {prediction.prediction_id} "
                  f"({prediction.status}) for "
-                 f"{prediction.candidate.strategy_id or '(unnamed)'}: "]
+                 f"{prediction.candidate.strategy_id or '(unnamed)'}: independent inspection only; "
+                 "formal solving requires plan-next U scoring. "]
         if result['hplus'] and 'decision' in result['hplus']:
             parts.append(f"H+={result['hplus']['decision']} ({result['hplus']['decision_status']}): "
                          f"{result['hplus']['explanation']}; ")
@@ -1473,9 +1472,7 @@ def cmd_predict_strategy(args) -> int:
         if prediction.trace.unsupported_fields:
             parts.append(f"not predicted: "
                          f"{', '.join(sorted(prediction.trace.unsupported_fields))}; ")
-        parts.append("This is a hypothesis — execute the candidate "
-                     "yourself, then `orx bind-strategy --prediction "
-                     f"{prediction.prediction_id} --action <id>`.")
+        parts.append('Inspect this forecast; use `orx plan-next --candidates ...` for a scored executable decision. ')
         return _emit(result, "".join(parts))
     finally:
         h.close()
@@ -1579,7 +1576,8 @@ def cmd_close_episode(args) -> int:
             return _emit(result,
                          f"Episode {args.task}/{args.episode} was already "
                          f"closed (state {closeout['terminal_state']}); "
-                         "the stored record stands — nothing re-counted.")
+                         "the stored record stands — nothing re-counted. "
+                         + _induction_handoff(result))
         n_evaluated = sum(1 for e in result.get("evaluations", [])
                           if e.get("state") == "evaluated")
         n_excluded = sum(1 for e in result.get("evaluations", [])
@@ -1620,9 +1618,17 @@ def cmd_close_episode(args) -> int:
                 f"({checks.get('unchecked', 0)} of "
                 f"{checks['n_executions']} unchecked)."
                 + (" " + checks["note"] if checks.get("note") else ""))
+        parts.append(_induction_handoff(result))
         return _emit(result, " ".join(parts))
     finally:
         h.close()
+
+
+def _induction_handoff(result):
+    pending=(result.get('induction_schedule') or {}).get('pending_ids') or []
+    return ('Read result.induction_schedule.pending_ids='+str(pending)+
+            '; settle every job with induction-material and induce before the next task.' if pending else
+            'Read result.induction_schedule.pending_ids: no pending induction for this episode.')
 
 
 def cmd_calibration(args) -> int:
@@ -2017,10 +2023,13 @@ def cmd_plan_next(args) -> int:
             limits["benefit_metric"] = args.benefit_metric
         if getattr(args, "benefit_unit", None):
             limits["benefit_unit"] = args.benefit_unit
+        if getattr(args,'cost_scales',None):limits['cost_scales']=_load_json_arg(args.cost_scales)
         plan = h.plan_next(task, episode_id=args.episode,
                            candidates=candidates, limits=limits)
         result = {"plan": plan, "decision_action_id": plan.get(
             "decision_action_id")}
+        result['selected_prediction_id']=plan.get('selected_prediction_id')
+        result['selected_score']=plan.get('selected_score')
         # The parameters that were REALLY in force, so a caller never has to
         # infer them from today's configuration.
         result["effective_parameters"] = {
@@ -2057,36 +2066,17 @@ def cmd_plan_next(args) -> int:
             ids = ", ".join(f"{sid}={c.get('prediction_id')}"
                             for sid, c in by_strategy.items())
             parts.append(f"Predictions: {ids}.")
-        suggested = plan.get("suggested")
-        if suggested:
-            step = (f"Suggested first step: {suggested['action_type']}"
-                    + (f" {suggested.get('strategy_id')}"
-                       if suggested.get("strategy_id") else "")
-                    + f" — {plan.get('suggestion_basis')}")
-            # The prediction id comes from the SUGGESTED candidate itself,
-            # matched on the FULL candidate identity — including solver and
-            # config. Matching on strategy_id + action_type alone named the
-            # FIRST candidate with that strategy, so "same strategy, HiGHS
-            # vs Gurobi" bound the wrong solver's prediction and the later
-            # identity check (correctly) rejected it as a mismatch: a real
-            # sample lost to a display bug.
-            suggested_id = _matching_candidate_prediction_id(
-                compared, suggested)
-            if suggested_id:
-                step += (f". Accept by ID: `orx choose-next --decision "
-                         f"{plan.get('decision_action_id')} --prediction "
-                         f"{suggested_id}` — then run the step with the SAME "
-                         "prediction (do NOT call predict-strategy again): "
-                         f"`orx execute --task ... --prediction "
-                         f"{suggested_id} --code solve.py --workspace ws` "
-                         "(the strategy and solver come from the candidate).")
-            else:
-                step += (f". Accept with `orx choose-next --decision "
-                         f"{plan.get('decision_action_id')} --chosen ...`.")
-            parts.append(step)
+        selected=plan.get('selected_prediction_id')
+        score=plan.get('selected_score') or {}
+        if selected:
+            parts.append(f"Selected {selected}; U={score.get('utility')}; common terms={score.get('scoring_basis',{}).get('terms')}; "
+                         f"G={score.get('benefit_value')}, C={score.get('cost_normalized')}, R={score.get('risk_effective')}. "
+                         f"Run `orx execute --task ... --prediction {selected} --code solve.py --workspace ws` directly; "
+                         "the original prediction is reused and actual adoption is recorded before execution. "
+                         "See selected_score.scoring_basis for omitted dimensions and reasons.")
         else:
-            parts.append(plan.get("suggestion_basis")
-                         or "No suggestion (see candidates).")
+            parts.append('No executable U decision: '+str(plan.get('truncation_reason') or plan.get('suggestion_basis') or plan.get('status'))+
+                         '. Revise candidates or repair the forecast, then call plan-next again.')
         return _emit(result, " ".join(parts))
     finally:
         h.close()
@@ -2533,11 +2523,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="per-dimension cost weights, e.g. "
                              "'llm_tokens=1.0,retries=2.0'")
     parser.add_argument("--delta", type=float, default=0.0,
-                        help="weight of the predicted knowledge term "
-                             "(U = alpha*Q - beta*C - gamma*R + delta*K). "
-                             "Default 0.0: an unknown knowledge value is "
-                             "never rewarded, so a positive delta is a "
-                             "deliberate experimental choice")
+                        help="legacy compatibility setting; formal strategy U uses G/C/R, "
+                             "with H+ scheduling induction independently")
     parser.add_argument("--prediction-mode", default="h-x-b-value",
                         choices=list(PREDICTION_MODES),
                         help="what the world model predicts: 'x-b-only' "
@@ -2627,20 +2614,18 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "execute",
-        help="sandbox-execute a solve script. Pass --prediction to run a "
+        help="execute the unused U-selected plan-next prediction with a solve script. A "
              "FROZEN candidate: the strategy/solver/episode are taken from "
              "it and the association is established before the run")
     p.add_argument("--task", required=True)
     p.add_argument("--strategy", default=None,
-                   help="the strategy that runs. Required for an unpredicted "
-                        "attempt; when --prediction is given it is taken from "
+                   help="optional assertion of the strategy; it is taken from "
                         "the candidate (pass it only to state the same value "
                         "— a conflicting value is refused BEFORE the run)")
     p.add_argument("--code", required=True, help="path to solve.py")
     p.add_argument("--workspace", required=True)
     p.add_argument("--solver", default=None,
-                   help="the concrete solver. Required for an unpredicted "
-                        "attempt; when --prediction is given it is taken from "
+                   help="optional assertion of the concrete solver; it is taken from "
                         "the candidate (a conflicting value is refused before "
                         "the run)")
     p.add_argument("--episode", default=None,
@@ -2657,9 +2642,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "checked, and a conflicting explicit argument is "
                         "refused before anything executes. After the run the "
                         "real result and the observed configuration are "
-                        "added to the same association. Omit it for an "
-                        "unpredicted attempt; `orx bind-strategy` can bind a "
-                        "manual action later")
+                        "added to the same association. A selected scored plan-next "
+                        "prediction is required; independent forecasts cannot authorize execution.")
     p.add_argument("--method", default=None, metavar="JSON",
                    help="the method THIS attempt intends to use, in your own "
                         "words: '{\"name\": ..., \"steps\": [...]}'. When "
@@ -2669,6 +2653,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(method_planned) — the method that actually ran "
                         "comes solely from the script's result.json "
                         "'method_performed' receipt, never from this plan")
+    p.add_argument('--config',default=None,metavar='JSON_OR_FILE',help='optional execution configuration assertion; must equal the selected candidate config before launch')
     p.add_argument("--adapted-from", default=None, metavar="EXEC_IDS",
                    help="comma-separated execution ids this attempt was "
                         "ADAPTED FROM (the recall hits you actually read). "
@@ -3234,13 +3219,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "the operation)")
     p.set_defaults(func=cmd_evaluate_capability)
 
-    p = sub.add_parser("plan-next",
-                       help="bounded next-step planning over predicted "
-                            "action consequences (M3): freeze one root "
-                            "snapshot, compare <=3 root candidates (and "
-                            "optional horizon-2 continuations), suggest the "
-                            "first step. Never executes, never writes "
-                            "selected_plan")
+    p = sub.add_parser("plan-next", help="score one or more proposed candidates, select by U, then execute the selected prediction directly")
     p.add_argument("--task", required=True)
     p.add_argument("--episode", default=None)
     p.add_argument("--candidates", default=None,
@@ -3249,6 +3228,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "candidate menu. Propose the methods you want "
                         "compared; `recall` shows what memory already "
                         "holds for this problem")
+    p.add_argument('--cost-scales',default=None,metavar='JSON_OR_FILE',
+                   help='candidate-independent positive resource peaks, e.g. {"tool_calls":30}; absent dimensions use applicable pre-decision measured history or are omitted')
     p.add_argument("--horizon", type=int, default=1,
                    help="fixed at 1: planning compares macro strategy "
                         "candidates once, then you re-plan from the REAL "
@@ -3264,13 +3245,8 @@ def build_parser() -> argparse.ArgumentParser:
                         "is re-checked. Exhaustion returns a truncation "
                         "reason and KEEPS the calls already paid for")
     p.add_argument("--delta", type=float, default=argparse.SUPPRESS,
-                   help="weight of the predicted knowledge term in the path "
-                        "utility (U = alpha*Q - beta*C - gamma*R + delta*K). "
-                        "Omitted = this harness's configured value, which is "
-                        "0.0 unless set: an unknown knowledge value is NOT "
-                        "rewarded, so a positive delta is a deliberate "
-                        "experimental choice. Overrides the global --delta "
-                        "for this one decision")
+                   help="compatibility parameter; strategy-outcome U uses only G/C/R, "
+                        "and H+ independently schedules induction")
     p.add_argument("--prediction-mode", default=argparse.SUPPRESS,
                    choices=["x-b-only", "h-x-b", "h-x-b-value"],
                    help="what the world model predicts: 'x-b-only' predicts "

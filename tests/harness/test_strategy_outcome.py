@@ -23,10 +23,14 @@ What this file asserts, one behaviour per test class:
    call limits really bind; one real execution binds; unexecuted
    candidates generate no facts.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import json
 import os
 import sys
 import unittest
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
@@ -138,10 +142,250 @@ class StrategyCase(HarnessTestCase):
             "    json.dump({'status': 'optimal', 'objective_value': "
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = execute_scored(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode_id)
         self.h.record(record)
         return record
+
+
+class UnifiedProvider(WorldModelProvider):
+    name='unified-solving-fixture'
+    def __init__(self):
+        self.requests=[];self.decision=0;self.g=.8;self.r=.2;self.cost=3
+    def predict(self,request,timeout_s=None):
+        import copy
+        self.requests.append(copy.deepcopy(request))
+        convention=request['benefit_convention']
+        return {'payload':{'benefit':{**{k:convention[k] for k in ('kind','metric','unit')},'value':self.g,
+            'baseline':{'kind':'unknown','note':'No comparable prior result.'}},
+            'cost':{'tool_calls':request['candidate']['config'].get('seed',self.cost)},
+            'risk':{'events':[] if self.r is None else [{'event':'implementation_failure','probability':self.r}]},
+            'capability_gain':{'decision':self.decision,'claim':'A checked interval endpoint may extend the current rule.',
+                'basis':['Actual candidate steps and frozen library'],
+                'verification_conditions':[{'condition':'Check the delivered integer result.'}]}},'usage':None,'latency_s':0.001}
+
+
+class TestUnifiedSolving(HarnessTestCase):
+    """Use the public planner, executor and close-out with no test bypass."""
+    def setUp(self):
+        super().setUp()
+        from pathlib import Path
+        self.provider=UnifiedProvider()
+        self.h=ORHarness(home=self.home,world_model=self.provider,embedding=LocalHashEmbeddingBackend())
+        self.addCleanup(self.h.close)
+        self.task={'task_id':'unified','family':'assignment','description':'Return the integer X=1.'}
+        self.method={'name':'one integer','steps':['Set X=1 and return its objective.']}
+        self.ws=Path(self.home)/'work';self.ws.mkdir()
+        self.code=self.ws/'solve.py'
+        self.code.write_text("import json\njson.dump({'status':'optimal','objective_value':1,'variables':{'X':1}},open('result.json','w'))\n")
+
+    def candidate(self,name='one',**config):
+        return {'action_type':'execute_strategy','strategy_id':name,'solver':'python','method':self.method,'config':config}
+
+    def plan(self,candidates=None,**overrides):
+        return self.h.plan_next(self.task,'E',candidates=candidates or [self.candidate()],limits={
+            'cost_weights':{'tool_calls':1},'cost_scales':{'tool_calls':30},**overrides})
+
+    def run_selected(self,plan):
+        return self.h.execute(self.task,None,str(self.code),str(self.ws),prediction_id=plan['selected_prediction_id'])
+
+    def assert_refused(self,prediction_id=None,**changes):
+        from unittest.mock import patch
+        args={'task':self.task,'code_path':str(self.code),'workspace':str(self.ws),'prediction_id':prediction_id,**changes}
+        count=len(self.h.actions.query(action_type='execute_strategy'))
+        with patch.object(self.h,'_run_executor') as run,self.assertRaises(ValueError):self.h.execute(**args)
+        run.assert_not_called()
+        self.assertEqual(len(self.h.actions.query(action_type='execute_strategy')),count)
+
+    def test_single_candidate_U_is_saved_and_direct_execute_adopts_once(self):
+        import math
+        plan=self.plan();p=plan['selected_prediction_id']
+        self.assertIsNotNone(p)
+        self.assertAlmostEqual(plan['selected_score']['utility'],.8-math.log1p(3)/math.log1p(30)-.2,places=6)
+        decision=self.h.actions.get(plan['decision_action_id'])
+        self.assertEqual(decision.outcome['selected_prediction_id'],p)
+        self.assertIsNone(decision.outcome.get('adopted_by_action_id'))
+        r=self.run_selected(plan)
+        self.assertEqual(len(self.provider.requests),1)
+        self.assertEqual(self.h.actions.get(r.action_id).params['scored_adoption']['prediction_id'],p)
+        choices=[a for a in self.h.actions.query(action_type='select_strategy') if (a.outcome or {}).get('adopted_by_action_id')]
+        self.assertEqual(len(choices),2)  # one decision pointer and one actual choice
+        self.assertEqual(sum((a.outcome or {}).get('adoption_source')=='execute' for a in choices),1)
+        self.assertTrue(r.execution_features['prediction_binding']['bound'])
+
+    def test_shared_context_and_stable_candidate_independent_cost_scale(self):
+        import math
+        low=self.plan([self.candidate('low',seed=3)])
+        high=self.plan([self.candidate('high',seed=30)])
+        multi=self.plan([self.candidate('low',seed=3),self.candidate('high',seed=30)])
+        self.assertLess(low['selected_score']['cost_normalized'],high['selected_score']['cost_normalized'])
+        self.assertAlmostEqual(low['selected_score']['cost_normalized'],math.log1p(3)/math.log1p(30),places=6)
+        self.assertEqual(multi['candidates'][0]['score']['cost_normalized'],low['selected_score']['cost_normalized'])
+        self.assertEqual(multi['candidates'][1]['score']['cost_normalized'],high['selected_score']['cost_normalized'])
+        self.assertEqual(multi['selected_prediction_id'],multi['candidates'][0]['prediction_id'])
+        self.assertEqual(self.provider.requests[-1]['prediction_context']['context_id'],
+                         self.provider.requests[-2]['prediction_context']['context_id'])
+        self.assertEqual(len(self.provider.requests),4)
+
+    def test_no_scale_omits_C_and_missing_R_is_partial_without_penalty(self):
+        self.provider.r=None
+        plan=self.plan(cost_scales={})
+        score=plan['selected_score']
+        self.assertEqual(score['utility'],.8)
+        self.assertEqual(score['scoring_basis']['terms'],['G'])
+        self.assertIn('scale',str(score['scoring_basis']['omitted_cost_dimensions']))
+        self.run_selected(plan)
+
+    def test_Hplus_never_changes_U_and_explicit_zero_is_valid(self):
+        self.provider.g=0;self.provider.r=0;self.provider.cost=0
+        self.provider.decision=0;a=self.plan()
+        self.provider.decision=1;b=self.plan()
+        self.assertEqual(a['selected_score']['utility'],0)
+        self.assertEqual(a['selected_score']['utility'],b['selected_score']['utility'])
+        self.run_selected(b)
+
+    def test_resource_peak_comes_from_applicable_pre_decision_measured_history(self):
+        import time
+        self.h.execution_context={'host':'unit-runner','model':'executor/v1','phase':'initial_modelling'}
+        first=self.plan(cost_scales={});record=self.run_selected(first)
+        self.h.check_task_result(record.execution_id,{'reference_objective':1,'reference_source':'independent'})
+        self.h.record(record)
+        decision=self.h.actions.get(first['decision_action_id']);end=time.time()
+        self.h.report_action('finish_task',self.task,'E',started_at=end,ended_at=end,host_usage={
+            'schema':'or-host-usage/1','host':'unit-runner','model':'executor/v1','scope':'remaining_to_task_end',
+            'report_id':'one-measured-window','window':{'started_at':decision.started_at,'ended_at':end,
+                'anchor_action_id':decision.action_id,'complete':True,'end_event':'finish_task'},
+            'tool_calls':30,'measured':['tool_calls']})
+        self.h.close_episode(self.task['task_id'],'E')
+        self.task={**self.task,'task_id':'next-original-task'}
+        second=self.plan(cost_scales={})
+        score=second['selected_score']
+        self.assertEqual(score['scoring_basis']['cost_scales']['tool_calls'],30)
+        source=score['scoring_basis']['cost_scale_sources']['tool_calls']
+        self.assertEqual(source['source'],'pre_decision_measured_history')
+        self.assertTrue(source['source_refs'])
+        self.assertEqual(source['n'],1)
+
+    def test_negative_U_still_uses_existing_permission_rules(self):
+        self.provider.cost=30;plan=self.plan()
+        self.assertLess(plan['selected_score']['utility'],0)
+        self.run_selected(plan)
+
+    def test_standalone_prediction_bare_execution_and_posthoc_bind_are_not_authorizations(self):
+        p=self.h.predict_strategy_outcome(self.task,self.candidate(),'E')
+        self.assert_refused(p.prediction_id)
+        self.assert_refused(strategy_id='one',solver='python')
+        action=self.h.actions.begin_action('execute_strategy',self.task['task_id'],'E',params={'strategy_id':'one','solver':'python'})
+        with self.assertRaises(ValueError):self.h.bind_strategy_outcome(p.prediction_id,action.action_id)
+
+    def test_unselected_manual_override_identity_and_config_conflicts_are_refused(self):
+        plan=self.plan([self.candidate('low',seed=3),self.candidate('high',seed=30)])
+        low,high=[r['prediction_id'] for r in plan['candidates']]
+        self.assert_refused(high)
+        with self.assertRaises(ValueError):self.h.choose_next(plan['decision_action_id'],prediction_id=high)
+        with self.assertRaises(ValueError):self.h.choose_next(plan['decision_action_id'],chosen=ActionSpec.from_dict(self.candidate('other')))
+        self.assert_refused(low,task={**self.task,'task_id':'other'})
+        self.assert_refused(low,task={**self.task,'description':'A different original problem.'})
+        self.assert_refused(low,episode_id='other')
+        self.assert_refused(low,solver='other')
+        self.assert_refused(low,method={'name':'other','steps':['Different implementation plan']})
+        self.assert_refused(low,config={'seed':999})
+        self.assertTrue(self.h.induction_status()['completed'])
+
+    def test_missing_U_shadow_and_rejection_cannot_create_attempts_or_jobs(self):
+        self.provider.g=None;plan=self.plan()
+        self.assertIsNone(plan['selected_prediction_id'])
+        self.assert_refused(plan['candidates'][0]['prediction_id'])
+        self.provider.g=.8;self.h.plan_mode='shadow';plan=self.plan()
+        self.assertIsNone(plan['selected_prediction_id']);self.assert_refused(plan['candidates'][0]['prediction_id'])
+        self.h.plan_mode='advise';plan=self.plan()
+        self.h.choose_next(plan['decision_action_id'],rejected=True)
+        self.assert_refused(plan['selected_prediction_id'])
+        self.assertEqual(self.h.induction_status()['jobs'],[])
+
+    def test_compatibility_choice_reuses_one_adoption_and_duplicate_consumption_is_refused(self):
+        from unittest.mock import patch
+        plan=self.plan();p=plan['selected_prediction_id']
+        chosen=self.h.choose_next(plan['decision_action_id'],prediction_id=p)
+        r=self.run_selected(plan)
+        self.assertEqual(self.h.actions.get(r.action_id).params['decision_choice_action_id'],chosen['action_id'])
+        with patch.object(self.h,'_run_executor') as run,self.assertRaises(ValueError):self.run_selected(plan)
+        run.assert_not_called()
+        self.assertEqual(len(self.h.actions.query(action_type='execute_strategy')),1)
+
+    def test_normal_loop_positive_receipt_zero_skip_and_existing_maintenance(self):
+        self.provider.decision=1;plan=self.plan();r=self.run_selected(plan)
+        self.h.check_task_result(r.execution_id,{'reference_objective':1,'reference_source':'independent'})
+        self.h.record(r);closed=self.h.close_episode('unified','E')
+        j=closed['induction_schedule']['pending_ids'][0]
+        self.assertEqual(self.h.close_episode('unified','E')['induction_schedule']['pending_ids'],[j])
+        self.h.induction_material(induction_id=j)
+        arguments={'induction_id':j,'relations':[{'when':'The original task requests X=1.','do':'Set and report integer X=1.',
+            'expect':'Meet the declared integer task.','evidence':[r.execution_id]}],
+            'review':{'outcome':'new_rule','comparison':{'sufficient':True,'substantive':True,'basis':'derivation',
+                'source':'Fixture reviewer inspected original input and captured integer script.',
+                'assessment':'The direct construction meets the stated one-variable task.','evidence_refs':[r.execution_id]}}}
+        result=self.h.induce(**arguments);again=self.h.induce(**arguments)
+        self.assertEqual(result['induction_receipt']['receipt_ref'],again['induction_receipt']['receipt_ref'])
+        self.assertEqual(result['induction_receipt']['prediction_id'],plan['selected_prediction_id'])
+        entry=result['relations'][0]['saved']
+        self.assertTrue(self.h.induce(relations=[{'entry_id':entry,'publication':{'state':'published','reason':'Checked the stated scope.'}}])['maintenance_only'])
+        self.task={**self.task,'task_id':'zero'};self.provider.decision=0
+        zero=self.plan();r=self.run_selected(zero);self.h.record(r)
+        self.assertEqual(self.h.close_episode('zero','E')['induction_schedule']['pending_ids'],[])
+
+    def test_failed_selected_positive_keeps_one_job_and_empty_receipt(self):
+        self.provider.decision=1
+        plan=self.plan()
+        self.code.write_text("raise ValueError('implementation bug')\n")
+        record=self.run_selected(plan)
+        self.assertFalse(record.quality['feasible'])
+        self.h.record(record)
+        closed=self.h.close_episode('unified','E',terminal_state='failed')
+        job=closed['induction_schedule']['pending_ids'][0]
+        self.h.induction_material(induction_id=job)
+        result=self.h.induce(induction_id=job,review={'outcome':'insufficient_material',
+            'conclusion':'The code exception supplies no evaluable result for the proposed endpoint check.'})
+        self.assertEqual(result['induction_receipt']['prediction_id'],plan['selected_prediction_id'])
+        self.assertEqual(self.h.close_episode('unified','E')['induction_schedule']['pending_ids'],[])
+        with self.assertRaisesRegex(ValueError,'consumed'):
+            self.run_selected(plan)
+
+    def test_invalid_independent_peaks_omit_the_dimension(self):
+        for peak in (0,-1,float('inf'),float('nan')):
+            with self.subTest(peak=peak):
+                plan=self.plan(cost_scales={'tool_calls':peak})
+                score=plan['selected_score']
+                self.assertIsNone(score['cost_normalized'])
+                self.assertEqual(score['scoring_basis']['terms'],['G','R'])
+                self.assertIn('tool_calls',score['scoring_basis']['omitted_cost_dimensions'])
+                self.assertAlmostEqual(score['utility'],.6)
+
+    def test_two_connections_claim_only_one_adoption(self):
+        import concurrent.futures
+        import threading
+        plan=self.plan();pid=plan['selected_prediction_id']
+        other=ORHarness(home=self.home,world_model=self.provider)
+        self.addCleanup(other.close)
+        actions=[h.actions.begin_action('execute_strategy','unified','E',params={})
+                 for h in (self.h,other)]
+        barrier=threading.Barrier(2)
+        def claim(pair):
+            h,action=pair
+            barrier.wait(timeout=5)
+            try:
+                h._claim_prediction_for_action(pid,action.action_id)
+                return action.action_id
+            except ValueError:
+                return None
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            winners=list(pool.map(claim,zip((self.h,other),actions)))
+        self.assertEqual(sum(bool(x) for x in winners),1)
+        decision=self.h.actions.get(plan['decision_action_id'])
+        self.assertIn(decision.outcome['adopted_by_action_id'],winners)
+        choices=[a for a in self.h.actions.query(action_type='select_strategy')
+                 if (a.outcome or {}).get('adoption_source')=='execute']
+        self.assertEqual(len(choices),1)
 
 
 # ---------------------------------------------------------------------------
@@ -876,7 +1120,7 @@ class TestPredictionDrivesDecision(StrategyCase):
                                    strategy_id="S01")],
             limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "no_valid_predictions")
-        self.assertIn("Fall back to `recall`", plan["truncation_reason"])
+        self.assertIn("call plan-next again", plan["truncation_reason"])
         self.assertIsNone(plan["suggested"])
 
     def test_horizon_two_is_refused_for_the_new_protocol(self):
@@ -940,13 +1184,13 @@ class TestExecutionBinding(StrategyCase):
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        bound = self.h.bind_strategy_outcome(
+        bound = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         self.assertIsNone(bound.trace.model_info.get("binding_mismatch"))
         self.assertTrue(bound.trace.comparable)
         # Idempotent re-bind, no extra model call.
         calls = len(self.provider.requests)
-        again = self.h.bind_strategy_outcome(
+        again = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         self.assertEqual(len(self.provider.requests), calls)
         self.assertEqual(again.trace.comparable, bound.trace.comparable)
@@ -958,7 +1202,7 @@ class TestExecutionBinding(StrategyCase):
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04", "solver": "cbc"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # ran with highs
-        bound = self.h.bind_strategy_outcome(
+        bound = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         mismatch = bound.trace.model_info.get("binding_mismatch") or {}
         self.assertIn("solver", mismatch)
@@ -971,7 +1215,7 @@ class TestExecutionBinding(StrategyCase):
                    "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # a DIFFERENT strategy ran
         executions_before = self.h.bank.count()
-        bound = self.h.bind_strategy_outcome(
+        bound = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         mismatch = bound.trace.model_info.get("binding_mismatch") or {}
         self.assertIn("strategy_id", mismatch)
@@ -1085,10 +1329,12 @@ class TestCliStrategyCommands(StrategyCase):
 
     def test_bind_strategy_command(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
-                   "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.solve(task, strategy="S04")
+                   "strategy_id": "S04", "solver":"highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
+        work=Path(self.home)/"cli_bind";work.mkdir()
+        script=work/"solve.py";script.write_text("import json\njson.dump({'status':'optimal','objective_value':100,'objective_bound':100},open('result.json','w'))\n")
+        record=self.h.execute(task,None,str(script),str(work),prediction_id=prediction.prediction_id)
         code, payload = self._run([
             "bind-strategy", "--prediction", prediction.prediction_id,
             "--action", record.action_id])

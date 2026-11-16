@@ -18,6 +18,9 @@ ten-problem run exposed:
 6. Binding a prediction to a real action whose episode it lacked backfills
    the episode, and a close-out reports bound predictions outside it.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import os
 import sys
 import unittest
@@ -298,13 +301,13 @@ class TestEpisodeBackfill(HarnessTestCase):
         task = {"task_id": "T", "family": "routing"}
         # A prediction made with NO episode.
         spec = ActionSpec("execute_strategy", "T", strategy_id="S01")
-        prediction = h.predict_strategy_outcome(task, spec, None)
+        prediction = planned_prediction(h,task, spec, None)
         self.assertIsNone(prediction.candidate.episode_id)
         # Its real action runs under an episode.
         script = self._mitm_script()
-        record = h.execute(task, "S01", str(script), str(work),
+        record = execute_scored(h,task, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         reloaded = h.get_strategy_outcome_prediction(prediction.prediction_id)
         self.assertEqual(reloaded.candidate.episode_id, "ep1")
         self.assertTrue(reloaded.trace.model_info.get(

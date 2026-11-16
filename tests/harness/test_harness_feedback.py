@@ -3,9 +3,12 @@ derivation chain, cross-check warnings, pending staging, cross-execution
 intervention recovery,
 and solver advisories. The SIRL_026 scenario (independent resource
 constraints mis-supplied as rc=0.8) is reproduced end to end."""
+
+from decision_fixtures import execute_scored
 import json
 import textwrap
 import unittest
+from pathlib import Path
 
 from helpers import HarnessTestCase, MEASURED_ALL
 
@@ -291,7 +294,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         try:
             task = {"task_id": "t_cir", "family": "allocation",
                     "coupling": self._cir(), "spec": {}}
-            out = h.execute(task, "S01", "solve.py", self.home, solver="highs")
+            out = execute_scored(h,task, "S01", str(Path(self.home)/"solve.py"), self.home, solver="highs")
             expected = CouplingAwareIR.from_dict(self._cir()).to_dict()
             self.assertEqual(out.cir_snapshot, expected)
             # The snapshot persists through the Evidence Bank.
@@ -312,7 +315,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
             task = {"task_id": "t_cir3", "family": "allocation",
                     "coupling": {"cir": self._cir()}, "spec": {}}
             with self.assertRaises(CIRFormatError) as caught:
-                h.execute(task, "S01", "solve.py", self.home, solver="highs")
+                execute_scored(h,task, "S01", str(Path(self.home)/"solve.py"), self.home, solver="highs")
             self.assertIn("NESTED", caught.exception.hint)
             # Nothing was staged: the refusal happens before the solve.
             self.assertEqual(h.bank.pending(), [])
@@ -325,7 +328,7 @@ class TestEvidenceKnowledgeSemantics(HarnessTestCase):
         h = ORHarness(home=self.home, executor=_StubExecutor(rec))
         try:
             task = {"task_id": "t_nocir", "family": "allocation", "spec": {}}
-            out = h.execute(task, "S01", "solve.py", self.home, solver="highs")
+            out = execute_scored(h,task, "S01", str(Path(self.home)/"solve.py"), self.home, solver="highs")
             self.assertIsNone(out.cir_snapshot)
         finally:
             h.close()
@@ -491,7 +494,7 @@ class TestProvableRetries(HarnessTestCase):
     def test_first_attempt_has_a_proven_zero(self):
         h = ORHarness(home=self.home)
         try:
-            rec = h.execute(self._task("tr1"), "S01", self._script(), self.home,
+            rec = execute_scored(h,self._task("tr1"), "S01", self._script(), self.home,
                             solver="highs", episode_id="ep1")
             self.assertEqual(rec.cost.retries, 0.0)
             self.assertIn("retries", rec.cost.measured_dims())
@@ -506,10 +509,10 @@ class TestProvableRetries(HarnessTestCase):
         unmeasured until the harness declares it."""
         h = ORHarness(home=self.home)
         try:
-            first = h.execute(self._task("tr2"), "S01", self._script("a.py"),
+            first = execute_scored(h,self._task("tr2"), "S01", self._script("a.py"),
                               self.home, solver="highs", episode_id="ep2")
             h.record(first)
-            second = h.execute(self._task("tr2"), "S01", self._script("b.py"),
+            second = execute_scored(h,self._task("tr2"), "S01", self._script("b.py"),
                                self.home, solver="highs", episode_id="ep2")
             self.assertNotIn("retries", second.cost.measured_dims())
             self.assertNotIn("retries_proof", second.execution_features)
@@ -524,10 +527,10 @@ class TestProvableRetries(HarnessTestCase):
     def test_a_different_strategy_is_not_a_prior_attempt(self):
         h = ORHarness(home=self.home)
         try:
-            first = h.execute(self._task("tr3"), "S01", self._script("c.py"),
+            first = execute_scored(h,self._task("tr3"), "S01", self._script("c.py"),
                               self.home, solver="highs", episode_id="ep3")
             h.record(first)
-            other = h.execute(self._task("tr3"), "S02", self._script("d.py"),
+            other = execute_scored(h,self._task("tr3"), "S02", self._script("d.py"),
                               self.home, solver="highs", episode_id="ep3")
             self.assertEqual(other.cost.retries, 0.0)
             self.assertIn("retries", other.cost.measured_dims())
@@ -537,10 +540,10 @@ class TestProvableRetries(HarnessTestCase):
     def test_a_different_episode_is_not_a_prior_attempt(self):
         h = ORHarness(home=self.home)
         try:
-            first = h.execute(self._task("tr4"), "S01", self._script("e.py"),
+            first = execute_scored(h,self._task("tr4"), "S01", self._script("e.py"),
                               self.home, solver="highs", episode_id="epA")
             h.record(first)
-            other = h.execute(self._task("tr4"), "S01", self._script("f.py"),
+            other = execute_scored(h,self._task("tr4"), "S01", self._script("f.py"),
                               self.home, solver="highs", episode_id="epB")
             self.assertEqual(other.cost.retries, 0.0)
             self.assertIn("retries", other.cost.measured_dims())

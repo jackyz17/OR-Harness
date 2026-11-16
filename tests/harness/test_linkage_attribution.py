@@ -33,6 +33,9 @@ What this file asserts, one behaviour per class:
 8. **A rule rebuild re-scores a stored ``excluded`` sample** without
    rewriting the prediction and without counting it twice.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import json
 import os
 import sys
@@ -301,7 +304,7 @@ class TestCandidateConfigEntry(unittest.TestCase):
 class TestMissingReceiptIsACaveat(Base):
 
     def _predict(self, **config):
-        return self.h.predict_strategy_outcome(
+        return planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs", "config": config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
@@ -310,7 +313,7 @@ class TestMissingReceiptIsACaveat(Base):
         never reports used to discard the WHOLE evaluation."""
         script, work = self._plain_script("caveat")
         prediction = self._predict(time_limit=60, seed=42)
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)
@@ -331,7 +334,7 @@ class TestMissingReceiptIsACaveat(Base):
     def test_an_unreported_approach_key_keeps_both_benefit_and_cost(self):
         script, work = self._plain_script("approach")
         prediction = self._predict(relaxation="lp")
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)
@@ -367,15 +370,15 @@ class TestConditionDeviation(Base):
         really happened."""
         script, work = self._stamped_script(
             "deviation", config={"time_limit": 30})
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # Run WITHOUT the prediction id (the run used a different value), and
         # bind explicitly — the honest deviation path.
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1")
         self.h.record(record)
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+        bound = bind_legacy(self.h,prediction.prediction_id,
                                              record.action_id)
         self.assertTrue((bound.trace.model_info.get("binding_mismatch")
                          or {}).get("config"))
@@ -389,14 +392,14 @@ class TestConditionDeviation(Base):
 
     def test_a_different_solver_preserves_cost_and_reports_the_deviation(self):
         script, work = self._plain_script("solver_dev")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "glpk"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # The run really used highs; bind explicitly to record the deviation.
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1")
         self.h.record(record)
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -415,14 +418,14 @@ class TestGenuineBoundariesStillRefuse(Base):
 
     def test_a_wrong_strategy_still_excludes_the_sample(self):
         script, work = self._plain_script("wrong_strategy")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # A DIFFERENT strategy really ran; bind explicitly to record it.
-        record = self.h.execute(TASK, "S02", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S02", str(script), str(work),
                                 solver="highs", episode_id="ep1")
         self.h.record(record)
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -431,15 +434,15 @@ class TestGenuineBoundariesStillRefuse(Base):
         self.assertTrue(evaluation["exclusion_reasons"])
 
     def test_an_unexecuted_candidate_gets_no_outcome(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         script, work = self._plain_script("other_ran")
-        record = self.h.execute(TASK, "S04", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S04", str(script), str(work),
                                 solver="highs", episode_id="ep1")
         self.h.record(record)
         # Bind the unused prediction to the other run.
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -459,10 +462,10 @@ class TestMethodDeviationIsAnEvaluationFact(Base):
         performed = {"name": "direct milp",
                      "steps": ["build milp", "solve"]}
         script, work = self._stamped_script("method_dev", method=performed)
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs", "method": plan}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)
@@ -489,14 +492,14 @@ class TestEntryRefusalReachesTheApi(Base):
 
     def test_a_non_execution_config_key_is_refused_before_any_attempt(self):
         with self.assertRaises(ValueError) as caught:
-            self.h.predict_strategy_outcome(
+            planned_prediction(self.h,
                 TASK, {"action_type": "execute_strategy",
                        "strategy_id": "S01", "config": {"task_id": "t2"}},
                 "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertIn("not an execution parameter", str(caught.exception))
 
     def test_a_method_in_config_is_normalized_and_recorded(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "config": {"method": "benders", "time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.candidate.config, {"time_limit": 60})
@@ -519,7 +522,7 @@ class TestMethodRoundTrip(Base):
     crashed ``CandidateRef.from_dict`` on the next read (``dict("...")``)."""
 
     def test_config_method_string_round_trips_and_executes(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs",
                    "config": {"method": "assignment MILP"}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
@@ -534,7 +537,7 @@ class TestMethodRoundTrip(Base):
         self.assertEqual(reloaded.candidate.config, {})
         # And the full predict -> save -> read -> execute chain runs.
         script, work = self._plain_script("method_rt")
-        record = self.h.execute(TASK, None, str(script), str(work),
+        record = execute_scored(self.h,TASK, None, str(script), str(work),
                                 solver=None, episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)
@@ -542,7 +545,7 @@ class TestMethodRoundTrip(Base):
         self.assertEqual(result["evaluations"][0]["state"], "evaluated")
 
     def test_a_bare_string_method_is_read_as_the_name(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
                    "solver": "highs", "method": "assignment MILP"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self.assertEqual(prediction.candidate.method,
@@ -585,12 +588,12 @@ class TestInterruptedAttemptIsPreserved(Base):
         self.h.executor = Probe()
 
     def test_the_failed_attempt_keeps_its_cost_and_failure_class(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
-            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+            execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         # A REAL failure fact exists, staged, with a classification.
@@ -619,18 +622,20 @@ class TestInterruptedAttemptIsPreserved(Base):
         self.assertEqual(action.linked_execution_id, failure.execution_id)
 
     def test_the_failure_is_an_observation_and_the_retry_is_not_a_zero(self):
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
-            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+            execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         # The retry is a SEPARATE attempt: it cannot claim a proven zero.
-        retry = self.h.execute(TASK, "S01", str(self.script), str(self.work),
+        fresh = planned_prediction(self.h,TASK,{"strategy_id":"S01","solver":"highs"},"ep1",
+            benefit_convention={"kind":"solution_quality","metric":"normalized_objective_gap","unit":"1-gap"})
+        retry = execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                                solver="highs", episode_id="ep1",
-                               prediction_id=prediction.prediction_id)
+                               prediction_id=fresh.prediction_id)
         self.assertNotIn("retries", retry.cost.measured_dims())
         self.assertNotIn("retries_proof", retry.execution_features)
         self.h.record(retry)
@@ -647,17 +652,19 @@ class TestInterruptedAttemptIsPreserved(Base):
     def test_a_failed_attempt_is_charged_to_the_episode_budget(self):
         """The failure really spent what it spent: the episode budget counts
         the interrupted attempt once, alongside the retry."""
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         self._interrupt_once(prediction.prediction_id)
         with self.assertRaises(FileExistsError):
-            self.h.execute(TASK, "S01", str(self.script), str(self.work),
+            execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1",
                            prediction_id=prediction.prediction_id)
-        retry = self.h.execute(TASK, "S01", str(self.script), str(self.work),
+        fresh = planned_prediction(self.h,TASK,{"strategy_id":"S01","solver":"highs"},"ep1",
+            benefit_convention={"kind":"solution_quality","metric":"normalized_objective_gap","unit":"1-gap"})
+        retry = execute_scored(self.h,TASK, "S01", str(self.script), str(self.work),
                                solver="highs", episode_id="ep1",
-                               prediction_id=prediction.prediction_id)
+                               prediction_id=fresh.prediction_id)
         self.h.record(retry)
         view = self.h.budget.view("t1", "ep1")
         # Two attempts, one of them the abandoned failure.
@@ -676,43 +683,27 @@ class TestInterruptedAttemptIsPreserved(Base):
 
 
 class TestClaimRelease(Base):
-
-    def test_an_interrupted_run_frees_the_prediction_for_a_real_attempt(self):
-        script, work = self._plain_script("claim_release")
-        prediction = self.h.predict_strategy_outcome(
-            TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
-                   "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-
+    def test_interrupted_scored_attempt_stays_consumed_and_repair_gets_new_decision(self):
+        script,work=self._plain_script("claim_release")
+        candidate={"strategy_id":"S01","solver":"highs"}
+        convention={"kind":"solution_quality","metric":"normalized_objective_gap","unit":"1-gap"}
+        prediction=planned_prediction(self.h,TASK,candidate,"ep1",benefit_convention=convention)
+        real=self.h.executor
         class Probe:
-            def __init__(self, real):
-                self.real = real
-
-            def execute(self, *a, **k):
-                raise RuntimeError("interrupted before the sandbox")
-
-        self.h.executor = Probe(self.h.executor)
+            def execute(self,*args,**kwargs):raise RuntimeError("interrupted before sandbox")
+        self.h.executor=Probe()
         with self.assertRaises(RuntimeError):
-            self.h.execute(TASK, "S01", str(script), str(work),
-                           solver="highs", episode_id="ep1",
-                           prediction_id=prediction.prediction_id)
-        # The claim was released: the SAME prediction can be tested now.
-        stored = self.h.strategy_predictions.get(prediction.prediction_id)
-        self.assertIsNone(stored.trace.model_info.get("bound_action_id"))
-        self.assertEqual(stored.trace.model_info.get("association_phase"),
-                         "released_no_execution")
-        # A real attempt now binds and evaluates normally.
-        self.h.executor = self._real_executor()
-        record = self.h.execute(TASK, "S01", str(script), str(work),
-                                solver="highs", episode_id="ep1",
-                                prediction_id=prediction.prediction_id)
+            self.h.execute(TASK,None,str(script),str(work),prediction_id=prediction.prediction_id)
+        stored=self.h.strategy_predictions.get(prediction.prediction_id)
+        self.assertIsNotNone(stored.trace.model_info.get("bound_action_id"))
+        with self.assertRaisesRegex(ValueError,"consumed"):
+            self.h.execute(TASK,None,str(script),str(work),prediction_id=prediction.prediction_id)
+        self.h.executor=real
+        fresh=planned_prediction(self.h,TASK,candidate,"ep1",benefit_convention=convention)
+        record=self.h.execute(TASK,None,str(script),str(work),prediction_id=fresh.prediction_id)
         self.h.record(record)
-        result = self.h.close_episode("t1", "ep1")
-        evaluation = result["evaluations"][0]
-        self.assertEqual(evaluation["state"], "evaluated")
-
-    def _real_executor(self):
-        from or_harness.execution.executor import SafePythonExecutor
-        return SafePythonExecutor()
+        result=self.h.close_episode("t1","ep1")
+        self.assertEqual(len(result["evaluations"]),2)
 
 
 # ---------------------------------------------------------------------------
@@ -731,10 +722,10 @@ class TestRuleRebuild(Base):
             _live_evaluation,
         )
         script, work = self._plain_script("rule_rebuild")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = self.h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(self.h,TASK, "S01", str(script), str(work),
                                 solver="highs", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)

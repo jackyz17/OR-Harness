@@ -29,6 +29,8 @@ The acceptance table from the request:
 | a history record with a task/strategy conflict | the corresponding block stays |
 | repeated rebuilds | the sample count is stable |
 """
+
+from decision_fixtures import execute_scored, planned_prediction
 import os
 import sys
 import unittest
@@ -234,12 +236,12 @@ class TestHistoryRebuildEndToEnd(HarnessTestCase):
                                              "temporal_coupling": 0.1,
                                              "route_complexity": 0.2,
                                              "semantic_coupling": 0.5}}}
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04",
                    "solver": "pulp", "config": {"solver": "pulp_cbc"}},
-            "ep1")
+            "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         script, work = self._solve("pulp")
-        record = self.h.execute(task, "S04", str(script), str(work),
+        record = execute_scored(self.h,task, "S04", str(script), str(work),
                                 solver="pulp", episode_id="ep1",
                                 prediction_id=prediction.prediction_id)
         self.h.record(record)

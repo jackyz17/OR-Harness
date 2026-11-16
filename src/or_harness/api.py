@@ -1670,11 +1670,11 @@ class ORHarness:
             # A legacy ActionSpec is mirrored to a dict and re-normalized so
             # the minimal format reaches it too, then mapped back.
             raw = candidate.to_dict()
-            if "measurement_scope" not in raw and "budget_hint" not in raw:
-                normalized = normalize_candidate_payload(raw)
-                entry_notes = list(
-                    normalized.pop("normalization_notes", []) or [])
-                candidate = ActionSpec.from_dict(normalized)
+            entry_notes = list(candidate.normalization_notes)
+            normalized = normalize_candidate_payload(raw)
+            entry_notes.extend(normalized.pop("normalization_notes", []) or [])
+            entry_notes = list(dict.fromkeys(entry_notes))
+            candidate = ActionSpec.from_dict(normalized)
         if isinstance(candidate, ActionSpec):
             candidate_ref = CandidateRef.from_action_spec(candidate)
         elif isinstance(candidate, dict):
@@ -1748,6 +1748,7 @@ class ORHarness:
         # change to the task, its data, the CIR or the candidate still is.
         prediction.trace.model_info["problem_identity_digest"] = (
             problem_identity_version(task, cir))
+        prediction.trace.model_info["execution_decision_required"] = True
         if config_notes:
             # A normalization that was performed rather than refused is
             # RECORDED on the prediction, so a reader can see the field was
@@ -2044,6 +2045,10 @@ class ORHarness:
         action = self.actions.get(action_id)
         if action is None:
             raise StorageError(f"unknown action_id {action_id!r}")
+        if prediction.trace.model_info.get('execution_decision_required'):
+            self._scored_decision(prediction,action_id=action_id)
+            if (action.params or {}).get('prediction_id')!=prediction_id or not (action.params or {}).get('scored_adoption'):
+                raise ValueError('bind-strategy cannot authorize an unscored or post-hoc execution; use plan-next then execute --prediction')
         model_info = prediction.trace.model_info
         bound = model_info.get("bound_action_id")
         if bound is not None and bound != action_id:
@@ -4311,29 +4316,12 @@ class ORHarness:
                   candidates: Optional[Sequence[ActionSpec]] = None,
                   limits: Optional[Any] = None,
                   ) -> Dict[str, Any]:
-        """Bounded next-step planning over predicted action consequences.
+        """Score one or more proposed candidates in one shared frozen context.
 
-        Freezes ONE root snapshot, predicts <= ``limits.max_root_candidates``
-        macro strategy candidates under the wm-so/1 protocol (benefit / cost
-        / risk / uncertainty, all conditioned on ONE shared prediction
-        input context), compares them on a conservative yardstick and
-        recommends the best candidate — the agent then explicitly accepts,
-        rejects, or overrides it (``choose_next``).
-
-        Horizon is FIXED at 1: one macro comparison, then re-planning from
-        the REAL observation of the chosen step. There is no imagined
-        multi-step rollout — asking for one raises rather than degrading
-        quietly.
-
-        The decision is recorded as a real ``select_strategy`` action whos
-        own cost carries the planning calls' spend (also aggregated in the
-        returned plan). Nothing is executed by this call; the suggestion
-        never writes X.selected_plan — only ``choose_next`` does.
-
-        Every compared candidate's prediction id is returned under
-        ``candidates``, so the chosen one can be handed straight to
-        ``execute(prediction_id=...)`` — the candidate is predicted ONCE.
-        """
+        Each candidate is predicted once. Return and persist the highest-U
+        executable prediction, preserving stable ties and existing budget
+        limits. Execute that ID directly; actual adoption is recorded by execute.
+        Shadow/disabled/unscorable decisions authorize no execution."""
         from or_harness.world_model.planner import PlanLimits, PlanResult
         limits = (limits if isinstance(limits, PlanLimits)
                   else PlanLimits.from_dict(limits))
@@ -4381,22 +4369,10 @@ class ORHarness:
             episode_id: Optional[str] = None, *,
             candidates: Optional[Sequence[ActionSpec]] = None,
             limits: Any = None) -> Dict[str, Any]:
-        """One macro strategy comparison under the wm-so/1 protocol.
+        """Predict, score and persist one bounded strategy decision.
 
-        The M3 decision loop: ONE frozen context for the whole decision,
-        one strategy-outcome prediction per candidate (a failed prediction
-        does not drag the others down), a conservative comparison, and a
-        suggestion the agent accepts, rejects or overrides through
-        ``choose_next`` — the SAME decision action and choice recording the
-        legacy protocol uses, so the downstream flow is one flow.
-
-        Fallback: when NO candidate carries a usable prediction (provider
-        down, every payload invalid), the plan reports
-        ``status="no_valid_predictions"`` with the reasons and NO
-        suggestion — the caller falls back to ``recall``/Selector or
-        chooses itself. The fallback is reported as what it is; it is never
-        dressed up as a completed world-model comparison.
-        """
+        U uses comparable G and shared available C/R; frozen H+ independently
+        schedules review after an actual attempt. No usable G means no decision."""
         from or_harness.world_model.planner import (
             PlanResult,
             score_strategy_outcome_predictions,
@@ -4532,7 +4508,9 @@ class ORHarness:
         planning_measured: set = set()
 
         def _charge_call(prediction) -> None:
+            prediction.trace.model_info['decision_action_id']=decision.action_id
             if prediction.trace.call_cost is None:
+                self.strategy_predictions._save(prediction)
                 return
             for dim in prediction.trace.call_cost.measured_dims():
                 planning_total[dim] = planning_total.get(dim, 0.0) + \
@@ -4618,12 +4596,18 @@ class ORHarness:
         plan.benefit_convention = convention
         # Conservative comparison on ONE yardstick.
         only_predictions = [p for _spec, p in predictions]
-        scores = score_strategy_outcome_predictions(only_predictions, limits)
+        pre_scores=score_strategy_outcome_predictions(only_predictions,limits,cost_scales={})
+        from or_harness.world_model.cost_signal import decision_cost_scales
+        scale_candidates=[p.candidate for p,s in zip(only_predictions,pre_scores) if s.utility is not None]
+        scales=decision_cost_scales(plan_context,scale_candidates,limits.cost_scales)
+        scores = score_strategy_outcome_predictions(only_predictions, limits,cost_scales=scales)
         comparable = [s for s in scores if s.utility is not None]
         suggested_spec: Optional[ActionSpec] = None
         suggestion_basis = ""
         if comparable and self.plan_mode == "advise":
             best = max(comparable, key=lambda s: s.utility)
+            plan.selected_prediction_id=best.prediction_id
+            plan.selected_score=best.to_dict()
             for spec, prediction in predictions:
                 if prediction.prediction_id == best.prediction_id:
                     suggested_spec = spec
@@ -4660,6 +4644,7 @@ class ORHarness:
             plan.budget_confirmation = final_view["status"]
             if final_view["status"] == "exceeded":
                 plan.status = "fallback"
+                plan.selected_prediction_id=None;plan.selected_score=None
                 plan.truncation_reason = (
                     "declared budget exceeded by real consumption "
                     "(including this planning's own spend); the suggestion "
@@ -4673,6 +4658,11 @@ class ORHarness:
                              "n_candidates": len(predictions),
                              "suggested": None,
                              "suggestion_withheld": True,
+                             "execution_contract":"wm-u-decision/1",
+                             "selected_prediction_id":None,
+                             "candidates":[{'action_spec':spec.to_dict(),'candidate_ref':prediction.candidate.to_dict(),
+                                'prediction_id':prediction.prediction_id,'score':score.to_dict(),'execution_allowed':False}
+                                for (spec,prediction),score in zip(predictions,scores)],
                              "benefit_convention": copy.deepcopy(
                                  plan.benefit_convention),
                              "status": plan.status,
@@ -4707,8 +4697,8 @@ class ORHarness:
             plan.truncation_reason = (
                 "no candidate carried a usable strategy-outcome prediction "
                 f"(statuses: {statuses}); no suggestion is possible. Fall "
-                "back to `recall`/Selector ordering or choose yourself — "
-                "the calls that happened and their cost are recorded.")
+                "revise candidates or repair the forecast and call plan-next again. "
+                "No execution is authorized; actual prediction spend is recorded.")
         self.actions.end_action(
             decision.action_id,
             status="completed",
@@ -4718,10 +4708,15 @@ class ORHarness:
                      "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
                      "root_snapshot_id": plan.root_snapshot_id,
                      "n_candidates": len(predictions),
+                     "execution_contract":"wm-u-decision/1",
+                     "selected_prediction_id":plan.selected_prediction_id,
+                     "selected_score":copy.deepcopy(plan.selected_score),
                      "candidates": [
                          {"action_spec": spec.to_dict(),
+                          "candidate_ref":prediction.candidate.to_dict(),
                           "prediction_id": prediction.prediction_id,
                           "prediction_status": prediction.status,
+                          "execution_allowed":prediction.prediction_id==plan.selected_prediction_id,
                           "score": score.to_dict()}
                          for (spec, prediction), score
                          in zip(predictions, scores)],
@@ -4748,8 +4743,12 @@ class ORHarness:
             result["candidate_rejections"] = candidate_rejections
         result["candidates"] = [
             {"action_spec": spec.to_dict(),
+             "candidate_ref":prediction.candidate.to_dict(),
              "prediction_id": prediction.prediction_id,
              "prediction_status": prediction.status,
+             "execution_allowed":prediction.prediction_id==plan.selected_prediction_id,
+             "execution_refusal_reason":None if prediction.prediction_id==plan.selected_prediction_id else
+                "not selected by this U decision" if plan.selected_prediction_id else plan.truncation_reason or plan.suggestion_basis,
              "score": score.to_dict(),
              "capability_gain": _capability_gain_view(prediction)}
             for (spec, prediction), score in zip(predictions, scores)]
@@ -4760,27 +4759,11 @@ class ORHarness:
                     prediction_id: Optional[str] = None,
                     rejected: bool = False,
                     deviation_note: Optional[str] = None) -> Dict[str, Any]:
-        """Record the agent's EXPLICIT choice after a plan.
+        """Record a compatible scored choice intent or reject a decision.
 
-        ``chosen`` is the ActionSpec the agent decided to take (the
-        suggested one or another — a deviation); ``prediction_id`` names a
-        candidate by the prediction the plan already made for it, which is
-        the ordinary path: the agent does NOT re-type the candidate JSON.
-        ``rejected=True`` records that no suggestion was taken.
-
-        When ``prediction_id`` is given the chosen candidate is resolved
-        from the DECISION's own recorded candidate list — checked to belong
-        to this decision — and the deviation test compares the candidate
-        REFERENCE (action type, strategy, solver and configuration), never
-        the whole plan JSON (a cosmetic key such as a note must not read as
-        a deviation) and never ``strategy_id + solver`` alone (the same pair
-        under a different config is a different candidate).
-
-        Only this call writes X.selected_plan (via a completed
-        select_strategy report linked to the decision action): a generated
-        suggestion alone never counts as a selection, and a selection record
-        produces no execution quality.
-        """
+        This optional compatibility path cannot select an unscored or losing
+        candidate. Execute automatically records actual adoption, reusing an
+        existing compatible intent. Rejection requires a new decision to solve."""
         from or_harness.world_model.actions import PROGRESS_UPDATES
         decision = self.actions.get(decision_action_id)
         if decision is None:
@@ -4807,6 +4790,14 @@ class ORHarness:
                         f"{prediction_id!r} name different candidates: "
                         "pass one of them, or make them agree")
             chosen = ActionSpec.from_dict(resolved)
+        if not rejected:
+            if prediction_id is None:
+                wanted=chosen.to_dict() if chosen is not None else {}
+                matches=[r for r in (decision.outcome or {}).get('candidates') or []
+                         if _candidate_reference(r.get('action_spec'))==_candidate_reference(wanted)]
+                if len(matches)!=1:raise ValueError('manual chosen candidate must identify one scored plan-next candidate')
+                prediction_id=matches[0]['prediction_id']
+            self._scored_decision(self.strategy_predictions.get(prediction_id))
         outcome: Dict[str, Any] = {
             "kind": "plan_next_choice",
             "decision_action_id": decision_action_id,
@@ -4817,6 +4808,9 @@ class ORHarness:
             outcome['hplus'] = _capability_gain_view(self.strategy_predictions.get(prediction_id))
         if rejected:
             outcome["rejected"] = True
+            with self.store.transaction():
+                decision.outcome['selection_rejected']=True
+                self.actions._update(decision)
             if deviation_note:
                 outcome["note"] = deviation_note
         elif chosen is not None:
@@ -5446,11 +5440,60 @@ class ORHarness:
                              f"[{lo}, {hi}]")
         return "; ".join(notes) if notes else None
 
+    def _scored_decision(self, prediction, *, action_id=None):
+        """Resolve saved U permission; manual choices cannot grant permission."""
+        import math
+        from or_harness.world_model.conditions import digest
+
+        decision_id = (prediction.trace.model_info or {}).get("decision_action_id")
+        decision = self.actions.get(decision_id) if decision_id else None
+        outcome = (decision.outcome or {}) if decision else {}
+        if (not decision or decision.action_type != "select_strategy"
+                or decision.status != "completed"
+                or (decision.params or {}).get("kind") != "plan_next"
+                or outcome.get("execution_contract") != "wm-u-decision/1"):
+            raise ValueError(
+                "prediction has no scored plan-next decision; "
+                "independent predict-strategy is inspection only")
+        if (decision.task_id != prediction.candidate.task_id
+                or decision.episode_id != prediction.candidate.episode_id):
+            raise ValueError(
+                "prediction and its U decision have conflicting task/episode ownership")
+        rows = [row for row in outcome.get("candidates") or []
+                if row.get("prediction_id") == prediction.prediction_id]
+        if len(rows) != 1:
+            raise ValueError("prediction is not uniquely among this decision candidates")
+        row = rows[0]
+        score = row.get("score") or {}
+        utility = score.get("utility")
+        if (not isinstance(utility, (int, float)) or isinstance(utility, bool)
+                or not math.isfinite(utility)
+                or score.get("prediction_id") != prediction.prediction_id):
+            raise ValueError(
+                "candidate has no available finite U; "
+                "call plan-next with a usable G prediction")
+        if (outcome.get("selected_prediction_id") != prediction.prediction_id
+                or not row.get("execution_allowed")
+                or outcome.get("suggestion_withheld")
+                or outcome.get("selection_rejected")):
+            raise ValueError(
+                "candidate is not selected or is not approved for execution "
+                "by this U decision")
+        if digest(row.get("candidate_ref")) != digest(prediction.candidate.to_dict()):
+            raise ValueError(
+                "candidate method, solver, config or scope changed since its U decision")
+        adopted = outcome.get("adopted_by_action_id")
+        if adopted is not None and adopted != action_id:
+            raise ValueError(
+                "this U decision is already bound/consumed by execution action "
+                + str(adopted))
+        return decision, row
+
     def _resolve_execution_candidate(
             self, prediction_id: str, task: Dict[str, Any],
             episode_id: Optional[str], *,
             strategy_id: Optional[str], solver: Optional[str],
-            code_path: str, workspace: str) -> CandidateRef:
+            code_path: str, workspace: str,method=None,config=None) -> CandidateRef:
         """Check a prediction-driven execution BEFORE anything runs.
 
         Everything here is STATIC (no solver, no model call, no action):
@@ -5467,9 +5510,15 @@ class ORHarness:
         if prediction is None:
             raise ValueError(
                 f"unknown prediction_id {prediction_id!r}: pass the id "
-                "`predict-strategy` / `plan-next` returned, or omit "
-                "--prediction to run an unpredicted attempt")
+                "plan-next selected for this decision")
         candidate = prediction.candidate
+        self._scored_decision(prediction)
+        if str(task.get('task_id',''))!=candidate.task_id:
+            raise ValueError('execution task_id contradicts the scored prediction task_id')
+        if method is not None and normalize_method(method)!=(normalize_method(candidate.method) or None):
+            raise ValueError('explicit method contradicts the scored candidate method')
+        if config is not None and config!=candidate.config:
+            raise ValueError('explicit config contradicts the scored candidate configuration')
         info = prediction.trace.model_info or {}
         # (a) The prediction must be USABLE. A failed/invalid prediction has
         # no candidate content to test, and a non-execute candidate is not
@@ -5544,8 +5593,7 @@ class ORHarness:
                 and str(solver) != candidate.solver:
             conflicts.append(
                 f"solver: argument {solver!r} != candidate {candidate.solver!r}")
-        if episode_id is not None and candidate.episode_id is not None \
-                and str(episode_id) != candidate.episode_id:
+        if episode_id is not None and str(episode_id) != candidate.episode_id:
             conflicts.append(
                 f"episode_id: argument {episode_id!r} != candidate "
                 f"{candidate.episode_id!r}")
@@ -5594,15 +5642,12 @@ class ORHarness:
         that the prediction is unclaimed happens inside the same lock, so
         two writers cannot both see it free.
 
-        The action is stamped in its CURRENT status. If it is already
-        ``running`` (two threads racing the same call), the second writer's
-        own action ends up claiming the prediction too — so the reader-side
-        check in :meth:`_prediction_claimed_by_action` still rejects a
-        prediction claimed by a DIFFERENT action, and the second execution
-        is refused before it starts.
+        A newly created action has no prediction claim. The transaction
+        selects one winner across competing actions; refused contenders
+        cannot leave a second adoption or start an executor.
         """
         store = self.strategy_predictions.store
-        with store.locked():
+        with store.transaction():
             action = self.actions.get(action_id)
             if action is None:
                 raise StorageError(f"unknown action_id {action_id!r}")
@@ -5617,6 +5662,9 @@ class ORHarness:
                     f"prediction {prediction_id!r} disappeared while claiming "
                     "it for this action")
             info = prediction.trace.model_info
+            decision,row=self._scored_decision(prediction,action_id=action_id)
+            other=self._prediction_claimed_by_action(prediction_id)
+            if other not in (None,action_id):raise ValueError('prediction is already claimed by another real attempt')
             bound = info.get("bound_action_id")
             if bound not in (None, str(action_id)):
                 raise StorageError(
@@ -5624,7 +5672,24 @@ class ORHarness:
                     f"action {bound!r}: a prediction corresponds to ONE real "
                     "attempt")
             # (1) the action's claim, then (2) the prediction's forward link.
-            self.actions._update(action)  # re-stamp under the lock
+            # Reuse a compatible choice intent; otherwise record one automatic
+            # choice with the existing entry point. Only a real execute claims it.
+            choices=[a for a in self.actions.query(task_id=action.task_id,episode_id=action.episode_id,action_type='select_strategy')
+                     if a.parent_action_id==decision.action_id and (a.outcome or {}).get('prediction_id')==prediction_id
+                     and not (a.outcome or {}).get('adopted_by_action_id')]
+            if choices:choice=choices[-1]
+            else:
+                chosen=self.choose_next(decision.action_id,prediction_id=prediction_id)
+                choice=self.actions.get(chosen['action_id'])
+            choice.outcome.update(adopted_by_action_id=action_id,adopted_at=time.time(),adoption_source='execute')
+            self.actions._update(choice)
+            action.params.update(decision_action_id=decision.action_id,decision_choice_action_id=choice.action_id,
+                                 prediction_id=prediction_id,prediction_bound_at=time.time(),
+                                 scored_adoption={'prediction_id':prediction_id,'utility':row['score']['utility'],
+                                                 'score':copy.deepcopy(row['score'])})
+            decision.outcome['adopted_by_action_id']=action_id
+            self.actions._update(decision)
+            self.actions._update(action)
             info.setdefault("bound_action_id", str(action_id))
             info["bound_action_id_before_execution"] = str(action_id)
             info["association_phase"] = "linked_before_execution"
@@ -5650,25 +5715,13 @@ class ORHarness:
 
     def _release_prediction_claim(self, prediction_id: str,
                                   action_id: str, *, reason: str) -> None:
-        """Release a claim whose action produced NO execution fact.
+        """Compatibility recovery for an old claim with no scored adoption.
 
-        An executor-level exception ends the action ``failed`` with no
-        linked execution. The prediction's claim would then point at a
-        dead action FOREVER: the close-out could only read it as "the bound
-        action has no linked execution", and no re-bind was possible (the
-        forward link blocked it). Releasing the claim lets the SAME
-        prediction be tested against a real attempt — the interrupted
-        action never produced a result, so nothing is unattributed and no
-        sample is double-counted.
-
-        The interrupted attempt is NOT discarded: its execution fact is
-        staged FIRST by :meth:`_stage_interrupted_attempt`, so the spend and
-        the failure stay on record while the prediction itself is freed.
-
-        Best-effort and idempotent: the action really failed, the reason is
-        recorded on the action's params, and a bookkeeping failure must
-        never mask the original exception.
-        """
+        Current scored attempts retain their claim, including failed attempts.
+        A correction or retry is proposed and scored as a fresh candidate."""
+        action=self.actions.get(action_id)
+        if action and (action.params or {}).get('scored_adoption'):
+            return  # a started attempt, including failure, consumes this decision
         try:
             self.actions.amend_action_params(
                 action_id, prediction_id=None, prediction_released_at=None)
@@ -5758,10 +5811,8 @@ class ORHarness:
             record.execution_features["baseline_measurement"] = (
                 "staged before the run began: latency reflects the real time "
                 "the attempt consumed up to the exception")
-            # The failed attempt's tie to its prediction is KEPT here, even
-            # after the claim is released: the prediction is freed to be
-            # tested on a real attempt, but the failure is not orphaned, and
-            # a later reader can see which prediction this attempt was for.
+            # A scored attempt stays consumed. Its failed fact retains the
+            # original prediction; a repaired attempt uses a fresh decision.
             if prediction_id:
                 record.execution_features["predicted_for"] = str(prediction_id)
             if method_planned is not None:
@@ -5801,56 +5852,31 @@ class ORHarness:
                 episode_id: Optional[str] = None,
                 prediction_id: Optional[str] = None,
                 method: Optional[Dict[str, Any]] = None,
+                config: Optional[Dict[str, Any]] = None,
                 adapted_from: Optional[Sequence[str]] = None,
                 adaptation: Optional[str] = None,
                 used_entry_ids: Optional[Sequence[Any]] = None
                 ) -> ExecutionRecord:
-        """Run one episode and assemble its Execution Evidence record.
+        """Execute the selected finite-U prediction from plan-next.
 
-        The returned record is an evidence unit: the strategy ACTUALLY used,
-        the quality/cost ACTUALLY observed, the failures actually seen, and
-        the implementation artifacts (solver output, diagnostics). When the
-        task carries a CIR (``coupling`` field), a snapshot is preserved on
-        the record so offline induction can re-bin this episode by structural
-        context. The record makes no generalization claim.
-
-        ``strategy_id`` is whatever the outer agent actually did — it is not
-        validated against a directory (there is none). When ``prediction_id``
-        names a FROZEN candidate, ``strategy_id``/``solver``/``episode_id``
-        may be OMITTED: they are taken from the candidate (the caller does
-        not re-type what the prediction already fixed). When they ARE given
-        and disagree with the candidate, the conflict is reported BEFORE the
-        execution starts (a contradiction discovered afterwards would waste
-        the run and could mis-attribute its result). What is still checked:
-        the resolved strategy id must be non-empty, the solver must be
-        named, and ``code_path`` must live inside ``workspace`` (the
-        executor's own policy). Sandbox, timeout, rlimits and budget checks
-        are unchanged.
-
-        ``prediction_id``: the strategy-outcome prediction this attempt is
-        testing. The association is established BEFORE the run — the frozen
-        candidate is read, the prediction's status/task identity/scope are
-        checked, an explicit argument that contradicts the candidate is
-        refused, and a prediction already claimed by another execution is
-        refused (one attempt per candidate). The action and its link are
-        persisted before the executor starts, so the association is
-        consistent and recoverable; after the run only the RESULT and the
-        real configuration observations are ADDED. A real failure, a timeout
-        or an exception keeps the association and the cost incurred — it
-        never overwrites a previous attempt. ``bind-strategy`` remains the
-        manual/recovery path.
-        """
+        Resolve score, permission, task/episode, method, solver, config and
+        unused claim before launch. Atomically record the actual adoption and
+        prediction binding before running. Every real attempt, including a
+        staged failure, consumes its prediction. Repair needs a fresh plan.
+        The result remains staged: check the original task and record it."""
         # ---- (1) RESOLVE THE CANDIDATE BEFORE ANYTHING RUNS ----------------
         # Static errors (an unknown prediction, a wrong task identity, a
         # conflict with an explicit argument, a candidate already claimed)
         # are refused HERE, before an action exists and before the sandbox
         # is touched — they must not consume the prediction or any budget.
         candidate = None
+        if not prediction_id:
+            raise ValueError('execute requires the selected scored prediction from plan-next; bare strategy/solver and independent forecasts cannot authorize execution')
         if prediction_id:
             candidate = self._resolve_execution_candidate(
                 prediction_id, task, episode_id,
                 strategy_id=strategy_id, solver=solver,
-                code_path=code_path, workspace=workspace)
+                code_path=code_path, workspace=workspace,method=method,config=config)
             strategy_id = candidate.strategy_id
             solver = candidate.solver or solver
             episode_id = candidate.episode_id
@@ -5904,8 +5930,8 @@ class ORHarness:
             # moment it exists, so the prediction→action link survives an
             # interruption. ``prediction_bound_at`` distinguishes "bound
             # before the run" (the target case) from a later bind.
-            exec_params["prediction_id"] = str(prediction_id)
-            exec_params["prediction_bound_at"] = time.time()
+            # The actual claim and adoption are written together in the
+            # transaction below, after all static validation succeeds.
             forecast = self.strategy_predictions.get(prediction_id)
             exec_params["prediction_context_id"] = forecast.trace.model_info.get("prediction_context_id")
             if forecast.trace.model_info.get('hplus'):

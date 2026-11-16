@@ -8,7 +8,7 @@ OR-Harness 运行在外层 harness agent（Hermes 类）**内部**。它不是�
 
 只有在你**显式配置**了 provider（`--world-model URL::MODEL`，或 `ORHarness(world_model=...)`）并**显式调用**预测命令时才会调用模型。未配置 provider 时，所有世界模型命令都返回明确的 `not_configured`，不发生任何网络活动。预测始终是影子假设：它不会变成事实，未执行候选的预测也不等于真实反馈。
 
-**完整主流程需要 provider。** `execute` 可以在没有 provider 时求解，但那样就没有任何预测被生成、绑定或校准——不带 `--prediction` 的尝试没有可收尾的评价，所以缺 provider 是配置缺口，而不是降级模式。下面的快速开始因此走完整的预测路径；以 [SKILL.md](SKILL.md) 为权威走查。
+**完整主流程需要 provider。** 正式求解必须使用 `plan-next` 返回的已评分、选中预测；单候选也一样。缺 provider 时返回原因，不允许直接执行。下面的快速开始因此走完整的预测路径；以 [SKILL.md](SKILL.md) 为权威走查。
 
 ## 核心能力
 
@@ -34,19 +34,20 @@ pip install -e ".[solvers-free]"   # 可选：highspy + pulp
 orx doctor                        # 探测求解器、检查记忆目录
 orx profile   --task t.json
 orx recall    --task t.json --top 3 --candidate my-method --candidate alt-method
-orx predict-strategy --task t.json --episode ep1 --candidate candidate.json
-orx execute   --task t.json --episode ep1 --prediction sp_... --code solve.py --workspace ws
+orx plan-next --task t.json --episode ep1 --candidates candidates.json
+# P = result.selected_prediction_id; one candidate is enough.
+orx execute   --task t.json --episode ep1 --prediction P --code ws/solve.py --workspace ws
 orx check-task exec_... --check '{"reference_objective": 10755, "integer": {"variables": ["x1", "x2"]}}'
 orx record    --from-staged exec_... --usage-file usage.json
-orx close-episode --task t.json --episode ep1 --terminal completed
+orx close-episode --task T --episode ep1 --terminal completed
 orx calibration
 ```
 
 每次尝试都需要 `--episode`，且预测必须在运行前绑定（`--prediction`）：`close-episode` 评价的正是这条关联。宿主的用量报告（`--usage-file`）才是真实 token 数；手填 `--override` 只是兜底，而"无来源的声明"必须加 `--override-source agent_estimate`，这样它永远不会被当作校准真值。
 
-**归纳是独立的离线步骤，不属于第一轮。** `orx induction-material` 读取材料批；由你形成新策略后用 `orx induce --relation '{...}'` 提交——框架只写入你提交的内容，而可迁移策略需要**2 个不同任务**上观察到同一机制。等这些执行攒够之后、在 episode 之外再跑。
+**按冻结 H+ 接单归纳。** 收尾后读取 `result.induction_schedule.pending_ids`；已执行 H+=1 即使失败或材料不足也完成一次审阅，H+=0 跳过新归纳。外层建库 agent 用同一 J 取材并同时提交短规则与 `--review` 学习结论；空审阅也有回执。有范围的推导和边界测试可以支持发布，发布决定与学习标签分别记录。串行建库在接单完成后进入下一题。
 
-`my-method` 刻意是框架从未见过的名字：框架不内置任何策略目录，因此不存在"是否属于目录"这个问题。`recall` 只报告你点名的方案在真实记忆里有什么（初始状态下是"空 + 原因"），`predict-cost`/`execute` 接受你提出的任何方案。完整走查（空库 → 外层提出方案 → 代价未知 → 执行 → 答案校验 → 记录 → 召回）是一个可运行脚本：`PYTHONPATH=src python3 references/examples/no_catalog.py`。
+`my-method` 刻意是框架从未见过的名字：框架不内置任何策略目录，因此不存在"是否属于目录"这个问题。`recall` 只报告你点名的方案在真实记忆里有什么（初始状态下是"空 + 原因"），`predict-cost` 可查看任何方案；正式执行采用 `plan-next` 返回的选中预测。完整走查（空库 → 外层提出方案 → 代价未知 → 执行 → 答案校验 → 记录 → 召回）是一个可运行脚本：`PYTHONPATH=src python3 references/examples/no_catalog.py`。
 
 记忆存放在显式目录（`--home` 或 `$OR_HARNESS_HOME`），底层为单个 SQLite 文件。
 
@@ -87,3 +88,10 @@ PYTHONPATH=src python3 -m unittest discover -s tests/harness -p "test_*.py"
 ## 许可
 
 MIT
+
+Runnable scored CLI workflows (scripted local provider, isolated memory):
+
+```bash
+PYTHONPATH=src python3 references/examples/unified_solving.py --mode single
+PYTHONPATH=src python3 references/examples/unified_solving.py --mode multi
+```

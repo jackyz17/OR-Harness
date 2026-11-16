@@ -99,6 +99,9 @@ class PlanLimits:
     beta: Optional[float] = None
     gamma: Optional[float] = None
     cost_weights: Optional[Dict[str, float]] = None
+    #: Candidate-independent resource peaks; absent dimensions need applicable
+    #: pre-decision measured history. No candidate maximum is a scale.
+    cost_scales: Optional[Dict[str, Any]] = None
     #: Weight of the knowledge term. ``None`` = not overridden (inherits
     #: the harness's configured value, which defaults to 0.0, so an
     #: unmodified call scores EXACTLY as it did before this term existed).
@@ -129,6 +132,7 @@ class PlanLimits:
             "benefit_unit": self.benefit_unit,
             "cost_weights": (dict(self.cost_weights)
                              if self.cost_weights is not None else None),
+            "cost_scales": copy.deepcopy(self.cost_scales),
         }
 
     @classmethod
@@ -156,6 +160,7 @@ class PlanLimits:
                           if data.get("benefit_unit") else None),
             cost_weights=(None if data.get("cost_weights") is None
                           else dict(data["cost_weights"])),
+            cost_scales=copy.deepcopy(data.get('cost_scales')),
         )
 
 
@@ -277,6 +282,8 @@ class PlanResult:
     #: metric, unit, source). Recorded so a reader can see WHICH currency
     #: the ranking used, and whether it was declared, agreed or defaulted.
     benefit_convention: Optional[Dict[str, Any]] = None
+    selected_prediction_id: Optional[str] = None
+    selected_score: Optional[Dict[str, Any]] = None
     created_at: float = field(default_factory=time.time)
 
     @staticmethod
@@ -301,6 +308,8 @@ class PlanResult:
             "planning_cost": copy.deepcopy(self.planning_cost),
             "budget_confirmation": self.budget_confirmation,
             "benefit_convention": copy.deepcopy(self.benefit_convention),
+            "selected_prediction_id":self.selected_prediction_id,
+            "selected_score":copy.deepcopy(self.selected_score),
             "created_at": self.created_at,
         }
 
@@ -325,6 +334,8 @@ class PlanResult:
             budget_confirmation=str(data.get("budget_confirmation",
                                              "unknown")),
             benefit_convention=copy.deepcopy(data.get("benefit_convention")),
+            selected_prediction_id=data.get('selected_prediction_id'),
+            selected_score=copy.deepcopy(data.get('selected_score')),
             created_at=float(data.get("created_at", time.time())),
         )
 
@@ -843,15 +854,14 @@ KNOWN_BENEFIT_CONVENTIONS: Dict[Tuple[str, str], Dict[str, str]] = {
     },
 }
 
-#: The PRIMARY benefit of a strategy decision: whether the ORIGINAL TASK
-#: was effectively completed. r12 makes this the DEFAULT yardstick. The
+#: The PRIMARY benefit is original-task acceptance given faithful execution.
+#: Explicit legacy completion/gap forecasts keep their registered conventions. The
 #: solver's own gap measures how well the MODEL was solved, which is NOT
 #: the same as the agent completing the task it was given — defaulting to
 #: it let an optimal solve of a mis-modelled problem read as full success.
 #: ``solution_quality`` stays a fully supported, explicitly declarable
 #: convention; it is simply no longer the default.
-PRIMARY_BENEFIT_CONVENTION = (COMPLETION_BENEFIT_KIND,
-                              COMPLETION_BENEFIT_METRIC)
+PRIMARY_BENEFIT_CONVENTION = ("effective_completion", FAITHFUL_G_METRIC)
 
 #: The default convention when a decision declares none and the candidates
 #: do not agree on one. It is the PRIMARY (task completion) convention: the
@@ -1020,11 +1030,11 @@ def resolve_benefit_convention(predictions: List[Any], *, kind: Any = None,
 
 
 def score_strategy_outcome_predictions(
-        predictions: List[Any], limits: PlanLimits
+        predictions: List[Any], limits: PlanLimits, *, cost_scales=None
         ) -> List[StrategyOutcomeScore]:
     """Compare rankable candidates using shared C dimensions and shared R.
 
-    The existing weights and peak scales are unchanged. Missing fields
+    Scales are independent of candidate values. Missing fields or scales
     remove a term/dimension for the entire comparison, never add a penalty
     to one candidate. Original declarations remain available for inspection.
     """
@@ -1082,15 +1092,35 @@ def score_strategy_outcome_predictions(
         elif None in keys or len(keys) != 1:
             common.discard(dim)
             omitted_dims[dim] = {"reason": "different or unknown measurement scopes"}
-    # Intersect FIRST, then apply component deduplication ONCE for everyone.
+    scales=cost_scales if cost_scales is not None else limits.cost_scales or {}
+    if not isinstance(scales,dict):scales={}
+    norms={};scale_sources={}
+    weights = limits.cost_weights or {}
+    for dim in sorted(common):
+        raw=scales.get(dim)
+        info=copy.deepcopy(raw) if isinstance(raw,dict) else {'peak':raw,'source':'explicit_plan_limits'}
+        peak=info.get('peak')
+        key=measurement_key(participants[0],dim)
+        if (not isinstance(peak,(int,float)) or isinstance(peak,bool) or
+                not math.isfinite(peak) or peak<=0 or info.get('scope',key)!=key):
+            common.discard(dim)
+            omitted_dims[dim]={'reason':'no reliable positive candidate-independent scale for this measurement scope'}
+            continue
+        weight=weights.get(dim,0.0)
+        if not isinstance(weight,(int,float)) or isinstance(weight,bool) or not math.isfinite(weight) or weight<=0:
+            common.discard(dim);omitted_dims[dim]={'reason':'no positive finite cost weight'};continue
+        norms[dim]=float(peak);scale_sources[dim]={**info,'peak':float(peak),'scope':key}
+    # Intersect and establish usable scales FIRST; then deduplicate the
+    # dimensions actually charged, with identical normalized weights.
     basis = sorted(chargeable_dimensions(common))
     for dim in sorted(common - set(basis)):
         omitted_dims[dim] = {"reason": "component deduplicated on common dimensions"}
-    norms = {dim: max([float(getattr(p.cost.expected, dim)) for p in participants] + [0]) or 1.0 for dim in basis}
+    norms={d:norms[d] for d in basis};scale_sources={d:scale_sources[d] for d in basis}
     probabilities = {p.prediction_id: implementation_probability(p) for p in predictions}
     use_r = bool(participants) and all(probabilities[p.prediction_id] is not None for p in participants)
     missing_r = [p.prediction_id for p in participants if probabilities[p.prediction_id] is None]
-    weights = limits.cost_weights or {}
+    total_weight=sum(weights[d] for d in basis)
+    normalized_weights={d:weights[d]/total_weight for d in basis}
     alpha = limits.alpha if limits.alpha is not None else 1.0
     beta = limits.beta if limits.beta is not None else 1.0
     gamma = limits.gamma if limits.gamma is not None else 1.0
@@ -1110,7 +1140,9 @@ def score_strategy_outcome_predictions(
             "participant_prediction_ids": [p.prediction_id for p in participants],
             "terms": (["G"] + (["C"] if basis else []) + (["R"] if use_r else [])) if reason is None else [],
             "cost_dimensions": basis, "cost_scales": dict(norms),
-            "cost_weights": {dim: weights.get(dim, 0.0) for dim in basis},
+            "cost_weights": normalized_weights,
+            "cost_scale_sources":copy.deepcopy(scale_sources),
+            "cost_normalization":"clip(log1p(predicted) / log1p(peak), 0, 1)",
             "utility_weights": {"alpha": alpha, "beta": beta, "gamma": gamma},
             "cost_measurement_scopes": {d: measurement_key(participants[0], d) for d in basis},
             "omitted_cost_dimensions": copy.deepcopy(omitted_dims),
@@ -1126,8 +1158,8 @@ def score_strategy_outcome_predictions(
             scores.append(score)
             continue
         score.benefit_value = float(prediction.benefit.value)
-        cost_value = sum(weights.get(d, 0.0) * float(getattr(prediction.cost.expected, d)) /
-                         max(norms[d], 1e-9) for d in basis)
+        cost_value = sum(normalized_weights[d] * min(1.0,max(0.0,
+            math.log1p(float(getattr(prediction.cost.expected,d)))/math.log1p(norms[d]))) for d in basis)
         score.cost_normalized = round(cost_value, 6) if basis else None
         if not basis:
             score.incomparable["cost"] = "no common same-scope valid cost dimensions; C omitted for all ranked candidates"
@@ -1136,6 +1168,8 @@ def score_strategy_outcome_predictions(
             score.incomparable["risk"] = "implementation risk missing/invalid on a ranked candidate; R omitted for all"
         score.utility = round(alpha * score.benefit_value - beta * cost_value -
                               gamma * (score.risk_probability if use_r else 0), 6)
+        if not math.isfinite(score.utility):
+            score.utility=None;score.incomparable['utility']='configured utility weights do not produce a finite U'
         if score.scoring_basis["partial"]:
             score.notes.append("partial utility over the recorded common terms; omitted data is unknown and incurs no candidate-specific penalty")
         scores.append(score)

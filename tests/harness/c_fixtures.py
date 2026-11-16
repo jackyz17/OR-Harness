@@ -3,6 +3,7 @@ import copy
 import time
 
 from tests.harness.g_fixtures import GCase, COUPLED
+from decision_fixtures import planned_prediction
 
 REUSE = {"name": "reuse joint model", "steps": [
     "Reuse the available joint supply-chain model and preserve the factory coupling.",
@@ -30,8 +31,8 @@ class CCase(GCase):
         self.provider.payload.pop("cost", None)
         if cost is not None:
             self.provider.payload["cost"] = copy.deepcopy(cost)
-        return self.h.predict_strategy_outcome(self.task,
-            {"action_type": "execute_strategy", "strategy_id": "S04", "method": method}, episode)
+        return planned_prediction(self.h,self.task,
+            {"action_type": "execute_strategy", "strategy_id": "S04", "solver":"highs", "method": method}, episode)
 
     def finish_c(self, prediction, *, tools=8, tokens=300, rounds=2, terminal="completed",
                  counters=False, calls=None, model="executor-model/v1", duplicate_record=None):

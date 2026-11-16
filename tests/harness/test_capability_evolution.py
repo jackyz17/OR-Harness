@@ -27,6 +27,9 @@ What this file asserts, one behaviour per test class:
 7. the capability predictor can never prove its own W_OR improvement, and
    repeated evaluation never doubles a sample.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import io
 import json
 import os
@@ -1151,7 +1154,7 @@ class TestTwoStageFeedback(M5Case):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         from pathlib import Path
@@ -1164,10 +1167,10 @@ class TestTwoStageFeedback(M5Case):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = h.execute(task, "S04", str(script), str(work),
+        record = execute_scored(h,task, "S04", str(script), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         h.close_episode(task_id, "ep1")
 
 
@@ -1742,7 +1745,7 @@ class TestReviewRoundFixes(M5Case):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         from pathlib import Path
@@ -1755,10 +1758,10 @@ class TestReviewRoundFixes(M5Case):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = h.execute(task, "S04", str(script), str(work),
+        record = execute_scored(h,task, "S04", str(script), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         h.close_episode(task_id, "ep1")
 
     def _accepted(self, payload=None, *, prediction_id=None,
@@ -1843,7 +1846,7 @@ class TestReviewRoundTwo(M5Case):
         self.addCleanup(orx.close)
         task = _task(task_id)
         predictions = [
-            orx.predict_strategy_outcome(
+            planned_prediction(orx,
                 task, {"action_type": "execute_strategy",
                        "strategy_id": "S04"}, episode, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             for _ in range(predictions_per_episode)]
@@ -1857,11 +1860,11 @@ class TestReviewRoundTwo(M5Case):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
             " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = orx.execute(task, "S04", str(script), str(work),
+        record = execute_scored(orx,task, "S04", str(script), str(work),
                              solver="highs", episode_id=episode)
         orx.record(record)
         for prediction in predictions:
-            orx.bind_strategy_outcome(prediction.prediction_id,
+            bind_legacy(orx,prediction.prediction_id,
                                       record.action_id)
         if at is not None:
             with orx.store.transaction() as conn:

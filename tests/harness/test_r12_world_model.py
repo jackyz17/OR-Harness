@@ -19,6 +19,8 @@ D. paired feedback keeps the full method steps, does not repeat the Brier
    the context input budget is deployment-configured and enforced.
 E. H+ structure is unchanged (no unified score).
 """
+
+from decision_fixtures import bind_legacy, planned_prediction
 import json
 import os
 import sys
@@ -51,7 +53,7 @@ class TestPrimaryBenefitIsCompletion(unittest.TestCase):
         self.assertEqual(DEFAULT_BENEFIT_CONVENTION,
                          PRIMARY_BENEFIT_CONVENTION)
         self.assertEqual(DEFAULT_BENEFIT_CONVENTION,
-                         ("effective_completion", "task_result_check_passed"))
+                         ("effective_completion", "task_check_passed_given_faithful_execution"))
 
     def test_completion_implied_risk_is_task_check_failed(self):
         self.assertEqual(benefit_implied_risk_events("effective_completion"),
@@ -122,7 +124,7 @@ class TestOptimalButTaskFailed(TaskCheckCase):
         cross-fact records that it does NOT represent task completion."""
         h = self.h
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, variables={"x1": 2.5, "x2": 1.5},
@@ -130,7 +132,7 @@ class TestOptimalButTaskFailed(TaskCheckCase):
         h.check_task_result(
             record.execution_id,
             {"integer": {"variables": ["x1", "x2"]}})
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         closed = h.close_episode("t1", "ep1")
         evaluation = closed["evaluations"][0]
         # The quality observation is the solver's own figure (1.0).

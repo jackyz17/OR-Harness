@@ -1,4 +1,7 @@
 """Review regressions: cold-start runner inputs and contradictory host meters."""
+
+from decision_fixtures import execute_scored, planned_prediction
+
 import contextlib
 import copy
 import io
@@ -21,9 +24,9 @@ class TestFirstProposal(CCase):
         self.h = ORHarness(home=self.home, world_model=self.provider,
             embedding=LocalHashEmbeddingBackend(), execution_context=RUNNER)
         self.addCleanup(self.h.close)
-        p = self.h.predict_strategy_outcome(self.task, {
+        p = planned_prediction(self.h,self.task, {
             "action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}, "history")
-        self.assertEqual(self.h.actions.query(task_id=self.task["task_id"]), [])
+        self.assertEqual(self.h.actions.query(task_id=self.task["task_id"],action_type="model"), [])
         r = self.run_g(p)
         self.check_g(r)
         self.finish_c(p)
@@ -108,18 +111,18 @@ class TestHostMeterIntegrity(CCase):
         self.check_g(r)
         if extra_execution:
             work = Path(self.home) / p.prediction_id
-            extra = self.h.execute(self.task, "S04", str(work / "solve.py"), str(work), solver="highs", episode_id="ep1")
+            extra = execute_scored(self.h,self.task, "S04", str(work / "solve.py"), str(work), solver="highs", episode_id="ep1")
             self.h.record(extra)
         stop = time.time()
         report = {"schema": "or-host-usage/1", "host": "test-host", "model": "executor-model/v1",
             "scope": "remaining_to_task_end", "measured": ["tool_calls", "llm_tokens"],
-            "window": {"started_at": p.trace.created_at, "ended_at": stop, "complete": True}}
+            "window": {"started_at": self.h.actions.get(p.trace.model_info["decision_action_id"]).started_at, "ended_at": stop, "complete": True}}
         if tools is not None:
             report["tool_calls"] = tools
         if tokens is not None:
             report["tokens"] = {"prompt_tokens": tokens, "completion_tokens": 0}
         if details is not None:
-            report["call_details"] = [{"started_at": p.trace.created_at, "ended_at": stop, **d} for d in details]
+            report["call_details"] = [{"started_at": self.h.actions.get(p.trace.model_info["decision_action_id"]).started_at, "ended_at": stop, **d} for d in details]
         if complete is not None:
             report["call_details_complete"] = complete
         if counters is not None:
@@ -228,7 +231,7 @@ class TestHostMeterIntegrity(CCase):
         self.h.report_action("finish_task", self.task, "ep1", started_at=stop, ended_at=stop,
             host_usage={"schema": "or-host-usage/1", "host": "test-host", "model": "executor-model/v1",
                 "scope": "remaining_to_task_end", "measured": ["tool_calls"], "tool_calls": 0,
-                "window": {"started_at": p.trace.created_at, "ended_at": stop, "complete": True}})
+                "window": {"started_at": self.h.actions.get(p.trace.model_info["decision_action_id"]).started_at, "ended_at": stop, "complete": True}})
         self.check_g(r)  # A later reference action must not replace the execute timestamp.
         e = self.close_g()["evaluations"][0]
         self.assertNotIn("tool_calls", e["cost"]["observed_fact"]["values"])

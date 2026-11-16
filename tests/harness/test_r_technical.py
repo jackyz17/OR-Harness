@@ -1,4 +1,7 @@
 """Single-attempt technical R and common-term strategy comparison."""
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import copy
 import json
 from pathlib import Path
@@ -49,7 +52,7 @@ class RCase(GCase):
         candidate = {"action_type": "execute_strategy", "strategy_id": "S04", "solver": "highs", "method": COUPLED, "scope": scope}
         if scope == "strategy_window":
             candidate["window_id"] = "win::" + self.task["task_id"] + "::" + episode + "::S04"
-        return self.h.predict_strategy_outcome(self.task, candidate, episode)
+        return planned_prediction(self.h,self.task, candidate, episode)
 
     def body(self, prediction=None, *, text=None, episode="ep1"):
         if prediction:
@@ -57,7 +60,7 @@ class RCase(GCase):
         root = Path(self.home) / (prediction.prediction_id if prediction else "unpredicted-" + episode)
         root.mkdir(exist_ok=True)
         (root / "solve.py").write_text(text or "import json\njson.dump({'status':'optimal','objective_value':1},open('result.json','w'))\n")
-        r = self.h.execute(self.task, "S04", str(root / "solve.py"), str(root), solver="highs", episode_id=episode,
+        r = execute_scored(self.h,self.task, "S04", str(root / "solve.py"), str(root), solver="highs", episode_id=episode,
                            prediction_id=prediction.prediction_id if prediction else None)
         self.h.record(r)
         return r
@@ -175,7 +178,7 @@ class TestRFeedback(RCase):
         a = self.predict_r(probability=.123456789)
         b = self.predict_r(probability=.2)
         r = self.body(a)
-        self.h.bind_strategy_outcome(b.prediction_id, r.action_id)
+        bind_legacy(self.h,b.prediction_id, r.action_id)
         result = self.close_g()
         e = next(e for e in result["evaluations"] if e["prediction_id"] == a.prediction_id)
         scored = next(s for s in e["risk"]["scored"] if s["event"] == "implementation_failure")
@@ -244,7 +247,7 @@ class TestRFeedback(RCase):
             self.assertFalse(e["groups"])
             self.h.execution_context = original
         self.provider.payload = payload()
-        self.h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy", "strategy_id": "S04",
+        planned_prediction(self.h,self.task, {"action_type": "execute_strategy", "strategy_id": "S04",
             "solver": "pulp", "method": COUPLED}, "other-interface")
         self.assertFalse(self.provider.requests[-1]["prediction_context"]["implementation_r_evidence"]["groups"])
         self.h.execution_context = {}
@@ -258,7 +261,8 @@ class TestCommonCRScoring(RCase):
         result = self.h.plan_next(self.task, "ep1", candidates=[
             ActionSpec("execute_strategy", self.task["task_id"], strategy_id=s, solver="highs", method=COUPLED)
             for s in ("S04", "S06")], limits={"horizon": 1, "alpha": 1, "beta": 1, "gamma": 1,
-                "cost_weights": {"llm_tokens": 1, "remaining_latency_s": 1, "solver_runtime_s": 1, "latency_s": 1}, **limits})
+                "cost_weights": {"llm_tokens": 1, "remaining_latency_s": 1, "solver_runtime_s": 1, "latency_s": 1},
+                "cost_scales":{"llm_tokens":700000,"remaining_latency_s":240,"solver_runtime_s":3,"latency_s":2}, **limits})
         return [row["score"] for row in result["candidates"]]
 
     def test_only_implementation_failure_is_r_despite_timeout_point_eight(self):
@@ -277,7 +281,7 @@ class TestCommonCRScoring(RCase):
         b = payload(None, cost={"llm_tokens": 700000})
         scores = self.plan(a, b)
         self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["llm_tokens"] for s in scores))
-        self.assertAlmostEqual(scores[0]["cost_normalized"], 5 / 7, places=6)
+        self.assertAlmostEqual(scores[0]["cost_normalized"], __import__("math").log1p(500000)/__import__("math").log1p(700000), places=6)
         self.assertEqual(scores[1]["cost_normalized"], 1)
         self.assertIsNone(scores[1]["cost_reported"]["values"].get("remaining_latency_s"))
 
@@ -297,7 +301,7 @@ class TestCommonCRScoring(RCase):
         scores = self.plan(payload(None, cost={"remaining_latency_s": 120, "solver_runtime_s": 2}),
                            payload(None, cost={"solver_runtime_s": 3}))
         self.assertTrue(all(s["scoring_basis"]["cost_dimensions"] == ["solver_runtime_s"] for s in scores))
-        self.assertAlmostEqual(scores[0]["cost_normalized"], 2 / 3, places=6)
+        self.assertAlmostEqual(scores[0]["cost_normalized"], __import__("math").log1p(2)/__import__("math").log1p(3), places=6)
 
     def test_all_valid_data_uses_common_container_and_keeps_components_visible(self):
         scores = self.plan(payload(.2, cost={"llm_tokens": 50, "remaining_latency_s": 120, "solver_runtime_s": 2}),
@@ -312,7 +316,7 @@ class TestCommonCRScoring(RCase):
         b["benefit"].update(kind="solution_quality", metric="normalized_objective_gap", unit="1-gap")
         scores = self.plan(a, b)
         self.assertIsNone(scores[1]["utility"])
-        self.assertEqual(scores[0]["scoring_basis"]["cost_scales"]["llm_tokens"], 10)
+        self.assertEqual(scores[0]["scoring_basis"]["cost_scales"]["llm_tokens"], 700000)
         self.assertEqual(scores[0]["scoring_basis"]["terms"], ["G", "C", "R"])
         self.assertEqual(len(scores[0]["scoring_basis"]["participant_prediction_ids"]), 1)
 

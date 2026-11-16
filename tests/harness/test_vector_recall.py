@@ -12,6 +12,8 @@ The design contract asserted here:
 6. Every honest refusal to run the text channel is REPORTED (``degraded``),
    never silently rendered as "found nothing".
 """
+
+from decision_fixtures import execute_scored
 import json
 import os
 import subprocess
@@ -133,11 +135,16 @@ class VectorCase(HarnessTestCase):
         lines.append("with open('result.json', 'w') as fh:")
         lines.append("    json.dump(payload, fh)")
         script.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = execute_scored(self.h,task, strategy, str(script), str(work),
                                 solver="highs")
         self.h.record(record)
         return record
 
+
+
+def run_scored_orx(home,*argv):
+    from decision_fixtures import scored_cli_argv
+    return run_orx(home,*scored_cli_argv(home,argv))
 
 class TestDiscoveryVsReuse(VectorCase):
     """Cases 1, 2, 7: what is seen, and how it is labelled."""
@@ -170,7 +177,7 @@ class TestDiscoveryVsReuse(VectorCase):
         work.mkdir(parents=True, exist_ok=True)
         script = work / "solve.py"
         script.write_text("raise RuntimeError('boom')\n", encoding="utf-8")
-        record = self.h.execute(_task("t_f", description=REQ_A), "S04",
+        record = execute_scored(self.h,_task("t_f", description=REQ_A), "S04",
                                 str(script), str(work), solver="highs")
         record.quality = {"status": "error", "feasible": False, "objective": None,
                           "gap": None}
@@ -329,7 +336,7 @@ class TestLegacyRecords(VectorCase):
         real belief snapshot exists — recovered, never invented."""
         task = _task("t_snap", description=REQ_A, resource_coupling=0.9)
         self.h.snapshot(task, "ep1")
-        record = self.h.execute(task, "S04",
+        record = execute_scored(self.h,task, "S04",
                                 self._script(task, "ws_snap"), 
                                 str(Path(self.home) / "ws_snap"),
                                 solver="highs")
@@ -422,7 +429,7 @@ class TestMethodTravelsWithTheHit(VectorCase):
             "    json.dump({'status': 'optimal', 'objective_value': 5.0, "
             "'objective_bound': 5.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(task, "S04", str(script), str(work),
+        record = execute_scored(self.h,task, "S04", str(script), str(work),
                                 solver="highs",
                                 method={"name": "capacity-first greedy",
                                         "steps": ["load the binding resource"]})
@@ -454,7 +461,7 @@ class TestMethodTravelsWithTheHit(VectorCase):
         work.mkdir(parents=True, exist_ok=True)
         script = work / "solve.py"
         script.write_text("raise RuntimeError('kaboom')\n", encoding="utf-8")
-        record = self.h.execute(_task("t_f2", description=REQ_A), "S04",
+        record = execute_scored(self.h,_task("t_f2", description=REQ_A), "S04",
                                 str(script), str(work), solver="highs")
         record.quality = {"status": "error", "feasible": False,
                           "objective": None, "gap": None}
@@ -492,7 +499,7 @@ class TestMethodTravelsWithTheHit(VectorCase):
             "    json.dump({'status': 'optimal', 'objective_value': 1.0, "
             "'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        rec = self.h.execute(target, "S04", str(script), str(work),
+        rec = execute_scored(self.h,target, "S04", str(script), str(work),
                              solver="highs",
                              adapted_from=[prior.execution_id],
                              adaptation="raised the demand cap")
@@ -698,7 +705,7 @@ class TestIndexSyncDiscipline(VectorCase):
                           "    json.dump({'status':'optimal','objective_value':1.0,"
                           "'objective_bound':1.0,'runtime_seconds':0.01}, fh)\n",
                           encoding="utf-8")
-        record = h.execute(task, "S04", str(script), str(work), solver="highs")
+        record = execute_scored(h,task, "S04", str(script), str(work), solver="highs")
         out = h.record(record)
         self.assertTrue(out["recorded"], "the fact must be saved regardless")
         self.assertEqual(out["index_sync"]["state"], "deferred")
@@ -908,7 +915,7 @@ class TestVectorRecallCLI(HarnessTestCase):
             encoding="utf-8")
 
     def _execute_and_record(self):
-        proc = run_orx(self.home, "execute", "--task", str(self.task_path),
+        proc = run_scored_orx(self.home, "execute", "--task", str(self.task_path),
                        "--strategy", "S04", "--code",
                        str(self.work / "solve.py"), "--workspace",
                        str(self.work), "--solver", "highs")

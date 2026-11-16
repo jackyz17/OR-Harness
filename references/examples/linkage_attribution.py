@@ -35,6 +35,8 @@ is injected).
 """
 from __future__ import annotations
 
+from _workflow import bind_legacy, execute_scored, planned_prediction
+
 import json
 import sys
 import tempfile
@@ -121,10 +123,10 @@ def _evaluate(h, prediction_id, script, work, *, solver="highs",
     prediction (a deviation); the auto-binding path refuses a contradiction
     at entry by design.
     """
-    record = h.execute(TASK, run_strategy, str(script), str(work),
+    record = execute_scored(h,TASK, run_strategy, str(script), str(work),
                        solver=solver, episode_id="ep1")
     h.record(record)
-    h.bind_strategy_outcome(prediction_id, record.action_id)
+    bind_legacy(h,prediction_id, record.action_id)
     result = h.close_episode(TASK["task_id"], "ep1")
     return result["evaluations"][0]
 
@@ -138,7 +140,7 @@ def main() -> int:
     print("=" * 72)
     print("1. An unreported effort knob (time_limit, seed) is a CAVEAT")
     print("=" * 72)
-    prediction = h.predict_strategy_outcome(
+    prediction = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                "solver": "highs", "config": {"time_limit": 60, "seed": 42}},
         "ep1")
@@ -162,15 +164,15 @@ def main() -> int:
     print("=" * 72)
     print("2. An unreported APPROACH knob is a caveat, not a veto")
     print("=" * 72)
-    prediction2 = h.predict_strategy_outcome(
+    prediction2 = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
                "solver": "highs", "config": {"relaxation": "lp"}},
         "ep2")
     script2, work2 = _script(h, "approach")
-    record2 = h.execute(TASK, "S02", str(script2), str(work2),
+    record2 = execute_scored(h,TASK, "S02", str(script2), str(work2),
                         solver="highs", episode_id="ep2")
     h.record(record2)
-    bound2 = h.bind_strategy_outcome(prediction2.prediction_id,
+    bound2 = bind_legacy(h,prediction2.prediction_id,
                                      record2.action_id)
     result2 = h.close_episode(TASK["task_id"], "ep2")
     evaluation2 = result2["evaluations"][0]
@@ -199,15 +201,15 @@ def main() -> int:
     print("=" * 72)
     print("3. A DEVIATION (solver changed) keeps the cost, drops the outcome")
     print("=" * 72)
-    prediction3 = h.predict_strategy_outcome(
+    prediction3 = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S03",
                "solver": "glpk"}, "ep3")
     script3, work3 = _script(h, "deviation")
     # The run really used highs, not the predicted glpk.
-    record3 = h.execute(TASK, "S03", str(script3), str(work3),
+    record3 = execute_scored(h,TASK, "S03", str(script3), str(work3),
                         solver="highs", episode_id="ep3")
     h.record(record3)
-    bound3 = h.bind_strategy_outcome(prediction3.prediction_id,
+    bound3 = bind_legacy(h,prediction3.prediction_id,
                                      record3.action_id)
     print(f"binding mismatch       : "
           f"{bound3.trace.model_info.get('binding_mismatch')}")
@@ -227,15 +229,15 @@ def main() -> int:
     print("=" * 72)
     print("4. Genuine boundaries still refuse")
     print("=" * 72)
-    prediction4 = h.predict_strategy_outcome(
+    prediction4 = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S04"},
         "ep4")
     script4, work4 = _script(h, "wrong_strategy")
     # A DIFFERENT strategy really ran.
-    record4 = h.execute(TASK, "S09", str(script4), str(work4),
+    record4 = execute_scored(h,TASK, "S09", str(script4), str(work4),
                         solver="highs", episode_id="ep4")
     h.record(record4)
-    h.bind_strategy_outcome(prediction4.prediction_id, record4.action_id)
+    bind_legacy(h,prediction4.prediction_id, record4.action_id)
     result4 = h.close_episode(TASK["task_id"], "ep4")
     evaluation4 = result4["evaluations"][0]
     print(f"state                  : {evaluation4['state']}")
@@ -249,7 +251,7 @@ def main() -> int:
     print("=" * 72)
     print("5. Entry-point discipline: a string METHOD is normalized")
     print("=" * 72)
-    prediction5 = h.predict_strategy_outcome(
+    prediction5 = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S05",
                "config": {"method": "benders", "time_limit": 60}}, "ep5")
     print(f"candidate.config       : {prediction5.candidate.config}")
@@ -264,7 +266,7 @@ def main() -> int:
     assert reloaded5.candidate.method == {"name": "benders", "steps": []}
     # A key that names no execution parameter is refused BEFORE an attempt.
     try:
-        h.predict_strategy_outcome(
+        planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S06",
                    "config": {"task_id": "other"}}, "ep5")
         raise AssertionError("a non-execution config key should be refused")
@@ -277,7 +279,7 @@ def main() -> int:
     print("=" * 72)
     print("6. An interrupted attempt is preserved as its own failure fact")
     print("=" * 72)
-    prediction6 = h.predict_strategy_outcome(
+    prediction6 = planned_prediction(h,
         TASK, {"action_type": "execute_strategy", "strategy_id": "S07",
                "solver": "highs"}, "ep6")
     script6, work6 = _script(h, "interrupt")
@@ -297,7 +299,7 @@ def main() -> int:
 
     h.executor = Interrupt()
     try:
-        h.execute(TASK, "S07", str(script6), str(work6), solver="highs",
+        execute_scored(h,TASK, "S07", str(script6), str(work6), solver="highs",
                   episode_id="ep6", prediction_id=prediction6.prediction_id)
     except FileExistsError as exc:
         print(f"attempt 1 raised        : {type(exc).__name__}")
@@ -310,15 +312,17 @@ def main() -> int:
     else:
         print("staged failure fact     : None")
     # The attempt is preserved (a real error fact, linked to the action the
-    # close-out will read) and the prediction was released for a retry.
+    # close-out will read) and the original scored prediction remains consumed. A repair uses a new decision.
     assert len(staged) == 1
     assert staged[0].quality["status"] == "error"
     assert "interrupted_before_record" in staged[0].execution_features
     assert h.strategy_predictions.get(
         prediction6.prediction_id).trace.model_info.get(
-            "bound_action_id") is None
+            "bound_action_id") is not None
+    # The failed scored decision stays consumed. A repair gets a fresh plan.
+    prediction6 = planned_prediction(h,TASK,{"strategy_id":"S07","solver":"highs"},"ep6")
     # The retry is a SEPARATE attempt and cannot claim a proven zero.
-    retry = h.execute(TASK, "S07", str(script6), str(work6),
+    retry = execute_scored(h,TASK, "S07", str(script6), str(work6),
                       solver="highs", episode_id="ep6",
                       prediction_id=prediction6.prediction_id)
     print(f"retry retries measured  : "

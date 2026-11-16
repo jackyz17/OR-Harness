@@ -18,6 +18,9 @@ What this file asserts, one behaviour per test class:
    evidence is still recalled and can still be revised from current evidence.
 7. **Surface** — the API and CLI entry points reach the same pass.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
+
 import io
 import json
 import os
@@ -120,7 +123,7 @@ class EvidenceWindowCase(HarnessTestCase):
             "    json.dump({'status': 'optimal', 'objective_value': "
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode_id)
         self.h.record(record)
         return record
@@ -128,11 +131,11 @@ class EvidenceWindowCase(HarnessTestCase):
     def close_with_evaluation(self, task_id, episode_id, strategy="S04"):
         """Solve, predict, bind and close ONE episode (a real sample)."""
         task = _task(task_id)
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": strategy}, episode_id)
         record = self.solve(task, strategy=strategy, episode_id=episode_id)
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         return self.h.close_episode(task_id, episode_id), record
 
@@ -309,11 +312,11 @@ class TestEvictionIsNotWithdrawal(EvidenceWindowCase):
 
     def test_evicted_source_does_not_revoke_the_stored_evaluation(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         first = self.h.close_episode("t1", "ep1")
         stored_id = first["evaluations"][0]["evaluation_id"]
@@ -330,11 +333,11 @@ class TestEvictionIsNotWithdrawal(EvidenceWindowCase):
 
     def test_excluded_source_IS_a_withdrawal(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         # An EXCLUDE is the explicit correction: the fact is withdrawn.

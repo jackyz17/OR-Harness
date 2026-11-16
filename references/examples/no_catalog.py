@@ -23,6 +23,8 @@ Two things to watch:
 """
 from __future__ import annotations
 
+from _workflow import execute_scored
+
 import json
 import sys
 import tempfile
@@ -123,7 +125,7 @@ def main() -> int:
         # ------------------------------------------------------------------
         step(4, "execute the proposed method in the sandbox")
         # ------------------------------------------------------------------
-        record = h.execute(TASK, METHOD, str(solve_path), str(work),
+        record = execute_scored(h,TASK, METHOD, str(solve_path), str(work),
                            solver="highs", episode_id="ep1")
         print(f"execution_id: {record.execution_id}")
         print(f"strategy_id: {record.strategy_id}   (the framework's own "
@@ -186,7 +188,7 @@ def main() -> int:
         # A second real execution supplies another fact. This is still the
         # same original text under a new ID, not an independent holdout.
         second_task = dict(TASK, task_id="demo_empty_2")
-        second = h.execute(second_task, METHOD, str(solve_path), str(work),
+        second = execute_scored(h,second_task, METHOD, str(solve_path), str(work),
                            solver="highs", episode_id="ep2")
         h.record(second, override={"llm_tokens": 1900, "tool_calls": 9})
         # The framework writes only the strategy the agent submits.

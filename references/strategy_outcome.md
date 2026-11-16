@@ -2,12 +2,12 @@
 
 Read this page when you are predicting one candidate, comparing several, or binding a real execution to a prediction — the wm-so/1 loop in detail: the yardstick, the comparison rules and the binding identity. For the frozen input a prediction is conditioned on, see [prediction_context.md](prediction_context.md); for every field and status, [world_model_contract.md](world_model_contract.md).
 
-**Status: the service is implemented and wired into planning.** This is the third phase of the reconstruction: the unified contract (phase 1) and the frozen prediction input context (phase 2) now carry a real, training-free OR strategy-consequence prediction service.
+The normal solving entry is `plan-next` for one or more candidates. Independent `predict-strategy` is available for inspection.
 
 - Protocol version: `wm-so/1`
 - Python module: `or_harness.world_model.strategy_prediction`
 - API: `ORHarness.predict_strategy_outcome` / `bind_strategy_outcome`
-- CLI: `orx predict-strategy` / `orx plan-next` (the only planning protocol) / `orx choose-next --prediction` / `orx execute --prediction` (associates BEFORE the run) / `orx bind-strategy` (manual recovery)
+- CLI: `plan-next` → `execute --prediction` → `check-task` → `record` → `close-episode` → frozen H+ jobs. `choose-next` is a compatibility/rejection record; later binding cannot authorize solving.
 - Tests: `tests/harness/test_strategy_outcome.py`
 - Runnable example: [`references/examples/strategy_outcome.py`](examples/strategy_outcome.py)
 - Bounded attribution (a missing receipt is a caveat, not a discard): [`references/examples/linkage_attribution.py`](examples/linkage_attribution.py)
@@ -16,28 +16,29 @@ The INPUT side (what a prediction is conditioned on) is documented in [`referenc
 
 ---
 
-## 1. The loop this phase implements
+## 1. Normal solving loop
 
 ```
-problem understanding / profile + memory retrieval
-        -> ONE frozen PredictionContext
-        -> a few candidate strategies
-        -> predicted benefit / cost / risk / uncertainty per candidate
-        -> compared, one suggested
-        -> the outer agent EXPLICITLY chooses (choose-next --prediction <id>)
-        -> modelling, solving, verification (the agent's work)
-        -> execute --prediction: the association is established BEFORE the run,
-           and the real result + observed config are added AFTER it
-        -> re-plan from the real observation if warranted
+profile / recall → propose one or more candidates → plan-next
+  → execute --prediction P → check-task → record --from-staged EX
+  → close-episode → consume induction_schedule.pending_ids
 ```
 
-- **P is exogenous**: the joint problem representation (math attributes, scenario semantics, structural relations) describes the problem; the service never predicts "the next problem P".
-- **X is the solving context the decision needs** — not a full mathematical model, not solve.py, not every internal state.
-- **H stays a latent capability**: capability evidence CONDITIONS the prediction; no H score, vector or capability-improvement claim is produced.
-- **Training-free**: a frozen, externally configured model fills the prediction content; nothing is fine-tuned, calibrated online, or trained inside a task.
-- **One macro comparison, then re-planning from the real observation.** The new protocol plans at horizon=1 only; no strategy-branch trial runs, no snapshot-rollback platform, no factory simulator, no latent-space dynamics. The legacy `plan-next` horizon=2 rollout remains available under the legacy protocol and its old boundaries.
+The framework freezes one shared context and makes one prediction per candidate.
+It saves G/C/R/H+, finite U, the winning prediction ID and its permission in the
+plan action. Stable ties preserve proposal order. Single candidates use the same
+score calculation. The next execute call uses the original selected P, records
+one actual adoption and atomically claims it before starting the solver. It makes
+no new forecast. Invalid/absent U, losing candidates, shadow decisions and rejected
+plans do not authorize execution or create actual outcomes or induction jobs.
 
-## 2. Predicting one candidate
+The outer agent writes and checks the chosen method. A failed attempt is recorded;
+a repaired attempt needs a fresh `plan-next`. H+ is independent of U. Only actual
+bound attempts with frozen H+=1 schedule a review, including failed attempts.
+Unexecuted forecasts stay unobserved. Close-out publishes factual feedback; the
+outer building agent settles the pending IDs before the next training task.
+
+## 2. Independent prediction inspection
 
 ```bash
 # build the frozen input once (optional: predict-strategy builds its own)
@@ -53,9 +54,11 @@ orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json
   --candidate '{"action_type":"execute_strategy","strategy_id":"S02"}'
 ```
 
+An independent forecast is readable but cannot be passed directly to formal execution. Use the scored entry below even for one candidate.
+
 **Candidates.** A candidate is a `CandidateRef` (or a legacy `ActionSpec`, whose execution params and budget hint are preserved verbatim and whose unmappable scopes are refused). A candidate may cover modelling / decomposition / solving / repair — it is not just one solver call. The service does NOT generate candidates — they come from YOU (there is no built-in strategy directory to enumerate, and `recall` is a report on real memory rather than a menu) — and it never generates solve.py.
 
-**Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the choice (a different config is a deviation) and the execution association, so a result is never attributed to a configuration that was not the one predicted.
+**Candidate identity.** The same `strategy_id` under a different solver, `time_limit`, `mip_gap`, `seed` or step scope is a DIFFERENT candidate: the config travels with the candidate into the prediction, the score and selection (a contradictory execution config is refused) and the execution association, so a result is never attributed to a configuration that was not the one predicted.
 
 **What the provider receives.** The full frozen context content — the joint problem representation (text, math attributes with origins; **CIR is internal and never sent**), the retrieval evidence (hits with their content, not ids), the capability evidence, the execution constraints — plus the candidate, an explicit output contract AND a `benefit_convention` block. The framework fixes the task, the candidate, the scope, the evidence sources AND the benefit convention; the model fills prediction content only.
 
@@ -115,88 +118,64 @@ these knowledge-increment labels.
 
 One provider call per prediction. No retries, no default success values.
 
-## 3. Comparing candidates and choosing
+## 3. Score one or more candidates
 
 ```bash
-orx plan-next --task t.json --episode ep1 \
-  [--candidates specs.json] [--max-calls N] \
-  [--benefit-kind KIND --benefit-metric METRIC]
+orx plan-next --task task.json --episode E --candidates candidates.json \
+  --cost-scales '{"tool_calls":30}'
+# Read result.selected_prediction_id P and result.selected_score.
+orx execute --task task.json --prediction P --code ws/solve.py --workspace ws
 ```
 
-`plan-next` (horizon fixed at 1):
+One JSON candidate list works for single and multiple strategies. Horizon is 1;
+default bounds are 3 candidates, 6 calls and 120 seconds. Known budget limits,
+provider errors and truncation retain their existing rules. There is no universal
+`U > 0` threshold. With comparable G the score is `alpha*G - beta*C - gamma*R`;
+H+ never changes this score. When no candidate has comparable G there is no
+executable selection. Eligible partial U is allowed and records its omissions.
 
-1. freezes ONE context for the whole decision (every candidate is conditioned on the same problem representation, X/B, retrieval evidence, capability evidence and constraints — one embedding call, one snapshot);
-2. predicts each candidate under wm-so/1 — under ONE shared `benefit_convention`, so every candidate is predicted on the SAME currency (a failed prediction does not drag the others down; the model-call count, wall clock and the REAL budget are checked before every call);
-3. determines a shared scoring basis from the candidates actually eligible for this ranking, then applies the existing `U = alpha*G - beta*C - gamma*R` weights and cost scales:
-   - **G**: the candidate's own usable value under the decision's benefit metric/unit/version. A candidate with unavailable or incompatible G has no utility and does not alter the ranked candidates' common basis;
-   - **C**: intersect the candidates' valid `expected_measured` dimensions with matching measurement scopes, then apply cost-component deduplication once on that intersection. Every candidate uses those same dimensions, component weights and existing peak scales. Explicit zero is valid. With no common dimension, mark C incomparable and omit it for the whole comparison. `latency_s` (attempt sandbox) and `remaining_latency_s` (end to end) retain separate meanings;
-   - **R**: read only `implementation_failure.probability`. All ranked candidates must supply a finite JSON number in [0,1] to include R. If any lacks it, omit R for all while preserving each original probability. Zero is valid; timeout, environment, budget, infeasibility and checker probabilities never substitute for R;
-   - the knowledge term is OFF (delta=0) for this protocol: an old knowledge-gain score is not an H improvement and does not leak into the new comparison;
-4. suggests the best candidate's first step. **A suggestion is not a selection**: only `choose-next` writes `X.selected_plan`, and it records accept / deviate / reject explicitly. Accept by ID (`choose-next --decision <id> --prediction <the chosen candidate's id>`): the candidate is read from this decision's own recorded comparison, and the deviation test compares the candidate REFERENCE (action type/strategy/solver/config), never the whole plan JSON.
+R reads only finite numeric `implementation_failure.probability` in [0,1].
+If any participating candidate lacks it, R is omitted for everyone. Other event
+probabilities remain diagnostics. C first intersects finite nonnegative resource
+predictions with identical measurement scopes, then removes dimensions without a
+reliable independent scale, then performs common component deduplication.
+`solver_runtime_s`, attempt `latency_s` and `remaining_latency_s` retain their own
+scopes. Explicit zero is a value; unknown is never imputed as zero or peak cost.
 
-**Fallback.** When NO candidate carries a usable prediction (provider down, every payload invalid), the plan reports `status="no_valid_predictions"` with the reasons and NO suggestion — fall back to `recall`/Selector ordering or choose yourself. The fallback is reported as what it is; it is never dressed up as a completed world-model comparison, and the calls that did happen keep their recorded cost.
+Each retained dimension uses `clip(log1p(predicted_d)/log1p(peak_d),0,1)`.
+Positive `peak_d` comes from explicit `limits.cost_scales` / CLI `--cost-scales`,
+or the maximum trustworthy actual in pre-decision published conditional-cost
+groups applicable to every participating candidate's host, phase, structure and
+solving conditions. The current candidate costs and current planning spend never
+set the peak. A scalar explicit peak is a declared resource scale; a structured
+one can declare scope and a source reference, for example
+`{"tool_calls":{"peak":30,"scope":"remaining_to_task_end","reference":"training-v1"}}`.
+History provenance records its observation version, support and source IDs.
+An unavailable, invalid, nonpositive or mismatched scale removes that dimension
+and explains why. Existing positive dimension weights are normalized over the
+retained set. Scores preserve raw resources, normalized C, scales, sources,
+weights, actual terms and omissions. Candidate costs do not change another
+candidate's same-dimension normalized value.
 
-**One convention per decision, resolved and reported.** The comparison reads ONE benefit currency, and where it came from is recorded in `result.plan.benefit_convention` (`kind`/`metric`/`unit`/`source`/`reason`). Three sources, in order:
+`result.selected_prediction_id` and `result.selected_score` are nullable.
+`result.plan.candidates[]` includes each original P, score, frozen candidate
+reference, `execution_allowed` and refusal reason. The completed selection action
+stores the same audit. `execute` checks ownership, task content, candidate,
+method, solver, config, finite U, selection and unused consumption. Bare strategy
+arguments, independent predictions, manual `choose-next --chosen`, or later
+`bind-strategy` cannot grant permission. `choose-next --rejected` remains useful
+for recording a declined plan; compatibility acceptance may reference only the
+winner and is reused at actual adoption.
 
-1. **declared** — the caller names it for this decision: `--benefit-kind` / `--benefit-metric` (optionally `--benefit-unit`). It is then pushed into EVERY candidate's request as a REQUIRED convention, so the candidates are PREDICTED in that currency, not merely compared in it. Declare this to compare **solver quality** instead of completion: `--benefit-kind solution_quality --benefit-metric normalized_objective_gap`.
-2. **agreed** — nothing declared, and every candidate carrying a benefit declared the SAME `kind`/`metric`. This is what makes two candidates comparable without ceremony.
-3. **legacy fallback** — the existing comparison fallback stays available for old/mixed inputs. New provider requests already have the required faithful-execution convention, so valid new forecasts agree on it; unavailable G never enters utility. Candidate entry, method forwarding, comparison and gating changes are deferred.
+Runnable CLI checks with an explicit local substitute provider:
 
-A declaration this build has no scale for (`valid_progress`, or an unknown pair) resolves to `source="unknown_declaration"` with `comparable=false`: no ranking is produced. A candidate whose own `kind`/`metric` differs from the decision's convention is reported in `score.incomparable["benefit"]` and produces no utility. Its raw cost and risk remain inspectable.
+```bash
+PYTHONPATH=src python3 references/examples/unified_solving.py --mode single
+PYTHONPATH=src python3 references/examples/unified_solving.py --mode multi
+```
 
-**Inspect partial scores.** `score.scoring_basis` records the ranked prediction IDs, actual terms, shared cost dimensions/scopes/weights/scales and omission reasons. `risk_probability`, `risk_reported` and `cost_reported` preserve original supported values. A=.50 before risk with R=.20 and B=.50 with unknown R both remain .50 in this comparison. A=500k tokens/120s and B=700k tokens/unknown time both use tokens alone. Missing inputs incur no candidate-specific penalty. Normalization, utility weights and gate thresholds are unchanged.
-
-**R has a fixed observation contract.** Requests and saved traces carry `risk_convention={event:implementation_failure,unit:execution,scope:attempt,observation_rule_version:wm-r-technical/1}`. R concerns constructing solver code, calling APIs, running it and delivering a protocol-valid result in one bound attempt. A code/API exception, abnormal solver exit or invalid delivery is 1; a normal valid delivery, including legal `infeasible`, is 0; external blockage, ordinary limits and insufficient attribution are unknown. Code-caused timeout requires sourced investigation. Business acceptance remains G, and solve/repair spend remains C. Historical predictions without this version retain their original observation rules. See [episode_closeout.md](episode_closeout.md#technical-r-observations).
-
-The same provider call receives `implementation_r_evidence`: a few closed-attempt facts for the actual execution agent and recorded solver interface, including counts and source references. A captured, previously successful script may be cited as available evidence, never as proof that a new candidate will succeed. Shared base rates and similar candidate probabilities are acceptable when supported by these facts.
-
-**Declare the benefit's meaning explicitly.** The `kind`/`metric` pair is the prediction's own yardstick, and the close-out observes the SAME one (the convention in the request says so):
-
-| You are predicting | Declare | Observed from |
-|---|---|---|
-| whether faithful execution passes original-task acceptance (**new request default**) | `kind=effective_completion`, `metric=task_check_passed_given_faithful_execution`, unit `probability` | sourced fidelity + full declared acceptance: passed=1, confirmed method-caused failure=0, otherwise unknown; `wm-g-faithful/1` |
-| legacy task completion | `kind=effective_completion`, `metric=task_result_check_passed` | the execution's own `check-task` verdict — 1.0 `passed`, 0.0 confirmed `failed`, UNKNOWN when unchecked or `insufficient` |
-| how well the solver solved the MODEL | `kind=solution_quality`, `metric=normalized_objective_gap` | the solver's gap (an `optimal` status is a gap of 0) |
-
-Candidates compared on completion are compared **with each other**, never against a quality candidate (and the reverse): the convention has to match before two numbers are ranked, because `1 - mip_gap` is not a completion rate and a `passed` check is not a quality level, even though both land in [0,1]. `valid_progress` has no observation channel in this build, so it is reported and never scored — and never quietly replaced by a completion rate.
-
-**Judge new G from the original task, the candidate steps and the expected result.** Faithful execution is an assumption of G, not a forecast that the script will be implemented correctly. Keep implementation risk, feasibility, solver quality and optimality separate. A method that omits a decisive constraint may faithfully produce an invalid answer.
-
-**Observation scope and legacy recovery.** New G uses the terminal in-scope attempt and its sourced method/acceptance assessment. A terminal unknown never borrows an earlier pass. Switching method attributes the later result to the actual method; a later code-only repair may supply a positive example for the original method. The old `task_result_check_passed` adapter retains its last-verdict/recovery and attempt-with-no-result rules; those rules do not apply to new G.
-
-**Feedback.** Global G residuals remain diagnostic. They produce neither aggregate nor single-case G correction instructions, and both cached reminder locations are filtered before provider calls. `conditional_g` reports comparable executed outcomes grouped by metric, observation version, scope, family, structural cell, predictor and solving conditions, with explicit sparse support. Same-task comparisons require the same frozen problem and acceptance standard and actual different methods; one executed method yields one factual case, and two passes tie. See [episode_closeout.md](episode_closeout.md).
-
-**Describe the candidate's `method`.** A candidate carries `{"name": str, "steps": [str, ...], "why": str?, "fallback": str?}` and the model predicts FROM it: a bare strategy id or solver name describes nothing about what would happen. The caller supplies it (a cold start has no memory to read it from), the solver/config stay separate fields, and an empty value means the caller did not describe it — not that there is nothing to describe.
-
-**Failure has ONE status and a structured reason.** A call that produced no usable prediction is `status="invalid"` (there is no separate `provider_error` status), with `trace.model_info["failure"]`:
-
-| `failure.kind` | Evidence |
-|---|---|
-| `truncated` | `finish_reason` is `length`/`max_tokens` — the endpoint stopped for length |
-| `wrong_top_level` | valid JSON whose top level is not an object (the field case of `[]`) |
-| `empty_response` | content was `""` or `null` |
-| `unparsable` | content is not JSON |
-| `timeout` / `network_error` | the call did not complete |
-| `unusable_payload` | a JSON object that failed contract validation |
-
-A MISSING `finish_reason` is recorded as `null` with a note saying how the answer ended is UNKNOWN — it is never read as a clean stop. An OLD record written under the retired `provider_error` word still READS: it is normalized to `invalid` and its original status and error are preserved under `trace.model_info["legacy_status"]` / `["error"]`, so no failure is lost and no corrupt record is silently accepted either.
-
-**Call parameters.** Four knobs, each with a flag and an environment variable, and the values actually in force come back under `result.effective_parameters` / `trace.model_info["effective_parameters"]`:
-
-| Knob | Precedence | Default |
-|---|---|---|
-| Output budget | `--wm-max-tokens` > `$OR_WM_MAX_TOKENS` > adapter default | 2048 |
-| Socket timeout | `--wm-timeout` > `$OR_WM_TIMEOUT` > adapter default | 300 |
-| JSON-mode hint | `$OR_WM_NO_RESPONSE_FORMAT=1` removes it | sent |
-| Thinking | `$OR_WM_ENABLE_THINKING=1` | OFF |
-
-A socket timeout bounds ONE blocking operation, not the whole request, so the caller's own clock check is what bounds the call in aggregate.
-
-**The two wire-format knobs exist because an endpoint's defaults are not ours.** `OR_WM_NO_RESPONSE_FORMAT=1` omits `response_format` from the body (never sends `null`), for endpoints that reject JSON mode. `OR_WM_ENABLE_THINKING=1` omits `enable_thinking`, letting the endpoint's own default apply; unset, the request carries `"enable_thinking": false`. Both are read ONCE at provider construction, so the body and `describe()` cannot disagree about the same call. Measured on one endpoint (Qwen3.8-27B via `llmapi.paratera.com/v1`, same request): thinking ON cost 36.3 s and 1291 reasoning tokens against 4.5 s and 0, and `reasoning_tokens` is counted INSIDE `completion_tokens` (325 total, 291 of them reasoning) — so thinking draws on the SAME output budget as the answer. Which arm a call used is reported in `describe()` and folded into `capability_version.provider`; it is NOT in `trace.model_info`, whose keys stay a fixed identity set.
-
-**Do not mix the two arms in one store.** Calibration groups by `strategy_outcome|<model identity>|<metric>|<unit>|<scope>`, and the model identity is the NAME, not the call configuration — so predictions made with thinking ON and OFF are the SAME group and would be pooled. Keep them in separate `--home` directories (or give them different `--world-model` model names) to compare them.
-
-**Cost accounting.** The model calls are REAL spend: charged once to the decision action as own cost (failed calls included), reported in `planning_cost`, never part of any candidate's utility. Candidate execution costs are PREDICTED values. Missing usage stays unknown — never free.
+These verify one-call-per-candidate wiring, U, actual adoption and H+ receipts.
+Predictor discrimination still requires comparable attributable real executions.
 
 ## 4. Budgets, stops, and archiving an interrupted run
 
@@ -258,18 +237,17 @@ Unexecuted candidates keep `unexecuted`/`unassociated` semantics: no counterfact
 
 ```bash
 # the ordinary flow: the association is established BEFORE the run
-orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace ws
-# the manual/recovery path, for an action that already ran
-orx bind-strategy --prediction PREDICTION_ID --action ACTION_ID
+orx execute --task t.json --prediction PREDICTION_ID --code ws/solve.py --workspace ws
+# Historical binding inspection is described under compatibility below.
 ```
 
-**The association is established before the execution, and the observation is added after it.** `execute --prediction` reads the FROZEN candidate, checks it, and takes the strategy/solver/episode FROM it — the caller does not re-type what the prediction already fixed: the**problem identity** must match (a changed task/data/CIR is a different problem; writing the `model` after predicting is NOT a change), the prediction's status must be usable, and a prediction already claimed by another attempt is refused (one attempt per candidate). A path error, a contradictory explicit argument or a claimed prediction is reported BEFORE anything runs, so the prediction is not spent and no cost is incurred; the action and its link are persisted before the sandbox starts, so an interrupted execution still shows which attempt the prediction was testing. What the run then adds is the RESULT and the OBSERVED configuration — never a re-interpretation of the candidate.
+**The association is established before the execution, and the observation is added after it.** `execute --prediction` reads the FROZEN candidate, checks it, and takes the strategy/solver/episode FROM it — the caller does not re-type what the prediction already fixed: the**problem identity** must match (a changed task/data/CIR is a different problem; writing the `model` after predicting is NOT a change), the prediction's status must be usable, and a prediction already claimed by another attempt is refused (one attempt per selected prediction). A path error, a contradictory explicit argument or a claimed prediction is reported BEFORE anything runs, so no execution evidence or solver spend is produced; the action and its link are persisted before the sandbox starts, so an interrupted execution still shows which attempt the prediction was testing. What the run then adds is the RESULT and the OBSERVED configuration — never a re-interpretation of the candidate.
 
 **A missing receipt is a caveat, not a discard.** The config comparison reads the configuration that really took effect, from the action's own `execution_config` (the executor's report plus the solve script's `config` receipt, accepted only when stamped with this attempt's action id so a leftover `result.json` is never read as this run's config). A key the run never reported is recorded under `binding_unknown` — separately from a known `binding_mismatch` — but it does NOT erase the sample: the close-out blocks only the comparison the problem really invalidates. An unreported knob — effort (`time_limit`, `seed`) or approach (`method`, `relaxation`) — blocks nothing: it is reported as a caveat, and identity is decided by the structured fields, not by a knob the run failed to echo. A different solver or a DIFFERENT REPORTED config value blocks the outcome dimensions and keeps the cost; only a wrong task, a wrong strategy, a wrong round or a post-hoc prediction excludes the sample entirely. The per-dimension rule is one small framework table (`world_model/attribution.py`), never a dependency engine over field names.
 
 **`bound` is not `calibratable`.** Being associated (`bound_action_id` set) says the prediction is linked to a real action. Whether ANYTHING may be calibrated is a separate question the CLOSE-OUT answers, field by field; the two are never conflated. `trace.comparable` becomes true only when the associated action is a completed real scope AND no mismatch exists (an attempt-scope prediction needs a completed linked execution; a window-scope prediction needs the window itself complete).
 
-`bind-strategy` is the MANUAL/recovery path: it applies the SAME identity rules to an action that already ran, so a manual bind behaves exactly like an automatic one. Re-binding the same action is idempotent and re-bills nothing.
+`bind-strategy` retains historical pairing and idempotent re-binding of an already authorized adoption. For new predictions, the action must carry the original scored adoption. It cannot turn an independent or unselected forecast into execution permission.
 
 **What is deliberately out of scope here:**
 
@@ -289,3 +267,9 @@ Unexecuted candidates keep `unexecuted`/`unassociated` semantics: no counterfact
 
 
 Prediction input storage and compatibility are defined in [snapshot_lifecycle.md](snapshot_lifecycle.md). New predictions retain identity, real/hypothetical source, frozen budget conditions, actual selection/version references, prompt version and request/omission diagnostics across success, failure and interruption. Binding and budget evaluation do not require a full snapshot. Individual evaluations and published corrections remain independently auditable; model input uses correction counts/field summaries instead of full correction details. H+ availability remains separate from actual adoption and effectiveness.
+
+Historical records retain their original conventions and bindings. New predictions
+require the saved `wm-u-decision/1` selection; a post-hoc binding cannot replace it.
+An interrupted adopted attempt stays consumed and retains its failure evidence;
+retry with a fresh decision. Large frozen evaluation protocol changes are outside
+this workflow change.

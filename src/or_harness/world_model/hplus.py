@@ -184,6 +184,11 @@ def schedule_episode(harness, task_id, episode_id):
             continue                         # old records keep their old protocol
         action_id = (prediction.trace.model_info or {}).get("bound_action_id")
         action = harness.actions.get(action_id) if action_id else None
+        if (prediction.trace.model_info.get('execution_decision_required') and action and
+                ((action.params or {}).get('prediction_id')!=prediction.prediction_id or
+                 not (action.params or {}).get('scored_adoption'))):
+            unobserved.append(prediction.prediction_id)
+            continue
         if not action or not action.linked_execution_id:
             unobserved.append(prediction.prediction_id)
             continue

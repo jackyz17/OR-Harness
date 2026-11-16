@@ -18,6 +18,9 @@ execution. This suite pins the fix (a task-scoped execution->action index):
 Every test uses a temporary home and the hermetic local embedding backend;
 the running experiment database is never touched.
 """
+from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
+
+
 import os
 import sys
 import unittest
@@ -98,10 +101,10 @@ class ArchiveScanCase(HarnessTestCase):
         task = _task(task_id)
         for ep_index in range(episodes):
             episode = f"ep{ep_index}"
-            prediction = h.predict_strategy_outcome(
+            prediction = planned_prediction(h,
                 task, {"action_type": "execute_strategy",
                        "strategy_id": "S04"}, episode)
-            record = h.execute(task, "S04",
+            record = import_legacy_execution(h,task, "S04",
                                self._script(h, f"{task_id}_{episode}"),
                                self._workdir(h, f"{task_id}_{episode}"),
                                solver="highs", episode_id=episode)
@@ -109,7 +112,7 @@ class ArchiveScanCase(HarnessTestCase):
             if not unchecked:
                 h.check_task_result(record.execution_id,
                                     {"reference_objective": 100.0})
-            h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+            bind_legacy(h,prediction.prediction_id, record.action_id)
             h.close_episode(task_id, episode)
         return task_id
 

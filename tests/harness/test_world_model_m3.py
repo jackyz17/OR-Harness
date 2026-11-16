@@ -13,6 +13,8 @@ properties that matter for THIS protocol: one frozen context per decision,
 a conservative yardstick, the prediction id handed over for binding, and
 honest failure/truncation reporting.
 """
+
+from decision_fixtures import execute_scored, planned_prediction
 import io
 import json
 import os
@@ -199,7 +201,7 @@ class TestPlanning(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "ok")
         self.assertEqual(plan["model_calls_made"], 2)
         self.assertIsNotNone(plan["suggested"])
@@ -284,10 +286,8 @@ class TestPlanning(HarnessTestCase):
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         # Deviation: the agent picks the non-suggested candidate.
-        choice = h.choose_next(plan["decision_action_id"],
-                               chosen=_spec("S02"),
-                               deviation_note="domain reason")
-        self.assertIsNotNone(choice["deviation"])
+        with self.assertRaisesRegex(ValueError,"not selected"):
+            h.choose_next(plan["decision_action_id"], chosen=_spec("S02"),deviation_note="domain reason")
         # Rejection on a fresh decision.
         plan2 = h.plan_next(TASK, "ep1",
                             candidates=[_spec("S01"), _spec("S02")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
@@ -370,7 +370,7 @@ class TestPlanning(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         scores = {c["action_spec"]["strategy_id"]: c["score"]
                   for c in plan["candidates"]}
         self.assertIsNone(scores["S02"]["utility"])
@@ -390,7 +390,7 @@ class TestPlanning(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "no_valid_predictions")
         self.assertIsNone(plan["suggested"])
         self.assertIn("no candidate carried a usable", plan["truncation_reason"])
@@ -409,7 +409,7 @@ class TestPlanning(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["model_calls_made"], 2)
         statuses = sorted(c["prediction_status"] for c in plan["candidates"])
         self.assertEqual(statuses, ["valid", "valid"])
@@ -448,7 +448,7 @@ class TestPlanning(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         decision = h.actions.get(plan["decision_action_id"])
         self.assertNotEqual(decision.status, "running")
         statuses = sorted(c["prediction_status"] for c in plan["candidates"])
@@ -506,7 +506,7 @@ class TestExecutionReplan(HarnessTestCase):
             "import json\n"
             "json.dump({'status': 'feasible', 'objective_value': 120.0},\n"
             "          open('result.json', 'w'))\n")
-        record = h.execute(TASK, executed_strategy,
+        record = execute_scored(h,TASK, executed_strategy,
                            str(script), str(workspace), solver="highs",
                            episode_id="ep1", prediction_id=chosen_pred_id)
         self.assertTrue(record.quality["feasible"])
@@ -540,7 +540,7 @@ class TestExecutionReplan(HarnessTestCase):
             "S01": {"quality": 0.5}, "S02": {"quality": 0.6}})
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         workspace = Path(self.home) / "ws2"
@@ -551,7 +551,7 @@ class TestExecutionReplan(HarnessTestCase):
             "json.dump({'status': 'feasible', 'objective_value': 120.0},\n"
             "          open('result.json', 'w'))\n")
         with self.assertRaises(ValueError) as caught:
-            h.execute(TASK, "S01",   # contradicts the predicted S02
+            execute_scored(h,TASK, "S01",   # contradicts the predicted S02
                       str(script), str(workspace), solver="highs",
                       episode_id="ep1",
                       prediction_id=prediction.prediction_id)
@@ -567,7 +567,7 @@ class TestExecutionReplan(HarnessTestCase):
         provider = ScriptableProvider(per_strategy={"S01": {"quality": 0.5}})
         h = ORHarness(home=self.home, world_model=provider)
         self.addCleanup(h.close)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         workspace = Path(self.home) / "ws3"
@@ -581,19 +581,19 @@ class TestExecutionReplan(HarnessTestCase):
         # NOT a change and must still execute. The candidate supplies the
         # solver, so the caller does not re-type it.
         same = dict(TASK, model="maximize x subject to C1: x <= 1")
-        record = h.execute(same, None, str(script), str(workspace),
+        record = execute_scored(h,same, None, str(script), str(workspace),
                            solver=None, episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         self.assertTrue(record.quality["feasible"])
         self.assertEqual(record.strategy_id, "S01")
         self.assertEqual(record.solver["name"] or "highs", "highs")
         # A REAL change to the task IS a different problem: refused.
-        prediction2 = h.predict_strategy_outcome(
+        prediction2 = planned_prediction(h,
             dict(TASK), {"action_type": "execute_strategy",
                          "strategy_id": "S01", "solver": "highs"}, "ep2", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         changed = dict(TASK, description="an entirely different problem")
         with self.assertRaises(ValueError) as caught:
-            h.execute(changed, None, str(script), str(workspace),
+            execute_scored(h,changed, None, str(script), str(workspace),
                       solver=None, episode_id="ep2",
                       prediction_id=prediction2.prediction_id)
         self.assertIn("problem changed", str(caught.exception))
@@ -617,7 +617,7 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["limits"]["cost_weights"],
                          {"solver_runtime_s": 1.0})
         self.assertEqual(plan["suggested"]["strategy_id"], "S02")
@@ -628,7 +628,7 @@ class TestReviewFixes(HarnessTestCase):
         # Explicit override wins over inheritance.
         plan2 = h.plan_next(TASK, "ep1",
                             candidates=[_spec("S01"), _spec("S02")],
-                            limits={"horizon": 1, "cost_weights": {}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                            limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, "cost_weights": {}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan2["limits"]["cost_weights"], {})
         self.assertEqual(plan2["suggested"]["strategy_id"], "S01")
 
@@ -642,7 +642,7 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["suggested"]["strategy_id"], "S01")
         scores = {c["action_spec"]["strategy_id"]: c["score"]
                   for c in plan["candidates"]}
@@ -659,7 +659,7 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h2.close)
         plan2 = h2.plan_next(TASK, "ep1",
                              candidates=[_spec("S03"), _spec("S04")],
-                             limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                             limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan2["suggested"]["strategy_id"], "S03")
         scores2 = {c["action_spec"]["strategy_id"]: c["score"]
                    for c in plan2["candidates"]}
@@ -681,12 +681,12 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h.close)
         plan_ab = h.plan_next(TASK, "ep1",
                               candidates=[_spec("S01"), _spec("S02")],
-                              limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                              limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan_ab["suggested"]["strategy_id"], "S02")
         for ordering in (("S01", "S02", "S03"), ("S03", "S02", "S01")):
             plan = h.plan_next(TASK, "ep1",
                                candidates=[_spec(s) for s in ordering],
-                               limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                               limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
             self.assertEqual(plan["suggested"]["strategy_id"], ordering[0])
             scores = {c["action_spec"]["strategy_id"]: c["score"] for c in plan["candidates"]}
             self.assertTrue(all(s["cost_normalized"] is None for s in scores.values()))
@@ -708,7 +708,7 @@ class TestReviewFixes(HarnessTestCase):
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02"),
                                        _spec("S03")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertNotEqual(plan["status"], "ok")
         self.assertEqual(plan["budget_confirmation"], "exceeded")
         self.assertIsNone(plan["suggested"])
@@ -730,7 +730,7 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h.close)
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, "time_budget_s": 0.1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, "time_budget_s": 0.1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "truncated")
         self.assertIn("time", plan["truncation_reason"])
 
@@ -752,7 +752,7 @@ class TestReviewFixes(HarnessTestCase):
         # before the provider is reached on a busy host.
         with patch("or_harness.api.time.monotonic", side_effect=lambda: clock[0]):
             plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")],
-                               limits={"horizon": 1, "time_budget_s": 0.01, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                               limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, "time_budget_s": 0.01, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "truncated")
         self.assertIn("time budget", plan["truncation_reason"])
         self.assertEqual(plan["model_calls_made"], 1)
@@ -776,7 +776,7 @@ class TestReviewFixes(HarnessTestCase):
         with patch("or_harness.api.time.monotonic", side_effect=lambda: clock[0]):
             plan = h.plan_next(TASK, "ep1",
                                candidates=[_spec("S01"), _spec("S02")],
-                               limits={"horizon": 1, "time_budget_s": 0.08, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                               limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, "time_budget_s": 0.08, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertEqual(plan["status"], "truncated")
         self.assertEqual(plan["model_calls_made"], 2)
 
@@ -788,7 +788,7 @@ class TestReviewFixes(HarnessTestCase):
         self.addCleanup(h.close)
         foreign = _spec("S01", task_id="other", episode_id="other_ep")
         plan = h.plan_next(TASK, "ep1", candidates=[foreign, _spec("S01")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         self.assertIn("identity conflict", plan["truncation_reason"])
         self.assertEqual(len(plan["candidates"]), 1)
         self.assertEqual(
@@ -812,7 +812,7 @@ class TestReviewFixes(HarnessTestCase):
                       beta=1.0, cost_weights={"solver_runtime_s": 1.0})
         plan = h.plan_next(TASK, "ep1",
                            candidates=[_spec("S01"), _spec("S02")],
-                           limits={"horizon": 1, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
+                           limits={"horizon": 1, "cost_scales":{"solver_runtime_s":100.0,"llm_tokens":1000.0}, 'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         decision_id = plan["decision_action_id"]
         h.close()
 
@@ -834,7 +834,7 @@ class TestReviewFixes(HarnessTestCase):
         self.assertIsNotNone(h2.read_prediction(first["prediction_id"]))
         # The frozen comparison scores are preserved as computed then.
         self.assertEqual(first["score"]["benefit_value"], 0.9)
-        self.assertEqual(first["score"]["cost_normalized"], 1.0)
+        self.assertAlmostEqual(first["score"]["cost_normalized"], __import__("math").log1p(10)/__import__("math").log1p(100),places=6)
         # The shared input context is referenced, and still resolvable.
         self.assertTrue(outcome.get("prediction_context_id"))
         self.assertIsNotNone(

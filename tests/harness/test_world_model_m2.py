@@ -13,6 +13,8 @@ Covers the eight verification requirements:
 Test doubles are labelled as such. No real LLM call is made in this suite.
 """
 
+from decision_fixtures import execute_scored
+
 import http.server
 import json
 import os
@@ -332,7 +334,7 @@ class TestShadowLoop(HarnessTestCase):
         self.assertEqual(prediction.call_cost.llm_tokens, 150.0)
         self.assertIn("llm_tokens", prediction.call_cost.measured_dims())
         # 2. The real action runs (existing path, unchanged).
-        record = h.execute(task, "S01", str(self._solve_script()),
+        record = execute_scored(h,task, "S01", str(self._solve_script()),
                            self.home, solver="highs", episode_id="ep1")
         # 3. Bind + compare.
         h.bind_outcome(prediction.prediction_id, record.action_id)
@@ -394,7 +396,7 @@ class TestShadowLoop(HarnessTestCase):
         task = _task()
         prediction = h.predict_outcome(task, _spec(), "ep1")
         # Execute a DIFFERENT strategy.
-        record = h.execute(task, "S04", str(self._solve_script("s4.py")),
+        record = execute_scored(h,task, "S04", str(self._solve_script("s4.py")),
                             self.home, solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, record.action_id)
         prediction = h.compare_prediction(prediction.prediction_id)
@@ -408,7 +410,7 @@ class TestShadowLoop(HarnessTestCase):
         h = self._harness(provider)
         task = _task()
         prediction = h.predict_outcome(task, _spec(), "ep1")
-        record = h.execute(task, "S01", str(self._solve_script()),
+        record = execute_scored(h,task, "S01", str(self._solve_script()),
                            self.home, solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, record.action_id)
         first = h.compare_prediction(prediction.prediction_id)
@@ -532,7 +534,7 @@ class TestBugfixRegressions(HarnessTestCase):
             task_id="taskA"), "ep1")
         # Execute task B (same strategy/solver — only the task differs).
         task_b = _task("taskB")
-        record = h.execute(task_b, "S01", str(self._solve_script()),
+        record = execute_scored(h,task_b, "S01", str(self._solve_script()),
                            self.home, solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, record.action_id)
         prediction = h.compare_prediction(prediction.prediction_id)
@@ -545,7 +547,7 @@ class TestBugfixRegressions(HarnessTestCase):
         provider = _ScriptedProvider(_GOOD_PAYLOAD)
         h = self._harness(provider)
         task = _task()
-        record = h.execute(task, "S01", str(self._solve_script()),
+        record = execute_scored(h,task, "S01", str(self._solve_script()),
                             self.home, solver="highs", episode_id="ep1")
         # Predict AFTER the execution already happened.
         prediction = h.predict_outcome(task, _spec(), "ep1")
@@ -560,7 +562,7 @@ class TestBugfixRegressions(HarnessTestCase):
         provider = _ScriptedProvider(_GOOD_PAYLOAD)
         h = self._harness(provider)
         task = _task()
-        record = h.execute(task, "S01", str(self._solve_script()),
+        record = execute_scored(h,task, "S01", str(self._solve_script()),
                             self.home, solver="highs", episode_id="ep1")
         # A task-scope spec against an attempt-scope execution.
         prediction = h.predict_outcome(task, _spec(

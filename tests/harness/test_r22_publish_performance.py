@@ -18,6 +18,9 @@ C. ``_task_end_boundary`` scoped by ``episode_id`` alone, so a second task
 The tests COUNT calls / decodes and compare results on a fixed fixture, so
 they do not depend on machine speed.
 """
+from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
+
+
 import os
 import sys
 import unittest
@@ -102,7 +105,7 @@ class ReproCase(HarnessTestCase):
             "    json.dump({'status': 'optimal', 'objective_value': 100,"
             " 'objective_bound': 100, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        rec = self.h.execute(task, strategy, str(work / "solve.py"),
+        rec = import_legacy_execution(self.h,task, strategy, str(work / "solve.py"),
                              str(work), solver="highs", episode_id=episode_id)
         self.h.record(rec)
         return rec
@@ -111,12 +114,12 @@ class ReproCase(HarnessTestCase):
         for i in range(n_ep):
             tid = f"t{i}"
             task = _task(tid)
-            preds = [self.h.predict_strategy_outcome(
+            preds = [planned_prediction(self.h,
                 task, {"action_type": "execute_strategy",
                        "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'}) for _ in range(per)]
             for a in range(per):
                 rec = self.solve(task, episode_id="ep1")
-                self.h.bind_strategy_outcome(preds[a].prediction_id,
+                bind_legacy(self.h,preds[a].prediction_id,
                                              rec.action_id)
             if declared_budget:
                 self.h.declare_budget(tid, {"llm_tokens": 1_000_000}, "ep1")
@@ -166,11 +169,11 @@ class TestBudgetLedgerReadsPerTask(ReproCase):
         unattributed report."""
         task = _task("t0")
         # An execution WITH an episode linkage.
-        pred = self.h.predict_strategy_outcome(
+        pred = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         rec = self.solve(task, episode_id="ep1")
-        self.h.bind_strategy_outcome(pred.prediction_id, rec.action_id)
+        bind_legacy(self.h,pred.prediction_id, rec.action_id)
         # An execution with NO action linkage (directly recorded).
         rec2 = self.solve(task, episode_id="ep1")  # has a linkage too
         from or_harness.core.schema import (

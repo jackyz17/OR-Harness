@@ -1389,6 +1389,10 @@ class CandidateRef:
             episode_id=getattr(spec, "episode_id", None),
             scope=resolved,
             scope_basis=basis,
+            window_id=getattr(spec,'window_id',None),
+            preconditions=list(getattr(spec,'preconditions',[]) or []),
+            expected_scope=list(getattr(spec,'expected_scope',[]) or []),
+            stop_conditions=list(getattr(spec,'stop_conditions',[]) or []),
         )
 
 

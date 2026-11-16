@@ -477,7 +477,7 @@ def conditional_cost_statistics(samples, min_samples=5):
             "counting_unit": "deduplicated actual execution window; errors count predictions"}
 
 
-def select_cost_evidence(summary, context, candidate):
+def select_cost_evidence(summary, context, candidate, *, max_groups=4):
     """Select applicable history BEFORE generic request-size trimming."""
     current = cost_conditions(context, candidate)
     audit = (summary or {}).get("conditional_cost") or {}
@@ -533,8 +533,58 @@ def select_cost_evidence(summary, context, candidate):
         "current_conditions": current,
         "candidate_work": {"steps_ref": "candidate.method.steps",
                            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"},
-        "reference_ranges": groups[:4], "cases": cases,
+        "reference_ranges": groups[:max_groups] if max_groups is not None else groups, "cases": cases,
         "missing": ([] if host.get("model") else ["execution-host model identity unavailable"]) +
                    (["decision phase unavailable"] if current.get("phase") == "unknown" else []),
         "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
         "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."}
+
+
+def decision_cost_scales(context, candidates, configured=None):
+    """Resolve shared positive peaks from configuration or frozen actuals.
+
+    History must apply to every candidate's solving conditions. Neither current
+    forecasts nor model-call spend from this decision contribute a peak.
+    """
+    from or_harness.world_model.conditions import digest
+
+    configured = configured or {}
+    if not isinstance(configured, dict):
+        raise ValueError("cost_scales must be a dimension-to-peak object")
+    views = [select_cost_evidence(context.strategy_calibration, context, candidate,
+                                  max_groups=None)
+             for candidate in candidates]
+    groups_by_candidate = [
+        {digest(group["conditions"]): group for group in view["reference_ranges"]}
+        for view in views]
+    common = (set.intersection(*(set(groups) for groups in groups_by_candidate))
+              if groups_by_candidate else set())
+    groups = [groups_by_candidate[0][key] for key in sorted(common)]
+    result = {}
+    for dimension in COST_DIMENSIONS:
+        scope = ("attempt_sandbox" if dimension == "latency_s"
+                 else "remaining_to_task_end")
+        if dimension in configured:
+            value = configured[dimension]
+            info = copy.deepcopy(value) if isinstance(value, dict) else {"peak": value}
+            result[dimension] = {
+                **info, "source": "explicit_plan_limits",
+                "reference": info.get("reference") or "limits.cost_scales." + dimension,
+                "configuration_ref": "limits.cost_scales." + dimension,
+                "as_of": context.created_at}
+            continue
+        facts = [group for group in groups
+                 if number((group.get("dimensions") or {}).get(dimension, {}).get("max"))
+                 is not None]
+        peaks = [group["dimensions"][dimension]["max"] for group in facts]
+        if peaks and max(peaks) > 0:
+            result[dimension] = {
+                "peak": max(peaks), "scope": scope,
+                "source": "pre_decision_measured_history",
+                "observation_rule_version": COST_OBSERVATION_VERSION,
+                "as_of": context.created_at,
+                "n": sum(group["dimensions"][dimension]["n"] for group in facts),
+                "source_refs": sorted({ref for group in facts
+                                       for ref in group.get("source_refs") or []}),
+                "conditions": [copy.deepcopy(group["conditions"]) for group in facts]}
+    return result

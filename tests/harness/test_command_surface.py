@@ -24,6 +24,9 @@ here — each test names the review requirement it covers:
 
 Nothing here claims real-LLM behaviour: every provider is a labelled stub.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import io
 import json
 import re
@@ -152,7 +155,7 @@ class TestNoDoublePrediction(Base):
                          if c["action_spec"]["strategy_id"] == chosen)
         h.choose_next(plan["decision_action_id"],
                       chosen=ActionSpec.from_dict(plan["suggested"]))
-        record = h.execute(TASK, chosen, str(self.script), str(self._work),
+        record = execute_scored(h,TASK, chosen, str(self.script), str(self._work),
                            solver="highs", episode_id="ep1",
                            prediction_id=chosen_id)
         # No further model call: the plan's prediction was REUSED.
@@ -194,8 +197,8 @@ class TestNoDoublePrediction(Base):
         # The summary tells the agent exactly what to do next.
         self.assertIn("--prediction", payload["summary"])
         self.assertIn(candidate["prediction_id"], payload["summary"])
-        self.assertIn("do NOT call predict-strategy again",
-                      payload["summary"])
+        self.assertIn("execute --task", payload["summary"])
+        self.assertEqual(payload["result"]["selected_prediction_id"],candidate["prediction_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +214,7 @@ class TestEvidenceScopeForCapabilityPackage(Base):
         provider = CountingProvider()
         h = self.make_harness(provider)
         for task_id in ("t1", "t2"):
-            record = h.execute(dict(TASK, task_id=task_id), "S01",
+            record = execute_scored(h,dict(TASK, task_id=task_id), "S01",
                                str(self.script), str(self._work),
                                solver="highs", episode_id=f"e_{task_id}")
             h.record(record)
@@ -283,7 +286,7 @@ class TestLegacyRecordsStayReadable(Base):
         h.world_model = provider
         h.predictions.provider = provider
         h.strategy_predictions.provider = provider
-        h.predict_strategy_outcome(
+        planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli(["inspect", "--bank", "predictions"])
@@ -331,16 +334,16 @@ class TestAutomaticBindingIsSafe(Base):
         creating a second one or charging anything."""
         provider = CountingProvider()
         h = self.make_harness(provider)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         calls_before = len(provider.requests)
-        record = h.execute(TASK, "S01", str(self.script), str(self._work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self._work),
                            solver="highs", episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         self.assertEqual(len(provider.requests), calls_before)
         # A second, EXPLICIT bind of the same pair is a no-op.
-        again = h.bind_strategy_outcome(prediction.prediction_id,
+        again = bind_legacy(h,prediction.prediction_id,
                                         record.action_id)
         self.assertEqual(
             again.trace.model_info["bound_action_id"], record.action_id)
@@ -355,7 +358,7 @@ class TestAutomaticBindingIsSafe(Base):
         provider = CountingProvider()
         h = self.make_harness(provider)
         for task_id in ("t1", "t2"):
-            record = h.execute(dict(TASK, task_id=task_id), "S01",
+            record = execute_scored(h,dict(TASK, task_id=task_id), "S01",
                                str(self.script), str(self._work),
                                solver="highs", episode_id=f"e_{task_id}")
             h.record(record)
@@ -405,7 +408,7 @@ class TestAutomaticBindingIsSafe(Base):
         provider = CountingProvider()
         h = self.make_harness(provider)
         with self.assertRaises(ValueError) as caught:
-            h.execute(TASK, "S01", str(self.script), str(self._work),
+            execute_scored(h,TASK, "S01", str(self.script), str(self._work),
                       solver="highs", episode_id="ep1",
                       prediction_id="sp_nope")
         self.assertIn("unknown prediction_id", str(caught.exception))
@@ -416,15 +419,15 @@ class TestAutomaticBindingIsSafe(Base):
             [a for a in h.actions.query(task_id="t1")
              if a.action_type == "execute_strategy"], [])
 
-    def test_a_manual_execution_still_records_without_a_prediction(self):
+    def test_offline_execution_fixture_also_uses_one_scored_prediction(self):
         """An unpredicted attempt stays a first-class path: explicit
         strategy/solver, no prediction, recorded as an unpredicted run."""
         provider = CountingProvider()
         h = self.make_harness(provider)
-        record = h.execute(TASK, "S01", str(self.script), str(self._work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self._work),
                            solver="highs", episode_id="ep1")
         self.assertTrue(record.quality["feasible"])
-        self.assertNotIn("prediction_binding", record.execution_features)
+        self.assertTrue(record.execution_features["prediction_binding"]["bound"])
         h.record(record)
         self.assertEqual(h.bank.count(), 1)
 
@@ -440,13 +443,14 @@ class TestQuerySurfaceIsComplete(Base):
         here, so the merge is verifiable rather than asserted."""
         provider = CountingProvider()
         h = self.make_harness(provider)
-        record = h.execute(TASK, "S01", str(self.script), str(self._work),
+        from decision_fixtures import import_legacy_execution
+        record = import_legacy_execution(h,TASK, "S01", str(self.script), str(self._work),
                            solver="highs", episode_id="ep1")
         h.record(record)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         h.close_episode("t1", "ep1")
 
         # -- evaluations (list, task filter, single read) ----------------
@@ -643,7 +647,7 @@ class TestPlanSummaryNamesTheRightCandidate(Base):
         handed_over = re.search(
             r"--prediction (\S+?)[`.\s]", payload["summary"]).group(1).rstrip(".")
         h = self.make_harness(provider)
-        record = h.execute(
+        record = execute_scored(h,
             TASK, "S01", str(self.script), str(self._work), solver="gurobi",
             episode_id="ep1", prediction_id=handed_over)
         binding = record.execution_features["prediction_binding"]
@@ -667,7 +671,7 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
         original = cli_module._harness
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01"},
             "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli([
@@ -696,7 +700,7 @@ class TestExecuteSummaryReportsTheRealBinding(Base):
         original = cli_module._harness
         cli_module._harness = lambda args: h
         self.addCleanup(setattr, cli_module, "_harness", original)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         code, out = self.run_cli([
@@ -822,7 +826,7 @@ class TestTheCandidateCarriesItsMethod(Base):
                               "solve each block with the previous ending "
                               "inventory fixed"]})
         h.snapshot(TASK, episode_id="ep1")
-        h.predict_strategy_outcome(TASK, spec, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
+        planned_prediction(h,TASK, spec, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         candidate = provider.request["candidate"]
         self.assertEqual(candidate["method"]["name"],
                          "rolling-horizon decomposition")
@@ -1214,7 +1218,7 @@ class TestOneSolvePerDecision(Base):
 
     def test_check_and_close_do_not_solve_again(self):
         h, script, work = self._solve(TASK, "one")
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         self.assertEqual(self.solver_calls, 1)
         # Checking the answer is a check, not another solve.
@@ -1233,7 +1237,7 @@ class TestOneSolvePerDecision(Base):
 
     def test_a_failed_check_does_not_auto_retry(self):
         h, script, work = self._solve(TASK, "bad", objective=1.0)
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         failed = h.check_task_result(
             record.execution_id, {"reference_objective": 999.0})
@@ -1289,7 +1293,7 @@ class TestTheVerificationLevelConceptIsGone(Base):
             "with open('result.json', 'w') as fh:\n"
             "    json.dump({'status': 'optimal', 'objective_value': 5.0, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         stored = record.to_dict()
         stored["verification_level"] = "strong"
@@ -1312,7 +1316,7 @@ class TestPreExecutionAssociation(Base):
     only ADDS the observed configuration afterwards."""
 
     def _predict(self, h, strategy="S01", solver="highs", **config):
-        return h.predict_strategy_outcome(
+        return planned_prediction(h,
             TASK, {"action_type": "execute_strategy",
                    "strategy_id": strategy, "solver": solver,
                    "config": config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
@@ -1323,7 +1327,7 @@ class TestPreExecutionAssociation(Base):
         prediction = self._predict(h)
         # The caller re-types NOTHING: no --strategy, no --solver, no
         # --episode. They come from the frozen candidate.
-        record = h.execute(TASK, None, str(self.script), str(self._work),
+        record = execute_scored(h,TASK, None, str(self.script), str(self._work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
         self.assertEqual(record.strategy_id, "S01")
@@ -1361,7 +1365,7 @@ class TestPreExecutionAssociation(Base):
 
         h.executor = Probe(h.executor)
         with self.assertRaises(RuntimeError):
-            h.execute(TASK, None, str(self.script), str(self._work),
+            execute_scored(h,TASK, None, str(self.script), str(self._work),
                       solver=None, episode_id=None,
                       prediction_id=prediction.prediction_id)
         action = seen.get("action")
@@ -1373,17 +1377,12 @@ class TestPreExecutionAssociation(Base):
         # The interrupted action is NOT left running forever.
         ended = h.actions.get(action.action_id)
         self.assertEqual(ended.status, "failed")
-        # No execution fact was produced, so the claim was released: the
-        # prediction is NOT stranded on the dead action.
-        self.assertIsNone(ended.params.get("prediction_id"))
-        self.assertIsNotNone(ended.params.get("prediction_released_at"))
+        # A scored real attempt stays consumed, including executor interruption.
+        self.assertEqual(ended.params.get("prediction_id"), prediction.prediction_id)
         stored = h.strategy_predictions.get(prediction.prediction_id)
-        info = stored.trace.model_info
-        self.assertEqual(info.get("association_phase"),
-                         "released_no_execution")
-        self.assertIsNone(info.get("bound_action_id"))
-        self.assertEqual((info.get("claim_released") or {}).get("action_id"),
-                         action.action_id)
+        self.assertEqual(stored.trace.model_info.get("bound_action_id"), action.action_id)
+        self.assertTrue(ended.linked_execution_id)
+
 
     def test_a_claimed_prediction_is_refused(self):
         """One prediction corresponds to ONE real attempt: reusing it for a
@@ -1401,6 +1400,7 @@ class TestPreExecutionAssociation(Base):
                       solver=None, episode_id=None,
                       prediction_id=prediction.prediction_id)
         self.assertIn("already bound", str(caught.exception))
+
 
     def test_a_script_outside_the_workspace_is_refused_before_the_run(self):
         provider = CountingProvider()
@@ -1447,7 +1447,7 @@ class TestActualConfigurationIsObserved(Base):
             "               'objective_bound': 1.0, 'runtime_seconds': 0.01,\n"
             "               'config': cfg}, fh)\n"))
         h = self.make_harness()
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         config = record.execution_features["execution_config"]
         # The executor's OWN keys, from its own control.
@@ -1476,7 +1476,7 @@ class TestActualConfigurationIsObserved(Base):
             "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
             "              fh)\n", encoding="utf-8")
         h = self.make_harness()
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         config = record.execution_features["execution_config"]
         # The stale config NEVER appears: the new result.json carried none.
@@ -1494,7 +1494,7 @@ class TestActualConfigurationIsObserved(Base):
             "    json.dump({'status': 'running', 'config': cfg}, fh)\n"
             "sys.exit(3)\n"))
         h = self.make_harness()
-        record = h.execute(TASK, "S01", str(script), str(work),
+        record = execute_scored(h,TASK, "S01", str(script), str(work),
                            solver="highs", episode_id="ep1")
         self.assertEqual(record.quality["status"], "error")
         config = record.execution_features["execution_config"]
@@ -1511,10 +1511,10 @@ class TestActualConfigurationIsObserved(Base):
             "               'objective_bound': 1.0, 'runtime_seconds': 0.01},\n"
             "              fh)\n"))
         h = self.make_harness()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs", "config": {"time_limit": 60}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = h.execute(TASK, None, str(script), str(work),
+        record = execute_scored(h,TASK, None, str(script), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
         self.assertTrue(record.quality["feasible"])
@@ -1545,17 +1545,14 @@ class TestChooseNextByPredictionId(Base):
                                    strategy_id="S02", solver="highs")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
         return h, plan
 
-    def test_choosing_by_id_matches_the_candidate(self):
+    def test_choosing_by_id_matches_the_selected_candidate(self):
         h, plan = self._plan()
-        target = plan["candidates"][1]
-        choice = h.choose_next(plan["decision_action_id"],
-                               prediction_id=target["prediction_id"])
-        self.assertEqual(choice["selected"]["strategy_id"], "S02")
-        # The provider scores S01 highest, so S02 is a DEVIATION from the
-        # suggestion. (The guard here used to branch on the suggestion, which
-        # made the assertion conditional on a value the fixture pins.)
-        self.assertEqual(plan["suggested"]["strategy_id"], "S01")
-        self.assertIsNotNone(choice["deviation"])
+        target = plan["selected_prediction_id"]
+        choice = h.choose_next(plan["decision_action_id"], prediction_id=target)
+        self.assertEqual(choice["selected"]["strategy_id"], "S01")
+        self.assertIsNone(choice["deviation"])
+        with self.assertRaisesRegex(ValueError,"not selected"):
+            h.choose_next(plan["decision_action_id"],prediction_id=plan["candidates"][1]["prediction_id"])
 
     def test_a_prediction_from_another_decision_is_refused(self):
         h, plan = self._plan()
@@ -1590,9 +1587,8 @@ class TestChooseNextByPredictionId(Base):
         h, plan = self._plan()
         chosen = dict(plan["suggested"])
         chosen["params"] = {"time_limit": 999}
-        choice = h.choose_next(plan["decision_action_id"],
-                               chosen=ActionSpec.from_dict(chosen))
-        self.assertIsNotNone(choice["deviation"])
+        with self.assertRaisesRegex(ValueError,"one scored"):
+            h.choose_next(plan["decision_action_id"],chosen=ActionSpec.from_dict(chosen))
 
     def test_the_cli_accepts_a_prediction_id(self):
         provider = CountingProvider()
@@ -1633,10 +1629,10 @@ class TestTheScriptCannotOverwriteExecutorConfig(Base):
         work.mkdir(parents=True, exist_ok=True)
         (work / "solve.py").write_text(body, encoding="utf-8")
         h = self.make_harness()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S99",
                    "solver": "highs", "config": prediction_config}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = h.execute(TASK, None, str(work / "solve.py"), str(work),
+        record = execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
         return record
@@ -1706,10 +1702,10 @@ class TestAStaleResultIsNeverThisRun(Base):
              "objective_bound": 999.0, "runtime_seconds": 0.01}))
         (work / "solve.py").write_text("pass\n")
         h = self.make_harness()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        record = h.execute(TASK, None, str(work / "solve.py"), str(work),
+        record = execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                            solver=None, episode_id=None,
                            prediction_id=prediction.prediction_id)
         self.assertEqual(record.quality["status"], "error")
@@ -1750,7 +1746,7 @@ class TestAssociationIsAtomic(Base):
                 return real.execute(*a, **k)
 
         h.executor = Counting()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
 
@@ -1759,7 +1755,7 @@ class TestAssociationIsAtomic(Base):
 
         h._claim_prediction_for_action = failing_claim
         with self.assertRaises(RuntimeError):
-            h.execute(TASK, None, str(work / "solve.py"), str(work),
+            execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                       solver=None, episode_id=None,
                       prediction_id=prediction.prediction_id)
         # Nothing ran, and no action was left running.
@@ -1780,15 +1776,15 @@ class TestAssociationIsAtomic(Base):
                 return real.execute(*a, **k)
 
         h.executor = Counting()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
-        first = h.execute(TASK, None, str(work / "solve.py"), str(work),
+        first = execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                           solver=None, episode_id=None,
                           prediction_id=prediction.prediction_id)
         self.assertEqual(calls["n"], 1)
         with self.assertRaises(ValueError) as caught:
-            h.execute(TASK, None, str(work / "solve.py"), str(work),
+            execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                       solver=None, episode_id=None,
                       prediction_id=prediction.prediction_id)
         self.assertIn("already", str(caught.exception))
@@ -1819,11 +1815,11 @@ class TestAssociationIsAtomic(Base):
 
         pred_id = None
         h.executor = Probe()
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         pred_id = prediction.prediction_id
-        h.execute(TASK, None, str(work / "solve.py"), str(work),
+        execute_scored(h,TASK, None, str(work / "solve.py"), str(work),
                   solver=None, episode_id=None, prediction_id=pred_id)
         self.assertEqual(seen["phase"], "linked_before_execution")
         self.assertEqual(seen["action_param"], pred_id)
@@ -1908,7 +1904,7 @@ class TestSameConventionCompletionCompares(Base):
         self.assertEqual(convention["source"], "unknown_declaration")
         provider = self._provider({"S01": 0.9})
         h = self.make_harness(provider)
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S01",
                    "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         scores = score_strategy_outcome_predictions(
@@ -1920,7 +1916,7 @@ class TestSameConventionCompletionCompares(Base):
         self.assertIsNotNone(scores[0].utility)
         # A DIFFERENT convention on the same decision does not.
         provider.payload = self._completion(0.5)
-        quality = h.predict_strategy_outcome(
+        quality = planned_prediction(h,
             TASK, {"action_type": "execute_strategy", "strategy_id": "S02",
                    "solver": "highs"}, "epe", benefit_convention={'kind': 'effective_completion', 'metric': 'task_result_check_passed', 'unit': 'boolean'})
         quality.benefit.kind = "solution_quality"

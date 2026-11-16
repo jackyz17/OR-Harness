@@ -20,6 +20,8 @@ usable as a measured fact. This file pins the ONE rule
 6. **A host report records ``provider_usage``**, not whatever source the
    caller's default was.
 """
+
+from decision_fixtures import execute_scored
 import json
 import os
 import sys
@@ -398,7 +400,7 @@ class TestCliBackfillChannel(HarnessTestCase):
         h = ORHarness(home=self.home, embedding=LocalHashEmbeddingBackend())
         self.addCleanup(h.close)
         work = self._solve("late")
-        record = h.execute({"task_id": "t1", "family": "routing", "spec": {}},
+        record = execute_scored(h,{"task_id": "t1", "family": "routing", "spec": {}},
                            "S01", str(work / "solve.py"), str(work),
                            solver="highs", episode_id="ep1")
         h.record(record)

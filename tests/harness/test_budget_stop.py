@@ -14,6 +14,8 @@ Pins the behaviours this round introduced:
 4. ``close-episode`` proceeds after a recorded interruption instead of being
    blocked by a still-"running" action.
 """
+
+from decision_fixtures import execute_scored
 import os
 import sys
 import unittest
@@ -208,7 +210,7 @@ class TestInterruptedCloseout(HarnessTestCase):
         self.addCleanup(h.close)
         h.record_session("T", "e1", reason="host stop", cancelled=True)
         with self.assertRaises(BudgetExhausted):
-            h.execute({"task_id": "T", "family": "routing"}, "S",
+            execute_scored(h,{"task_id": "T", "family": "routing"}, "S",
                       "solve.py", ".", solver="highs", episode_id="e1")
 
     def test_cli_session_and_gate_surface(self):
@@ -237,7 +239,7 @@ class TestInterruptedCloseout(HarnessTestCase):
                               "--episode", "e1"])
         self.assertEqual(code2, 2)
         out = json.loads(buf2.getvalue())
-        self.assertIn("task stopped before this attempt started",
+        self.assertIn("selected scored prediction",
                       out["summary"])
 
 

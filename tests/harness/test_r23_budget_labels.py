@@ -27,6 +27,8 @@ pins the fix, one behaviour per test:
 Every test uses a temporary home and the hermetic local embedding backend;
 the running experiment database is never touched.
 """
+
+from decision_fixtures import bind_legacy, planned_prediction
 import os
 import sys
 import unittest
@@ -150,7 +152,7 @@ class R23Case(HarnessTestCase):
         if scope != "attempt":
             candidate["scope"] = scope
             candidate["window_id"] = window_id
-        return self.h.predict_strategy_outcome(task, candidate, episode)
+        return planned_prediction(self.h,task, candidate, episode)
 
 
 class TestBudgetChannelScoring(R23Case):
@@ -161,7 +163,7 @@ class TestBudgetChannelScoring(R23Case):
         self.h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
         prediction = self.predict(task)
         record, action_id = self.record_execution(task, llm_tokens=5000)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         scored = {e["event"]: e for e in risk["scored"]}
@@ -178,7 +180,7 @@ class TestBudgetChannelScoring(R23Case):
         prediction = self.predict(task, scope="strategy_window",
                                   window_id="win::t1::ep1::S04")
         record, action_id = self.record_execution(task, llm_tokens=5000)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         scored = {e["event"]: e for e in risk["scored"]}
@@ -195,7 +197,7 @@ class TestBudgetChannelScoring(R23Case):
         # llm_tokens is measured and over; tool_calls is never measured.
         self.h.declare_budget("t1", {"llm_tokens": 10, "tool_calls": 10},
                               "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["observed_units"]["budget_exhausted"]["label"],
@@ -210,7 +212,7 @@ class TestBudgetChannelScoring(R23Case):
         # tool_calls declared but never measured.
         self.h.declare_budget("t1", {"llm_tokens": 10000, "tool_calls": 100},
                               "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["scored"], [])
@@ -226,7 +228,7 @@ class TestBudgetChannelScoring(R23Case):
         self.h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
         prediction = self.predict(task)
         record, action_id = self.record_execution(task, llm_tokens=5)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         scored = {e["event"]: e for e in risk["scored"]}
@@ -245,7 +247,7 @@ class TestLabelDiscrimination(R23Case):
         # Only a per-attempt latency budget is declared: no episode
         # dimension to exhaust.
         self.h.declare_budget("t1", {"latency_s": 1.0}, "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["scored"], [])
@@ -263,7 +265,7 @@ class TestLabelDiscrimination(R23Case):
         record, action_id = self.record_execution(task, llm_tokens=5)
         self.h.declare_budget("t1", {"llm_tokens": 10000, "latency_s": 999},
                               "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["observed_units"]["budget_exhausted"]["label"],
@@ -282,7 +284,7 @@ class TestLabelDiscrimination(R23Case):
         self.h.record_session("t1", "ep1",
                               reason="tool_calls reached 100",
                               cancelled=True, cost={"tool_calls": 100.0})
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1",
                                       terminal_state="budget_exhausted")
         risk = result["evaluations"][0]["risk"]
@@ -299,7 +301,7 @@ class TestLabelDiscrimination(R23Case):
         # A NON-cancelled stop (the process exited on its own, no cause).
         self.h.record_session("t1", "ep1", reason="process exited",
                               cancelled=False)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1", terminal_state="aborted")
         risk = result["evaluations"][0]["risk"]
         self.assertNotEqual(
@@ -315,7 +317,7 @@ class TestAttributionAndCounting(R23Case):
         record, action_id = self.record_execution(task, llm_tokens=5000)
         self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
         for prediction in predictions:
-            self.h.bind_strategy_outcome(prediction.prediction_id,
+            bind_legacy(self.h,prediction.prediction_id,
                                          action_id)
         self.h.close_episode("t1", "ep1")
         summary = self.h.calibration_summary(min_samples=1)
@@ -330,7 +332,7 @@ class TestAttributionAndCounting(R23Case):
             prediction = self.predict(task)
             record, action_id = self.record_execution(task, llm_tokens=5000)
             self.h.declare_budget(f"task{index}", {"llm_tokens": 10}, "ep1")
-            self.h.bind_strategy_outcome(prediction.prediction_id,
+            bind_legacy(self.h,prediction.prediction_id,
                                          action_id)
             self.h.close_episode(f"task{index}", "ep1")
         summary = self.h.calibration_summary(min_samples=1)
@@ -345,7 +347,7 @@ class TestAttributionAndCounting(R23Case):
         record, action_id = self.record_execution(task, strategy="S04",
                                                   llm_tokens=5000)
         self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
-        self.h.bind_strategy_outcome(chosen.prediction_id, action_id)
+        bind_legacy(self.h,chosen.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         # The evaluation is keyed by prediction id: the CHOSEN prediction is
         # evaluated; the unchosen candidate has no bound action and no real
@@ -377,7 +379,7 @@ class TestComparabilityAndVersions(R23Case):
         # The declaration CHANGED (100 -> 10). The current verdict answers a
         # different question.
         self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         scored = {e["event"] for e in risk["scored"]}
@@ -402,7 +404,7 @@ class TestComparabilityAndVersions(R23Case):
         prediction = self.predict(task)
         record, action_id = self.record_execution(task, llm_tokens=5000)
         self.h.declare_budget("t1", {"llm_tokens": 10}, "ep1")
-        self.h.bind_strategy_outcome(prediction.prediction_id, action_id)
+        bind_legacy(self.h,prediction.prediction_id, action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
         self.assertEqual(risk["event_vocabulary_version"], "wm-events/3")

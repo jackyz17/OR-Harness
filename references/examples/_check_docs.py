@@ -24,7 +24,7 @@ from or_harness.cli import build_parser  # noqa: E402
 AGENT_FACING_DOCS = [
     "SKILL.md", "README.md", "README_zh.md",
     "references/commands.md", "references/concepts.md",
-    "references/induction.md", "references/modeling.md",
+    "references/induction.md", "references/hplus.md", "references/modeling.md",
     "references/world_model_contract.md",
     "references/prediction_context.md", "references/strategy_outcome.md",
     "references/episode_closeout.md", "references/snapshot_lifecycle.md",
@@ -45,7 +45,7 @@ DOCUMENTED_EXAMPLES = [
     "references/examples/usage_accounting.py",
     "references/examples/capability_gain.py",
     "references/examples/capability_followup.py",
-    "references/examples/end_to_end.py",
+    "references/examples/end_to_end.py", "references/examples/unified_solving.py",
 ]
 
 #: (command, [flags]) that the docs tell an agent to use.
@@ -62,7 +62,7 @@ DOCUMENTED_FLAGS = [
     ("predict-strategy", ["--task", "--candidate", "--episode",
                           "--context", "--cir"]),
     ("execute", ["--task", "--strategy", "--code", "--workspace", "--solver",
-                 "--episode", "--prediction"]),
+                 "--episode", "--prediction", "--config"]),
     ("choose-next", ["--decision", "--prediction", "--chosen", "--rejected",
                      "--note"]),
     ("bind-strategy", ["--prediction", "--action"]),
@@ -85,11 +85,11 @@ DOCUMENTED_FLAGS = [
                              "--allow-descriptive"]),
     ("check-task", ["--check", "--episode"]),
     ("induce", ["--strategy", "--dry-run", "--force",
-                "--note", "--verify", "--relation"]),
+                "--note", "--verify", "--relation", "--review", "--induction-id"]),
     ("plan-next", ["--task", "--episode", "--candidates", "--horizon",
                    "--max-calls", "--time-budget", "--delta",
                    "--prediction-mode", "--benefit-kind", "--benefit-metric",
-                   "--benefit-unit"]),
+                   "--benefit-unit", "--cost-scales"]),
     ("induction-material", ["--strategy", "--task", "--limit", "--cursor",
                             "--related-top-k"]),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),

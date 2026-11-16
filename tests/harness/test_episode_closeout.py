@@ -25,6 +25,9 @@ What this file asserts, one behaviour per test class:
    episode's published summary (or its insufficient-evidence state) while
    the first episode's own stored context stays unchanged.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import json
 import os
 import sys
@@ -129,7 +132,8 @@ class M4Case(HarnessTestCase):
             f"{objective}, 'objective_bound': {objective}"
             + (f", 'mip_gap': {gap}" if gap is not None else "")
             + ", 'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        from decision_fixtures import import_legacy_execution
+        record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode_id)
         self.h.record(record)
         return record
@@ -144,7 +148,7 @@ class TestPreFixesHold(M4Case):
 
     def test_missing_episode_is_unknown_not_match(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         # Execute WITHOUT an episode id: the action records none.
@@ -157,10 +161,10 @@ class TestPreFixesHold(M4Case):
             "    json.dump({'status': 'optimal', 'objective_value': 1,"
             " 'objective_bound': 1, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(task, "S04", str(work / "solve.py"),
+        record = execute_scored(self.h,task, "S04", str(work / "solve.py"),
                                 str(work), solver="highs")
         self.h.record(record)
-        bound = self.h.bind_strategy_outcome(
+        bound = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         info = bound.trace.model_info
         self.assertIsNone(info.get("binding_mismatch"))
@@ -171,12 +175,12 @@ class TestPreFixesHold(M4Case):
     def test_missing_config_is_unknown_not_match(self):
         task = _task("t1")
         # The candidate declares a config key the action log never carries.
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04",
                    "config": {"time_limit": 60, "seed": 42}}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        bound = self.h.bind_strategy_outcome(
+        bound = bind_legacy(self.h,
             prediction.prediction_id, record.action_id)
         info = bound.trace.model_info
         self.assertIsNone(info.get("binding_mismatch"))
@@ -348,11 +352,11 @@ class TestCloseoutBoundaries(M4Case):
 
     def test_close_episode_evaluates_bound_predictions(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         self.assertFalse(result["already_closed"])
@@ -367,11 +371,11 @@ class TestCloseoutBoundaries(M4Case):
 
     def test_reclose_is_idempotent(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         first = self.h.close_episode("t1", "ep1")
         second = self.h.close_episode("t1", "ep1")
@@ -426,11 +430,11 @@ class TestCloseoutBoundaries(M4Case):
 
     def test_open_episode_does_not_calibrate(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         # NOT closed yet: the calibration summary must not count it.
         summary = self.h.calibration_summary()
@@ -447,11 +451,11 @@ class TestEvaluationEligibility(M4Case):
 
     def test_unexecuted_candidate_gets_no_label(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")  # a different strategy ran
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -471,11 +475,11 @@ class TestEvaluationEligibility(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -488,11 +492,11 @@ class TestEvaluationEligibility(M4Case):
         # Brier score IS recorded — but an event whose scope did NOT
         # complete stays unscored. Exercise both.
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -503,11 +507,11 @@ class TestEvaluationEligibility(M4Case):
 
     def test_cost_compared_only_where_both_sides_measured(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         cost = result["evaluations"][0]["cost"]
@@ -519,12 +523,12 @@ class TestEvaluationEligibility(M4Case):
 
     def test_prediction_is_not_rewritten_by_evaluation(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         frozen = json.dumps(prediction.to_dict(), sort_keys=True)
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         stored = self.h.get_strategy_outcome_prediction(
@@ -545,11 +549,11 @@ class TestEvaluationEligibility(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         interval = result["evaluations"][0]["interval"]
@@ -567,11 +571,11 @@ class TestCalibrationChannel(M4Case):
 
     def test_second_episode_reads_published_summary(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         # A NEW context (episode 2) carries the published summary CONTENT.
@@ -591,11 +595,11 @@ class TestCalibrationChannel(M4Case):
         task = _task("t1")
         ctx1 = self.h.build_prediction_context(task, "ep1")
         frozen = json.dumps(ctx1.to_dict(), sort_keys=True)
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         from or_harness.world_model.conditions import ContextExpired, get_value
@@ -609,11 +613,11 @@ class TestCalibrationChannel(M4Case):
 
     def test_active_episode_does_not_see_own_feedback(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         # Episode 1 is still OPEN: a context built now sees no calibration
         # from it (its own feedback is not yet closed).
@@ -623,11 +627,11 @@ class TestCalibrationChannel(M4Case):
 
     def test_min_samples_threshold_is_effective_and_recorded(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1", min_calibration_samples=1)
         summary = self.h.calibration_summary(min_samples=1)
@@ -651,11 +655,11 @@ class TestCalibrationChannel(M4Case):
 
     def test_calibration_separate_from_knowledge_reliability(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         ctx = self.h.build_prediction_context(_task("t1"), "ep2")
@@ -690,7 +694,7 @@ class TestWindowScopeAggregation(M4Case):
                           tag="w1")
         second = self.solve(task, strategy="S04", episode_id="ep1",
                           tag="w2")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      second.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -737,7 +741,7 @@ class TestWindowScopeAggregation(M4Case):
                    "window_id": "win::t1::ep1::S04::r1"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         second = self.solve(task, strategy="S04", episode_id="ep1",
                           tag="r1")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      second.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -769,7 +773,7 @@ class TestWindowScopeAggregation(M4Case):
         second = self.solve(task, strategy="S04", episode_id="ep1",
                           tag="m1")
         # Bind the ROUND-0 action to the ROUND-1 prediction: a mismatch.
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+        bound = bind_legacy(self.h,prediction.prediction_id,
                                             first.action_id)
         mismatch = bound.trace.model_info.get("binding_mismatch") or {}
         self.assertIn("window_round", mismatch)
@@ -784,13 +788,13 @@ class TestWindowScopeAggregation(M4Case):
         work.mkdir(parents=True, exist_ok=True)
         (work / "solve.py").write_text(
             "raise RuntimeError('model invalid')\n", encoding="utf-8")
-        failed = self.h.execute(task, "S04", str(work / "solve.py"),
+        failed = execute_scored(self.h,task, "S04", str(work / "solve.py"),
                                 str(work), solver="highs",
                                 episode_id="ep1")
         self.h.record(failed)
         repaired = self.solve(task, strategy="S04", episode_id="ep1",
                               tag="w3")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      repaired.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -822,11 +826,11 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -849,11 +853,11 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -879,11 +883,11 @@ class TestUnobservedIsNotALabel(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -911,11 +915,11 @@ class TestUnobservedIsNotALabel(M4Case):
         # Declare a budget; the execution leaves llm_tokens UNMEASURED
         # (the default), so the ledger verdict is UNCONFIRMED, not ok.
         h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         view = h.budget.view("t1", "ep1",
                              budget=h._load_budget("t1", "ep1"))
@@ -948,7 +952,7 @@ class TestUnobservedIsNotALabel(M4Case):
         self.addCleanup(h.close)
         task = _task("t1")
         h.declare_budget("t1", {"llm_tokens": 10000}, "ep1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
@@ -957,7 +961,7 @@ class TestUnobservedIsNotALabel(M4Case):
         # dimension — the ledger verdict is then a real "ok", not an
         # "unconfirmed".
         h.bank.update_cost(record.execution_id, llm_tokens=10)
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         view = h.budget.view("t1", "ep1",
                              budget=h._load_budget("t1", "ep1"))
@@ -990,14 +994,14 @@ class TestUnobservedIsNotALabel(M4Case):
         self.addCleanup(h.close)
         task = _task("t1")
         h.declare_budget("t1", {"llm_tokens": 1000}, "ep1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         # The declared limit was frozen before the forecast; observed
         # usage arrives afterwards and establishes the real overrun.
         h.bank.update_cost(record.execution_id, llm_tokens=5000, source="agent_observed")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         result = h.close_episode("t1", "ep1")
         risk = result["evaluations"][0]["risk"]
@@ -1037,7 +1041,7 @@ class TestCalibrationGrouping(M4Case):
         h = ORHarness(home=self.home, world_model=provider,
                       embedding=self.backend)
         self.addCleanup(h.close)
-        predictions = [h.predict_strategy_outcome(
+        predictions = [planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, episode, benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
             for _ in range(n)]
@@ -1050,7 +1054,7 @@ class TestCalibrationGrouping(M4Case):
                 h.strategy_predictions._save(prediction)
         record = self.solve(task, strategy="S04", episode_id=episode)
         for prediction in predictions:
-            h.bind_strategy_outcome(prediction.prediction_id,
+            bind_legacy(h,prediction.prediction_id,
                                     record.action_id)
         h.close_episode(task_id, episode)
         return h
@@ -1093,11 +1097,11 @@ class TestCalibrationGrouping(M4Case):
                       embedding=self.backend)
         self.addCleanup(h.close)
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(h,prediction.prediction_id,
                                 record.action_id)
         h.close_episode("t1", "ep1")
         summary = h.calibration_summary(min_samples=1)
@@ -1156,12 +1160,12 @@ class TestEligibilityIsPerField(M4Case):
 
     def test_a_bound_prediction_reports_its_field_eligibility(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
         # The association exists; the prediction is NOT yet calibrated.
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+        bound = bind_legacy(self.h,prediction.prediction_id,
                                              record.action_id)
         self.assertTrue(bound.trace.comparable)
         self.assertEqual(bound.trace.model_info.get("bound_action_id"),
@@ -1183,11 +1187,11 @@ class TestEligibilityIsPerField(M4Case):
 
     def test_an_excluded_prediction_is_not_calibratable(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")   # a different strategy
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         result = self.h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -1242,11 +1246,11 @@ class TestCliCloseoutCommands(M4Case):
 
     def test_close_episode_command(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         code, payload = self._run([
             "close-episode", "--task", "t1", "--episode", "ep1"])
@@ -1266,11 +1270,11 @@ class TestCliCloseoutCommands(M4Case):
 
     def test_evaluations_bank(self):
         task = _task("t1")
-        prediction = self.h.predict_strategy_outcome(
+        prediction = planned_prediction(self.h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         record = self.solve(task, strategy="S04")
-        self.h.bind_strategy_outcome(prediction.prediction_id,
+        bind_legacy(self.h,prediction.prediction_id,
                                      record.action_id)
         self.h.close_episode("t1", "ep1")
         code, payload = self._run(["inspect", "--bank", "evaluations",

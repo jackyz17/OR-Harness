@@ -27,6 +27,32 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from or_harness.api import ORHarness
 from or_harness.core.schema import COST_DIMENSIONS
+from or_harness.world_model.provider import WorldModelProvider
+
+
+class SimulationDecisionProvider(WorldModelProvider):
+    """Declared plumbing forecast for this synthetic memory ablation.
+
+    The outer simulated agent still proposes its one chosen method. These
+    fixed forecasts authorize that candidate through the shared U entry;
+    they do not measure world-model discrimination or alter the ablation.
+    """
+    name = "synthetic-memory-ablation"
+
+    def predict(self, request, timeout_s=None):
+        return {"payload": {"benefit": {
+            **{k: request["benefit_convention"][k] for k in ("kind", "metric", "unit")},
+            "value": 0.8, "baseline": {"kind": "unknown", "note": "Synthetic plumbing forecast."}},
+            "capability_gain": {"decision": 0, "basis": ["This memory ablation collects execution facts."]}},
+            "usage": None, "latency_s": 0}
+
+
+def _execute_planned(harness, task, strategy_id, script, workdir):
+    plan = harness.plan_next(task, candidates=[{"strategy_id": strategy_id, "solver": "highs"}])
+    if not plan.get("selected_prediction_id"):
+        raise RuntimeError("synthetic execution requires an available U decision")
+    return harness.execute(task, None, str(script), str(workdir),
+                           prediction_id=plan["selected_prediction_id"])
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +271,8 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
     """
     if mode not in MEMORY_MODES:
         raise ValueError(f"mode must be one of {MEMORY_MODES}")
-    harness = ORHarness(home=home, cost_weights=cost_weights)
+    harness = ORHarness(home=home, cost_weights=cost_weights,
+                        world_model=SimulationDecisionProvider())
     metrics = RunMetrics(mode=mode)
     cumulative = 0.0
     workdir = Path(tempfile.mkdtemp(prefix="orx_exp_"))
@@ -281,8 +308,7 @@ def run_stream(mode: str, tasks: Sequence[SyntheticTask], home: str, *,
             # record-time feedback compares against it (never a post-hoc
             # estimate).
             prediction = harness.predict_cost(task_json, strategy_id)
-            record = harness.execute(task_json, strategy_id, str(script),
-                                     str(workdir), solver="highs")
+            record = _execute_planned(harness, task_json, strategy_id, script, workdir)
             llm_tokens = 1500.0 * law["cost_scale"]
             # tool_calls counts ALL tool invocations in the attempt's scope
             # (writing the script, running it, reading the result) — the
@@ -341,8 +367,7 @@ def _warmup(harness: ORHarness, workdir: Path) -> None:
             script = workdir / f"warm_{family}_{strategy_id}.py"
             script.write_text(_solve_script(law["quality"], law["cost_scale"]),
                               encoding="utf-8")
-            record = harness.execute(task_json, strategy_id, str(script),
-                                     str(workdir), solver="highs")
+            record = _execute_planned(harness, task_json, strategy_id, script, workdir)
             harness.record(record,
                            override={"llm_tokens": 1500.0 * law["cost_scale"],
                                      "tool_calls": 3.0})

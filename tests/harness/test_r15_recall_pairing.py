@@ -19,6 +19,9 @@ What this file asserts, one behaviour per test class:
    channels in full, and a reused frozen context is projected without
    reading today's banks.
 """
+from decision_fixtures import bind_legacy, execute_scored, import_legacy_execution, planned_prediction
+
+
 import copy
 import json
 import os
@@ -448,7 +451,7 @@ class R15Case(HarnessTestCase):
             "    json.dump({'status': 'optimal', 'objective_value': "
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = import_legacy_execution(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode_id)
         self.h.record(record)
         return record
@@ -485,11 +488,11 @@ class R15Case(HarnessTestCase):
                                              "route_complexity": 0.2,
                                              "semantic_coupling": 0.5}}}
         # Close one episode so a pair exists.
-        pred = self.h.predict_strategy_outcome(
+        pred = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1")
         record = self.solve(task)
-        self.h.bind_strategy_outcome(pred.prediction_id, record.action_id)
+        bind_legacy(self.h,pred.prediction_id, record.action_id)
         self.h.close_episode("t2", "ep1")
         self.provider.requests.clear()
         self.h.plan_next(
@@ -515,21 +518,21 @@ class R15Case(HarnessTestCase):
                                              "temporal_coupling": 0.1,
                                              "route_complexity": 0.2,
                                              "semantic_coupling": 0.5}}}
-        pred = self.h.predict_strategy_outcome(
+        pred = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1")
         record = self.solve(task)
-        self.h.bind_strategy_outcome(pred.prediction_id, record.action_id)
+        bind_legacy(self.h,pred.prediction_id, record.action_id)
         self.h.close_episode("t3", "ep1")
         ctx = self.h.build_prediction_context(task, "ep2")
         before = ctx.provider_view()["prediction_execution_pairs"]
         # A LATER close-out must not move the frozen context's selection.
-        pred2 = self.h.predict_strategy_outcome(
+        pred2 = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S05"},
             "ep2")
         record2 = self.solve(task, strategy="S05", episode_id="ep2",
                              tag="t3_ep2")
-        self.h.bind_strategy_outcome(pred2.prediction_id, record2.action_id)
+        bind_legacy(self.h,pred2.prediction_id, record2.action_id)
         self.h.close_episode("t3", "ep2")
         after = ctx.provider_view()["prediction_execution_pairs"]
         self.assertEqual(before, after)
@@ -542,14 +545,14 @@ class R15Case(HarnessTestCase):
                                              "temporal_coupling": 0.1,
                                              "route_complexity": 0.2,
                                              "semantic_coupling": 0.5}}}
-        pred = self.h.predict_strategy_outcome(
+        pred = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1")
         record = self.solve(task)
-        self.h.bind_strategy_outcome(pred.prediction_id, record.action_id)
+        bind_legacy(self.h,pred.prediction_id, record.action_id)
         self.h.close_episode("t4", "ep1")
         self.provider.requests.clear()
-        self.h.predict_strategy_outcome(
+        planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep2")
         block = (self.provider.requests[-1]["prediction_context"]
@@ -572,11 +575,11 @@ class R15Case(HarnessTestCase):
                                              "temporal_coupling": 0.1,
                                              "route_complexity": 0.2,
                                              "semantic_coupling": 0.5}}}
-        pred = self.h.predict_strategy_outcome(
+        pred = planned_prediction(self.h,
             task, {"action_type": "execute_strategy", "strategy_id": "S04"},
             "ep1")
         record = self.solve(task)
-        self.h.bind_strategy_outcome(pred.prediction_id, record.action_id)
+        bind_legacy(self.h,pred.prediction_id, record.action_id)
         self.h.close_episode("t5", "ep1")
         eid = self.h.store.closeout_registry()[0]["evaluation_ids"][0]
         before = json.dumps(self.h.get_strategy_evaluation(eid),

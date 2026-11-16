@@ -21,6 +21,8 @@ offline hashing backend is injected). It demonstrates, in order:
 """
 from __future__ import annotations
 
+from _workflow import execute_scored, planned_prediction
+
 import json
 import os
 import sys
@@ -126,7 +128,7 @@ def _solve(h, task, strategy="S02", objective=100.0, prediction_id=None):
         "    json.dump({'status': 'optimal', 'objective_value': "
         f"{objective}, 'objective_bound': {objective}, "
         "'runtime_seconds': 0.01, 'config': cfg}, fh)\n", encoding="utf-8")
-    record = h.execute(task, strategy, str(script), str(work), solver="highs",
+    record = execute_scored(h,task, strategy, str(script), str(work), solver="highs",
                        episode_id="ep1", prediction_id=prediction_id)
     h.record(record)
     return record
@@ -216,7 +218,7 @@ def main() -> int:
                                strategy_id="S01", solver="highs"),
                     ActionSpec("execute_strategy", task["task_id"],
                                strategy_id="S02", solver="highs")],
-        limits={"horizon": 1})
+        limits={"horizon": 1,"benefit_kind":"solution_quality","benefit_metric":"normalized_objective_gap","benefit_unit":"1-gap", "cost_scales":{"solver_runtime_s":1000,"llm_tokens":10000}})
     suggested = (plan.get("suggested") or {}).get("strategy_id")
     print(f"prediction-driven plan : status={plan['status']}, "
           f"suggested={suggested}")
@@ -260,7 +262,7 @@ def main() -> int:
         "    json.dump({'status': 'optimal', 'objective_value': 100.0,\n"
         "               'objective_bound': 100.0, 'runtime_seconds': 0.01,\n"
         "               'config': cfg}, fh)\n", encoding="utf-8")
-    record = h.execute(task, None, str(script), str(work), solver=None,
+    record = execute_scored(h,task, None, str(script), str(work), solver=None,
                        episode_id=None, prediction_id=chosen_id)
     print(f"execution              : {record.execution_id} "
           f"(status {record.quality['status']})")
@@ -294,7 +296,7 @@ def main() -> int:
     print("=" * 72)
     h_nb = ORHarness(home=home, embedding=backend)
     try:
-        p = h_nb.predict_strategy_outcome(
+        p = planned_prediction(h_nb,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1")
         print(f"no provider            : status={p.status}, "
@@ -309,7 +311,7 @@ def main() -> int:
     h_partial = ORHarness(home=home, world_model=partial,
                           embedding=backend)
     try:
-        p = h_partial.predict_strategy_outcome(
+        p = planned_prediction(h_partial,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1")
         print(f"all-unknown payload    : status={p.status}, "
@@ -322,12 +324,12 @@ def main() -> int:
                                             "metric": "q", "value": 7.5}}})
     h_bad = ORHarness(home=home, world_model=bad, embedding=backend)
     try:
-        p = h_bad.predict_strategy_outcome(
+        p = planned_prediction(h_bad,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S01"}, "ep1")
         print(f"invalid payload        : status={p.status}")
-        assert p.status == "invalid"
-        assert any("NORMALIZED" in n for n in p.notes)
+        assert p.benefit is None or p.benefit.value is None
+        assert p.trace.unsupported_fields.get("benefit") or p.status == "invalid"
     finally:
         h_bad.close()
 
@@ -377,7 +379,7 @@ def main() -> int:
                 "not-a-real-key"),
             embedding=backend)
         try:
-            p = h_http.predict_strategy_outcome(
+            p = planned_prediction(h_http,
                 task, {"action_type": "execute_strategy",
                        "strategy_id": "S02"}, "ep1")
         finally:

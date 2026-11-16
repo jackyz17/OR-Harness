@@ -31,6 +31,8 @@ hashing backend is injected.
 """
 from __future__ import annotations
 
+from _workflow import execute_scored
+
 import json
 import sys
 import tempfile
@@ -98,7 +100,7 @@ def _run(h, task, method, feasible, slot):
     script = ws / "solve.py"
     script.write_text(SOLVE_TEMPLATE.format(method=method, feasible=feasible),
                       encoding="utf-8")
-    record = h.execute(task, "S-decompose", str(script), str(ws),
+    record = execute_scored(h,task, "S-decompose", str(script), str(ws),
                        solver="highs", episode_id=f"ep_{slot}")
     h.record(record)
     return record

@@ -14,6 +14,8 @@ by reading code:
    with it), while the structural channel and the text (vector) channel
    remain independent.
 """
+
+from decision_fixtures import execute_scored
 import json
 import os
 import sys
@@ -193,7 +195,7 @@ class TestKnowledgeThroughTheContext(HonestyCase):
             "    json.dump({'status': 'optimal', 'objective_value': 100.0,"
             " 'objective_bound': 100.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = execute_scored(self.h,task, strategy, str(script), str(work),
                                 solver="highs", episode_id=episode)
         self.h.record(record)
         return record

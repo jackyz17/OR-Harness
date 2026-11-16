@@ -14,6 +14,9 @@ Two P1 defects this file pins:
    "unobserved". "Cannot be summed" is not "cannot be compared": a single
    explicit span is a comparable observation.
 """
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction, prediction_anchor
+
+
 import os
 import sys
 import unittest
@@ -73,7 +76,7 @@ class TestRemainingCostObservation(M4Case):
             "cost": {"llm_tokens": 300.0},
         }
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         self.assertEqual(prediction.cost.scope, "remaining_to_task_end")
@@ -85,7 +88,7 @@ class TestRemainingCostObservation(M4Case):
         (goal / "solve.py").write_text(
             "raise RuntimeError('first attempt fails')\n",
             encoding="utf-8")
-        first = h.execute(task, "S04", str(goal / "solve.py"), str(goal),
+        first = execute_scored(h,task, "S04", str(goal / "solve.py"), str(goal),
                           solver="highs", episode_id="ep1")
         h.record(first)
         h.bank.update_cost(first.execution_id, source="provider_usage",
@@ -94,7 +97,7 @@ class TestRemainingCostObservation(M4Case):
                             tag="rem2")
         h.bank.update_cost(second.execution_id, source="provider_usage",
                            llm_tokens=200.0)
-        h.bind_strategy_outcome(prediction.prediction_id, second.action_id)
+        bind_legacy(h,prediction.prediction_id, second.action_id)
         # Attempt receipts alone are not the complete remaining window.
         # The host reports the shared-anchor -> real-termination total.
         import time
@@ -104,7 +107,7 @@ class TestRemainingCostObservation(M4Case):
                 "model": "executor/v1", "scope": "remaining_to_task_end",
                 "tokens": {"prompt_tokens": 200, "completion_tokens": 100},
                 "measured": ["llm_tokens"], "window": {
-                    "started_at": prediction.trace.created_at, "ended_at": end,
+                    "started_at": prediction_anchor(self.h,prediction), "ended_at": end,
                     "complete": True, "end_event": "finish_task"}})
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
@@ -133,7 +136,7 @@ class TestRemainingCostObservation(M4Case):
             "cost": {"remaining_latency_s": 30.0},
         }
         task = _task("t1")
-        prediction = h.predict_strategy_outcome(
+        prediction = planned_prediction(h,
             task, {"action_type": "execute_strategy",
                    "strategy_id": "S04"}, "ep1")
         record = self.solve(task, strategy="S04", episode_id="ep1",
@@ -141,7 +144,7 @@ class TestRemainingCostObservation(M4Case):
         # Backfill the REAL remaining span (a trusted measurement).
         h.bank.update_cost(record.execution_id, source="agent_observed",
                            remaining_latency_s=600.0)
-        h.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+        bind_legacy(h,prediction.prediction_id, record.action_id)
         result = h.close_episode("t1", "ep1")
         evaluation = result["evaluations"][0]
         entry = evaluation["cost"]["per_dim"].get("remaining_latency_s")
@@ -178,7 +181,7 @@ class TestHostCostWindow(CCase):
         prediction = self.predict_c(cost={"tool_calls": 2, "llm_tokens": 200})
         record = self.run_g(prediction, record=False)
         self.check_g(record)
-        start, stop = prediction.trace.created_at, time.time()
+        start, stop = prediction_anchor(self.h,prediction), time.time()
         calls = [{"id": "host-1", "kind": "model", "started_at": start,
             "ended_at": stop, "prompt_tokens": 120, "completion_tokens": 80,
             "reasoning_tokens": 60, "cached_tokens": 90},
@@ -288,7 +291,7 @@ class TestHostCostWindow(CCase):
         end = time.time()
         self.h.report_action("finish_task", self.task, "ep1", started_at=end, ended_at=end)
         stop = time.time()
-        anchor = prediction.trace.created_at
+        anchor = prediction_anchor(self.h,prediction)
         calls = [{"id": "before", "kind": "tool", "started_at": anchor - 2, "ended_at": anchor - 1},
                  {"id": "inside", "kind": "tool", "started_at": anchor, "ended_at": end},
                  {"id": "after", "kind": "tool", "started_at": (end + stop) / 2, "ended_at": stop}]
@@ -312,7 +315,7 @@ class TestHostCostWindow(CCase):
         self.h.report_action("finish_task", self.task, "ep1", started_at=end, ended_at=end,
             host_usage={"schema": "or-host-usage/1", "host": "test-host", "model": "executor-model/v1",
                 "scope": "remaining_to_task_end", "tool_calls": 8, "measured": ["tool_calls"],
-                "window": {"started_at": prediction.trace.created_at, "ended_at": end, "complete": True}})
+                "window": {"started_at": prediction_anchor(self.h,prediction), "ended_at": end, "complete": True}})
         summary = self.h.calibration_summary()
         self.assertEqual(summary["conditional_cost"]["coverage"]["tool_calls"]["n_actual"], 1)
         self.predict_c("next-late")
@@ -335,7 +338,7 @@ class TestHostCostWindow(CCase):
         self.close_g()
         report = {"schema": "or-host-usage/1", "host": "test-host", "model": "executor-model/v1",
             "scope": "remaining_to_task_end", "tool_calls": 8, "measured": ["tool_calls"],
-            "window": {"started_at": prediction.trace.created_at, "ended_at": end, "complete": True}}
+            "window": {"started_at": prediction_anchor(self.h,prediction), "ended_at": end, "complete": True}}
         with patch.object(cli, "_harness", return_value=self.h), patch.object(self.h, "close"), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["amend-cost", record.execution_id, "--usage-file", json.dumps(report)]), 0)
         self.assertNotIn("tool_calls", self.h.bank.get(record.execution_id).cost.measured_dims())
@@ -352,7 +355,7 @@ class TestHostCostWindow(CCase):
         self.h.report_action("finish_task", self.task, "ep1", started_at=end, ended_at=end,
             host_usage={"schema": "or-host-usage/1", "host": "test-host", "model": "executor-model/v1",
                 "scope": "remaining_to_task_end", "tool_calls": 8, "measured": ["tool_calls"],
-                "window": {"started_at": prediction.trace.created_at - 10, "ended_at": end, "complete": True}})
+                "window": {"started_at": prediction_anchor(self.h,prediction) - 10, "ended_at": end, "complete": True}})
         result = self.close_g()
         cost = result["evaluations"][0]["cost"]
         self.assertNotIn("tool_calls", cost.get("per_dim") or {})
@@ -374,7 +377,7 @@ class TestHostCostWindow(CCase):
         self.check_g(record)
         self.finish_c(prediction)
         work = Path(self.home) / prediction.prediction_id
-        later = self.h.execute(self.task, "S04", str(work / "solve.py"), str(work),
+        later = execute_scored(self.h,self.task, "S04", str(work / "solve.py"), str(work),
                                solver="highs", episode_id="ep1")
         self.h.record(later)
         fact = build_calibration_summary(self.h)["conditional_cost"]["cases"][0]
@@ -451,7 +454,7 @@ class TestConditionalCostRequest(CCase):
         groups = self.h.calibration_summary()["conditional_cost"]["groups"]
         self.assertEqual(len(groups), 2)
         self.seed_host("next-limited")
-        self.h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy",
+        planned_prediction(self.h,self.task, {"action_type": "execute_strategy",
             "strategy_id": "S04", "method": REUSE, "solver": "highs", "config": {"time_limit": 60}},
             "next-limited")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
@@ -464,7 +467,7 @@ class TestConditionalCostRequest(CCase):
         self.h.report_action("verify", self.task, "unknown-phase",
             host_usage={"schema": "or-host-usage/1", "host": "test-host",
                         "model": "executor-model/v1", "measured": []})
-        self.h.predict_strategy_outcome(self.task, {"action_type": "execute_strategy",
+        planned_prediction(self.h,self.task, {"action_type": "execute_strategy",
             "strategy_id": "S04", "method": REUSE}, "unknown-phase")
         evidence = self.provider.requests[-1]["prediction_context"]["cost_evidence"]
         self.assertEqual(evidence["current_conditions"]["phase"], "unknown")

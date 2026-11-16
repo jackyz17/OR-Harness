@@ -91,7 +91,10 @@ class StubProvider(WorldModelProvider):
 
     def predict(self, request, timeout_s=None):
         self.requests.append(request)
-        return {"payload": self.payload,
+        import copy
+        payload=copy.deepcopy(self.payload)
+        payload['benefit'].update({k:request['benefit_convention'][k] for k in ('kind','metric','unit')})
+        return {"payload": payload,
                 "usage": {"prompt_tokens": 900, "completion_tokens": 100},
                 "error": None, "latency_s": 0.01}
 
@@ -196,11 +199,12 @@ class TestDocumentedResultKeys(DocumentedKeysCase):
 
     def _executed(self):
         prediction = self.run_cli(
-            "predict-strategy", "--task", str(self.task_path),
-            "--candidate", str(self.cand_path), "--episode", "ep1")
+            "plan-next", "--task", str(self.task_path),
+            "--candidates", self._candidate_list(), "--episode", "ep1",
+            "--benefit-kind","solution_quality","--benefit-metric","normalized_objective_gap")
         executed = self.run_cli(
             "execute", "--task", str(self.task_path), "--episode", "ep1",
-            "--prediction", prediction["prediction_id"],
+            "--prediction", prediction["selected_prediction_id"],
             "--code", str(self.script), "--workspace", str(self.workspace))
         return executed["execution_id"]
 

@@ -74,7 +74,9 @@ def run_comparison(*, initial_home, training_tasks, test_tasks, output,
             round_usage=[];training_results=[]
             for task in training_tasks:
                 task=copy.deepcopy(task);task_id=str(task['task_id'])
-                prediction=h.predict_strategy_outcome(task,propose(h,task),task_id)
+                decision=h.plan_next(task,task_id,candidates=[propose(h,task)])
+                if not decision.get('selected_prediction_id'):raise ValueError('no executable U decision: '+str(decision.get('truncation_reason')))
+                prediction=h.strategy_predictions.get(decision['selected_prediction_id'])
                 record=attempt(h,task,prediction)
                 bound=h.strategy_predictions.get(prediction.prediction_id).trace.model_info.get('bound_action_id')
                 action=h.actions.get(bound) if bound else None
@@ -126,7 +128,9 @@ def run_comparison(*, initial_home, training_tasks, test_tasks, output,
             fork_memory(home,test_home)
             with closing(ORHarness(home=str(test_home),world_model=provider_factory(),
                                   embedding=embedding_factory() if embedding_factory else None)) as h:
-                prediction=h.predict_strategy_outcome(task,propose(h,task),str(task['task_id']))
+                decision=h.plan_next(task,str(task['task_id']),candidates=[propose(h,task)])
+                if not decision.get('selected_prediction_id'):raise ValueError('no executable U decision: '+str(decision.get('truncation_reason')))
+                prediction=h.strategy_predictions.get(decision['selected_prediction_id'])
                 record=attempt(h,task,prediction)
                 if h.bank.get(record.execution_id) is None:h.record(record)
                 h.close_episode(str(task['task_id']),str(task['task_id']))
@@ -167,7 +171,7 @@ def integer_fixture(output,seed=7,positive_min=False):
         def predict(self,request,timeout_s=None):
             decision=1 if request['candidate']['task_id'] in ('review-max','learn-min') else 0
             return {'payload':{'cost':{'tool_calls':2},
-                'benefit':{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')}|{'value':0.8},
+                'benefit':{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')}|{'value':0.8,'baseline':{'kind':'unknown'}},
                 'capability_gain':{'decision':decision,
                     'claim':'This run may add a new signed-endpoint boundary.' if decision else '',
                     'basis':['Scripted experimental stance; deliberately includes a covered positive and a missed minimization opportunity.'],
@@ -179,6 +183,10 @@ def integer_fixture(output,seed=7,positive_min=False):
         return {'strategy_id':'endpoint','solver':'python','method':{'name':'integer interval enumeration','steps':[GENERAL_RULE['do']]}}
 
     def attempt(h,t,prediction=None):
+        if prediction is None:
+            decision=h.plan_next(t,t['task_id'],candidates=[propose(h,t)])
+            if not decision.get('selected_prediction_id'):raise ValueError('fixture has no executable U decision')
+            prediction=h.strategy_predictions.get(decision['selected_prediction_id'])
         f=t['fixture'];n,c=f['n'],f['c'];minimum=f['min'];boundary=f['boundary']
         ws=Path(h.store.home)/('work_'+t['task_id']);ws.mkdir()
         code='import json,os\nvalues=[]\n'
@@ -191,8 +199,8 @@ def integer_fixture(output,seed=7,positive_min=False):
         entry=h.sbank.get('1')
         v=(entry.rule or {}).get('candidate_version') or (entry.rule or {}).get('active_version') if entry else None
         use=['1@'+str(v)] if v and v>=2 else None
-        r=h.execute(t,None if prediction else 'endpoint',str(ws/'solve.py'),str(ws),solver=None if prediction else 'python',
-                    episode_id=t['task_id'],prediction_id=prediction.prediction_id if prediction else None,
+        r=h.execute(t,None,str(ws/'solve.py'),str(ws),
+                    episode_id=t['task_id'],prediction_id=prediction.prediction_id,
                     method=propose(h,t)['method'],used_entry_ids=use)
         y=r.execution_features['solution_variables']['Y']
         expected=0 if boundary else 2*c-(n-c)//3 if minimum else 2*n+3*((n-c)//3)
@@ -237,7 +245,7 @@ def integer_fixture(output,seed=7,positive_min=False):
     output=Path(output)
     initial=output.parent/(output.name+'_initial')
     initial.mkdir(parents=True,exist_ok=False)
-    with closing(ORHarness(home=str(initial),embedding=LocalHashEmbeddingBackend(),induction_mode='manual')) as h:
+    with closing(ORHarness(home=str(initial),world_model=Provider(),embedding=LocalHashEmbeddingBackend(),induction_mode='manual')) as h:
         seed_task=task('initial-max',1000,300,minimum=False)
         r=attempt(h,seed_task);h.record(r);h.close_episode('initial-max','initial-max')
         h.sbank.add(StrategicEntry(entry_id='',strategy_id='upper-only',pattern={'predicates':{'family':'assignment'}},

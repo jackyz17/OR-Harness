@@ -52,6 +52,8 @@ framework keeps prediction, fact and effect apart.
 """
 from __future__ import annotations
 
+from _workflow import bind_legacy, import_legacy_execution, planned_prediction
+
 import json
 import sys
 import tempfile
@@ -209,7 +211,7 @@ def _close_later_episode(h, task_id, *, quality_value):
     from or_harness.api import ORHarness as H
     orx = H(home=h.home, world_model=provider,
             embedding=LocalHashEmbeddingBackend())
-    prediction = orx.predict_strategy_outcome(
+    prediction = planned_prediction(orx,
         task, {"action_type": "execute_strategy", "strategy_id": "S04"},
         "ep1")
     work = Path(h.home) / f"ws_later_{task_id}"
@@ -220,10 +222,10 @@ def _close_later_episode(h, task_id, *, quality_value):
         "    json.dump({'status': 'optimal', 'objective_value': 1.0,"
         " 'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
         encoding="utf-8")
-    record = orx.execute(task, "S04", str(work / "solve.py"), str(work),
+    record = import_legacy_execution(orx,task, "S04", str(work / "solve.py"), str(work),
                          solver="highs", episode_id="ep1")
     orx.record(record)
-    orx.bind_strategy_outcome(prediction.prediction_id, record.action_id)
+    bind_legacy(orx,prediction.prediction_id, record.action_id)
     result = orx.close_episode(task_id, "ep1")
     orx.close()
     return result
@@ -296,6 +298,8 @@ def main() -> int:
     backend = LocalHashEmbeddingBackend()
     provider = StubProvider()
     h = ORHarness(home=home, world_model=provider, embedding=backend)
+    from or_harness.world_model.hplus import configure
+    configure(h,"manual")  # explicit historical offline capability experiment
 
     # ------------------------------------------------------------------
     print("=" * 72)

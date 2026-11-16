@@ -32,6 +32,8 @@ capability improved: one closed episode is one sample.
 """
 from __future__ import annotations
 
+from _workflow import bind_legacy, import_legacy_execution, planned_prediction
+
 import json
 import os
 import sys
@@ -106,7 +108,7 @@ def _attempt(h, task, strategy, *, status, objective, episode,
             "with open('result.json', 'w') as fh:\n"
             "    json.dump(" + json.dumps(result) + ", fh)\n",
             encoding="utf-8")
-    record = h.execute(task, strategy, str(work / "solve.py"), str(work),
+    record = import_legacy_execution(h,task, strategy, str(work / "solve.py"), str(work),
                        solver="highs", episode_id=episode)
     h.record(record)
     return record
@@ -125,7 +127,7 @@ def main() -> int:
     print("=" * 72)
     task = dict(TASK)
     # The prediction is made BEFORE anything runs (frozen input).
-    prediction = h.predict_strategy_outcome(
+    prediction = planned_prediction(h,
         task, {"action_type": "execute_strategy",
                "strategy_id": "S04", "solver": "highs"}, "ep1")
     print(f"prediction             : {prediction.prediction_id} "
@@ -153,7 +155,7 @@ def main() -> int:
 
     # Bind the prediction to the REAL action that ran (the repaired
     # attempt's action).
-    bound = h.bind_strategy_outcome(prediction.prediction_id,
+    bound = bind_legacy(h,prediction.prediction_id,
                                     repaired.action_id)
     info = bound.trace.model_info
     print(f"binding mismatch       : {info.get('binding_mismatch')}")
@@ -212,7 +214,7 @@ def main() -> int:
     print("3. Honest boundaries")
     print("=" * 72)
     # (a) An unexecuted candidate: predicted, never run, never bound.
-    unexecuted = h.predict_strategy_outcome(
+    unexecuted = planned_prediction(h,
         task, {"action_type": "execute_strategy",
                "strategy_id": "S01"}, "ep1")
     print(f"unexecuted candidate   : {unexecuted.prediction_id} — "
@@ -269,7 +271,7 @@ def main() -> int:
           f"unknown={check_occurrence['n_unknown']}")
     assert check_occurrence["n_observation_units"] == 2
     # The provider really receives the summary content with the context.
-    h.predict_strategy_outcome(
+    planned_prediction(h,
         task, {"action_type": "execute_strategy",
                "strategy_id": "S04"}, "ep2")
     sent = provider.requests[-1]["prediction_context"]

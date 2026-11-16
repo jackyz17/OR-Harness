@@ -24,6 +24,9 @@ What this file asserts, one behaviour per test class:
    nothing; only an explicit prediction call reaches the provider; and the
    phase-1 fixes do not regress.
 """
+
+from decision_fixtures import bind_legacy, execute_scored
+
 import json
 import os
 import sys
@@ -134,7 +137,7 @@ class ContextCase(HarnessTestCase):
             "    json.dump({'status': 'optimal', 'objective_value': "
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01}, fh)\n", encoding="utf-8")
-        record = self.h.execute(task, strategy, str(script), str(work),
+        record = execute_scored(self.h,task, strategy, str(script), str(work),
                                 solver="highs")
         self.h.record(record)
         return record
@@ -1048,7 +1051,7 @@ class TestFrozenContextFreezesTheWholeRequest(ContextCase):
             "    json.dump({'status': 'optimal', 'objective_value': 100.0, "
             "'objective_bound': 100.0, 'runtime_seconds': 0.01}, fh)\n",
             encoding="utf-8")
-        h.record(h.execute(task, "S04", str(script), str(work),
+        h.record(execute_scored(h,task, "S04", str(script), str(work),
                            solver="highs"))
         ctx = h.build_prediction_context(task, "ep1", snapshot=snap)
         # No retrieval was SAVED with the snapshot, so none is rebuilt:
@@ -1347,7 +1350,7 @@ class TestProblemIdentityExcludesModelingArtifacts(ContextCase):
         action = self.h.begin_action(
             "execute_strategy", {**task, "model": "minimize x; C1: x >= 1"},
             "ep1", params={"strategy_id": "S01", "solver": "highs"})
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id,
+        bound = bind_legacy(self.h,prediction.prediction_id,
                                              action["action_id"])
         info = bound.trace.model_info
         self.assertIsNone(info.get("binding_mismatch"),
@@ -1360,7 +1363,7 @@ class TestProblemIdentityExcludesModelingArtifacts(ContextCase):
         action2 = self.h.begin_action(
             "execute_strategy", {**task, "text": "cover every area, weighted"},
             "ep1", params={"strategy_id": "S02", "solver": "highs"})
-        bound2 = self.h.bind_strategy_outcome(other.prediction_id,
+        bound2 = bind_legacy(self.h,other.prediction_id,
                                               action2["action_id"])
         self.assertTrue(
             bound2.trace.model_info.get("binding_mismatch"),

@@ -1,4 +1,6 @@
 """Binary H+ through prediction, real execution, close, induction and feedback."""
+
+from decision_fixtures import execute_scored, planned_prediction
 import copy
 import io
 import json
@@ -28,7 +30,7 @@ class BinaryProvider(WorldModelProvider):
 
     def predict(self, request, timeout_s=None):
         self.requests.append(copy.deepcopy(request))
-        payload={'benefit':{**{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')},'value':0.9},
+        payload={'benefit':{**{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')},'value':0.9,'baseline':{'kind':'unknown'}},
                  'cost':{'tool_calls':3},'risk':{'events':[{'event':'implementation_failure','probability':0.1}]}}
         if self.gain is not None:
             payload['capability_gain']=copy.deepcopy(self.gain)
@@ -43,13 +45,19 @@ class BinaryCase(RuleCase):
         self.h.strategy_predictions.provider=self.provider
 
     def predict(self,name,decision=1,*,parameters=None,boundary=False):
+        # Some cases import an initial manual library. Start its current
+        # training stream after that fixture preparation, as the runner does.
+        from or_harness.world_model.hplus import mode
+        if mode(self.h)=='manual':
+            with self.h.store.transaction() as conn:
+                conn.execute("DELETE FROM meta WHERE key IN ('induction_mode','hplus_enabled')")
         self.provider.gain['decision']=decision
         n,c=parameters or ((12,0) if boundary else (641,130))
         task={'task_id':name,'family':'assignment','base_task_id':name,
               'description':f'Nonnegative integer X,Y. X+Y <= {n}; X >= 2Y+{c}. '+
                   ('Minimize (X-3)^2+Y; objective is not monotone.' if boundary else 'Minimize 2X-5Y.')}
         candidate={'strategy_id':'endpoint','solver':'python','method':METHOD}
-        return self.h.predict_strategy_outcome(task,candidate,name),task
+        return planned_prediction(self.h,task,candidate,name),task
 
     def closed(self,name='hplus-training',decision=1):
         p,task=self.predict(name,decision)
@@ -101,7 +109,7 @@ class TestBinaryHplus(BinaryCase):
                 p,task=self.predict(n,0)
                 # Omit the decision in the actual next prediction, not by editing a saved one.
                 self.provider.gain.pop('decision')
-                p=self.h.predict_strategy_outcome(task,{'strategy_id':'endpoint','solver':'python','method':METHOD},n)
+                p=planned_prediction(self.h,task,{'strategy_id':'endpoint','solver':'python','method':METHOD},n)
             else:
                 p,task=self.predict(n,value)
             _,record=self.solve(n,prediction_id=p.prediction_id)
@@ -123,7 +131,7 @@ class TestBinaryHplus(BinaryCase):
         p,task=self.predict('failed',1)
         work=Path(self.home)/'crash';work.mkdir()
         (work/'solve.py').write_text("raise ValueError('broken code')\n")
-        r=self.h.execute(task,None,str(work/'solve.py'),str(work),prediction_id=p.prediction_id,episode_id='failed')
+        r=execute_scored(self.h,task,None,str(work/'solve.py'),str(work),prediction_id=p.prediction_id,episode_id='failed')
         self.h.record(r)
         close=self.h.close_episode('failed','failed',terminal_state='failed')
         job=close['induction_schedule']['jobs'][0]

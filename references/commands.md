@@ -6,8 +6,8 @@ For a cold first proposal, the normal runner can pass known execution conditions
 
 ```bash
 export OR_EXECUTION_CONTEXT='{"host":"my-runner","model":"actual-executor-model","agent_id":"runner/v1","solver_interface":"highs","phase":"initial_modelling","source":"runner_configuration"}'
-orx predict-strategy --task task.json --candidate candidate.json --episode ep1
-# Or: orx --execution-context runner.json predict-strategy ...
+orx plan-next --task task.json --candidates candidates.json --episode ep1
+# Or: orx --execution-context runner.json plan-next ...
 ```
 
 `OR_EXECUTION_CONTEXT` accepts inline JSON or a file (`@file` also works). The global CLI flag overrides the environment; Python uses `ORHarness(execution_context={...})`. Supply the actual execution model, independently of `--world-model`, and update the declaration when runner conditions change. Host/model/optional agent ID, known solver interface, phase and source are frozen with the snapshot and remain fixed for reused contexts. Missing information remains unknown. Applicable technical R history uses the execution agent and the interface actually recorded by past executions.
@@ -25,7 +25,7 @@ For a new task, understand its structure with `profile`, inspect memory with `re
 | Decision | Calls | Reuse |
 |---|---|---|
 | One candidate | `predict-strategy` | Pass its prediction ID directly to `execute` |
-| Compare candidates | `plan-next` → `choose-next` | Pass the chosen candidate's existing prediction ID to `execute` |
+| Score and select | `plan-next` → `execute --prediction` | Read `result.selected_prediction_id` for one or more candidates |
 
 Then write the chosen method's code, `execute`, `check-task`, and `record --from-staged`. Record failures too; inspect the reflection material and make a new decision when a repair is needed. At episode end, `close-episode` evaluates predictions and publishes calibration. Offline, `induction-material` supplies facts from which you form and submit a claim with `induce --relation`.
 
@@ -41,7 +41,7 @@ Avoid duplicate work:
 | Purpose | Commands | Effects |
 |---|---|---|
 | Understand and discover | `profile`, `recall` | Read; recall may call an embedding provider |
-| Predict and select | `predict-strategy`, `plan-next`, `choose-next` | Prediction/planning calls the world model and logs spend; choice writes a decision |
+| Score and select | `plan-next` | One shared context, one forecast per candidate, saved U selection; independent predict-strategy is inspection |
 | Execute, check, record | `execute`, `check-task`, `record` | Runs code; logs checks; stages and records facts |
 | Close the episode | `close-episode` | Writes evaluations/calibration; performs retention |
 | Optional input/baseline | `context`, `predict-cost`, `snapshot`, `budget` | Context/snapshot persist; budget declaration writes; cost baseline reads |
@@ -57,8 +57,8 @@ Avoid duplicate work:
 | ID or payload | Source | Consumer |
 |---|---|---|
 | Task / episode | Choose one task ID per logical problem and one episode label per solving effort; retries retain them | Commands accepting `--task` / `--episode` |
-| Decision action | `plan-next`: `result.decision_action_id` | `choose-next --decision` |
-| Candidate prediction | `predict-strategy`: `result.prediction_id`; `plan-next`: `result.plan.candidates[].prediction_id` | `choose-next --prediction`, `execute --prediction`, manual `bind-strategy` |
+| Decision action | `plan-next`: `result.decision_action_id` | saved authorization; optional compatibility rejection |
+| Candidate prediction | `predict-strategy`: `result.prediction_id`; `plan-next`: `result.plan.candidates[].prediction_id` | `execute --prediction` for the scored winner; independent IDs are inspection only |
 | Execution | `execute`: `result.execution_id` | `check-task`, `record --from-staged`, correction commands |
 | Execution action | `execute`: `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
 | Evidence IDs | `induction-material`: `result.material[].execution_id` | Relation evidence; `predict-capability --bundle` |
@@ -161,7 +161,7 @@ Method evidence is `performed`, `planned_only`, or `none`: `method.actual` comes
 
 **Read / next:** `source=entry|stats|unknown`, support counts, per-dimension support, and expected cost. Unknown or incompatible evidence yields null, not free execution. Pass the printed cost snapshot to `record --prediction` if you used it, so feedback compares with that frozen baseline. Use `predict-strategy` or `plan-next` for world-model consequences.
 
-## 4. Predict and choose
+## 4. Plan and inspect predictions
 
 ### Candidate format
 
@@ -209,33 +209,46 @@ New G is P(original-task acceptance | faithful execution of the candidate steps 
 | `timeout` / `network_error` | Retry deliberately or adjust `--wm-timeout` / `OR_WM_TIMEOUT` and planning time budget |
 | `unusable_payload` | Fix fields named in validation notes |
 
-Unknown `finish_reason` remains unknown. Pass the chosen prediction ID to `execute`; do not also plan the same decision. See [strategy_outcome.md](strategy_outcome.md).
+Unknown `finish_reason` remains unknown. This command is independent inspection. Formal solving requires `plan-next`; its selected prediction is reused by execute without a second forecast. See [strategy_outcome.md](strategy_outcome.md).
 
-### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode ep1] --candidates specs.json [--horizon 1] [--max-calls N] [--delta W] [--prediction-mode M] [--time-budget S]`
+### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--prediction-mode M] [--time-budget S]`
 
-**Purpose / effects:** Optional bounded comparison replacing individual prediction calls. Requires caller-proposed `execute_strategy` candidates and a configured provider. Freezes one root snapshot/context, predicts candidates against it, logs planning spend, and suggests a first step. It neither selects nor executes.
+**Purpose / effects:** The normal decision entry accepts one or more candidates,
+freezes one shared context, calls the world model once per candidate, saves
+G/C/R/H+ and U, and selects the eligible highest-U candidate with stable ties.
+It does not execute the solver. Read `result.selected_prediction_id`,
+`result.selected_score`, `result.plan.candidates[]`, limits and planning spend.
+When no selection is available these keys are null and the reason is explicit.
 
-**Limits / scoring:** Horizon is exactly 1; other values exit 2. Default bounds are at most 3 candidates, 6 model calls, and 120 seconds for the whole decision. Remaining wall time limits each next call; exhaustion is explicit. Among candidates with comparable G, utility uses common terms of `alpha*G - beta*C - gamma*R`. C uses their valid same-scope `expected_measured` dimension intersection followed by common component deduplication; empty intersection omits C for everyone. R reads only `implementation_failure.probability` and is omitted for everyone if any ranked candidate lacks it. Explicit zeros are valid. Raw inputs, omissions and shared scales/weights remain in the score audit. Incompatible G produces no utility. The knowledge bonus is off; planning spend is charged once outside candidate scores. Existing scales, weights and gates are unchanged.
+**Scoring:** Use comparable G, common same-scope C dimensions and technical R.
+Unknown R removes R for all ranked candidates; unknown C dimensions or missing
+reliable peaks remove those dimensions. Zero is valid. Each retained C component
+uses clipped `log1p(value)/log1p(positive peak)` with normalized existing weights.
+`--cost-scales '{"tool_calls":30}'` declares an independent peak; otherwise use
+applicable pre-decision trusted cost history. No candidate-max normalization or
+universal positive-U gate is used. Raw values, actual terms, sources, dimensions,
+weights and omissions remain in the score. H+ does not enter U.
 
-**Read / next:** `result.decision_action_id`, `plan.candidates[].prediction_id`, suggestion, `planning_cost`, `effective_parameters`, per-candidate failures/rejections, `score.incomparable`, and `budget_confirmation`. Choose with `choose-next`, then execute using the same prediction ID. Missing budget evidence is `unknown/unconfirmed`, not an assurance of affordability.
+**Next:** `execute --prediction P` uses the saved winner. No routine choose-next
+or independent forecast is needed. Shadow, denied, unscorable, spent and
+unselected predictions cannot execute. A repair needs a fresh plan. See
+[strategy_outcome.md](strategy_outcome.md) for scopes and structured scales.
 
-**Recover:** Known exceeded budget stops before model calls (`fallback`). No usable forecast gives `no_valid_predictions` and no suggestion; inspect memory or choose explicitly. A malformed/failed candidate does not prevent scoring the others. No imagined rollout or extra prediction is needed. See [strategy_outcome.md](strategy_outcome.md).
+### `orx choose-next --decision ACTION_ID (--prediction P | --chosen spec.json | --rejected) [--note "..."]`
 
-### `orx choose-next --decision ACTION_ID (--prediction PREDICTION_ID | --chosen spec.json | --rejected) [--note "..."]`
-
-**Purpose / effects:** Record acceptance, deviation, or rejection of a plan. Writes the selected-plan execution-context field, not execution quality; no provider or solver call.
-
-**Input / next:** Prefer a prediction ID from this decision's `plan.candidates[]`. It identifies the stored candidate without retyping JSON. `--chosen` accepts its full spec; if both are supplied they must agree. Deviation compares action type, strategy, solver, and configuration, not cosmetic plan fields. Execute with the chosen prediction ID.
-
-**Recover:** Unknown/non-selection decisions and prediction IDs outside this comparison are refused. Rejection records `last_rejected_suggestion` without replacing the selected plan.
+Compatibility/rejection record, with no solver or model call. Accept only the
+scored winner from this decision; execute reuses the choice record for its one
+actual adoption. A manual choice cannot override saved U permission. Rejection
+records the reason and prevents executing that decision. Historical choices
+remain readable.
 
 ## 5. Execute and check
 
-### `orx execute --task t.json [--prediction PREDICTION_ID | --strategy S04 --solver NAME] --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT] [--used-entry-ids 3,5]`
+### `orx execute --task t.json --prediction PREDICTION_ID --code solve.py --workspace DIR [--episode ep1] [--method JSON] [--adapted-from ex_a,ex_b] [--adaptation TEXT] [--used-entry-ids 3,5]`
 
 **Purpose / effects:** Run the chosen code, log an action, capture task text/version and observed configuration, and stage every resulting attempt. Staging is not recording; use `record --from-staged` afterward. No automatic second solve is started.
 
-**Input / binding:** With `--prediction`, the frozen candidate supplies strategy, solver, configuration identity, and episode; contradictory explicit values, changed problem identity, or an already-claimed prediction are refused before the run. The action/link is persisted before execution. Adding a post-strategy model does not change problem identity. Without a prediction, supply strategy/solver; this is an explicitly unpredicted attempt, eligible for a later manual binding. `--method` describes its plan.
+**Input / binding:** A selected, unused, finite-U prediction from `plan-next` is required. Bare execution and independent forecasts are refused before execution. With `--prediction`, the frozen candidate supplies strategy, solver, configuration identity, and episode; contradictory explicit values, changed problem identity, or an already-claimed prediction are refused before the run. The action/link is persisted before execution. Adding a post-strategy model does not change problem identity. Without a prediction, supply strategy/solver; this is an explicitly unpredicted attempt, eligible for a later manual binding. `--method` describes its plan.
 
 **Sandbox:** Code must live inside the workspace, which becomes its working directory. Blocked imports include `subprocess`, `socket`, `urllib`, `http`, `requests`, `shutil`, and `pathlib`; only `os` / `os.path` are allowed from `os`, with operations such as `chdir`, `walk`, and `remove` refused. In-process solvers such as `highspy` and `ortools` are allowed; subprocess-based PuLP/CBC cannot run. Constraint labels must be `C1`, `C2`, … for L2 cross-reference. POSIX resource limits and a whole-script wall-clock timeout apply.
 
@@ -405,7 +418,7 @@ For new G, the optional `g_attribution` object belongs inside the existing `--ch
 
 Close-out reads the pre-execution binary `capability_gain.decision` and returns durable `induction_schedule.pending_ids` / `next_actions`. The outer building agent must settle all positive jobs. Failed executions and missing learning checks still trigger 1. `--induction-decision allow|skip|pending` is historical compatibility and cannot override a new switch.
 
-**Recover / next:** Running actions produce a pending refusal; finish them honestly, including confirmed host stops, and close again. Read check coverage, then undertake offline induction when there is something worth examining. See [episode_closeout.md](episode_closeout.md).
+**Recover / next:** Running actions produce a pending refusal; finish them honestly, including confirmed host stops, and close again. Read `result.induction_schedule.pending_ids` even on repeated close. Consume each positive job with material and one submission before the next training task. See [episode_closeout.md](episode_closeout.md).
 
 ### `orx calibration [--min-samples N] [--rebuild]`
 
@@ -472,7 +485,7 @@ Read/recover required jobs, immutable receipt references, separate explicit-0/mi
 
 ### `orx bind-capability --prediction ID [--adoption-action ACTION_ID]`
 
-**Purpose / effects:** Bind a real maintenance fact when the operation ran outside `accept-capability`. Captures actual operation/end time, created/revised/retired entries, admission verdict, cost, and scope agreement. Idempotent; no model call. It cannot set `effect_verified`.
+**Purpose / effects:** Historical/compatibility binding; new forecasts require a saved scored adoption. Bind a real maintenance fact when the operation ran outside `accept-capability`. Captures actual operation/end time, created/revised/retired entries, admission verdict, cost, and scope agreement. Idempotent; no model call. It cannot set `effect_verified`.
 
 **When (stage-1):** after the REAL induction completes. New binary jobs bind automatically; explicit binding is a recovery path. An executed solve alone is not an induction fact; unexecuted claims stay pending.
 

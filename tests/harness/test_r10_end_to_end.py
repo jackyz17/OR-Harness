@@ -10,6 +10,9 @@ quality:
   visible on a later recall, and the rule-kind variant saved but not
   published.
 """
+
+from decision_fixtures import bind_legacy, execute_scored
+
 import os
 import sys
 import unittest
@@ -90,7 +93,7 @@ class EndToEndCase(HarnessTestCase):
             f"{objective}, 'objective_bound': {objective}, "
             "'runtime_seconds': 0.01, 'variables': {'x': 2, 'y': 3}}, fh)\n",
             encoding="utf-8")
-        return self.h.execute(task, strategy, str(script), str(work),
+        return execute_scored(self.h,task, strategy, str(script), str(work),
                               solver=solver, episode_id="ep1")
 
 
@@ -103,7 +106,7 @@ class TestFullFlow(EndToEndCase):
         plan = self.h.plan_next(task, episode_id="ep1", candidates=[
             {"name": "enumeration_with_constraints",
              "steps": ["derive a tight bound", "enumerate the reduced domain"],
-             "solver": "python"}])
+             "solver": "python"}], limits={"benefit_kind":"solution_quality","benefit_metric":"normalized_objective_gap","benefit_unit":"1-gap"})
         compared = plan.get("candidates") or []
         self.assertEqual(len(compared), 1)
         candidate = compared[0]
@@ -123,7 +126,7 @@ class TestFullFlow(EndToEndCase):
         # solver comes from the candidate, so there is no mismatch.
         record = self._solve(task, spec["strategy_id"], tag="flow",
                              solver=spec.get("solver") or "highs")
-        prediction = self.h.bind_strategy_outcome(prediction_id,
+        prediction = bind_legacy(self.h,prediction_id,
                                                   record.action_id)
         self.assertEqual(prediction.trace.model_info.get("bound_action_id"),
                          record.action_id)

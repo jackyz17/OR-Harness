@@ -1,4 +1,6 @@
 """Hermetic G fixtures using real execute/check-task/close-episode paths."""
+
+from decision_fixtures import execute_scored
 import copy
 import json
 import os
@@ -9,6 +11,7 @@ from or_harness.api import ORHarness
 from or_harness.strategy.embedding_index import LocalHashEmbeddingBackend
 from or_harness.world_model.provider import WorldModelProvider
 from or_harness.world_model.contracts import FAITHFUL_G_CONVENTION
+from decision_fixtures import planned_prediction
 
 COUPLED = {"name": "joint factory selection", "steps": [
     "Select the same factory for BE and CFC, preserving the coupling constraint."]}
@@ -44,12 +47,15 @@ class GCase(HarnessTestCase):
             "annotations": {"coupling": {"resource_coupling": 0.8}}}
 
     def predict_g(self, method=COUPLED, episode="ep1", **kwargs):
-        return self.h.predict_strategy_outcome(self.task,
-            {"action_type": "execute_strategy", "strategy_id": "S04", "method": method},
+        if 'context' in kwargs:
+            return self.h.predict_strategy_outcome(self.task,
+                {'action_type':'execute_strategy','strategy_id':'S04','solver':'highs','method':method},episode,**kwargs)
+        return planned_prediction(self.h,self.task,
+            {"action_type": "execute_strategy", "strategy_id": "S04", "solver":"highs", "method": method},
             episode, **kwargs)
 
     def run_g(self, prediction, *, split=False, crash=False, timeout=False, actual=None,
-              execution_config=None, record=True):
+              execution_config=None, record=True,historical=False):
         work = Path(self.home) / prediction.prediction_id
         work.mkdir()
         script = work / "solve.py"
@@ -65,8 +71,14 @@ class GCase(HarnessTestCase):
                + ", action_id=os.environ['OR_ACTION_ID'])\n" if execution_config is not None else "") +
             "with open('result.json', 'w') as f: json.dump(result, f)\n"))
         script.write_text(body)
-        execution = self.h.execute(self.task, "S04", str(script), str(work), solver="highs",
-            episode_id=prediction.candidate.episode_id, prediction_id=prediction.prediction_id)
+        if historical:
+            from decision_fixtures import import_legacy_execution,bind_legacy
+            execution=import_legacy_execution(self.h,self.task,'S04',str(script),str(work),solver='highs',
+                episode_id=prediction.candidate.episode_id,method_planned=prediction.candidate.method)
+            bind_legacy(self.h,prediction.prediction_id,execution.action_id)
+        else:
+            execution = execute_scored(self.h,self.task, "S04", str(script), str(work), solver="highs",
+                episode_id=prediction.candidate.episode_id, prediction_id=prediction.prediction_id)
         if record:
             self.h.record(execution)
         return execution

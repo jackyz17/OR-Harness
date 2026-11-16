@@ -8,6 +8,8 @@ declaration. These tests pin the whole chain: proposal -> execution record ->
 staging -> recording -> read-back -> induction material, and the honest
 distinction between the two.
 """
+
+from decision_fixtures import execute_scored, planned_prediction
 import json
 import os
 import sys
@@ -213,11 +215,11 @@ class TestMethodRoundTrip(MethodChainCase):
 class TestExecuteMethodChain(MethodChainCase):
     def test_candidate_method_is_planned_and_the_script_reports_actual(self):
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace()
         script = self.write_script(ws, SOLVE_OK)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         # The PLAN is on the record, marked as coming from the candidate.
@@ -238,8 +240,8 @@ class TestExecuteMethodChain(MethodChainCase):
         """A receipt with no matching action_id is a leftover from another
         run and must not be read as this attempt's method."""
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace("ws_stale")
         script = self.write_script(ws, """
             import json
@@ -251,7 +253,7 @@ class TestExecuteMethodChain(MethodChainCase):
             with open("result.json", "w") as fh:
                 json.dump(result, fh)
         """)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         # The plan is known; the performance is UNKNOWN, never a copy.
@@ -263,8 +265,8 @@ class TestExecuteMethodChain(MethodChainCase):
 
     def test_a_failure_keeps_the_receipt_and_the_record(self):
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace("ws_fail")
         script = self.write_script(ws, """
             import json, os, sys
@@ -278,7 +280,7 @@ class TestExecuteMethodChain(MethodChainCase):
                 json.dump(result, fh)
             sys.exit(1)
         """)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         self.assertFalse(record.quality["feasible"])
@@ -297,8 +299,8 @@ class TestExecuteMethodChain(MethodChainCase):
         """An injected executor without ``method_planned`` must not lose the
         plan: the caller attaches it to the record."""
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace("ws_legacy")
 
         class LegacyExecutor:
@@ -316,7 +318,7 @@ class TestExecuteMethodChain(MethodChainCase):
 
         script = self.write_script(ws, SOLVE_OK)
         h.executor = LegacyExecutor(h.executor)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         self.assertEqual(record.method_planned["name"], PLAN["name"])
@@ -326,11 +328,11 @@ class TestExecuteMethodChain(MethodChainCase):
 class TestBindMethodObservation(MethodChainCase):
     def test_binding_reports_a_matching_performed_method(self):
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace()
         script = self.write_script(ws, SOLVE_OK)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         h.record(record)
@@ -341,8 +343,8 @@ class TestBindMethodObservation(MethodChainCase):
 
     def test_binding_reports_a_different_performed_method(self):
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace("ws_mismatch")
         script = self.write_script(ws, """
             import json, os
@@ -356,7 +358,7 @@ class TestBindMethodObservation(MethodChainCase):
             with open("result.json", "w") as fh:
                 json.dump(result, fh)
         """)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         h.record(record)
@@ -368,15 +370,15 @@ class TestBindMethodObservation(MethodChainCase):
 
     def test_no_observed_method_leaves_the_comparison_unknown(self):
         h = self.harness()
-        prediction = h.predict_strategy_outcome(TASK, _spec("S01", method=PLAN),
-                                                "ep1")
+        prediction = planned_prediction(h,TASK, _spec("S01", method=PLAN),
+                                                "ep1", benefit_convention={'kind': 'solution_quality', 'metric': 'normalized_objective_gap', 'unit': '1-gap'})
         ws = self.workspace("ws_none")
         script = self.write_script(ws, """
             import json
             json.dump({"status": "optimal", "objective_value": 42.0,
                        "solver": "highs"}, open("result.json", "w"))
         """)
-        record = h.execute(TASK, None, str(script), str(ws), solver=None,
+        record = execute_scored(h,TASK, None, str(script), str(ws), solver=None,
                            episode_id="ep1",
                            prediction_id=prediction.prediction_id)
         h.record(record)

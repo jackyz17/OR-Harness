@@ -31,6 +31,8 @@ API key:
 """
 from __future__ import annotations
 
+from _workflow import execute_scored
+
 import sys
 import tempfile
 from pathlib import Path
@@ -136,7 +138,7 @@ def main() -> int:
         "    json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
         "               'objective_bound': 1.0, 'runtime_seconds': 0.01}, fh)\n",
         encoding="utf-8")
-    record = h.execute(TASK, "S01", str(work / "solve.py"), str(work),
+    record = execute_scored(h,TASK, "S01", str(work / "solve.py"), str(work),
                        solver="highs", episode_id="ep1")
     h.record(record, host_usage=openclaw)
     stored = h.bank.get(record.execution_id)
@@ -225,7 +227,7 @@ def main() -> int:
 
     # End to end: one record call writes BOTH dimensions with their own
     # provenance — llm_tokens becomes CALIBRATABLE (provider_usage).
-    record2 = h.execute(TASK, "S02", str(work / "solve.py"), str(work),
+    record2 = execute_scored(h,TASK, "S02", str(work / "solve.py"), str(work),
                         solver="highs", episode_id="ep2")
     h.record(record2, host_usage=dict(HOST_REPORT))
     stored2 = h.bank.get(record2.execution_id)

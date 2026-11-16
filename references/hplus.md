@@ -1,7 +1,8 @@
+Normal solving: `profile / recall → plan-next → execute --prediction → check-task → record → close-episode → consume frozen H+`. A standalone forecast or manual choice does not authorize execution.
+
 # Frozen H+ and evidence-backed learning receipts
 
-H+ is the pre-execution binary investment switch in the SAME `predict-strategy`
-answer. G/C/R still selects the solving strategy. Use `capability_gain.decision`
+H+ is the pre-execution binary investment switch in each candidate's SAME world-model answer inside `plan-next`. G/C/R still selects the solving strategy. Use `capability_gain.decision`
 as the JSON number 0 or 1 (`wm-hplus-binary/1`). With 1, provide a short learning
 hypothesis in `claim` and a concrete `verification_conditions` check; with 0,
 state a reason in `basis`. Missing/illegal decisions schedule 0 with distinct
@@ -16,8 +17,9 @@ one honest review; actual evidence decides the learning receipt.
 ## The normal handoff
 
 ```bash
-orx predict-strategy --task task.json --episode E --candidate candidate.json
-orx execute --task task.json --prediction P --code solve.py --workspace ws
+orx plan-next --task task.json --episode E --candidates candidates.json
+# P = result.selected_prediction_id; even one candidate is scored.
+orx execute --task task.json --prediction P --code ws/solve.py --workspace ws
 orx check-task EX --check '{"reference_objective":90,"reference_source":"bench_declared"}'
 orx record --from-staged EX
 orx close-episode --task T --episode E
@@ -181,3 +183,68 @@ PYTHONPATH=src python docs/validation/run_review_eight_demo.py
 It publishes from A/B plus derivation and a constructed boundary before real C,
 then records C use and performs lightweight `keep`, with an actual next provider
 request fragment in its JSON output.
+
+
+## Complete review submissions
+
+Use actual delivered J and execution IDs. A prediction H+=0 skips new induction; a learning label 0 follows a real supported review. Publication and learning labels remain separate.
+
+### 有据的新增或修订
+
+先执行 `orx induction-material --induction-id J`。随后同时提交短规则和学习结论：
+
+```bash
+orx induce --induction-id J \
+  --relation '{
+    "when":"Y可有限枚举，固定Y后整数X的非空可行域是有限区间，且目标对X单调。",
+    "do":"跳过没有可行X的Y。对其余Y按目标方向选相应区间端点，比较所有Y。目标对X不单调时，完整枚举可行X。",
+    "expect":"在所述条件下保留原问题的最优目标值，并减少对X的枚举。",
+    "evidence":["EX_A","EX_B","EX_BOUNDARY"],
+    "publication":{"state":"published","reason":"端点推导和记录的小规模枚举支持这一范围。","scope":["有限整数区间、固定Y时目标对X单调"]}
+  }' \
+  --review '{
+    "outcome":"new_rule",
+    "conclusion":"明确了端点选择方法和非单调目标下的回退条件。",
+    "comparison":{
+      "sufficient":true,"substantive":true,"basis":"derivation",
+      "source":"实际A、B题的输入和枚举记录，以及小规模非单调边界试验。",
+      "assessment":"两种目标方向都由端点推导解释，边界试验核对了完整枚举回退。",
+      "evidence_refs":["EX_A","EX_B","EX_BOUNDARY"]
+    }
+  }'
+```
+
+`--relation` 保存规则、证据和发布选择；`--review` 保存真实学习结论。实际新版本与有据的实质增量可以得到学习标签 1。修订已有条目时在 relation 中增加实际 `entry_id` 和 `operation:"revise"`，保留该编号及版本链；outcome 可用 `revised`。发布本身不自动产生学习正例。
+
+### 已覆盖或没有增量
+
+可以完成空审阅，也可以在同一提交中给实际已有版本补证据。空审阅示例：
+
+```bash
+orx induce --induction-id J \
+  --review '{
+    "outcome":"already_covered",
+    "conclusion":"实际执行采用的端点方向及回退条件已由当前规则版本覆盖，没有可复用的新增量。",
+    "comparison":{
+      "sufficient":true,"substantive":false,
+      "source":"已对照当前规则版本、实际执行步骤及原题检查记录。",
+      "assessment":"实际方法落在已有适用条件内，对照没有发现需要新增或修订的步骤或边界。",
+      "evidence_refs":["EX_A","EX_B"]
+    }
+  }'
+```
+
+充分对照且引用有效检查事实时可得到学习标签 0；没有增量也可用 `no_increment`。需要补证据时加 `--relation '{"entry_id":"实际编号","operation":"add_evidence","evidence":["EX_A"]}'`，与上述 review 一起结清原 J。材料不足、仅未召回旧规则或只改写措辞不能自动充当充分对照。
+
+### 证据不足
+
+```bash
+orx induce --induction-id J \
+  --review '{
+    "outcome":"insufficient_material",
+    "conclusion":"已审阅实际输入与执行记录，但缺少约束覆盖检查，无法核对端点回退是否保持原题可行性；本轮不新增规则。"
+  }'
+```
+
+该命令完成本轮审阅并保留回执，学习标签为未知。不能把未知写成无增量。后续有效补检、更正、引用失效按现有证据规则进入之后的反馈；已经发出的预测仍保留当时输入。
+

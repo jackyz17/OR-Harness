@@ -1,4 +1,7 @@
 """Behavioral acceptance tests for disposable prediction inputs and old banks."""
+
+from decision_fixtures import bind_legacy, execute_scored
+
 import copy
 import hashlib
 import json
@@ -173,7 +176,7 @@ class LifecycleCase(unittest.TestCase):
         action = self.h.actions.begin_action("execute_strategy", "t", "e", pre_snapshot=real,
                                              params={"strategy_id": "candidate", "solver": "highs"})
         self.h.actions.end_action(action.action_id, outcome={})
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id, action.action_id)
+        bound = bind_legacy(self.h,prediction.prediction_id, action.action_id)
         self.assertIn("input_state", bound.trace.model_info["binding_mismatch"])
         self.assertFalse(bound.trace.comparable)
 
@@ -187,7 +190,7 @@ class LifecycleCase(unittest.TestCase):
         action = self.h.actions.begin_action("execute_strategy", "t", "e",
             pre_snapshot=self.h.snapshot(TASK, "e"), params={"strategy_id": "candidate", "solver": "highs"})
         self.h.actions.end_action(action.action_id, outcome={})
-        bound = self.h.bind_strategy_outcome(prediction.prediction_id, action.action_id)
+        bound = bind_legacy(self.h,prediction.prediction_id, action.action_id)
         self.assertIn("input_state", bound.trace.model_info["binding_unknown"])
         from or_harness.world_model.attribution import binding_attribution
         attributed = binding_attribution({}, bound.trace.model_info["binding_unknown"])
@@ -218,7 +221,7 @@ class LifecycleCase(unittest.TestCase):
             cost=CostVector(llm_tokens=5000, measured={"llm_tokens"}))
         self.h.bank.append(record)
         self.h.actions.end_action(action.action_id, outcome={}, linked_execution_id=record.execution_id)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action.action_id)
+        bind_legacy(self.h,prediction.prediction_id, action.action_id)
         risk = self.h.close_episode("t", "e")["evaluations"][0]["risk"]
         self.assertNotIn("budget_exhausted", {row["event"] for row in risk["scored"]})
         # A real overrun remains an execution fact even though its new
@@ -247,7 +250,7 @@ class LifecycleCase(unittest.TestCase):
             cost=CostVector(llm_tokens=5000, measured={"llm_tokens"}))
         self.h.bank.append(record)
         self.h.actions.end_action(action.action_id, outcome={}, linked_execution_id=record.execution_id)
-        self.h.bind_strategy_outcome(prediction.prediction_id, action.action_id)
+        bind_legacy(self.h,prediction.prediction_id, action.action_id)
         risk = self.h.close_episode("t", "e")["evaluations"][0]["risk"]
         self.assertNotIn("budget_exhausted", {row["event"] for row in risk["scored"]})
         self.assertEqual(self.h.bank.get(record.execution_id).cost.measured_dims(), {"llm_tokens"})
@@ -393,7 +396,7 @@ class LifecycleCase(unittest.TestCase):
             return ExecutionRecord(execution_id="ex_adopted", task_id="t", strategy_id="candidate",
                 profile_snapshot=self.h.profile(TASK), quality={"status": "optimal", "feasible": True, "gap": 0})
         with patch.object(self.h, "_run_executor", side_effect=executor):
-            record = self.h.execute(TASK, "candidate", str(script), str(work), solver="highs",
+            record = execute_scored(self.h,TASK, "candidate", str(script), str(work), solver="highs",
                                     episode_id="e", used_entry_ids=[key])
         ref = record.execution_features["used_entries"]["versions"][key]
         self.assertEqual(get_value(self.h.store, ref)["expected"]["quality_hat"], 0.4)
@@ -412,7 +415,7 @@ class LifecycleCase(unittest.TestCase):
                 raise OSError("artifact disk unavailable")
             return capture(*args, **kwargs)
         with patch("or_harness.core.artifacts.capture", side_effect=fail_output):
-            record = self.h.execute(TASK, "candidate", str(script), str(work), solver="highs", episode_id="e")
+            record = execute_scored(self.h,TASK, "candidate", str(script), str(work), solver="highs", episode_id="e")
         self.assertEqual(record.quality["status"], "optimal")
         self.assertIn("artifact_capture_missing", record.execution_features)
         self.assertEqual(self.h.bank.get_pending(record.execution_id).quality["status"], "optimal")
@@ -467,7 +470,7 @@ class LifecycleCase(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             return json.loads(result.stdout)["result"]
         try:
-            plan = cli(["--world-model", f"http://127.0.0.1:{server.server_port}::fixture", "plan-next",
+            plan = cli(["--world-model", f"http://127.0.0.1:{server.server_port}::fixture", "plan-next", "--benefit-kind", "solution_quality", "--benefit-metric", "normalized_objective_gap",
                         "--task", str(task_file), "--candidates", str(candidates_file), "--episode", "e"])["plan"]
             prediction_id = plan["candidates"][0]["prediction_id"]
             cli(["choose-next", "--decision", plan["decision_action_id"], "--prediction", prediction_id])

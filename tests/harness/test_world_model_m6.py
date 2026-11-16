@@ -19,6 +19,8 @@ Coverage map (plan §9 assertion -> test):
   31-33 publication gate          TestPublicationGateUntouched
   34-35 knowledge value decides   TestKnowledgeValueChangesChoice
 """
+
+from decision_fixtures import execute_scored
 import os
 import sys
 import tempfile
@@ -150,7 +152,7 @@ class Base(HarnessTestCase):
     def seed(self, h, task_id="t1", strategy_id="S01"):
         """One real execution + record — the minimum for a learning need."""
         task = dict(TASK, task_id=task_id)
-        record = h.execute(task, strategy_id, str(self.script), str(self.work),
+        record = execute_scored(h,task, strategy_id, str(self.script), str(self.work),
                            solver="highs", episode_id=f"e_{task_id}")
         h.record(record, override={"llm_tokens": 1500.0})
         return record
@@ -191,7 +193,7 @@ class TestTaskBoundary(Base):
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01",
                           episode_id="ep1")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        record = h.execute(TASK, "S01", str(self.script), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1")
         # The task is edited AFTER the execution — a late binding must still
         # be judged against execution-time versions, not this new content.
@@ -536,7 +538,7 @@ class TestDelayedFeedbackLoop(Base):
         self.seed(h, "t1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         exec_pred = h.predict_outcome(TASK, spec, "ep1")
-        record = h.execute(TASK, "S01", str(self.script), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1")
         h.bind_outcome(exec_pred.prediction_id, record.action_id)
         result = h.record(record, override={"llm_tokens": 1500.0})
@@ -555,7 +557,7 @@ class TestDelayedFeedbackLoop(Base):
         h.world_model = cons_provider
         h.predictions.provider = cons_provider
         cons_pred = h.predict_outcome(TASK, spec, "ep2")
-        cons_record = h.execute(TASK, "S01", str(self.script), str(self.work),
+        cons_record = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                                 solver="highs", episode_id="ep2")
         h.bind_outcome(cons_pred.prediction_id, cons_record.action_id)
         h.record(cons_record, override={"llm_tokens": 1500.0})
@@ -600,7 +602,7 @@ class TestDelayedFeedbackLoop(Base):
         self.seed(h, "t1")
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        record = h.execute(TASK, "S01", str(self.script), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, record.action_id)
         # record() runs the H evaluation first, writing the knowledge block.
@@ -656,7 +658,7 @@ class TestDelayedFeedbackLoop(Base):
         self.seed(h)
         spec = ActionSpec("execute_strategy", "t1", strategy_id="S01")
         prediction = h.predict_outcome(TASK, spec, "ep1")
-        record = h.execute(TASK, "S01", str(self.script), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(self.script), str(self.work),
                            solver="highs", episode_id="ep1")
         h.bind_outcome(prediction.prediction_id, record.action_id)
         first = h.record(record, override={"llm_tokens": 1500.0})
@@ -779,7 +781,7 @@ class TestBudgetHonesty(Base):
         h = self.make_harness()
         broken = self.work / "broken.py"
         broken.write_text("raise SystemExit(2)\n", encoding="utf-8")
-        record = h.execute(TASK, "S01", str(broken), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(broken), str(self.work),
                            solver="highs", episode_id="ep1")
         result = h.record(record)
         self.assertTrue(result["recorded"])

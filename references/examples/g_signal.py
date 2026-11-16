@@ -3,6 +3,8 @@
 PYTHONPATH=src python references/examples/g_signal.py > /tmp/g-request.json
 The JSON is an excerpt of a request actually delivered to the stub provider.
 """
+
+from _workflow import execute_scored, planned_prediction
 import copy
 import json
 import tempfile
@@ -49,8 +51,8 @@ def main():
                 ("faithful_pass", joint, 1, "faithful", "unknown"),
                 ("code_omission", joint, 2, "deviated", "implementation"),
             ]:
-                p = h.predict_strategy_outcome(task, {"action_type": "execute_strategy",
-                    "strategy_id": "S04", "method": method}, ep)
+                p = planned_prediction(h,task, {"action_type": "execute_strategy",
+                    "strategy_id": "S04", "method": method}, ep, benefit_convention=FAITHFUL_G_CONVENTION)
                 work = Path(home) / ep
                 work.mkdir()
                 script = work / "solve.py"
@@ -61,7 +63,7 @@ def main():
                     "result['method_performed']['action_id']=os.environ['OR_ACTION_ID']\n"
                     "result['config']={'action_id':os.environ['OR_ACTION_ID'],'time_limit':60}\n"
                     "with open('result.json','w') as f: json.dump(result,f)\n")
-                record = h.execute(task, "S04", str(script), str(work), solver="highs",
+                record = execute_scored(h,task, "S04", str(script), str(work), solver="highs",
                     episode_id=ep, prediction_id=p.prediction_id)
                 h.record(record)
                 h.check_task_result(record.execution_id, {
@@ -75,8 +77,8 @@ def main():
                 benefit = closed["evaluations"][0]["benefit"]
                 outcomes.append({"episode": ep, "G_observed": benefit.get("observed"),
                     "label_eligibility": benefit["label_eligibility"], "reason": benefit.get("reason")})
-            h.predict_strategy_outcome(task, {"action_type": "execute_strategy",
-                "strategy_id": "S04", "method": joint}, "next")
+            planned_prediction(h,task, {"action_type": "execute_strategy",
+                "strategy_id": "S04", "method": joint}, "next", benefit_convention=FAITHFUL_G_CONVENTION)
             actual = provider.requests[-1]
             context = actual["prediction_context"]
             excerpt = {key: actual[key] for key in (

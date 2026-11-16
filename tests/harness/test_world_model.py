@@ -7,6 +7,8 @@ idempotency, legacy compatibility, episode scoping, and the verified-
 knowledge view (WM-K1).
 """
 
+from decision_fixtures import execute_scored
+
 import os
 import sys
 import unittest
@@ -488,7 +490,7 @@ class TestHarnessIntegration(HarnessTestCase):
             "json.dump({'status': 'optimal', 'objective_value': 10.0,\n"
             "           'objective_bound': 10.0, 'mip_gap': 0.0,\n"
             "           'runtime_seconds': 0.1}, open('result.json', 'w'))\n")
-        record = h.execute(task, "S01", str(script), self.home,
+        record = execute_scored(h,task, "S01", str(script), self.home,
                            solver="highs", episode_id="ep1")
         self.assertIsNotNone(record.action_id)
         action = h.actions.get(record.action_id)
@@ -650,7 +652,7 @@ class TestHarnessIntegration(HarnessTestCase):
             "json.dump({'status': 'optimal', 'objective_value': 42.0,\n"
             "           'objective_bound': 42.0, 'mip_gap': 0.0,\n"
             "           'runtime_seconds': 0.2}, open('result.json', 'w'))\n")
-        record = h.execute(task, "S01", str(script), self.home,
+        record = execute_scored(h,task, "S01", str(script), self.home,
                            solver="highs", episode_id="ep1")
         h.record(record, override={"llm_tokens": 1500})
         # 4. Post-state / budget queries.
@@ -880,7 +882,7 @@ class TestBugfixRegressions(HarnessTestCase):
             "json.dump({'status': 'optimal', 'objective_value': 1.0,\n"
             "           'objective_bound': 1.0, 'mip_gap': 0.0,\n"
             "           'runtime_seconds': 0.1}, open('result.json', 'w'))\n")
-        record = h.execute(task, "S01", str(script), self.home,
+        record = execute_scored(h,task, "S01", str(script), self.home,
                            solver="highs", episode_id="ep1")
         action = h.actions.get(record.action_id)
         post = h.get_snapshot(action.post_snapshot_id)

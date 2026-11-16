@@ -1,4 +1,6 @@
 """Normal execution/check/close paths for short rules and held-out evidence."""
+
+from decision_fixtures import execute_scored
 import copy
 import io
 import json
@@ -56,7 +58,7 @@ class RuleCase(HarnessTestCase):
         code += "result={'status':'optimal','objective_value':answer[0],'objective_bound':answer[0], 'variables':{'X':answer[1],'Y':answer[2],'reduction_used':" + str(not boundary) + "},'method_performed':" + repr(performed_method or METHOD) + "}\n"
         code += "result['method_performed']['action_id']=os.environ['OR_ACTION_ID']\njson.dump(result,open('result.json','w'))\n"
         (work / 'solve.py').write_text(code)
-        r = self.h.execute(task, "endpoint", str(work / 'solve.py'), str(work), solver="python",
+        r = execute_scored(self.h,task, "endpoint", str(work / 'solve.py'), str(work), solver="python",
                            episode_id=name, method=METHOD,
                            prediction_id=prediction_id,
                            used_entry_ids=[f"{use}@{version}"] if use else None)
@@ -418,7 +420,7 @@ class TestRuleLifecycle(RuleCase):
                 status=main(['--home',self.home]+args)
             self.assertEqual(status,0,out.getvalue())
             return json.loads(out.getvalue()),out.getvalue().strip()
-        result,_=cli(['execute','--task',str(work/'task.json'),'--strategy','endpoint','--solver','python','--code',str(work/'solve.py'),'--workspace',str(work),'--episode','cli-ep'])
+        result,_=cli(__import__('decision_fixtures').scored_cli_argv(self.home,['execute','--task',str(work/'task.json'),'--strategy','endpoint','--solver','python','--code',str(work/'solve.py'),'--workspace',str(work),'--episode','cli-ep']))
         execution_id=result['result']['execution']['execution_id']
         cli(['check-task',execution_id,'--check',json.dumps({'reference_objective':2699,'reference_source':'bench_declared'})])
         cli(['record','--from-staged',execution_id])

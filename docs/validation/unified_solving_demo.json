@@ -1,0 +1,1533 @@
+{
+  "audit_baseline": "4e98fdfa52dc843826c37483f171bc605f038a99",
+  "local_git_metadata_available": false,
+  "scope": "Scored solving entry, pre-execution adoption, independent C scales and frozen H+ handoff; no large frozen-evaluation protocol changes.",
+  "tests": {
+    "full": {
+      "command": "PYTHONPATH=src:tests/harness python3 -m unittest discover -s tests/harness -q",
+      "n": 1908,
+      "seconds": 209.785,
+      "status": "passed"
+    },
+    "directed": {
+      "command": "PYTHONPATH=src:tests/harness python3 -m unittest -q test_strategy_outcome test_r_technical test_end_to_end_cli test_hplus_binary test_documented_result_keys test_world_model_m3 test_r13_remaining_cost test_calibration_v2 test_snapshot_lifecycle",
+      "n": 280,
+      "seconds": 55.107,
+      "status": "passed"
+    },
+    "experiments": {
+      "command": "PYTHONPATH=src:tests/harness python3 -m unittest -q test_hplus_experiments test_experiments",
+      "n": 6,
+      "seconds": 37.628,
+      "status": "passed"
+    },
+    "pre_execution": {
+      "command": "PYTHONPATH=src:tests/harness python3 -m unittest -q test_command_surface.TestPreExecutionAssociation",
+      "n": 4,
+      "status": "passed"
+    },
+    "documentation": {
+      "command": "PYTHONPATH=src python3 references/examples/_check_docs.py",
+      "status": "passed"
+    },
+    "runnable_documented_examples": {
+      "n": 14,
+      "status": "passed"
+    },
+    "compileall": {
+      "command": "python3 -m compileall -q src tests/harness references/examples",
+      "status": "passed"
+    }
+  },
+  "interpretation": "Scripted provider forecasts verify wiring. They are not real-model strategy ranking or industrial cost-discrimination results.",
+  "single": {
+    "home": "/tmp/orx-unified-ah3b7e_r",
+    "provider_kind": "scripted wiring fixture",
+    "provider_calls": 2,
+    "decisions": [
+      {
+        "decision_action_id": "ac_343244748baf",
+        "task_id": "endpoint-source",
+        "prediction_context_id": "ctx_bce2cbdefd64",
+        "model_calls_made": 1,
+        "selected_prediction_id": "sp_6d3e6d3e2747",
+        "selected_score": {
+          "prediction_id": "sp_6d3e6d3e2747",
+          "benefit_value": 0.9,
+          "cost_normalized": 0.403698,
+          "risk_effective": 0.1,
+          "risk_reported": [
+            {
+              "event": "implementation_failure",
+              "probability": 0.1
+            }
+          ],
+          "risk_probability": 0.1,
+          "cost_reported": {
+            "scope": "remaining_to_task_end",
+            "expected_measured": [
+              "tool_calls"
+            ],
+            "values": {
+              "tool_calls": 3.0
+            }
+          },
+          "scoring_basis": {
+            "participant_prediction_ids": [
+              "sp_6d3e6d3e2747"
+            ],
+            "terms": [
+              "G",
+              "C",
+              "R"
+            ],
+            "cost_dimensions": [
+              "tool_calls"
+            ],
+            "cost_scales": {
+              "tool_calls": 30.0
+            },
+            "cost_weights": {
+              "tool_calls": 1.0
+            },
+            "cost_scale_sources": {
+              "tool_calls": {
+                "peak": 30.0,
+                "source": "explicit_plan_limits",
+                "reference": "limits.cost_scales.tool_calls",
+                "configuration_ref": "limits.cost_scales.tool_calls",
+                "as_of": 1794829834.4586332,
+                "scope": "remaining_to_task_end"
+              }
+            },
+            "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+            "utility_weights": {
+              "alpha": 1.0,
+              "beta": 1.0,
+              "gamma": 1.0
+            },
+            "cost_measurement_scopes": {
+              "tool_calls": "remaining_to_task_end"
+            },
+            "omitted_cost_dimensions": {},
+            "risk_event": "implementation_failure",
+            "omitted_risk_reason": null,
+            "missing_risk_prediction_ids": [],
+            "partial": false
+          },
+          "utility": 0.396302,
+          "incomparable": {},
+          "notes": []
+        },
+        "candidates": [
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_6d3e6d3e2747",
+            "prediction_status": "valid",
+            "execution_allowed": true,
+            "execution_refusal_reason": null,
+            "score": {
+              "prediction_id": "sp_6d3e6d3e2747",
+              "benefit_value": 0.9,
+              "cost_normalized": 0.403698,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 3.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_6d3e6d3e2747"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829834.4586332,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": 0.396302,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 1,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          }
+        ]
+      },
+      {
+        "decision_action_id": "ac_c721879122d8",
+        "task_id": "endpoint-covered",
+        "prediction_context_id": "ctx_e4a097ea03ba",
+        "model_calls_made": 1,
+        "selected_prediction_id": "sp_6108fed009c9",
+        "selected_score": {
+          "prediction_id": "sp_6108fed009c9",
+          "benefit_value": 0.9,
+          "cost_normalized": 0.403698,
+          "risk_effective": 0.1,
+          "risk_reported": [
+            {
+              "event": "implementation_failure",
+              "probability": 0.1
+            }
+          ],
+          "risk_probability": 0.1,
+          "cost_reported": {
+            "scope": "remaining_to_task_end",
+            "expected_measured": [
+              "tool_calls"
+            ],
+            "values": {
+              "tool_calls": 3.0
+            }
+          },
+          "scoring_basis": {
+            "participant_prediction_ids": [
+              "sp_6108fed009c9"
+            ],
+            "terms": [
+              "G",
+              "C",
+              "R"
+            ],
+            "cost_dimensions": [
+              "tool_calls"
+            ],
+            "cost_scales": {
+              "tool_calls": 30.0
+            },
+            "cost_weights": {
+              "tool_calls": 1.0
+            },
+            "cost_scale_sources": {
+              "tool_calls": {
+                "peak": 30.0,
+                "source": "explicit_plan_limits",
+                "reference": "limits.cost_scales.tool_calls",
+                "configuration_ref": "limits.cost_scales.tool_calls",
+                "as_of": 1794829836.0447524,
+                "scope": "remaining_to_task_end"
+              }
+            },
+            "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+            "utility_weights": {
+              "alpha": 1.0,
+              "beta": 1.0,
+              "gamma": 1.0
+            },
+            "cost_measurement_scopes": {
+              "tool_calls": "remaining_to_task_end"
+            },
+            "omitted_cost_dimensions": {},
+            "risk_event": "implementation_failure",
+            "omitted_risk_reason": null,
+            "missing_risk_prediction_ids": [],
+            "partial": false
+          },
+          "utility": 0.396302,
+          "incomparable": {},
+          "notes": []
+        },
+        "candidates": [
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_6108fed009c9",
+            "prediction_status": "valid",
+            "execution_allowed": true,
+            "execution_refusal_reason": null,
+            "score": {
+              "prediction_id": "sp_6108fed009c9",
+              "benefit_value": 0.9,
+              "cost_normalized": 0.403698,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 3.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_6108fed009c9"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829836.0447524,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": 0.396302,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 0,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          }
+        ]
+      }
+    ],
+    "execution_ids": [
+      "ex_ef949858aa21",
+      "ex_e55af7e09e1d"
+    ],
+    "induction_receipt": {
+      "induction_id": "ij_8391cf0199d7823f14467aee",
+      "prediction_id": "sp_6d3e6d3e2747",
+      "solve_action_id": "ac_aa22798c3db8",
+      "induction_action_id": "ac_2ca73b01fe0f",
+      "material_id": "induction_material:0d8d928e873d9e49a7f7d0939a65afedb48cdacaf8f924d6e0bd2cf32e15f9aa",
+      "source_execution_ids": [
+        "ex_ef949858aa21"
+      ],
+      "receipt_ref": "hplus_receipt:f0cfc11f987a8cf4fb36c59f356943bcfdaa4d7383e4c6e689edbff7536fe1d7",
+      "verification": [
+        {
+          "condition_index": 0,
+          "condition": "Full enumeration gives the same objective 90.",
+          "state": "checked",
+          "finding": "Captured script asserts equality with full enumeration and objective 90.",
+          "source": "Example reviewer inspected the captured script and independent checker.",
+          "evidence_refs": [
+            "artifacts.submitted_script",
+            "task_check.checks"
+          ],
+          "reason": null
+        }
+      ],
+      "rule_updates": [
+        {
+          "version": 1,
+          "body_ref": "rule:24a115649d5bf273e1cd0eb832d3b7d6754567128337517d07db427cee348c5e",
+          "operation": "create",
+          "new_version": true,
+          "entry_id": "1",
+          "increment": {
+            "substantive": true,
+            "status": "agent_review",
+            "comparison_ref": "hplus_comparison:54ffdc948b29815894759851a9370ff7993aaa5d73ca7cdc25ec44b8d9b3dab5",
+            "body_changed": true
+          },
+          "substantive": true
+        }
+      ],
+      "outcome": "new_rule"
+    },
+    "induction_observation": {
+      "label": 1,
+      "verification_state": "agent_supported_increment",
+      "hypothesis_outcome": "unknown",
+      "validated_rules": [
+        {
+          "entry_id": "1",
+          "version": 1,
+          "body_ref": "rule:24a115649d5bf273e1cd0eb832d3b7d6754567128337517d07db427cee348c5e",
+          "operation": "create"
+        }
+      ],
+      "observation_rule_version": "wm-hplus-review/2"
+    },
+    "all_jobs_completed": true,
+    "commands": [
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r profile --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-source.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r recall --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-source.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r --world-model http://127.0.0.1:44913::scripted-example plan-next --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-source.json --episode E --candidates /tmp/orx-unified-ah3b7e_r/ws/endpoint-source-candidates.json --cost-scales '{\"tool_calls\":30}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r execute --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-source.json --prediction sp_6d3e6d3e2747 --code /tmp/orx-unified-ah3b7e_r/ws/solve.py --workspace /tmp/orx-unified-ah3b7e_r/ws",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r check-task ex_ef949858aa21 --check '{\"reference_objective\": 90, \"reference_source\": \"independent\", \"reference_version\": \"full-enumeration/1\", \"integer\": {\"variables\": [\"X\", \"Y\"]}, \"recompute_objective\": {\"coefficients\": {\"X\": 2, \"Y\": -5}}, \"semantic_probe\": [{\"path\": \"execution_features.solution_variables.X\", \"min\": 470, \"max\": 471}, {\"path\": \"execution_features.solution_variables.Y\", \"min\": 0, \"max\": 170}], \"hplus_verification\": [{\"prediction_id\": \"sp_6d3e6d3e2747\", \"condition_index\": 0, \"state\": \"checked\", \"finding\": \"Captured script asserts equality with full enumeration and objective 90.\", \"source\": \"Example reviewer inspected the captured script and independent checker.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"task_check.checks\"]}], \"g_attribution\": {\"method_fidelity\": \"faithful\", \"failure_source\": \"unknown\", \"acceptance_scope\": \"original_task\", \"acceptance_id\": \"endpoint-original/1\", \"source\": \"Example reviewer inspected the captured script and its exhaustive feasibility comparison.\", \"assessment\": \"The actual script enumerates the original constraints and confirms the minimum independently.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"artifacts.workspace_result\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r record --from-staged ex_ef949858aa21",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r close-episode --task endpoint-source --episode E --terminal completed",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r induction-material --induction-id ij_8391cf0199d7823f14467aee",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r induce --induction-id ij_8391cf0199d7823f14467aee --relation '{\"when\": \"Y can be finitely enumerated and each fixed-Y feasible integer X is a finite interval with monotone objective.\", \"do\": \"Skip empty intervals; choose the lower X endpoint for increasing minimization and the opposite endpoint for maximization; enumerate X for nonmonotone objectives.\", \"expect\": \"Preserve the optimum within this scope while reducing X enumeration.\", \"evidence\": [\"ex_ef949858aa21\"], \"publication\": {\"state\": \"published\", \"reason\": \"Monotonicity derivation and captured full enumeration agree.\", \"scope\": [\"finite integer intervals with fixed-Y monotone objective\"]}}' --review '{\"outcome\": \"new_rule\", \"conclusion\": \"The lower endpoint is supported for this minimization direction.\", \"comparison\": {\"sufficient\": true, \"substantive\": true, \"basis\": \"derivation\", \"source\": \"Original task and captured endpoint/full enumeration.\", \"assessment\": \"Coefficient 2 makes the fixed-Y objective increasing; enumeration verifies objective 90.\", \"evidence_refs\": [\"ex_ef949858aa21\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r close-episode --task endpoint-source --episode E",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r profile --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-covered.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r recall --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-covered.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r --world-model http://127.0.0.1:44913::scripted-example plan-next --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-covered.json --episode E --candidates /tmp/orx-unified-ah3b7e_r/ws/endpoint-covered-candidates.json --cost-scales '{\"tool_calls\":30}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r execute --task /tmp/orx-unified-ah3b7e_r/ws/endpoint-covered.json --prediction sp_6108fed009c9 --code /tmp/orx-unified-ah3b7e_r/ws/solve.py --workspace /tmp/orx-unified-ah3b7e_r/ws --used-entry-ids 1@1",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r check-task ex_e55af7e09e1d --check '{\"reference_objective\": 90, \"reference_source\": \"independent\", \"reference_version\": \"full-enumeration/1\", \"integer\": {\"variables\": [\"X\", \"Y\"]}, \"recompute_objective\": {\"coefficients\": {\"X\": 2, \"Y\": -5}}, \"semantic_probe\": [{\"path\": \"execution_features.solution_variables.X\", \"min\": 470, \"max\": 471}, {\"path\": \"execution_features.solution_variables.Y\", \"min\": 0, \"max\": 170}], \"hplus_verification\": [{\"prediction_id\": \"sp_6108fed009c9\", \"condition_index\": 0, \"state\": \"checked\", \"finding\": \"Captured script asserts equality with full enumeration and objective 90.\", \"source\": \"Example reviewer inspected the captured script and independent checker.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"task_check.checks\"]}], \"g_attribution\": {\"method_fidelity\": \"faithful\", \"failure_source\": \"unknown\", \"acceptance_scope\": \"original_task\", \"acceptance_id\": \"endpoint-original/1\", \"source\": \"Example reviewer inspected the captured script and its exhaustive feasibility comparison.\", \"assessment\": \"The actual script enumerates the original constraints and confirms the minimum independently.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"artifacts.workspace_result\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r record --from-staged ex_e55af7e09e1d",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r close-episode --task endpoint-covered --episode E --terminal completed",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-ah3b7e_r induction-status"
+    ],
+    "request_fragment": {
+      "candidate": {
+        "action_type": "execute_strategy",
+        "strategy_id": "endpoint",
+        "solver": "python",
+        "method": {
+          "name": "lower endpoint enumeration",
+          "steps": [
+            "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+            "For this minimization choose the lower feasible integer X and compare all Y.",
+            "Check integrality, both original inequalities and objective 2X-5Y."
+          ]
+        },
+        "config": {},
+        "preconditions": [],
+        "expected_scope": [],
+        "stop_conditions": [],
+        "task_id": "endpoint-source",
+        "episode_id": "E",
+        "scope": "attempt",
+        "scope_basis": "legacy_attempt",
+        "window_id": null
+      },
+      "benefit_convention": {
+        "kind": "effective_completion",
+        "metric": "task_check_passed_given_faithful_execution",
+        "unit": "probability",
+        "scope": "attempt",
+        "observation_rule_version": "wm-g-faithful/1",
+        "observed_from": "attributable original-task acceptance after faithful execution",
+        "source": "declared",
+        "required": true,
+        "note": "THIS DECISION compares benefit under this convention. Predict this candidate's benefit with EXACTLY this kind and metric: a different kind or metric cannot be ranked against the other candidates, and it is NOT silently converted"
+      },
+      "prediction_context": {
+        "context_id": "ctx_bce2cbdefd64",
+        "context_version": "wm-context/4",
+        "task_id": "endpoint-source",
+        "episode_id": "E",
+        "snapshot_id": "bs_7306b8be3d2f",
+        "cost_evidence": {
+          "observation_rule_version": "wm-c-window/1",
+          "current_conditions": {
+            "scope": "remaining_to_task_end",
+            "phase": "unknown",
+            "phase_basis": "unknown",
+            "reusable_artifacts": [],
+            "execution_host": {},
+            "solver_conditions": {
+              "solver": "python",
+              "config": {},
+              "constraints": {
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                },
+                "declared_budget": null
+              }
+            },
+            "family": "assignment",
+            "structure": {
+              "problem_class": "unknown"
+            }
+          },
+          "candidate_work": {
+            "steps_ref": "candidate.method.steps",
+            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"
+          },
+          "reference_ranges": [],
+          "cases": [],
+          "missing": [
+            "execution-host model identity unavailable",
+            "decision phase unavailable"
+          ],
+          "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
+          "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."
+        },
+        "implementation_r_evidence": {
+          "event": "implementation_failure",
+          "unit": "execution",
+          "scope": "attempt",
+          "observation_rule_version": "wm-r-technical/1",
+          "execution_agent": {},
+          "solver_interface": "python",
+          "groups": [],
+          "missing": [
+            "execution agent host/model unknown"
+          ],
+          "support": "insufficient_evidence",
+          "note": "use applicable empirical facts; shared base rates or similar candidate probabilities are allowed when supported"
+        },
+        "prediction_reminders": []
+      }
+    }
+  },
+  "multi": {
+    "home": "/tmp/orx-unified-joe9065e",
+    "provider_kind": "scripted wiring fixture",
+    "provider_calls": 4,
+    "decisions": [
+      {
+        "decision_action_id": "ac_824cd5486c27",
+        "task_id": "endpoint-source",
+        "prediction_context_id": "ctx_ea1363fe41b5",
+        "model_calls_made": 2,
+        "selected_prediction_id": "sp_6f73f232ef9b",
+        "selected_score": {
+          "prediction_id": "sp_6f73f232ef9b",
+          "benefit_value": 0.9,
+          "cost_normalized": 0.403698,
+          "risk_effective": 0.1,
+          "risk_reported": [
+            {
+              "event": "implementation_failure",
+              "probability": 0.1
+            }
+          ],
+          "risk_probability": 0.1,
+          "cost_reported": {
+            "scope": "remaining_to_task_end",
+            "expected_measured": [
+              "tool_calls"
+            ],
+            "values": {
+              "tool_calls": 3.0
+            }
+          },
+          "scoring_basis": {
+            "participant_prediction_ids": [
+              "sp_6f73f232ef9b",
+              "sp_95d04717e97d"
+            ],
+            "terms": [
+              "G",
+              "C",
+              "R"
+            ],
+            "cost_dimensions": [
+              "tool_calls"
+            ],
+            "cost_scales": {
+              "tool_calls": 30.0
+            },
+            "cost_weights": {
+              "tool_calls": 1.0
+            },
+            "cost_scale_sources": {
+              "tool_calls": {
+                "peak": 30.0,
+                "source": "explicit_plan_limits",
+                "reference": "limits.cost_scales.tool_calls",
+                "configuration_ref": "limits.cost_scales.tool_calls",
+                "as_of": 1794829840.4576147,
+                "scope": "remaining_to_task_end"
+              }
+            },
+            "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+            "utility_weights": {
+              "alpha": 1.0,
+              "beta": 1.0,
+              "gamma": 1.0
+            },
+            "cost_measurement_scopes": {
+              "tool_calls": "remaining_to_task_end"
+            },
+            "omitted_cost_dimensions": {},
+            "risk_event": "implementation_failure",
+            "omitted_risk_reason": null,
+            "missing_risk_prediction_ids": [],
+            "partial": false
+          },
+          "utility": 0.396302,
+          "incomparable": {},
+          "notes": []
+        },
+        "candidates": [
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_6f73f232ef9b",
+            "prediction_status": "valid",
+            "execution_allowed": true,
+            "execution_refusal_reason": null,
+            "score": {
+              "prediction_id": "sp_6f73f232ef9b",
+              "benefit_value": 0.9,
+              "cost_normalized": 0.403698,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 3.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_6f73f232ef9b",
+                  "sp_95d04717e97d"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829840.4576147,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": 0.396302,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 1,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          },
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "strategy_id": "full-enumeration",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "full integer enumeration",
+                "steps": [
+                  "Rebuild the feasible set by enumerating every nonnegative integer X and Y.",
+                  "Check X+Y<=641 and X>=2Y+130, then compare 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "full-enumeration",
+              "solver": "python",
+              "method": {
+                "name": "full integer enumeration",
+                "steps": [
+                  "Rebuild the feasible set by enumerating every nonnegative integer X and Y.",
+                  "Check X+Y<=641 and X>=2Y+130, then compare 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-source",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_95d04717e97d",
+            "prediction_status": "valid",
+            "execution_allowed": false,
+            "execution_refusal_reason": "not selected by this U decision",
+            "score": {
+              "prediction_id": "sp_95d04717e97d",
+              "benefit_value": 0.9,
+              "cost_normalized": 1.0,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 30.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_6f73f232ef9b",
+                  "sp_95d04717e97d"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829840.4576147,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": -0.2,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 1,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          }
+        ]
+      },
+      {
+        "decision_action_id": "ac_bbeb73d58d50",
+        "task_id": "endpoint-covered",
+        "prediction_context_id": "ctx_a778bb28136d",
+        "model_calls_made": 2,
+        "selected_prediction_id": "sp_48577d32b3e1",
+        "selected_score": {
+          "prediction_id": "sp_48577d32b3e1",
+          "benefit_value": 0.9,
+          "cost_normalized": 0.403698,
+          "risk_effective": 0.1,
+          "risk_reported": [
+            {
+              "event": "implementation_failure",
+              "probability": 0.1
+            }
+          ],
+          "risk_probability": 0.1,
+          "cost_reported": {
+            "scope": "remaining_to_task_end",
+            "expected_measured": [
+              "tool_calls"
+            ],
+            "values": {
+              "tool_calls": 3.0
+            }
+          },
+          "scoring_basis": {
+            "participant_prediction_ids": [
+              "sp_48577d32b3e1",
+              "sp_d279804ff018"
+            ],
+            "terms": [
+              "G",
+              "C",
+              "R"
+            ],
+            "cost_dimensions": [
+              "tool_calls"
+            ],
+            "cost_scales": {
+              "tool_calls": 30.0
+            },
+            "cost_weights": {
+              "tool_calls": 1.0
+            },
+            "cost_scale_sources": {
+              "tool_calls": {
+                "peak": 30.0,
+                "source": "explicit_plan_limits",
+                "reference": "limits.cost_scales.tool_calls",
+                "configuration_ref": "limits.cost_scales.tool_calls",
+                "as_of": 1794829842.0402806,
+                "scope": "remaining_to_task_end"
+              }
+            },
+            "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+            "utility_weights": {
+              "alpha": 1.0,
+              "beta": 1.0,
+              "gamma": 1.0
+            },
+            "cost_measurement_scopes": {
+              "tool_calls": "remaining_to_task_end"
+            },
+            "omitted_cost_dimensions": {},
+            "risk_event": "implementation_failure",
+            "omitted_risk_reason": null,
+            "missing_risk_prediction_ids": [],
+            "partial": false
+          },
+          "utility": 0.396302,
+          "incomparable": {},
+          "notes": []
+        },
+        "candidates": [
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "endpoint",
+              "solver": "python",
+              "method": {
+                "name": "lower endpoint enumeration",
+                "steps": [
+                  "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+                  "For this minimization choose the lower feasible integer X and compare all Y.",
+                  "Check integrality, both original inequalities and objective 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_48577d32b3e1",
+            "prediction_status": "valid",
+            "execution_allowed": true,
+            "execution_refusal_reason": null,
+            "score": {
+              "prediction_id": "sp_48577d32b3e1",
+              "benefit_value": 0.9,
+              "cost_normalized": 0.403698,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 3.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_48577d32b3e1",
+                  "sp_d279804ff018"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829842.0402806,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": 0.396302,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 0,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          },
+          {
+            "action_spec": {
+              "action_type": "execute_strategy",
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "strategy_id": "full-enumeration",
+              "solver": "python",
+              "params": {},
+              "measurement_scope": "attempt",
+              "budget_hint": null,
+              "method": {
+                "name": "full integer enumeration",
+                "steps": [
+                  "Rebuild the feasible set by enumerating every nonnegative integer X and Y.",
+                  "Check X+Y<=641 and X>=2Y+130, then compare 2X-5Y."
+                ]
+              }
+            },
+            "candidate_ref": {
+              "action_type": "execute_strategy",
+              "strategy_id": "full-enumeration",
+              "solver": "python",
+              "method": {
+                "name": "full integer enumeration",
+                "steps": [
+                  "Rebuild the feasible set by enumerating every nonnegative integer X and Y.",
+                  "Check X+Y<=641 and X>=2Y+130, then compare 2X-5Y."
+                ]
+              },
+              "config": {},
+              "preconditions": [],
+              "expected_scope": [],
+              "stop_conditions": [],
+              "task_id": "endpoint-covered",
+              "episode_id": "E",
+              "scope": "attempt",
+              "scope_basis": "legacy_attempt",
+              "window_id": null
+            },
+            "prediction_id": "sp_d279804ff018",
+            "prediction_status": "valid",
+            "execution_allowed": false,
+            "execution_refusal_reason": "not selected by this U decision",
+            "score": {
+              "prediction_id": "sp_d279804ff018",
+              "benefit_value": 0.9,
+              "cost_normalized": 1.0,
+              "risk_effective": 0.1,
+              "risk_reported": [
+                {
+                  "event": "implementation_failure",
+                  "probability": 0.1
+                }
+              ],
+              "risk_probability": 0.1,
+              "cost_reported": {
+                "scope": "remaining_to_task_end",
+                "expected_measured": [
+                  "tool_calls"
+                ],
+                "values": {
+                  "tool_calls": 30.0
+                }
+              },
+              "scoring_basis": {
+                "participant_prediction_ids": [
+                  "sp_48577d32b3e1",
+                  "sp_d279804ff018"
+                ],
+                "terms": [
+                  "G",
+                  "C",
+                  "R"
+                ],
+                "cost_dimensions": [
+                  "tool_calls"
+                ],
+                "cost_scales": {
+                  "tool_calls": 30.0
+                },
+                "cost_weights": {
+                  "tool_calls": 1.0
+                },
+                "cost_scale_sources": {
+                  "tool_calls": {
+                    "peak": 30.0,
+                    "source": "explicit_plan_limits",
+                    "reference": "limits.cost_scales.tool_calls",
+                    "configuration_ref": "limits.cost_scales.tool_calls",
+                    "as_of": 1794829842.0402806,
+                    "scope": "remaining_to_task_end"
+                  }
+                },
+                "cost_normalization": "clip(log1p(predicted) / log1p(peak), 0, 1)",
+                "utility_weights": {
+                  "alpha": 1.0,
+                  "beta": 1.0,
+                  "gamma": 1.0
+                },
+                "cost_measurement_scopes": {
+                  "tool_calls": "remaining_to_task_end"
+                },
+                "omitted_cost_dimensions": {},
+                "risk_event": "implementation_failure",
+                "omitted_risk_reason": null,
+                "missing_risk_prediction_ids": [],
+                "partial": false
+              },
+              "utility": -0.2,
+              "incomparable": {},
+              "notes": []
+            },
+            "capability_gain": {
+              "kind": "frozen_induction_signal",
+              "decision": 0,
+              "decision_status": "explicit",
+              "explanation": "The lower endpoint complements a maximum-only endpoint rule.",
+              "verification_conditions": [
+                {
+                  "condition": "Full enumeration gives the same objective 90.",
+                  "check_basis": null,
+                  "prediction_made": true,
+                  "fact_bound": false,
+                  "effect_verified": false
+                }
+              ],
+              "gaps": []
+            }
+          }
+        ]
+      }
+    ],
+    "execution_ids": [
+      "ex_0f60fba1a13f",
+      "ex_61dbe1ed665a"
+    ],
+    "induction_receipt": {
+      "induction_id": "ij_727c2feac03f3ea04e48e5ad",
+      "prediction_id": "sp_6f73f232ef9b",
+      "solve_action_id": "ac_08500910aba3",
+      "induction_action_id": "ac_4b86c2150941",
+      "material_id": "induction_material:ac4579adab27228d670dd0cfb57251ff220fba312aa59819924f9bf199bf4298",
+      "source_execution_ids": [
+        "ex_0f60fba1a13f"
+      ],
+      "receipt_ref": "hplus_receipt:f1273350cb1ec11a8f7843d8ee9bd402b9ecd82a9361452aad635f2846a9871a",
+      "verification": [
+        {
+          "condition_index": 0,
+          "condition": "Full enumeration gives the same objective 90.",
+          "state": "checked",
+          "finding": "Captured script asserts equality with full enumeration and objective 90.",
+          "source": "Example reviewer inspected the captured script and independent checker.",
+          "evidence_refs": [
+            "artifacts.submitted_script",
+            "task_check.checks"
+          ],
+          "reason": null
+        }
+      ],
+      "rule_updates": [
+        {
+          "version": 1,
+          "body_ref": "rule:24a115649d5bf273e1cd0eb832d3b7d6754567128337517d07db427cee348c5e",
+          "operation": "create",
+          "new_version": true,
+          "entry_id": "1",
+          "increment": {
+            "substantive": true,
+            "status": "agent_review",
+            "comparison_ref": "hplus_comparison:55f70e32a7ce915c7220eef8286a6d077ea59ce43dada7f15dc71151a263a817",
+            "body_changed": true
+          },
+          "substantive": true
+        }
+      ],
+      "outcome": "new_rule"
+    },
+    "induction_observation": {
+      "label": 1,
+      "verification_state": "agent_supported_increment",
+      "hypothesis_outcome": "unknown",
+      "validated_rules": [
+        {
+          "entry_id": "1",
+          "version": 1,
+          "body_ref": "rule:24a115649d5bf273e1cd0eb832d3b7d6754567128337517d07db427cee348c5e",
+          "operation": "create"
+        }
+      ],
+      "observation_rule_version": "wm-hplus-review/2"
+    },
+    "all_jobs_completed": true,
+    "commands": [
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e profile --task /tmp/orx-unified-joe9065e/ws/endpoint-source.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e recall --task /tmp/orx-unified-joe9065e/ws/endpoint-source.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e --world-model http://127.0.0.1:36467::scripted-example plan-next --task /tmp/orx-unified-joe9065e/ws/endpoint-source.json --episode E --candidates /tmp/orx-unified-joe9065e/ws/endpoint-source-candidates.json --cost-scales '{\"tool_calls\":30}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e execute --task /tmp/orx-unified-joe9065e/ws/endpoint-source.json --prediction sp_6f73f232ef9b --code /tmp/orx-unified-joe9065e/ws/solve.py --workspace /tmp/orx-unified-joe9065e/ws",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e check-task ex_0f60fba1a13f --check '{\"reference_objective\": 90, \"reference_source\": \"independent\", \"reference_version\": \"full-enumeration/1\", \"integer\": {\"variables\": [\"X\", \"Y\"]}, \"recompute_objective\": {\"coefficients\": {\"X\": 2, \"Y\": -5}}, \"semantic_probe\": [{\"path\": \"execution_features.solution_variables.X\", \"min\": 470, \"max\": 471}, {\"path\": \"execution_features.solution_variables.Y\", \"min\": 0, \"max\": 170}], \"hplus_verification\": [{\"prediction_id\": \"sp_6f73f232ef9b\", \"condition_index\": 0, \"state\": \"checked\", \"finding\": \"Captured script asserts equality with full enumeration and objective 90.\", \"source\": \"Example reviewer inspected the captured script and independent checker.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"task_check.checks\"]}], \"g_attribution\": {\"method_fidelity\": \"faithful\", \"failure_source\": \"unknown\", \"acceptance_scope\": \"original_task\", \"acceptance_id\": \"endpoint-original/1\", \"source\": \"Example reviewer inspected the captured script and its exhaustive feasibility comparison.\", \"assessment\": \"The actual script enumerates the original constraints and confirms the minimum independently.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"artifacts.workspace_result\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e record --from-staged ex_0f60fba1a13f",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e close-episode --task endpoint-source --episode E --terminal completed",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e induction-material --induction-id ij_727c2feac03f3ea04e48e5ad",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e induce --induction-id ij_727c2feac03f3ea04e48e5ad --relation '{\"when\": \"Y can be finitely enumerated and each fixed-Y feasible integer X is a finite interval with monotone objective.\", \"do\": \"Skip empty intervals; choose the lower X endpoint for increasing minimization and the opposite endpoint for maximization; enumerate X for nonmonotone objectives.\", \"expect\": \"Preserve the optimum within this scope while reducing X enumeration.\", \"evidence\": [\"ex_0f60fba1a13f\"], \"publication\": {\"state\": \"published\", \"reason\": \"Monotonicity derivation and captured full enumeration agree.\", \"scope\": [\"finite integer intervals with fixed-Y monotone objective\"]}}' --review '{\"outcome\": \"new_rule\", \"conclusion\": \"The lower endpoint is supported for this minimization direction.\", \"comparison\": {\"sufficient\": true, \"substantive\": true, \"basis\": \"derivation\", \"source\": \"Original task and captured endpoint/full enumeration.\", \"assessment\": \"Coefficient 2 makes the fixed-Y objective increasing; enumeration verifies objective 90.\", \"evidence_refs\": [\"ex_0f60fba1a13f\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e close-episode --task endpoint-source --episode E",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e profile --task /tmp/orx-unified-joe9065e/ws/endpoint-covered.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e recall --task /tmp/orx-unified-joe9065e/ws/endpoint-covered.json",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e --world-model http://127.0.0.1:36467::scripted-example plan-next --task /tmp/orx-unified-joe9065e/ws/endpoint-covered.json --episode E --candidates /tmp/orx-unified-joe9065e/ws/endpoint-covered-candidates.json --cost-scales '{\"tool_calls\":30}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e execute --task /tmp/orx-unified-joe9065e/ws/endpoint-covered.json --prediction sp_48577d32b3e1 --code /tmp/orx-unified-joe9065e/ws/solve.py --workspace /tmp/orx-unified-joe9065e/ws --used-entry-ids 1@1",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e check-task ex_61dbe1ed665a --check '{\"reference_objective\": 90, \"reference_source\": \"independent\", \"reference_version\": \"full-enumeration/1\", \"integer\": {\"variables\": [\"X\", \"Y\"]}, \"recompute_objective\": {\"coefficients\": {\"X\": 2, \"Y\": -5}}, \"semantic_probe\": [{\"path\": \"execution_features.solution_variables.X\", \"min\": 470, \"max\": 471}, {\"path\": \"execution_features.solution_variables.Y\", \"min\": 0, \"max\": 170}], \"hplus_verification\": [{\"prediction_id\": \"sp_48577d32b3e1\", \"condition_index\": 0, \"state\": \"checked\", \"finding\": \"Captured script asserts equality with full enumeration and objective 90.\", \"source\": \"Example reviewer inspected the captured script and independent checker.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"task_check.checks\"]}], \"g_attribution\": {\"method_fidelity\": \"faithful\", \"failure_source\": \"unknown\", \"acceptance_scope\": \"original_task\", \"acceptance_id\": \"endpoint-original/1\", \"source\": \"Example reviewer inspected the captured script and its exhaustive feasibility comparison.\", \"assessment\": \"The actual script enumerates the original constraints and confirms the minimum independently.\", \"evidence_refs\": [\"artifacts.submitted_script\", \"artifacts.workspace_result\"]}}'",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e record --from-staged ex_61dbe1ed665a",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e close-episode --task endpoint-covered --episode E --terminal completed",
+      "/data/home/zhanyiqi/miniforge3/bin/python3 -m or_harness.cli --home /tmp/orx-unified-joe9065e induction-status"
+    ],
+    "request_fragment": {
+      "candidate": {
+        "action_type": "execute_strategy",
+        "strategy_id": "endpoint",
+        "solver": "python",
+        "method": {
+          "name": "lower endpoint enumeration",
+          "steps": [
+            "Enumerate nonnegative integer Y; fixed Y has 2Y+130 <= X <= 641-Y.",
+            "For this minimization choose the lower feasible integer X and compare all Y.",
+            "Check integrality, both original inequalities and objective 2X-5Y."
+          ]
+        },
+        "config": {},
+        "preconditions": [],
+        "expected_scope": [],
+        "stop_conditions": [],
+        "task_id": "endpoint-source",
+        "episode_id": "E",
+        "scope": "attempt",
+        "scope_basis": "legacy_attempt",
+        "window_id": null
+      },
+      "benefit_convention": {
+        "kind": "effective_completion",
+        "metric": "task_check_passed_given_faithful_execution",
+        "unit": "probability",
+        "scope": "attempt",
+        "observation_rule_version": "wm-g-faithful/1",
+        "observed_from": "attributable original-task acceptance after faithful execution",
+        "source": "declared",
+        "required": true,
+        "note": "THIS DECISION compares benefit under this convention. Predict this candidate's benefit with EXACTLY this kind and metric: a different kind or metric cannot be ranked against the other candidates, and it is NOT silently converted"
+      },
+      "prediction_context": {
+        "context_id": "ctx_ea1363fe41b5",
+        "context_version": "wm-context/4",
+        "task_id": "endpoint-source",
+        "episode_id": "E",
+        "snapshot_id": "bs_1f906b26d5a2",
+        "cost_evidence": {
+          "observation_rule_version": "wm-c-window/1",
+          "current_conditions": {
+            "scope": "remaining_to_task_end",
+            "phase": "unknown",
+            "phase_basis": "unknown",
+            "reusable_artifacts": [],
+            "execution_host": {},
+            "solver_conditions": {
+              "solver": "python",
+              "config": {},
+              "constraints": {
+                "executor": {
+                  "timeout_seconds": 120,
+                  "workspace_policy": "solve scripts must live inside their execution workspace"
+                },
+                "declared_budget": null
+              }
+            },
+            "family": "assignment",
+            "structure": {
+              "problem_class": "unknown"
+            }
+          },
+          "candidate_work": {
+            "steps_ref": "candidate.method.steps",
+            "reusable_artifacts_ref": "cost_evidence.current_conditions.reusable_artifacts"
+          },
+          "reference_ranges": [],
+          "cases": [],
+          "missing": [
+            "execution-host model identity unavailable",
+            "decision phase unavailable"
+          ],
+          "applicability": "same execution host/model, remaining window, phase, family and solving limits; absent structure is unknown",
+          "note": "Totals already include the work in each reference case. Compare added/saved candidate steps; count each step once. Sparse ranges describe only the cited executions."
+        },
+        "implementation_r_evidence": {
+          "event": "implementation_failure",
+          "unit": "execution",
+          "scope": "attempt",
+          "observation_rule_version": "wm-r-technical/1",
+          "execution_agent": {},
+          "solver_interface": "python",
+          "groups": [],
+          "missing": [
+            "execution agent host/model unknown"
+          ],
+          "support": "insufficient_evidence",
+          "note": "use applicable empirical facts; shared base rates or similar candidate probabilities are allowed when supported"
+        },
+        "prediction_reminders": []
+      }
+    }
+  },
+  "endpoint_review": {
+    "provider": "substitute; validates the chain, not predictive discrimination",
+    "objectives": {
+      "A": 2699,
+      "B": 90,
+      "C": 196,
+      "boundary": 0
+    },
+    "induction_id": "ij_687aaca0be5371420445828f",
+    "prediction_id": "sp_088127cde2b5",
+    "entry_id": "1",
+    "active_version": 1,
+    "source_execution_ids": [
+      "ex_3603365320e7",
+      "ex_8affcfb0e36f",
+      "ex_9ffa257cf24d"
+    ],
+    "published_before_real_C": true,
+    "published_scope": [
+      "monotone integer-interval endpoint derivation",
+      "A/B enumerations",
+      "constructed nonmonotone fallback"
+    ],
+    "management": {
+      "maintenance_only": true,
+      "version": 1,
+      "action": "keep",
+      "new_induction_actions": 0
+    },
+    "later_real_C_execution_id": "ex_6d6039cfe1be",
+    "material_id": "induction_material:f444aef061be9ba148f8f09760cb5a02f5d975db80d79a72aecb65780c3b3b3c",
+    "induction_action_id": "ac_8d416a1801a9",
+    "receipt_ref": "hplus_receipt:dafc1d15a125c1e73ff2b38d86b484094a165e2664ee700da0e6890f6c631038",
+    "hplus_label": 1,
+    "cli_submission_replayed_same_receipt": true
+  }
+}

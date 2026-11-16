@@ -16,6 +16,9 @@ The design this file pins down, one property per test:
 7. Two different methods that share an id are NOT merged: the binding records
    the config mismatch, and the statistics stay keyed on what really ran.
 """
+
+from decision_fixtures import bind_legacy, execute_scored, planned_prediction
+
 import json
 import os
 import subprocess
@@ -135,7 +138,7 @@ class TestChannelsIndependent(NoCatalogCase):
                                                "temporal_coupling": 0.9,
                                                "route_complexity": 0.1,
                                                "semantic_coupling": 0.2}})
-        record = h.execute(other, OUTSIDE, str(self.solve_path),
+        record = execute_scored(h,other, OUTSIDE, str(self.solve_path),
                            str(self.work), solver="highs")
         h.record(record)
         result = h.recall(TASK)
@@ -152,7 +155,7 @@ class TestChannelsIndependent(NoCatalogCase):
                                                "temporal_coupling": 0.9,
                                                "route_complexity": 0.1,
                                                "semantic_coupling": 0.2}})
-        record = h.execute(other, OUTSIDE, str(self.solve_path),
+        record = execute_scored(h,other, OUTSIDE, str(self.solve_path),
                            str(self.work), solver="highs")
         h.record(record)
         h.recall(TASK)
@@ -176,7 +179,7 @@ class TestChannelsIndependent(NoCatalogCase):
         # document needs its captured task text, so the fact is recorded the
         # same way the write path does it.
         with_backend.index_sync.sync_entries()
-        record = with_backend.execute(TASK, OUTSIDE, str(self.solve_path),
+        record = execute_scored(with_backend,TASK, OUTSIDE, str(self.solve_path),
                                       str(self.work), solver="highs")
         self.assertEqual(
             with_backend.index_sync.sync_execution(record)["state"], "synced")
@@ -212,7 +215,7 @@ class TestOutsideDirectoryLoop(NoCatalogCase):
         self.assertIsNone(snapshot.expected_cost)
         self.assertEqual(snapshot.strategy_id, OUTSIDE)
         # 2. execution: no directory membership required
-        record = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
+        record = execute_scored(h,TASK, OUTSIDE, str(self.solve_path), str(self.work),
                            solver="highs")
         self.assertTrue(record.quality["feasible"])
         self.assertEqual(record.strategy_id, OUTSIDE)
@@ -230,14 +233,14 @@ class TestOutsideDirectoryLoop(NoCatalogCase):
         """Neither entry point raises on an unrecognized id."""
         h = self.harness()
         h.predict_cost(TASK, "totally-made-up")
-        h.execute(TASK, "totally-made-up", str(self.solve_path), str(self.work),
+        execute_scored(h,TASK, "totally-made-up", str(self.solve_path), str(self.work),
                   solver="highs")
 
     def test_empty_strategy_id_is_still_refused(self):
         """The checks that REMAIN: the record must name the method."""
         h = self.harness()
         with self.assertRaises(ValueError) as caught:
-            h.execute(TASK, "   ", str(self.solve_path), str(self.work),
+            execute_scored(h,TASK, "   ", str(self.solve_path), str(self.work),
                       solver="highs")
         self.assertIn("strategy_id is required", str(caught.exception))
 
@@ -247,12 +250,12 @@ class TestOutsideDirectoryLoop(NoCatalogCase):
         outside = Path(self.home) / "outside.py"
         outside.write_text(SOLVE, encoding="utf-8")
         with self.assertRaises(ValueError):
-            h.execute(TASK, OUTSIDE, str(outside), str(self.work),
+            execute_scored(h,TASK, OUTSIDE, str(outside), str(self.work),
                       solver="highs")
 
     def test_caller_proposal_marks_the_memory_less_ones(self):
         h = self.harness()
-        record = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
+        record = execute_scored(h,TASK, OUTSIDE, str(self.solve_path), str(self.work),
                            solver="highs")
         h.record(record)
         result = h.recall(TASK, candidates=[OUTSIDE, "custom:never-run"])
@@ -304,7 +307,7 @@ class TestHistoryRemainsReadable(NoCatalogCase):
         """A record/entry written under the old ids stays fully usable: the
         framework reads it from memory, not from a directory."""
         h = self.harness()
-        record = h.execute(TASK, "S01", str(self.solve_path), str(self.work),
+        record = execute_scored(h,TASK, "S01", str(self.solve_path), str(self.work),
                            solver="highs")
         h.record(record)
         # Recall, prediction and inspect all still work without any write.
@@ -386,11 +389,11 @@ class TestSameIdDifferentMethod(NoCatalogCase):
                                strategy_id=OUTSIDE,
                                params={"time_limit": 60,
                                        "solver": "highs"})
-        prediction = h.predict_strategy_outcome(TASK, candidate, "ep1")
-        record = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
+        prediction = planned_prediction(h,TASK, candidate, "ep1")
+        record = execute_scored(h,TASK, OUTSIDE, str(self.solve_path), str(self.work),
                            solver="highs", episode_id="ep1")
         h.record(record)
-        bound = h.bind_strategy_outcome(
+        bound = bind_legacy(h,
             prediction.prediction_id, record.action_id)
         info = bound.trace.model_info
         unknown = info.get("binding_unknown") or {}
@@ -405,13 +408,13 @@ class TestSameIdDifferentMethod(NoCatalogCase):
         """Two different configurations under one id stay separate FACTS
         (their costs are not averaged into one another)."""
         h = self.harness()
-        first = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
+        first = execute_scored(h,TASK, OUTSIDE, str(self.solve_path), str(self.work),
                           solver="highs")
         # The counted backfill is a TRUSTED source: a bare hand-typed number
         # would be tagged agent_estimate and excluded from the mean.
         h.record(first, override={"llm_tokens": 100},
                  override_source="agent_observed")
-        second = h.execute(TASK, OUTSIDE, str(self.solve_path), str(self.work),
+        second = execute_scored(h,TASK, OUTSIDE, str(self.solve_path), str(self.work),
                            solver="highs")
         h.record(second, override={"llm_tokens": 900},
                  override_source="agent_observed")

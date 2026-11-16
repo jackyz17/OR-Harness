@@ -30,7 +30,7 @@ class SubstituteProvider(WorldModelProvider):
         self.requests=self.requests or []
         self.requests.append(copy.deepcopy(request))
         return {'payload':{
-            'benefit':{**{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')},'value':0.8},
+            'benefit':{**{k:v for k,v in request['benefit_convention'].items() if k in ('kind','metric','unit')},'value':0.8,'baseline':{'kind':'unknown'}},
             'cost':{'tool_calls':3},'capability_gain':{
                 'decision':self.decision,'claim':'Endpoint choice depends on objective direction; nonmonotonicity disables reduction.',
                 'basis':['candidate and frozen rules'],
@@ -51,7 +51,9 @@ def problem(name,n,c,*,maximum=False,boundary=False):
 def execute_checked(h,provider,home,name,n,c,expected,*,decision=0,entry=None,maximum=False,boundary=False):
     task=problem(name,n,c,maximum=maximum,boundary=boundary)
     provider.decision=decision
-    prediction=h.predict_strategy_outcome(task,{'strategy_id':'endpoints','solver':'python','method':METHOD},name)
+    decision=h.plan_next(task,name,candidates=[{'strategy_id':'endpoints','solver':'python','method':METHOD}])
+    if not decision.get('selected_prediction_id'):raise ValueError('demo has no executable U decision')
+    prediction=h.strategy_predictions.get(decision['selected_prediction_id'])
     work=Path(home)/('work-'+name);work.mkdir()
     code='import json,os\nvalues=[]\n'
     if boundary:
