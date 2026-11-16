@@ -48,10 +48,6 @@ from or_harness.world_model.knowledge_track import (  # noqa: E402
     stage_verdict,
     unresolved_stages,
 )
-from or_harness.world_model.planner import (  # noqa: E402
-    PlanLimits,
-    evaluate_path,
-)
 from or_harness.world_model.prediction import (  # noqa: E402
     ActionSpec,
     OutcomePrediction,
@@ -544,52 +540,6 @@ class TestVerdictJudgesTheProposition(Base):
 
 
 class TestExtraCostEntersScoring(Base):
-    def test_extra_cost_changes_the_utility(self):
-        """D5: raising the declared enabling cost from 1 to 1e9 tokens must
-        change K / the path utility."""
-        table = {"revises|after_consolidation": {
-            "n": 50, "reliability": 1.0, "basis": "measured"}}
-        lookup = reliability_lookup(table)
-        targets = [KnowledgeTarget(kind="hypothesis", strategy_id="S01",
-                                   support_n=2, distinct_tasks=2)]
-
-        def build(extra):
-            return OutcomePrediction(
-                prediction_id=f"wp_{extra}", input_snapshot_id="bs_1",
-                action_spec=ActionSpec("execute_strategy", "t1",
-                                       strategy_id="S01"),
-                status="valid",
-                predicted={"quality": 0.7, "feasible": True,
-                           "failure_prob": 0.1,
-                           "cost": {"llm_tokens": 10.0},
-                           "cost_measured": ["llm_tokens"],
-                           "knowledge_changes": [{
-                               "target": {"kind": "hypothesis",
-                                          "strategy_id": "S01"},
-                               "change": "revises",
-                               "horizon": "after_consolidation",
-                               "preconditions": ["contrast_execution"],
-                               "expected_extra_cost": {"llm_tokens": extra}}]})
-
-        limits = PlanLimits(delta=0.5, cost_weights={"llm_tokens": 1.0})
-        norms, basis = {"llm_tokens": 10.0}, ["llm_tokens"]
-        cheap_k, cheap_detail = knowledge_value(targets, [build(1.0)],
-                                                reliability=lookup)
-        dear_k, dear_detail = knowledge_value(targets, [build(1e9)],
-                                              reliability=lookup)
-        self.assertIsNotNone(cheap_k)
-        self.assertEqual(cheap_k, dear_k,
-                         "the knowledge VALUE itself is unchanged")
-        cheap_path = evaluate_path([build(1.0)], limits, norms, basis,
-                                   knowledge=(cheap_k, cheap_detail))
-        dear_path = evaluate_path([build(1e9)], limits, norms, basis,
-                                  knowledge=(dear_k, dear_detail))
-        self.assertLess(dear_path.utility, cheap_path.utility,
-                        "the enabling spend must make the path worse")
-        charged = dear_path.knowledge_detail.get("extra_cost_charged")
-        self.assertIsNotNone(charged,
-                             "the charge must be reported, not silent")
-        self.assertGreater(charged["normalized"], 0.0)
 
     def test_uncosted_after_consolidation_gain_is_still_refused(self):
         targets = [KnowledgeTarget(kind="hypothesis", strategy_id="S01",

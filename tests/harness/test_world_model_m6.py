@@ -51,12 +51,6 @@ from or_harness.world_model.knowledge_track import (  # noqa: E402
     stage_verdict,
     unresolved_stages,
 )
-from or_harness.world_model.planner import (  # noqa: E402
-    PlanLimits,
-    evaluate_path,
-    real_incumbent_available,
-    second_step_dependency_ok,
-)
 from or_harness.world_model.prediction import (  # noqa: E402
     ActionSpec,
     OutcomePrediction,
@@ -252,86 +246,10 @@ class TestPredictionFactIsolation(Base):
         self.assertNotIn("knowledge_changes",
                          str(recall.get("recommendations")))
 
-    def test_prediction_rollout_may_reason_over_imagined_solution(self):
-        """A7: a rollout over a predicted successor IS allowed; what is
-        forbidden is a REAL execution treating it as an incumbent."""
-        prediction = OutcomePrediction(
-            prediction_id="wp_x", input_snapshot_id="bs_x",
-            action_spec=ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S01"),
-            status="valid",
-            predicted={"state_changes": {"current_solution": {
-                "status": "feasible", "objective": 4210.5,
-                "solution": {"x_M1": 30}}}})
-        self.assertTrue(second_step_dependency_ok(prediction),
-                        "a structured predicted successor is usable for a "
-                        "rollout")
-        # ... but a REAL execution must not depend on it.
-        imagined = {"current_solution": {
-            "value": {"status": "optimal", "objective": 4210.5},
-            "provenance": "agent_reported", "epistemic": "inferred",
-            "hypothetical": True}}
-        self.assertFalse(real_incumbent_available(imagined))
-        observed = {"current_solution": {
-            "value": {"status": "optimal", "objective": 4210.5},
-            "provenance": "observed", "epistemic": "fact"}}
-        self.assertTrue(real_incumbent_available(observed))
-
 
 # ---------------------------------------------------------------------------
 # 8-9  unknown upside is never rewarded
 # ---------------------------------------------------------------------------
-
-
-class TestUnknownKnowledgeValue(Base):
-    def test_missing_k_adds_nothing_not_the_full_weight(self):
-        """A8: an unknown knowledge value contributes 0.0, NOT delta."""
-        limits = PlanLimits(delta=0.9)
-        prediction = OutcomePrediction(
-            prediction_id="wp_1", input_snapshot_id="bs_1",
-            action_spec=ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S01"),
-            status="valid",
-            predicted={"quality": 0.8, "feasible": True,
-                       "failure_prob": 0.0, "cost": {"llm_tokens": 1.0},
-                       "cost_measured": ["llm_tokens"]})
-        with_k_none = evaluate_path([prediction], limits,
-                                    {"llm_tokens": 1.0}, ["llm_tokens"],
-                                    knowledge=(None, {}))
-        self.assertEqual(with_k_none.delta_knowledge, 0.0)
-        self.assertIn("knowledge", with_k_none.incomparable)
-        # A justified K of 1.0 WOULD add the full weight — proving the term
-        # is live and the None case is a deliberate zero, not a dead term.
-        with_k_one = evaluate_path([prediction], limits,
-                                   {"llm_tokens": 1.0}, ["llm_tokens"],
-                                   knowledge=(1.0, {}))
-        self.assertEqual(with_k_one.delta_knowledge, 0.9)
-
-    def test_unknown_k_ranks_like_no_knowledge_term(self):
-        """A9: with K unknown, ranking degenerates to the solve utility."""
-        limits = PlanLimits(delta=0.9)
-        strong = OutcomePrediction(
-            prediction_id="wp_s", input_snapshot_id="bs_1",
-            action_spec=ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S01"),
-            status="valid",
-            predicted={"quality": 0.9, "feasible": True, "failure_prob": 0.0,
-                       "cost": {"llm_tokens": 1.0},
-                       "cost_measured": ["llm_tokens"]})
-        weak = OutcomePrediction(
-            prediction_id="wp_w", input_snapshot_id="bs_1",
-            action_spec=ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S02"),
-            status="valid",
-            predicted={"quality": 0.3, "feasible": True, "failure_prob": 0.0,
-                       "cost": {"llm_tokens": 1.0},
-                       "cost_measured": ["llm_tokens"]})
-        p_strong = evaluate_path([strong], limits, {"llm_tokens": 1.0},
-                                 ["llm_tokens"], knowledge=(None, {}))
-        p_weak = evaluate_path([weak], limits, {"llm_tokens": 1.0},
-                               ["llm_tokens"], knowledge=(None, {}))
-        self.assertGreater(p_strong.utility, p_weak.utility,
-                           "unknown knowledge must not invert a quality gap")
 
 
 # ---------------------------------------------------------------------------
@@ -786,29 +704,6 @@ class TestBudgetHonesty(Base):
         result = h.record(record)
         self.assertTrue(result["recorded"])
 
-    def test_delta_zero_reproduces_pre_m6_utility(self):
-        """A35: with delta 0 the knowledge term is bit-identical to before."""
-        prediction = OutcomePrediction(
-            prediction_id="wp_1", input_snapshot_id="bs_1",
-            action_spec=ActionSpec("execute_strategy", "t1",
-                                   strategy_id="S01"),
-            status="valid",
-            predicted={"quality": 0.8, "feasible": True,
-                       "failure_prob": 0.1,
-                       "cost": {"llm_tokens": 10.0},
-                       "cost_measured": ["llm_tokens"]})
-        weights = {"llm_tokens": 1.0}
-        off = evaluate_path([prediction], PlanLimits(delta=0.0,
-                                                     cost_weights=weights),
-                            {"llm_tokens": 10.0}, ["llm_tokens"],
-                            knowledge=(1.0, {}))
-        self.assertEqual(off.delta_knowledge, 0.0)
-        # alpha*Q - beta*(w*v/norm) - gamma*R, with no knowledge term at all.
-        expected = round(1.0 * 0.8 - 1.0 * (1.0 * 10.0 / 10.0)
-                         - 1.0 * 0.1, 6)
-        self.assertEqual(off.utility, expected)
-        self.assertNotIn("knowledge", off.incomparable,
-                         "delta=0 leaves the comparison report untouched")
 
     def test_planning_cost_is_sunk_not_in_path_utility(self):
         """A30: the calls' own spend never enters a path's utility."""
@@ -888,52 +783,6 @@ class TestPublicationGateUntouched(Base):
 
 
 class TestKnowledgeValueChangesChoice(Base):
-    def test_knowledge_value_flips_a_tied_choice_only_when_enabled(self):
-        """A34 — the core falsifiable assertion. Two paths tied on X/B and
-        differing only in the predicted knowledge change: the choice flips
-        under h-x-b-value and does NOT flips under delta=0."""
-        def make(sid, knowledge_changes):
-            return OutcomePrediction(
-                prediction_id=f"wp_{sid}", input_snapshot_id="bs_1",
-                action_spec=ActionSpec("execute_strategy", "t1",
-                                       strategy_id=sid),
-                status="valid",
-                predicted={"quality": 0.7, "feasible": True,
-                           "failure_prob": 0.1,
-                           "cost": {"llm_tokens": 10.0},
-                           "cost_measured": ["llm_tokens"],
-                           "knowledge_changes": knowledge_changes})
-        change = [{
-            "target": {"kind": "hypothesis", "strategy_id": "S01"},
-            "change": "candidate_forms",
-            "horizon": "after_consolidation"}]
-        with_change = make("S01", change)
-        without = make("S02", [])
-        base_norms, base_basis = {"llm_tokens": 10.0}, ["llm_tokens"]
-
-        off = PlanLimits(delta=0.0)
-        p_off_a = evaluate_path([with_change], off, base_norms, base_basis)
-        p_off_b = evaluate_path([without], off, base_norms, base_basis)
-        self.assertEqual(p_off_a.utility, p_off_b.utility,
-                         "with delta=0 the knowledge prediction is invisible")
-
-        on = PlanLimits(delta=0.5)
-        from or_harness.world_model.knowledge import knowledge_value
-        targets = [KnowledgeTarget(kind="hypothesis", strategy_id="S01",
-                                   support_n=2, distinct_tasks=2)]
-        reliable = lambda c, h: 1.0
-        k_a, _ = knowledge_value(targets, [with_change],
-                                 reliability=reliable)
-        k_b, _ = knowledge_value(targets, [without], reliability=reliable)
-        self.assertIsNotNone(k_a)
-        self.assertIsNone(k_b)
-        p_on_a = evaluate_path([with_change], on, base_norms, base_basis,
-                               knowledge=(k_a, {}))
-        p_on_b = evaluate_path([without], on, base_norms, base_basis,
-                               knowledge=(k_b, {}))
-        self.assertGreater(p_on_a.utility, p_on_b.utility,
-                           "a justified knowledge value must be able to "
-                           "break a tie — this is the mechanism M6 adds")
 
     def test_modes_gate_what_is_requested_and_scored(self):
         """The three experiment modes differ in request content and in

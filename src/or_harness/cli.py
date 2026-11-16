@@ -309,6 +309,7 @@ def cmd_profile(args) -> int:
             validate_cir,
         )
         from or_harness.profiling.model_syntax import verify_model
+        from or_harness.profiling.profiler import derivation_report
         task = _load_json_arg(args.task)
         allow_empty = bool(getattr(args, "allow_empty_cir", False))
         # -- CIR side (validation, structural inference, groups, guidance) --
@@ -364,7 +365,7 @@ def cmd_profile(args) -> int:
                 coupling["shape_lints"] = lints
         # -- Profile side --
         profile = h.profile(task, cir=cir_obj)
-        report = h.derivation_report(task, cir=cir_obj)
+        report = derivation_report(profile)
         # An honest account of what the CIR actually contributed. Reported
         # even when the profile came out fully determined, because the
         # failure this guards against is a CIR that PARSED to nothing while
@@ -1975,7 +1976,6 @@ def cmd_evaluate_capability(args) -> int:
 def cmd_plan_next(args) -> int:
     h = _harness(args)
     try:
-        from or_harness.world_model.prediction import ActionSpec
         task = _load_json_arg(args.task)
         if getattr(args, "horizon", None) not in (None, 1):
             # Refused EXPLICITLY rather than accepted-and-ignored: there is
@@ -1989,28 +1989,10 @@ def cmd_plan_next(args) -> int:
                 "happened — no imagined multi-step rollout is built")
         candidates = None
         if args.candidates:
-            from or_harness.world_model.contracts import (
-                normalize_candidate_payload)
-            raw = _load_json_arg(args.candidates)
-            if not isinstance(raw, list):
+            candidates = _load_json_arg(args.candidates)
+            if not isinstance(candidates, list):
                 return _fail("--candidates must be a JSON list of "
                              "ActionSpec objects")
-            normalized = []
-            rejections = []
-            for index, item in enumerate(raw):
-                try:
-                    normalized.append(normalize_candidate_payload(item))
-                except ValueError as exc:
-                    # A correctable input error is reported WITH the other
-                    # candidates rather than aborting the whole call.
-                    rejections.append(f"candidate #{index + 1}: {exc}")
-            if rejections and not normalized:
-                return _fail("every candidate was refused at input "
-                             "normalization (correctable): "
-                             + "; ".join(rejections))
-            candidates = [ActionSpec.from_dict(c) for c in normalized]
-            if rejections:
-                args._candidate_rejections = rejections
         limits = {"horizon": args.horizon,
                   "max_model_calls": args.max_calls,
                   "time_budget_s": getattr(args, "time_budget", None)}
@@ -2040,13 +2022,12 @@ def cmd_plan_next(args) -> int:
             result["protocol"] = plan["protocol"]
         # Input-level refusals travel with the plan, so the caller sees what
         # to fix even when the rest of the candidates were compared.
-        rejections = list(getattr(args, "_candidate_rejections", []) or [])
-        plan_rejections = plan.get("candidate_rejections") or []
-        if plan_rejections:
-            rejections = list(plan_rejections)
-        if rejections:
-            result["candidate_rejections"] = rejections
+        if plan.get("candidate_rejections"):
+            result["candidate_rejections"] = plan["candidate_rejections"]
         status = plan.get("status")
+        if status == "no_candidates" and plan.get("candidate_rejections"):
+            _emit(result, plan.get("truncation_reason"))
+            return 2
         if status in ("disabled", "no_candidates", "fallback"):
             return _emit(result, f"plan_next returned status={status}: "
                                  f"{plan.get('truncation_reason')}")

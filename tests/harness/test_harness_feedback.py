@@ -148,6 +148,25 @@ class TestProfilerChain(HarnessTestCase):
         self.assertEqual(report["origin"]["resource_coupling"], "null")
         self.assertEqual(report["origin"]["semantic_coupling"], "supplied")
         self.assertIn("model_verification", report)
+        import io
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+        from or_harness import cli
+        from or_harness.profiling.profiler import derivation_report
+        with tempfile.TemporaryDirectory(prefix="orx-profile-once-") as home:
+            h=ORHarness(home=home)
+            out=io.StringIO()
+            with patch("or_harness.cli._harness",return_value=h), \
+                    patch("or_harness.api.profile_task",wraps=profile_task) as derive, \
+                    patch.object(h,"derivation_report",side_effect=AssertionError("profile recomputed")), \
+                    redirect_stdout(out):
+                code=cli.main(["profile","--task",json.dumps(task)])
+            self.assertEqual(code,0,out.getvalue())
+            self.assertEqual(derive.call_count,1)
+            result=json.loads(out.getvalue())["result"]
+            self.assertEqual(result["profile"],profile.to_dict())
+            self.assertEqual(result["derivation"],derivation_report(profile))
 
     def test_no_model_no_derivation_reports_null_with_note(self):
         task = {"task_id": "t", "family": "allocation", "spec": {}}

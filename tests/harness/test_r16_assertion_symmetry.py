@@ -1,4 +1,4 @@
-"""Assertion audits remain distinct from rule validation. Help and runtime documentation describe versioned candidates, independent transfer/boundary checks and idempotent revision. Mechanical shape guards remain compatible."""
+"""Assertion/claim separation and executable induction shape guards."""
 import os
 import sys
 import unittest
@@ -20,8 +20,6 @@ from or_harness.strategy.verification import (  # noqa: E402
     VERIFIED,
     verify_relation,
 )
-
-REPO = os.path.join(os.path.dirname(__file__), "..", "..")
 
 
 def _rec(execution_id, *, code_hash="abc123", status="optimal"):
@@ -94,66 +92,6 @@ class TestAssertionSymmetric(unittest.TestCase):
                    {"execution_id": "b", "role": "y"}],
             assertions=[{"kind": ASSERTION_CODE_CHANGED, "roles": ["x", "y"]}])
         self.assertEqual(report["state"], INSUFFICIENT)
-
-
-# ---------------------------------------------------------------------------
-# B. the help text matches the implementation
-# ---------------------------------------------------------------------------
-
-
-class TestHelpMatchesImplementation(unittest.TestCase):
-    def _induce_help(self):
-        import io
-        import contextlib
-        from or_harness import cli
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            with self.assertRaises(SystemExit):
-                cli.main(["induce", "--help"])
-        # The help wraps at the terminal width: collapse the whitespace so a
-        # phrase is matched across a line break.
-        return " ".join(buffer.getvalue().split())
-
-    def test_help_describes_explicit_versioned_revision(self):
-        help_text = self._induce_help()
-        self.assertNotIn("REVISES", help_text)
-        self.assertIn("operation=add_evidence|revise|merge", help_text)
-        self.assertIn("candidate version",help_text)
-        self.assertIn("idempotent",help_text)
-
-    def test_publication_is_not_a_task_count(self):
-        help_text = self._induce_help()
-        self.assertNotIn(">=2 independent tasks", help_text)
-        self.assertIn("no uniform check gate", help_text)
-
-
-# ---------------------------------------------------------------------------
-# C. the documents state the agent-owned value gate
-# ---------------------------------------------------------------------------
-
-
-class TestDocsStateTheValueGate(unittest.TestCase):
-    def test_skill_names_the_agent_value_gate(self):
-        with open(os.path.join(REPO, "SKILL.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("when / do / expect", text)
-        self.assertIn("explicit publication choice", text)
-        self.assertIn("act on versioned entries through the shared lifecycle",text)
-
-    def test_induction_reference_separates_assertion_from_claim(self):
-        with open(os.path.join(REPO, "references", "induction.md"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("A failed\nassertion is not automatically a refutation",text)
-        self.assertIn("Check that each declared assertion matches the claim",text)
-        self.assertIn("`code_changed`", text)
-
-    def test_empty_review_is_named_the_only_correct_form(self):
-        with open(os.path.join(REPO, "references", "induction.md"),
-                  encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertIn("without `--relation`", text)
-        self.assertIn('Placeholder claims such as "no new knowledge"',text)
 
 
 # ---------------------------------------------------------------------------

@@ -90,8 +90,9 @@ DOCUMENTED_FLAGS = [
                    "--max-calls", "--time-budget", "--delta",
                    "--prediction-mode", "--benefit-kind", "--benefit-metric",
                    "--benefit-unit", "--cost-scales"]),
-    ("induction-material", ["--strategy", "--task", "--limit", "--cursor",
+    ("induction-material", ["--induction-id", "--strategy", "--task", "--limit", "--cursor",
                             "--related-top-k"]),
+    ("induction-status", ["--task", "--episode"]),
     ("inspect", ["--bank", "--task", "--evaluation", "--prediction"]),
     ("snapshot", ["--task", "--episode"]),
     ("action", ["--report", "--task", "--amend-cost", "--cost"]),
@@ -332,10 +333,7 @@ def main() -> int:
     print("no milestone/history references            OK")
 
     # Every markdown link target in the agent-facing docs must exist.
-    for doc in ["SKILL.md", "README.md", "README_zh.md",
-                "references/world_model_contract.md",
-                "references/prediction_context.md",
-                "references/commands.md", "references/concepts.md"]:
+    for doc in AGENT_FACING_DOCS:
         path = ROOT / doc
         if not path.exists():
             failures.append(f"{doc} is missing")

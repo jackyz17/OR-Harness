@@ -146,26 +146,64 @@ class TestPlanNextNormalization(HarnessTestCase):
         self.assertEqual(
             specs[0]["action_spec"]["method"]["name"], "enum")
 
-    def test_ill_formed_candidate_is_reported_not_a_doomed_call(self):
+    def test_mixed_candidates_share_the_valid_limit_and_refusals_in_cli_and_api(self):
+        import copy
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
         from or_harness.api import ORHarness
+        from or_harness.cli import main
         from or_harness.world_model.provider import WorldModelProvider
 
         class StubProvider(WorldModelProvider):
-            def describe(self):
-                return {"provider": "stub"}
-
+            def __init__(self):
+                self.requests=[]
             def predict(self, request, timeout_s=None):
-                return {"payload": {}, "usage": {}, "error": None,
-                        "latency_s": 0.01}
+                self.requests.append(copy.deepcopy(request))
+                return {'payload':{'benefit':{
+                    **{k:request['benefit_convention'][k] for k in ('kind','metric','unit')},
+                    'value':.8,'baseline':{'kind':'unknown'}}},
+                    'usage':None,'latency_s':None}
 
-        h = ORHarness(home=self.home, world_model=StubProvider())
+        bad={'name':'A','method':{'name':'B','steps':['s']}}
+        candidates=[bad]+[{'name':f'good-{i}','steps':['solve'],'solver':'python'}
+                          for i in range(4)]+[bad]
+        provider=StubProvider()
+        h=ORHarness(home=self.home,world_model=provider)
         self.addCleanup(h.close)
-        plan = h.plan_next(self._task(), episode_id="ep1", candidates=[
-            {"name": "A", "method": {"name": "B", "steps": ["s"]}},
-        ])
-        rejections = plan.get("candidate_rejections") or []
-        self.assertTrue(rejections)
-        self.assertIn("disagree", rejections[0])
+        refused=h.plan_next(self._task(),'ep1',candidates=[bad])
+        self.assertEqual(refused['status'],'no_candidates')
+        self.assertIn('disagree',refused['candidate_rejections'][0])
+        self.assertEqual(provider.requests,[])
+        with patch('or_harness.api.normalize_candidate_payload',wraps=normalize_candidate_payload) as normalize:
+            api=h.plan_next(self._task(),'ep1',candidates=candidates)
+            self.assertEqual(normalize.call_count,len(candidates))
+        self.assertEqual(len(provider.requests),3)
+        self.assertEqual(len(api['candidates']),3)
+        self.assertEqual(len(api['candidate_rejections']),2)
+        self.assertIn('candidate #6',api['candidate_rejections'][1])
+        self.assertIsNotNone(api['selected_prediction_id'])
+        with tempfile.TemporaryDirectory(prefix='orx-cli-normalization-') as home:
+            cli_provider=StubProvider()
+            cli_h=ORHarness(home=home,world_model=cli_provider)
+            out=io.StringIO()
+            with patch('or_harness.cli._harness',return_value=cli_h), \
+                    patch('or_harness.api.normalize_candidate_payload',wraps=normalize_candidate_payload) as normalize, \
+                    redirect_stdout(out):
+                code=main(['plan-next','--task',json.dumps(self._task()),'--episode','ep1',
+                           '--candidates',json.dumps(candidates)])
+            self.assertEqual(normalize.call_count,len(candidates))
+            self.assertEqual(code,0,out.getvalue())
+            cli=json.loads(out.getvalue())['result']['plan']
+            self.assertEqual(len(cli_provider.requests),3)
+        self.assertEqual(cli['candidate_rejections'],api['candidate_rejections'])
+        self.assertEqual([c['action_spec'] for c in cli['candidates']],
+                         [c['action_spec'] for c in api['candidates']])
+        self.assertEqual([r['candidate']['strategy_id'] for r in cli_provider.requests],
+                         [r['candidate']['strategy_id'] for r in provider.requests])
+        self.assertEqual(cli['selected_score']['utility'],api['selected_score']['utility'])
 
 
 if __name__ == "__main__":

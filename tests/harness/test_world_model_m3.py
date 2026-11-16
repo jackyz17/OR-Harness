@@ -261,22 +261,24 @@ class TestPlanning(HarnessTestCase):
         # No model call was made for the refused request.
         self.assertEqual(provider.requests, [])
 
-    def test_suggestion_is_not_a_selection(self):
-        """Only an explicit choose_next writes X.selected_plan."""
-        provider = ScriptableProvider(per_strategy={"S01": {"quality": 0.8}})
-        h = ORHarness(home=self.home, world_model=provider)
-        self.addCleanup(h.close)
-        plan = h.plan_next(TASK, "ep1", candidates=[_spec("S01")], limits={'benefit_kind': 'solution_quality', 'benefit_metric': 'normalized_objective_gap', 'benefit_unit': '1-gap'})
-        progress = h._episode_progress("t1", "ep1")
-        self.assertNotIn("selected_plan", progress)
-        choice = h.choose_next(plan["decision_action_id"],
-                               chosen=ActionSpec.from_dict(
-                                   plan["suggested"]))
-        self.assertEqual(choice["selected"]["strategy_id"], "S01")
-        progress = h._episode_progress("t1", "ep1")
-        self.assertIn("selected_plan", progress)
-        self.assertEqual(progress["selected_plan"]["value"]["selected"]
-                         ["strategy_id"], "S01")
+
+    def test_legacy_two_step_plan_remains_readable(self):
+        from or_harness.world_model.planner import PlanResult
+        raw={"plan_id":"pl_legacy","root_snapshot_id":"bs_old","task_id":"t1",
+             "limits":{"horizon":2,"delta":.5},
+             "paths":[{"steps":[{"action_spec":_spec("S01").to_dict(),
+                                  "prediction_id":"pr_old","status":"valid"},
+                                 {"action_spec":_spec("S02").to_dict(),
+                                  "prediction_id":"pr_conditional","status":"valid"}],
+                       "utility":.7,"q_terminal":.8,"c_path":.1,"r_terminal":0,
+                       "hypothetical_snapshot_id":"bs_hypothetical",
+                       "delta_knowledge":.1,"knowledge_detail":{"status":"predicted","value":.2}}]}
+        plan=PlanResult.from_dict(raw)
+        self.assertEqual(plan.limits.horizon,2)
+        decoded=plan.to_dict()["paths"][0]
+        for key,value in raw["paths"][0].items():
+            self.assertEqual(decoded[key],value)
+        self.assertEqual(plan.paths[0].steps[0].prediction_id,"pr_old")
 
     def test_choice_deviation_and_rejection(self):
         provider = ScriptableProvider(per_strategy={

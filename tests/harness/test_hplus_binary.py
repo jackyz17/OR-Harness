@@ -159,6 +159,28 @@ class TestBinaryHplus(BinaryCase):
             result=other.induce(**args)
             repeated=other.induce(**args)
             self.assertTrue(repeated['already_completed'])
+            self.assertEqual(repeated['induction_receipt'],result['induction_receipt'])
+            from or_harness.world_model.hplus import get_job, JOB_PREFIX
+            from or_harness.world_model.induction_gate import meta_write
+            from or_harness.world_model.conditions import put_value
+            job=get_job(other,job_id)
+            stored=get_value(other.store,job['result_ref'])
+            self.assertNotIn('induction_receipt',stored)
+            self.assertEqual(stored['receipt_ref'],job['receipt_ref'])
+            self.assertEqual(get_value(other.store,stored['receipt_ref']),
+                {k:v for k,v in result['induction_receipt'].items() if k!='receipt_ref'})
+            # Simulate an older persisted result. Reading/retrying it must
+            # expand identically without migrating the historical object.
+            legacy=copy.deepcopy(stored)
+            legacy.pop('receipt_ref')
+            legacy['induction_receipt']=copy.deepcopy(result['induction_receipt'])
+            with other.store.transaction() as conn:
+                legacy_ref=put_value(conn,other.store,'hplus_result',legacy)
+                job['result_ref']=legacy_ref
+                meta_write(other.store,JOB_PREFIX+job_id,job)
+            old_retry=other.induce(**args)
+            self.assertEqual(old_retry['induction_receipt'],result['induction_receipt'])
+            self.assertEqual(get_job(other,job_id)['result_ref'],legacy_ref)
             self.assertEqual(result['action']['action_id'],action_id)
             self.assertEqual(len(other.actions.query(action_type='induce')),1)
             self.assertEqual(other.sbank.count(),1)
@@ -201,7 +223,13 @@ class TestBinaryHplus(BinaryCase):
         self.assertEqual(feedback['settled_examples'][0]['rule_versions'][0]['version'],1)
         self.assertNotIn(next_id,[j['prediction_id'] for j in feedback['settled_examples']])
         from or_harness.world_model.hplus import feedback as feedback_view
-        self.assertEqual(feedback_view(self.h,task={'family':'routing'})['settled_examples'],[])
+        with patch('or_harness.world_model.hplus.receipt_observation',wraps=receipt_observation) as observed:
+            self.assertEqual(feedback_view(self.h,task={'family':'routing'})['settled_examples'],[])
+            observed.assert_not_called()
+            matching=feedback_view(self.h,task={'family':'assignment'},as_of=feedback['as_of'])
+            self.assertEqual(observed.call_count,1)
+            self.assertEqual(matching['settled_examples'][0]['receipt_ref'],job['receipt_ref'])
+            self.assertEqual(matching['settled_examples'][0]['label'],1)
 
     def test_strict_signal_numbers_and_legacy_reading(self):
         for value in (True,False,'1',2,-1,10**400,float('nan'),float('inf'),[],{}):

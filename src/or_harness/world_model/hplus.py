@@ -478,11 +478,26 @@ def complete(harness, job, result, review=None):
             'comparison_ref':update['increment']['comparison_ref'],'support_fact_refs':fact['support_fact_refs']})
     job["state"] = "completed"
     result["induction_receipt"] = {**fact, "receipt_ref": job["receipt_ref"]}
-    job["result_ref"] = put_value(harness.store.conn, harness.store, "hplus_result", result)
+    stored_result = {key: value for key, value in result.items()
+                     if key != "induction_receipt"}
+    stored_result["receipt_ref"] = job["receipt_ref"]
+    job["result_ref"] = put_value(harness.store.conn, harness.store, "hplus_result", stored_result)
     _save_job(harness, job)
     from or_harness.strategy.evidence_access import release_hold
     release_hold(harness,job['induction_id'])
     return fact
+
+
+def completed_result(harness, job):
+    """Expand a completed result without rewriting older embedded receipts."""
+    result = copy.deepcopy(get_value(harness.store, job["result_ref"]))
+    if "induction_receipt" not in result:
+        receipt_ref = result.pop("receipt_ref", job.get("receipt_ref"))
+        if not receipt_ref:
+            raise ValueError("completed induction result has no receipt reference")
+        result["induction_receipt"] = {
+            **get_value(harness.store, receipt_ref), "receipt_ref": receipt_ref}
+    return result
 
 
 def receipt_observation(harness, job, *, as_of=None):
@@ -525,12 +540,12 @@ def feedback(harness, *, task=None, budget_chars=3500, as_of=None):
     for job in jobs(harness):
         if job["created_at"] >= cutoff or job["state"] != "completed":
             continue
+        signal = job["signal"]
+        if family and signal.get("family") != family:
+            continue
         observation = receipt_observation(harness, job, as_of=cutoff)
         receipt = observation.get("receipt")
         if not receipt:
-            continue
-        signal = job["signal"]
-        if family and signal.get("family") != family:
             continue
         overlap=len(text & words(signal.get('claim','')))
         structure=signal.get('structure') or {}

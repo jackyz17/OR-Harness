@@ -257,7 +257,7 @@ class ORHarness:
             from or_harness.world_model.hplus import configure
             configure(self, induction_mode)
         # The utility weights belong to the WORLD MODEL's consequence
-        # comparison (planner.evaluate_path), NOT to recall: recall only
+        # comparison (score_strategy_outcome_predictions), NOT to recall: recall only
         # discovers material. They are kept on the harness so the planner
         # defaults can read them.
         self.alpha, self.beta, self.gamma = alpha, beta, gamma
@@ -322,7 +322,6 @@ class ORHarness:
         # planning call: a correctable input error reported back with the
         # plan, never a doomed model call. Reset at the start of each
         # ``plan_next``.
-        self._candidate_rejections: List[str] = []
         # World-model M4: offline maintenance assessment.
         # World-model M6: what the world model is asked to predict, and
         # whether a knowledge term may influence the choice.
@@ -4269,47 +4268,35 @@ class ORHarness:
     def _candidate_specs(self, task: Dict[str, Any],
                          episode_id: Optional[str],
                          candidates: Optional[Sequence[ActionSpec]],
-                         limit: int) -> List[ActionSpec]:
-        """The bounded root-candidate list — supplied BY THE CALLER.
+                         limit: int) -> Tuple[List[ActionSpec], List[str]]:
+        """Normalize caller proposals once; bound valid candidates, not raw rows.
 
-        The framework does not generate candidates. There is no directory to
-        enumerate and no planner-side menu to fall back on: a candidate is a
-        method the outer agent decided to consider for THIS problem, and the
-        framework's job is to predict, execute and record it. An empty
-        ``candidates`` therefore yields an empty list, which the planning
-        entry points report as ``no_candidates`` with that reason.
-
-        Identity is reconciled here (task/episode) so the caller need not
-        repeat them, and the caller's objects are never mutated — the spec is
-        value-copied first.
+        Return correctable refusals alongside the usable specs, without
+        mutating caller objects or retaining input state on the harness.
         """
         task_id = str(task.get("task_id", ""))
-        if not candidates:
-            return []
-        specs = []
-        for index, spec in enumerate(list(candidates)[:limit]):
-            if isinstance(spec, dict):
-                raw = spec
-            else:
-                raw = spec.to_dict()
-            # NORMALIZE BEFORE building the spec, so the minimal candidate
-            # format reaches the planner too. A payload that cannot be
-            # normalized is a CORRECTABLE error reported per candidate (it
-            # never becomes a doomed model call), and it never drags the
-            # other candidates down.
+        specs, rejections = [], []
+        for index, candidate in enumerate(candidates or []):
             try:
-                raw = normalize_candidate_payload(raw)
-            except ValueError as exc:
-                self._candidate_rejections.append(
-                    f"candidate #{index + 1}: {exc}")
-                continue
-            spec = ActionSpec.from_dict(raw)
-            if not spec.task_id:
+                raw = candidate.to_dict() if hasattr(candidate, "to_dict") else candidate
+                spec = ActionSpec.from_dict(normalize_candidate_payload(raw))
+                if spec.task_id and spec.task_id != task_id:
+                    raise ValueError(
+                        f"candidate identity conflict: task_id {spec.task_id!r} != {task_id!r}")
+                if (spec.episode_id is not None and episode_id is not None
+                        and spec.episode_id != episode_id):
+                    raise ValueError(
+                        f"candidate identity conflict: episode_id {spec.episode_id!r} != {episode_id!r}")
+                if spec.action_type != "execute_strategy":
+                    raise ValueError("only execute_strategy candidates can enter this decision")
                 spec.task_id = task_id
-            if spec.episode_id is None:
                 spec.episode_id = episode_id
-            specs.append(spec)
-        return specs
+            except (TypeError, ValueError) as exc:
+                rejections.append(f"candidate #{index + 1}: {exc}")
+                continue
+            if len(specs) < max(0, limit):
+                specs.append(spec)
+        return specs, rejections
 
     def plan_next(self, task: Dict[str, Any],
                   episode_id: Optional[str] = None, *,
@@ -4352,23 +4339,26 @@ class ORHarness:
             limits.gamma = self.gamma
         if limits.cost_weights is None:
             limits.cost_weights = dict(self.selector.cost_weights)
+        # Retain legacy experiment settings in the record; they do not
+        # enter the one-step G/C/R utility.
         if limits.delta is None:
-            # Defaults to this harness's configured delta, which is 0.0
-            # unless the caller deliberately chose otherwise — so an
-            # unmodified call is scored exactly as before the knowledge
-            # term existed, while ``prediction_mode="x-b-only"`` forces it
-            # off regardless of configuration.
-            limits.delta = (0.0 if self.prediction_mode == "x-b-only"
-                            else self.delta)
+            limits.delta = (0.0 if self.prediction_mode == "x-b-only" else self.delta)
         if self.prediction_mode != "h-x-b-value":
             limits.delta = 0.0
-        return self._plan_next_strategy_outcome(
-            task, episode_id, candidates=candidates, limits=limits)
+        specs, rejections = self._candidate_specs(
+            task, episode_id, candidates, limits.max_root_candidates)
+        result = self._plan_next_strategy_outcome(
+            task, episode_id, candidates=specs, limits=limits,
+            candidate_rejections=rejections)
+        if rejections:
+            result["candidate_rejections"] = rejections
+        return result
     def _plan_next_strategy_outcome(
             self, task: Dict[str, Any],
             episode_id: Optional[str] = None, *,
-            candidates: Optional[Sequence[ActionSpec]] = None,
-            limits: Any = None) -> Dict[str, Any]:
+            candidates: Sequence[ActionSpec],
+            limits: Any,
+            candidate_rejections: Sequence[str] = ()) -> Dict[str, Any]:
         """Predict, score and persist one bounded strategy decision.
 
         U uses comparable G and shared available C/R; frozen H+ independently
@@ -4387,6 +4377,10 @@ class ORHarness:
                           task_id=task_id,
                           episode_id=episode_id,
                           limits=limits)
+        identity_refusals = [reason for reason in candidate_rejections
+                             if "identity conflict" in reason]
+        if identity_refusals:
+            plan.truncation_reason = "; ".join(identity_refusals)
         if not self.planning:
             plan.status = "disabled"
             plan.truncation_reason = ("planning is disabled "
@@ -4405,36 +4399,7 @@ class ORHarness:
                 "planning would spend more — returning without model calls. "
                 "Report the current best solution instead.")
             return plan.to_dict()
-        specs = self._candidate_specs(task, episode_id, candidates,
-                                      limits.max_root_candidates)
-        # Candidates the normalizer REFUSED (a correctable input error) are
-        # reported alongside the plan: they never became a model call, and
-        # they never change the status of the candidates that did.
-        candidate_rejections = list(getattr(self, "_candidate_rejections", []))
-        self._candidate_rejections = []
-        valid_specs = []
-        identity_conflicts = []
-        for spec in specs:
-            if spec.task_id and spec.task_id != task_id:
-                identity_conflicts.append(
-                    f"{spec.action_type}/{spec.strategy_id}: task_id "
-                    f"{spec.task_id!r} != {task_id!r}")
-                continue
-            if (spec.episode_id is not None and episode_id is not None
-                    and spec.episode_id != episode_id):
-                identity_conflicts.append(
-                    f"{spec.action_type}/{spec.strategy_id}: episode_id "
-                    f"{spec.episode_id!r} != {episode_id!r}")
-                continue
-            spec.task_id = task_id
-            spec.episode_id = episode_id
-            valid_specs.append(spec)
-        if identity_conflicts:
-            plan.truncation_reason = (
-                "candidate identity conflict (rejected): "
-                + "; ".join(identity_conflicts))
-        specs = [s for s in valid_specs
-                 if s.action_type == "execute_strategy"]
+        specs = candidates
         if not specs:
             plan.status = "no_candidates"
             reason = ("no execute_strategy candidates were supplied: the "
@@ -4508,7 +4473,8 @@ class ORHarness:
         planning_measured: set = set()
 
         def _charge_call(prediction) -> None:
-            prediction.trace.model_info['decision_action_id']=decision.action_id
+            # Association is independent of whether this call measured any spend.
+            prediction.trace.model_info["decision_action_id"] = decision.action_id
             if prediction.trace.call_cost is None:
                 self.strategy_predictions._save(prediction)
                 return
@@ -4523,14 +4489,6 @@ class ORHarness:
                    for d in prediction.trace.call_cost.measured_dims()})
             prediction.trace.model_info[
                 "charged_to_parent_action"] = decision.action_id
-            # The SHARED decision anchor: every candidate predicted under
-            # this decision carries the SAME decision action id, so the
-            # close-out anchors the remaining span at that one recorded
-            # start time rather than each prediction's own ``created_at``
-            # (which differs because the candidates are predicted in a
-            # loop).
-            prediction.trace.model_info["decision_action_id"] = \
-                decision.action_id
             self.strategy_predictions._save(prediction)
 
         for spec in specs:
@@ -4557,13 +4515,22 @@ class ORHarness:
             from or_harness.world_model.conditions import ContextExpired
             try:
                 prediction = self.predict_strategy_outcome(
-                    task, spec, episode_id, context=plan_context,
+                    task, CandidateRef.from_action_spec(spec), episode_id,
+                    context=plan_context,
                     timeout_s=max(0.001, remaining),
                     benefit_convention=declared_convention)
             except ContextExpired as exc:
                 stop_reason = str(exc)
                 break
             calls_made += 1
+            # The decision already normalized these proposals. Reuse the
+            # canonical CandidateRef entry and retain the original diagnostics.
+            if spec.normalization_notes:
+                notes = prediction.trace.model_info.get("config_normalized", [])
+                prediction.trace.model_info["config_normalized"] = list(
+                    dict.fromkeys(notes + spec.normalization_notes))
+                prediction.notes.extend(note for note in spec.normalization_notes
+                                        if note not in prediction.notes)
             # Charge THIS call's known spend immediately (failed calls
             # included: their tokens are real) so the loop's own budget
             # gate sees them before the next call is considered.
@@ -4607,7 +4574,6 @@ class ORHarness:
         if comparable and self.plan_mode == "advise":
             best = max(comparable, key=lambda s: s.utility)
             plan.selected_prediction_id=best.prediction_id
-            plan.selected_score=best.to_dict()
             for spec, prediction in predictions:
                 if prediction.prediction_id == best.prediction_id:
                     suggested_spec = spec
@@ -4638,120 +4604,81 @@ class ORHarness:
                          "as own cost AS EACH CALL RETURNED — sunk, never "
                          "part of any candidate's utility"),
             }
+        budget_exceeded = False
         if declared:
-            final_view = self.budget.view(task_id, episode_id,
-                                          budget=declared)
+            final_view = self.budget.view(task_id, episode_id, budget=declared)
             plan.budget_confirmation = final_view["status"]
-            if final_view["status"] == "exceeded":
+            budget_exceeded = final_view["status"] == "exceeded"
+            if budget_exceeded:
                 plan.status = "fallback"
-                plan.selected_prediction_id=None;plan.selected_score=None
+                plan.selected_prediction_id = None
                 plan.truncation_reason = (
                     "declared budget exceeded by real consumption "
                     "(including this planning's own spend); the suggestion "
-                    "is withheld — report the current best solution "
-                    "instead.")
-                self.actions.end_action(
-                    decision.action_id, status="completed",
-                    outcome={"kind": "plan_next_evaluation",
-                             "plan_id": plan.plan_id,
-                             "protocol": "strategy-outcome",
-                             "n_candidates": len(predictions),
-                             "suggested": None,
-                             "suggestion_withheld": True,
-                             "execution_contract":"wm-u-decision/1",
-                             "selected_prediction_id":None,
-                             "candidates":[{'action_spec':spec.to_dict(),'candidate_ref':prediction.candidate.to_dict(),
-                                'prediction_id':prediction.prediction_id,'score':score.to_dict(),'execution_allowed':False}
-                                for (spec,prediction),score in zip(predictions,scores)],
-                             "benefit_convention": copy.deepcopy(
-                                 plan.benefit_convention),
-                             "status": plan.status,
-                             "truncation_reason": plan.truncation_reason})
-                result = plan.to_dict()
-                result["prediction_context_id"] = plan_context.context_id
-                result["prediction_context_version"] = \
-                    plan_context.version
-                result["protocol"] = "strategy-outcome"
-                result["benefit_convention"] = copy.deepcopy(
-                    plan.benefit_convention)
-                result["candidates"] = [
-                    {"action_spec": spec.to_dict(),
-                     "prediction_id": prediction.prediction_id,
-                     "prediction_status": prediction.status,
-                     "score": score.to_dict(),
-                     "capability_gain": _capability_gain_view(prediction)}
-                    for (spec, prediction), score
-                    in zip(predictions, scores)]
-                return result
-        if suggested_spec is not None:
-            plan.suggested = suggested_spec
-            plan.suggestion_basis = suggestion_basis
-        elif comparable:
-            plan.suggestion_basis = suggestion_basis
-        plan.status = "truncated" if stop_reason else "ok"
-        if stop_reason:
-            plan.truncation_reason = stop_reason
-        if not comparable:
-            plan.status = "no_valid_predictions"
-            statuses = sorted({p.status for p in only_predictions})
-            plan.truncation_reason = (
-                "no candidate carried a usable strategy-outcome prediction "
-                f"(statuses: {statuses}); no suggestion is possible. Fall "
-                "revise candidates or repair the forecast and call plan-next again. "
-                "No execution is authorized; actual prediction spend is recorded.")
-        self.actions.end_action(
-            decision.action_id,
-            status="completed",
-            outcome={"kind": "plan_next_evaluation",
-                     "plan_id": plan.plan_id,
-                     "protocol": "strategy-outcome",
-                     "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
-                     "root_snapshot_id": plan.root_snapshot_id,
-                     "n_candidates": len(predictions),
-                     "execution_contract":"wm-u-decision/1",
-                     "selected_prediction_id":plan.selected_prediction_id,
-                     "selected_score":copy.deepcopy(plan.selected_score),
-                     "candidates": [
-                         {"action_spec": spec.to_dict(),
-                          "candidate_ref":prediction.candidate.to_dict(),
-                          "prediction_id": prediction.prediction_id,
-                          "prediction_status": prediction.status,
-                          "execution_allowed":prediction.prediction_id==plan.selected_prediction_id,
-                          "score": score.to_dict()}
-                         for (spec, prediction), score
-                         in zip(predictions, scores)],
-                     "suggested": (plan.suggested.to_dict()
-                                   if plan.suggested else None),
-                     "suggestion_basis": plan.suggestion_basis,
-                     "suggestion_withheld": self.plan_mode == "shadow",
-                     "status": plan.status,
-                     "truncation_reason": plan.truncation_reason,
-                     "model_calls_made": int(plan.model_calls_made),
-                     "planning_cost": copy.deepcopy(plan.planning_cost),
-                     "budget_confirmation": plan.budget_confirmation,
-                     "benefit_convention": copy.deepcopy(
-                         plan.benefit_convention),
-                     "prediction_context_id": plan_context.context_id,
-                     "prediction_context_version": plan_context.version})
-        result = plan.to_dict()
-        result["prediction_context_id"] = plan_context.context_id
-        result["prediction_context_version"] = plan_context.version
-        result["protocol"] = "strategy-outcome"
-        result["benefit_convention"] = copy.deepcopy(plan.benefit_convention)
-        result["protocol"] = "strategy-outcome"
+                    "is withheld — report the current best solution instead.")
+        if not budget_exceeded:
+            if suggested_spec is not None:
+                plan.suggested = suggested_spec
+                plan.suggestion_basis = suggestion_basis
+            elif comparable:
+                plan.suggestion_basis = suggestion_basis
+            plan.status = "truncated" if stop_reason else "ok"
+            if stop_reason:
+                plan.truncation_reason = stop_reason
+            if not comparable:
+                plan.status = "no_valid_predictions"
+                statuses = sorted({p.status for p in only_predictions})
+                plan.truncation_reason = (
+                    "no candidate carried a usable strategy-outcome prediction "
+                    f"(statuses: {statuses}); no suggestion is possible. Fall "
+                    "revise candidates or repair the forecast and call plan-next again. "
+                    "No execution is authorized; actual prediction spend is recorded.")
+        # One set of score rows feeds persistence, CLI/Python output and
+        # execution authorization; no parallel approval state is maintained.
+        candidate_rows = []
+        for (spec, prediction), score in zip(predictions, scores):
+            allowed = prediction.prediction_id == plan.selected_prediction_id
+            candidate_rows.append({
+                "action_spec": spec.to_dict(),
+                "candidate_ref": prediction.candidate.to_dict(),
+                "prediction_id": prediction.prediction_id,
+                "prediction_status": prediction.status,
+                "execution_allowed": allowed,
+                "execution_refusal_reason": None if allowed else (
+                    "not selected by this U decision" if plan.selected_prediction_id
+                    else plan.truncation_reason or plan.suggestion_basis),
+                "score": score.to_dict(),
+                "capability_gain": _capability_gain_view(prediction)})
+        plan.selected_score = next((row["score"] for row in candidate_rows
+                                    if row["execution_allowed"]), None)
+        decision_result = {
+            "kind": "plan_next_evaluation", "plan_id": plan.plan_id,
+            "protocol": "strategy-outcome",
+            "protocol_version": STRATEGY_OUTCOME_PROTOCOL_VERSION,
+            "root_snapshot_id": plan.root_snapshot_id,
+            "n_candidates": len(candidate_rows),
+            "execution_contract": "wm-u-decision/1",
+            "selected_prediction_id": plan.selected_prediction_id,
+            "selected_score": plan.selected_score,
+            "candidates": candidate_rows,
+            "suggested": plan.suggested.to_dict() if plan.suggested else None,
+            "suggestion_basis": plan.suggestion_basis,
+            "suggestion_withheld": self.plan_mode == "shadow" or budget_exceeded,
+            "status": plan.status, "truncation_reason": plan.truncation_reason,
+            "model_calls_made": int(plan.model_calls_made),
+            "planning_cost": copy.deepcopy(plan.planning_cost),
+            "budget_confirmation": plan.budget_confirmation,
+            "benefit_convention": copy.deepcopy(plan.benefit_convention),
+            "prediction_context_id": plan_context.context_id,
+            "prediction_context_version": plan_context.version}
         if candidate_rejections:
-            result["candidate_rejections"] = candidate_rejections
-        result["candidates"] = [
-            {"action_spec": spec.to_dict(),
-             "candidate_ref":prediction.candidate.to_dict(),
-             "prediction_id": prediction.prediction_id,
-             "prediction_status": prediction.status,
-             "execution_allowed":prediction.prediction_id==plan.selected_prediction_id,
-             "execution_refusal_reason":None if prediction.prediction_id==plan.selected_prediction_id else
-                "not selected by this U decision" if plan.selected_prediction_id else plan.truncation_reason or plan.suggestion_basis,
-             "score": score.to_dict(),
-             "capability_gain": _capability_gain_view(prediction)}
-            for (spec, prediction), score in zip(predictions, scores)]
+            decision_result["candidate_rejections"] = list(candidate_rejections)
+        self.actions.end_action(decision.action_id, status="completed",
+                                outcome=decision_result)
+        result = plan.to_dict()
+        result.update({key: decision_result[key] for key in (
+            "prediction_context_id", "prediction_context_version", "protocol",
+            "candidates")})
         return result
 
     def choose_next(self, decision_action_id: str, *,
@@ -6689,19 +6616,17 @@ class ORHarness:
         if (existing_only or not relations and kwargs.get('effect_attributions')) and not associated and review is None:
             return self._maintain_entries(**kwargs)
         from or_harness.world_model.hplus import (
-            require_job, reserve_action, complete, get_job, get_value, put_submission,submission_conflict,
+            reserve_action, complete, get_job, completed_result, put_submission,submission_conflict,
             submission_fingerprint,submission_matches,
         )
         from or_harness.world_model.hplus import submission_job
-        from or_harness.world_model.conditions import digest
         job=submission_job(self,induction_id,kwargs.get('relations'),submission_fingerprint(kwargs,review))
         if job is None:
             return self._induce_impl(**kwargs)
         if job['state'] == 'completed':
-            from or_harness.world_model.conditions import digest
             if not submission_matches(self,job,kwargs,review):
                 raise submission_conflict(self,job,kwargs,review)
-            result = copy.deepcopy(get_value(self.store, job['result_ref']))
+            result = completed_result(self, job)
             result['already_completed'] = True
             self._sync_induction_result(result)
             self.bind_capability_maintenance(job['prediction_id'],adoption_action_id=job['action_id'])
@@ -6720,12 +6645,11 @@ class ORHarness:
         try:
             with self.store.transaction():
                 current=get_job(self,job['induction_id'])
-                from or_harness.world_model.conditions import digest
                 fingerprint=submission_fingerprint(kwargs,review)
                 if current['state']=='completed':
                     if not submission_matches(self,current,kwargs,review):
                         raise submission_conflict(self,current,kwargs,review)
-                    result=copy.deepcopy(get_value(self.store,current['result_ref']))
+                    result=completed_result(self,current)
                     result['already_completed']=True
                 else:
                     job=current

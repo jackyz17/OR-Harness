@@ -700,9 +700,9 @@ def knowledge_value(targets: Sequence[KnowledgeTarget],
             detail["targets"].append(record)
             continue
         # The extra spend the predicted gain REQUIRES travels with the
-        # value: a value whose enabling cost is never charged would let a
-        # prediction buy influence it has not paid for. The caller charges
-        # it (see planner.evaluate_path); this module only reports it.
+        # value so research consumers can inspect its prerequisites. This
+        # module reports the cost; the normal G/C/R scorer does not price
+        # a predicted knowledge gain.
         extra = item.get("expected_extra_cost")
         if isinstance(extra, dict) and extra:
             record["expected_extra_cost"] = {

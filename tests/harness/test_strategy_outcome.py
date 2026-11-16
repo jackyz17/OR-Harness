@@ -199,11 +199,28 @@ class TestUnifiedSolving(HarnessTestCase):
 
     def test_single_candidate_U_is_saved_and_direct_execute_adopts_once(self):
         import math
-        plan=self.plan();p=plan['selected_prediction_id']
+        original_predict = self.provider.predict
+        def without_usage(request, timeout_s=None):
+            response = original_predict(request, timeout_s)
+            return {**response, 'usage': None, 'latency_s': None}
+        from unittest.mock import patch
+        with patch.object(self.provider, 'predict', side_effect=without_usage):
+            plan=self.plan()
+        p=plan['selected_prediction_id']
+        prediction=self.h.strategy_predictions.get(p)
+        self.assertIsNone(prediction.trace.call_cost)
+        self.assertEqual(prediction.trace.model_info['decision_action_id'],plan['decision_action_id'])
+        self.assertNotIn('charged_to_parent_action',prediction.trace.model_info)
+        self.assertIsNone(plan['planning_cost'])
+        self.assertNotIn('selected_plan',self.h._episode_progress('unified','E'))
         self.assertIsNotNone(p)
         self.assertAlmostEqual(plan['selected_score']['utility'],.8-math.log1p(3)/math.log1p(30)-.2,places=6)
         decision=self.h.actions.get(plan['decision_action_id'])
         self.assertEqual(decision.outcome['selected_prediction_id'],p)
+        self.assertEqual(decision.outcome['candidates'],plan['candidates'])
+        self.assertEqual(decision.outcome['selected_score'],plan['selected_score'])
+        self.assertEqual(self.h.bank.count(),0)
+        self.assertEqual(self.h.bank.pending(task_id='unified'),[])
         self.assertIsNone(decision.outcome.get('adopted_by_action_id'))
         r=self.run_selected(plan)
         self.assertEqual(len(self.provider.requests),1)
@@ -1092,22 +1109,6 @@ class TestPredictionDrivesDecision(StrategyCase):
         self.assertIn("G=0.95", plan["suggestion_basis"])
         self.assertIn("R=omitted", plan["suggestion_basis"])
 
-    def test_suggestion_is_not_a_selection(self):
-        _h, _provider, plan = self._plan(
-            {"S01": GOOD_PAYLOAD, "S02": GOOD_PAYLOAD})
-        decision_id = plan["decision_action_id"]
-        # The decision action lives in THIS plan's harness; read it there.
-        action = _h.actions.get(decision_id)
-        self.assertEqual(action.action_type, "select_strategy")
-        # The decision action's outcome is an EVALUATION, not a selection.
-        self.assertEqual(action.outcome["kind"], "plan_next_evaluation")
-        # X.selected_plan is NOT written by planning.
-        ep1_snapshots = [s for s in _h.snapshots(task_id="t1")
-                         if s.episode_id == "ep1"]
-        self.assertTrue(ep1_snapshots,
-                        "planning must snapshot the decision episode")
-        for snap in ep1_snapshots:
-            self.assertNotIn("selected_plan", snap.task_progress)
 
     def test_all_predictions_failed_reports_fallback(self):
         provider = StubProvider(payload=None)
