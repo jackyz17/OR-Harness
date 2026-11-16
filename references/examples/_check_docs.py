@@ -59,8 +59,6 @@ DOCUMENTED_FLAGS = [
     ("recall", ["--task", "--top", "--exclude", "--candidate",
                 "--memory-mode", "--include-unverified"]),
     ("predict-cost", ["--task", "--strategy"]),
-    ("predict-strategy", ["--task", "--candidate", "--episode",
-                          "--context", "--cir"]),
     ("execute", ["--task", "--strategy", "--code", "--workspace", "--solver",
                  "--episode", "--prediction", "--config"]),
     ("choose-next", ["--decision", "--prediction", "--chosen", "--rejected",

@@ -15,7 +15,7 @@
 | `world_model/hplus.py` | 新协议仅对真实评分采用且有执行结果的候选按事前 H+ 派单；拒绝、影子评分和未执行预测不产生结果或归纳待办。失败尝试仍消费原 P，修复需要新决策。 |
 | `cli.py` | plan 摘要直接交出可执行 P/U 或退回原因；execute 引导检查和保存失败记录；重复 close 仍显示未完成的 `induction_schedule.pending_ids`。 |
 
-独立 `predict-strategy` 用于查看预测。裸 strategy/solver、独立预测 ID、无有效 U、落选 P、手工选择、配置/任务冲突以及重复消费均不能授权正式执行。新预测的事后 bind 也必须对应原有评分采用。旧预测及历史绑定保留读取口径。
+查看已有预测使用 `orx inspect --bank predictions --prediction P`；Python 预测 API 保留。裸 strategy/solver、独立预测 ID、无有效 U、落选 P、手工选择、配置/任务冲突以及重复消费均不能授权正式执行。新预测的事后 bind 也必须对应原有评分采用。旧预测及历史绑定保留读取口径。
 
 ## C 的独立尺度
 

@@ -1399,86 +1399,6 @@ def cmd_budget(args) -> int:
         h.close()
 
 
-def cmd_predict_strategy(args) -> int:
-    """Predict ONE candidate's consequences under the wm-so/1 protocol."""
-    h = _harness(args)
-    try:
-        from or_harness.world_model.prediction import ActionSpec
-        task = _load_json_arg(args.task)
-        raw = _load_json_arg(args.candidate)
-        if isinstance(raw, dict) and "measurement_scope" in raw:
-            candidate: Any = ActionSpec.from_dict(raw)
-        else:
-            candidate = raw
-        context = None
-        if args.context:
-            context = h.get_prediction_context(args.context)
-            if context is None:
-                return _fail(f"unknown context_id {args.context!r}")
-        cir = _load_json_arg(args.cir) if args.cir else None
-        try:
-            prediction = h.predict_strategy_outcome(
-                task, candidate, args.episode, context=context, cir=cir)
-        except BudgetExhausted as exc:
-            return _fail(
-                f"task stopped before this prediction started: {exc}. No "
-                "model call was made. Finish the episode (record the host "
-                "stop with `orx record --session ...`, then `orx "
-                "close-episode --terminal budget_exhausted`).")
-        result = {"prediction": prediction.to_dict(),
-                  "prediction_id": prediction.prediction_id}
-        from or_harness.api import _capability_gain_view
-        result['hplus'] = _capability_gain_view(prediction)
-        info = prediction.trace.model_info
-        failure = info.get("failure")
-        if failure:
-            # A failed prediction must SAY WHY in its own output: the
-            # difference between "the model was truncated" and "the model
-            # answered with the wrong shape" decides whether to raise the
-            # output budget or fix the request.
-            result["failure"] = failure
-        if info.get("effective_parameters"):
-            result["effective_parameters"] = info["effective_parameters"]
-        if prediction.status == "contract_only" \
-                and not prediction.provider_configured:
-            return _fail(f"prediction not enabled: "
-                         f"{(prediction.notes or ['no provider'])[0]}", 2)
-        parts = [f"Strategy-outcome prediction {prediction.prediction_id} "
-                 f"({prediction.status}) for "
-                 f"{prediction.candidate.strategy_id or '(unnamed)'}: independent inspection only; "
-                 "formal solving requires plan-next U scoring. "]
-        if result['hplus'] and 'decision' in result['hplus']:
-            parts.append(f"H+={result['hplus']['decision']} ({result['hplus']['decision_status']}): "
-                         f"{result['hplus']['explanation']}; ")
-        if failure:
-            parts.append(f"FAILED [{failure.get('kind')}] "
-                         f"{failure.get('detail') or ''} "
-                         f"(finish_reason="
-                         f"{failure.get('finish_reason')!r}); ")
-        if prediction.benefit is not None:
-            b = prediction.benefit
-            parts.append(f"G={b.value} ({b.kind}/{b.metric}"
-                         + (f", baseline {b.baseline.kind}" if b.baseline
-                            else "") + "); ")
-        if prediction.cost is not None and prediction.cost.expected:
-            dims = prediction.cost.expected.measured_dims()
-            parts.append("c={" + ", ".join(
-                f"{d}: {getattr(prediction.cost.expected, d)}"
-                for d in sorted(dims)) + "}; ")
-        if prediction.risk is not None and prediction.risk.events:
-            parts.append(f"L={len(prediction.risk.events)} event(s); ")
-        if prediction.uncertainty is not None:
-            parts.append("uncertainty "
-                         f"(source={prediction.uncertainty.source}); ")
-        if prediction.trace.unsupported_fields:
-            parts.append(f"not predicted: "
-                         f"{', '.join(sorted(prediction.trace.unsupported_fields))}; ")
-        parts.append('Inspect this forecast; use `orx plan-next --candidates ...` for a scored executable decision. ')
-        return _emit(result, "".join(parts))
-    finally:
-        h.close()
-
-
 def _attribution_summary(info: Dict[str, Any]) -> str:
     """A short, honest sentence about which comparisons a binding's
     unconfirmed/mismatched fields actually block.
@@ -2980,30 +2900,6 @@ def build_parser() -> argparse.ArgumentParser:
                    help="declare a budget, e.g. 'llm_tokens=50000,"
                         "solver_runtime_s=600'")
     p.set_defaults(func=cmd_budget)
-
-    p = sub.add_parser(
-        "predict-strategy",
-        help="predict ONE candidate strategy's benefit/cost/risk/"
-             "uncertainty under the wm-so/1 protocol, from a frozen "
-             "prediction context (world-model M3)")
-    p.add_argument("--task", required=True,
-                   help="task JSON (literal or file)")
-    p.add_argument("--candidate", required=True,
-                   help="candidate JSON (literal or file): a CandidateRef "
-                        "{action_type, strategy_id, solver, config, scope} "
-                        "or a legacy ActionSpec (measurement_scope/"
-                        "budget_hint preserved verbatim)")
-    p.add_argument("--episode", default=None)
-    p.add_argument("--context", default=None, metavar="CTX_ID",
-                   help="reuse a FROZEN prediction input context built by "
-                        "`orx context` (identity verified, including the "
-                        "effective input version); default builds a fresh "
-                        "one for this call")
-    p.add_argument("--cir", default=None,
-                   help="CIR JSON (literal or file): the effective problem "
-                        "input. Pass the SAME CIR you built the context "
-                        "with when reusing one")
-    p.set_defaults(func=cmd_predict_strategy)
 
     p = sub.add_parser(
         "bind-strategy",

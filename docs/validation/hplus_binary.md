@@ -14,7 +14,7 @@
 
 ## 实际接入
 
-`capability_gain.decision` 在同一次 `predict-strategy` 调用中给出 JSON 数值 0/1。
+`capability_gain.decision` 在候选的同一次世界模型调用中给出 JSON 数值 0/1；正式求解入口为 `plan-next`。
 框架在预测记录的 `trace.model_info.hplus` 冻结权威值、原假设、具体核验和输入引用。
 字符串、布尔、越界及非有限值按 0 调度，分别保留非法/缺失诊断；历史三态不转换。
 有效 1 的说明或核验不完整也仍为 1。它不参与 G/C/R 策略效用。
@@ -38,9 +38,12 @@
 
 ## 正常调用
 
+以下命令已更新为当前评分入口；历史实测数据和版本引用保持原样。`candidates.json` 是含一个或多个候选的 JSON 列表。
+
 ```bash
 orx --home BANK --induction-mode hplus --world-model URL::MODEL \
-  predict-strategy --task task.json --episode E --candidate candidate.json
+  plan-next --task task.json --episode E --candidates candidates.json
+# P 使用 result.selected_prediction_id。
 orx --home BANK execute --task task.json --episode E --prediction P --code solve.py --workspace ws
 orx --home BANK check-task EX --check '{"reference_objective":90,"reference_source":"bench_declared"}'
 orx --home BANK record --from-staged EX

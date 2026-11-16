@@ -849,7 +849,7 @@ class TestReviewFixes(HarnessTestCase):
 
 class TestPlanNextCli(HarnessTestCase):
     """The CLI hands the chosen candidate's prediction id over, so the
-    agent never calls `predict-strategy` again after planning."""
+    agent executes the original scored prediction without another forecast."""
 
     def _run(self, argv):
         from or_harness import cli

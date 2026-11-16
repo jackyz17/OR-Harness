@@ -20,19 +20,20 @@ Commands print one JSON line to stdout: `{"result": {...}, "summary": "..."}`. E
 
 ## 1. Common paths and command index
 
-For a new task, understand its structure with `profile`, inspect memory with `recall`, and propose candidate methods. Choose one prediction path:
+For a new task, understand its structure with `profile`, inspect memory with `recall`, and propose candidate methods. Use the shared scored path for one or more candidates:
 
-| Decision | Calls | Reuse |
+| Stage | Call | Read |
 |---|---|---|
-| One candidate | `predict-strategy` | Pass its prediction ID directly to `execute` |
-| Score and select | `plan-next` → `execute --prediction` | Read `result.selected_prediction_id` for one or more candidates |
+| Score one or more proposals | `plan-next` | `result.selected_prediction_id` and its U |
+| Execute the selection | `execute --prediction P` | actual execution ID and binding |
+| Read an existing forecast | `inspect --bank predictions --prediction P` | stored generation and forecast; no provider call |
 
 Then write the chosen method's code, `execute`, `check-task`, and `record --from-staged`. Record failures too; inspect the reflection material and make a new decision when a repair is needed. At episode end, `close-episode` evaluates predictions and publishes calibration. Offline, `induction-material` supplies facts from which you form and submit a claim with `induce --relation`.
 
 Avoid duplicate work:
 
-- `predict-strategy` builds a prediction context by default; `plan-next` shares one across its candidates. Call `context` separately when you need to inspect or explicitly reuse a frozen input.
-- `plan-next` replaces separate `predict-strategy` calls for that comparison. Selecting a candidate does not require predicting it again.
+- `plan-next` builds one frozen context shared by its candidates. Use `context` to inspect input; explicit context reuse is available through the Python prediction service.
+- Both one and multiple candidates use the same scored decision. Execute the returned selected prediction ID without another forecast.
 - `execute --prediction` establishes the prediction link before the run. Use `bind-strategy` only for an attempt that needs a manual or recovery binding.
 - `predict-cost` is an optional historical cost baseline, separate from the world-model forecast.
 - `close-episode` publishes calibration and performs retention maintenance. Extra reads, rebuilds, or retention passes are for inspection and repair.
@@ -41,7 +42,7 @@ Avoid duplicate work:
 | Purpose | Commands | Effects |
 |---|---|---|
 | Understand and discover | `profile`, `recall` | Read; recall may call an embedding provider |
-| Score and select | `plan-next` | One shared context, one forecast per candidate, saved U selection; independent predict-strategy is inspection |
+| Score and select | `plan-next` | One shared context, one forecast per candidate, saved U selection; inspect reads existing forecasts |
 | Execute, check, record | `execute`, `check-task`, `record` | Runs code; logs checks; stages and records facts |
 | Close the episode | `close-episode` | Writes evaluations/calibration; performs retention |
 | Optional input/baseline | `context`, `predict-cost`, `snapshot`, `budget` | Context/snapshot persist; budget declaration writes; cost baseline reads |
@@ -58,7 +59,7 @@ Avoid duplicate work:
 |---|---|---|
 | Task / episode | Choose one task ID per logical problem and one episode label per solving effort; retries retain them | Commands accepting `--task` / `--episode` |
 | Decision action | `plan-next`: `result.decision_action_id` | saved authorization; optional compatibility rejection |
-| Candidate prediction | `predict-strategy`: `result.prediction_id`; `plan-next`: `result.plan.candidates[].prediction_id` | `execute --prediction` for the scored winner; independent IDs are inspection only |
+| Candidate prediction | `plan-next`: `result.selected_prediction_id` / `result.plan.candidates[].prediction_id` | `execute --prediction` for the scored winner; independent IDs are inspection only |
 | Execution | `execute`: `result.execution_id` | `check-task`, `record --from-staged`, correction commands |
 | Execution action | `execute`: `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
 | Evidence IDs | `induction-material`: `result.material[].execution_id` | Relation evidence; `predict-capability --bundle` |
@@ -153,19 +154,19 @@ Method evidence is `performed`, `planned_only`, or `none`: `method.actual` comes
 
 `--math` declares known attributes, e.g. `'{"linearity":"linear","objective_kind":"min"}'`. A supplied `--cir` replaces task coupling consistently for representation, profile, and retrieval; `joint.sources.cir` reports its origin. Missing model/CIR/text is reported, not guessed. Retrieval deduplicates `layer:id`; content digests cover consulted knowledge, not read timestamps.
 
-**Recover / next:** Reuse the context with `predict-strategy --context CTX_ID` and the same effective CIR. Task/version/episode or known structural mismatches are refused; unknown structure is not a mismatch. `--no-persist` returns content without creating a later lookup target. Historical `--snapshot` builds use frozen knowledge/retrieval, exclude later-created memories, and mark unavailable reliability/evidence blocks missing; they cannot reconstruct history from today's banks. See [prediction_context.md](prediction_context.md).
+**Recover / next:** Explicit reuse uses `ORHarness.predict_strategy_outcome(..., context=ctx, cir=cir)` with the same effective CIR. CLI `plan-next` builds its own shared context. Task/version/episode or known structural mismatches are refused; unknown structure is not a mismatch. `--no-persist` returns content without creating a later lookup target. Historical `--snapshot` builds use frozen knowledge/retrieval, exclude later-created memories, and mark unavailable reliability/evidence blocks missing; they cannot reconstruct history from today's banks. See [prediction_context.md](prediction_context.md).
 
 ### `orx predict-cost --task t.json --strategy S`
 
 **Purpose / effects:** Optional read-only historical attempt-cost baseline; no provider call. It does not predict benefit, risk, or uncertainty.
 
-**Read / next:** `source=entry|stats|unknown`, support counts, per-dimension support, and expected cost. Unknown or incompatible evidence yields null, not free execution. Pass the printed cost snapshot to `record --prediction` if you used it, so feedback compares with that frozen baseline. Use `predict-strategy` or `plan-next` for world-model consequences.
+**Read / next:** `source=entry|stats|unknown`, support counts, per-dimension support, and expected cost. Unknown or incompatible evidence yields null, not free execution. Pass the printed cost snapshot to `record --prediction` if you used it, so feedback compares with that frozen baseline. Use `plan-next` for world-model consequences and scoring.
 
 ## 4. Plan and inspect predictions
 
 ### Candidate format
 
-`predict-strategy --candidate` accepts inline JSON or a path; `plan-next --candidates` takes a list. A minimal described candidate is:
+`plan-next --candidates` accepts an inline JSON list or a path to one. The list may contain one or multiple candidates. A minimal described candidate is:
 
 ```json
 {"name":"bounded_enumeration",
@@ -181,11 +182,21 @@ The full shape supports `action_type:"execute_strategy"`, task/episode identity,
 
 **Field responsibilities — do not duplicate.** `solver` (top level) is the declared solver / calling interface. `method` is the modelling form, variable domains, objective, constraints and the method steps. `config` is the execution parameters: time limit, random seed, solve precision, and comparable knobs. Put the solver ONLY at the top level: a `config.solver` copies it, and the two spellings need not agree — so a duplicate is neither matched nor mistaken for a mismatch (it does not block the outcome). Genuine execution params (`warm_start`, `msg`, `time_limit`, `seed`, `mip_gap`, …) stay in `config`; only keys that name no execution parameter at all are refused.
 
-### `orx [--world-model URL::MODEL] predict-strategy --task t.json --candidate c.json [--episode ep1] [--context CTX_ID] [--cir cir.json]`
+### Stored forecasts and their conventions
 
-**Purpose / effects:** Make and persist one `wm-so/1` candidate forecast and its real call usage. Builds a fresh context by default; an explicit context is checked against task/version/episode and effective CIR. Provider input contains the frozen content, not just IDs.
+`plan-next` saves one `wm-so/1` forecast per candidate together with the score
+and execution permission. Read `result.selected_prediction_id` and execute that
+original P. View an existing candidate forecast with:
 
-**Read:** `result.prediction_id`, `result.prediction.candidate.strategy_id`, forecast status and failure. The forecast covers benefit with metric/unit/baseline, five-dimensional cost with a predicted mask, named risk events, and explicitly uncalibrated self-reported uncertainty. Normalized solution quality must be in `[0,1]`; a raw objective is refused, not clamped. Capability-gain traces, when present, remain predictions for later evaluation.
+```bash
+orx inspect --bank predictions --prediction P
+```
+
+Inspection makes no provider call. `result.prediction.kind` names the generation;
+`result.prediction.prediction` contains its stored payload. It exposes status, candidate,
+G/C/R/H+, notes and trace. The Python service `ORHarness.predict_strategy_outcome`
+remains available for explicit context reuse and contract inspection; standalone
+API forecasts do not authorize execution.
 
 Declare the benefit meaning before observing the result:
 
@@ -199,7 +210,13 @@ Declare the benefit meaning before observing the result:
 New G is P(original-task acceptance | faithful execution of the candidate steps under the agreed solving conditions); method omissions remain omitted, while script implementation risk belongs in R. The request fixes convention and scope before the call. A different metric or non-finite/out-of-range numeric G makes G unavailable with a reason, preserving C/R. `benefit.notes` keeps one grounded requirement → candidate step → expected-consequence sentence even when `value` is absent. Explicit old API/planning conventions and stored forecasts keep their original meanings.
 
 
-**Recover / next:** No usable prediction is `invalid` with `result.failure`; configuration/availability and actual forecast production are separate facts. One call, no automatic retries/default forecasts. Failures are saved with usage consumed:
+**Recover / next:** A failed or unsupported forecast retains its status,
+notes, failure details and measured call usage. Inspect that saved prediction;
+repair the candidate or provider response and call `plan-next` again when no
+eligible U is returned. A candidate is predicted once per plan without hidden
+retries or default forecasts. See [strategy_outcome.md](strategy_outcome.md).
+
+Saved forecast diagnostics retain these recovery hints:
 
 | `failure.kind` | Recovery |
 |---|---|
@@ -209,7 +226,7 @@ New G is P(original-task acceptance | faithful execution of the candidate steps 
 | `timeout` / `network_error` | Retry deliberately or adjust `--wm-timeout` / `OR_WM_TIMEOUT` and planning time budget |
 | `unusable_payload` | Fix fields named in validation notes |
 
-Unknown `finish_reason` remains unknown. This command is independent inspection. Formal solving requires `plan-next`; its selected prediction is reused by execute without a second forecast. See [strategy_outcome.md](strategy_outcome.md).
+Unknown `finish_reason` remains unknown.
 
 ### `orx [--world-model URL::MODEL] plan-next --task t.json [--episode E] --candidates specs.json [--cost-scales JSON_OR_FILE] [--horizon 1] [--max-calls N] [--prediction-mode M] [--time-budget S]`
 
@@ -465,7 +482,7 @@ Read/recover required jobs, immutable receipt references, separate explicit-0/mi
 
 **Input / read:** Bundle supplies frozen recorded `execution_ids`; framework fixes identity, scope, targeting, horizon, and per-metric baselines. Model supplies expected changes (metric/unit/direction/value/baseline), learning cost, degradation risk, uncertainty, and verification conditions. Cost baselines are per dimension/unit; unlike currencies cannot be converted. No provider gives `contract_only`; a validated actual forecast is required for `valid`.
 
-**Next:** Compare multiple operation predictions when choosing among them, or retain the forecast for later binding. This is unnecessary for direct induction or an online H+ already forecast by `predict-strategy`.
+**Next:** Compare multiple operation predictions when choosing among them, or retain the forecast for later binding. This is unnecessary for direct induction or a frozen H+ already forecast inside `plan-next`.
 
 ### `orx compare-capability --predictions ID[,ID...] [--horizon-tasks N] [--allow-quality-loss]`
 

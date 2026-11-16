@@ -1277,6 +1277,11 @@ class TestCliStrategyCommands(StrategyCase):
                     "usage": {"prompt_tokens": 100,
                               "completion_tokens": 50},
                 }
+                request=json.loads(body["messages"][1]["content"])
+                content=json.loads(payload["choices"][0]["message"]["content"])
+                content["benefit"].update({key:request["benefit_convention"][key]
+                                           for key in ("kind","metric","unit")})
+                payload["choices"][0]["message"]["content"]=json.dumps(content)
                 data = json.dumps(payload).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -1297,36 +1302,39 @@ class TestCliStrategyCommands(StrategyCase):
                                   + argv)
         return code, payload, seen
 
-    def test_predict_strategy_command(self):
-        code, payload, seen = self._with_http_stub([
-            "predict-strategy", "--task", json.dumps(_task("t1")),
-            "--candidate", json.dumps({"action_type": "execute_strategy",
-                                       "strategy_id": "S01"}),
-            "--episode", "ep1"])
-        self.assertEqual(code, 0)
-        self.assertEqual(payload["result"]["prediction"]["status"], "valid")
-        # The wire protocol really is the OpenAI chat shape, and the system
-        # prompt selects the strategy-outcome protocol.
-        self.assertEqual(seen[0]["model"], "stub-model")
-        system = seen[0]["messages"][0]["content"]
-        self.assertIn("wm-so/1", system)
-        user = json.loads(seen[0]["messages"][1]["content"])
-        self.assertEqual(user["prediction_protocol"], "wm-so/1")
+    def test_single_candidate_plan_calls_provider_once_and_can_be_inspected(self):
+        code,payload,seen=self._with_http_stub([
+            "plan-next","--task",json.dumps(_task("t1")),"--episode","ep1",
+            "--candidates",json.dumps([{"strategy_id":"S01","solver":"python"}])])
+        self.assertEqual(code,0)
+        pid=payload["result"]["selected_prediction_id"]
+        self.assertIsNotNone(pid)
+        self.assertEqual(payload["result"]["selected_score"]["prediction_id"],pid)
+        self.assertEqual(len(seen),1)
+        self.assertEqual(seen[0]["model"],"stub-model")
+        self.assertIn("wm-so/1",seen[0]["messages"][0]["content"])
+        request=json.loads(seen[0]["messages"][1]["content"])
+        self.assertEqual(request["prediction_protocol"],"wm-so/1")
+        code,inspected=self._run(["inspect","--bank","predictions","--prediction",pid])
+        self.assertEqual(code,0)
+        self.assertEqual(inspected["result"]["prediction"]["kind"],"strategy_outcome")
+        self.assertEqual(inspected["result"]["prediction"]["prediction"]["prediction_id"],pid)
+        self.assertEqual(len(seen),1)
 
-    def test_predict_strategy_with_context_reuse(self):
-        code, payload = self._run([
-            "context", "--task", json.dumps(_task("t1")), "--episode",
-            "ep1"])
-        self.assertEqual(code, 0)
-        ctx_id = payload["result"]["context_id"]
-        code, payload, _seen = self._with_http_stub([
-            "predict-strategy", "--task", json.dumps(_task("t1")),
-            "--candidate", json.dumps({"action_type": "execute_strategy",
-                                       "strategy_id": "S01"}),
-            "--episode", "ep1", "--context", ctx_id])
-        self.assertEqual(code, 0)
-        self.assertEqual(payload["result"]["prediction"]["status"],
-                         "valid")
+    def test_plan_candidates_share_the_same_frozen_context_over_http(self):
+        code,payload,seen=self._with_http_stub([
+            "plan-next","--task",json.dumps(_task("t1")),"--episode","ep1",
+            "--candidates",json.dumps([{"strategy_id":sid,"solver":"python"}
+                                       for sid in ("S01","S02")])])
+        self.assertEqual(code,0)
+        self.assertEqual(len(seen),2)
+        requests=[json.loads(envelope["messages"][1]["content"]) for envelope in seen]
+        plan=payload["result"]["plan"]
+        self.assertEqual({request["prediction_context"]["context_id"] for request in requests},
+                         {plan["prediction_context_id"]})
+        self.assertEqual(requests[0]["prediction_context"],requests[1]["prediction_context"])
+        self.assertEqual(len(plan["candidates"]),2)
+        self.assertIsNotNone(payload["result"]["selected_prediction_id"])
 
     def test_bind_strategy_command(self):
         task = _task("t1")

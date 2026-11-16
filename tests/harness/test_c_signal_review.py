@@ -37,8 +37,8 @@ class TestFirstProposal(CCase):
                 "--wm-timeout", "1", "--wm-max-tokens", "256"]
         if explicit is not None:
             args += ["--execution-context", json.dumps(explicit)]
-        args += ["predict-strategy", "--task", json.dumps(new_task), "--episode", "first",
-            "--candidate", json.dumps({"action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE})]
+        args += ["plan-next", "--task", json.dumps(new_task), "--episode", "first",
+            "--candidates", json.dumps([{"action_type": "execute_strategy", "strategy_id": "S04", "method": REUSE}])]
         # Substitute only network/provider construction. _harness, snapshot,
         # CLI parsing, published retrieval and the predictor are real.
         def harness(**kwargs):
@@ -62,7 +62,13 @@ class TestFirstProposal(CCase):
         self.assertEqual(e["current_conditions"]["phase"], "initial_modelling")
         self.assertEqual(e["current_conditions"]["execution_host"]["model"], RUNNER["model"])
         self.assertIn("execution_context", e["current_conditions"]["phase_basis"])
-        self.assertFalse(self.h.actions.query(task_id=task["task_id"]), "no fake model/usage actions needed")
+        actions=self.h.actions.query(task_id=task["task_id"])
+        self.assertEqual(len(actions),1)
+        self.assertEqual(actions[0].action_type,"select_strategy")
+        self.assertEqual(actions[0].params["kind"],"plan_next")
+        self.assertEqual(actions[0].status,"completed")
+        self.assertIsNone(actions[0].linked_execution_id)
+        self.assertIsNotNone(actions[0].outcome["selected_prediction_id"])
 
     def test_explicit_runner_flag_overrides_environment_and_unknown_inputs_stay_unknown(self):
         self.history_without_seed_actions()

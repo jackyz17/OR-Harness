@@ -56,6 +56,16 @@ class TestEndToEndCLI(HarnessTestCase):
                           fh)
         """), encoding="utf-8")
 
+    def test_retired_prediction_command_is_absent_from_help_and_exits_two(self):
+        help_result=run_orx(self.home,"--help")
+        self.assertEqual(help_result.returncode,0,help_result.stderr)
+        self.assertNotIn("predict-strategy",help_result.stdout)
+        self.assertIn("plan-next",help_result.stdout)
+        refused=run_orx(self.home,"predict-strategy","--task",str(self.task_path),
+                        "--candidate",'{"strategy_id":"S01"}')
+        self.assertEqual(refused.returncode,2)
+        self.assertIn("invalid choice",refused.stderr)
+
     def test_normal_scored_cli_single_and_multiple_candidates(self):
         import importlib.util
         spec=importlib.util.spec_from_file_location('unified_solving',REPO/'references/examples/unified_solving.py')

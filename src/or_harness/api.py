@@ -5381,7 +5381,7 @@ class ORHarness:
                 or outcome.get("execution_contract") != "wm-u-decision/1"):
             raise ValueError(
                 "prediction has no scored plan-next decision; "
-                "independent predict-strategy is inspection only")
+                "independent Python predictions are inspection only")
         if (decision.task_id != prediction.candidate.task_id
                 or decision.episode_id != prediction.candidate.episode_id):
             raise ValueError(

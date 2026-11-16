@@ -29,13 +29,13 @@ Scripts, result files observed after attempts, captured output clips and interna
 # Explicit context creation is optional; plan-next normally creates one itself.
 orx --home /work/run context --task task.json --episode e1
 orx --home /work/run context --context-id ctx_ID
-orx --home /work/run predict-strategy --task task.json --candidate candidate.json --episode e1 --context ctx_ID
+orx --home /work/run plan-next --task task.json --candidates candidates.json --episode e1
 
 # Available after consumption/expiry as well as while active:
 orx --home /work/run context --context-id ctx_ID --audit
 ```
 
-During the valid lifetime, reuse sends the original stored input and never reruns recall against today's memory. Default limits:
+CLI `plan-next` creates one shared input for its decision. Explicit reuse uses the Python service `predict_strategy_outcome(..., context=h.get_prediction_context("ctx_ID"))`. During the valid lifetime it sends the original stored input and never reruns recall against today's memory. Default limits:
 
 - `OR_HARNESS_CONTEXT_TTL_S=86400`: input reuse lifetime, fixed when persisted.
 - `OR_HARNESS_ACTIVE_CONTEXTS=128`: maximum active input count in a home.

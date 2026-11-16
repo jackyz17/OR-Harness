@@ -2,7 +2,7 @@
 
 Read this page when a prediction surprised you and you need to know what it was conditioned on: the frozen joint problem representation, the retrieval evidence it carried, the capability evidence behind `H`, and how a context is reused. For the protocol a prediction is written in, see [strategy_outcome.md](strategy_outcome.md); for the field definitions of every prediction, [world_model_contract.md](world_model_contract.md).
 
-**The strategy-outcome prediction service consumes this input** (see [`references/strategy_outcome.md`](strategy_outcome.md)) — it is what `predict-strategy` and `plan-next` use. The legacy `predict_outcome` payload reader is kept so OLD records stay readable, but no agent-facing prediction flow uses that path.
+**The strategy-outcome prediction service consumes this input** (see [`references/strategy_outcome.md`](strategy_outcome.md)) — it is the shared input used by `plan-next` and the Python prediction service. The legacy `predict_outcome` payload reader is kept so OLD records stay readable, but no agent-facing prediction flow uses that path.
 
 This document defines **what information a prediction actually uses**, and how that information reaches the model consistently, completely and traceably.
 
@@ -25,8 +25,9 @@ This document is the authority for the INPUT side. The contract side (statuses, 
 |---|---|---|---|
 | Build the frozen prediction input | `orx context --task t.json` / `ORHarness.build_prediction_context` | a task JSON (nothing else is required) | a `PredictionContext` |
 | Read a stored input back | `orx context --context-id CTX` / `ORHarness.get_prediction_context` | the context id | the frozen context, **without re-running anything** |
-| Predict with a shared input | `orx predict-strategy --context CTX` / `predict_strategy_outcome(..., context=ctx)` | a task + a candidate | a `StrategyOutcomePrediction` conditioned on that input |
-| Predict without naming a context | `orx predict-strategy` (builds one for this call) / `predict_strategy_outcome(..., context=None)` | a task + a candidate | a prediction conditioned on a context frozen FOR THIS CALL |
+| Score proposed candidates | `orx plan-next` / `ORHarness.plan_next(...)` | a task + a list of one or more candidates | predictions sharing one frozen input, scores and an eligible selected P |
+| Explicit Python context reuse | `predict_strategy_outcome(..., context=ctx)` | a task + a candidate + the saved input | a `StrategyOutcomePrediction`; standalone API inspection does not grant execution permission |
+| Inspect a saved forecast | `orx inspect --bank predictions --prediction P` | an existing prediction ID | stored prediction content and input references without a model call |
 
 **The minimum task fields** for a useful context:
 
@@ -347,7 +348,7 @@ can still yield a validated boundary increment. See [hplus.md](hplus.md).
 
 ## 8. What is NOT here
 
-- **The legacy `predict_outcome` protocol is unchanged** for the records it already wrote: the payload shape it produced is what the contract reader still parses. It is no longer an agent-facing prediction path — `predict-strategy` (wm-so/1) is the only one — so the two never compete for the same decision.
+- **The legacy `predict_outcome` protocol is unchanged** for the records it already wrote: the payload shape it produced is what the contract reader still parses. It is no longer an agent-facing prediction path — `plan-next` (wm-so/1) is the public scored entry — so the two never compete for the same decision.
 - **Capability evolution is a separate service.** Its contract and service live in [`references/world_model_contract.md`](world_model_contract.md); the input context described here is shared with it.
 - **No task-closing scheduler, no offline learning schedule.**
 - **No capability evaluation system, no H score, no latent vectors.**

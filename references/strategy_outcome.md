@@ -2,7 +2,7 @@
 
 Read this page when you are predicting one candidate, comparing several, or binding a real execution to a prediction — the wm-so/1 loop in detail: the yardstick, the comparison rules and the binding identity. For the frozen input a prediction is conditioned on, see [prediction_context.md](prediction_context.md); for every field and status, [world_model_contract.md](world_model_contract.md).
 
-The normal solving entry is `plan-next` for one or more candidates. Independent `predict-strategy` is available for inspection.
+The solving entry is `plan-next` for one or more candidates. Read existing forecasts with `orx inspect --bank predictions --prediction P`.
 
 - Protocol version: `wm-so/1`
 - Python module: `or_harness.world_model.strategy_prediction`
@@ -38,23 +38,20 @@ bound attempts with frozen H+=1 schedule a review, including failed attempts.
 Unexecuted forecasts stay unobserved. Close-out publishes factual feedback; the
 outer building agent settles the pending IDs before the next training task.
 
-## 2. Independent prediction inspection
+## 2. Propose candidates and inspect saved forecasts
 
 ```bash
-# build the frozen input once (optional: predict-strategy builds its own)
-orx context --task t.json --episode ep1
-
-# predict ONE candidate under wm-so/1
-orx predict-strategy --task t.json --episode ep1 \
-  --candidate '{"action_type":"execute_strategy","strategy_id":"S01",
-                "solver":"highs","config":{"time_limit":60}}'
-
-# reuse a frozen context (pass the SAME --cir you built it with)
-orx predict-strategy --task t.json --episode ep1 --context CTX_ID --cir cir.json \
-  --candidate '{"action_type":"execute_strategy","strategy_id":"S02"}'
+orx plan-next --task t.json --episode ep1 \
+  --candidates '[{"name":"joint assignment","steps":["Build the coupled model","Solve and check original constraints"],"solver":"highs","config":{"time_limit":60}}]'
+# P = result.selected_prediction_id
+orx inspect --bank predictions --prediction P
 ```
 
-An independent forecast is readable but cannot be passed directly to formal execution. Use the scored entry below even for one candidate.
+The same candidate list format handles one or more proposals. Inspection reads
+the saved forecast without a new model call. The Python service
+`ORHarness.predict_strategy_outcome()` remains the planner's prediction entry;
+advanced Python callers can reuse an explicit frozen context. Independent API
+forecasts remain readable and need a scored plan before formal execution.
 
 **Candidates.** A candidate is a `CandidateRef` (or a legacy `ActionSpec`, whose execution params and budget hint are preserved verbatim and whose unmappable scopes are refused). A candidate may cover modelling / decomposition / solving / repair — it is not just one solver call. The service does NOT generate candidates — they come from YOU (there is no built-in strategy directory to enumerate, and `recall` is a report on real memory rather than a menu) — and it never generates solve.py.
 
@@ -202,7 +199,7 @@ First compare the candidate steps against the reference workflow: what model can
 
 **Two kinds of overrun, two different responses.** The view reports `exceeded_dims` (each with its `scope`) plus two booleans:
 
-- **`episode_exhausted`** — an EPISODE-scoped cumulative dimension is over the limit. This STOPS the task: `execute` and `predict-strategy` refuse to start new work (they raise `BudgetExhausted` before any action, prediction or sandbox touch).
+- **`episode_exhausted`** — an EPISODE-scoped cumulative dimension is over the limit. This STOPS the task: `execute` and `plan-next` refuse to start new work (they raise `BudgetExhausted` before any action, prediction or sandbox touch).
 - **`attempt_limited`** — only `latency_s` on one attempt is over. This is a FAILURE to keep (the attempt stays recorded with its cost) and a RETRY is allowed: one slow attempt must never permanently block the rest of the task.
 
 The gate reads the SCOPE, never the bare `exceeded` status.
@@ -223,7 +220,7 @@ This archives the REAL termination, in one of three honest shapes, never fabrica
 2. a `running` execute action with no staged fact (a kill that landed BEFORE staging) is ended as an honest interruption (`status="failed"`, `outcome.interrupted=true`, result marked `unobservable`) — the cost incurred is kept;
 3. NO execute attempt at all (the session spent its budget editing code / calling the world model) is recorded as a non-execution `finish_task` action — no `execute_strategy` is invented.
 
-In every case the reason is the HOST's stated cause, verbatim, and an episode-termination mark is written so a later `execute`/`predict-strategy` refuses new work for the task. Re-recording the SAME stop is IDEMPOTENT (nothing is written twice).
+In every case the reason is the HOST's stated cause, verbatim, and an episode-termination mark is written so a later `execute`/`plan-next` refuses new work for the task. Re-recording the SAME stop is IDEMPOTENT (nothing is written twice).
 
 **Finishing is never gated.** `record`, `check-task`, `record --session`, archiving and `close-episode` do NOT go through the solve gate — the host's finish path must complete even after a stop. After the stop is recorded the interrupted action is no longer `running`, so `close-episode --terminal budget_exhausted` evaluates instead of returning `pending`. The stop does not rewrite observed quality/cost and does not turn a benefit into 0: what could be observed is kept, what could not is marked interrupted/unknown.
 

@@ -985,7 +985,7 @@ def normalize_candidate_payload(raw: Any, *,
     """Normalize a candidate payload to the ONE canonical candidate shape.
 
     THE single entry-point discipline for candidates: ``plan-next`` and
-    ``predict-strategy`` (API and CLI) all call this BEFORE they build a
+    ``ORHarness.predict_strategy_outcome`` normalize raw proposals before building a
     :class:`CandidateRef` / ``ActionSpec``, so the same hand-written input is
     never interpreted two different ways.
 

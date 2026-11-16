@@ -1,7 +1,7 @@
 """Runnable example: a missing execution receipt no longer discards a real
 attempt (bounded attribution).
 
-The gap this example demonstrates: `orx predict-strategy` proposed a
+The gap this example demonstrates: the strategy prediction service proposed a
 configuration and the run really happened, but the solve script did not read
 some of those settings back into `result.json`. The old close-out treated
 "the action could not CONFIRM this config key" the same as "the action KNOWN

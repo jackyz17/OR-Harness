@@ -50,12 +50,6 @@ DOCUMENTED_RESULT_KEYS: Dict[str, Dict[str, Set[str]]] = {
         "required": {"context_id"},
         "conditional": set(),
     },
-    "predict-strategy": {
-        # The CLI wraps the prediction: the id is top-level, the rest (status,
-        # benefit, cost, trace, capability_gain) ride inside ``prediction``.
-        "required": {"prediction_id", "prediction"},
-        "conditional": {"failure", "effective_parameters"},
-    },
     "plan-next": {
         # The plan object rides under ``plan``: candidates, status, ids and
         # costs are inside it, not at the top level.

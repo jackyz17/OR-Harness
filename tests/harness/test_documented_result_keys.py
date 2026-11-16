@@ -171,10 +171,15 @@ class TestDocumentedResultKeys(DocumentedKeysCase):
         self.assert_required("recall", self.run_cli(
             "recall", "--task", str(self.task_path), "--top", "3"))
 
-    def test_predict_strategy(self):
-        self.assert_required("predict-strategy", self.run_cli(
-            "predict-strategy", "--task", str(self.task_path),
-            "--candidate", str(self.cand_path), "--episode", "ep1"))
+    def test_inspect_existing_scored_prediction(self):
+        plan=self.run_cli("plan-next","--task",str(self.task_path),"--episode","ep1",
+                          "--candidates",self._candidate_list())
+        pid=plan["selected_prediction_id"]
+        self.assertIsNotNone(pid)
+        result=self.run_cli("inspect","--bank","predictions","--prediction",pid)
+        self.assert_required("inspect",result)
+        self.assertEqual(result["prediction"]["kind"],"strategy_outcome")
+        self.assertEqual(result["prediction"]["prediction"]["prediction_id"],pid)
 
     def test_plan_next(self):
         self.assert_required("plan-next", self.run_cli(
