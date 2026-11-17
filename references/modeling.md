@@ -4,6 +4,16 @@ Read this page when you are writing your first model or CIR: the five-block synt
 
 The model representation is the intermediate artifact between **choosing a strategy** and **writing solver code**: once the strategy is decided, write the problem as a GAMS-style model representation and carry it in the task JSON's top-level `model` field, then translate it into solve.py. The framework verifies it deterministically (no LLM) and reports what its declared constraints say about structural coupling as a DIAGNOSTIC (`derivation.model_coupling`). It is NOT a prerequisite for strategy selection: choosing a strategy relies on the task text, the CIR, the profile, and the evidence's expected quality/cost/risk. Because the model is a POST-strategy artifact, it never moves the structural key — the profile you retrieved with stays the profile the execution is filed under.
 
+## Start from the shared original input
+
+The minimal task file is `{"task_id":"T","family":"assignment","text":"Actual original requirements and data"}`. Reuse `--task task.json` in both interactive and batch workflows. A structured `spec` is optional. If later commands must see the same CIR, store it in `task.json.coupling`; `profile --cir cir.json` affects that call, not every subsequent command.
+
+`profile` reports `result.profile`, `result.derivation`, `result.coupling.modeling_guidance` and `result.coupling.health`. `recall` already includes a profile. Distinguish empty `result.recommendations` using `result.recommendations_basis`, successful vector search with no hits, and `result.degraded` when search could not run. Inspect the actual prior method and acceptance scope before transferring a model.
+
+After the selected method runs, read solver diagnostics separately from `check-task`'s `result.state`, `result.report.checks[]` and `result.report.scope.unchecked[]`. The original requirements and sourced acceptance checks define the claim; an optimal model status does not establish business correctness. Preserve a failed attempt and its measured resources before planning a repair in the same episode.
+
+For an adopted method, declare the version actually read with `execute --used-entry-ids ENTRY@VERSION`. Structural recall exposes `recommendations[].knowledge.rule`; otherwise inspect the entry and read `result.entries[0].rule.view_version`. Complete checking and recording as usual. See [induction.md](induction.md#existing-entry-use-and-utility) for optional transfer assessments and utility/status management.
+
 ## Why before code
 
 The model representation is the cheapest place to catch structural errors. An undeclared symbol or a missing constraint found here costs one revision; found in solver code it costs an execution failure, a retry (retries are a CostVector dimension), and a polluted record. For highly coupled problems — where this framework earns its keep — modeling errors are the most expensive kind.

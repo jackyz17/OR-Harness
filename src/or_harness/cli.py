@@ -612,8 +612,8 @@ def cmd_execute(args) -> int:
                 summary += (f" WARNING: prediction {prediction_id} could NOT "
                             "be bound after the run ("
                             f"{(binding or {}).get('reason') or 'unknown'}); "
-                            "bind it explicitly with `orx bind-strategy` "
-                            "once the action is on record.")
+                            "inspect the saved decision and binding evidence; "
+                            "a recovery link cannot grant execution permission.")
         return _emit(out, summary)
     finally:
         h.close()
@@ -1169,7 +1169,7 @@ def cmd_induction_material(args) -> int:
                 return _emit(result, "Induction " + result["induction_gate"]["state"] + ": " + result["reason"])
             from or_harness.world_model.induction_material import seal_budget
             summary = (f"Read {result['count']} task attempt(s) with cross-task controls and short rules. "
-                       "Submit when/do/expect plus evidence IDs with `induce --relation`; select the existing entry for revisions.")
+                       "Using the same J, submit when/do/expect and evidence with `induce --relation` plus `--review`, or a reasoned empty review; select the existing entry for revisions.")
             seal_budget(result, summary=summary)
             return _emit(result, summary)
         if not result["count"]:
@@ -1202,8 +1202,8 @@ def cmd_induction_material(args) -> int:
                     f"{result['cross_task_hint']['n_distinct_tasks_in_batch']} "
                     "task(s) (a fact, not a threshold). Form the strategy "
                     "(condition -> how -> consequence -> boundary) and submit "
-                    "it with `orx induce --relation` — or submit nothing if "
-                    "nothing new was found.")
+                    "it with `orx induce --relation` plus `--review`; "
+                    "a required job with no new rule still needs an empty review.")
         memory = result.get("memory_state") or {}
         if memory.get("state") in ("both_banks_empty", "strategic_bank_empty",
                                    "evidence_bank_empty"):
@@ -1912,7 +1912,7 @@ def cmd_plan_next(args) -> int:
             candidates = _load_json_arg(args.candidates)
             if not isinstance(candidates, list):
                 return _fail("--candidates must be a JSON list of "
-                             "ActionSpec objects")
+                             "described methods or ActionSpec objects")
         limits = {"horizon": args.horizon,
                   "max_model_calls": args.max_calls,
                   "time_budget_s": getattr(args, "time_budget", None)}
@@ -2010,9 +2010,9 @@ def cmd_choose_next(args) -> int:
                        + (f"{(result.get('selected') or {}).get('strategy_id')}"
                           if (result.get('selected') or {}).get('strategy_id')
                           else "")
-                       + ". X.selected_plan updated; execute the step with "
-                         "`orx execute --prediction <the chosen prediction>`, "
-                         "then record and close the episode.")
+                       + ". Compatibility choice saved; execution still requires "
+                         "the original unused U-permitted winner. The normal "
+                         "flow executes result.selected_prediction_id directly.")
         if result.get("deviation"):
             summary += " (deviation from the suggestion recorded)"
         return _emit(result, summary)
@@ -2569,7 +2569,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--used-entry-ids", dest="used_entry_ids", default=None,
                    metavar="NUMBERS",
                    help="comma-separated knowledge ENTRY NUMBERS this attempt "
-                        "ADOPTED (e.g. '3,5'). A DECLARATION — distinct from "
+                        "ADOPTED (prefer explicit versions, e.g. '3@2,5@1'). "
+                        "A DECLARATION — distinct from "
                         "being recalled and from --adapted-from. Pass an "
                         "EMPTY string ('') to record 'adopted no prior "
                         "knowledge', which is a fact, not an omission. An "
@@ -2777,8 +2778,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser(
         "induce", help="submit short rules or manage existing entries from real use",
         epilog=("Knowledge is ONLY written from a strategy YOU form: read "
-                "the material with `orx induction-material`, then submit the "
-                "strategy with --relation. The framework derives the evidence "
+                "the material with `orx induction-material --induction-id J`, then submit "
+                "the strategy with --relation and its conclusion with --review, "
+                "or settle J with a reasoned empty review. The framework derives the evidence "
                 "identity, checks the declared `check` block, and stores the "
                 "result — it never turns a cell's means into a technique and "
                 "has no statistical fallback."))
@@ -2809,7 +2811,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "merged")
     p.add_argument('--induction-id', default=None, help='authorize and complete one frozen H+ induction job')
     p.add_argument('--review', default=None, metavar='JSON_OR_FILE',
-                   help='empty review or hypothesis conclusion: outcome, conclusion, hypothesis_outcome, comparison and evidence references')
+                   help='actual learning conclusion: outcome, conclusion, optional hypothesis_outcome, comparison and evidence references; submit alongside --relation or as an empty review')
     p.add_argument("--relation", action="append", default=None, metavar="JSON",
                    help="submit when/do/expect plus evidence execution IDs (repeatable). "
                         "Optional entry_id and operation=add_evidence|revise|merge select "
@@ -2838,7 +2840,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "-> suspect, `keep` leaves the status; it never "
                         "rewrites verification_state. The framework never "
                         "writes one of these itself. Pure utility management needs no positive "
-                        "induction job or empty review; the adopted version is resolved automatically.")
+                        "induction job or empty review; the adopted version is resolved automatically. "
+                        "A refuting verdict without lifecycle_action currently defaults to demotion; "
+                        "explicit keep leaves status unchanged.")
     p.set_defaults(func=cmd_induce)
 
     p = sub.add_parser("inspect", help="query the memory layers")
@@ -2915,22 +2919,23 @@ def build_parser() -> argparse.ArgumentParser:
         "close-episode",
         help="close ONE episode (world-model M4): evaluate its bound "
              "strategy-outcome predictions against their real outcomes and "
-             "publish the experience calibration. Reads what was recorded "
-             "— no solver, no model call, no induction. Idempotent")
+             "publish calibration and dispatch frozen H+ review jobs in "
+             "result.induction_schedule.pending_ids. No solver/model call "
+             "or rule-writing review; the agent consumes the jobs. Idempotent")
     p.add_argument("--task", required=True)
     p.add_argument("--episode", default=None)
     p.add_argument("--terminal", default="completed",
                    choices=["completed", "failed", "aborted",
                             "budget_exhausted"],
-                   help="the honest terminal state (only 'completed' "
-                        "claims success)")
+                   help="the actual terminal state; completed alone does not "
+                        "certify original-task acceptance")
     p.add_argument("--finish-action", default=None, metavar="ACTION_ID",
                    help="the finish_task action that ended the episode, "
                         "when one was recorded")
     p.add_argument('--execution',default=None,metavar='EXECUTION_ID',
                    help='choose an existing actual run when several episodes are ambiguous, including an unnamed episode')
     p.add_argument("--induction-decision", choices=["allow", "skip", "pending"], default=None,
-                   help="explicit H+ close-out start judgement; no new formula or threshold")
+                   help="legacy close-out judgement; cannot override a new frozen binary H+ signal")
     p.add_argument("--induction-reason", default=None)
     p.add_argument("--min-samples", type=int, default=None,
                    help="minimum resolved samples before a calibration "
@@ -3149,11 +3154,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_plan_next)
 
     p = sub.add_parser("choose-next",
-                       help="record your explicit choice after a plan: "
-                            "accept the suggestion, pick another candidate "
-                            "(deviation), or reject. Only this writes "
-                            "X.selected_plan. Name the candidate by its "
-                            "PREDICTION id instead of re-typing its JSON")
+                       help="compatibility choice/rejection record for an existing plan; "
+                            "cannot authorize an unscored or losing candidate. Normal "
+                            "solving executes result.selected_prediction_id directly")
     p.add_argument("--decision", required=True, metavar="ACTION_ID",
                    help="the select_strategy decision action id from "
                         "plan-next")
@@ -3166,7 +3169,7 @@ def build_parser() -> argparse.ArgumentParser:
                         "(action type/strategy/solver/config), not the whole "
                         "JSON")
     p.add_argument("--chosen", default=None,
-                   help="ActionSpec JSON of the action you will execute "
+                   help="ActionSpec JSON for a compatibility choice record "
                         "(an alternative to --prediction; if both are given "
                         "they must name the same candidate)")
     p.add_argument("--rejected", action="store_true",
@@ -3182,8 +3185,9 @@ def build_parser() -> argparse.ArgumentParser:
              "history, the methods performed, the failures, the costs, the "
              "before/after changes and the existing strategies are all "
              "included; a missing field is marked, never dropped. Read it, "
-             "then submit the strategy you form with `orx induce --relation`. "
-             "No model call, no writes")
+             "then use the same J to submit --relation plus --review, or "
+             "a reasoned empty review. No model call or rule write; "
+             "job evidence/session references may be saved")
     p.add_argument('--induction-id', default=None, help='positive executed job returned by close-episode')
     p.add_argument('--episode',default=None,help='legacy initiating episode, or check the selected job episode')
     p.add_argument('--query',default=None,help='mechanism keywords chosen by the induction agent')

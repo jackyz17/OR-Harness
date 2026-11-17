@@ -2,14 +2,15 @@
 
 Read this page when you are ending a task episode, reading the published calibration summary, or handling a verdict that arrives after the fact. It covers the close-out record, the per-prediction evaluation, the calibration statistics, retention and archiving, and the known limits of all four.
 
-**Status: implemented.** This is the fourth phase of the reconstruction: after the unified contract (phase 1), the frozen prediction input context (phase 2) and the strategy-outcome prediction service (phase 3, wm-so/1), this phase closes the loop — a real episode ends, its bound predictions are evaluated against their real outcomes field by field, and the aggregate becomes experience calibration that later episodes read.
+The normal task close publishes recorded solving calibration and dispatches reviews from frozen H+. The outer agent consumes those jobs; close-out makes no solver/model call and authors no rule.
 
-- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/3`; risk-event vocabulary: `wm-events/3`; observation rules: `wm-obs/4`; context: `wm-context/3`
+- Close-out record version: `wm-closeout/1`; calibration summary version: `wm-calib/3`; risk-event vocabulary: `wm-events/3`; observation rules: `wm-obs/4`; context: `wm-context/4`
 - Python module: `or_harness.world_model.episode_closeout`
 - API: `ORHarness.close_episode` / `episode_closeout_record` / `get_strategy_evaluation` / `strategy_prediction_evaluations` / `calibration_summary` / `archive_calibration` / `calibration_retention`
 - CLI: `orx close-episode` / `orx calibration` / `orx inspect --bank evaluations` / `orx archive-calibration` / `orx inspect --bank retention`
 - Tests: `tests/harness/test_episode_closeout.py`, `tests/harness/test_calibration_v2.py`
-- Runnable example: [`references/examples/episode_closeout.py`](examples/episode_closeout.py)
+- Normal CLI example: [`unified_solving.py`](examples/unified_solving.py)
+- Historical calibration audit: [`episode_closeout.py`](examples/episode_closeout.py), which imports old pairings and is not an execution-authorization recipe
 - Bounded attribution (which comparison a problem really invalidates): [`references/examples/linkage_attribution.py`](examples/linkage_attribution.py)
 
 Related: the prediction service in [`references/strategy_outcome.md`](strategy_outcome.md), the input context in [`references/prediction_context.md`](prediction_context.md), the contract objects in [`references/world_model_contract.md`](world_model_contract.md).
@@ -18,16 +19,15 @@ Related: the prediction service in [`references/strategy_outcome.md`](strategy_o
 
 ## 1. The loop this phase completes
 
-```
-profile / recall -> freeze ONE context
-    -> predict candidates (wm-so/1) -> compare -> EXPLICIT choice (--prediction)
-    -> model / execute / repair / verify (the agent's work)
-    -> execute --prediction associates the run BEFORE it starts; the result
-       and the observed configuration are added AFTER it
-    -> finish_task / close-episode            <-- THIS PHASE
-    -> per-field evaluation of every associated prediction
-    -> experience calibration published (closed episodes only)
-    -> LATER episodes' contexts read the published summary
+```text
+profile / recall -> plan-next (shared context, predictions and U)
+    -> execute --prediction P (original selected, unused permitted ID)
+    -> check-task EX -> record --from-staged EX
+    -> close-episode (actual terminal state)
+    -> published calibration + induction_schedule.pending_ids
+    -> agent reads material and submits a review using each same J
+    -> induction-status confirms settlement
+    -> next task's plan-next reads applicable pre-decision feedback
 ```
 
 Three units stay distinct, and the close-out never conflates them:
@@ -48,11 +48,20 @@ What it does (in order):
 1. **refuses while actions are still running**: an episode with a `running` action returns `state="pending"` with the `unfinished_actions` listed — a running scope has no final numbers, and closing anyway would freeze a record their results could never enter (a re-close just returns the stored record). End the running actions (or let them finish), then close;
 2. **summarizes and evaluates** every ASSOCIATED strategy-outcome prediction of the episode against its real outcome (see §3–4) — associated means the prediction is linked to a real action; whether any of it is CALIBRATABLE is decided here, field by field;
 3. **records the close-out once** — idempotent: re-closing (after a restart, or by mistake) returns the stored record and counts nothing twice;
-4. **publishes the calibration summary** (see §5) — built AFTER the evaluations and the close-out record are persisted, so the first close-out's own return already includes this round's samples.
+4. **publishes the calibration summary** (see §5) — built after the evaluations/close-out are persisted, so the return includes this round;
+5. **dispatches frozen H+ jobs** — read `result.induction_schedule.pending_ids`. Actual executed H+=1 needs a review even after failure or missing checks. H+=0 keeps execution/use facts without new induction; unexecuted candidates remain unobserved.
 
-What it never does: run a solver, call the prediction model, trigger induction, or rewrite a stored prediction. `--terminal failed|aborted| budget_exhausted` closes an honest failure as a failure — only `completed` claims success. `--finish-action` links the close-out to the `finish_task` action you recorded (`orx action --report finish_task`); the close-out does not create a second task lifecycle.
+What it never does: run a solver, call the prediction model, author/submit the agent's review, or rewrite a stored prediction. Dispatch and review execution are separate responsibilities. `--terminal failed|aborted| budget_exhausted` closes an honest failure as a failure — `completed` reports task completion without independently certifying acceptance. `--finish-action` links the close-out to the `finish_task` action you recorded (`orx action --report finish_task`); the close-out does not create a second task lifecycle.
 
-**A close-out is the end of the episode, NOT a certification of the answer.** The normal flow is check-and-repair FIRST, then close: a task-result verdict (`orx check-task`) belongs before the close-out. Closing with unchecked answers is legitimate (the check may not be runnable yet), so the close-out never refuses on that ground — but it reports `task_checks = {n_executions, verdicts, unchecked, note}` so "the episode ended" is never misread as "the answer was validated". **The observation rules are `wm-obs/2`**: an execution whose answer a check CONFIRMED does not satisfy the task keeps the solver's own quality figure (`normalized_objective_gap` = how well the solver solved the model) and the task check travels as a SEPARATE fact under `evaluations[].benefit.task_check` — the quality number is never rewritten to `0.0`, so "predicted 0.8, observed 1.0" plus `task_check.state="failed"` reads as "the solver solved its model, but the answer failed the task". Its real cost still counts in the scope's totals. A refused close-out (a running action) returns `closeout: null` with `state="pending"` — the CLI reports it as an open episode (exit 2), never as a crash.
+**A close-out is the end of the episode, NOT a certification of the answer.** The normal flow is check-and-repair FIRST, then close: a task-result verdict (`orx check-task`) belongs before the close-out. Closing with unchecked answers is legitimate (the check may not be runnable yet), so the close-out never refuses on that ground — but it reports `task_checks = {n_executions, verdicts, unchecked, note}` so "the episode ended" is never misread as "the answer was validated". **Historical solver-gap observation (`wm-obs/2` remains readable):** an execution whose answer a check CONFIRMED does not satisfy the task keeps the solver's own quality figure (`normalized_objective_gap` = how well the solver solved the model) and the task check travels as a SEPARATE fact under `evaluations[].benefit.task_check` — the quality number is never rewritten to `0.0`, so "predicted 0.8, observed 1.0" plus `task_check.state="failed"` reads as "the solver solved its model, but the answer failed the task". Its real cost still counts in the scope's totals. A refused close-out (a running action) returns `closeout: null` with `state="pending"` — the CLI reports it as an open episode (exit 2), never as a crash.
+
+### Check and save before closing
+
+Keep `task.json` and EP across repairs. After `execute --prediction P`, EX is `result.execution_id`. Run `check-task EX --check check.json` using original requirements and sourced evidence, then `record --from-staged EX`, including failures. Read `result.state`, `result.report.checks[]` and `result.report.scope.unchecked[]`. Tool completion, solver optimality and original-task acceptance are separate facts. Missing acceptance support remains unknown.
+
+### Settle the dispatched review
+
+`close-episode` dispatches; the agent calls `induction-material --induction-id J` and submits one rule/review or empty-review branch from [induction.md](induction.md#complete-review-submissions). `induction-status --task T --episode EP` reports `result.completed` and `result.observation_counts`; completion and supported learning are separate. Re-close shows still-pending J values without duplicating the job; resume the same J after interruption. A failed/insufficient positive attempt can settle with a factual empty review. See [hplus.md](hplus.md).
 
 ## 3. The real outcome summary
 
@@ -65,7 +74,7 @@ For each bound prediction, the close-out derives what ACTUALLY happened from the
   - `attempt`: the bound action's own execution only;
   - `strategy_window`: the declared selection round's whole window (an 11s-then-17s window reports 28s, not 17s).
 
-  Modelling/verification/other attempts are auxiliary overhead — real spend, reported separately, never charged to the predicted scope. Per-dimension aggregates report `n_measured`/`complete`; a cumulative dimension's comparable value IS its sum.
+  For `remaining_to_task_end`, in-window modeling, verification, failed attempts and retries belong to the remaining resource window when their measurements support it. Legacy attempt/window scopes retain their own boundaries; out-of-scope overhead remains separate. Per-dimension aggregates report `n_measured`/`complete`; a cumulative dimension's comparable value IS its sum.
 - **A span is never summed, but a SINGLE span is comparable.** For `latency_s` / `remaining_latency_s` the aggregate withholds the SUM (overlapping ranges would double-count) yet still publishes a `comparable` value when there is exactly ONE explicitly measured span (or consistent repeats). A backfilled real `remaining_latency_s=600` therefore IS scored against a prediction of 30 — "cannot be summed" is not "cannot be compared".
 - **The remaining span uses the SHARED decision anchor and the REAL task end.** The anchor is the `select_strategy` decision action's `started_at` (every candidate of one decision shares it) — NOT each prediction's own `created_at`. The end is, in priority order: (1) the `finish_task` action's `ended_at` (the only explicit task-termination event, `basis="finish_task"`); else (2) the latest relevant action end (`execute_strategy`/`verify`), FLAGGED `basis="last_action_not_task_end"` as a LOWER BOUND, not claimed to be the task end; else (3) UNKNOWN with a reason (the close-out's own `created_at` is NOT used). Actions that ended AFTER the close-out are excluded, so a later offline pass cannot push the original task's end forward. The `remaining_latency_s` observation is, in priority order: (1) an explicitly measured value on the records, else (2) the derived timestamp span; when neither exists the dimension stays UNKNOWN and the script-execution cost is NEVER substituted.
 - **risk events** are observed by the framework independently of predicted events. New `implementation_failure` uses the single bound attempt's `wm-r-technical/1` receipt (below). Legacy predictions retain their recorded `error_class` adapter. `task_check_failed` reflects only the check result; `solver_reported_infeasible`, timeout and budget exhaustion remain independent diagnostics. Retired event names receive no label or alias.
@@ -143,7 +152,7 @@ A group below the sample minimum (`--min-samples`, default 5) reports `insuffici
 
 ### 5a. The observation-rule version (`wm-obs/2`)
 
-The summary reports `observation_rule_version` (`wm-obs/2`), and every stored evaluation carries the version under which its observed values were derived. **A rule change is a meaning change**, so samples measured under different rules are different measurements and never pool.
+The current summary reports `observation_rule_version:wm-obs/4`; every stored evaluation retains the version under which its observations were derived. Faithful G and technical R additionally retain their signal-specific rules (`wm-g-faithful/1`, `wm-r-technical/1`). The historical `wm-obs/2` solver-gap rule below remains readable. **A rule change is a meaning change**, so incompatible measurements never pool.
 
 `wm-obs/2` removes the task-check gate. Before it, a `normalized_objective_gap` observation for an answer that failed the task check was forced to `0.0`, mixing two different measurements (how well the solver solved the model, and whether the answer satisfies the task) into one number. Under `wm-obs/2`:
 
@@ -318,7 +327,7 @@ orx enforce-window [--window-episodes 800] [--open-grace-days 30] [--dry-run]
 - **Technical attribution has limits**: external blockage and ordinary timeouts remain unknown without a verified code cause. Historical classifier-only records cannot establish new technical labels, and sparse agent/interface groups support only their displayed attempts.
 - **No framework channel can adjudicate a MODELLING error (open)**: a task check reports whether its DECLARED bases held, not whether the model was wrong — the cause (misread task, implementation bug, unmet requirement, wrong reference) is the agent's diagnosis. That is why `model_invalid` is retired rather than derived, and why a risk the framework cannot observe keeps label `unknown`.
 - **Budget risk is episode-scoped (open)**: the episode-level over-budget FACT is scored on a prediction that declared `budget_exhausted`, whatever the candidate's execution scope (`wm-events/3`), and the label reads the episode-scoped verdict plus an explicit termination receipt. A per-attempt budget system is deliberately out of scope; a per-attempt `latency_s` overrun is never reported as budget exhaustion.
-- Late-arriving verification: an evaluation, once written at close-out, is never silently revised — the STORED evaluation is the honest record of what was known then. A task-result check that arrives LATER does change later USE, and the correction is FIELD-SCOPED: the benefit observation is re-derived (to `0.0` for a confirmed-wrong answer) while the measured cost is preserved, the correction is applied only to the execution it names, and the published summary is republished when the episode is still in the window. Rewriting the stored evaluation itself remains refused.
+- Late-arriving verification: stored evaluations preserve what was known at close-out. Later use re-derives the affected benefit under its own metric and attribution rules while retaining measured cost, and republishes in-window calibration. A failed check alone cannot force faithful G to 0: missing fidelity or candidate-method attribution remains unknown. Corrections apply only to the cited execution; they do not rewrite the frozen prediction or original evaluation.
 - **Archived detail cannot receive a late correction (open)**: once an episode's detail has been archived (past the grace period), a later task check still annotates the EXECUTION (facts are never archived), but that episode's calibration correction channel is closed. The grace period is the bound on how long that channel stays open — there is no permanent retention path.
 - **Constraint satisfaction is only checkable when declared (open)**: the framework does not parse natural-language constraints, so a task check covers the bases you declare (a reference value, a status, integrality, a declared objective recomputation, explicit probes). Undeclared constraints stay in `scope.unchecked` — a `passed` verdict is not proof that the model represents the task.
 - **Task-level verdicts are per-execution (open)**: `task_check` annotates one execution's answer. There is no episode-level "the task was solved" flag, deliberately: an episode may contain a disqualified attempt and a repaired success, and collapsing them into one verdict would lose exactly the distinction this layer exists to preserve.
@@ -348,9 +357,10 @@ Optional sourced `check-task.hplus_verification` records completion of the
 frozen check by prediction ID/condition index and artifact/check references.
 A missing check is reported, not used to cancel 1. The immutable receipt keeps
 hypothesis outcome separate from knowledge increment. Existing rule-use
-assessments and later checks retain the previous candidate/transfer/boundary/
-regression publication rules, including independent source identity and cost
-comparison requirements.
+assessments and later checks retain their actual adopted version, source identity,
+purpose and coverage. They do not impose a uniform transfer/boundary/regression
+publication gate. Explicit measured cost comparisons retain their comparability
+requirements.
 
 The old `induction_decision=allow|skip|pending` and CLI flags are compatibility
 judgements only; they cannot override a new binary switch. Standalone legacy

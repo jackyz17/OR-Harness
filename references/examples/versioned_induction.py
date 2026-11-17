@@ -1,10 +1,11 @@
-"""Small real integer solves: derive, freeze, transfer, test a boundary.
+"""Historical version-gate and material-size audit for older checkouts.
 
-PYTHONPATH=src python references/examples/versioned_induction.py
-Optional --report FILE writes auditable references. --mass adds 29 long
-historical rules; --baseline-root CHECKOUT measures that checkout's material
-builder and CLI envelope against exactly the same isolated fixture.
-Hash embeddings test the plumbing, not semantic retrieval quality.
+This script preserves the old automatic-admission assertions and optional
+--mass / --baseline-root research path. It is not the current solving or
+publication walkthrough. For the existing A/B -> explicit publication -> C
+example on this checkout, run docs/validation/run_review_eight_demo.py; use
+unified_solving.py for the normal scored CLI workflow. Current review commands
+and their evidence/learning semantics are in references/induction.md.
 """
 from __future__ import annotations
 

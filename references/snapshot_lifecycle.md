@@ -10,7 +10,7 @@ OR-Harness keeps two memory layers: execution evidence and strategic knowledge. 
 | `frozen_conditions` | Problem/progress value references, identity, real/hypothetical source, compact budget aggregates and knowledge-availability revision | Small facts used by action/prediction references; no coverage, knowledge bodies or bank statistics |
 | `condition_values` | Immutable, content-addressed problem/progress values and actually referenced evidence, knowledge, targets, feedback and prompts | Shared historical values; no full-library content versions |
 | `prediction_contexts` (`wm-context/4`) | Small audit manifest, frozen condition reference, selected content versions and input digest | Survives release of the full working input; existing calibration archival can move manifests |
-| `runtime_inputs` | One candidate-related working input per decision, shared by its candidates; large problem content uses a shared version | Released after `choose-next` or successful episode close; expired inputs are removed on subsequent context writes |
+| `runtime_inputs` | One candidate-related working input per decision, shared by its candidates; large problem content uses a shared version | Released at successful episode close in the normal flow (compatibility `choose-next` can release earlier); expired inputs are removed on subsequent context writes |
 | `knowledge_availability` | Entry identity, predicate/presence changes and revision order, without knowledge bodies | Historical applicability index for H+; availability is separate from adoption and effectiveness |
 | Execution/action records | Real attempts, outcomes/checks, costs/masks, adoption/reuse versions, condition and prediction links | Existing evidence/episode policies apply |
 | Published calibration, pairs and individual evaluations | Existing independent calibration/feedback records | Existing windows, eligibility, observation versions and archive rules apply |
@@ -44,11 +44,17 @@ CLI `plan-next` creates one shared input for its decision. Explicit reuse uses t
 
 Capacity pressure explicitly expires older unleased inputs. If a new input cannot fit while other calls are in progress, it is refused. Active calls are protected until their call lease expires; provider network I/O holds no SQLite write transaction. Cleanup runs on context writes and at consumption boundaries; there is no background timer.
 
-`choose-next` releases the comparison input after recording the choice/rejection and progress. Execution and later binding/calibration continue from frozen conditions and the prediction. A pending close with unfinished actions does not release inputs. Successful episode close releases remaining inputs of that task/episode.
+The normal flow calls `execute --prediction P` directly and releases remaining working inputs on successful episode close. Compatibility `choose-next` can release the comparison input after recording a choice/rejection; it is not a normal step or an authorization override. Execution and later binding/calibration continue from frozen conditions and the prediction. A pending close with unfinished actions does not release inputs. Successful episode close releases remaining inputs of that task/episode.
 
 Reading or reusing a released/expired input raises `ContextExpired` (`StorageError`), and CLI reuse returns exit code 2. Use `--audit` to inspect its manifest, or start a new decision. An empty context is never returned as a substitute. Python objects already held by a caller remain their old value; they are not refreshed from the bank.
 
 A strategy provider call saves an `invalid` prediction with `call_state=in_flight` before starting, under the same prediction ID that the returned result will update. A process interruption therefore leaves an honest unknown result/usage and durable conditions. Successful and failed responses preserve real usage and all identity/request references on their first returned-result save. No automatic retry is implied by an interrupted call.
+
+## Audit next-task feedback
+
+In the same home, the next `plan-next` automatically reads the published applicable calibration, recalled rule views and settled H+ receipts available at that decision's cutoff. Later checks/rules do not rewrite the old input. A stored feedback reference establishes availability, not that the provider saw its full body.
+
+Use `orx inspect --bank predictions --prediction P` to read `result.prediction.prediction.trace.model_info.request_omissions`. Use `orx context --context-id CTX --audit` to read frozen feedback references even after the working input expires or is released. Budget trimming can omit a receipt kept in that manifest; missing feedback in a provider request does not prove no review occurred. Source and omission references keep these two questions inspectable.
 
 ## Compatibility and model-input changes
 
@@ -64,14 +70,14 @@ Storage and input projection are validated separately:
 
 Model/metric/unit/scope/observation-version isolation, per-field eligibility, windows and sample thresholds remain unchanged. Request diagnostics measure characters, not tokens. This change does not promise identical stochastic model responses or reduced request size on every fixture.
 
-## Fixed-memory testing with per-question copies
+## Existing fixed-memory testing with per-question copies
 
-Finish building the base and stop writing to it, including index updates. Create a fresh home from the same base for every test question:
+This section records the existing optional experiment operation; the normal solving walkthrough does not require library copies or change frozen-evaluation protocols. Finish building the base and stop writing to it, including index updates. Create a fresh home from the same base for every test question:
 
 ```bash
 orx --home /work/fixed-base fork-memory --destination /work/test-A
 orx --home /work/test-A plan-next --task A.json --episode test --candidates candidates-A.json
-# choose-next, execute, record, check-task and close-episode all use /work/test-A.
+# execute, check-task, record and close-episode all use /work/test-A.
 # Retries for A continue in this same home and inherit A's progress/budget.
 
 orx --home /work/fixed-base fork-memory --destination /work/test-B

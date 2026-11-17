@@ -1,100 +1,77 @@
 # OR-Harness
 
-A small, composable, harness-friendly **strategy-learning capability layer** for operations-research agents.
+A composable strategy-learning layer for operations-research agents. The outer agent proposes methods, writes solver code, judges evidence and forms reusable rules. OR-Harness supplies structural profiling, memory retrieval, G/C/R/H+ prediction, U-scored decisions, sandboxed execution, task checking, versioned knowledge and factual feedback.
 
-> Given an evolving stream of large-scale industrial optimization tasks, can an OR agent learn from previous executions which solving strategies are appropriate for particular problem structures, and increasingly achieve similar or better solution quality at lower execution cost?
+The research question is whether repeated, attributable executions can teach an OR agent which methods fit a problem structure while preserving task quality and reducing resource use. Scripted examples verify the workflow; they do not establish predictive discrimination or a measured cost advantage.
 
-OR-Harness runs *inside* an outer harness agent (Hermes-style). It is not an autonomous agent: no conversation loop, no hidden global state, no unattended background work. The outer agent orchestrates; this layer advises, executes, and remembers.
+## Start here
 
-A model is called **only** when you explicitly configure a provider (`--world-model URL::MODEL`, or `ORHarness(world_model=...)`) and explicitly invoke a prediction command. With no provider configured, every world-model command returns an explicit `not_configured` and no network activity happens. A prediction is a shadow hypothesis: it never becomes a fact, and an unexecuted candidate's prediction is never real feedback.
-
-**The provider is REQUIRED for the documented loop.** Formal execution requires a scored `plan-next` selection, including one candidate; a missing provider returns a reason and authorizes no execution. The Quick start below therefore uses the full prediction path: [SKILL.md](SKILL.md) is the authoritative walkthrough.
-
-## What it provides
-
-- **Two-layer memory**: a bounded **Execution Evidence Bank** (episodic facts: actual strategy/quality/cost, failures, artifacts; a recent WINDOW of complete episodes, oldest evicted whole so a repair chain is never split) and a derived **Strategic Knowledge Bank** (commitments: expected quality/cost/failure risk, with prediction intervals and forward validation; admission never depends on evidence survival — a claim keeps its own content and verification scope after its source references expire). Statistics are computed on the fly, never persisted.
-- **Deterministic profiling**: structural coupling features from your task spec or supplied annotations — no NLP subsystem.
-- **Strategy selection with full control, and NO built-in strategy directory**: transparent scoring (`α·Q̂ − β·C_scalar − γ·R̂`), two-layer evidence fallback, four ablation modes. There is no shipped list of method names, descriptions, applicability rules, actions or fallbacks. A strategy is a candidate because the MEMORY holds something about it in this structural cell — a recorded execution (`conditional_stats`) or an offered claim (`strategic_entry`); with neither, `recall` returns an empty list plus `recommendations_basis` saying why, rather than a `no_memory` row at `-inf`. **You propose the candidates** (`recall --candidate`, `plan-next --candidates`), and `predict-cost` accepts any method id and `plan-next` can score any proposed method: an unknown cost basis is reported as `source="unknown"` with `expected_cost=null` (never a default zero), not a refusal. Entry content (`strategy_type` / `actions` / `fallback_strategy_id`) is what the harness recorded on the entry — induction fills in none of it, because inferring a method's actions from its id would be fabrication.
-- **Sandboxed execution**: AST policy + POSIX rlimits + wall-clock timeout for your solve scripts; basic verification; five-dimensional cost metering (retries count).
-- **Versioned induction**: predict and freeze binary H+ in the same G/C/R call, close the task, settle every positive induction job, read a compact cross-source comparison pack, and submit when/do/expect. The whole default result is bounded at 32000 characters. Exact repeats are idempotent; authors add evidence, revise or merge a selected entry. Independent unseen transfer, changed-premise boundaries and required regressions control new-version publication. Uses/checks retain frozen references; legacy data stays readable. See [the workflow](references/induction.md).
-- **Knowledge claims** (`induce --relation`): cross-task knowledge that is NOT one strategy's statistics — a structural condition paired with a modeling/solving choice and its consequence, e.g. "with temporal coupling ≥0.5 a temporal decomposition must keep its cross-period state". Each claim references recorded executions with a ROLE and may declare what is computationally checkable (`probe` / `status` / `comparison` assertions) — supplied EITHER as an embedded relation `check` block OR as a standalone `--verify` payload, both read (a conflict is reported, never swallowed); the framework derives the evidence identity from the facts and records the verdict. Assertions carry their own semantics: `mode: paired` compares only same-task pairs, `mode: group` compares side means over a metric every record measured, and `aggregation: all|mean` decides how an unfavourable sample is treated. A predicate key the framework cannot evaluate is never defaulted to satisfied — recall reports such a hit as `unknown` with the unsupported keys, distinct from `conflicts`. A submitted claim is OFFERED as knowledge; the verification block states plainly what was CHECKED and what is NOT covered — "no violation found within this scope", never a proof the prose claim is true or general. `recall` returns it through the ordinary `recommendations` path. See [references/induction.md](references/induction.md).
-- **Seven solver adapters** (highs, pulp, ortools, scip, copt, pyomo, gurobi) — availability probing only; you pick the concrete solver per situation.
-- **Unified world-model contracts** (`wm-contract/1`): a versioned, serializable, validatable shape for two prediction modules — **OR strategy consequence prediction** (benefit with its metric/unit/baseline, `CostVector` cost, named risk events, uncertainty split into execution randomness vs evidence gap) and **harness capability evolution prediction** (capability evidence for `H = F(M, W_OR, Pi, R, T)`, a candidate learning operation, baseline and horizon, learning cost, degradation risk, verification conditions). Building a contract makes no model call, so it says `status="contract_only"` rather than pretending a forecast was made, and it keeps `provider_configured` (a provider is attached), `service_available` (this build implements that kind) and `prediction_made` (a forecast really happened) as three separate facts: a configured provider with zero model calls is never `valid`. Both services are implemented (`wm-so/1`, `wm-ce/1`), reached by agents through `plan-next` and `predict-capability`. Legacy unversioned payloads stay readable through an explicit legacy view; an unknown contract version fails instead of being guessed at. See [references/world_model_contract.md](references/world_model_contract.md).
-- **Frozen prediction input context** (`wm-context/4`): what a prediction is actually conditioned on, and how that information reaches the model consistently, completely and traceably. One `orx context` freezes the **joint problem representation** (task text and payload, the CIR's relations kept as relations rather than compressed into three numbers, math attributes with an explicit origin each, the structural profile and its derivation report), **X/B** from the same snapshot, the **retrieval evidence of both existing channels** (deduplicated by evidence identity, carrying content and applicability labels — a cross-cell hit stays visible and never enters the target cell's statistics), the **harness capability evidence** (`H = F(M, W_OR, Pi, R, T)`, evidence strength only, no composite score), the **external execution constraints**, and three feedback blocks fed back from closed episodes: the aggregate calibration summary, the compact per-episode **prediction-execution pairs** (successes and failures, cross-cell cases included, budget-bounded, never a silent top-k) and deterministic **reminders**, plus the **H+ follow-up state**. It builds BEFORE modelling: no `model`, no CIR and no task text are all normal inputs whose absent parts are reported item by item, and nothing is inferred from the `family` name. Building performs **no prediction-model call, no solver execution and no induction**; one context is shared across a candidate comparison, and reuse is version-verified. See [references/prediction_context.md](references/prediction_context.md).
-- **Strategy-outcome prediction service** (`wm-so/1`): `orx plan-next` predicts G/C/R/H+ once per proposed candidate, scores one or more candidates under a shared frozen context, and returns `result.selected_prediction_id`. Comparable G and common available C/R determine U; cost uses independent resource scales, and H+ schedules later induction. `execute --prediction` reuses the winner and records actual adoption before execution. Read a saved forecast with `orx inspect --bank predictions --prediction P`. The Python service `ORHarness.predict_strategy_outcome()` remains available for the planner and advanced context/contract inspection. Failed and unsupported forecasts retain their usage and diagnostics. See [references/strategy_outcome.md](references/strategy_outcome.md).
-- **Episode close-out and experience calibration**: `orx close-episode` closes one episode under an honest terminal state (completed/failed/aborted/budget_exhausted), evaluates every bound strategy-outcome prediction against its real outcome **field by field** (benefit error under the prediction's own declared metric/baseline, per-dimension cost error where both sides measured the same scope, Brier scores for labelled risk events, interval coverage — excluded fields are neither hits nor misses), and publishes a versioned **experience calibration summary** that later episodes' prediction contexts read (closed episodes only; below the sample minimum it reports `insufficient_evidence`, never a guessed figure). Idempotent; no solver run, no model call, no induction; the frozen prediction is never rewritten and an unexecuted candidate never gets a counterfactual label. The same strategy chosen twice is two selection rounds (`round_index`), never one aggregated sample. See [references/episode_closeout.md](references/episode_closeout.md).
-- **Task-result checking**: `orx check-task` answers the question `execute` cannot — whether the ANSWER satisfies the original task. A solver's `optimal + gap=0` only says it solved its own model; the bases you declare (`reference_objective`, `integer`, `recompute_objective`, `semantic_probe`, ...) are the only things checked, unchecked parts are reported, and a confirmed-wrong answer stays in the evidence set as a counter-example while never counting as a success. See [references/commands.md](references/commands.md).
-- **Capability-evolution prediction and two-stage effect feedback** (`wm-ce/1`): `orx predict-capability` predicts what ONE offline learning operation (induce / revise / reverify / retire) would change in FUTURE task performance — expected changes with their metric/unit/baseline, learning cost, degradation risk, uncertainty and verification conditions — from frozen capability evidence, a candidate operation, the exact experience scope and a framework-frozen per-metric baseline. `orx compare-capability` applies ONE bounded rule (largest net saving over the declared window: the cumulative saving minus the one-time predicted maintenance cost, in the SAME unit, under a quality-non-degradation constraint) and reports rather than ranks incomparable candidates. `orx accept-capability` is the only offline entry that changes knowledge and runs the operation the prediction was about; `orx bind-capability` records the maintenance FACT; `orx evaluate-capability` judges the EFFECT against real later tasks — counted in TASK-EPISODES, admitting only tasks whose WORK ran after the operation, and only once the declared horizon is met. A knowledge change is never a capability gain. See [references/commands.md](references/commands.md).
-
-## Quick start
+Install from this checkout:
 
 ```bash
-pip install -e .                # zero runtime dependencies (pure stdlib)
-pip install -e ".[solvers-free]"  # optional: highspy + pulp
-
-orx doctor                       # probe solvers, check memory home
-orx profile   --task t.json
-orx recall    --task t.json --top 3 --candidate my-method --candidate alt-method
-orx plan-next --task t.json --episode ep1 --candidates candidates.json
-# P = result.selected_prediction_id; one candidate is enough.
-orx execute   --task t.json --episode ep1 --prediction P --code ws/solve.py --workspace ws
-orx check-task exec_... --check '{"reference_objective": 10755, "integer": {"variables": ["x1", "x2"]}}'
-orx record    --from-staged exec_... --usage-file usage.json
-orx close-episode --task T --episode ep1 --terminal completed
-orx calibration
+python3 -m pip install -e .
 ```
 
-Every attempt needs an `--episode`, and the prediction is bound BEFORE the run (`--prediction`): that association is what `close-episode` evaluates. The host's usage report (`--usage-file`) is the real token figure — a hand-typed `--override` is a fallback, and a hand-DECLARED number needs `--override-source agent_estimate` so it is never used as a calibration truth.
+Python 3.9+ and the standard library support the core; solver packages are optional and availability is checked at runtime. Configure an OpenAI-compatible world-model endpoint/model (`--world-model URL::MODEL`, credential `OR_WM_API_KEY` when required). Formal execution needs a permitted U-scored selection, including for one candidate. Without a usable predictor, planning reports why it cannot select an executable prediction.
 
-**Induction follows frozen H+.** After close-out, read `result.induction_schedule.pending_ids`. The outer building agent settles each executed positive with material and one short-rule plus review submission, or a reasoned empty review. H+=0 skips new induction. Scoped derivation or boundary checks can support publication before a third real task; publication and learning labels remain separate. Finish the current jobs before the next training task. See the complete relation/review examples in [references/induction.md](references/induction.md).
+Read [SKILL.md](SKILL.md) to complete one task in six steps:
 
-`check-task` is not optional theatre: everything downstream (calibration, statistics, induction) treats an unchecked or `insufficient` answer as UNKNOWN rather than a success.
+| Step | Action | Main result |
+|---|---|---|
+| 1 | Prepare/reuse `task.json`; `profile` and `recall` | Structure, CIR health, applicable rules and real cases |
+| 2 | `plan-next --task task.json --episode EP --candidates candidates.json` | `selected_prediction_id`, `selected_score`, per-candidate reasons |
+| 3 | `execute --prediction P`, `check-task`, `record --from-staged EX` | Real attempt, declared acceptance scope and measured resources |
+| 4 | `close-episode --task T --episode EP --terminal ...` | Published calibration and `induction_schedule.pending_ids` |
+| 5 | `induction-material --induction-id J`, then one review submission | Rule/publication choice and an actual review receipt |
+| 6 | Adopt `ENTRY@VERSION`, check/record/close, then plan the next task | Versioned use, optional utility management and relevant feedback |
 
-`my-method` is deliberately a name the framework has never seen: it ships no strategy directory, so there is nothing to be a member of. `recall` reports what memory holds for the methods you name (initially: nothing, with a reason), and `predict-cost` can inspect any proposed method; `execute --prediction` runs the scored winner. The full walkthrough — empty bank, proposal, unknown cost, execution, task check, record, recall — is a runnable script: `PYTHONPATH=src python3 references/examples/no_catalog.py`.
+Use the same task file and memory home for a problem; put a shared CIR in `task.json.coupling`. A repair stays in the same episode and obtains a fresh scored prediction. A forecast's valid status is separate from its execution permission. Inspect saved forecasts with `orx inspect --bank predictions --prediction P`; execution uses the selected original prediction without another model call.
 
-Memory lives in an explicit directory (`--home` or `$OR_HARNESS_HOME`), stored as a single SQLite file.
+## What the signals and memory mean
 
-Configuration is deliberately explicit — there is no config file; the whole surface is CLI flags plus environment variables: `$OR_HARNESS_HOME` (memory location), `$OR_WM_API_KEY` (world-model endpoint key; URL and model are passed via `--world-model URL::MODEL`), `$OR_WM_TIMEOUT` / `$OR_WM_MAX_TOKENS` (world-model call timeout and output budget, overridden by `--wm-timeout` / `--wm-max-tokens`), `$OR_WM_NO_RESPONSE_FORMAT` (set to `1` when the endpoint rejects JSON mode), `$OR_WM_ENABLE_THINKING` (set to `1` to let the model reason before answering; off by default), and `$OR_EMBEDDING_BACKEND` / `$OR_EMBEDDING_BASE_URL` / `$OR_EMBEDDING_MODEL` / `$OR_EMBEDDING_API_KEY` (embedding backend for vector recall). Everything else is per-invocation flags — see [references/commands.md](references/commands.md).
+G estimates original-task acceptance given faithful execution of the proposed method. C predicts raw remaining resource use; common comparable dimensions use independent cost scales. R estimates one attempt's technical implementation/execution failure. U uses G/C/R and records missing terms. Binary H+ is frozen in that same prediction, stays outside U and schedules one post-task review only for an actually executed positive candidate. Failed positive attempts still need review; unexecuted candidates stay unobserved.
 
-## Documentation
+The Execution Evidence Bank retains real methods, attempts, checks, artifacts and costs in a bounded episode window. The Strategic Knowledge Bank retains reusable `when / do / expect` rules with immutable versions and evidence references. A published rule is the author's supported use decision; task acceptance, review completion and learning observations are separate facts. Existing cases with reliable derivation or small executable checks can support scoped cold-start publication and a substantive learning positive. A third transfer task, boundary test and regression suite are not a uniform prerequisite. Later checks report their own coverage.
 
-- **[SKILL.md](SKILL.md)** — the thin contract for harness agents (start here)
-- **[references/commands.md](references/commands.md)** — every command, grouped by work stage, with the ids to pass between commands
-- **[references/modeling.md](references/modeling.md)** — the model representation and the CIR: syntax, constraint labels, verification layers
-- **[references/world_model_contract.md](references/world_model_contract.md)** — the unified prediction contracts, `contract_only`, attempt vs strategy window, capability sources, migration table (with a runnable example)
-- **[references/prediction_context.md](references/prediction_context.md)** — the frozen prediction input context: the joint representation and its math-attribute origins, the two retrieval channels and their evidence classes, capability evidence strength, one-build/consistent-reuse rules (with a runnable example)
-- **[references/strategy_outcome.md](references/strategy_outcome.md)** — the strategy-outcome prediction service (wm-so/1): the protocol, the comparison yardstick, the prediction–choice–execution binding (with a runnable example)
-- **[references/episode_closeout.md](references/episode_closeout.md)** — the episode close-out: real outcome summaries, per-field post-hoc evaluation, window selection rounds, the experience calibration channel (with a runnable example)
-- **[references/concepts.md](references/concepts.md)** — two-layer memory, CostVector, disposal ladder, and the three separate questions (did the solver solve the model / is the answer valid for the task / does the claim hold)
-- **[references/induction.md](references/induction.md)** — the four induction-worthy patterns, applicability as family + structural cell, creation gate and admission verification, offline lifecycle
-- **[references/examples/task_check.py](references/examples/task_check.py)** — runnable: check → diagnose → repair → record → close-out (a relaxed LP is caught by an integer-domain check, repaired, and only then treated as a success)
-- **[references/examples/](references/examples/)** — the other runnable walkthroughs (`no_catalog.py`, `strategy_outcome.py`, `episode_closeout.py`, `capability_evolution.py`, `prediction_context.py`, `contract_roundtrip.py`)
+Retrieval discovers material; it does not choose the solving method. Read `recommendations_basis`, vector hits and `degraded` separately. In the current implementation `--memory-mode none` clears structural recommendations but still runs vector retrieval; it is not a no-memory isolation switch. Missing measurements and unknown applicability remain explicit.
 
-## Experiments
+Actual adoption uses `execute --used-entry-ids ENTRY@VERSION`. Optional utility actions are separate: `keep` preserves status, `demote` suspends the selected version, and `retire` moves the entry to the cold archive. A `refuting` effect without `lifecycle_action` can also demote the adopted version in this checkout. See the reference before submitting an effect attribution.
 
-```bash
-PYTHONPATH=src python3 -m or_harness.experiments.runner  # or via the API
-```
+## Runnable workflows
 
-`experiments/runner.py` runs a deterministic synthetic task stream under four ablation modes (`none` / `cases` / `strategic` / `cost-aware`) and writes per-task metrics CSVs (quality, all five cost dimensions, cumulative cost, memory sizes) plus a `summary.json`. The C-vs-D separation — quality tied, cost divergent — is the experimental support for cost awareness being a necessary component of memory.
-
-Prediction inputs now have a bounded runtime lifecycle; old banks remain readable. See [input lifecycle, fixed-memory testing and explicit cleanup](references/snapshot_lifecycle.md).
-
-## Development
-
-```bash
-PYTHONPATH=src python3 -m unittest discover -s tests/harness -p "test_*.py"
-```
-
-Pure stdlib; solver packages are optional extras discovered at runtime.
-
-## License
-
-MIT
-
-Runnable scored CLI workflows (scripted local provider, isolated memory):
+These use isolated memory homes, scripted predictions and real Python integer solves:
 
 ```bash
 PYTHONPATH=src python3 references/examples/unified_solving.py --mode single
 PYTHONPATH=src python3 references/examples/unified_solving.py --mode multi
+PYTHONPATH=src python3 docs/validation/run_review_eight_demo.py
 ```
+
+The first two exercise normal CLI planning, execution, checking, recording, close-out and H+ settlement. The A/B example illustrates an endpoint mechanism, explicit scoped publication, a later adopted version and a counterexample. The complete new/revised, covered and insufficient review commands have one canonical home: [references/induction.md](references/induction.md#complete-review-submissions).
+
+## Reference map
+
+| Need | Reference |
+|---|---|
+| Commands, result fields, configuration and compatibility/recovery paths | [commands.md](references/commands.md) |
+| Minimal input, modeling representation and CIR | [modeling.md](references/modeling.md) |
+| U permission, G/C/R, resource scales, missing terms and budgets | [strategy_outcome.md](references/strategy_outcome.md) |
+| Acceptance scope, terminal states, calibration and H+ dispatch | [episode_closeout.md](references/episode_closeout.md) |
+| Full review submissions, publication, adopted use and utility | [induction.md](references/induction.md) |
+| Frozen H+ scheduling, receipts and learning labels | [hplus.md](references/hplus.md) |
+| Next-task evidence, request budgets and frozen feedback audit | [prediction_context.md](references/prediction_context.md) |
+| Input lifetime, historical reading and optional cleanup | [snapshot_lifecycle.md](references/snapshot_lifecycle.md) |
+| Design and serialized contracts | [concepts.md](references/concepts.md), [world_model_contract.md](references/world_model_contract.md) |
+
+## Development and experiments
+
+```bash
+PYTHONPATH=src python3 references/examples/_check_docs.py
+PYTHONPATH=src:tests/harness python3 -m unittest discover -s tests/harness -q
+```
+
+Existing synthetic and H+/NoH+/random experiment entry points remain available; their protocol, splits and large frozen evaluations are separate from this documentation work. See [hplus.md](references/hplus.md) and [snapshot_lifecycle.md](references/snapshot_lifecycle.md) for their current scope.
+
+## License
+
+MIT

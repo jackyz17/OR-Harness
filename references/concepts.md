@@ -50,7 +50,7 @@ Two memory layers serve different purposes:
 | **Execution Evidence** | Recorded methods, attempt chains, outputs, task checks, failures, and measured costs | Inspect how a previous task was handled and adapt grounded experience |
 | **Strategic Knowledge** | Reusable methods, applicability conditions, explanations, boundaries, and supported effect claims | Guide what to do under specified conditions |
 
-Each rule has a framework-assigned entry number. New when/do/expect bodies are immutable candidate versions; add evidence, revise or merge an explicitly selected entry. Independent unseen transfer and changed-premise boundaries activate a version, with affected old-success regressions required for revisions. One active version is offered; prior uses retain their frozen version. True unversioned legacy rows keep their historical semantics. Assertion audits do not prove transfer or causal advantage.
+Each rule has a framework-assigned entry number. New when/do/expect bodies are immutable candidate versions; add evidence, revise or merge an explicitly selected entry. The agent explicitly chooses candidate or published state with a sourced scope. Existing cases plus reliable derivation or small executable checks can support cold-start publication; third-task transfer, boundary and regression checks are optional evidence purposes rather than a uniform gate. One active version is offered; prior uses retain their frozen version. True unversioned legacy rows keep their historical semantics. Assertion audits do not prove transfer or causal advantage.
 
 An execution record preserves observations and their sources. Its solver result can be valid for the implemented model while the answer remains wrong for the task. Record planned and actually performed methods separately; a plan supplies intent, while execution receipts and inspected artifacts support what happened.
 
@@ -64,11 +64,11 @@ Embedding retrieval is the primary discovery channel; profile information assist
 
 Prefer admitted applicable knowledge as a starting point. When it is absent, inspect execution evidence directly; useful experience does not require prior promotion into strategic knowledge. Historical failures can reveal repair conditions or limitations even when the successful method is unsuitable.
 
-A retrieved item keeps its evidence status. Text similarity exposes material to inspect; semantic premises determine whether its method can be adapted. Structural statistics retain their own scope: finding a related execution from another cell does not authorize adding its measured numbers to the target cell's estimate.
+A retrieved item keeps its evidence status. `--memory-mode none` clears structural recommendations in this implementation but does not disable vector retrieval; it is not an isolation mode. Text similarity exposes material to inspect; semantic premises determine whether its method can be adapted. Structural statistics retain their own scope: finding a related execution from another cell does not authorize adding its measured numbers to the target cell's estimate.
 
 When memory offers no relevant experience, report that absence and reason from the current problem to propose a fresh strategy. The framework supplies no built-in method menu and no fabricated historical score for that proposal. An empty bank is a reported state, never a gate: with no prior knowledge, solve the task and its own evidence becomes the first material, and you are never required to publish a first entry. Keep uncertainty explicit and obtain evidence through execution.
 
-Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. Attribution is by NUMBER, never by a shared method name: an entry named `method:monotone_reduction` adopted by a run named `milp_pulp_cbc` is still tied to the run. The framework never counts a mere recall — or a shared name — as reuse succeeded.
+Adoption, recall and outcome are kept apart. Being recalled (surfaced at decision time) is not adoption; adoption is the agent DECLARING the entry numbers a run relied on (`--used-entry-ids`); the outcome is that run's own result. Prefer explicit `ENTRY@VERSION`; inspect an unversioned hit before adoption. Utility `keep` leaves status unchanged, `demote` suspends the selected version and `retire` archives the entry. A `refuting` effect without `lifecycle_action` currently defaults to demotion; ordinary use/checks are separate. Attribution is by NUMBER, never by a shared method name: an entry named `method:monotone_reduction` adopted by a run named `milp_pulp_cbc` is still tied to the run. The framework never counts a mere recall — or a shared name — as reuse succeeded.
 
 A further distinction: the adoption record and its outcome accumulate independently of prediction CALIBRATION. A hit/miss is computed only when the entry DECLARED a prediction and the run observed a quality; an entry with no declared prediction is never scored against a default interval, and an execution failure is not automatically a counterexample to the knowledge — whether a failure refutes a claim is the agent's analysis, not an automatic verdict.
 
@@ -82,7 +82,7 @@ The world model provides a unified conditional forecast:
 
 A candidate specifies the proposed method and execution conditions. The predictor estimates their consequences: likely solution quality, required resources, failure risks, and potential learning. Solver/configuration choices are candidate inputs whose effects are assessed.
 
-Use Q/C/R predictions alongside relevant evidence to compare candidates before execution. Historical experience describes observed cases; the forecast addresses the proposed action in the current context. The agent remains responsible for the choice, including uncertain predictions, quality requirements, and available budget.
+Use `plan-next` to predict G/C/R/H+ and score U for one or more candidates under one frozen context before execution. The benefit field G is original-task acceptance probability given faithful implementation; C is raw remaining resource use; scored R is one attempt's technical implementation/execution failure probability. Historical experience describes observed cases; the forecast addresses the proposed action in the current context. The agent proposes and may revise methods; formal execution consumes only the saved finite-U permitted selection. A valid forecast, manual choice or later binding cannot create that permission. H+ is independent of U.
 
 The default comparison uses quality, cost, and risk. H+ controls post-task induction investment and states what the action might teach and how to check it. It is not a measured reward or an automatic utility bonus. Adding an entry or predicting a benefit does not establish capability improvement.
 
@@ -104,7 +104,7 @@ Prediction calls also consume tokens and time. Their measured spend belongs in t
 |---|---|---|
 | **Q: quality** | Task feasibility, correctness, and objective performance under the evaluation criteria | Model results plus task-level checks covering the relevant requirements |
 | **C: cost** | Resources consumed by reasoning, tools, solving, checking, and rework | Measured values with provenance and compatible scope |
-| **R: risk/uncertainty** | Failure exposure and uncertainty in quality, cost, or applicability | Observed failures, limited support, structural differences, and calibrated prediction reliability |
+| **R: technical risk** | Probability that one implementation/execution attempt fails technically | Direct code/API/exit/protocol evidence; environment blocks and unattributed timeouts remain unknown |
 
 Three checks answer different questions:
 
@@ -118,7 +118,7 @@ Retain confirmed-wrong attempts as failure evidence and include their measured c
 
 Store cost as the raw vector:
 
-**`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s`**
+**`llm_tokens, tool_calls, solver_runtime_s, retries, latency_s, remaining_latency_s`**
 
 Preserve which dimensions were measured, their source, and their measurement scope. Missing cost is unknown. Distinguish estimates from observations, total tokens from partial token counts, and inner solver time from a subprocess wall-clock proxy. Do not silently average incompatible quantities or omit unmeasured records from a claim covering the whole cited set.
 
@@ -141,4 +141,4 @@ Revisions may strengthen, narrow, merge, or retire knowledge. A relevant counter
 
 Keep evidence retention and belief revision separate. Complete old episode chains may leave a bounded evidence window after closeout processing. Expiry is a storage event, not a refutation; retained claims keep their content and verification scope. An expired reference cannot substitute for fresh support when revising a claim. Retirement and cold-archive policies prevent an unchanged failed pattern from repeatedly reappearing.
 
-For binary H+ training feedback, a substantive rule increment is confirmed only after independent transfer, boundaries and required regressions. A sourced sufficient comparison establishing coverage/no usable increment is a negative; insufficient, unvalidated and unexecuted work remains unknown. A refuted hypothesis may yield a valuable boundary rule. Separate later-performance claims require actual adopted versions, execution/checker coverage and comparable observations; cost savings require measured paired conditions. Legacy delayed-effect evidence retains its original meaning.
+For binary H+ training feedback, an actual new/revised rule plus a sufficient sourced substantive-increment review and valid evidence supports a positive within its scope. Derivation or small executable checks may support this without a mandatory third independent task, boundary test and regression suite. A sourced sufficient comparison establishing coverage/no usable increment is a negative; insufficiently supported or unexecuted work remains unknown. A refuted hypothesis may yield a valuable boundary rule. Separate later-performance claims require actual adopted versions, execution/checker coverage and comparable observations; cost savings require measured paired conditions. Legacy delayed-effect evidence retains its original meaning.

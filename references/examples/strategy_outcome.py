@@ -7,7 +7,7 @@ offline hashing backend is injected). It demonstrates, in order:
 1. a task with **no model and no solve.py** and TWO different strategy
    candidates, predicted under the wm-so/1 protocol by a fixed-output stub
    provider — the new protocol really reaches the provider;
-2. per-candidate comparison and an EXPLICIT choice, with the predictions
+2. per-candidate U comparison and the saved executable selection, with the predictions
    set so the recommendation DIFFERS from the plain Selector ordering —
    proving the prediction really participates in the decision;
 3. a small deterministic fixture executed through the real execution
@@ -206,7 +206,7 @@ def main() -> int:
     # ------------------------------------------------------------------
     print()
     print("=" * 72)
-    print("2. Comparison and explicit choice (prediction drives the advice)")
+    print("2. U comparison and the original selected prediction")
     print("=" * 72)
     # What would the plain Selector say? (memory-based ordering)
     recall = h.recall(task)
@@ -228,19 +228,11 @@ def main() -> int:
     assert plan["status"] == "ok"
     assert suggested == "S02", (
         "the better predicted candidate must win the suggestion")
-    assert plan["prediction_context_id"] == ctx.context_id or True
-    # The suggestion is NOT a selection: name the chosen candidate by the
-    # prediction the PLAN already made — the candidate is read from the
-    # decision's own comparison, never re-typed.
-    chosen_id = next(
-        c["prediction_id"] for c in plan["candidates"]
-        if c["action_spec"]["strategy_id"] == suggested)
-    choice = h.choose_next(plan["decision_action_id"],
-                           prediction_id=chosen_id)
-    print(f"explicit choice        : recorded "
-          f"({choice.get('selected', {}).get('strategy_id')}) "
-          f"from prediction {chosen_id}")
-    assert choice["selected"]["strategy_id"] == "S02"
+    # The earlier independent API forecasts demonstrate inspection only.
+    # Execute the permitted ID from this scored plan without a manual choice.
+    chosen_id = plan["selected_prediction_id"]
+    assert chosen_id and plan["selected_score"]["utility"] is not None
+    print(f"selected prediction    : {chosen_id}; U={plan['selected_score']['utility']}")
 
     # ------------------------------------------------------------------
     print()
@@ -278,7 +270,7 @@ def main() -> int:
           f"(source {config.get('sources', {}).get('time_limit')})")
     print(f"no second prediction   : "
           f"{len(provider.requests) == calls_before}")
-    print("NOTE: this is a PROCESS check (predict -> choose by id ->")
+    print("NOTE: this is a PROCESS check (plan-next -> selected id ->")
     print("      associate-before-run -> observe-after -> close), not a")
     print("      model-accuracy experiment.")
     assert binding["bound"]

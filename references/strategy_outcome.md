@@ -9,7 +9,8 @@ The solving entry is `plan-next` for one or more candidates. Read existing forec
 - API: `ORHarness.predict_strategy_outcome` / `bind_strategy_outcome`
 - CLI: `plan-next` → `execute --prediction` → `check-task` → `record` → `close-episode` → frozen H+ jobs. `choose-next` is a compatibility/rejection record; later binding cannot authorize solving.
 - Tests: `tests/harness/test_strategy_outcome.py`
-- Runnable example: [`references/examples/strategy_outcome.py`](examples/strategy_outcome.py)
+- Normal CLI example: [`unified_solving.py`](examples/unified_solving.py)
+- Advanced Python forecast/context inspection: [`strategy_outcome.py`](examples/strategy_outcome.py)
 - Bounded attribution (a missing receipt is a caveat, not a discard): [`references/examples/linkage_attribution.py`](examples/linkage_attribution.py)
 
 The INPUT side (what a prediction is conditioned on) is documented in [`references/prediction_context.md`](prediction_context.md); the CONTRACT (the objects a prediction parses into) in [`references/world_model_contract.md`](world_model_contract.md). This document is the authority for the SERVICE: the protocol, the decision loop and the execution binding.
@@ -27,13 +28,13 @@ profile / recall → propose one or more candidates → plan-next
 The framework freezes one shared context and makes one prediction per candidate.
 It saves G/C/R/H+, finite U, the winning prediction ID and its permission in the
 plan action. Stable ties preserve proposal order. Single candidates use the same
-score calculation. The next execute call uses the original selected P, records
+score calculation. Read `result.selected_prediction_id` and `result.selected_score`; `result.plan.candidates[]` carries each `prediction_status`, `execution_allowed`, `execution_refusal_reason` and `score`. A valid forecast is not by itself an executable selection. If no P is returned, read `result.plan.status`, `truncation_reason` and candidate refusals before correcting the proposal/evidence/configuration. The next execute call uses the original selected P, records
 one actual adoption and atomically claims it before starting the solver. It makes
 no new forecast. Invalid/absent U, losing candidates, shadow decisions and rejected
 plans do not authorize execution or create actual outcomes or induction jobs.
 
 The outer agent writes and checks the chosen method. A failed attempt is recorded;
-a repaired attempt needs a fresh `plan-next`. H+ is independent of U. Only actual
+a repaired attempt needs a fresh `plan-next` with the same task file and episode. H+ is independent of U. Only actual
 bound attempts with frozen H+=1 schedule a review, including failed attempts.
 Unexecuted forecasts stay unobserved. Close-out publishes factual feedback; the
 outer building agent settles the pending IDs before the next training task.
@@ -41,7 +42,7 @@ outer building agent settles the pending IDs before the next training task.
 ## 2. Propose candidates and inspect saved forecasts
 
 ```bash
-orx plan-next --task t.json --episode ep1 \
+orx --world-model URL::MODEL plan-next --task t.json --episode ep1 \
   --candidates '[{"name":"joint assignment","steps":["Build the coupled model","Solve and check original constraints"],"solver":"highs","config":{"time_limit":60}}]'
 # P = result.selected_prediction_id
 orx inspect --bank predictions --prediction P
@@ -63,14 +64,14 @@ forecasts remain readable and need a scored plan before formal execution.
 
 The response must use the required convention. A different metric/unit/scope or a non-finite/out-of-range G makes **G unavailable** (`trace.unsupported_fields.benefit`), preserving valid C/R and `benefit.notes`. No rejected number is converted to the required metric. JSON booleans and numeric strings are not G numbers. In this same call, `benefit.notes` carries one grounded sentence linking the decisive requirement, candidate steps and expected consequence, or naming the missing condition. Omit `value` when unsupported; keep the sentence. The main agent decides how to revise.
 
-> 原题要求 BE 和 CFC 同厂，候选分别选厂后直接合并，预计可能产生跨厂解。
+> The original task requires BE and CFC to use the same factory; choosing factories separately and merging may produce a cross-factory solution.
 
 **Output semantics.**
 
 | Field | Contract object | Rules |
 |---|---|---|
 | benefit G | `BenefitEstimate` | metric, unit and baseline required with a value; `solution_quality` must be a NORMALIZED value in [0,1] (e.g. `1-gap`) — a raw objective value is refused, never clamped. Business production/transport cost is OR objective quality, NOT a harness resource cost. An optional `interval` states WHAT it is about via `interval_kind` (`outcome` = ONE run's value, `mean` = the average over runs) and an optional `interval_coverage` (the nominal level claimed). A completion PROBABILITY is a mean over runs — an `effective_completion` interval with no kind is FLAGGED, never read as a single 0/1 label's interval. Omitting the kind leaves the range's meaning unstated (legacy) and the close-out groups it under `(unstated)` |
-| cost c | `ExpectedCost` / `CostVector` | the five resource dimensions; the measured mask marks PREDICTED dimensions (a prediction, not a measurement); an omitted dimension is unknown, never zero |
+| cost c | `ExpectedCost` / `CostVector` | raw resource dimensions, including attempt and remaining end-to-end time under their own scopes; the measured mask marks PREDICTED dimensions (a prediction, not a measurement); an omitted dimension is unknown, never zero |
 | risk R | `RiskStatement` / `RiskEvent` | only `implementation_failure.probability` is scored: one attempt's technical failure probability under the actual execution agent, solver interface and running conditions; other events remain diagnostics |
 | uncertainty | `UncertaintyStatement` | execution randomness vs knowledge gap; a model self-report is recorded as `model_self_report` with the numbers in its notes, explicitly UNCALIBRATED — never relabeled as measured |
 | capability gain H+ | `CapabilityGain` | `capability_gain.decision` is the JSON number 0 or 1, the frozen induction switch (`wm-hplus-binary/1`). With 1, provide one learning hypothesis in `claim` and one concrete `verification_conditions` check; with 0, one reason in `basis`. Reuse `applies_to`, per-metric `expected_changes` and evidence fields. Missing/illegal values schedule 0 with separate diagnostics; valid 1 still requires review if explanatory detail is missing. Legacy `assessment` retains its old meaning and does not supply the new switch. H+ never enters strategy utility |
@@ -94,9 +95,7 @@ completes the job, linking the actual induction action and exact rule versions.
 Solving alone is never a maintenance binding. See [hplus.md](hplus.md).
 
 `hplus_feedback` contains a few relevant pre-decision settled training receipts.
-Independent validation of a substantive increment confirms a positive; a
-sourced sufficient no-increment comparison confirms a negative; unavailable,
-unexecuted or unvalidated evidence remains unknown. Hypothesis truth and rule
+A real new/revised body with a sourced sufficient substantive-increment review and valid support confirms a positive in that scope; reliable derivation or small runnable checks can supply that support without a mandatory third transfer task. A sourced sufficient no-increment comparison confirms a negative; unavailable, unexecuted or insufficiently supported evidence remains unknown. Hypothesis truth and rule
 increment are separate. Legacy stance/effect records remain readable under
 their original protocol, without mapping `expected` to 1 or silence to an
 explicit 0. The legacy performance-effect evaluator remains distinct from

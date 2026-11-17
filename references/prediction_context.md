@@ -13,7 +13,7 @@ This document defines **what information a prediction actually uses**, and how t
 - Tests: `tests/harness/test_prediction_context.py`
 - Runnable example: [`references/examples/prediction_context.py`](examples/prediction_context.py)
 
-New contexts are consumable inputs: default reuse lifetime 24 hours, with bounded active storage. `choose-next` or successful episode close releases the full working input; an expired reuse raises `ContextExpired`. `context --context-id CTX --audit` reads the surviving manifest. Existing `wm-context/3` and full snapshots remain readable through explicit adapters. See [snapshot_lifecycle.md](snapshot_lifecycle.md) for responsibilities, exact limits, fixed-memory testing and explicit cleanup.
+New contexts are consumable inputs: default reuse lifetime 24 hours, with bounded active storage. Successful episode close releases the normal flow's full working input; a compatibility `choose-next` can release it earlier after a recorded choice/rejection; an expired reuse raises `ContextExpired`. `context --context-id CTX --audit` reads the surviving manifest. Existing `wm-context/3` and full snapshots remain readable through explicit adapters. See [snapshot_lifecycle.md](snapshot_lifecycle.md) for responsibilities, exact limits, fixed-memory testing and explicit cleanup.
 
 This document is the authority for the INPUT side. The contract side (statuses, scopes, capability sources) stays in [`references/world_model_contract.md`](world_model_contract.md).
 
@@ -301,7 +301,7 @@ This is the phase's most important engineering boundary.
 
 **G applicability is selected before size trimming.** The audit summary retains every `conditional_g` group. `provider_view` first selects at most six applicable groups for the current task and candidate, then calls the ordinary context size bound. Different families, conflicting known structural bins or solver/limit settings, different declared budgets, metrics, scopes or G rule versions are withheld. Same-task facts and shared known structure rank first. Unknown dimensions remain explicit `partial_case_support`, not matches or a current-candidate prior; sparse groups support only their executed cases. `conditional_g_selection` reports available/applicable/included/omitted counts. Stable grouping uses observed execution settings and declared limits, so a further 3 tokens of prediction spend cannot split otherwise identical executed conditions. Both reminder locations continue to remove global/single-case G correction instructions.
 
-**C applicability is selected before size trimming too.** The frozen solving context can carry `execution_host` from the most recent real host report in this task/episode at or before the snapshot. It is independent of the predicting provider's identity. `cost_evidence` selects a maximum of four matching raw-cost ranges and three cases from the already-published `conditional_cost` population. Match the execution host/model, measurement scope, known phase, family, compatible known structure and solving restrictions. Different actual receipt configurations stay distinct; extra prediction-token consumption does not split a group. Missing model identity/phase gives no common-scale prior. Missing structural/settings dimensions remain unknown, and sparse support describes only the cited executions. Candidate steps and available artifacts explain work differences; they are not fabricated invocation counts. The full audit population is omitted from the provider view after this selection. Cached contexts remain frozen. Both top-level and nested reminders filter retired C as well as G corrections; risk and interval feedback remain available.
+**C applicability is selected before size trimming too.** The frozen solving context carries known execution host/model/interface and phase from the runner's `execution_context` / `OR_EXECUTION_CONTEXT`, including a first proposal with no actions. Real reports at or before the snapshot remain additional recorded evidence. It is independent of the predicting provider's identity. `cost_evidence` selects a maximum of four matching raw-cost ranges and three cases from the already-published `conditional_cost` population. Match the execution host/model, measurement scope, known phase, family, compatible known structure and solving restrictions. Different actual receipt configurations stay distinct; extra prediction-token consumption does not split a group. Missing model identity/phase gives no common-scale prior. Missing structural/settings dimensions remain unknown, and sparse support describes only the cited executions. Candidate steps and available artifacts explain work differences; they are not fabricated invocation counts. The full audit population is omitted from the provider view after this selection. Cached contexts remain frozen. Both top-level and nested reminders filter retired C as well as G corrections; risk and interval feedback remain available.
 
 For a first proposal, the runner's `execution_context` (Python constructor, `OR_EXECUTION_CONTEXT` or global CLI flag) supplies already-known execution host/model and phase before there are completed actions. It is copied into `snapshot.harness_state.execution_context`, then into the solving context. These inputs take precedence over legacy host lookup; actual artifact progress determines the phase when available. Historical reconstruction and context reuse read saved declarations only. Neither a new task nor an unknown runner borrows the world-model provider's identity or another episode's host. See [c_signal_review.md](../docs/c_signal_review.md) for a normal CLI first request with zero preceding actions.
 
@@ -318,9 +318,9 @@ verification state, hypothesis outcome and one bias/deviation reason.
 
 | Label | Evidence |
 |---|---|
-| `1` | A substantive submitted/revised rule version passes independent transfer, boundary and required regressions |
+| `1` | A real new/revised version plus a sourced sufficient substantive-increment review and valid evidence; reliable derivation or small runnable checks can support its stated scope |
 | `0` | A sourced sufficient comparison of the frozen baseline with actual checked work confirms coverage/no increment |
-| `null` | Insufficient material, unvalidated increment or unavailable/unexecuted evidence |
+| `null` | Insufficient material/support or unavailable/unexecuted evidence |
 
 Feedback uses only facts recorded before the prediction. The context freezes
 its selected feedback; later checks do not rewrite old inputs. A 0 execution
@@ -330,11 +330,24 @@ when the current library has subsequently changed. Historical three-state
 and delayed performance-effect records retain their own meanings.
 
 The original `capability_gain.decision` controls induction, not G/C/R utility.
-Source tasks/displayed material are distinct from future independent targets.
+Publication is an explicit version-use decision; there is no compulsory third-task/transfer/boundary/regression bundle. Source tasks/displayed material are distinct from future independent targets.
 Receipt completion is not proof of a useful method, and a refuted hypothesis
 can still yield a validated boundary increment. See [hplus.md](hplus.md).
 
 ---
+
+## Audit what the next provider actually received
+
+Continue the next task's `plan-next` in the same `--home`. It builds one shared context and automatically selects applicable published solving calibration, recalled rules and settled H+ receipts that existed before the decision. No extra prediction, feedback or snapshot command is a normal prerequisite.
+
+For optional diagnosis:
+
+```bash
+orx inspect --bank predictions --prediction P
+orx context --context-id CTX --audit
+```
+
+P is a saved candidate prediction; CTX comes from its plan's `prediction_context_id` or prediction trace. Inspect wraps the payload at `result.prediction.prediction`, so request omissions are at `result.prediction.prediction.trace.model_info.request_omissions`. The context audit exposes the frozen input/feedback references that were available. Provider-size trimming may omit an H+ receipt that survives in the frozen context: recorded availability and actual transmission are separate facts. Old request omissions remain attached to that original call, not recomputed from today's library. See [snapshot_lifecycle.md](snapshot_lifecycle.md).
 
 ## 7. Compatibility
 
@@ -350,13 +363,15 @@ can still yield a validated boundary increment. See [hplus.md](hplus.md).
 
 - **The legacy `predict_outcome` protocol is unchanged** for the records it already wrote: the payload shape it produced is what the contract reader still parses. It is no longer an agent-facing prediction path — `plan-next` (wm-so/1) is the public scored entry — so the two never compete for the same decision.
 - **Capability evolution is a separate service.** Its contract and service live in [`references/world_model_contract.md`](world_model_contract.md); the input context described here is shared with it.
-- **No task-closing scheduler, no offline learning schedule.**
+- **No autonomous reviewer.** Close-out dispatches frozen jobs; the outer agent submits their conclusions.
 - **No capability evaluation system, no H score, no latent vectors.**
 - **No training** of a model, a prediction head or a retriever.
 - **No new semantic extractor, no retrieval rework**: the two existing channels are wired in, not replaced, and no composite retrieval score is introduced.
-- **No change** to the structural bins, the unknown-matching rule, the selector's scoring, the induction-pattern detectors or the induction publication gate.
+- **No replacement** for the existing structural bins, unknown-matching rules, U scorer or author-led publication choice.
 - **No new autonomous agent and no background loop.**
 
 ## Short versioned rule views
 
 Structural recall, vector recall and normal world-model knowledge views share the v2 active-version predicate. Candidate/suspended versions remain inspectable for induction and targeted trials; pending revisions preserve the active body. Short bodies carry version/body references; long legacy prose/logs use detail references. Small historical unversioned views retain their semantics. Actual adoption freezes `entry_id@version`; later checks do not read a newer body. Reading/recall never establishes use, faithful execution or comparative advantage.
+
+Existing runtime wording is retained in this documentation change: the system prompt allows unsupported G to be omitted, and a frozen retrieval note can still use the older phrase "admission verification passes." Short views also retain their stored/default verification labels. Read the actual version's `published` state and declared verification scope; that wording does not introduce a compulsory third-task/transfer/boundary/regression checklist. Cold-start prompt policy and projection defaults are separate implementation work, not changes made by this walkthrough.

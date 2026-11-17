@@ -96,7 +96,7 @@ def run(mode="single", home=None):
     decisions, executions, closes, summaries = [], [], [], []
     try:
         for index, task_id in enumerate(("endpoint-source", "endpoint-covered")):
-            task = {"task_id": task_id, "family": "assignment", "description":
+            task = {"task_id": task_id, "family": "assignment", "text":
                 "Minimize 2X-5Y for nonnegative integers X,Y subject to X+Y<=641 and X>=2Y+130."}
             task_file = work / f"{task_id}.json"
             task_file.write_text(json.dumps(task))

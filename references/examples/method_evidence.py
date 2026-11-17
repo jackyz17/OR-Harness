@@ -17,15 +17,16 @@ The chain it walks:
    writes the "condition -> how -> consequence -> boundary" strategy.
 3. **the write is checked and auditable** — the submission records a
    maintenance action with a knowledge delta, its declared `check` is
-   evaluated, and the published strategy reaches recall from an INDEPENDENT
-   task.
+   evaluated, and the new body remains candidate because this audit submits
+   no explicit publication choice. An assertion verdict does not publish it.
 4. **an honest refusal to invent** — a second batch whose evidence reports NO
    method is readable (`method.basis == "none"`), and submitting a strategy
    from it carries a `material` warning: the framework will not turn a mean
    into a technique.
 
-It runs with no model, no network and no API key — the deterministic offline
-hashing backend is injected.
+It uses an explicit fixed predictor, no live service/network/API key, and the
+deterministic offline hashing backend. Its manual-library audit is separate
+from the normal frozen H+ workflow in unified_solving.py.
 
     PYTHONPATH=src python3 references/examples/method_evidence.py
 """
@@ -119,8 +120,8 @@ def main() -> int:
             t1 = dict(TASK_BASE, task_id="T1")
             failed = _run(h, t1, FAILED_METHOD, feasible=False, slot="f")
             fixed = _run(h, t1, FIXED_METHOD, feasible=True, slot="s")
-            # A second independent task so the strategy can be published
-            # (the publication gate needs >=2 distinct tasks).
+            # A second actual task supplies a comparison. Its count is not
+            # a uniform publication gate; the author chooses supported scope.
             t2 = dict(TASK_BASE, task_id="T2")
             fixed2 = _run(h, t2, FIXED_METHOD, feasible=True, slot="t")
             print(f"failed attempt {failed.execution_id}: "
@@ -142,9 +143,9 @@ def main() -> int:
                 print(f"  {m['execution_id']}: {m['method']['basis']} / "
                       f"{label}")
             # The strategy: conditions -> method -> consequence -> boundary.
-            # The evidence spans TWO independent tasks (the failed attempt on
-            # T1 and the fixed method on T2), which is what the publication
-            # gate needs; the framework DERIVES the identity from the facts.
+            # The evidence spans two tasks plus a repair control. The author
+            # assesses their scope; the framework derives recorded identities
+            # without treating a sample count as publication permission.
             strategy = {
                 "subject": "principle:cross_period_state",
                 "claim": ("when temporal coupling is high, the cross-period "
@@ -220,7 +221,7 @@ def main() -> int:
             print()
 
             print("=" * 72)
-            print("4. the verified strategy reaches recall from a NEW task")
+            print("4. assertion verification and publication are separate")
             print("=" * 72)
             recall = h.recall(dict(TASK_BASE, task_id="T4"))
             hits = [r for r in recall.get("recommendations", [])
@@ -235,9 +236,10 @@ def main() -> int:
                 print(f"  tasks     : {claim.get('tasks')}")
                 print(f"  evidence  : "
                       f"{[e['execution_id'] for e in claim.get('evidence', [])]}")
-            print("\nThe strategy is quoted from accumulated evidence on OTHER "
-                  "tasks, with the entry's own verification state and a "
-                  "citable evidence list — not from a mean.")
+            print("\nThe candidate and its cited evidence remain inspectable. "
+                  "No explicit publication choice was submitted, so the "
+                  "assertion audit alone does not offer it in normal recall. "
+                  "See induction.md for the complete relation/review handoff.")
             return 0
         finally:
             h.close()

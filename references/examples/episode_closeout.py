@@ -1,4 +1,9 @@
-"""Runnable example: the M4 episode close-out loop.
+"""Historical calibration audit: imported multi-attempt pairing and close-out.
+
+This example deliberately imports legacy execution/prediction associations to
+audit old observation scopes. It is not a normal execution-authorization recipe.
+Use unified_solving.py for plan-next -> execute --prediction -> check -> record
+and the frozen H+ review handoff.
 
 Runs with NO real model (a fixed-output stub provider), NO network, NO API
 key and NO embedding service (the deterministic offline hashing backend is

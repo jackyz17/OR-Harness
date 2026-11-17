@@ -227,8 +227,8 @@ def main() -> int:
         detail=h.inspect(bank='strategic',entry_id=created)
         assert detail['entries'][0]['rule']['state']=='candidate'
         assert not any(r['evidence']=='strategic_entry' for r in h.recall(TASK)['recommendations'])
-        print('-> the assertion audit is readable; independent mechanism/transfer/boundary evidence is still missing')
-        print('-> see versioned_induction.py for a real integer-rule transfer and boundary example')
+        print('-> the assertion audit is readable; no explicit publication choice was submitted')
+        print('-> see docs/validation/run_review_eight_demo.py for current A/B publication and later use')
 
         # ------------------------------------------------------------------
         step(9, "no candidates supplied -> no menu is invented")
