@@ -202,5 +202,3 @@ The agent chooses cost baselines, comparability and causal interpretation. Optio
 The next `plan-next` in the same memory home selects applicable settled receipts from before its decision cutoff. See [prediction input audit](prediction_context.md#audit-what-the-next-provider-actually-received) to trace which feedback reached the provider.
 
 New ordinary prediction homes use H+ automatically. Use global `--induction-mode hplus` or `OR_INDUCTION_MODE=hplus` to set the building mode explicitly. H+, NoH+, and random controls use separate homes. NoH+ opportunity reviews use the prediction-time library. Drain required jobs before freezing the library. For execution isolation in fixed-memory tests, follow [the per-question copy procedure](snapshot_lifecycle.md#fixed-memory-testing-with-per-question-copies).
-
-Historical capability and effect records retain their original contracts. `evaluate-capability` measures later performance through its separate protocol. The review labels above measure a supported learning increment from the actual induction.

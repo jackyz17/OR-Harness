@@ -55,7 +55,7 @@ A task needs `task_id` and `family`; other inputs are optional. **You do not nee
 | `strategy_calibration` | the PUBLISHED strategy-outcome experience calibration, frozen (see §6b) |
 | `paired_feedback` | the COMPACT per-episode prediction-execution PAIRS of closed episodes, frozen (see §6c) |
 | `prediction_reminders` | the DETERMINISTIC "watch this next time" notes derived from the summary (see §6c) |
-| `hplus_feedback` | the follow-up state of ONLINE capability-gain claims (see §6d) |
+| `hplus_feedback` | related completed H+ induction receipts (see §6d) |
 | `conditions` | source/identity and candidate-related statistics/references; no duplicate complete snapshot or X/B (Python keeps `ctx.snapshot` as a compatibility property) |
 | `cell_evidence` | per strategy, the distinct-task count behind the cell's statistics, **frozen** |
 | `sources` | where each part came from (snapshot id, task version, channel list, CIR origin) |

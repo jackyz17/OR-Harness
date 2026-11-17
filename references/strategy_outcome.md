@@ -167,6 +167,6 @@ The action's `execution_config` contains what the executor observed and any scri
 
 ## 6. Compatibility
 
-Historical `OutcomePrediction` and `CapabilityEvolutionPrediction` records retain their original scope and metrics. See [contract migration](world_model_contract.md#7-migration-table) and [stored input lifecycle](snapshot_lifecycle.md). `HttpChatProvider` selects its prompt using the request protocol, with `wm-so/1` selecting the current strategy-outcome prompt.
+Historical prediction records retain their original scope and metrics. See [contract migration](world_model_contract.md#7-migration-table) and [stored input lifecycle](snapshot_lifecycle.md). `HttpChatProvider` selects its prompt using the request protocol, with `wm-so/1` selecting the current strategy-outcome prompt.
 
 Current executions require a saved `wm-u-decision/1` selection. An interrupted adopted attempt retains its failure evidence and consumes the prediction. Repair by planning again.

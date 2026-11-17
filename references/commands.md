@@ -14,10 +14,9 @@ Use the same task file through preparation, planning, and execution. See [task i
 | Score and select | `plan-next` | One shared context, one forecast per candidate, saved U selection; inspect reads existing forecasts |
 | Execute, check, record | `execute`, `check-task`, `record` | Runs code; logs checks; stages and records facts |
 | Close the episode | `close-episode` | Writes evaluations/calibration; performs retention |
-| Optional input/baseline | `context`, `predict-cost`, `snapshot`, `budget` | Context/snapshot persist; budget declaration writes; cost baseline reads |
+| Optional inputs | `context`, `snapshot`, `budget` | Save prediction inputs or snapshots, declare a budget |
 | Offline knowledge | `induction-material`, `induce`, `retire` | Material reads; induction/retirement change knowledge |
-| Optional maintenance forecasts | `predict-capability`, `compare-capability`, `accept-capability`, `reject-capability` | Forecast, compare, decide |
-| H+ building handoff | `induction-status`, `induction-material`, `induce` | Consume every frozen positive job after task close-out; its real induction receipt binds automatically. Legacy `evaluate-capability` remains a separate later-performance check |
+| H+ building handoff | `induction-status`, `induction-material`, `induce` | Review each pending H+ job after close-out. `induce` records the result in an induction receipt |
 | Inspect and diagnose | `doctor`, `contract`, `inspect`, `calibration` | Read/build views; `calibration --rebuild` writes |
 | Repair/report | `bind-strategy`, `amend-cost`, `action`, `exclude-execution`, `restore-execution` | Writes links, costs, actions, or correction history |
 | Store/index maintenance | `rebuild-index`, `archive-calibration`, `enforce-window` | Explicit maintenance; `--dry-run` writes nothing |
@@ -31,9 +30,7 @@ Use the same task file through preparation, planning, and execution. See [task i
 | Candidate prediction | `plan-next`: `result.selected_prediction_id` / `result.plan.candidates[].prediction_id` | `execute --prediction` for the scored winner; independent IDs are inspection only |
 | Execution | `execute`: `result.execution_id` | `check-task`, `record --from-staged`, correction commands |
 | Execution action | `execute`: `result.action_id` | `bind-strategy --action`, `action --amend-cost` |
-| Evidence IDs | `induction-material`: `result.material[].execution_id` | Relation evidence; `predict-capability --bundle` |
-| Capability prediction | `predict-capability`: `result.prediction_id` | Compare, accept/reject, bind, evaluate |
-| Recommendation | `compare-capability`: `result.recommendation` | `accept-capability` / `reject-capability` |
+| Evidence IDs | `induction-material`: `result.material[].execution_id` | Evidence for the induction submission |
 
 Keep these boundaries throughout the calls:
 
@@ -123,12 +120,6 @@ Method evidence is `performed`, `planned_only`, or `none`: `method.actual` comes
 `--math` declares known attributes, e.g. `'{"linearity":"linear","objective_kind":"min"}'`. A supplied `--cir` replaces task coupling consistently for representation, profile, and retrieval; `joint.sources.cir` reports its origin. Missing model/CIR/text is reported, not guessed. Retrieval deduplicates `layer:id`; content digests cover consulted knowledge, not read timestamps.
 
 **Recover / next:** Explicit reuse uses `ORHarness.predict_strategy_outcome(..., context=ctx, cir=cir)` with the same effective CIR. CLI `plan-next` builds its own shared context. Task/version/episode or known structural mismatches are refused; unknown structure is not a mismatch. `--no-persist` returns content without creating a later lookup target. Historical `--snapshot` builds use frozen knowledge/retrieval, exclude later-created memories, and mark unavailable reliability/evidence blocks missing; they cannot reconstruct history from today's banks. See [prediction_context.md](prediction_context.md).
-
-### `orx predict-cost --task t.json --strategy S`
-
-**Purpose / effects:** Optional read-only historical attempt-cost baseline; no provider call. It does not predict benefit, risk, or uncertainty.
-
-**Read / next:** `source=entry|stats|unknown`, support counts, per-dimension support, and expected cost. Unknown or incompatible evidence yields null, not free execution. Pass the printed cost snapshot to `record --prediction` if you used it, so feedback compares with that frozen baseline. Use `plan-next` for world-model consequences and scoring.
 
 ## 4. Plan and inspect predictions
 
@@ -382,7 +373,7 @@ Execute actions are logged automatically; induction logs maintenance under `__ma
 
 **Read:** Groups separate model identity, metric, unit, and scope. Statistics include signed benefit error, cost log ratio, interval coverage/width, per-event Brier, and predicted probability versus occurrence over the same scored denominator. Separate `occurrence` reports its own observation-unit counts/denominator; do not mix those rates. Below minimum support: `insufficient_evidence`, `reliability:null`. `applicability:"global_diagnostic"` does not imply per-strategy reliability or guaranteed prediction improvement. Legacy knowledge-prediction statistics are separate.
 
-## 8. Offline knowledge and capability feedback
+## 8. Offline induction
 
 ### `orx induction-material [--induction-id J] [--strategy S] [--task T] [--episode E] [--limit N] [--cursor C] [--related-top-k K] [--purpose modelling|implementation] [--query TEXT] [--executions EX1,EX2] [--view compact|detail]`
 
@@ -402,46 +393,6 @@ Execute actions are logged automatically; induction logs maintenance under `__ma
 
 Read `result.completed`, `result.pending_ids`, `result.signal_counts`, and `result.observation_counts`. Use each pending ID to [resume its review](induction.md#take-a-required-review). See [review result fields](induction.md#read-publication-completion-and-learning-separately) for how completion and learning are reported.
 
-### `orx [--world-model URL::MODEL] predict-capability --operation JSON [--task t.json] [--bundle bundle.json] [--horizon TEXT] [--horizon-tasks N] [--budget JSON] [--task-id ID] [--episode ep1] [--timeout S]`
-
-**Purpose / effects:** Optional `wm-ce/1` forecast of a proposed maintenance operation's later performance effects. Logs forecast/failure and real call usage. Operation specifies `induce|revise|reverify|retire`, strategy/target and config; prediction support does not guarantee an execution path for every type.
-
-**Input / read:** Bundle supplies frozen recorded `execution_ids`; framework fixes identity, scope, targeting, horizon, and per-metric baselines. Model supplies expected changes (metric/unit/direction/value/baseline), learning cost, degradation risk, uncertainty, and verification conditions. Cost baselines are per dimension/unit; unlike currencies cannot be converted. No provider gives `contract_only`; a validated actual forecast is required for `valid`.
-
-**Next:** Compare multiple operation predictions when choosing among them, or retain the forecast for later binding. This is unnecessary for direct induction or a frozen H+ already forecast inside `plan-next`.
-
-### `orx compare-capability --predictions ID[,ID...] [--horizon-tasks N] [--allow-quality-loss]`
-
-**Purpose / effects:** Read-only comparison; no operation runs. Among compatible quantified savings without quality loss, recommends greatest cumulative saving over the declared horizon minus that operation's one-time predicted maintenance cost, in the same unit.
-
-**Read / next:** Recommendation, `defer`, `insufficient_evidence`, or incomparable reasons. Missing horizon, incompatible units, no executable operation path, or no payback prevents ordinary ranking. `--allow-quality-loss` is an explicit comparison option, not evidence of benefit. Accept/reject explicitly; a recommendation is not execution.
-
-### `orx accept-capability --recommendation JSON [--prediction ID] [--verify JSON] [--note TEXT] [--force]`
-
-**Purpose / effects:** Execute the accepted offline operation on its own frozen scope and automatically bind the maintenance fact. `induce|revise` delegate to induction; `retire` retires the named target; unsupported types are refused.
-
-**Input / next:** Induction/revision operations must carry the exact relation payloads in `operation.config.relations`; no relations means no statistical fallback. Retirement uses its named target. The operation never widens scope by rereading today's bank. Read the knowledge delta and `result.maintenance_binding`; do not repeat the operation or its binding. Evaluate future effects when qualified later tasks exist.
-
-### `orx reject-capability --recommendation JSON [--prediction ID] [--reason TEXT]`
-
-**Purpose / effects:** Record decline/defer and its reason. No maintenance operation runs or knowledge changes; the decision log is a write. Prediction remains unbound. Nothing further is required for that decision.
-
-### `orx bind-capability --prediction ID [--adoption-action ACTION_ID]`
-
-**Purpose / effects:** Historical/compatibility binding; new forecasts require a saved scored adoption. Bind a real maintenance fact when the operation ran outside `accept-capability`. Captures actual operation/end time, created/revised/retired entries, admission verdict, cost, and scope agreement. Idempotent; no model call. It cannot set `effect_verified`.
-
-**When (stage-1):** after the REAL induction completes. New binary jobs bind automatically; explicit binding is a recovery path. An executed solve alone is not an induction fact; unexecuted claims stay pending.
-
-**Online H+:** `--prediction sp_...` binds the REAL induction action from its original frozen gain trace and completed job (`prediction_source:"online_trace"`); no separate capability prediction is required. Stored maintenance forecasts report source `stored`. Evaluate later useful performance, not merely entry creation.
-
-### `orx evaluate-capability --prediction ID [--tasks ID,...] [--paired JSON] [--allow-descriptive]`
-
-**Purpose / effects:** Persist later-effect evaluation. Uses closed task-episodes whose actual work ran after the operation, under produced knowledge, within frozen targeting and outside its source evidence. The unit is task-episode, not prediction count; repeated predictions for one execution do not add independent tasks.
-
-**When (stage-2):** triggered **later, on a rolling basis**, once a qualified later task-episode has closed (an unreached horizon stays `pending` — not a failure). Keep it bounded: evaluate the oldest ≤K claims per episode, or sweep at checkpoints.
-
-**Read / next:** Horizon not reached stays `pending`. Paired treated/reference evidence must cite real tasks and compatible metric/unit; it supplies the observed difference. Only `observed_improvement` sets `effect_verified`; descriptive movement, insufficient evidence and refutation are separate. `--allow-descriptive` explicitly limits the conclusion. Final verdicts short-circuit repeats; pending results may be evaluated later. Online `sp_...` traces use the original claim/conditions, never a hindsight forecast. No extra call is needed after a final verdict.
-
 ## 9. Diagnostics and inspection
 
 ### `orx doctor`
@@ -450,9 +401,9 @@ Read `result.completed`, `result.pending_ids`, `result.signal_counts`, and `resu
 
 **Next:** Record unrecorded real attempts. Rebuild an unhealthy configured index when needed. No backend means structural fallback, not a missing semantic match.
 
-### `orx contract [--kind strategy_outcome|capability_evolution] [--payload JSON]`
+### `orx contract [--kind strategy_outcome] [--payload JSON]`
 
-**Purpose / effects:** Build/inspect a versioned contract without provider calls. Strategy-outcome construction supports `--task`, `--spec`, `--benefit`, `--cost`, `--risk`; capability construction supports `--operation`, `--horizon`, `--horizon-tasks`, `--verification`.
+**Purpose / effects:** Build a strategy-outcome contract locally with `--task`, `--spec` and optional `--benefit`, `--cost` and `--risk`. Use `--payload` to inspect a saved prediction payload.
 
 ```bash
 orx contract --kind strategy_outcome --task t.json \
@@ -465,7 +416,7 @@ orx contract --payload prediction.json
 
 **Read:** Contract version and separate `provider_configured`, `service_available`, `prediction_made`. Building returns `contract_only` even with a provider; only a produced, validated forecast is `valid`. Unsupported versions exit 2; unversioned payloads use `legacy_view`, without inventing gains/risk/measurements. Legacy specs preserve params/budget hints and refuse unmappable task scope. See [world_model_contract.md](world_model_contract.md).
 
-### `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts|evaluations|retention|capability [--task ID] [--strategy S] [--status candidate] [--episode EP] [--evaluation ID] [--prediction ID]`
+### `orx inspect --bank experience|strategic|archive|actions|snapshots|predictions|texts|evaluations|retention [--task ID] [--strategy S] [--status candidate] [--episode EP] [--evaluation ID] [--prediction ID]`
 
 **Purpose / effects:** Read stored layers. No solving, prediction, retirement, or migration. Use filters/key lookup instead of repeatedly listing history.
 
@@ -473,13 +424,12 @@ orx contract --payload prediction.json
 |---|---|
 | `experience`, `strategic`, `archive` | Facts, active knowledge, archived knowledge; strategic status/verification/provenance/prediction track |
 | `actions`, `snapshots` | Logged actions and frozen execution context |
-| `predictions` | Separate legacy, strategy, and capability generations; only strategy channel feeds strategy calibration |
+| `predictions` | Stored strategy predictions and historical prediction records |
 | `evaluations` | Stored close-out evaluations; pending waits for scope, excluded is neither hit nor miss |
 | `retention` | Calibration window, grace periods, archive caps and counts; evidence window is a separate scope |
-| `capability` | Maintenance-fact binding and later-effect verification, separately |
 | `texts` | Retained retrieval documents keyed by task ID/text digest; not claims or a learning bank |
 
-`predictions --prediction ID` returns one record and resolved generation, not a history listing; `capability --prediction ID` returns its forecast/binding/effect state. `--evaluation ID` selects an evaluation. `--status suspect|dormant` finds retirement candidates without deleting them. `texts --task ID` lists that task's versions; no task filter lists all retained versions, including sources for unindexed records. Use each execution's `task_text_digest` to identify its version.
+`predictions --prediction ID` returns one stored record and its prediction kind. `--evaluation ID` selects an evaluation. `--status suspect|dormant` finds retirement candidates without deleting them. `texts --task ID` lists that task's versions; no task filter lists all retained versions, including sources for unindexed records. Use each execution's `task_text_digest` to identify its version.
 
 Targeted reads: `inspect --bank strategic --entry 3 [--rule-version candidate|2]` returns body versions and check/use/effect references; `inspect --bank experience --execution ex_ID` reads a full fact. `inspect --bank values --value REF` resolves a frozen body/fact/assessment after its source execution is evicted.
 

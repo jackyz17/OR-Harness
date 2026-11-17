@@ -16,7 +16,6 @@ Read this page when you need an exact field definition, a status value, or the m
 | You want to… | Use | What you must supply | What you get |
 |---|---|---|---|
 | Inspect a candidate's prediction contract | `orx contract --kind strategy_outcome` / `ORHarness.build_strategy_outcome_contract` | a task JSON + a candidate (strategy id, optional solver/config/scope) | a `StrategyOutcomePrediction` contract |
-| Inspect a learning operation's contract | `orx contract --kind capability_evolution` / `ORHarness.build_capability_evolution_contract` | a learning operation (`induce` / `revise` / `reverify` / `retire`) + a horizon | a `CapabilityEvolutionPrediction` contract |
 | Read a stored prediction | `orx contract --payload <json>` / `ORHarness.read_prediction_payload` | the payload | a version-identified view (current / legacy / unsupported) |
 | See what is known about harness capability | `ORHarness.capability_evidence` | nothing (task optional) | `HarnessCapabilityEvidence` — evidence, **no score** |
 | See the real scope a strategy occupied | `ORHarness.strategy_execution_window` | task id (+ episode, strategy) | `StrategyExecutionWindow` with a `comparable` flag |
@@ -33,15 +32,9 @@ Read this page when you need an exact field definition, a status value, or the m
 
 Only the third yields `status="valid"`. Merely constructing a contract returns `contract_only` **even when a provider is configured** — a configured provider with zero model calls is not a prediction, and an empty benefit/cost/risk is not a forecast.
 
-`capability_evolution` has **both a contract and a service** (`wm-ce/1`). Predicting it takes a REAL model call, so a configured provider alone still returns `contract_only`: the service is implemented, the call has not been made. Check `ORHarness.prediction_service_status(kind)` (or the `service_implemented` field) for implementation and `prediction_made` for an actual forecast — "a provider exists" is neither.
-
 ---
 
-## 2. The two prediction modules
-
-Both live over one shared frame, and both are *predictions*, not facts.
-
-### 2.1 `StrategyOutcomePrediction` — OR strategy consequence prediction
+## 2. Strategy consequence prediction
 
 Answers: *under the current problem (P), solving context (X) and harness capability condition, what would this candidate strategy produce?*
 
@@ -78,26 +71,6 @@ Old forecasts and explicit old conventions retain their original meanings, units
 
 See [technical R observations](episode_closeout.md#technical-r-observations) for executor evidence and [candidate scoring](strategy_outcome.md#3-score-one-or-more-candidates) for the shared U basis.
 
-
-### 2.2 `CapabilityEvolutionPrediction` — harness capability evolution
-
-Answers: *from the current capability evidence, the real experience and a candidate learning operation `u`, how would future task performance change — at what learning cost, with what degradation risk, and under what verification conditions?*
-
-| Field | Meaning |
-|---|---|
-| `current_evidence` | `HarnessCapabilityEvidence` — M / W_OR / Pi / R / T with an evidence status each |
-| `candidate_operation` | `LearningOperation` — what is being learned, over which experience scope |
-| `experience_scope` | `ExperienceScope` — the real executions/tasks used (independent-task count is derived) |
-| `task_targeting` | which task types the claim is about |
-| `baseline` / `horizon` / `horizon_tasks` | against what, over what window |
-| `expected_changes` | `ExpectedChange` list — metric, direction, optional value |
-| `learning_cost` | the cost of learning (separate from any execution cost) |
-| `degradation_risk` | `RiskStatement` — what could get worse |
-| `verification_conditions` | `VerificationCondition` list — what would confirm it |
-| `trace` | shared traceability block |
-
-**H is judged through observable consequences, never a latent vector.** The contract defines no "H vector", no latent transition network, and no composite capability score. It is training-free by design: a frozen model may later fill these fields through two interfaces, and nothing here needs fine-tuning.
-
 ---
 
 ## 3. The capability sources of `H`
@@ -122,7 +95,7 @@ Each source carries an evidence **status**, deliberately ordinal:
 
 `harness_state.knowledge` (knowledge refs), `experience` counts and `tool_config` are **evidence about H**, not measured H. They map to `m` and `t` as `indirect_evidence` only. `w_or`, `pi` and `r` stay `no_evidence` — nothing in the legacy state observed them, so nothing is inferred.
 
-**There is no `E_hist` capability term.** Historical experience is not a capability component; it is the substrate the sources are evidenced from. And the H-evolution predictor's own quality is assessed separately — it is not part of its own claim to have "got stronger".
+Historical experience supplies evidence for the capability sources.
 
 ---
 
@@ -150,45 +123,28 @@ Rules the framework enforces:
 - A `rollup="reference"` action is never summed again: its cost lives on its child.
 - Cost totals report `total` / `n_measured` / `n_items` / `complete` / `partial` per dimension. A partial total is labelled, never presented as the whole picture, and a dimension nothing measured stays `null`.
 
-**B is not a predicted world-state object.** Budget declarations, execution limits and the real resource ledger stay in `BudgetLedger`. Cost appears in these contracts twice, and the two are never summed:
+**B is not a predicted world-state object.** Budget declarations, execution limits and the real resource ledger stay in `BudgetLedger`. The prediction records two costs with different scopes.
 
-1. `cost` / `learning_cost` — the *predicted* cost of the candidate;
-2. `trace.call_cost` — the *measured* spend of the prediction call itself.
+1. `cost` gives the predicted cost of running the candidate.
+2. `trace.call_cost` gives the measured spend of the prediction call.
 
 For strategy-outcome C, the default measurement window is the shared decision anchor through real task termination. `cost.expected` and `expected_measured` keep their raw-value/mask meanings. `cost_evidence` is request evidence, not an extra cost dimension. `wm-c-window/1` observations include complete host-window counts or counter deltas and timestamped call ledgers; they do not relabel legacy attempt totals. A full host total already includes modelling/checking/repair work, so auxiliary action totals are not added again. Per-dimension error diagnostics keep both `solver_runtime_s` and `remaining_latency_s`; utility's existing component charging rule is unchanged. A script-wall proxy is not precise inner solver runtime. Missing C leaves real observations intact and supplies no prediction-error sample.
 
 ---
 
-## 5. Statuses: prediction ≠ fact ≠ verified effect
+## 5. Prediction status and H+ review
 
-`status` on either contract:
-
-| Value | Means |
+| `status` | Meaning |
 |---|---|
-| `draft` | being built, not yet validated |
-| `contract_only` | The contract is available and this request produced no prediction |
-| `valid` | a real prediction, produced and validated (requires `service_available=true` **and** predicted content) |
-| `unsupported` | the request is outside the supported prediction path; nothing was predicted |
-| `invalid` | a prediction was attempted and failed validation |
+| `draft` | Contract in preparation |
+| `contract_only` | An assembled contract |
+| `valid` | A prediction produced by the configured service and validated |
+| `unsupported` | Request outside the supported prediction path |
+| `invalid` | Prediction attempt failed validation |
 
-Three things that are routinely confused, and are kept apart:
+Check `prediction_made` for a completed forecast. Scoring a `strategy_window` prediction requires `trace.comparable=True` and a window for the same task, episode and strategy.
 
-1. **prediction made** — the object exists;
-2. **fact bound** — the real evidence landed and can be bound to it;
-3. **effect verified** — the predicted improvement was *observed*.
-
-Only (3) supports a claim that the harness got stronger. Adding knowledge entries, accumulating evidence, or a model asserting an improvement is none of the three. `VerificationCondition` records all three flags separately.
-
-For new online H+, the frozen binary decision is a scheduling fact about the
-prediction, not an observed learning reward. A positive executed job completes
-only with a real induction receipt. Independent rule validation establishes a
-knowledge increment; a separate comparable later-performance observation is
-needed for a performance claim. Original hypothesis truth is another field.
-Historical `CapabilityGain.assessment` (`expected` / `none` /
-`insufficient_basis`) and missing values remain readable and separately
-counted under that old protocol; no binary decision is inferred from them.
-
-When you read a status, check the adjacent fields rather than the word alone: `contract_only` with a configured provider still means no forecast; `service_available` for `capability_evolution` means the service exists — `prediction_made` is what says a call really happened; and a `scope="strategy_window"` prediction must carry `trace.comparable=True` (with a window that really belongs to this task/episode/strategy) before it may be scored.
+The frozen H+ decision controls review after a bound execution. A completed review records the original hypothesis, the actual evidence and the supported learning result in its induction receipt. Read the [learning labels](induction.md#read-publication-completion-and-learning-separately) and [feedback input](prediction_context.md#6d-the-h-training-receipt-block).
 
 ---
 
@@ -200,13 +156,13 @@ See [`references/examples/contract_roundtrip.py`](examples/contract_roundtrip.py
 PYTHONPATH=src python3 references/examples/contract_roundtrip.py
 ```
 
-It builds a strategy-outcome contract for a task with **no `model` field and several unknowns**, round-trips it through JSON, builds a capability-evolution contract, and reads a legacy payload through the legacy view. The script asserts its own invariants and prints the key facts.
+It builds a strategy-outcome contract for a task with several unknown fields, round-trips it through JSON, and reads a legacy payload through the legacy view. The script asserts its own invariants and prints the key facts.
 
 ---
 
 ## 7. Migration table
 
-How old shapes are preserved or interpreted. **Nothing is auto-migrated, no table is rewritten, no old API is removed.**
+Stored predictions retain their original version, scope and fields. These mappings explain the legacy read view.
 
 | Old shape | New home | How it is read |
 |---|---|---|
@@ -215,7 +171,6 @@ How old shapes are preserved or interpreted. **Nothing is auto-migrated, no tabl
 | `harness_state.tool_config` | `HarnessCapabilityEvidence.sources.t` | `indirect_evidence` — availability is a precondition for `T`, not a measured `T` |
 | `budget_state` | unchanged | stays in `BudgetLedger`; `B` is not a predicted object |
 | `state_changes` (fine-grained) | `BenefitEstimate.progress_shape` | read as an **X progress shape only**; per-field successor values are not carried forward |
-| `knowledge_changes` | `CapabilityEvolutionPrediction.expected_changes` | raw hypotheses for reference; **not** a measured capability increment |
 | `predicted.quality` | `benefit.value` (`kind=solution_quality`) | value preserved; `metric`/`unit`/`baseline` are **not derivable** — reported as gaps |
 | `predicted.failure_prob` | `risk.events[event=task_failure].probability` | probability preserved; **severity is not invented** |
 | `predicted.cost` / `cost_measured` | `cost.expected` / `cost.expected_measured` | preserved verbatim, mask included |
@@ -224,13 +179,8 @@ How old shapes are preserved or interpreted. **Nothing is auto-migrated, no tabl
 | `evidence_basis` / `unsupported_fields` | `trace.*` | preserved verbatim |
 | `action_spec` | `CandidateRef` | mechanical mapping; the spec's execution `params` and `budget_hint` are carried through **verbatim**. `measurement_scope="attempt"` → `scope="attempt"` (recorded as `scope_basis="legacy_attempt"`); a legacy `"task"` scope is **refused**, never silently shrunk — pass `scope=` to declare the narrowing yourself |
 | `OutcomePrediction`, snapshots, config, logs | unchanged | still readable; the old path returns `not_configured` with no provider — a BLOCKER, since the world model is mandatory |
-| Experiment ablation modes (`x-b-only`, `h-x-b`, `h-x-b-value`) | unchanged names | they select contract kinds, not behaviour: `strategy_outcome` only / both kinds with the knowledge term forced off / both kinds with the knowledge term live at `--delta` (default `0.0`). Use `prediction_kinds_for_mode(mode)` to resolve one programmatically |
 
 **Not convertible, on purpose** (the full list is `LEGACY_UNMAPPABLE` in `contracts.py`, and it is returned by every legacy read): knowledge references into a capability level, experience counts into capability, tool availability into a `T` level, `budget_state` into a predicted state, and fine-grained `state_changes` into per-field predictions. No capability increment, risk severity or measurement is derived from any of them. A legacy payload's own report names what was NOT derived under `legacy_view.gaps` and `legacy_view.unmappable`.
-
----
-
-Use `prediction_kinds_for_mode(mode)` to get the contract kinds for a mode programmatically.
 
 ---
 
